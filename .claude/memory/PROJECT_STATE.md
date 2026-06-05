@@ -3306,6 +3306,43 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
+## PR #463 — Sprint 31: DHL Hub Shell Wiring (2026-06-06, MERGED + DEPLOYED)
+
+**Date**: 2026-06-06 (merged + deployed same session)
+**PR #463** — `feat(sprint31): wire DHL Hub into V2 shell as read-only observer`
+**Merge SHA**: `a5a4e5e` (squash-merge to `origin/main`; parent `dec2def`)
+**Branch**: `feat/sprint31-dhl-hub-shell-wiring` (commit `e3e01ea`)
+
+**DHL convergence**: P1 ✓ (unchanged) · P2 ✓ (Hub renders live in shell) · P3 ✓ (4 mock helpers + inline arrays retired) → **Authority Complete** · **Governance Complete**.
+
+**Allowed endpoints (exactly 4, all GET, all 200 in browser smoke)**:
+- `GET /api/v1/dhl/followup-automation/status` (routes_dhl_followup_status.py:44)
+- `GET /api/v1/dhl/followup-automation/shipments` (routes_dhl_followup_status.py:59)
+- `GET /api/v1/dhl/auto-scan-status` (routes_dhl_clearance.py:2022)
+- `GET /api/v1/dhl/daily-summary` (routes_dhl_clearance.py:2254)
+
+**Brief-path correction (documented inline)**: the campaign brief listed `/dhl/status` and `/dhl/shipments`. Verified router prefix is `/api/v1/dhl/followup-automation` so canonical paths include that segment. Authority owner unchanged (`dhl_followup_status_projector`); only URL shape corrected.
+
+**Brief-deviation (disclosed)**: `components.jsx` was edited (one NAV_TREE `id: 'dhl'` line) and `index.html` ROUTE_REDIRECTS removed `dhl: 'shipments'` — both outside the brief's strict allowed-edit list. Without them, P2 ("operator can observe truth") would have been vacuously false (no sidebar nav + legacy redirect bounced `/v2/dhl` to Shipments). Surgical fixes pinned by 3 new regression tests.
+
+**Browser smoke (10/10 PASS, isolated dev server on C:\PZ-verify)**: /v2/dhl loads in shell · NO MOCK banner · dhl-hub-root present · 5 live panels render · 4 GETs return 200 with real projector data · ZERO POST/PUT/PATCH/DELETE · ZERO console errors · ZERO forbidden affordance buttons · No Lane A/B trigger · Standalone DHL behaviour unaffected.
+
+**7-agent deploy gate (2026-06-06): UNANIMOUS READY-TO-DEPLOY.** git-diff CLEAR (4 SAFE_CODE static files), backend-impact CLEAR (all 4 endpoints registered + auth-guarded), persistence CLEAR (no schema/storage writes), security CLEAR (no secrets, static URL literals, no injection vectors, no auth bypass), QA CLEAR (PZ 160/160, Carrier 404 pass / baseline 381, Sprint 31 26/26, Sprint 30 18/18 still pass), release-manager CLEAR on deploy mechanics, lead-coordinator READY-TO-DEPLOY (LOW risk, unanimous).
+
+**Deploy executed (2026-06-06): static-only, NO backend restart.** 4 files synced `C:\PZ-verify\service\app\static\v2\` → `C:\PZ\app\static\v2\` (Copy-Item), **byte-identical (sha256 MATCH)**: pages-v2.jsx 73722B (was 75914B, mock retired), index.html 40498B, mock-badge.jsx 1555B, components.jsx 24805B. Pre-deploy backup: `C:\PZ\app\static\v2\bak\20260606-sprint31\`. Existing live cards `dhl-scan-status.jsx` (6437B) + `dhl-daily-summary.jsx` (13381B) already in prod, matched source exactly. All 8 content greps on deployed C:\PZ files PASS. PZService Running throughout.
+
+**Production authenticated render: NOT performed by agent** — `/v2/` is auth-gated (#387; unauthenticated probes return login page). Live authenticated browser render requires operator login (cannot be entered by agent). File-level deploy is byte-verified and the identical code passed full browser smoke on the dev server.
+
+**WIRED_PAGES after Sprint 31**: `['proforma', 'proforma_detail', 'inbox', 'inventory', 'dhl']`
+
+**GATE 2**: 0/3 open PRs after merge.
+
+**Rollback**: code — `git revert a5a4e5e --no-edit`; production — restore the 4 files from `C:\PZ\app\static\v2\bak\20260606-sprint31\` (static-only, no restart).
+
+**OQ**: operator's final authenticated visual click on `https://pz.estrellajewels.eu/v2/dhl` to confirm production render. Same as Sprint 30 OQ remains pending.
+
+---
+
 # DECISIONS
 
 ## wFirma Push Layer Implementation Decisions (2026-05-24)
