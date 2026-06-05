@@ -113,6 +113,10 @@ STOP_DSK_RECEIVED         = "dsk_received"
 STOP_MANUAL               = "manual_stop"
 STOP_TERMINAL             = "shipment_terminal"
 STOP_CUSTOMS_DOCS_RECEIVED = "customs_docs_received"
+# SAD/ZC429/PZC received: customs declaration accepted and goods released.
+# Once any of these events appears in the timeline, the customs phase is
+# permanently closed and DHL follow-up is no longer needed or appropriate.
+STOP_CUSTOMS_COMPLETE     = "customs_complete"
 
 # Normalized carrier stages that, when observed at a Poland location, mean
 # the shipment has reached the customs phase and the DHL follow-up SLA may

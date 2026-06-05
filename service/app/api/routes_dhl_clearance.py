@@ -2365,8 +2365,9 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
 
     # ── Per-batch state ───────────────────────────────────────────────────────
     from ..services.active_shipment_monitor import (
-        _all_audit_paths as _audit_paths,
-        _is_active        as _batch_active,
+        _all_audit_paths    as _audit_paths,
+        _is_active          as _batch_active,
+        _is_customs_complete,
     )
 
     _EXCLUDED_AWBS: frozenset = frozenset({"5665916826"})
@@ -2461,8 +2462,11 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
                            (" — dsk_path missing" if not _dsk_path else ""),
             })
 
-        # Lane B candidates: no DHL reply, active, check if follow-up SLA eligible
-        if not _dhl_recv and not _dsk_sent:
+        # Lane B candidates: no DHL reply, active, customs NOT complete,
+        # check if follow-up SLA eligible.
+        # Customs-complete check is first: if SAD/ZC429/PZC exists, the batch
+        # is excluded from Lane B regardless of hours_waiting.
+        if not _dhl_recv and not _dsk_sent and not _is_customs_complete(audit):
             # Would follow-up be eligible if Lane B were ON?
             _fu_state = audit.get("dhl_followup") or {}
             _fu_active = bool(_fu_state.get("active"))
@@ -2592,6 +2596,7 @@ def run_scheduled_followup_check() -> Dict[str, Any]:
     from ..services.active_shipment_monitor import (
         _all_audit_paths        as _audit_paths,
         _is_active              as _batch_active,
+        _is_customs_complete,
         _process_dhl_followup,
     )
     from ..services.tracking_intelligence import detect_tracking_triggers
@@ -2599,17 +2604,18 @@ def run_scheduled_followup_check() -> Dict[str, Any]:
     _EXCLUDED_AWBS: frozenset = frozenset({"5665916826"})
 
     out: Dict[str, Any] = {
-        "ok":                  True,
-        "lane":                "B",
-        "batches_checked":     0,
-        "followup_started":    0,
-        "followup_sent":       0,
-        "followup_stopped":    0,
-        "followup_suppressed": 0,
-        "skipped_inactive":    0,
-        "skipped_excluded":    0,
-        "skipped_received":    0,
-        "errors":              [],
+        "ok":                       True,
+        "lane":                     "B",
+        "batches_checked":          0,
+        "followup_started":         0,
+        "followup_sent":            0,
+        "followup_stopped":         0,
+        "followup_suppressed":      0,
+        "skipped_inactive":         0,
+        "skipped_excluded":         0,
+        "skipped_received":         0,
+        "skipped_customs_complete": 0,
+        "errors":                   [],
     }
 
     for ap in _audit_paths():
@@ -2627,6 +2633,12 @@ def run_scheduled_followup_check() -> Dict[str, Any]:
         # Active-batch guard — skip terminal/delivered batches
         if not _batch_active(audit):
             out["skipped_inactive"] += 1
+            continue
+
+        # Customs-complete gate — SAD/ZC429/PZC received means customs is done.
+        # No follow-up email should ever be sent for a customs-cleared shipment.
+        if _is_customs_complete(audit):
+            out["skipped_customs_complete"] += 1
             continue
 
         # Skip if DHL already replied (Lane A will have set this flag)

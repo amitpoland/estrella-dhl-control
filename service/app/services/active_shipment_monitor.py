@@ -124,6 +124,38 @@ _STATUS_ORDER = {
 }
 
 
+# ── Customs-completion detector ───────────────────────────────────────────────
+
+# Timeline events that signal customs declaration accepted + goods released.
+# Any one of these permanently closes the customs phase for this shipment.
+# DHL follow-up must STOP immediately when any of these is present.
+_CUSTOMS_COMPLETE_EVENTS: frozenset = frozenset({
+    "sad_uploaded",      # SAD (Single Administrative Document) uploaded — goods released
+    "zc429_received",    # AIS ZC429 customs clearance confirmed (EV_ZC429_RECEIVED)
+    "pzc_received",      # ACS PZC + duty notice (EV_PZC_RECEIVED)
+    "sad_received",      # Alternate event name used by some ingestion paths
+    "customs_cleared",   # Future canonical event (reserved)
+})
+
+
+def _is_customs_complete(audit: Dict[str, Any]) -> bool:
+    """
+    Return True when the shipment's timeline shows customs declaration is done.
+
+    Checks audit["timeline"] for any SAD/ZC429/PZC customs-completion event.
+    These events are canonical signals that the customs authority has accepted
+    the declaration and released the goods — DHL follow-up is no longer needed.
+
+    Pure / side-effect free. Returns False on missing/malformed timeline.
+    """
+    tl = audit.get("timeline") or []
+    return any(
+        ev.get("event") in _CUSTOMS_COMPLETE_EVENTS
+        for ev in tl
+        if isinstance(ev, dict)
+    )
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _all_audit_paths() -> List[Path]:
@@ -1997,7 +2029,8 @@ def _process_dhl_followup(
     """
     from .dhl_followup_sla import (
         start_followup, stop_followup, record_followup_sent, is_due,
-        STOP_DHL_EMAIL_RECEIVED, STOP_TERMINAL, STOP_CUSTOMS_DOCS_RECEIVED, _now_poland,
+        STOP_DHL_EMAIL_RECEIVED, STOP_TERMINAL, STOP_CUSTOMS_DOCS_RECEIVED,
+        STOP_CUSTOMS_COMPLETE, _now_poland,
     )
     out: Dict[str, Any] = {
         "started":     False,
@@ -2006,6 +2039,24 @@ def _process_dhl_followup(
         "error":       None,
         "state_after": None,
     }
+
+    # ── Customs-complete gate (first — permanent, unconditional) ─────────────
+    # If the timeline contains SAD/ZC429/PZC, customs is done.
+    # No follow-up should be sent regardless of dhl_followup.active state.
+    if _is_customs_complete(audit):
+        if (audit.get("dhl_followup") or {}).get("active"):
+            stop_followup(audit, STOP_CUSTOMS_COMPLETE)
+            write_json_atomic(audit_path, audit)
+            try:
+                tl.log_event(audit_path, "dhl_followup_stopped", "monitor",
+                             "active_shipment_monitor",
+                             detail={"reason": STOP_CUSTOMS_COMPLETE})
+            except Exception:
+                pass
+            out["stopped"]     = True
+            out["state_after"] = audit.get("dhl_followup")
+        # Whether active or not: return immediately — customs phase is done.
+        return out
 
     state = audit.get("dhl_followup") or {}
     dhl_received     = bool((audit.get("dhl_email") or {}).get("received"))
