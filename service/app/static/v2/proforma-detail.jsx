@@ -232,6 +232,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const canConvert    = draftState === 'posted' || draftState === 'ready';
   const isBlocked     = draftState === 'post_failed' || draftState === 'convert_blocked';
   const alreadyPosted = draftState === 'posted' || draftState === 'invoiced';
+  const canPrint      = !!(liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id));
 
   const blockingReasons = (preview && preview.blocking_reasons) || [];
   const exportBlockers  = (preview && preview.export_blockers)  || [];
@@ -323,7 +324,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         {/* Group 3 — Output */}
         <TbBtn
           onClick={handleDownloadPdf}
-          title="Open PDF in new tab"
+          disabled={!canPrint}
+          title={canPrint
+            ? 'Open wFirma proforma PDF in new tab'
+            : 'PDF only available after posting to wFirma'}
           data-testid="proforma-detail-download-pdf"
         >
           ⎙ Print
