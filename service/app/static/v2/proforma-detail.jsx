@@ -20,22 +20,28 @@ const PROFORMA_TABS = [
 
 // ── Toolbar button ────────────────────────────────────────────────────────────
 function TbBtn({ children, onClick, disabled, title, warn, style: xs, ...rest }) {
+  const [hov, setHov] = React.useState(false);
   return (
     <button
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
       title={title}
+      onMouseEnter={() => !disabled && setHov(true)}
+      onMouseLeave={() => setHov(false)}
       {...rest}
       style={{
-        background: 'transparent', border: 0, padding: '7px 11px', borderRadius: 6,
+        background: (hov && !disabled)
+          ? (warn ? 'var(--badge-amber-bg)' : 'var(--row-hover)')
+          : 'transparent',
+        border: 0, padding: '8px 12px', borderRadius: 6,
         fontFamily: 'inherit', fontSize: 13,
         color: warn
           ? 'var(--badge-amber-text)'
-          : (disabled ? 'var(--text-4, #9ca3af)' : 'var(--text)'),
+          : (disabled ? 'var(--text-3)' : 'var(--text)'),
         cursor: disabled ? 'not-allowed' : 'pointer',
         display: 'inline-flex', alignItems: 'center', gap: 6,
-        fontWeight: 500, opacity: disabled ? 0.5 : 1,
-        whiteSpace: 'nowrap',
+        fontWeight: warn ? 600 : 500, opacity: disabled ? 0.5 : 1,
+        whiteSpace: 'nowrap', transition: 'background 0.1s',
         ...(xs || {}),
       }}
     >
@@ -88,9 +94,9 @@ function ProformaPartyCard({ title, name, lines, footer, footerMuted, warn, warn
     <div
       data-testid={dataTestid}
       style={{
-        background: 'var(--card)',
+        background: 'var(--bg)',
         border: `1px solid ${warn ? 'var(--badge-amber-border)' : 'var(--border)'}`,
-        borderRadius: 8, padding: '14px 16px', boxShadow: '0 1px 2px var(--shadow)',
+        borderRadius: 8, padding: '14px 16px',
       }}
     >
       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.16em', textTransform: 'uppercase', marginBottom: 8 }}>
@@ -254,12 +260,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   };
 
   return (
-    <div data-testid="proforma-detail-root" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--bg)' }}>
+    <div data-testid="proforma-detail-root" style={{ flex: 1, overflowY: 'auto', background: 'var(--bg)', padding: '20px 24px 60px' }}>
 
       {/* ── Action toolbar ──────────────────────────────────────────────── */}
       <div style={{
-        padding: '8px 16px', background: 'var(--card)', borderBottom: '1px solid var(--border)',
-        display: 'flex', alignItems: 'center', gap: 0, flexShrink: 0, flexWrap: 'wrap',
+        padding: '12px 16px', background: 'var(--card)',
+        border: '1px solid var(--border)', borderRadius: '12px 12px 0 0', borderBottom: 0,
+        display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap',
       }}>
 
         {/* Group 1 — CRUD */}
@@ -335,6 +342,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         >
           ⚙ Generate ▾
         </TbBtn>
+        <TbBtn
+          disabled
+          title="More actions"
+          data-testid="tb-more"
+        >
+          ⋯
+        </TbBtn>
 
         {/* Spacer */}
         <div style={{ flexGrow: 1, minWidth: 12 }} />
@@ -361,10 +375,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
       {/* ── Party cards (SELLER / BUYER / RECIPIENT) ────────────────────── */}
       <div style={{
-        padding: '16px 24px', background: 'var(--bg-subtle)',
-        borderBottom: '1px solid var(--border)', flexShrink: 0,
+        background: 'var(--card)',
+        borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+        padding: '22px 24px 12px',
+        display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16,
       }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
+        <div style={{ display: 'contents' }}>
 
           {/* SELLER — authority: GET /api/v1/settings/company-profile */}
           <ProformaPartyCard
@@ -402,7 +418,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       {/* ── Tab strip ──────────────────────────────────────────────────────── */}
       <div style={{
         display: 'flex', gap: 0, padding: '0 24px',
-        background: 'var(--card)', borderBottom: '1px solid var(--border)', flexShrink: 0,
+        background: 'var(--card)',
+        borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+        borderBottom: '1px solid var(--border)',
       }}>
         {PROFORMA_TABS.map(t => (
           <button key={t.id} onClick={() => setActiveTab(t.id)} style={{
@@ -416,7 +434,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       </div>
 
       {/* ── Tab content ────────────────────────────────────────────────────── */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '24px' }}>
+      <div style={{
+        background: 'var(--card)',
+        border: '1px solid var(--border)', borderTop: 0,
+        borderRadius: '0 0 12px 12px',
+        padding: '24px',
+        minHeight: 320,
+        overflow: 'auto',
+        boxShadow: '0 4px 12px var(--shadow)',
+      }}>
         {activeTab === 'overview' && (
           <ProformaOverviewTab
             detail={detail}
