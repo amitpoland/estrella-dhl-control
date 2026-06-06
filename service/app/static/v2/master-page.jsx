@@ -29,20 +29,27 @@ const ROLE_MATRIX = {
 };
 
 // ── Table column definitions per entity — match actual backend response fields
+// Sprint 38b: mapping/status columns added for 7 focus entities.
+// Column.mapping = true renders "not mapped" badge instead of bare "—" for nulls.
+// Column.timestamp = true renders relative-time format for ISO date strings.
 const ENTITY_COLUMNS = {
   clients: [
-    { key: 'bill_to_name',   label: 'Company name' },
-    { key: 'country',        label: 'Country' },
-    { key: 'nip',            label: 'NIP / VAT ID', mono: true },
-    { key: 'default_currency', label: 'Currency' },
-    { key: 'active',         label: 'Active', toggle: true },
+    { key: 'bill_to_name',          label: 'Company name' },
+    { key: 'country',               label: 'Country' },
+    { key: 'nip',                   label: 'NIP / VAT ID', mono: true },
+    { key: 'default_currency',      label: 'Currency' },
+    { key: 'bill_to_contractor_id', label: 'wFirma ID', mono: true, mapping: true },
+    { key: 'last_wfirma_sync_at',   label: 'Last wFirma sync', timestamp: true },
+    { key: 'active',                label: 'Active', toggle: true },
   ],
   suppliers: [
-    { key: 'name',           label: 'Supplier name' },
-    { key: 'supplier_code',  label: 'Code', mono: true },
-    { key: 'country',        label: 'Country' },
-    { key: 'vat_id',         label: 'VAT ID', mono: true },
-    { key: 'active',         label: 'Active', toggle: true },
+    { key: 'name',                  label: 'Supplier name' },
+    { key: 'supplier_code',         label: 'Code', mono: true },
+    { key: 'country',               label: 'Country' },
+    { key: 'vat_id',                label: 'VAT ID', mono: true },
+    { key: 'wfirma_id',             label: 'wFirma ID', mono: true, mapping: true },
+    { key: 'last_wfirma_sync_at',   label: 'Last sync', timestamp: true },
+    { key: 'active',                label: 'Active', toggle: true },
   ],
   products: [
     { key: 'product_code',       label: 'Product code', mono: true },
@@ -83,6 +90,7 @@ const ENTITY_COLUMNS = {
     { key: 'carrier_code', label: 'Code', mono: true },
     { key: 'name',         label: 'Name' },
     { key: 'parser_type',  label: 'Parser' },
+    { key: 'api_type',     label: 'API type' },
     { key: 'inbox_email',  label: 'Inbox email' },
     { key: 'active',       label: 'Active', toggle: true },
   ],
@@ -91,6 +99,8 @@ const ENTITY_COLUMNS = {
     { key: 'name',                label: 'Name' },
     { key: 'risk_transfer_point', label: 'Risk transfer' },
     { key: 'freight_included',    label: 'Freight', toggle: true },
+    { key: 'insurance_included',  label: 'Insurance', toggle: true },
+    { key: 'customs_included',    label: 'Customs', toggle: true },
     { key: 'active',              label: 'Active', toggle: true },
   ],
   units: [
@@ -116,6 +126,79 @@ const ENTITY_COLUMNS = {
   ],
 };
 
+// ── Sprint 38b: Per-entity mapping status metadata
+// Each entity declares what mapping/status authority exists (available)
+// and what is missing (pending). Rendered as info banners below the table.
+const MAPPING_INFO = {
+  clients: {
+    available: [
+      'wFirma contractor ID (bill_to_contractor_id column)',
+      'wFirma sync preview + apply (GET/POST /customer-master/sync-from-wfirma)',
+      'Last wFirma sync timestamp visible per record',
+    ],
+    pending: [
+      'Purchase packing list usage — no endpoint exposes which packing lists reference this client',
+      'Sales packing list usage — no endpoint exposes sales packing list references',
+      'Proforma/invoice history — no per-client proforma count endpoint',
+      'DHL/customs shipment history — no per-client shipment count endpoint',
+    ],
+  },
+  suppliers: {
+    available: [
+      'wFirma ID (wfirma_id column)',
+      'wFirma sync preview + apply (GET/POST /suppliers/sync-from-wfirma)',
+      'Last wFirma sync timestamp visible per record',
+    ],
+    pending: [
+      'Purchase packing list supplier usage — no endpoint exposes which packing lists reference this supplier',
+    ],
+  },
+  products: {
+    available: [
+      'HS code cross-reference (hs_code_override links to HS Codes tab)',
+      'Unit cross-reference (unit_override links to Units tab)',
+      'Design cross-reference (design_code_link links to Designs tab)',
+    ],
+    pending: [
+      'wFirma goods mapping — wFirma goods IDs live in /wfirma/products (separate authority); no per-product wFirma ID stored in Product Local',
+      'Packing list item usage — no endpoint exposes which packing lists contain this product code',
+    ],
+  },
+  vat: {
+    available: [],
+    pending: [
+      'wFirma VAT sync — no wFirma VAT sync endpoint exists; local VAT config is the only authority',
+    ],
+  },
+  carriers: {
+    available: [
+      'Parser type and API type visible per carrier',
+      'Supported services list available from backend',
+    ],
+    pending: [
+      'DHL active model/credentials status — no endpoint exposes live DHL API connection status per carrier',
+      'FedEx/UPS/GLS/InPost/DPD — mapping/status only unless backend authority exists for these carriers',
+    ],
+  },
+  incoterms: {
+    available: [
+      'Freight/insurance/customs inclusion flags visible per incoterm',
+    ],
+    pending: [
+      'Usage tracking — no endpoint exposes which purchase/sales packing lists use each incoterm',
+    ],
+  },
+  units: {
+    available: [
+      'Unit type classification visible per unit',
+    ],
+    pending: [
+      'Conversion backend — no unit conversion endpoint exists',
+      'Product Local usage — no endpoint counts how many products use each unit',
+    ],
+  },
+};
+
 // ── Roles: static system data (no backend endpoint exists)
 const STATIC_ROLES = [
   { id: 'r1', name: 'admin',    desc: 'Full access incl. role management',     create: true, edit: true, delete: true, lock: true },
@@ -128,6 +211,79 @@ const STATIC_ROLES = [
 const WRITE_DISABLED_REASON = 'Write operations not yet wired — Sprint 38 is read-only authority conversion';
 const ROLES_DISABLED_REASON = 'No backend endpoint for role management — roles are system-defined';
 const USERS_WRITE_DISABLED_REASON = 'User write operations require admin endpoints not yet wired to this page';
+const WFIRMA_VAT_SYNC_DISABLED = 'Backend pending: wFirma VAT sync endpoint missing';
+
+// ── Sprint 38b: format a timestamp for display
+function _fmtTimestamp(isoStr) {
+  if (!isoStr) return null;
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return isoStr;
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  } catch (_) {
+    return isoStr;
+  }
+}
+
+// ── Sprint 38b: cell renderer supporting mapping + timestamp columns
+function _renderCell(col, value) {
+  if (col.toggle) return value ? '✓' : '✗';
+  if (col.timestamp) {
+    const formatted = _fmtTimestamp(value);
+    if (!formatted) return '—';
+    return formatted;
+  }
+  if (col.mapping) {
+    if (value == null || value === '') {
+      return React.createElement('span', {
+        style: { fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic' },
+        'data-testid': 'mapping-not-mapped',
+      }, 'not mapped');
+    }
+    return String(value);
+  }
+  if (value == null || value === '') return '—';
+  return String(value);
+}
+
+// ── Sprint 38b: Mapping info banner component
+function MappingInfoBanner({ entityId }) {
+  const info = MAPPING_INFO[entityId];
+  if (!info) return null;
+  if (info.available.length === 0 && info.pending.length === 0) return null;
+
+  return React.createElement('div', {
+    'data-testid': 'mapping-info-' + entityId,
+    style: {
+      marginTop: 12, padding: 14,
+      background: 'var(--bg-subtle)',
+      border: '1px solid var(--border)',
+      borderRadius: 6, fontSize: 11,
+    },
+  },
+    React.createElement('div', {
+      style: { fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
+               letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 8 },
+    }, 'Mapping & integration status'),
+
+    info.available.length > 0 && React.createElement('div', { style: { marginBottom: info.pending.length > 0 ? 8 : 0 } },
+      info.available.map(function(item, i) {
+        return React.createElement('div', { key: 'a' + i, style: { color: 'var(--text-2)', marginBottom: 2 } },
+          '✓ ', item);
+      })
+    ),
+
+    info.pending.length > 0 && React.createElement('div', null,
+      info.pending.map(function(item, i) {
+        return React.createElement('div', {
+          key: 'p' + i,
+          'data-testid': 'mapping-pending-' + entityId + '-' + i,
+          style: { color: 'var(--badge-amber-text, #92400e)', marginBottom: 2 },
+        }, '○ Backend pending: ', item);
+      })
+    )
+  );
+}
 
 // ── API fetch mapping: entity id -> { fetch, extractRecords, rowKey }
 function _entityApi(entityId) {
@@ -345,7 +501,7 @@ function MasterPage() {
                                 fontWeight: ci === 0 ? 600 : 400,
                                 fontFamily: c.mono ? 'monospace' : 'inherit',
                               }}>
-                                {c.toggle ? (v ? '✓' : '✗') : (v == null || v === '' ? '—' : String(v))}
+                                {_renderCell(c, v)}
                               </td>
                             );
                           })}
@@ -387,10 +543,37 @@ function MasterPage() {
               Users are read-only in this view. User management (approve, reject, role change, activate/deactivate) requires admin endpoints not yet wired to this page.
             </div>
           )}
+
+          {/* Sprint 38b: wFirma sync buttons for entities with sync endpoints */}
+          {(entity === 'clients' || entity === 'suppliers') && (
+            <div data-testid={'wfirma-sync-section-' + entity} style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Btn variant="outline" small disabled title={WRITE_DISABLED_REASON} data-testid={'btn-wfirma-sync-' + entity}>
+                {'⟳'} Sync from wFirma
+              </Btn>
+              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                Preview + apply endpoint available — write operations disabled in Sprint 38b (read-only mapping extension)
+              </span>
+            </div>
+          )}
+
+          {/* Sprint 38b: VAT sync button — disabled, endpoint missing */}
+          {entity === 'vat' && (
+            <div data-testid="wfirma-sync-section-vat" style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Btn variant="outline" small disabled title={WFIRMA_VAT_SYNC_DISABLED} data-testid="btn-wfirma-sync-vat">
+                {'⟳'} Sync from wFirma
+              </Btn>
+              <span style={{ fontSize: 11, color: 'var(--badge-amber-text, #92400e)' }}>
+                Backend pending: wFirma VAT sync endpoint missing
+              </span>
+            </div>
+          )}
+
+          {/* Sprint 38b: Mapping info banner for focus entities */}
+          <MappingInfoBanner entityId={entity} />
         </div>
       </div>
     </div>
   );
 }
 
-Object.assign(window, { MasterPage, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS });
+Object.assign(window, { MasterPage, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner });
