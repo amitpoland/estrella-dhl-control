@@ -3532,7 +3532,20 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               // through wFirma directly or via an older flow that didn't write those fields).
               const _wfExport   = (audit && audit.wfirma_export) || {};
               const _pzDocId    = (_wfExport.wfirma_pz_doc_id || '').trim();
-              const pzGenerated = !!(audit && (audit.pz_pdf_filename || audit.pz_generated_at || _pzDocId));
+              // Mirror server-side evaluate_closure() check: any of these fields
+              // indicates a PZ or equivalent document exists.
+              // polish_desc_filename (Polish customs description PDF) also satisfies
+              // the PZ-equivalent check on the server — keep UI in sync.
+              const _pzOutput   = ((audit && audit.pz_output) || {}).pdf || '';
+              const pzGenerated = !!(audit && (
+                audit.pz_pdf_filename ||
+                audit.pz_generated_at ||
+                audit.pz_generated ||
+                audit.pz_filename ||
+                audit.polish_desc_filename ||
+                _pzDocId ||
+                _pzOutput
+              ));
               const batchCompletedStatus = !!(audit && audit.status === 'completed');
               const closureEvalDisabled = closureCheckLoading || !pzGenerated || batchCompletedStatus;
               const closureEvalDisabledReason = batchCompletedStatus

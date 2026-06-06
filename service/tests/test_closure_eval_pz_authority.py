@@ -35,8 +35,8 @@ def _closure_eval_block(src: str) -> str:
     """
     anchor = src.find("closure-eval-card")
     assert anchor != -1, "closure-eval-card testid not found in shipment-detail.html"
-    # Walk back to the pzGenerated computation (it appears ~200 chars before the card)
-    region_start = max(0, anchor - 800)
+    # Walk back to include wfirma_export / _pzDocId / _pzOutput lines before the card
+    region_start = max(0, anchor - 1500)
     region_end = anchor + 2000
     return src[region_start:region_end]
 
@@ -111,4 +111,60 @@ class TestClosureEvalPzGeneratedAuthority:
         src = _src()
         assert "closure-eval-card" in src, (
             "closure-eval-card testid missing from shipment-detail.html"
+        )
+
+
+class TestClosureEvalIssue397Recovery:
+    """Issue #397: pzGenerated must mirror all fields from server-side evaluate_closure().
+
+    The production fix (2026-06-03, recovered 2026-06-06) aligned pzGenerated with
+    shipment_closure.evaluate_closure() — which uses pz_generated, pz_filename, and
+    polish_desc_filename — and added pz_output.pdf as the canonical export-service
+    evidence field. Without these, UI showed 'PZ must be generated first' even when
+    the server-side closure check passed.
+
+    These tests pin the alignment so a future repo-from-HEAD deploy cannot silently
+    regress to the narrower 3-field check.
+    """
+
+    def test_pz_generated_field_in_block(self):
+        """pzGenerated must check audit.pz_generated (evaluate_closure field 1)."""
+        block = _closure_eval_block(_src())
+        assert "audit.pz_generated" in block, (
+            "pzGenerated must check audit.pz_generated — evaluate_closure() uses this "
+            "as a direct boolean flag for PZ completion (Issue #397 recovery)"
+        )
+
+    def test_pz_filename_field_in_block(self):
+        """pzGenerated must check audit.pz_filename (evaluate_closure field 2)."""
+        block = _closure_eval_block(_src())
+        assert "audit.pz_filename" in block, (
+            "pzGenerated must check audit.pz_filename — evaluate_closure() uses this "
+            "field to detect PZ filename (Issue #397 recovery)"
+        )
+
+    def test_polish_desc_filename_field_in_block(self):
+        """pzGenerated must check audit.polish_desc_filename (evaluate_closure PZ-equivalent)."""
+        block = _closure_eval_block(_src())
+        assert "audit.polish_desc_filename" in block, (
+            "pzGenerated must check audit.polish_desc_filename — evaluate_closure() "
+            "treats Polish description PDF as PZ-equivalent (Issue #397 recovery)"
+        )
+
+    def test_pz_output_pdf_accessed_in_block(self):
+        """pzGenerated must check pz_output.pdf (export_service canonical PDF evidence)."""
+        block = _closure_eval_block(_src())
+        assert "pz_output" in block, (
+            "pzGenerated must check audit.pz_output.pdf — populated by "
+            "_build_pz_output() after a successful PZ run; None when no PDF on disk "
+            "(Issue #397 recovery)"
+        )
+
+    def test_pz_output_accessed_safely(self):
+        """pz_output must be accessed with a null-guard (no TypeError if absent)."""
+        block = _closure_eval_block(_src())
+        assert "pz_output) || {}" in block or "(audit.pz_output || {})" in block or \
+               "audit && audit.pz_output) || {}" in block, (
+            "pz_output must be null-guarded to prevent TypeError when audit has no "
+            "pz_output block (Issue #397 recovery)"
         )
