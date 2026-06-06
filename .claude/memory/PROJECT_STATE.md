@@ -3572,6 +3572,26 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
+## Sprint 34c — NAV label cleanup: DEPLOYED (2026-06-06)
+
+**Date**: 2026-06-06 (cleanup deploy)
+**SHA**: `4bc0614` — fix(v2-nav): rename intelligence nav label 'Parser / Learning' → 'Intelligence Hub'
+**File changed**: `service/app/static/v2/components.jsx` line 33 only
+**Test updated**: `test_sprint34_intelligence_hub_wiring.py::test_intelligence_in_nav_tree` — added label assertion `"label: 'Intelligence Hub'"` to pin the new value
+
+**Change**: NAV_TREE entry `{ id: 'intelligence', label: 'Parser / Learning' }` → `{ id: 'intelligence', label: 'Intelligence Hub' }`. The old label was the retired V1 `LearningParserPage` name. Now sidebar label matches the page header deployed in Sprint 34.
+
+**7-agent gate**: ALL CLEAR — git-diff SAFE_CODE, backend-impact CLEAR (no Python touched), persistence CLEAR, security CLEAR, QA CLEAR (28/28 Sprint 34 tests pass with new label assertion), release-manager CLEAR, lead-coordinator READY-TO-DEPLOY
+
+**Static deploy**: `robocopy` 1 file copied (`components.jsx`), SHA256 MATCH verified:
+  `D16384DD5121B3139D3CE441A4EDD3A89AEE2A5C434D57428FB0A8DFD6925348`
+
+**GATE 6 browser smoke**: PASS — https://pz.estrellajewels.eu/v2/intelligence shows "Intelligence Hub" in both the Setup group sidebar AND the page header. Live data visible (17 suggestions, 3 suppliers, engine active). PZService NOT restarted.
+
+**Scorecard**: `.claude/memory/scorecards/2026-06-06-sprint34c-nav-label-cleanup.md`
+
+---
+
 # DECISIONS
 
 ## wFirma Push Layer Implementation Decisions (2026-05-24)
