@@ -130,12 +130,135 @@ function ProformaPartyCard({ title, name, lines, footer, footerMuted, warn, warn
   );
 }
 
+// ── Print-preview modal ────────────────────────────────────────────────────────
+// READ-ONLY. Never mutates draft state. Uses real docData/cmrData from ProformaDetailPage.
+// Requires: estrella-doc-tokens.css + estrella-doc-proforma.jsx + estrella-doc-cmr.jsx loaded in index.html.
+function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, onClose }) {
+  // Scale A4 (794px) to fit within 860px modal body → ~0.9 scale
+  const SCALE = 0.88;
+  const activeType = docType || 'proforma';
+
+  // Variant selection per document type
+  const variantOptions = activeType === 'cmr' ? ['classic', 'modern'] : ['classic', 'modern', 'bold'];
+
+  // Component resolution
+  let DocVariant = null;
+  if (activeType === 'cmr') {
+    DocVariant = variant === 'modern'
+      ? (window.EJCMRModern  || null)
+      : (window.EJCMRClassic || null);
+  } else {
+    DocVariant = variant === 'modern' ? (window.EJProformaModern || null)
+               : variant === 'bold'   ? (window.EJProformaBold   || null)
+               : (window.EJProformaClassic || null);
+  }
+
+  // Trap Escape key
+  React.useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="ej-preview-overlay"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+      data-testid="proforma-preview-modal"
+    >
+      <div className="ej-preview-wrap">
+        {/* Control bar */}
+        <div className="ej-preview-bar">
+          <span style={{ fontWeight: 700, letterSpacing: '0.04em' }}>Print Preview</span>
+          <span style={{ color: '#7C89A3', fontSize: 11 }}>
+            Read-only · {activeType === 'cmr' ? (cmrData && cmrData.cmr_no) || '—' : docData.doc_no}
+          </span>
+          <div style={{ display: 'flex', gap: 6, marginLeft: 'auto', alignItems: 'center' }}>
+            {/* Document type selector */}
+            {[['proforma', 'Proforma'], ['cmr', 'CMR']].map(([dt, label]) => (
+              <button
+                key={dt}
+                onClick={() => {
+                  onDocTypeChange(dt);
+                  if (dt === 'cmr' && variant === 'bold') onVariantChange('classic');
+                }}
+                data-testid={`preview-doctype-${dt}`}
+                style={{
+                  padding: '4px 12px', borderRadius: 5, border: '1px solid',
+                  fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  borderColor: activeType === dt ? '#C9A24B' : '#3A4A62',
+                  background:  activeType === dt ? '#C9A24B30' : 'transparent',
+                  color:        activeType === dt ? '#C9A24B'  : '#8A9AB6',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+            <div style={{ width: 1, height: 20, background: '#2A3A52', margin: '0 2px' }}/>
+            {/* Variant selector (per doc type) */}
+            {variantOptions.map(v => (
+              <button
+                key={v}
+                onClick={() => onVariantChange(v)}
+                data-testid={`preview-variant-${v}`}
+                style={{
+                  padding: '4px 12px', borderRadius: 5, border: '1px solid',
+                  fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  borderColor: variant === v ? '#7C89A3' : '#2A3A52',
+                  background:  variant === v ? '#2A3A5240' : 'transparent',
+                  color:        variant === v ? '#C8D4E8'  : '#5A6A82',
+                }}
+              >
+                {v.charAt(0).toUpperCase() + v.slice(1)}
+              </button>
+            ))}
+            <div style={{ width: 1, height: 20, background: '#2A3A52', margin: '0 4px' }}/>
+            <button
+              onClick={onClose}
+              data-testid="preview-close"
+              style={{
+                padding: '4px 12px', borderRadius: 5, border: '1px solid #3A4A62',
+                background: 'transparent', color: '#8A9AB6',
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              }}
+            >
+              ✕ Close
+            </button>
+          </div>
+        </div>
+
+        {/* Document body */}
+        <div className="ej-preview-body">
+          {DocVariant ? (
+            <div
+              className="ej-preview-sheet"
+              style={{ transform: `scale(${SCALE})`, transformOrigin: 'top center' }}
+            >
+              {activeType === 'cmr'
+                ? <DocVariant cmrData={cmrData}/>
+                : <DocVariant docData={docData}/>
+              }
+            </div>
+          ) : (
+            <div style={{ padding: 40, color: '#64748B', fontSize: 13 }}>
+              Print preview requires {activeType === 'cmr' ? 'estrella-doc-cmr.jsx' : 'estrella-doc-proforma.jsx'} to be loaded.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
   const [showConvertModal, setShowConvertModal]  = React.useState(false);
   const [showPostModal,    setShowPostModal]     = React.useState(false);
   const [cloning,          setCloning]           = React.useState(false);
+  const [showPreview,      setShowPreview]       = React.useState(false);
+  const [previewVariant,   setPreviewVariant]    = React.useState('classic');
+  const [previewDocType,   setPreviewDocType]    = React.useState('proforma');
 
   // WIRED: fetch full draft detail (GET /api/v1/proforma/draft/{id})
   const draftHook = window.PzState.useDraft(draft && draft.id);
@@ -225,6 +348,85 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     paymentTerms: paymentTermsDisplay,
     incoterm:     liveDraft.incoterm || '—',
   };
+  // ── docData for print preview (EJProformaClassic / EJProformaModern) ──────
+  const _previewLabel = liveDraft.wfirma_proforma_fullnumber
+    || (draft && draft.wfirma_proforma_fullnumber)
+    || (draft && draft.id ? `Draft #${draft.id}` : 'Draft');
+  const previewDocData = {
+    doc_no:   _previewLabel,
+    date:     liveDraft.invoice_date || liveDraft.created_at
+              ? (liveDraft.invoice_date || liveDraft.created_at || '').slice(0, 10) : '—',
+    due:      liveDraft.due_date ? liveDraft.due_date.slice(0, 10) : '—',
+    payment:  paymentTermsDisplay,
+    rate:     { eur: fxRate, date: liveDraft.exchange_rate_date || '—', table: liveDraft.nbp_table || '—' },
+    seller:   {
+      name:  detail.exporter.name,
+      addr:  detail.exporter.address,
+      vat:   detail.exporter.vatEu,
+      email: (companyProfile && companyProfile.email) || '',
+      phone: (companyProfile && companyProfile.phone) || '',
+    },
+    buyer:    {
+      name:    detail.customer.name,
+      addr:    detail.customer.address,
+      city:    detail.customer.country,
+      country: detail.customer.country,
+      vat:     detail.customer.vatEu,
+    },
+    lines:    lines.map(l => ({
+      seq:     l.seq,
+      sku:     l.sku,
+      desc:    l.desc,
+      purity:  l.purity,
+      origin:  l.origin,
+      qty:     l.qty,
+      unitEur: l.unitEur,
+      netEur:  l.netEur,
+    })),
+    total_eur: lines.reduce((s, l) => s + l.netEur, 0),
+    total_pln: (fxRate && fxRate > 0)
+      ? lines.reduce((s, l) => s + l.netEur, 0) * fxRate : null,
+    carrier:  liveDraft.batch_id
+      ? { awb: liveDraft.batch_id, incoterm: liveDraft.incoterm || 'DAP' } : null,
+    banks:    [],
+  };
+  // ── cmrData for CMR preview (EJCMRClassic / EJCMRModern) ─────────────────
+  // Uses real data from liveDraft; carrier detail limited to batch_id + incoterm.
+  // No CMR backend route exists — this is client-side preview only.
+  const cmrPreviewData = {
+    cmr_no:   batchId ? `CMR-EJ-${batchId}` : '—',
+    doc_ref:  _previewLabel,
+    seller:   {
+      name:  exporter.name,
+      addr:  exporter.address,
+      city:  exporter.country,
+      vat:   exporter.vatEu,
+      email: (companyProfile && companyProfile.email) || '',
+      phone: (companyProfile && companyProfile.phone) || '',
+    },
+    shipto:   {
+      name:    customer.name,
+      addr:    customer.address,
+      city:    customer.country,
+      country: customer.country,
+    },
+    buyer:    { vat: customer.vatEu },
+    carrier:  liveDraft.batch_id ? {
+      name:        'DHL Express',
+      awb:         liveDraft.batch_id,
+      service:     'EXPRESS WORLDWIDE',
+      incoterm:    liveDraft.incoterm || 'DAP',
+      origin:      exporter.country  || '—',
+      destination: customer.country  || '—',
+    } : null,
+    lines: lines.map(l => ({
+      sku:    l.sku,
+      desc:   l.desc,
+      purity: l.purity,
+      qty:    l.qty,
+      origin: l.origin,
+    })),
+  };
   // ──────────────────────────────────────────────────────────────────────────
 
   const draftState    = liveDraft.draft_state || liveDraft.status || (draft && draft.status) || '';
@@ -232,6 +434,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const canConvert    = draftState === 'posted' || draftState === 'ready';
   const isBlocked     = draftState === 'post_failed' || draftState === 'convert_blocked';
   const alreadyPosted = draftState === 'posted' || draftState === 'invoiced';
+  const canPrint      = !!(liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id));
 
   const blockingReasons = (preview && preview.blocking_reasons) || [];
   const exportBlockers  = (preview && preview.export_blockers)  || [];
@@ -322,8 +525,25 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
         {/* Group 3 — Output */}
         <TbBtn
+          onClick={() => setShowPreview(true)}
+          title="Preview print layout — Proforma or CMR · Classic / Modern / Bold"
+          data-testid="tb-preview"
+        >
+          ◫ Preview
+        </TbBtn>
+        <TbBtn
+          disabled
+          title="CMR print — no backend PDF generation route. Use Preview to view CMR layout."
+          data-testid="tb-cmr"
+        >
+          ≡ CMR
+        </TbBtn>
+        <TbBtn
           onClick={handleDownloadPdf}
-          title="Open PDF in new tab"
+          disabled={!canPrint}
+          title={canPrint
+            ? 'Open wFirma proforma PDF in new tab'
+            : 'PDF only available after posting to wFirma'}
           data-testid="proforma-detail-download-pdf"
         >
           ⎙ Print
@@ -492,6 +712,17 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             setShowConvertModal(false);
             onConvert && onConvert(draft);
           }}
+        />
+      )}
+      {showPreview && (
+        <ProformaPreviewModal
+          docData={previewDocData}
+          cmrData={cmrPreviewData}
+          variant={previewVariant}
+          onVariantChange={setPreviewVariant}
+          docType={previewDocType}
+          onDocTypeChange={setPreviewDocType}
+          onClose={() => setShowPreview(false)}
         />
       )}
     </div>

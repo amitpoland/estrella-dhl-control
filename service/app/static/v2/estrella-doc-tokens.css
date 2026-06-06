@@ -1,0 +1,154 @@
+/* Estrella document tokens — emerald / gold luxury palette
+   Used by: estrella-doc-proforma.jsx and future document components
+   Source: Estrella Document Suite design canvas (2026-06-06) */
+:root {
+  --ej-ink:   #0F172A;
+  --ej-ink-2: #334155;
+  --ej-mute:  #64748B;
+  --ej-faint: #94A3B8;
+  --ej-line:  #E2E8F0;
+  --ej-line-2:#CBD5E1;
+  --ej-bg:    #F8FAFC;
+  --ej-paper: #FFFFFF;
+  --ej-cream: #FBF8F1;
+
+  --ej-brand:  #0B3D2E;
+  --ej-brand-2:#0F5A45;
+  --ej-brand-3:#DCEDE5;
+  --ej-gold:   #C9A24B;
+  --ej-gold-2: #B0892F;
+  --ej-gold-tint: #F6EFD9;
+
+  --ej-success:#16A34A;
+  --ej-warn:   #B45309;
+  --ej-danger: #B91C1C;
+
+  --ej-radius:    4px;
+  --ej-radius-lg: 10px;
+
+  --ej-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --ej-sans: "Inter", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/* A4 page shell (794 × 1123 px = 210 × 297 mm @96dpi) */
+.ej-a4 {
+  width: 794px;
+  height: 1123px;
+  background: var(--ej-paper);
+  color: var(--ej-ink);
+  font-family: var(--ej-sans);
+  font-size: 10.5px;
+  line-height: 1.45;
+  position: relative;
+  overflow: hidden;
+  font-feature-settings: "ss01","cv11","tnum";
+  -webkit-font-smoothing: antialiased;
+}
+.ej-a4 * { box-sizing: border-box; }
+.ej-a4 .ej-pad { padding: 44px 48px; }
+.ej-a4 .ej-pad-tight { padding: 32px 40px; }
+
+/* Typography */
+.ej-eyebrow {
+  font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--ej-mute); font-weight: 600;
+}
+.ej-eyebrow-gold { color: var(--ej-gold-2) !important; }
+.ej-mono { font-family: var(--ej-mono); font-variant-numeric: tabular-nums; }
+.ej-num  { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+.ej-h1   { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; color: var(--ej-ink); }
+.ej-h2   { font-size: 18px; font-weight: 700; letter-spacing: -0.015em; color: var(--ej-ink); }
+.ej-h3   { font-size: 13px; font-weight: 600; color: var(--ej-ink); }
+
+/* Logo wordmark */
+.ej-logo { display: inline-flex; align-items: center; gap: 10px; color: var(--ej-brand); }
+.ej-logo-text { display: flex; flex-direction: column; line-height: 1; }
+.ej-logo-name { font-size: 14px; font-weight: 700; letter-spacing: 0.02em; color: var(--ej-brand); }
+.ej-logo-tag  { font-size: 8.5px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--ej-gold-2); margin-top: 4px; }
+
+/* Tables */
+.ej-table { width: 100%; border-collapse: collapse; }
+.ej-table th, .ej-table td { padding: 8px 10px; text-align: left; vertical-align: top; }
+.ej-table th {
+  font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ej-mute); font-weight: 600; border-bottom: 1px solid var(--ej-line-2);
+}
+.ej-table td { border-bottom: 1px solid var(--ej-line); font-size: 10.5px; color: var(--ej-ink); }
+.ej-table tr:last-child td { border-bottom: none; }
+.ej-r { text-align: right; }
+.ej-c { text-align: center; }
+
+/* Address card */
+.ej-addr { background: var(--ej-bg); border: 1px solid var(--ej-line); border-radius: var(--ej-radius); padding: 12px 14px; }
+.ej-addr-label { font-size: 8.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ej-mute); font-weight: 600; margin-bottom: 6px; }
+.ej-addr-name  { font-weight: 600; color: var(--ej-ink); margin-bottom: 2px; }
+
+/* Pill badge */
+.ej-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 8px; border-radius: 999px;
+  font-size: 9px; font-weight: 600; letter-spacing: 0.06em;
+  background: var(--ej-bg); color: var(--ej-ink-2); border: 1px solid var(--ej-line-2);
+}
+.ej-pill-gold  { background: var(--ej-gold-tint); color: var(--ej-gold-2); border-color: var(--ej-gold); }
+.ej-pill-green { background: var(--ej-brand-3);   color: var(--ej-brand);  border-color: var(--ej-brand-2); }
+
+/* Green / gold header band */
+.ej-band {
+  height: 6px;
+  background: linear-gradient(90deg, var(--ej-brand) 0 65%, var(--ej-gold) 65% 100%);
+}
+
+/* Bank chip row */
+.ej-bank { border: 1px solid var(--ej-line); border-radius: var(--ej-radius); padding: 10px 12px; background: var(--ej-paper); }
+.ej-bank-cur {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  background: var(--ej-brand); color: #fff;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.04em; margin-right: 6px;
+}
+
+/* Watermark dot pattern */
+.ej-pattern {
+  position: absolute; inset: 0; pointer-events: none; opacity: 0.03;
+  background-image: radial-gradient(circle at 20% 20%, var(--ej-brand) 1px, transparent 1.5px),
+                    radial-gradient(circle at 70% 60%, var(--ej-gold) 1px, transparent 1.5px);
+  background-size: 60px 60px;
+}
+
+/* Bold variant — left rail */
+.ej-rail {
+  background: var(--ej-brand); color: #fff;
+  width: 200px; padding: 32px 24px;
+  display: flex; flex-direction: column; gap: 24px;
+  position: relative; flex-shrink: 0;
+}
+.ej-rail::after {
+  content: ""; position: absolute; top: 0; right: -1px; bottom: 0;
+  width: 4px; background: var(--ej-gold);
+}
+
+/* Preview modal overlay */
+.ej-preview-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.72);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 0; overflow-y: auto; z-index: 9000;
+}
+.ej-preview-wrap {
+  background: #fff; width: 900px; min-height: 100vh;
+  display: flex; flex-direction: column;
+}
+.ej-preview-bar {
+  position: sticky; top: 0; z-index: 1;
+  background: #1B2538; color: #F2EBD9;
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; font-size: 13px; flex-shrink: 0;
+}
+.ej-preview-body {
+  background: #E8E4DC; padding: 32px;
+  display: flex; flex-direction: column; align-items: center; gap: 24px;
+  flex: 1;
+}
+.ej-preview-sheet {
+  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+  transform-origin: top center;
+}

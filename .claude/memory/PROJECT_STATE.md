@@ -2,7 +2,7 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-06-06 (Sprint 36 Phase 1 authority recovery completion).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-06-06 (Sprint 36 Phase 2 PR #475 + Sprint 37/38/39 planning).
 
 **Last-run-at:** 2026-06-06 (Sprint 36 Phase 1). Origin/main HEAD: **10bf117** (Sprint 36 Phase 1 — proforma detail authority recovery completed). Production: `C:\PZ` deployed with Sprint 36 Phase 1 content (proforma-detail.jsx + mock-badge.jsx authority recovery verified). GATE 2: **0/3 open PRs** (clean board). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 40/40 Sprint 36 tests PASS. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **proforma_detail authority violations RESOLVED** — all fake data eliminated, 6 real endpoints wired, MOCK banner suppressed. ATLAS-V2: **Sprint 36 Phase 1 COMPLETED** (SHA 10bf117), authority recovery successful, next phase planning. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
 
@@ -3743,7 +3743,78 @@ prior-pages-preserved assertions. Each update includes an explanatory comment.
 
 ---
 
+## Sprint 36 Phase 2 — Proforma Toolbar + Document Suite (2026-06-06, PR #475 OPEN)
+
+**Date**: 2026-06-06
+**PR**: [#475](https://github.com/amitpoland/estrella-dhl-control/pull/475) — OPEN
+**Branch**: `fix/proforma-toolbar-authority-map`
+**HEAD SHA**: `3b82dd2`
+
+**Diff scope (toolbar authority + document suite + audit docs):**
+- MODIFIED: `service/app/static/v2/proforma-detail.jsx` — full 13-button toolbar (6 enabled, 6 disabled+reason, 1 conditional)
+- NEW: `service/app/static/v2/estrella-doc-proforma.jsx` — EJProformaClassic, EJProformaModern, EJProformaBold print-preview variants
+- NEW: `service/app/static/v2/estrella-doc-cmr.jsx` — EJCMRClassic, EJCMRModern CMR document components
+- MODIFIED: `service/app/static/v2/index.html` — loads document suite JSX files
+- MODIFIED: `service/app/static/v2/pz-api.js` — 4 missing proforma lifecycle functions added
+- NEW: `service/tests/test_toolbar_authority_map.py` — 54/54 source-grep regression tests
+- NEW: `BACKEND_GAP_REGISTER.md` — 39 existing routes confirmed, 7 gaps (M1–M7) documented with exact contracts
+- NEW: `MOCK_PAGE_AUTHORITY_AUDIT.md` — 3 mock pages audited for backend CRUD coverage
+
+**Toolbar button states (authority-honest):**
+- ENABLED: Duplicate, Post, Convert, Print, Preview, Back
+- DISABLED+REASON: Edit (M5), Delete (M1), CMR (M3), Send (M2), Generate (M4), More (placeholder)
+- Each disabled button has an honest `title` attribute explaining why
+
+**Test results**: 54/54 toolbar source-grep tests PASS
+
+**Browser smoke (2026-06-06, port 47214 verify instance):**
+- V2 shell loads: ✅ no console errors (only Babel warning)
+- Pro Forma page wired: ✅ no MOCK banner
+- API calls: ✅ all 200
+- Network requests: ✅ clean (no 4xx/5xx from app)
+- BLOCKED: Proforma detail toolbar — `proforma_drafts.db` is 0 bytes (no drafts exist)
+
+**PR #475 verification status:**
+- Structure verified ✅ (54/54 source-grep tests)
+- Runtime verified ✅ (V2 shell loads, API endpoints respond)
+- Authority verified ✅ (every button mapped to real backend route or honest disabled reason)
+- Business-data verification PENDING — first real proforma draft creation will serve as definitive toolbar browser test
+
+**Mock Page Authority Audit findings (3 remaining MOCK pages):**
+- **wFirma Mapping**: FULLY READY TO WIRE — 25+ endpoints exist, zero gaps
+- **Master Data**: 10/12 entities have full CRUD — Users partial, Roles missing
+- **Carriers**: ~30% ready — config CRUD + DHL status exist, multi-carrier API management does not
+
+---
+
+## Sprint 37/38/39 Planning — Mock Page Elimination (2026-06-06)
+
+**Operator-directed sprint plan (2026-06-06):**
+
+| Sprint | Target | Backend Readiness | Risk | Effort |
+|--------|--------|------------------|------|--------|
+| **37** | wFirma Mapping | ~100% | Low | Low |
+| **38** | Master Data | ~85% | Medium | Medium |
+| **39** | Carriers | ~30% | High | High |
+
+**Sprint 37 scope**: Convert wFirma Mapping from MOCK to authority-backed. Replace hardcoded capability strip, customer mappings, product mappings, and counts with `GET /wfirma/capabilities`, `GET /wfirma/customers`, `GET /wfirma/products`. Add to WIRED_PAGES. Remove MOCK banner.
+
+**Sprint 38 scope**: Wire Master Data page. 10 entities LIVE, Users READ-ONLY, Roles DISABLED. Remove MOCK banner. Do not block the entire page because Roles are missing.
+
+**Sprint 39 scope**: Carriers page remains MOCK until authority exists for multi-carrier integration. Only carrier config CRUD + DHL status can be wired.
+
+---
+
 # DECISIONS
+
+## Atlas-V2 Sprint Priority Resequencing (2026-06-06)
+
+- **Sprint 37 = wFirma Mapping** (not Master Data) — operator decision 2026-06-06. Rationale: ~100% backend readiness, zero gaps, lowest effort, highest MOCK-elimination ROI. Replace hardcoded arrays with 3 GET calls + wire capability strip.
+- **Sprint 38 = Master Data** — 10/12 entities LIVE, Users READ-ONLY, Roles DISABLED. Do not block the page because 2 entities have partial gaps. Remove MOCK after wiring.
+- **Sprint 39 = Carriers** — remains MOCK until multi-carrier API authority exists. Only carrier config CRUD + DHL status can be partially wired. Page keeps MOCK banner.
+- **Source**: Operator directive 2026-06-06, informed by `MOCK_PAGE_AUTHORITY_AUDIT.md` (committed SHA `3b82dd2`).
+
+---
 
 ## wFirma Push Layer Implementation Decisions (2026-05-24)
 

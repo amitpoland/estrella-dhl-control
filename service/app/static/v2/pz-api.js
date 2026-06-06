@@ -198,6 +198,30 @@
         reset_all:           false,
       }),
 
+    // POST /api/v1/proforma/draft/{draft_id}/post
+    // Posts draft to wFirma as a proforma invoice.
+    // Gated by wfirma_create_proforma_allowed flag — backend enforces; frontend should
+    // gate the button on the visibility/disclose-post response.
+    postDraftToWfirma: (draftId, body) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/post`, body || {}),
+
+    // POST /api/v1/proforma/draft/{draft_id}/clone
+    // Clones draft — creates a new draft from this one.
+    cloneDraft: (draftId) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/clone`, {}),
+
+    // POST /api/v1/proforma/draft/{draft_id}/to-invoice
+    // Converts posted proforma to a final wFirma invoice.
+    // Gated by wfirma_create_invoice_allowed flag — backend enforces.
+    // body: { confirm: 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA', ... }
+    draftToInvoice: (draftId, body) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/to-invoice`, body || {}),
+
+    // GET /api/v1/proforma/draft/{draft_id}/events
+    // Returns event timeline for the draft.
+    getDraftEvents: (draftId) =>
+      _get(`${BASE}/proforma/draft/${draftId}/events`),
+
     // ── Customer Master ──────────────────────────────────────────────
 
     // GET /api/v1/customer-master[?q=...]
@@ -272,6 +296,31 @@
           error: 'Reason required -- rejection cancelled.' });
       return _call('POST', endpoint, { rejected_by: op, reason: r });
     },
+
+    // ── wFirma Mapping (Sprint 37) ──────────────────────────────────
+
+    // GET /api/v1/wfirma/capabilities
+    // Returns { ok, data: { api_configured, customer_api_supported, ..., blocking_reasons[] } }
+    getWfirmaCapabilities: () =>
+      _get(`${BASE}/wfirma/capabilities`),
+
+    // GET /api/v1/wfirma/customers
+    // Returns { ok, data: { count, customers[] } }
+    getWfirmaCustomers: () =>
+      _get(`${BASE}/wfirma/customers`),
+
+    // GET /api/v1/wfirma/products
+    // Returns { ok, data: { count, products[] } }
+    getWfirmaProducts: () =>
+      _get(`${BASE}/wfirma/products`),
+
+    // GET /api/v1/wfirma/contractors/search?q=
+    searchWfirmaContractors: (q) =>
+      _get(`${BASE}/wfirma/contractors/search?q=${encodeURIComponent(q || '')}`),
+
+    // GET /api/v1/wfirma/goods/search?q=
+    searchWfirmaGoods: (q) =>
+      _get(`${BASE}/wfirma/goods/search?q=${encodeURIComponent(q || '')}`),
 
   });
 })();
