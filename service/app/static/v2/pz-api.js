@@ -322,5 +322,82 @@
     searchWfirmaGoods: (q) =>
       _get(`${BASE}/wfirma/goods/search?q=${encodeURIComponent(q || '')}`),
 
+    // ── Master Data — read (Sprint 38) ─────────────────────────────
+
+    // GET /api/v1/suppliers/[?country=&active=&limit=]
+    // Returns { count, suppliers: [{id, supplier_code, name, country, ...}] }
+    listSuppliers: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/suppliers${qs}`);
+    },
+
+    // GET /api/v1/product-local/[?active=&limit=]
+    // Returns { count, items: [{product_code, hs_code_override, unit_override, ...}] }
+    listProductLocal: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/product-local${qs}`);
+    },
+
+    // GET /api/v1/designs/[?active=&limit=]
+    // Returns { ok, count, designs: [{design_code, display_name, ...}] }
+    listDesigns: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/designs${qs}`);
+    },
+
+    // GET /api/v1/hs-codes/[?active=&limit=]
+    // Returns { count, hs_codes: [{hs_code, description_pl, duty_rate_pct, ...}] }
+    listHsCodes: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/hs-codes${qs}`);
+    },
+
+    // GET /api/v1/fx-rates/[?from_currency=&limit=]
+    // Returns { count, fx_rates: [{id, rate_date, from_currency, to_currency, rate, ...}] }
+    listFxRates: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/fx-rates${qs}`);
+    },
+
+    // GET /api/v1/vat-config/[?active=&limit=]
+    // Returns { count, vat_config: [{id, country, product_type, rate_pct, rate_code, ...}] }
+    listVatConfig: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/vat-config${qs}`);
+    },
+
+    // GET /api/v1/incoterms/[?active=&limit=]
+    // Returns { count, incoterms: [{code, name, risk_transfer_point, ...}] }
+    listIncoterms: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/incoterms${qs}`);
+    },
+
+    // GET /api/v1/units/[?active=&limit=]
+    // Returns { count, units: [{code, name_pl, name_en, unit_type, ...}] }
+    listUnits: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/units${qs}`);
+    },
+
+    // GET /api/v1/carriers-config/[?active=&limit=]
+    // Returns { count, carriers: [{carrier_code, name, parser_type, ...}] }
+    listCarriersConfig: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/carriers-config${qs}`);
+    },
+
+    // GET /auth/users  (requires admin cookie)
+    // Returns [{id, full_name, email, role, is_active, ...}]
+    listUsers: () =>
+      _get('/auth/users'),
+
+    // GET /api/v1/master/audit/[?entity_type=&limit=]
+    // Returns { count, entries: [...] }
+    listMasterAudit: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/master/audit${qs}`);
+    },
+
   });
 })();
