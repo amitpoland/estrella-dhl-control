@@ -3651,7 +3651,7 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 **Ghost endpoints avoided**: `GET /api/v1/dhl/documents/{batch_id}` and `GET /api/v1/batch/{batch_id}/documents` listed in sprint-04 plan do not exist — correctly rejected during pre-flight.
 
-**Sprint 35b SCHEDULED (GATE 4 disposition)**: [Issue #467](https://github.com/amitpoland/estrella-dhl-control/issues/467) — Wire `ShipmentDetailPage` Documents tab. Remove `UPLOADED_DOCS`/`GENERATED_DOCS` mock arrays and dead `DocCard` onClick buttons. Requires `DashboardPage.onViewShipment` routing to be made real first. Scope: `shipment-detail-page.jsx` Documents tab only; do not touch `documents-hub.jsx`, `documents-v2.html`, or V1 frozen pages.
+**Sprint 35b COMPLETED (2026-06-06, PR #470 merged SHA 1af12b2, DEPLOYED)**: [Issue #467](https://github.com/amitpoland/estrella-dhl-control/issues/467) — `ShipmentDetailPage` Documents tab wired to real `/api/v1/dashboard/batches/{id}/files` authority; `UPLOADED_DOCS`/`GENERATED_DOCS` mock arrays removed; `DashboardPage.onViewShipment` drill-through made real; ProformaTab navigates to `/v2/proforma?batch_id=`. GATE 6 passed. 7-agent deploy gate passed. Deployed to `C:\PZ`. See FACTS § "Sprint 35b — ShipmentDetail Documents Authority Repair".
 
 **Reviewer challenge finding (2026-06-06)**: Pre-merge audit confirmed two-layer document authority design is correct (hub = batch status index via `/batches`, viewer = file authority via `/batches/{id}/files_detail`). `shipment-detail-page.jsx` mock arrays are in unreachable code (DashboardPage never calls `onViewShipment`) — deferred correctly to Sprint 35b, not a Sprint 35 blocker.
 
@@ -4445,5 +4445,36 @@ It does **NOT** contain `wfirma_capabilities.py`. The scheduler text claiming `2
 **6. Concurrent-session containment.** The autonomous session holding `.claude/scheduled_tasks.lock` (PID 18972, `--resume d455e6f3`, `bypassPermissions`) was found idle (CPU flat, lock mtime stale 34 min, no `.git/index.lock`). Stopped under a four-condition safety gate, confirmed exited; stale lock removed. It had already committed `882204d` + `d648346` to main before being stopped — nothing in-flight was lost.
 
 **Net**: production state is correct and healthy; the only defects were in the scheduler's PROJECT_STATE *narrative* (commit-scope attribution), corrected above. No history rewritten. No code reverted.
+
+---
+
+## Sprint 35b — ShipmentDetail Documents Authority Repair + Batch Context Flow (2026-06-06, FULLY CLOSED)
+
+**FACTS entry** (append-only):
+
+**Date**: 2026-06-06  
+**Branch**: `feat/atlas-v2-sprint35b-shipment-detail-documents`  
+**PR #470**: https://github.com/amitpoland/estrella-dhl-control/pull/470 — MERGED (squash SHA `1af12b2`)  
+**Issue #467**: CLOSED (merged automatically via PR)  
+**Issue #471**: Filed — `Btn` component `data-testid` DOM forwarding gap (low priority, non-blocking)
+
+**Diff scope (4 files, static-only, no backend changes)**:
+- `service/app/static/v2/dashboard-page.jsx` — `onViewShipment` prop wired; `<tr onClick>` drill-through; `cursor: pointer` when prop present
+- `service/app/static/v2/index.html` — passes `onViewShipment={handleViewShipment}` to `DashboardPage`; fixes back-button target to `'shipments'`
+- `service/app/static/v2/shipment-detail-page.jsx` — `DocumentsTab`: removed mock arrays, fetches real `GET /api/v1/dashboard/batches/{batch_id}/files`, `!batchId` guard; `ProformaTabInShipment`: navigates to `/v2/proforma?batch_id=`
+- `service/tests/test_sprint35b_shipment_detail_documents.py` — 8 source-grep tests, all passing
+
+**GATE 6 verified (2026-06-06)**: dev server `127.0.0.1:47214`, all 7 checks green — row drill-through, Documents tab real API, Pro Forma batch context navigation, no console errors.
+
+**7-agent deploy gate (2026-06-06)**: GO — all 6 dimensions CLEAR (git-diff, backend-impact, persistence, security, QA, release-manager).
+
+**Production deploy (2026-06-06)**:
+- Robocopy: 3/3 files synced to `C:\PZ\app\static\v2\` ✓
+- PZService: restarted, STATE=RUNNING ✓
+- File hashes: 3/3 MATCH (source == production) ✓
+- Content grep: `UPLOADED_DOCS` gone ✓, `GENERATED_DOCS` gone ✓, `/files` API present ✓, `?batch_id=` nav present ✓, `!batchId` guard present ✓
+- Public URL: `https://pz.estrellajewels.eu` → 401 (auth active, service responding) ✓
+
+**Sprint 35b status**: FULLY CLOSED
 
 ---
