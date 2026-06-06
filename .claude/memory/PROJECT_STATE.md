@@ -3450,6 +3450,30 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
+## Sprint 33 — Automation Hub: MERGED + DEPLOYED (2026-06-06)
+
+**Date**: 2026-06-06 (merge + deploy)
+**Commit SHA**: `80bd027` (pushed to `origin/main`)
+
+**Files changed (3)**:
+- `service/app/static/v2/pages-v2.jsx` — AiBridgePage mock retired (tasks[], capabilities[], 8 mock task IDs T-88xx, hardcoded stats, Capabilities tab, write buttons Retry/Edit/Save&Activate/Test/Diff); replaced with live read-only observer; 3 helper components added (AiBridgeTaskTable, AiBridgeErrorTable, AiBridgeTemplatesView); 4 apiFetch calls to GET /api/v1/ai-bridge/tasks?status=pending, tasks?status=processed, /errors, /templates; 7 data-testid attributes; observer-only disclaimer
+- `service/app/static/v2/mock-badge.jsx` — `'automation'` added to WIRED_PAGES (removes purple MOCK banner from automation page)
+- `service/tests/test_sprint33_automation_hub_wiring.py` — NEW: 26 source-grep regression tests (sections A–I: wired pages, live apiFetch, endpoint contract, write method absence, affordance removal, mock retirement, index.html route, testids+disclaimer, NAV_TREE)
+
+**WIRED_PAGES now = ['proforma', 'proforma_detail', 'inbox', 'inventory', 'dhl', 'shipments', 'automation']** — 7 V2 domains live.
+
+**Verification**: Sprint 33 tests 26/26 PASS, Sprint 32 regression 27/27 PASS, PZ golden 160/160. Full 7-agent deploy gate: 6 CLEAR + 1 CONDITIONAL (release-manager, pre-PR procedural) → READY-TO-DEPLOY (lead-coordinator resolved). Static deploy robocopy exit 3 (success); deployed file content verified via Select-String on C:\PZ\app\static\v2\. PZService NOT restarted (static-only). GATE 6 browser (https://pz.estrellajewels.eu/v2/automation): all 4 ai-bridge endpoints returned 200 (tasks?status=pending, tasks?status=processed, /errors, /templates), zero console errors, MOCK banner absent.
+
+**Authority owner**: `routes_ai_bridge.py` — GET-only surface. No backend changes, no schema changes, no write affordances.
+
+**Scorecard** (RULE 6 citation): `.claude/memory/scorecards/2026-06-06-sprint33-automation-hub-deploy.md` — 10/10 agents EXEMPLARY (33–34/35). No NEEDS-TUNING/UNRELIABLE verdicts. No GATE 4 disposition required.
+
+**Render-gate updated**: `atlas-v2-render-gate.md` wired-pages table row for `automation` added.
+
+**Open PRs**: 0.
+
+---
+
 ## Atlas Capability Registry Installed (2026-06-06, commit 5e3c251)
 
 **Date**: 2026-06-06  

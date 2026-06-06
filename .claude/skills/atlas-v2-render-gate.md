@@ -88,6 +88,7 @@ have regressed or the backend shape diverged.**
 | `inventory` | `GET /api/v1/inventory/v2/*` | Sprint 30 |
 | `dhl` | `GET /api/v1/dhl/status`, `GET /api/v1/dhl/shipments` | Sprint 31 |
 | `shipments` | `GET /api/v1/dashboard/batches` | Sprint 32 |
+| `automation` | `GET /api/v1/ai-bridge/tasks`, `GET /api/v1/ai-bridge/errors`, `GET /api/v1/ai-bridge/templates` | Sprint 33 |
 
 Update this table as each sprint wires additional pages.
 
