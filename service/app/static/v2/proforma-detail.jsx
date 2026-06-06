@@ -130,12 +130,96 @@ function ProformaPartyCard({ title, name, lines, footer, footerMuted, warn, warn
   );
 }
 
+// ── Print-preview modal ────────────────────────────────────────────────────────
+// READ-ONLY. Never mutates draft state. Uses real docData from ProformaDetailPage.
+// Requires: estrella-doc-tokens.css + estrella-doc-proforma.jsx loaded in index.html.
+function ProformaPreviewModal({ docData, variant, onVariantChange, onClose }) {
+  // Scale A4 (794px) to fit within 860px modal body → ~0.9 scale
+  const SCALE = 0.88;
+
+  const DocVariant = (variant === 'modern' && window.EJProformaModern)
+    ? window.EJProformaModern
+    : (window.EJProformaClassic || null);
+
+  // Trap Escape key
+  React.useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="ej-preview-overlay"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+      data-testid="proforma-preview-modal"
+    >
+      <div className="ej-preview-wrap">
+        {/* Control bar */}
+        <div className="ej-preview-bar">
+          <span style={{ fontWeight: 700, letterSpacing: '0.04em' }}>Print Preview</span>
+          <span style={{ color: '#7C89A3', fontSize: 11 }}>Read-only · {docData.doc_no}</span>
+          <div style={{ display: 'flex', gap: 6, marginLeft: 'auto', alignItems: 'center' }}>
+            {/* Variant selector */}
+            {['classic', 'modern'].map(v => (
+              <button
+                key={v}
+                onClick={() => onVariantChange(v)}
+                data-testid={`preview-variant-${v}`}
+                style={{
+                  padding: '4px 12px', borderRadius: 5, border: '1px solid',
+                  fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  borderColor: variant === v ? '#C9A24B' : '#3A4A62',
+                  background:  variant === v ? '#C9A24B20' : 'transparent',
+                  color:        variant === v ? '#C9A24B' : '#8A9AB6',
+                }}
+              >
+                {v.charAt(0).toUpperCase() + v.slice(1)}
+              </button>
+            ))}
+            <div style={{ width: 1, height: 20, background: '#2A3A52', margin: '0 4px' }}/>
+            <button
+              onClick={onClose}
+              data-testid="preview-close"
+              style={{
+                padding: '4px 12px', borderRadius: 5, border: '1px solid #3A4A62',
+                background: 'transparent', color: '#8A9AB6',
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              }}
+            >
+              ✕ Close
+            </button>
+          </div>
+        </div>
+
+        {/* Document body */}
+        <div className="ej-preview-body">
+          {DocVariant ? (
+            <div
+              className="ej-preview-sheet"
+              style={{ transform: `scale(${SCALE})`, transformOrigin: 'top center' }}
+            >
+              <DocVariant docData={docData}/>
+            </div>
+          ) : (
+            <div style={{ padding: 40, color: '#64748B', fontSize: 13 }}>
+              Print preview requires estrella-doc-proforma.jsx to be loaded.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
   const [showConvertModal, setShowConvertModal]  = React.useState(false);
   const [showPostModal,    setShowPostModal]     = React.useState(false);
   const [cloning,          setCloning]           = React.useState(false);
+  const [showPreview,      setShowPreview]       = React.useState(false);
+  const [previewVariant,   setPreviewVariant]    = React.useState('classic');
 
   // WIRED: fetch full draft detail (GET /api/v1/proforma/draft/{id})
   const draftHook = window.PzState.useDraft(draft && draft.id);
@@ -224,6 +308,48 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     lines,
     paymentTerms: paymentTermsDisplay,
     incoterm:     liveDraft.incoterm || '—',
+  };
+  // ── docData for print preview (EJProformaClassic / EJProformaModern) ──────
+  const _previewLabel = liveDraft.wfirma_proforma_fullnumber
+    || (draft && draft.wfirma_proforma_fullnumber)
+    || (draft && draft.id ? `Draft #${draft.id}` : 'Draft');
+  const previewDocData = {
+    doc_no:   _previewLabel,
+    date:     liveDraft.invoice_date || liveDraft.created_at
+              ? (liveDraft.invoice_date || liveDraft.created_at || '').slice(0, 10) : '—',
+    due:      liveDraft.due_date ? liveDraft.due_date.slice(0, 10) : '—',
+    payment:  paymentTermsDisplay,
+    rate:     { eur: fxRate, date: liveDraft.exchange_rate_date || '—', table: liveDraft.nbp_table || '—' },
+    seller:   {
+      name:  detail.exporter.name,
+      addr:  detail.exporter.address,
+      vat:   detail.exporter.vatEu,
+      email: (companyProfile && companyProfile.email) || '',
+      phone: (companyProfile && companyProfile.phone) || '',
+    },
+    buyer:    {
+      name:    detail.customer.name,
+      addr:    detail.customer.address,
+      city:    detail.customer.country,
+      country: detail.customer.country,
+      vat:     detail.customer.vatEu,
+    },
+    lines:    lines.map(l => ({
+      seq:     l.seq,
+      sku:     l.sku,
+      desc:    l.desc,
+      purity:  l.purity,
+      origin:  l.origin,
+      qty:     l.qty,
+      unitEur: l.unitEur,
+      netEur:  l.netEur,
+    })),
+    total_eur: lines.reduce((s, l) => s + l.netEur, 0),
+    total_pln: (fxRate && fxRate > 0)
+      ? lines.reduce((s, l) => s + l.netEur, 0) * fxRate : null,
+    carrier:  liveDraft.batch_id
+      ? { awb: liveDraft.batch_id, incoterm: liveDraft.incoterm || 'DAP' } : null,
+    banks:    [],
   };
   // ──────────────────────────────────────────────────────────────────────────
 
@@ -322,6 +448,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         <TbSep />
 
         {/* Group 3 — Output */}
+        <TbBtn
+          onClick={() => setShowPreview(true)}
+          title="Preview print layout — Classic or Modern A4 document"
+          data-testid="tb-preview"
+        >
+          ◫ Preview
+        </TbBtn>
         <TbBtn
           onClick={handleDownloadPdf}
           disabled={!canPrint}
@@ -496,6 +629,14 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             setShowConvertModal(false);
             onConvert && onConvert(draft);
           }}
+        />
+      )}
+      {showPreview && (
+        <ProformaPreviewModal
+          docData={previewDocData}
+          variant={previewVariant}
+          onVariantChange={setPreviewVariant}
+          onClose={() => setShowPreview(false)}
         />
       )}
     </div>

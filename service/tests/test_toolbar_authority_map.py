@@ -308,6 +308,87 @@ def test_v2_api_has_all_lifecycle_functions():
 def test_toolbar_testids_present():
     src = _src()
     for testid in ("tb-post", "tb-convert", "proforma-detail-download-pdf",
-                   "tb-send", "tb-generate", "tb-duplicate"):
+                   "tb-send", "tb-generate", "tb-duplicate", "tb-preview"):
         assert f'data-testid="{testid}"' in src, \
             f"Toolbar button testid '{testid}' must be present"
+
+
+# ── 10. Preview modal ─────────────────────────────────────────────────────────
+
+def test_preview_button_opens_modal():
+    """Preview button must set showPreview state (setShowPreview(true))."""
+    src = _src()
+    assert "setShowPreview(true)" in src, \
+        "Preview button must call setShowPreview(true)"
+
+
+def test_preview_modal_testid_present():
+    """Preview modal must have proforma-preview-modal testid."""
+    src = _src()
+    assert 'data-testid="proforma-preview-modal"' in src, \
+        "ProformaPreviewModal must have data-testid='proforma-preview-modal'"
+
+
+def test_preview_modal_is_read_only():
+    """Preview modal must not call any PzApi mutation function."""
+    src = _src()
+    # Extract the ProformaPreviewModal function body
+    modal_start = src.find("function ProformaPreviewModal(")
+    modal_end   = src.find("\nfunction ProformaDetailPage(", modal_start)
+    modal_body  = src[modal_start:modal_end] if modal_end > modal_start else ""
+    for mutation_fn in ("postDraftToWfirma", "draftToInvoice", "cloneDraft"):
+        assert mutation_fn not in modal_body, \
+            f"ProformaPreviewModal must not call PzApi.{mutation_fn} (read-only)"
+
+
+def test_preview_variant_controls_present():
+    """Preview modal must render Classic and Modern variant selector buttons."""
+    src = _src()
+    # Variant buttons use a template literal: data-testid={`preview-variant-${v}`}
+    # with values 'classic' and 'modern' from the mapped array.
+    assert "preview-variant-" in src, \
+        "Preview modal must have variant selector buttons (data-testid prefix 'preview-variant-')"
+    assert "'classic'" in src and "'modern'" in src, \
+        "Preview modal must iterate over ['classic', 'modern'] variants"
+
+
+def test_preview_uses_ej_proforma_components():
+    """Preview must load EJProformaClassic / EJProformaModern from window."""
+    src = _src()
+    assert "EJProformaClassic" in src, \
+        "ProformaPreviewModal must reference window.EJProformaClassic"
+    assert "EJProformaModern" in src, \
+        "ProformaPreviewModal must reference window.EJProformaModern"
+
+
+def test_doc_tokens_css_in_index():
+    """index.html must load estrella-doc-tokens.css."""
+    idx = (Path(__file__).parent.parent / "app" / "static" / "v2" / "index.html").read_text(encoding="utf-8")
+    assert "estrella-doc-tokens.css" in idx, \
+        "index.html must link estrella-doc-tokens.css for document print preview"
+
+
+def test_doc_proforma_jsx_in_index():
+    """index.html must load estrella-doc-proforma.jsx."""
+    idx = (Path(__file__).parent.parent / "app" / "static" / "v2" / "index.html").read_text(encoding="utf-8")
+    assert "estrella-doc-proforma.jsx" in idx, \
+        "index.html must load estrella-doc-proforma.jsx for print variant components"
+
+
+def test_doc_tokens_css_exists():
+    """estrella-doc-tokens.css must exist in the V2 static directory."""
+    tokens = _V2_DIR / "estrella-doc-tokens.css"
+    assert tokens.exists(), "service/app/static/v2/estrella-doc-tokens.css must exist"
+
+
+def test_doc_proforma_jsx_exists():
+    """estrella-doc-proforma.jsx must exist in the V2 static directory."""
+    jsx = _V2_DIR / "estrella-doc-proforma.jsx"
+    assert jsx.exists(), "service/app/static/v2/estrella-doc-proforma.jsx must exist"
+
+
+def test_ej_brand_colors_in_tokens():
+    """Tokens CSS must define Estrella emerald and gold brand colors."""
+    tokens = (_V2_DIR / "estrella-doc-tokens.css").read_text(encoding="utf-8")
+    assert "#0B3D2E" in tokens, "tokens.css must define --ej-brand: #0B3D2E (deep emerald)"
+    assert "#C9A24B" in tokens, "tokens.css must define --ej-gold: #C9A24B (gold)"
