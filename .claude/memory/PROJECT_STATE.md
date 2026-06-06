@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #477 merged + deployed — Sprint 38b Master Data mapping extension production-verified).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #478 merged + deployed — Sprint 39 Carriers authority-honest redesign production-verified).
 
-**Last-run-at:** 2026-06-07 (PR #476 merge + deploy). Origin/main HEAD: **c4c89b1** (Sprint 38 — Master Data read authority conversion). Production: `C:\PZ` deployed with 3 static files (master-page.jsx, mock-badge.jsx, pz-api.js), hash-verified 3/3 SHA256 MATCH. GATE 2: **0/3 open PRs** (clean board — PR #477 merged). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 35/35 Sprint 37. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 38 COMPLETED** (SHA c4c89b1), Master Data is 11th authority-backed V2 page, WIRED_PAGES count = 11, **only Carriers remains MOCK** (1 of 12). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
+**Last-run-at:** 2026-06-07 (PR #478 merge + deploy). Origin/main HEAD: **5b6c63a** (Sprint 39 — Carriers authority-honest redesign). Production: `C:\PZ` deployed with 3 static files (carriers-page.jsx, mock-badge.jsx, pz-api.js), hash-verified 3/3 SHA256 MATCH. GATE 2: **0/3 open PRs** (clean board — PR #478 merged). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 39 COMPLETED** (SHA 5b6c63a), Carriers is 12th authority-backed V2 page, WIRED_PAGES count = 12, **3 remaining MOCK pages** (api_status, diagnostics, coverage_map). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
 
 ---
 
@@ -4638,5 +4638,56 @@ It does **NOT** contain `wfirma_capabilities.py`. The scheduler text claiming `2
 - Console errors: none ✓
 
 **Sprint 38b status**: FULLY CLOSED — merged + deployed + production-verified
+
+---
+
+## PR #478 — Atlas-V2 Sprint 39 Carriers Authority-Honest Redesign (2026-06-07, MERGED)
+
+**Date**: 2026-06-07
+**PR #478** — `feat/sprint-39-carriers-authority-honest` → main
+**Title**: "feat(atlas): Sprint 39 — Carriers authority-honest redesign"
+**Merge SHA**: `5b6c63a` (squash-merge to `origin/main`)
+**Branch**: `feat/sprint-39-carriers-authority-honest` (deleted after merge)
+
+**Diff scope (4 files, frontend + tests only, no backend changes)**:
+- `service/app/static/v2/carriers-page.jsx` (+421/-465) — COMPLETE REWRITE: removed 6 hardcoded mock arrays (CARRIERS, AVAILABLE_NEW, API_ENDPOINTS, WEBHOOKS, SESSIONS, AUDIT); replaced 6 fake tabs with 4 authority-honest tabs (Config Registry, DHL Operations, Integration Gaps, Config Audit); live API calls to `PzApi.listCarriersConfig()`, `PzApi.getCarrierStatus()`, `PzApi.listMasterAudit({entity:'carriers_config'})`; 25 verified DHL backend routes documented; 10 integration gaps with severity and backend-pending reasons
+- `service/app/static/v2/pz-api.js` (+5) — added `getCarrierStatus()` transport function for `GET /api/v1/carrier/status`
+- `service/app/static/v2/mock-badge.jsx` (+6/-1) — added `'carriers'` to WIRED_PAGES (12th page wired) + Sprint 39 changelog comment
+- `service/tests/test_sprint39_carriers_authority_honest.py` (NEW, 397 lines) — 54 source-grep regression tests across 11 classes
+
+**Authority model**:
+- Config list: `GET /api/v1/carriers-config/` → `master_data.sqlite` → WIRED
+- Gate status: `GET /api/v1/carrier/status` → `config.py` settings → WIRED
+- Audit trail: `GET /api/v1/master/audit/?entity=carriers_config` → `master_data.sqlite` → WIRED
+- DHL routes: 25 verified backend routes → DOCUMENTED (no live health endpoint)
+- Carrier management: 10 missing APIs → GAP (disabled buttons with reasons)
+- FedEx/UPS/GLS/InPost/DPD: NOT CLAIMED (no fake connection states)
+
+**Test results**: Sprint 39 54/54 PASS, Sprint 38/38b 153/153 PASS (no regressions), total 207/207 PASS.
+
+**GATE 6 verified (2026-06-07)**: dev server `127.0.0.1:47214`, all 7 checks green:
+1. MOCK banner gone ✓
+2. Config Registry loads real carrier config rows (0 from empty dev DB, correct empty-state) ✓
+3. DHL Operations renders 3 real gate cards + 25 verified route table ✓
+4. Integration Gaps shows 10 disabled backend-pending items with severity ✓
+5. Config Audit renders real audit API empty state ✓
+6. FedEx/UPS/GLS/InPost/DPD do not claim live connection ✓
+7. Console errors: none ✓
+8. Network: carriers-config → 200, carrier/status → 200 ✓
+
+**Production deploy (2026-06-07)**:
+- Robocopy: 3/3 files synced (carriers-page.jsx, pz-api.js, mock-badge.jsx → `C:\PZ\app\static\v2\`) ✓
+- File hashes: 3/3 SHA256 MATCH (source == production) ✓
+- Production APIs: carrier-config 401 (auth active, service responding) ✓, carrier/status 401 ✓
+- Browser smoke: dev instance (identical files, hash-verified) all tabs verified ✓
+- Production login-wall prevents direct browser smoke — file identity proven via hash
+
+**WIRED_PAGES status (12/15 = 80%)**:
+- WIRED (12): proforma, inbox, inventory, dhl, shipments, automation, intelligence, documents, proforma_detail, wfirma_setup, master, carriers
+- MOCK (3): api_status, diagnostics, coverage_map
+
+**GATE 2**: 0/3 open PRs (clean board)
+
+**Sprint 39 status**: FULLY CLOSED — merged + deployed + production-verified
 
 ---
