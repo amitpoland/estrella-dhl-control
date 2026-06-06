@@ -10,10 +10,11 @@
 // Sprint 34:   'intelligence' added — IntelligencePage wired read-only to intelligence + invoice-learning authority.
 // Sprint 35:   'documents' added — DocumentsHubPage wired read-only to GET /api/v1/dashboard/batches.
 // Sprint 36 Phase 0 (2026-06-06): 'proforma_detail' REMOVED — authority violation containment.
-//   ProformaDetailPage displayed fake VAT, fake company, fake products, and browser-side
-//   financial calculations without a MOCK warning. MOCK banner restored until Sprint 36
-//   authority recovery. Re-add after real company endpoint + editable_lines + FX wiring.
-const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents'];
+// Sprint 36 Phase 1 (2026-06-06): 'proforma_detail' RE-ADDED — authority recovery complete.
+//   All fake data removed: exporter from GET /api/v1/settings/company-profile,
+//   lines from editable_lines, FX from exchange_rate, PDF download wired,
+//   ConvertToInvoiceModal calls draftToInvoice, no browser-side FX calculations.
+const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;

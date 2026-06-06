@@ -1,5 +1,11 @@
-// Pro Forma Detail (Screen B) — wFirma-style detail with 5 tabs + action toolbar
-// Per ATLAS_PROFORMA_DRILLDOWN_REDESIGN.md
+// Pro Forma Detail (Screen B) — Sprint 36 Phase 1 authority recovery
+// Authority sources (no fake/hardcoded data):
+//   GET /api/v1/proforma/draft/{id}              → editable_lines, exchange_rate
+//   GET /api/v1/settings/company-profile          → exporter identity
+//   GET /api/v1/proforma/draft/{id}/disclose-post → VAT context
+//   POST /api/v1/proforma/draft/{id}/to-invoice   → convert action (real API)
+//   GET /api/v1/proforma/{batch_id}/{cn}/document.pdf → PDF download
+//   GET /api/v1/proforma/draft/{id}/events        → history tab
 
 const PROFORMA_TABS = [
   { id: 'overview', label: 'Overview' },
@@ -32,51 +38,99 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const previewHook = window.PzState.useProformaPreview(batchId, clientName);
   const preview = previewHook.data || null;
 
+  // WIRED: fetch company profile for exporter block (GET /api/v1/settings/company-profile)
+  const [companyProfile, setCompanyProfile] = React.useState(null);
+  React.useEffect(() => {
+    window.EstrellaShared.apiFetch('/api/v1/settings/company-profile')
+      .then(r => setCompanyProfile((r && r.profile) || null))
+      .catch(() => setCompanyProfile(null));
+  }, []);
+
   const vatResolution = disclosure && disclosure.vat_resolution;
+
+  // ── Authority-wired detail construction ──────────────────────────────────────
+  // Product lines from backend editable_lines (GET /api/v1/proforma/draft/{id})
+  const lines = (liveDraft.editable_lines || []).map((ln, i) => ({
+    seq:      i + 1,
+    lineId:   ln.line_id || '',
+    sku:      ln.product_code || '—',
+    desc:     ln.design_no || ln.product_code || '—',
+    qty:      parseFloat(ln.qty || 0),
+    unitEur:  parseFloat(ln.unit_price || 0),
+    netEur:   parseFloat(ln.unit_price || 0) * parseFloat(ln.qty || 0),
+    hsCode:   ln.hs_code || '—',
+    origin:   ln.origin || '—',
+    purity:   ln.purity || '',
+    currency: ln.currency || 'EUR',
+  }));
+
+  // FX rate from backend draft (no browser-side PLN conversion)
+  const fxRate = liveDraft.exchange_rate ? parseFloat(liveDraft.exchange_rate) : null;
+
+  // Payment terms from JSON blob
+  const rawPt = liveDraft.payment_terms;
+  const paymentTermsDisplay = rawPt
+    ? (typeof rawPt === 'object'
+        ? (Object.entries(rawPt).map(([k, v]) => `${k}: ${v}`).join(' · ') || '—')
+        : String(rawPt))
+    : '—';
+
+  // Exporter from company profile (GET /api/v1/settings/company-profile)
+  const exporter = companyProfile
+    ? {
+        name:    companyProfile.legal_name || '—',
+        vatEu:   companyProfile.vat_eu || '—',
+        address: [companyProfile.street, companyProfile.postal_city].filter(Boolean).join(', ') || '—',
+        country: companyProfile.country || '—',
+      }
+    : { name: '—', vatEu: '—', address: '—', country: '—' };
+
+  // Customer from live draft resolution
+  const cr = liveDraft.customer_resolution || {};
+  const customer = {
+    name:       liveDraft.client_name || draft.client_name || '—',
+    vatEu:      cr.vat_eu || '—',
+    address:    '—',
+    country:    '—',
+    wfirmaId:   cr.wfirma_customer_id || null,
+    wfirmaName: cr.resolved_wfirma_customer_name || null,
+  };
 
   const detail = {
     ...liveDraft,
-    customer: {
-      name: liveDraft.client_name || draft.client_name || '—',
-      vatEu: '—',
-      address: '—',
-      country: '—',
-      wfirmaId: null,
-      wfirmaName: null,
-    },
-    exporter: {
-      name: 'Estrella Jewels Sp. z o.o.',
-      vatEu: 'PL5252532437',
-      address: 'ul. Przykładowa 10, 00-001 Warszawa',
-      country: 'Poland',
-    },
+    customer,
+    exporter,
     fx: {
-      rate: 4.2650,
-      source: 'NBP',
-      date: '2026-05-10',
-      table: 'A 089/2026',
+      rate:   fxRate,
+      source: liveDraft.exchange_rate_source || 'NBP',
+      date:   liveDraft.exchange_rate_date || '—',
+      table:  liveDraft.nbp_table || '—',
     },
-    lines: [
-      { seq: 1, sku: 'RNG-AU750-001', desc: '18K Gold Ring with Diamond', qty: 2, unitEur: 1840.00, netEur: 3680.00, hsCode: '71131910', origin: 'IN', purity: '18K 750', wfirmaProductId: 'WF-PROD-8821' },
-      { seq: 2, sku: 'NKL-AU585-008', desc: '14K Gold Necklace', qty: 3, unitEur: 980.50, netEur: 2941.50, hsCode: '71131910', origin: 'IN', purity: '14K 585', wfirmaProductId: 'WF-PROD-8822' },
-      { seq: 3, sku: 'BRC-PT950-012', desc: 'Platinum Bracelet', qty: 1, unitEur: 4200.00, netEur: 4200.00, hsCode: '71131100', origin: 'CH', purity: 'PT 950', wfirmaProductId: 'WF-PROD-8823' },
-    ],
-    paymentTerms: 'Bank transfer · 14 days',
-    incoterm: 'DDP Warsaw',
+    lines,
+    paymentTerms: paymentTermsDisplay,
+    incoterm:     liveDraft.incoterm || '—',
   };
+  // ─────────────────────────────────────────────────────────────────────────────
 
-  // Use live draft_state if available, fall back to mock status
   const draftState = liveDraft.draft_state || liveDraft.status || draft.status || '';
   const canConvert = draftState === 'posted' || draftState === 'ready';
-  const isBlocked = draftState === 'post_failed' || draftState === 'convert_blocked';
+  const isBlocked  = draftState === 'post_failed' || draftState === 'convert_blocked';
 
-  // Readiness from live preview
   const blockingReasons = (preview && preview.blocking_reasons) || [];
-  const exportBlockers = (preview && preview.export_blockers) || [];
+  const exportBlockers  = (preview && preview.export_blockers)  || [];
+
+  const handleDownloadPdf = () => {
+    const bid = liveDraft.batch_id || draft.batch_id || '';
+    const cn  = liveDraft.client_name || draft.client_name || '';
+    if (!bid || !cn) return;
+    window.open(`/api/v1/proforma/${encodeURIComponent(bid)}/${encodeURIComponent(cn)}/document.pdf`, '_blank');
+  };
+
+  const proformaLabel = liveDraft.wfirma_proforma_fullnumber || draft.wfirma_proforma_fullnumber || `Draft #${draft.id}`;
 
   return (
-    <div data-screen-label={`Proforma ${draft.number}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--bg)' }}>
-      
+    <div data-testid="proforma-detail-root" data-screen-label={`Proforma ${proformaLabel}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--bg)' }}>
+
       {/* Action toolbar */}
       <div style={{
         padding: '16px 32px', background: 'var(--card)', borderBottom: '1px solid var(--border)',
@@ -95,22 +149,21 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             Pro Forma Draft
           </div>
           <div style={{ fontSize: 16, fontWeight: 700, fontFamily: 'monospace', color: 'var(--text)' }}>
-            {draft.number}
+            {proformaLabel}
           </div>
         </div>
 
-        <ProformaStatusChip status={draft.status} />
+        <ProformaStatusChip status={draftState} />
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Btn variant="outline" small>↓ Download PDF</Btn>
-          <Btn variant="outline" small>✎ Edit Draft</Btn>
+          <Btn variant="outline" small onClick={handleDownloadPdf} data-testid="proforma-detail-download-pdf">↓ Download PDF</Btn>
           {isBlocked && (
             <Btn variant="outline" small disabled style={{ opacity: 0.5, cursor: 'not-allowed' }}>
               ⚠ Convert Blocked
             </Btn>
           )}
           {canConvert && (
-            <Btn variant="gold" small onClick={() => setShowConvertModal(true)}>
+            <Btn variant="gold" small onClick={() => setShowConvertModal(true)} data-testid="proforma-detail-convert-btn">
               ⚠ Convert to Invoice
             </Btn>
           )}
@@ -129,7 +182,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
               FX & Payment
             </div>
-            <InfoRow label="EUR/PLN Rate" value={detail.fx.rate.toFixed(4)} />
+            <InfoRow label="EUR/PLN Rate" value={fxRate ? fxRate.toFixed(4) : '—'} />
             <InfoRow label="NBP Table" value={detail.fx.table} />
             <InfoRow label="Rate Date" value={detail.fx.date} />
             <InfoRow label="Payment Terms" value={detail.paymentTerms} />
@@ -158,7 +211,6 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       <div style={{ flex: 1, overflow: 'auto', padding: '24px 32px' }}>
         {activeTab === 'overview' && (
           <>
-            {/* LIVE: readiness blocking reasons */}
             {blockingReasons.length > 0 && (
               <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6 }}>
                 <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--badge-red-text)', marginBottom: 4 }}>Blocking reasons</div>
@@ -171,7 +223,6 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 {exportBlockers.map((r, i) => <div key={i} style={{ fontSize: 12, color: 'var(--badge-amber-text)' }}>{r}</div>)}
               </div>
             )}
-            {/* LIVE: VAT resolution (from disclose-post, ADR-027 D4) */}
             {vatResolution && (
               <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--badge-neutral-bg)', border: '1px solid var(--border)', borderRadius: 6 }} data-testid="vat-resolution-detail">
                 <div style={{ fontWeight: 700, fontSize: 11, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>VAT Treatment</div>
@@ -185,13 +236,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 )}
               </div>
             )}
-            <OverviewTab detail={detail} />
+            <OverviewTab detail={detail} lines={lines} fxRate={fxRate} />
           </>
         )}
         {activeTab === 'lines' && <LinesTab lines={detail.lines} />}
         {activeTab === 'customer_mapping' && <CustomerMappingTab customer={detail.customer} isBlocked={isBlocked} />}
         {activeTab === 'reservation' && <ReservationTab draft={draft} />}
-        {activeTab === 'history' && <HistoryTab draft={draft} />}
+        {activeTab === 'history' && <HistoryTab draft={draft} draftId={draft && draft.id} />}
       </div>
 
       {showConvertModal && (
@@ -199,7 +250,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           draft={draft}
           detail={detail}
           onClose={() => setShowConvertModal(false)}
-          onConfirm={() => {
+          onSuccess={() => {
             setShowConvertModal(false);
             onConvert && onConvert(draft);
           }}
@@ -243,25 +294,25 @@ function PartyCard({ title, party, highlight }) {
   );
 }
 
-function OverviewTab({ detail }) {
+function OverviewTab({ detail, lines, fxRate }) {
+  const totalEur = lines.reduce((s, l) => s + l.netEur, 0);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <SectionLabel>Summary</SectionLabel>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
-        <StatTile label="Line Items" value={detail.lines.length} />
-        <StatTile label="Total Items" value={detail.items} />
-        <StatTile label="Total EUR" value={`€${detail.totalEur.toFixed(2)}`} accent="var(--accent)" />
-        <StatTile label="Total PLN" value={`zł ${(detail.totalEur * detail.fx.rate).toFixed(2)}`} />
+        <StatTile label="Line Items" value={lines.length} />
+        <StatTile label="Currency" value={detail.currency || 'EUR'} />
+        <StatTile label="Total EUR" value={`€${totalEur.toFixed(2)}`} accent="var(--accent)" />
+        <StatTile label="FX Rate EUR/PLN" value={fxRate ? fxRate.toFixed(4) : '—'} />
       </div>
 
       <SectionLabel style={{ marginTop: 8 }}>Shipment reference</SectionLabel>
       <PanelCard>
         <div style={{ padding: '16px 20px' }}>
-          <InfoRow label="Shipment ID" value={detail.shipmentId} mono />
-          <InfoRow label="AWB / Tracking" value={detail.shipmentAwb} mono />
-          <InfoRow label="Source" value={SOURCE_LABEL[detail.source]} />
-          <InfoRow label="Created" value={detail.createdAt} />
-          <InfoRow label="Created by" value={detail.createdBy} />
+          <InfoRow label="Batch ID" value={detail.batch_id} mono />
+          <InfoRow label="Client" value={detail.client_name} />
+          <InfoRow label="Draft state" value={detail.draft_state} />
+          <InfoRow label="Created" value={detail.created_at} />
         </div>
       </PanelCard>
     </div>
@@ -290,13 +341,20 @@ function LinesTab({ lines }) {
             </tr>
           </thead>
           <tbody>
+            {lines.length === 0 && (
+              <tr>
+                <td colSpan="8" style={{ padding: '24px 14px', textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>
+                  No line items — draft not yet built from packing upload.
+                </td>
+              </tr>
+            )}
             {lines.map((line, i) => (
-              <tr key={line.seq} style={{ borderBottom: i < lines.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
+              <tr key={line.lineId || line.seq} style={{ borderBottom: i < lines.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
                 <td style={{ padding: '12px 14px', fontSize: 11, color: 'var(--text-3)' }}>{line.seq}</td>
                 <td style={{ padding: '12px 14px', fontFamily: 'monospace', fontSize: 11, fontWeight: 600, color: 'var(--text-2)' }}>{line.sku}</td>
                 <td style={{ padding: '12px 14px' }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{line.desc}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{line.purity}</div>
+                  {line.purity && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{line.purity}</div>}
                 </td>
                 <td style={{ padding: '12px 14px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)' }}>{line.hsCode}</td>
                 <td style={{ padding: '12px 14px', fontSize: 11, color: 'var(--text-2)' }}>{line.origin}</td>
@@ -309,8 +367,8 @@ function LinesTab({ lines }) {
           <tfoot>
             <tr style={{ borderTop: '2px solid var(--border)', background: 'var(--bg-subtle)' }}>
               <td colSpan="7" style={{ padding: '12px 14px', textAlign: 'right', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>Total</td>
-              <td style={{ padding: '12px 14px', textAlign: 'right', fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--accent)' }}>
-                {lines.reduce((sum, l) => sum + l.netEur, 0).toFixed(2)}
+              <td style={{ padding: '12px 14px', textAlign: 'right', fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--accent)' }} data-testid="proforma-lines-total">
+                {lines.length > 0 ? lines.reduce((s, l) => s + l.netEur, 0).toFixed(2) : '—'}
               </td>
             </tr>
           </tfoot>
@@ -335,8 +393,8 @@ function CustomerMappingTab({ customer, isBlocked }) {
           </div>
           <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.5 }}>
             This customer must be mapped to a wFirma customer record before converting to invoice.
+            Use the Customer Mapping page to establish the link.
           </div>
-          <Btn variant="gold" small>Open wFirma Mapping Setup</Btn>
         </div>
       ) : (
         <PanelCard>
@@ -368,7 +426,7 @@ function ReservationTab({ draft }) {
             Reservation gate status for this draft
           </div>
           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
-            Not implemented in this wireframe
+            Not yet wired — deferred post Sprint 36
           </div>
         </div>
       </PanelCard>
@@ -376,11 +434,21 @@ function ReservationTab({ draft }) {
   );
 }
 
-function HistoryTab({ draft }) {
-  const events = [
-    { ts: draft.createdAt, user: draft.createdBy, action: 'Draft created', status: 'created' },
-    { ts: '2026-05-10 14:25', user: 'System', action: 'Customer mapping verified', status: 'verified' },
-  ];
+function HistoryTab({ draft, draftId }) {
+  // WIRED: GET /api/v1/proforma/draft/{id}/events
+  const [events, setEvents] = React.useState(null);
+  React.useEffect(() => {
+    if (!draftId) return;
+    window.PzApi.getDraftEvents(draftId)
+      .then(r => setEvents((r && r.events) ? r.events : []))
+      .catch(() => setEvents([]));
+  }, [draftId]);
+
+  const displayEvents = (events !== null && events.length > 0) ? events : (
+    events === null
+      ? [{ ts: '…', user: '', action: 'Loading history…', status: 'loading' }]
+      : [{ ts: draft.created_at || '—', user: draft.created_by || '—', action: 'Draft created', status: 'created' }]
+  );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -389,8 +457,8 @@ function HistoryTab({ draft }) {
         <div style={{ padding: '20px 24px' }}>
           <div style={{ position: 'relative', paddingLeft: 32 }}>
             <div style={{ position: 'absolute', left: 10, top: 8, bottom: 8, width: 2, background: 'var(--border)' }} />
-            {events.map((e, i) => (
-              <div key={i} style={{ position: 'relative', marginBottom: i < events.length - 1 ? 20 : 0, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+            {displayEvents.map((e, i) => (
+              <div key={i} style={{ position: 'relative', marginBottom: i < displayEvents.length - 1 ? 20 : 0, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
                 <div style={{
                   position: 'absolute', left: -32, width: 22, height: 22, borderRadius: 11,
                   background: 'var(--badge-green-bg)', border: `2px solid var(--badge-green-border)`,
@@ -399,9 +467,9 @@ function HistoryTab({ draft }) {
                   <span style={{ fontSize: 11, color: 'var(--badge-green-text)', fontWeight: 700 }}>✓</span>
                 </div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{e.action}</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{e.action || e.event_type || e.description || '—'}</div>
                   <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
-                    {e.ts} · {e.user}
+                    {e.ts || e.created_at || e.occurred_at || '—'} · {e.user || e.operator || '—'}
                   </div>
                 </div>
               </div>
@@ -413,22 +481,35 @@ function HistoryTab({ draft }) {
   );
 }
 
-// Convert to Invoice Modal — full payload disclosure + idempotency key
-function ConvertToInvoiceModal({ draft, detail, onClose, onConfirm }) {
-  const [idempotencyKey, setIdempotencyKey] = React.useState(`INV-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
+// Convert to Invoice Modal — wired to POST /api/v1/proforma/draft/{id}/to-invoice
+function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
   const [confirmed, setConfirmed] = React.useState(false);
+  const [loading, setLoading] = React.useState(false);
+  const [apiError, setApiError] = React.useState(null);
+
+  const handleConvert = () => {
+    if (!confirmed || loading) return;
+    setLoading(true);
+    setApiError(null);
+    window.PzApi.draftToInvoice(draft.id, {
+      confirm: 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA',
+    })
+      .then(() => { onSuccess && onSuccess(); })
+      .catch(e => {
+        setApiError((e && e.message) ? e.message : 'Conversion failed — check backend logs.');
+        setLoading(false);
+      });
+  };
 
   const payload = {
-    endpoint: 'POST /api/v1/proforma/{id}/convert-to-invoice',
-    proformaId: draft.id,
-    proformaNumber: draft.number,
-    customer: detail.customer.wfirmaId,
-    customerName: detail.customer.wfirmaName,
-    totalEur: detail.totalEur,
-    fxRate: detail.fx.rate,
-    totalPln: (detail.totalEur * detail.fx.rate).toFixed(2),
-    lineCount: detail.lines.length,
-    idempotencyKey,
+    endpoint:         'POST /api/v1/proforma/draft/{id}/to-invoice',
+    draftId:          draft.id,
+    proformaNumber:   detail.wfirma_proforma_fullnumber || '—',
+    wfirmaProformaId: detail.wfirma_proforma_id || '—',
+    customer:         detail.customer.wfirmaId || '—',
+    customerName:     detail.customer.wfirmaName || '—',
+    lineCount:        detail.lines.length,
+    currency:         detail.currency || 'EUR',
   };
 
   return (
@@ -459,7 +540,6 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onConfirm }) {
         </div>
 
         <div style={{ padding: 24 }}>
-          {/* Warning block */}
           <div style={{
             padding: '14px 16px', background: 'var(--badge-red-bg)', border: `2px solid var(--badge-red-border)`,
             borderRadius: 8, marginBottom: 20,
@@ -473,7 +553,6 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onConfirm }) {
             </div>
           </div>
 
-          {/* Payload disclosure */}
           <div style={{ marginBottom: 20 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>
               Request payload
@@ -494,23 +573,16 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onConfirm }) {
             </div>
           </div>
 
-          {/* Idempotency key */}
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>
-              Idempotency key (pre-reserved)
-            </div>
+          {apiError && (
             <div style={{
-              padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)',
-              borderRadius: 6, fontFamily: 'monospace', fontSize: 12, color: 'var(--text)',
-            }}>
-              {idempotencyKey}
+              marginBottom: 16, padding: '10px 14px',
+              background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+              borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600,
+            }} data-testid="convert-modal-error">
+              ⚠ {apiError}
             </div>
-            <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 4 }}>
-              This key ensures the operation runs exactly once, even if the network fails mid-request.
-            </div>
-          </div>
+          )}
 
-          {/* Confirmation checkbox */}
           <label style={{
             display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px',
             background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8,
@@ -521,27 +593,28 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onConfirm }) {
               checked={confirmed}
               onChange={e => setConfirmed(e.target.checked)}
               style={{ width: 18, height: 18, cursor: 'pointer' }}
+              data-testid="convert-modal-confirm-checkbox"
             />
             <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>
               I understand this action is irreversible and will immediately post to wFirma
             </span>
           </label>
 
-          {/* Actions */}
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <Btn variant="outline" onClick={onClose}>Cancel</Btn>
+            <Btn variant="outline" onClick={onClose} disabled={loading}>Cancel</Btn>
             <Btn
               variant="default"
-              disabled={!confirmed}
-              onClick={onConfirm}
+              disabled={!confirmed || loading}
+              onClick={handleConvert}
+              data-testid="convert-modal-submit"
               style={{
-                background: confirmed ? 'var(--badge-red-text)' : 'var(--badge-neutral-bg)',
-                color: confirmed ? '#fff' : 'var(--text-3)',
-                cursor: confirmed ? 'pointer' : 'not-allowed',
-                opacity: confirmed ? 1 : 0.5,
+                background: (confirmed && !loading) ? 'var(--badge-red-text)' : 'var(--badge-neutral-bg)',
+                color: (confirmed && !loading) ? '#fff' : 'var(--text-3)',
+                cursor: (confirmed && !loading) ? 'pointer' : 'not-allowed',
+                opacity: (confirmed && !loading) ? 1 : 0.5,
               }}
             >
-              ⚠ Convert to Invoice
+              {loading ? '⏳ Converting…' : '⚠ Convert to Invoice'}
             </Btn>
           </div>
         </div>
