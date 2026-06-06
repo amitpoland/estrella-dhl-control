@@ -3474,6 +3474,26 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
+## Sprint 33 Hardening — Dead Header Buttons Removed (2026-06-06)
+
+**Date**: 2026-06-06  
+**Commit SHA**: `8b0b1ed` (pushed to `origin/main`)  
+**Type**: Post-audit fix — no architecture change, no backend change
+
+**Root cause**: Sprint 33 implementation audit found two dead `<Btn>` controls (`System Status`, `↓ Export Logs`) in the `page === 'automation'` route block of `index.html` (line 569). They had no `onClick` handlers, no backend authority, and were cosmetic remnants from an earlier design draft. Rule: no dead buttons.
+
+**Fix**: Removed `actions={...}` prop from the Automation `PageHeader` — collapsed to single self-closing `<PageHeader title="..." subtitle="..." />` (matches all other simple pages).
+
+**Files changed (2)**:
+- `service/app/static/v2/index.html` — 3-line PageHeader with actions prop → 1-line self-closing tag
+- `service/tests/test_sprint33_automation_hub_wiring.py` — section J added (tests 27–30): `test_no_system_status_button_in_automation_header`, `test_no_export_logs_button_in_automation_header`, `test_automation_page_header_has_no_actions_prop`, `test_automation_route_still_renders_ai_bridge_page_after_hardening`
+
+**Verification**: 30/30 Sprint 33 tests PASS, 27/27 Sprint 32 regression PASS. SHA256 hash of deployed `C:\PZ\app\static\v2\index.html` = `8BEA0575611FA26FEA8CCA2ECCDFBC8152E70F6DDCB200A3A995908701F3DAB2` (matches source). PZService NOT restarted (static-only). GATE 6 browser (https://pz.estrellajewels.eu/v2/automation): `hasSystemStatus=false`, `hasExportLogs=false`, `hasMockBanner=false`, `hasHubRoot=true`, all 4 ai-bridge GET endpoints 200, zero console errors, zero app-level write methods.
+
+**Open PRs**: 0.
+
+---
+
 ## Atlas Capability Registry Installed (2026-06-06, commit 5e3c251)
 
 **Date**: 2026-06-06  
