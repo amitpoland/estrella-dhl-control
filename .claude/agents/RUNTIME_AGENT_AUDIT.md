@@ -164,3 +164,116 @@ The 15 repo agents remain the only canonical, version-controlled, gate-bound age
 Everything else in the ~80-entry dispatch menu is an optional helper at best and a
 hazard at worst. **No runtime-only agent may be final authority or mutate production.**
 Use the `agent-orchestration-playbook.md` groups; treat the dispatch menu as untrusted.
+
+---
+
+# ADDENDUM — Install & Classification Pass (2026-06-06)
+
+## Install summary
+
+| Metric | Value |
+|---|---|
+| Repo agents BEFORE | 15 |
+| Repo agents AFTER | **20** (+5 installed) |
+| Installed this pass | reviewer-challenge, ux-flow, integration-boundary, gap-detection, final-consistency-review |
+| Intentionally NOT installed | ~49 user-level (see classification) |
+| Quarantined (write-risk) | 12 EJ-domain write-capable + 7 generic write/builders |
+| Wrong-domain (never install) | 6 legal-* + 5 brand-voice:* |
+
+All 5 installs were authored **inspect-only (`tools: Read, Grep, Glob`)**; the 3 that
+had `Bash` upstream (integration-boundary, gap-detection, final-consistency-review)
+had Bash **removed** for repo-canonical safety, with provenance documented in each file.
+
+## Phase-4 dispatchability test (honest result — Lesson B)
+
+| Agent | Dispatched? | Response? | Finding |
+|---|---|---|---|
+| reviewer-challenge | YES | YES (VERDICT: PASS, named C:\PZ-verify) | R/G/G in both copies — behaviour identical |
+| final-consistency-review | YES | YES (VERDICT: PASS) | ⚠️ **ran the USER-LEVEL copy — still reported Bash.** My repo inspect-only (Bash-stripped) copy is NOT the one dispatched this session. |
+
+**Conclusion (Lesson B confirmed):** these names were already dispatchable as
+user-level runtime agents, so dispatch "works" — but the **repo copies are not
+guaranteed to be the version that runs mid-session**. `final-consistency-review`
+proved the user-level (un-stripped, Bash-capable) copy is what dispatched, not the
+new repo inspect-only copy. **Fresh-session requirement:** a new Claude Code session
+is required to (a) reload the registry and (b) verify whether project-level repo
+copies take precedence over the user-level copies of the same name. Until then,
+dispatching these 5 names uses the user-level versions; treat tool-stripping as
+**pending fresh-session confirmation**, not yet in force.
+
+## Classification of all 54 user-level agents
+
+Status key: SAFE = INSTALL_SAFE · REV = INSTALL_REVIEW_ONLY · NO = DO_NOT_INSTALL · Q = QUARANTINE_WRITE_RISK.
+"Installed" = copied into repo this pass.
+
+| Agent | tools | write? | bash? | domain | EJ-safe | status | installed |
+|---|---|---|---|---|---|---|---|
+| reviewer-challenge | R/G/G | no | no | review | yes | SAFE | ✅ |
+| ux-flow | R/G/G | no | no | UI/UX | yes | SAFE | ✅ |
+| integration-boundary | R/G/G/B | no | yes→stripped | integration | yes | REV | ✅ |
+| gap-detection | R/G/G/B | no | yes→stripped | planning | yes | REV | ✅ |
+| final-consistency-review | R/G/G/B | no | yes→stripped | governance | yes | REV | ✅ |
+| readiness-closure | R/G/G | no | no | status/gate | yes | SAFE | deferred* |
+| business-process | R/G/G | no | no | business | yes | SAFE | deferred* |
+| finance-accounting-logic | R/G/G | no | no | accounting | yes(read) | SAFE | deferred* |
+| product-owner-interpreter | R/G/G | no | no | planning | yes | SAFE | deferred* |
+| planning-task-breakdown | R/G/G | no | no | planning | yes | SAFE | deferred* |
+| multimodal-evidence | R/G/G | no | no | evidence | yes | SAFE | deferred* |
+| system-architect | R/G/G/WF | no | no(WF) | architecture | yes | REV | deferred* |
+| compliance | R/G/G/WF/WS | no | no(WF/WS) | compliance | yes(read) | REV | deferred* |
+| button-functionality | R/G/G/B | no | yes | UI audit | yes | REV | deferred* |
+| security-permissions | R/G/G/B | no | yes | security | yes | REV | deferred* |
+| reviewer-challenge … (above) | | | | | | | |
+| assumption-builder | R/G/G | no | no | intake | neutral | NO (generic scaffolding) | — |
+| intent-clarification | R/G/G | no | no | intake | neutral | NO (generic scaffolding) | — |
+| natural-language-intake | R/G/G | no | no | intake | neutral | NO (generic scaffolding) | — |
+| task-classification | R/G/G | no | no | intake | neutral | NO (generic scaffolding) | — |
+| context-resolution | R/G/G | no | no | intake | neutral | NO (generic scaffolding) | — |
+| misunderstanding-prevention | R/G/G | no | no | intake | neutral | NO (generic scaffolding) | — |
+| chief-orchestrator | R/G/G | no | no | orchestration | neutral | NO (orchestrator = main loop) | — |
+| agent-router | R/G/G | no | no | routing | neutral | NO (orchestrator covers) | — |
+| escalation-filter | R/G/G | no | no | governance | neutral | NO (generic) | — |
+| flow-continuity | R/G/G/B | no | yes | integration | yes | NO (covered by integration-boundary) | — |
+| deployment-readiness | R/G/G/B | no | yes | governance | yes | NO (covered by deploy gate) | — |
+| release-manager | R/G/G/B | no | yes | deploy | yes | NO (repo deploy-release-manager is canonical) | — |
+| ci-runner | R/B/G/G | no | yes | CI | yes | NO (orchestrator runs CI) | — |
+| pr-author | R/B/G/G/WF | gh-write | yes | git | caution | NO (orchestrator authors PRs) | — |
+| dhl-customs | R/W/E/B/WF | YES | yes | DHL/customs | NO as actor | Q | — |
+| wfirma-integration | R/W/E/B/WF | YES | yes | wFirma | NO as actor | Q | — |
+| pz-purchase-accounting | R/W/E/B | YES | yes | PZ | NO as actor | Q | — |
+| sales-proforma | R/W/E/B | YES | yes | proforma | NO as actor | Q | — |
+| inventory-state-machine | R/W/E/B | YES | yes | inventory | NO as actor | Q | — |
+| warehouse-ops | R/W/E/B | YES | yes | warehouse | NO as actor | Q | — |
+| client-contractor-mapping | R/W/E/B/WF | YES | yes | customer master | NO as actor | Q | — |
+| email-evidence-recovery | R/W/E/B | YES | yes | email | NO as actor (Lesson E) | Q | — |
+| database-storage | R/W/E/B | YES | yes | storage/schema | NO as actor | Q | — |
+| deployment-windows-ops | R/W/E/B | YES | yes | deploy/service | NO as actor | Q | — |
+| document-intelligence | R/W/E/B | YES | yes | doc parsing | NO as actor | Q | — |
+| dashboard-operations | R/W/E | YES | no | dashboard | NO as actor | Q | — |
+| backend-api | R/W/E/B | YES | yes | generic backend | NO (builder) | NO | — |
+| frontend-ui | R/W/E/B | YES | yes | generic frontend | NO (builder, wrong stack) | NO | — |
+| git-workflow | R/W/E/B | YES | yes | git | NO (orchestrator) | NO | — |
+| testing-verification | R/W/E/B | YES | yes | tests | NO (builder) | NO | — |
+| browser-verifier | R/W/E/B | YES | yes | browser QA | gap — needs exec; can't be pure-inspect | NO (see gap note) | — |
+| memory-lessons | R/W/E | YES | no | memory | NO (flow-context-keeper owns memory) | NO | — |
+| prompt-engineering | R/W/E | YES | no | prompts | NO | NO | — |
+| legal-argument-builder | R/W/E | YES | no | legal ❌ | wrong domain | NO | — |
+| legal-case-intake | R/W/E | YES | no | legal ❌ | wrong domain | NO | — |
+| legal-drafting | R/W/E | YES | no | legal ❌ | wrong domain | NO | — |
+| legal-evidence-binder | R/W/E | YES | no | legal ❌ | wrong domain | NO | — |
+| legal-research | R/G/G/WF/WS | no | no | legal ❌ | wrong domain | NO | — |
+| legal-risk-review | R/G/G | no | no | legal ❌ | wrong domain | NO | — |
+
+`*deferred` = classified INSTALL_SAFE/REV and approved for repo install, but **not
+installed this pass** to avoid premature canonical bloat. Install when the relevant
+domain sprint begins (e.g. finance-accounting-logic + compliance when the Accounting
+Hub sprint starts; button-functionality + system-architect when needed). This keeps
+the canonical set lean and every installed agent justified by active need.
+
+## Browser-QA gap (unchanged, important)
+
+`browser-verifier` cannot be installed as a pure-inspect agent — browser verification
+genuinely needs exec (run a dev server) + possibly Write (test harness). A Read/Grep/Glob
+shadow would be non-functional. **Browser QA therefore remains an orchestrator-driven
+activity via the Preview MCP (as in Sprint 30/31), not a repo agent.** Documented as a
+known, accepted gap.

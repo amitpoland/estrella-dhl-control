@@ -2,7 +2,16 @@
 
 **Source of truth for the agents that are version-controlled in THIS repository.**
 Generated 2026-06-06 by direct inspection of `.claude/agents/*.md` frontmatter
-(not the runtime dispatch menu). 15 repo-installed agents.
+(not the runtime dispatch menu). **20 repo-installed agents** (15 original + 5 installed
+2026-06-06: reviewer-challenge, ux-flow, integration-boundary, gap-detection,
+final-consistency-review — all inspect-only).
+
+> **Fresh-session caveat (Lesson B):** the 5 agents installed 2026-06-06 were already
+> dispatchable as user-level runtime agents. Dispatch tests confirmed they respond, but
+> `final-consistency-review` ran the **user-level copy (still Bash-capable)**, not the
+> repo inspect-only copy. The repo copies' tool-stripping is **pending fresh-session
+> confirmation** of project-over-user precedence. Until a fresh session verifies this,
+> treat these 5 as runtime-backed. Full detail: `RUNTIME_AGENT_AUDIT.md` addendum.
 
 > **Canonical rule:** These 15 agents are the only agents whose behaviour,
 > tool grants, and boundaries are guaranteed by version control. The runtime
@@ -36,6 +45,11 @@ Generated 2026-06-06 by direct inspection of `.claude/agents/*.md` frontmatter
 | 13 | `adr-historian` | DOCS-WRITE | `.claude/adr/*` (append-only) | ✅ cannot mutate product | Post-run governance |
 | 14 | `agent-performance-observer` | DOCS-WRITE (+Bash) | `.claude/memory/scorecards/*` | ✅ cannot mutate product | Post-run governance |
 | 15 | `flow-context-keeper` | DOCS-WRITE (+Bash) | `.claude/memory/PROJECT_STATE.md` | ✅ cannot mutate product | Post-run governance |
+| 16 | `reviewer-challenge` | INSPECT-ONLY | — | ✅ cannot mutate | Planning, Impl-review (CLAUDE.md-mandated on V2 PRs) |
+| 17 | `ux-flow` | INSPECT-ONLY | — | ✅ cannot mutate | Impl-review (UI/UX) |
+| 18 | `integration-boundary` | INSPECT-ONLY (Bash stripped) | — | ✅ cannot mutate | Impl-review (FE/BE seams) |
+| 19 | `gap-detection` | INSPECT-ONLY (Bash stripped) | — | ✅ cannot mutate | Planning (pre-work 10-cat scan) |
+| 20 | `final-consistency-review` | INSPECT-ONLY (Bash stripped) | — | ✅ cannot mutate | Post-run (pre-operator last gate) |
 
 > **Filename ↔ subagent_type note:** the deploy files are named with underscores
 > on disk (`deploy_git_diff_reviewer.md`) but dispatch with hyphens

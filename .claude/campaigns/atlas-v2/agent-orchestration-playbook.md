@@ -90,7 +90,18 @@ then the coordinator. No deploy without READY-TO-DEPLOY.
 Purpose: observe, score, persist state.
 - `agent-performance-observer` — mandatory after any FINAL REPORT / ≥3-subagent run (RULE 2); orchestrator must verify the scorecard file exists on disk (Lesson C)
 - `flow-context-keeper`        — update PROJECT_STATE; cite the scorecard (RULE 6)
+- `final-consistency-review`   — pre-operator last gate (8 consistency dimensions) — installed 2026-06-06
 - `adr-historian`              — **only if an architecture decision was made**
+
+> **2026-06-06 canonical additions (now repo-installed, inspect-only):**
+> `reviewer-challenge` (Planning + Impl-review — CLAUDE.md-mandated on V2 PRs),
+> `ux-flow` (Impl-review, UI/UX), `integration-boundary` (Impl-review, FE/BE seams),
+> `gap-detection` (Planning, pre-work 10-category scan), `final-consistency-review`
+> (Post-run last gate). These join the canonical 15 → **20 repo agents**. NOTE: their
+> repo (inspect-only) copies are pending fresh-session precedence confirmation over the
+> user-level copies of the same name (Lesson B) — see `RUNTIME_AGENT_AUDIT.md` addendum.
+> Add to groups: A += gap-detection, reviewer-challenge · B += reviewer-challenge,
+> ux-flow, integration-boundary · D += final-consistency-review.
 
 ---
 

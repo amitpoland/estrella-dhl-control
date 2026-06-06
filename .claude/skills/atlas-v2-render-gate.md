@@ -84,6 +84,10 @@ have regressed or the backend shape diverged.**
 |---|---|---|
 | `proforma` | `GET /api/v1/proforma/drafts/{batch_id}` | Sprint 1 |
 | `proforma_detail` | `GET /api/v1/proforma/draft/{id}` etc. | Sprint 1 |
+| `inbox` | `GET /api/v1/inbox` | Sprint 2B.2 |
+| `inventory` | `GET /api/v1/inventory/v2/*` | Sprint 30 |
+| `dhl` | `GET /api/v1/dhl/status`, `GET /api/v1/dhl/shipments` | Sprint 31 |
+| `shipments` | `GET /api/v1/dashboard/batches` | Sprint 32 |
 
 Update this table as each sprint wires additional pages.
 
