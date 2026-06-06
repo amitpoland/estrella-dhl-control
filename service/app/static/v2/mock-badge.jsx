@@ -9,7 +9,11 @@
 // Sprint 33:   'automation' added — AiBridgePage wired read-only to ai-bridge authority.
 // Sprint 34:   'intelligence' added — IntelligencePage wired read-only to intelligence + invoice-learning authority.
 // Sprint 35:   'documents' added — DocumentsHubPage wired read-only to GET /api/v1/dashboard/batches.
-const WIRED_PAGES = ['proforma', 'proforma_detail', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents'];
+// Sprint 36 Phase 0 (2026-06-06): 'proforma_detail' REMOVED — authority violation containment.
+//   ProformaDetailPage displayed fake VAT, fake company, fake products, and browser-side
+//   financial calculations without a MOCK warning. MOCK banner restored until Sprint 36
+//   authority recovery. Re-add after real company endpoint + editable_lines + FX wiring.
+const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;

@@ -100,14 +100,17 @@ def test_v2_index_includes_mock_banner_component():
 
 
 def test_v2_mock_badge_wired_pages_correct():
-    """WIRED_PAGES must contain proforma, proforma_detail, and inbox.
+    """WIRED_PAGES must contain proforma and inbox.
 
     inbox was added in Sprint 2B.2 when GET /api/v1/inbox was wired.
+    NOTE: 'proforma_detail' was intentionally removed in Sprint 36 Phase 0 (2026-06-06)
+    due to an authority violation (fake VAT/company/products + browser-side financial
+    calculations). It will be re-added after Sprint 36 authority recovery.
     Update this list each time a new page is promoted from MOCK to live.
     """
     badge_src = (_V2 / "mock-badge.jsx").read_text(encoding="utf-8", errors="replace")
     assert "'proforma'" in badge_src or '"proforma"' in badge_src, "'proforma' missing from WIRED_PAGES"
-    assert "'proforma_detail'" in badge_src or '"proforma_detail"' in badge_src, "'proforma_detail' missing"
+    # proforma_detail NOT asserted here — intentionally removed in Sprint 36 Phase 0 (2026-06-06)
     assert "'inbox'" in badge_src or '"inbox"' in badge_src, (
         "'inbox' missing from WIRED_PAGES — Sprint 2B.2 wired inbox to GET /api/v1/inbox; "
         "remove the MOCK badge by adding 'inbox' to WIRED_PAGES in mock-badge.jsx"

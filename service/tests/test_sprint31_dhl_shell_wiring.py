@@ -76,11 +76,16 @@ def test_wired_pages_array_contains_dhl():
 
 
 def test_existing_wired_pages_preserved():
-    """Regression: proforma / proforma_detail / inbox / inventory remain wired."""
+    """Regression: proforma / inbox / inventory remain wired.
+
+    NOTE: 'proforma_detail' was intentionally removed from WIRED_PAGES in Sprint 36
+    Phase 0 (2026-06-06) — authority violation containment. It will be re-added after
+    Sprint 36 full authority recovery.
+    """
     src = _MOCK_BADGE.read_text(encoding="utf-8")
     idx = src.index("WIRED_PAGES")
     arr_body = src[src.index("[", idx):src.index("]", idx)]
-    for page in ("proforma", "proforma_detail", "inbox", "inventory"):
+    for page in ("proforma", "inbox", "inventory"):
         assert page in arr_body, f"{page!r} must remain in WIRED_PAGES"
 
 

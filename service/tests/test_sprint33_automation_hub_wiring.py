@@ -82,7 +82,8 @@ def test_existing_wired_pages_preserved():
     src = _MOCK_BADGE.read_text(encoding="utf-8")
     idx = src.index("WIRED_PAGES")
     arr_body = src[src.index("[", idx):src.index("]", idx)]
-    for page in ("proforma", "proforma_detail", "inbox", "inventory", "dhl", "shipments"):
+    # proforma_detail intentionally removed Sprint 36 Phase 0 (2026-06-06) — authority violation
+    for page in ("proforma", "inbox", "inventory", "dhl", "shipments"):
         assert page in arr_body, f"{page!r} must remain in WIRED_PAGES"
 
 
