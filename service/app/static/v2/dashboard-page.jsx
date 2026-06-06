@@ -36,12 +36,7 @@ function _safeHttpUrl(u) {
   return (typeof u === 'string' && /^https?:\/\//i.test(u)) ? u : null;
 }
 
-function DashboardPage() {
-  // No internal detail-drill in this sprint: the V2 ShipmentDetailPage is
-  // mock-shaped (reads shipment.awb, does not fetch by batch_id), so drilling a
-  // live batch row would render an empty page. The AWB instead links out to the
-  // carrier tracking page (live tracking_url). Detail-drill is deferred to the
-  // shipment-detail sprint.
+function DashboardPage({ onViewShipment }) {
 
   const [rows,    setRows]    = React.useState(null);
   const [loading, setLoading] = React.useState(true);
@@ -196,9 +191,10 @@ function DashboardPage() {
                   const trackUrl = _safeHttpUrl(row.tracking_url);
                   return (
                     <tr key={row.batch_id || i}
+                      onClick={() => onViewShipment && onViewShipment(row)}
                       onMouseEnter={e => e.currentTarget.style.background = 'var(--row-hover)'}
                       onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                      style={{ borderBottom: '1px solid var(--border-subtle)', transition: 'background 0.1s' }}
+                      style={{ borderBottom: '1px solid var(--border-subtle)', transition: 'background 0.1s', cursor: onViewShipment ? 'pointer' : 'default' }}
                     >
                       <td style={{ padding: '10px 12px' }}>
                         {trackUrl ? (

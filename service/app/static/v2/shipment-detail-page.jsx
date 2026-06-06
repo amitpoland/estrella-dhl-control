@@ -277,7 +277,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
           />
         )}
         {activeTab === 'documents' && (
-          <DocumentsTab shipment={shipment} sadUploaded={sadUploaded} pzGenerated={pzGenerated} onNotify={notify} />
+          <DocumentsTab batchId={shipment && shipment.batch_id} />
         )}
         {activeTab === 'timeline' && (
           <TimelineTab shipment={shipment} sadUploaded={sadUploaded} pzGenerated={pzGenerated} replySent={replySent} dhlEmailReceived={dhlEmailReceived} pzExported={pzExported} />
@@ -596,35 +596,26 @@ function PzTab({ shipment, sadUploaded, pzGenerated, setPzGenerated, pzExported,
   );
 }
 
-// ── DOCUMENTS
+// ── DOCUMENTS — wired to GET /api/v1/dashboard/batches/{batch_id}/files
+// Authority: routes_dashboard._build_files_detail()
+// No mock arrays. All file entries come from backend authority only.
 
-const UPLOADED_DOCS = [
-  { name: 'Invoice_Estrella_Apr2024.pdf', type: 'Invoice PDF', status: 'uploaded' },
-  { name: 'Invoice_Estrella_Apr2024_2.pdf', type: 'Invoice PDF', status: 'uploaded' },
-  { name: 'Invoice_Estrella_Apr2024_3.pdf', type: 'Invoice PDF', status: 'uploaded' },
-  { name: 'AWB_DHL_1234567890.pdf', type: 'AWB / Tracking PDF', status: 'uploaded' },
-];
+const _GENERATED_LABELS = {
+  pz_pdf:     'PZ PDF',
+  calc_xlsx:  'Calculation XLSX',
+  audit_en:   'Audit EN PDF',
+  audit_pl:   'Audit PL PDF',
+  audit_memo: 'Audit Memo PDF',
+  corrections:'Corrections JSON',
+};
 
-const GENERATED_DOCS = [
-  { name: 'Polish_Customs_Description.pdf', type: 'Polish Customs Desc.', status: 'generated' },
-  { name: 'SAD_ready.json', type: 'SAD-ready JSON', status: 'generated' },
-  { name: 'DSK_Estrella_Apr2024.pdf', type: 'DSK PDF', status: 'generated' },
-  { name: 'DHL_Reply_Package.zip', type: 'DHL Reply Package', status: 'generated' },
-  { name: 'PZ_Estrella_Apr2024.pdf', type: 'PZ PDF', status: null },
-  { name: 'Calculation_Apr2024.xlsx', type: 'Calculation XLSX', status: null },
-  { name: 'Audit_EN_Apr2024.pdf', type: 'Audit EN PDF', status: null },
-  { name: 'Audit_PL_Apr2024.pdf', type: 'Audit PL PDF', status: null },
-  { name: 'Audit_Memo_Apr2024.pdf', type: 'Audit Memo PDF', status: null },
-  { name: 'Correction_Report_Apr2024.pdf', type: 'Correction Report', status: null },
-];
+const _SOURCE_LABELS = { invoices: 'Invoice', sad: 'SAD / ZC429', awb: 'AWB' };
 
-function DocCard({ doc, sadUploaded, pzGenerated, onNotify }) {
-  const isPzRelated = doc.name.includes('PZ') || doc.name.includes('Calc') || doc.name.includes('Audit') || doc.name.includes('Correction');
-  const available = doc.status === 'uploaded' || (doc.status === 'generated' && (!isPzRelated || pzGenerated)) || (isPzRelated && pzGenerated);
-  const ext = doc.name.split('.').pop().toLowerCase();
-  const iconBg = available ? (ext === 'pdf' ? 'var(--badge-red-bg)' : ext === 'xlsx' ? 'var(--badge-green-bg)' : ext === 'json' ? 'var(--badge-blue-bg)' : 'var(--badge-amber-bg)') : 'var(--badge-neutral-bg)';
-  const iconColor = available ? (ext === 'pdf' ? 'var(--badge-red-text)' : ext === 'xlsx' ? 'var(--badge-green-text)' : ext === 'json' ? 'var(--badge-blue-text)' : 'var(--badge-amber-text)') : 'var(--text-3)';
-
+function DocCard({ file }) {
+  const ext = file.name ? file.name.split('.').pop().toLowerCase() : '';
+  const iconBg    = file.exists ? (ext === 'pdf' ? 'var(--badge-red-bg)' : ext === 'xlsx' ? 'var(--badge-green-bg)' : ext === 'json' ? 'var(--badge-blue-bg)' : 'var(--badge-amber-bg)') : 'var(--bg)';
+  const iconColor = file.exists ? (ext === 'pdf' ? 'var(--badge-red-text)' : ext === 'xlsx' ? 'var(--badge-green-text)' : ext === 'json' ? 'var(--badge-blue-text)' : 'var(--badge-amber-text)') : 'var(--text-3)';
+  const canDownload = file.exists && !!file.url;
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 14,
@@ -637,41 +628,85 @@ function DocCard({ doc, sadUploaded, pzGenerated, onNotify }) {
         background: iconBg, color: iconColor,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontSize: 11, fontWeight: 800, letterSpacing: '0.05em',
-      }}>{ext.toUpperCase()}</div>
+      }}>{ext ? ext.toUpperCase() : '?'}</div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: available ? 'var(--text)' : 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.name}</div>
-        <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>{doc.type}</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: file.exists ? 'var(--text)' : 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {file.name || '—'}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>{file.type}</div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        {available
-          ? <span style={{ fontSize: 11, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ {doc.status === 'uploaded' ? 'Uploaded' : 'Generated'}</span>
-          : <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Not generated</span>
+        {file.stale && <span style={{ fontSize: 10, color: 'var(--badge-amber-text)', fontWeight: 600 }}>legacy</span>}
+        {file.exists
+          ? <span style={{ fontSize: 11, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ Present</span>
+          : <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Not found</span>
         }
-        <Btn small variant={available ? 'outline' : 'ghost'} disabled={!available} onClick={() => onNotify(`Downloading ${doc.name}…`)}>↓</Btn>
+        <a
+          href={canDownload ? file.url : undefined}
+          target="_blank" rel="noopener noreferrer"
+          onClick={!canDownload ? e => e.preventDefault() : undefined}
+          data-testid="doc-download"
+          style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            padding: '4px 10px', borderRadius: 5, fontSize: 11, fontWeight: 600,
+            border: '1px solid var(--border)', background: 'transparent',
+            color: canDownload ? 'var(--text)' : 'var(--text-3)',
+            textDecoration: 'none', cursor: canDownload ? 'pointer' : 'not-allowed',
+            opacity: canDownload ? 1 : 0.45,
+          }}
+        >↓</a>
       </div>
     </div>
   );
 }
 
-function DocumentsTab({ shipment, sadUploaded, pzGenerated, onNotify }) {
-  const sadDoc = { name: 'SAD_ZC429.pdf', type: 'SAD / ZC429 PDF', status: sadUploaded ? 'uploaded' : null };
-  const dhlDoc = { name: 'DHL_Email_Attachment.pdf', type: 'DHL Email Attachment', status: 'uploaded' };
+function DocumentsTab({ batchId }) {
+  const [data,    setData]    = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error,   setError]   = React.useState(null);
+
+  React.useEffect(() => {
+    if (!batchId) return;
+    setLoading(true); setError(null);
+    window.EstrellaShared.apiFetch('/api/v1/dashboard/batches/' + encodeURIComponent(batchId) + '/files')
+      .then(d => { setData(d); setLoading(false); })
+      .catch(e => { setError((e && e.message) || 'Failed to load documents'); setLoading(false); });
+  }, [batchId]);
+
+  if (!batchId) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-2)' }}>
+        <div style={{ fontSize: 13 }}>No batch context — documents unavailable.</div>
+      </div>
+    );
+  }
+  if (loading) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>Loading documents…</div>;
+  if (error)   return <div style={{ padding: 40, textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 13 }}>Failed to load documents: {error}</div>;
+
+  const sf = (data && data.source_files) || {};
+  const uploadedRows = Object.entries(_SOURCE_LABELS).flatMap(([cat, label]) =>
+    (sf[cat] || []).map(f => ({ ...f, type: label }))
+  );
+
+  const gf = (data && data.files) || {};
+  const generatedRows = Object.entries(_GENERATED_LABELS).map(([key, label]) => ({
+    ...(gf[key] || { name: label.toLowerCase().replace(/ /g, '_'), url: '', exists: false, stale: false }),
+    type: label,
+  }));
+
   return (
-    <div className="docs-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+    <div data-testid="documents-tab" className="docs-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
       <div>
         <SectionLabel>Uploaded shipment documents</SectionLabel>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {[...UPLOADED_DOCS, sadDoc, dhlDoc].map((d, i) => (
-            <DocCard key={i} doc={d} sadUploaded={sadUploaded} pzGenerated={pzGenerated} onNotify={onNotify} />
-          ))}
-        </div>
+        {uploadedRows.length === 0
+          ? <div style={{ padding: '20px 0', fontSize: 13, color: 'var(--text-3)' }}>No uploaded documents found.</div>
+          : <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>{uploadedRows.map((f, i) => <DocCard key={i} file={f} />)}</div>
+        }
       </div>
       <div>
         <SectionLabel>Generated output documents</SectionLabel>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {GENERATED_DOCS.map((d, i) => (
-            <DocCard key={i} doc={d} sadUploaded={sadUploaded} pzGenerated={pzGenerated} onNotify={onNotify} />
-          ))}
+          {generatedRows.map((f, i) => <DocCard key={i} file={f} />)}
         </div>
       </div>
     </div>
@@ -742,50 +777,42 @@ function TimelineTab({ shipment, sadUploaded, pzGenerated, replySent, dhlEmailRe
   );
 }
 
-// Pro Forma tab inside shipment detail — shows drafts for this shipment
+// Pro Forma tab inside shipment detail — navigates to real Pro Forma hub with batch context.
+// Authority: proforma-list.jsx → GET /api/v1/proforma/drafts/{batch_id}
+// No mock drafts. batch_id flows from parent shipment prop.
 function ProformaTabInShipment({ shipment }) {
-  // Sample drafts linked to this shipment
-  const drafts = [
-    { id: 'pf_s1', number: 'PROF 95/2026', customer: 'Diamond Point NV', items: 47, totalEur: 18420.50, status: 'ready', createdAt: '2026-05-10 14:22' },
-  ];
+  const batchId = shipment && shipment.batch_id;
+
+  if (!batchId) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-2)' }}>
+        <div style={{ fontSize: 13 }}>No batch context — Pro Forma drafts unavailable.</div>
+      </div>
+    );
+  }
+
+  const goToProforma = () => {
+    window.location.href = '/v2/proforma?batch_id=' + encodeURIComponent(batchId);
+  };
 
   return (
     <>
       <SectionLabel>Pro Forma drafts for this shipment</SectionLabel>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {drafts.length === 0 ? (
-          <PanelCard>
-            <div style={{ padding: 32, textAlign: 'center' }}>
-              <div style={{ fontSize: 13, color: 'var(--text-3)' }}>No pro forma drafts for this shipment</div>
-              <Btn variant="gold" small style={{ marginTop: 14 }}>+ Create Pro Forma Draft</Btn>
+      <PanelCard>
+        <div style={{ padding: '24px 28px', display: 'flex', alignItems: 'center', gap: 20 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
+              Pro Forma drafts for batch {batchId}
             </div>
-          </PanelCard>
-        ) : (
-          drafts.map(d => (
-            <PanelCard key={d.id}>
-              <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 16 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-                    <span style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{d.number}</span>
-                    <Badge status={d.status === 'ready' ? 'Ready' : d.status} />
-                  </div>
-                  <InfoRow label="Customer" value={d.customer} />
-                  <InfoRow label="Items" value={d.items} />
-                  <InfoRow label="Total EUR" value={`€${d.totalEur.toFixed(2)}`} />
-                  <InfoRow label="Created" value={d.createdAt} />
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  <Btn variant="outline" small onClick={() => alert('Open Pro Forma detail (would navigate to /proforma/' + d.id + ')')}>Open Detail →</Btn>
-                  <Btn variant="outline" small>↓ Download PDF</Btn>
-                </div>
-              </div>
-            </PanelCard>
-          ))
-        )}
-      </div>
-      <div style={{ marginTop: 12, padding: '12px 16px', background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)', borderRadius: 8, fontSize: 11.5, color: 'var(--text)', lineHeight: 1.5 }}>
-        <strong>Note:</strong> Pro Forma drafts are automatically created from shipment data. To manage all drafts across shipments, navigate to <strong>Documents → Pro Forma</strong> from the sidebar.
-      </div>
+            <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+              Create, edit, post to wFirma, and convert drafts to invoices in the Pro Forma hub.
+            </div>
+          </div>
+          <Btn variant="outline" small onClick={goToProforma} data-testid="proforma-tab-open">
+            Open Pro Forma →
+          </Btn>
+        </div>
+      </PanelCard>
     </>
   );
 }
