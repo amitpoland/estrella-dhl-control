@@ -3617,12 +3617,13 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
-## Sprint 35 — Documents Hub V2: DEPLOYED + GATE 6 PASS (2026-06-06)
+## Sprint 35 — Documents Hub V2: MERGED + DEPLOYED (2026-06-06)
 
 **Date**: 2026-06-06
-**SHA**: `98bd37d` — feat(atlas-v2): Sprint 35 — Documents Hub V2 read-only authority exposure
-**PR**: [#466](https://github.com/amitpoland/estrella-dhl-control/pull/466) — OPEN (pending merge + Issue #396 close)
-**Branch**: `feat/sprint-35-documents-hub-v2`
+**SHA**: `0659983` — feat(atlas-v2): Sprint 35 — Documents Hub V2 authority exposure (#466) ← squash-merge to main
+**Feature SHA**: `98bd37d` (pre-merge branch head)
+**PR**: [#466](https://github.com/amitpoland/estrella-dhl-control/pull/466) — MERGED 2026-06-06T11:17:53Z
+**Branch**: `feat/sprint-35-documents-hub-v2` (merged)
 
 **Files changed**:
 - `service/app/static/v2/documents-hub.jsx` — replaced mock Proforma/PZ lifecycle manager with read-only `DocumentsHubPage` (authority: `GET /api/v1/dashboard/batches`)
@@ -3646,9 +3647,13 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 **URL routing note**: V2 shell uses path-based routing exclusively (`/v2/documents`). `parseV2Location()` reads `window.location.pathname`, not `searchParams`. Do not use `?page=X` for direct navigation — use `/v2/X`.
 
-**Issue #396**: `shipment-v2.html` (broken `files_detail.files.sad_pdf` keys) was deleted in Sprint 03 cleanup (commit 40cba08). Issue already resolved architecturally. Section K regression tests now permanently guard against re-introduction. Issue #396 close pending operator confirmation (auto-mode classifier requires visible transcript evidence).
+**Issue #396**: CLOSED 2026-06-06. `shipment-v2.html` (broken `files_detail.files.sad_pdf` keys) deleted in Sprint 03 cleanup (commit 40cba08). Section K regression tests permanently guard against re-introduction. See: https://github.com/amitpoland/estrella-dhl-control/issues/396
 
 **Ghost endpoints avoided**: `GET /api/v1/dhl/documents/{batch_id}` and `GET /api/v1/batch/{batch_id}/documents` listed in sprint-04 plan do not exist — correctly rejected during pre-flight.
+
+**Sprint 35b SCHEDULED (GATE 4 disposition)**: [Issue #467](https://github.com/amitpoland/estrella-dhl-control/issues/467) — Wire `ShipmentDetailPage` Documents tab. Remove `UPLOADED_DOCS`/`GENERATED_DOCS` mock arrays and dead `DocCard` onClick buttons. Requires `DashboardPage.onViewShipment` routing to be made real first. Scope: `shipment-detail-page.jsx` Documents tab only; do not touch `documents-hub.jsx`, `documents-v2.html`, or V1 frozen pages.
+
+**Reviewer challenge finding (2026-06-06)**: Pre-merge audit confirmed two-layer document authority design is correct (hub = batch status index via `/batches`, viewer = file authority via `/batches/{id}/files_detail`). `shipment-detail-page.jsx` mock arrays are in unreachable code (DashboardPage never calls `onViewShipment`) — deferred correctly to Sprint 35b, not a Sprint 35 blocker.
 
 **Scorecard**: `.claude/memory/scorecards/2026-06-06-sprint35-documents-hub.md`
 
