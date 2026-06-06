@@ -19,7 +19,10 @@
 //   SELLER/BUYER/RECIPIENT party cards. ReservationTab wired to blocking_reasons.
 //   OverviewTab KV grid (16 fields). PostToWFirmaModal added.
 //   pz-api.js: postDraftToWfirma now accepts body param for confirm_token.
-const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail'];
+// Sprint 37 (2026-06-06): 'wfirma_setup' added — WfirmaMappingPage wired to
+//   GET /wfirma/capabilities, GET /wfirma/customers, GET /wfirma/products.
+//   All hardcoded mock data removed; live API rendering only.
+const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;

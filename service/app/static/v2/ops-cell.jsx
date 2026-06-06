@@ -598,49 +598,120 @@ function StatusChipRow({ label, ok }) {
 
 function WfirmaMappingPage() {
   const [tab, setTab] = React.useState('customers');
+  const [capabilities, setCaps] = React.useState(null);
+  const [customers, setCustomers] = React.useState([]);
+  const [products, setProducts] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+  const [filter, setFilter] = React.useState('');
 
-  const customers = [
-    { name: 'Bijoux Maison Paris', wfirmaId: 'WF-CUST-104', vat: 'FR12345678901', country: 'FR', match: true,  lastSync: '2026-05-08 09:12' },
-    { name: 'Goldhaus Berlin',     wfirmaId: 'WF-CUST-108', vat: 'DE987654321',   country: 'DE', match: true,  lastSync: '2026-05-08 09:12' },
-    { name: 'Atelier Lyon',        wfirmaId: null,          vat: 'FR55667788990', country: 'FR', match: false, lastSync: '—' },
-    { name: 'Joaillerie Geneva',   wfirmaId: 'WF-CUST-112', vat: 'CHE112233445',  country: 'CH', match: true,  lastSync: '2026-05-08 09:12' },
-  ];
+  // ── Load live data from backend on mount ──────────────────────────
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const [capRes, custRes, prodRes] = await Promise.all([
+          PzApi.getWfirmaCapabilities(),
+          PzApi.getWfirmaCustomers(),
+          PzApi.getWfirmaProducts(),
+        ]);
+        if (cancelled) return;
+        if (!capRes.ok)  { setError('Failed to load capabilities: ' + (capRes.error || 'unknown')); }
+        if (!custRes.ok) { setError(e => (e ? e + ' | ' : '') + 'Failed to load customers: ' + (custRes.error || 'unknown')); }
+        if (!prodRes.ok) { setError(e => (e ? e + ' | ' : '') + 'Failed to load products: ' + (prodRes.error || 'unknown')); }
+        if (capRes.ok)  setCaps(capRes.data);
+        if (custRes.ok) setCustomers(custRes.data.customers || []);
+        if (prodRes.ok) setProducts(prodRes.data.products || []);
+      } catch (e) {
+        if (!cancelled) setError('Network error: ' + e.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
-  const products = [
-    { code: 'EJL/26-27/015-1', wfirmaGood: 'WF-PROD-9921', name: 'Solitaire 1.0ct',  unit: 'piece', vat: '23%', stock: 3,  sync: 'ok'      },
-    { code: 'EJL/26-27/015-2', wfirmaGood: 'WF-PROD-9922', name: 'Halo bracelet',    unit: 'piece', vat: '23%', stock: 1,  sync: 'ok'      },
-    { code: 'EJL/26-27/015-3', wfirmaGood: null,           name: 'Pavé pendant',     unit: 'piece', vat: '23%', stock: 0,  sync: 'missing' },
-    { code: 'EJL/26-27/015-4', wfirmaGood: 'WF-PROD-9931', name: 'Chain 18k',        unit: 'piece', vat: '23%', stock: 12, sync: 'ok'      },
-    { code: 'EJL/26-27/015-5', wfirmaGood: 'WF-PROD-9932', name: 'Stud earrings',    unit: 'piece', vat: '23%', stock: 4,  sync: 'stale'   },
-  ];
+  // ── Derive capability pills from live data ────────────────────────
+  const capPills = capabilities ? [
+    { label: 'customers.read',    ok: !!capabilities.customer_api_supported },
+    { label: 'customers.write',   ok: !!capabilities.create_customer_allowed },
+    { label: 'goods.read',        ok: !!capabilities.product_api_supported },
+    { label: 'goods.write',       ok: !!capabilities.create_product_allowed },
+    { label: 'warehouse.read',    ok: !!capabilities.warehouse_module_enabled },
+    { label: 'reservation.write', ok: !!capabilities.ready_to_reserve, warn: !capabilities.ready_to_reserve },
+  ] : [];
+
+  // ── Filter logic ──────────────────────────────────────────────────
+  const f = filter.toLowerCase();
+  const filteredCustomers = f ? customers.filter(c =>
+    (c.client_name || '').toLowerCase().includes(f) ||
+    (c.wfirma_customer_id || '').toLowerCase().includes(f) ||
+    (c.vat_id || '').toLowerCase().includes(f)
+  ) : customers;
+
+  const filteredProducts = f ? products.filter(p =>
+    (p.product_code || '').toLowerCase().includes(f) ||
+    (p.wfirma_product_id || '').toLowerCase().includes(f) ||
+    (p.product_name_pl || '').toLowerCase().includes(f)
+  ) : products;
+
+  // ── Unresolved counts ─────────────────────────────────────────────
+  const unresolvedCust = customers.filter(c => c.match_status !== 'matched').length;
+  const unresolvedProd = products.filter(p => !p.wfirma_product_id || p.sync_status === 'stale').length;
+
+  if (loading) {
+    return (
+      <div style={{ padding: '60px 32px', textAlign: 'center', color: 'var(--text-3)' }}>
+        <div style={{ fontSize: 14 }}>Loading wFirma mapping data...</div>
+        <div style={{ fontSize: 11, marginTop: 8 }}>GET /api/v1/wfirma/capabilities · customers · products</div>
+      </div>
+    );
+  }
 
   return (
-    <div style={{ padding: '0 32px 40px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div data-testid="wfirma-mapping-page" style={{ padding: '0 32px 40px', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-      {/* Capability strip */}
+      {/* Error banner */}
+      {error && (
+        <div style={{ padding: '10px 16px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-red-text)' }}>
+          <strong>Error:</strong> {error}
+        </div>
+      )}
+
+      {/* Capability strip — live from GET /api/v1/wfirma/capabilities */}
       <Card style={{ padding: 16 }}>
         <SectionHeader icon="◉" title="Capability strip" subtitle="GET /api/v1/wfirma/capabilities" />
-        <div className="responsive-grid-3" style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-          <CapPill label="customers.read"     ok={true}  />
-          <CapPill label="customers.write"    ok={true}  />
-          <CapPill label="goods.read"         ok={true}  />
-          <CapPill label="goods.write"        ok={false} />
-          <CapPill label="warehouse.read"     ok={true}  />
-          <CapPill label="reservation.write"  ok={false} warn />
-        </div>
-        <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-amber-text)' }}>
-          <strong>Blocking reasons:</strong> WFIRMA_WAREHOUSE_ID missing · reservation.write scope not granted on credentials
-        </div>
+        {capabilities ? (
+          <React.Fragment>
+            <div className="responsive-grid-3" style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+              {capPills.map(cp => <CapPill key={cp.label} label={cp.label} ok={cp.ok} warn={cp.warn} />)}
+            </div>
+            {capabilities.blocking_reasons && capabilities.blocking_reasons.length > 0 && (
+              <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-amber-text)' }}>
+                <strong>Blocking reasons:</strong> {capabilities.blocking_reasons.join(' · ')}
+              </div>
+            )}
+            {capabilities.blocking_reasons && capabilities.blocking_reasons.length === 0 && capabilities.api_configured && (
+              <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-green-text)' }}>
+                <strong>All clear</strong> — no blocking reasons
+              </div>
+            )}
+          </React.Fragment>
+        ) : (
+          <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-3)' }}>Capabilities not available</div>
+        )}
       </Card>
 
-      {/* Tabs */}
+      {/* Tabs — live counts */}
       <Card style={{ padding: 0, overflow: 'hidden' }}>
         <div style={{ display: 'flex', borderBottom: '1px solid var(--border)' }}>
           {[
-            { id: 'customers', label: 'Customers',  count: customers.length, unresolved: customers.filter(c => !c.match).length },
-            { id: 'products',  label: 'Products',   count: products.length,  unresolved: products.filter(p => !p.wfirmaGood || p.sync === 'stale').length },
+            { id: 'customers', label: 'Customers',  count: customers.length, unresolved: unresolvedCust },
+            { id: 'products',  label: 'Products',   count: products.length,  unresolved: unresolvedProd },
           ].map((t, i) => (
-            <button key={t.id} onClick={() => setTab(t.id)} style={{
+            <button key={t.id} data-testid={`wfirma-tab-${t.id}`} onClick={() => setTab(t.id)} style={{
               padding: '12px 20px', border: 'none', cursor: 'pointer',
               background: tab === t.id ? 'var(--card)' : 'var(--bg-subtle)',
               borderBottom: tab === t.id ? '2px solid var(--accent)' : '2px solid transparent',
@@ -654,60 +725,77 @@ function WfirmaMappingPage() {
           ))}
           <div style={{ flex: 1 }} />
           <div style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <input placeholder="Filter…" style={{ padding: '6px 10px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card)', color: 'var(--text)' }} />
-            <Btn variant="outline" small>Run diagnostic</Btn>
+            <input data-testid="wfirma-filter" placeholder="Filter..." value={filter} onChange={e => setFilter(e.target.value)} style={{ padding: '6px 10px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card)', color: 'var(--text)' }} />
+            <Btn variant="outline" small disabled title="Diagnostic not yet wired — backend search+compare available">Run diagnostic</Btn>
           </div>
         </div>
 
         {tab === 'customers' && (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-            <thead>
-              <tr style={{ background: 'var(--bg-subtle)' }}>
-                {['Client name','wFirma ID','VAT ID','Country','Match status','Last sync',''].map(h => <th key={h} style={{ textAlign: 'left', padding: '10px 16px', fontSize: 10, fontWeight: 700, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--border)' }}>{h}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {customers.map((c, i) => (
-                <tr key={i} style={{ borderTop: i ? '1px solid var(--border-subtle)' : 'none' }}>
-                  <td style={{ padding: '10px 16px', color: 'var(--text)', fontWeight: 600 }}>{c.name}</td>
-                  <td style={{ padding: '10px 16px' }}>{c.wfirmaId ? <code style={{ fontFamily: 'ui-monospace, monospace', color: 'var(--text)' }}>{c.wfirmaId}</code> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
-                  <td style={{ padding: '10px 16px', fontFamily: 'ui-monospace, monospace', color: 'var(--text)' }}>{c.vat}</td>
-                  <td style={{ padding: '10px 16px', color: 'var(--text)' }}>{c.country}</td>
-                  <td style={{ padding: '10px 16px' }}><StatusChip kind={c.match ? 'ready' : 'pending'}>{c.match ? 'Matched' : 'No mapping'}</StatusChip></td>
-                  <td style={{ padding: '10px 16px', color: 'var(--text-3)', fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>{c.lastSync}</td>
-                  <td style={{ padding: '10px 16px', textAlign: 'right' }}><Btn variant="ghost" small>{c.match ? 'Edit' : 'Map'}</Btn></td>
+          filteredCustomers.length === 0 ? (
+            <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+              {filter ? 'No customers match filter.' : 'No customer mappings registered.'}
+            </div>
+          ) : (
+            <table data-testid="wfirma-customers-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle)' }}>
+                  {['Client name','wFirma ID','VAT ID','Country','Match status','Last sync',''].map(h => <th key={h} style={{ textAlign: 'left', padding: '10px 16px', fontSize: 10, fontWeight: 700, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--border)' }}>{h}</th>)}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filteredCustomers.map((c, i) => {
+                  const matched = c.match_status === 'matched';
+                  return (
+                    <tr key={c.client_name || i} style={{ borderTop: i ? '1px solid var(--border-subtle)' : 'none' }}>
+                      <td style={{ padding: '10px 16px', color: 'var(--text)', fontWeight: 600 }}>{c.client_name || '—'}</td>
+                      <td style={{ padding: '10px 16px' }}>{c.wfirma_customer_id ? <code style={{ fontFamily: 'ui-monospace, monospace', color: 'var(--text)' }}>{c.wfirma_customer_id}</code> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
+                      <td style={{ padding: '10px 16px', fontFamily: 'ui-monospace, monospace', color: 'var(--text)' }}>{c.vat_id || '—'}</td>
+                      <td style={{ padding: '10px 16px', color: 'var(--text)' }}>{c.country || '—'}</td>
+                      <td style={{ padding: '10px 16px' }}><StatusChip kind={matched ? 'ready' : 'pending'}>{matched ? 'Matched' : c.match_status || 'No mapping'}</StatusChip></td>
+                      <td style={{ padding: '10px 16px', color: 'var(--text-3)', fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>{c.updated_at || c.created_at || '—'}</td>
+                      <td style={{ padding: '10px 16px', textAlign: 'right' }}><Btn variant="ghost" small disabled title="Customer mapping edit — requires operator confirmation">{matched ? 'Edit' : 'Map'}</Btn></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )
         )}
 
         {tab === 'products' && (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-            <thead>
-              <tr style={{ background: 'var(--bg-subtle)' }}>
-                {['Product code','wFirma good_id','Polish name','Unit','VAT','Stock','Sync',''].map(h => <th key={h} style={{ textAlign: 'left', padding: '10px 16px', fontSize: 10, fontWeight: 700, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--border)' }}>{h}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {products.map((p, i) => (
-                <tr key={i} style={{ borderTop: i ? '1px solid var(--border-subtle)' : 'none' }}>
-                  <td style={{ padding: '10px 16px', fontFamily: 'ui-monospace, monospace', color: 'var(--text)' }}>{p.code}</td>
-                  <td style={{ padding: '10px 16px' }}>{p.wfirmaGood ? <code style={{ fontFamily: 'ui-monospace, monospace', color: 'var(--text)' }}>{p.wfirmaGood}</code> : <StatusChip kind="blocked">Missing</StatusChip>}</td>
-                  <td style={{ padding: '10px 16px', color: 'var(--text)' }}>{p.name}</td>
-                  <td style={{ padding: '10px 16px', color: 'var(--text)' }}>{p.unit}</td>
-                  <td style={{ padding: '10px 16px', color: 'var(--text)' }}>{p.vat}</td>
-                  <td style={{ padding: '10px 16px', color: 'var(--text)' }}>{p.stock}</td>
-                  <td style={{ padding: '10px 16px' }}>
-                    <StatusChip kind={p.sync === 'ok' ? 'ready' : p.sync === 'stale' ? 'pending' : 'blocked'}>
-                      {p.sync === 'ok' ? 'Synced' : p.sync === 'stale' ? 'Stale' : 'Missing'}
-                    </StatusChip>
-                  </td>
-                  <td style={{ padding: '10px 16px', textAlign: 'right' }}><Btn variant="ghost" small>{p.wfirmaGood ? 'Edit' : 'Map'}</Btn></td>
+          filteredProducts.length === 0 ? (
+            <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+              {filter ? 'No products match filter.' : 'No product mappings registered.'}
+            </div>
+          ) : (
+            <table data-testid="wfirma-products-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle)' }}>
+                  {['Product code','wFirma good_id','Polish name','Unit','VAT','Sync',''].map(h => <th key={h} style={{ textAlign: 'left', padding: '10px 16px', fontSize: 10, fontWeight: 700, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--border)' }}>{h}</th>)}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filteredProducts.map((p, i) => {
+                  const syncOk = p.wfirma_product_id && p.sync_status !== 'stale';
+                  return (
+                    <tr key={p.product_code || i} style={{ borderTop: i ? '1px solid var(--border-subtle)' : 'none' }}>
+                      <td style={{ padding: '10px 16px', fontFamily: 'ui-monospace, monospace', color: 'var(--text)' }}>{p.product_code || '—'}</td>
+                      <td style={{ padding: '10px 16px' }}>{p.wfirma_product_id ? <code style={{ fontFamily: 'ui-monospace, monospace', color: 'var(--text)' }}>{p.wfirma_product_id}</code> : <StatusChip kind="blocked">Missing</StatusChip>}</td>
+                      <td style={{ padding: '10px 16px', color: 'var(--text)' }}>{p.product_name_pl || p.product_name || '—'}</td>
+                      <td style={{ padding: '10px 16px', color: 'var(--text)' }}>{p.unit || '—'}</td>
+                      <td style={{ padding: '10px 16px', color: 'var(--text)' }}>{p.vat_rate ? p.vat_rate + '%' : '—'}</td>
+                      <td style={{ padding: '10px 16px' }}>
+                        <StatusChip kind={syncOk ? 'ready' : p.sync_status === 'stale' ? 'pending' : 'blocked'}>
+                          {syncOk ? 'Synced' : p.sync_status === 'stale' ? 'Stale' : p.sync_status || 'Missing'}
+                        </StatusChip>
+                      </td>
+                      <td style={{ padding: '10px 16px', textAlign: 'right' }}><Btn variant="ghost" small disabled title="Product mapping edit — requires operator confirmation">{p.wfirma_product_id ? 'Edit' : 'Map'}</Btn></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )
         )}
       </Card>
 

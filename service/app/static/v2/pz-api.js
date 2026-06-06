@@ -297,5 +297,30 @@
       return _call('POST', endpoint, { rejected_by: op, reason: r });
     },
 
+    // ── wFirma Mapping (Sprint 37) ──────────────────────────────────
+
+    // GET /api/v1/wfirma/capabilities
+    // Returns { ok, data: { api_configured, customer_api_supported, ..., blocking_reasons[] } }
+    getWfirmaCapabilities: () =>
+      _get(`${BASE}/wfirma/capabilities`),
+
+    // GET /api/v1/wfirma/customers
+    // Returns { ok, data: { count, customers[] } }
+    getWfirmaCustomers: () =>
+      _get(`${BASE}/wfirma/customers`),
+
+    // GET /api/v1/wfirma/products
+    // Returns { ok, data: { count, products[] } }
+    getWfirmaProducts: () =>
+      _get(`${BASE}/wfirma/products`),
+
+    // GET /api/v1/wfirma/contractors/search?q=
+    searchWfirmaContractors: (q) =>
+      _get(`${BASE}/wfirma/contractors/search?q=${encodeURIComponent(q || '')}`),
+
+    // GET /api/v1/wfirma/goods/search?q=
+    searchWfirmaGoods: (q) =>
+      _get(`${BASE}/wfirma/goods/search?q=${encodeURIComponent(q || '')}`),
+
   });
 })();
