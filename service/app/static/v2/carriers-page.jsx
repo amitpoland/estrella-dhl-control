@@ -1,181 +1,181 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// CarriersPage — multi-carrier login & API integration registry
+// ---------------------------------------------------------------------------
+// CarriersPage -- Authority-honest Carrier Config + DHL Operations page.
 //
-// Backend hooks (all wireframe; nothing live):
-//   GET  /api/v1/carriers                    — list connected accounts
-//   POST /api/v1/carriers/{id}/test          — ping carrier sandbox / prod
-//   POST /api/v1/carriers/{id}/credentials   — rotate/edit credentials
-//   POST /api/v1/carriers/{id}/disconnect    — revoke session, clear tokens
-//   POST /api/v1/carriers/{id}/oauth/start   — begin OAuth flow (FedEx, UPS)
-//   GET  /api/v1/carriers/{id}/webhooks      — webhook receiver health
-//   GET  /api/v1/carriers/{id}/services      — supported services / rate plans
-//   GET  /api/v1/carriers/audit              — credential audit log
+// Sprint 39: Complete redesign from mock multi-carrier management console to
+// real authority-backed page. All data from live backend APIs:
 //
-// All write buttons stay disabled with an API chip + tooltip naming the
-// endpoint. No live credentials are shipped — placeholders only.
-// ─────────────────────────────────────────────────────────────────────────────
+//   GET  /api/v1/carriers-config/       -- carrier config registry (CRUD)
+//   GET  /api/v1/carrier/status         -- carrier_api_status + carrier_plt_status
+//   GET  /api/v1/master/audit/?entity=carriers_config  -- config audit trail
+//
+// Tabs:
+//   1. Config Registry  -- live rows from carriers-config table
+//   2. DHL Operations   -- real gate status + route-backed operational facts
+//   3. Integration Gaps -- missing APIs rendered as disabled backend-pending items
+//   4. Config Audit     -- real audit trail filtered to carriers_config entity
+//
+// Authority owners:
+//   - Carrier config:  /api/v1/carriers-config/ (master_data.sqlite)
+//   - Carrier gates:   /api/v1/carrier/status (settings)
+//   - DHL operations:  DHL clearance/tracking/webhook/followup/readiness routes
+//   - Config audit:    /api/v1/master/audit/ filtered to carriers_config
+//
+// NO fake connection states. NO fake account numbers. NO fake quotas.
+// NO fake ping times. NO fake session tracking. NO fake webhook registry.
+// Planned actions visible but disabled with exact backend-pending reasons.
+// ---------------------------------------------------------------------------
 
 const CARRIER_TABS = [
-  { id: 'accounts',    label: 'Carrier Accounts' },
-  { id: 'add',         label: 'Add Carrier' },
-  { id: 'integration', label: 'API Integration' },
-  { id: 'webhooks',    label: 'Webhooks' },
-  { id: 'sessions',    label: 'Active Sessions' },
-  { id: 'audit',       label: 'Audit Log' },
+  { id: 'config',      label: 'Config Registry' },
+  { id: 'dhl_ops',     label: 'DHL Operations' },
+  { id: 'gaps',        label: 'Integration Gaps' },
+  { id: 'audit',       label: 'Config Audit' },
 ];
 
-const CARRIERS = [
-  {
-    id: 'dhl-express', name: 'DHL Express', code: 'DHL', logo: 'D',
-    env: 'production', state: 'connected', auth: 'API Key + Site ID',
-    account: '954********', sandboxAccount: '980********',
-    services: ['Express Worldwide', 'Express 9:00', 'Express 12:00', 'Economy Select'],
-    lastPing: '2026-05-11 09:42:14', pingMs: 312, region: 'EU · APAC · AMR',
-    quotaUsed: 1247, quotaLimit: 5000,
-    docs: ['Commercial Invoice', 'Waybill', 'CN23'],
-  },
-  {
-    id: 'fedex', name: 'FedEx', code: 'FDX', logo: 'F',
-    env: 'sandbox', state: 'connected', auth: 'OAuth2 Client Credentials',
-    account: '740********', sandboxAccount: '510********',
-    services: ['International Priority', 'International Economy', 'International First'],
-    lastPing: '2026-05-11 09:38:02', pingMs: 411, region: 'Global',
-    quotaUsed: 38, quotaLimit: 2500,
-    docs: ['Commercial Invoice', 'Air Waybill'],
-  },
-  {
-    id: 'ups', name: 'UPS', code: 'UPS', logo: 'U',
-    env: 'sandbox', state: 'pending_oauth', auth: 'OAuth2 Authorization Code',
-    account: '—', sandboxAccount: '7T****',
-    services: ['Worldwide Express', 'Worldwide Saver', 'Worldwide Expedited'],
-    lastPing: '—', pingMs: null, region: 'Global',
-    quotaUsed: 0, quotaLimit: 1000,
-    docs: ['Commercial Invoice'],
-  },
-  {
-    id: 'gls', name: 'GLS', code: 'GLS', logo: 'G',
-    env: 'production', state: 'disconnected', auth: 'API Key',
-    account: '—', sandboxAccount: '—',
-    services: ['Business Parcel', 'Express'],
-    lastPing: '2026-04-22 14:01:00', pingMs: null, region: 'EU',
-    quotaUsed: 0, quotaLimit: 3000,
-    docs: ['Commercial Invoice'],
-  },
-  {
-    id: 'inpost', name: 'InPost', code: 'INP', logo: 'i',
-    env: 'sandbox', state: 'configured', auth: 'Bearer Token',
-    account: '—', sandboxAccount: 'shop_*****',
-    services: ['Paczkomat 24/7', 'Kurier'],
-    lastPing: '2026-05-09 11:24:00', pingMs: 184, region: 'PL · CZ · DE',
-    quotaUsed: 12, quotaLimit: 2000,
-    docs: ['Label'],
-  },
-  {
-    id: 'dpd', name: 'DPD', code: 'DPD', logo: 'd',
-    env: 'production', state: 'error', auth: 'Username + Password',
-    account: 'estr_pl', sandboxAccount: '—',
-    services: ['Classic', 'Pickup'],
-    lastPing: '2026-05-10 22:17:44', pingMs: null, region: 'EU',
-    quotaUsed: 0, quotaLimit: 0,
-    docs: ['Label'],
-    errorMsg: 'AUTH_401 — token rejected; needs rotation',
-  },
+// -- Known DHL operational routes (backend-verified, not mock) ---------------
+const DHL_ROUTES = [
+  { category: 'Shipment',    method: 'POST', path: '/api/v1/carrier/{batch_id}/shipment',          gated: true,  gate: 'carrier_api_status', desc: 'Create carrier shipment via CarrierCoordinator' },
+  { category: 'Shipment',    method: 'GET',  path: '/api/v1/carrier/{batch_id}/shipment',          gated: false, gate: null,                 desc: 'Get recorded shipment for batch' },
+  { category: 'Label',       method: 'POST', path: '/api/v1/carrier/{batch_id}/label-package',     gated: false, gate: null,                 desc: 'Generate outbound customs/shipping doc package' },
+  { category: 'Tracking',    method: 'GET',  path: '/api/v1/tracking/{tracking_no}',               gated: true,  gate: 'dhl_tracking_api_status', desc: 'Live tracking status (auto-detects DHL by 10-digit AWB)' },
+  { category: 'Tracking',    method: 'POST', path: '/api/v1/tracking/{tracking_no}/refresh',       gated: true,  gate: 'dhl_tracking_api_status', desc: 'Force-refresh tracking status from carrier API' },
+  { category: 'Tracking DB', method: 'GET',  path: '/api/v1/tracking/events/{batch_id}',           gated: false, gate: null,                 desc: 'DB-backed tracking events for batch' },
+  { category: 'Webhook',     method: 'POST', path: '/api/v1/carrier/webhook/dhl',                  gated: false, gate: null,                 desc: 'DHL Express webhook receiver (HMAC-SHA256 verified)' },
+  { category: 'Clearance',   method: 'GET',  path: '/api/v1/dhl/scan-inbox',                       gated: false, gate: null,                 desc: 'Scan Zoho Mail for DHL customs emails' },
+  { category: 'Clearance',   method: 'POST', path: '/api/v1/dhl/match-and-handle',                 gated: false, gate: null,                 desc: 'Match AWB to batch + run clearance handler' },
+  { category: 'Clearance',   method: 'GET',  path: '/api/v1/dhl/clearance-status/{batch_id}',      gated: false, gate: null,                 desc: 'Clearance status for batch' },
+  { category: 'Clearance',   method: 'POST', path: '/api/v1/dhl/generate-description/{batch_id}',  gated: false, gate: null,                 desc: 'Generate Polish customs description' },
+  { category: 'Clearance',   method: 'POST', path: '/api/v1/dhl/generate-customs-package/{batch_id}', gated: false, gate: null,              desc: 'Full customs description package' },
+  { category: 'Clearance',   method: 'POST', path: '/api/v1/dhl/approve/{batch_id}',               gated: false, gate: null,                 desc: 'Approve customs description' },
+  { category: 'Clearance',   method: 'GET',  path: '/api/v1/dhl/sad-ready/{batch_id}',             gated: false, gate: null,                 desc: 'SAD-ready JSON data for filing' },
+  { category: 'Documents',   method: 'POST', path: '/api/v1/dhl-documents/{batch_id}/upload',      gated: false, gate: null,                 desc: 'Upload customs documents (multipart)' },
+  { category: 'Documents',   method: 'POST', path: '/api/v1/dhl-documents/{batch_id}/received',    gated: false, gate: null,                 desc: 'Register DHL-received customs docs into audit' },
+  { category: 'Readiness',   method: 'GET',  path: '/api/v1/dhl/readiness/{batch_id}',             gated: false, gate: null,                 desc: '7-stage pipeline readiness (read-only reconstruction)' },
+  { category: 'Follow-up',   method: 'GET',  path: '/api/v1/dhl-followup/{batch_id}/mode',         gated: false, gate: null,                 desc: 'Read current follow-up mode + telemetry' },
+  { category: 'Follow-up',   method: 'POST', path: '/api/v1/dhl-followup/{batch_id}/mode',         gated: false, gate: null,                 desc: 'Set follow-up mode (manual/automatic)' },
+  { category: 'Follow-up',   method: 'POST', path: '/api/v1/dhl-followup/{batch_id}/send-now',     gated: false, gate: null,                 desc: 'Fire follow-up email now (operator-explicit)' },
+  { category: 'Follow-up',   method: 'POST', path: '/api/v1/dhl-followup/{batch_id}/stop',         gated: false, gate: null,                 desc: 'Stop SLA follow-up' },
+  { category: 'Follow-up',   method: 'GET',  path: '/api/v1/dhl/followup-automation/status',       gated: false, gate: null,                 desc: 'Automation status card payload' },
+  { category: 'Follow-up',   method: 'GET',  path: '/api/v1/dhl/followup-automation/shipments',    gated: false, gate: null,                 desc: 'Drill-down shipment rows' },
+  { category: 'Shadow',      method: 'GET',  path: '/api/v1/carrier/shadow/log',                   gated: false, gate: null,                 desc: 'Shadow mode log entries' },
+  { category: 'Status',      method: 'GET',  path: '/api/v1/carrier/status',                       gated: false, gate: null,                 desc: 'Global carrier_api_status + carrier_plt_status' },
 ];
 
-const AVAILABLE_NEW = [
-  { code: 'TNT', name: 'TNT', auth: 'API Key', region: 'Global' },
-  { code: 'AMZ', name: 'Amazon Shipping', auth: 'OAuth2', region: 'EU · US' },
-  { code: 'POC', name: 'Poczta Polska', auth: 'SOAP Auth', region: 'PL' },
-  { code: 'ARM', name: 'Aramex', auth: 'API Key', region: 'MENA · APAC' },
-  { code: 'PSL', name: 'PostNL', auth: 'API Key', region: 'NL · BE · DE' },
-  { code: 'CHN', name: 'China Post', auth: 'OAuth2', region: 'CN' },
+// -- Integration gaps (from Sprint 39 audit) ---------------------------------
+const INTEGRATION_GAPS = [
+  { id: 'GAP-C01', api: 'GET /api/v1/carriers',              label: 'Unified carrier list with connection state', severity: 'critical', note: 'carriers-config provides config metadata; connection state tracking does not exist' },
+  { id: 'GAP-C02', api: 'POST /api/v1/carriers/{id}/test',   label: 'Test connection / health-check',              severity: 'medium',   note: 'No per-carrier ping/health endpoint' },
+  { id: 'GAP-C03', api: 'POST /api/v1/carriers/{id}/credentials', label: 'Credential rotation / editing',          severity: 'high',     note: 'Credentials in .env only; no UI management API' },
+  { id: 'GAP-C04', api: 'POST /api/v1/carriers/{id}/disconnect',  label: 'Disconnect / revoke carrier session',    severity: 'high',     note: 'No connection-state machine exists' },
+  { id: 'GAP-C05', api: 'POST /api/v1/carriers/{id}/oauth/start', label: 'OAuth flow initiation',                  severity: 'high',     note: 'No OAuth infrastructure (FedEx, UPS)' },
+  { id: 'GAP-C06', api: 'GET /api/v1/carriers/{id}/webhooks',     label: 'Webhook registry (list/manage)',         severity: 'medium',   note: 'DHL webhook receiver exists; no registry endpoint to list/manage' },
+  { id: 'GAP-C07', api: 'GET /api/v1/carriers/{id}/sessions',     label: 'Session / token tracking',              severity: 'medium',   note: 'No session tracking backend' },
+  { id: 'GAP-C08', api: 'POST /api/v1/carriers/{id}/env',         label: 'Per-carrier env management (prod/sandbox)', severity: 'high',  note: 'carrier_api_status is global, not per-carrier' },
+  { id: 'GAP-C09', api: 'GET /api/v1/carriers/{id}/quota',        label: 'Quota / rate-limit tracking',            severity: 'low',      note: 'No quota instrumentation' },
+  { id: 'GAP-C10', api: 'POST /api/v1/carriers/onboard',          label: 'Carrier onboarding workflow',            severity: 'high',     note: 'OAuth callback, key entry, integration setup does not exist' },
 ];
 
-const API_ENDPOINTS = [
-  { method: 'POST', path: '/api/v1/carriers/dhl/shipments',       auth: 'API Key + Site ID', rateLimit: '60 / min', status: 'connected' },
-  { method: 'GET',  path: '/api/v1/carriers/dhl/tracking/{awb}',  auth: 'API Key',           rateLimit: '300 / min', status: 'connected' },
-  { method: 'POST', path: '/api/v1/carriers/dhl/labels',          auth: 'API Key',           rateLimit: '30 / min', status: 'connected' },
-  { method: 'POST', path: '/api/v1/carriers/fedex/oauth/token',   auth: 'Client Credentials',rateLimit: '—',         status: 'connected' },
-  { method: 'POST', path: '/api/v1/carriers/fedex/ship',          auth: 'Bearer',            rateLimit: '60 / min', status: 'connected' },
-  { method: 'POST', path: '/api/v1/carriers/fedex/track',         auth: 'Bearer',            rateLimit: '120 / min', status: 'connected' },
-  { method: 'POST', path: '/api/v1/carriers/ups/oauth/authorize', auth: 'OAuth2 Code',       rateLimit: '—',         status: 'pending' },
-  { method: 'POST', path: '/api/v1/carriers/inpost/shipments',    auth: 'Bearer',            rateLimit: '20 / min', status: 'configured' },
-  { method: 'POST', path: '/api/v1/carriers/gls/parcels',         auth: 'API Key',           rateLimit: '40 / min', status: 'disconnected' },
-  { method: 'POST', path: '/api/v1/carriers/dpd/auth',            auth: 'Username + PW',     rateLimit: '—',         status: 'error' },
-  { method: 'POST', path: '/api/v1/carriers/{id}/test',           auth: '—',                  rateLimit: '—',         status: 'meta' },
-  { method: 'POST', path: '/api/v1/carriers/{id}/disconnect',     auth: '—',                  rateLimit: '—',         status: 'meta' },
-];
-
-const WEBHOOKS = [
-  { carrier: 'DHL Express', event: 'shipment.created',     url: '/webhooks/carriers/dhl/created',  state: 'active',   last24h: 142 },
-  { carrier: 'DHL Express', event: 'tracking.update',      url: '/webhooks/carriers/dhl/tracking', state: 'active',   last24h: 3018 },
-  { carrier: 'DHL Express', event: 'delivery.confirmed',   url: '/webhooks/carriers/dhl/delivered',state: 'active',   last24h: 89 },
-  { carrier: 'FedEx',       event: 'shipment.confirmed',   url: '/webhooks/carriers/fedex/ship',   state: 'active',   last24h: 27 },
-  { carrier: 'FedEx',       event: 'tracking.update',      url: '/webhooks/carriers/fedex/track',  state: 'active',   last24h: 612 },
-  { carrier: 'UPS',         event: 'oauth.callback',       url: '/webhooks/carriers/ups/oauth',    state: 'pending',  last24h: 0 },
-  { carrier: 'InPost',      event: 'parcel.locker_dropped',url: '/webhooks/carriers/inpost/drop',  state: 'configured', last24h: 0 },
-  { carrier: 'DPD',         event: 'tracking.update',      url: '/webhooks/carriers/dpd/track',    state: 'error',    last24h: 0 },
-];
-
-const SESSIONS = [
-  { carrier: 'DHL Express', user: 'admin@estrella.pl',   token: 'k_dhl_2026****a9c2', issued: '2026-05-11 08:00', expires: '2026-05-11 16:00', ip: '10.0.4.21', state: 'active' },
-  { carrier: 'FedEx',       user: 'system',              token: 'fx_oauth_****d1f0',  issued: '2026-05-11 06:22', expires: '2026-05-11 22:22', ip: 'service',   state: 'active' },
-  { carrier: 'FedEx',       user: 'admin@estrella.pl',   token: 'fx_user_****81bb',   issued: '2026-05-11 09:14', expires: '2026-05-11 17:14', ip: '10.0.4.21', state: 'active' },
-  { carrier: 'InPost',      user: 'ops@estrella.pl',     token: 'inp_****0c14',       issued: '2026-05-10 14:08', expires: '2026-05-17 14:08', ip: '10.0.4.42', state: 'active' },
-  { carrier: 'UPS',         user: 'admin@estrella.pl',   token: '—',                  issued: '—',                expires: '—',                ip: '—',         state: 'pending' },
-];
-
-const AUDIT = [
-  { ts: '2026-05-11 09:42', carrier: 'DHL Express', actor: 'admin@estrella.pl', event: 'credentials.test',    detail: 'Test ping → 200 OK · 312 ms' },
-  { ts: '2026-05-11 09:14', carrier: 'FedEx',       actor: 'admin@estrella.pl', event: 'oauth.refresh',       detail: 'Bearer rotated, expires 17:14' },
-  { ts: '2026-05-11 06:22', carrier: 'FedEx',       actor: 'system',            event: 'oauth.refresh.auto',  detail: 'Background refresh; success' },
-  { ts: '2026-05-10 22:17', carrier: 'DPD',         actor: 'system',            event: 'auth.error',          detail: 'AUTH_401 — token rejected · alert raised' },
-  { ts: '2026-05-10 14:08', carrier: 'InPost',      actor: 'ops@estrella.pl',   event: 'credentials.added',   detail: 'Bearer Token added (sandbox)' },
-  { ts: '2026-05-09 17:30', carrier: 'GLS',         actor: 'admin@estrella.pl', event: 'carrier.disconnect',  detail: 'Manual disconnect — tokens revoked' },
-  { ts: '2026-05-08 11:02', carrier: 'UPS',         actor: 'admin@estrella.pl', event: 'oauth.start',         detail: 'OAuth flow initiated → awaiting callback' },
-  { ts: '2026-05-08 10:55', carrier: 'UPS',         actor: 'admin@estrella.pl', event: 'carrier.added',       detail: 'Created sandbox account record' },
-];
-
-// State chip colours (extends global chip vocab for carriers)
-const carrierStateChip = (s) => {
+// -- Severity badge rendering ------------------------------------------------
+const severityChip = (sev) => {
   const m = {
-    connected:    { label: 'Connected',     bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
-    sandbox:      { label: 'Sandbox',       bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
-    pending_oauth:{ label: 'OAuth Pending', bg: 'var(--badge-yellow-bg)',  text: 'var(--badge-yellow-text)',  border: 'var(--badge-yellow-border)' },
-    configured:   { label: 'Configured',    bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
-    disconnected: { label: 'Disconnected',  bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
-    error:        { label: 'Error',         bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
-    pending:      { label: 'Pending',       bg: 'var(--badge-yellow-bg)',  text: 'var(--badge-yellow-text)',  border: 'var(--badge-yellow-border)' },
-    active:       { label: 'Active',        bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
-    meta:         { label: 'Meta',          bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+    critical: { label: 'Critical', bg: 'var(--badge-red-bg)',    text: 'var(--badge-red-text)',    border: 'var(--badge-red-border)' },
+    high:     { label: 'High',     bg: 'var(--badge-yellow-bg)', text: 'var(--badge-yellow-text)', border: 'var(--badge-yellow-border)' },
+    medium:   { label: 'Medium',   bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   border: 'var(--badge-blue-border)' },
+    low:      { label: 'Low',      bg: 'var(--badge-neutral-bg)',text: 'var(--badge-neutral-text)',border: 'var(--badge-neutral-border)' },
   };
-  const v = m[s] || m.configured;
+  const v = m[sev] || m.medium;
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center',
-      background: v.bg, color: v.text, border: `1px solid ${v.border}`,
+      background: v.bg, color: v.text, border: '1px solid ' + v.border,
       borderRadius: 4, padding: '2px 7px', fontSize: 10, fontWeight: 600,
       letterSpacing: '0.03em', whiteSpace: 'nowrap',
     }}>{v.label}</span>
   );
 };
 
-function CarriersPage() {
-  const [tab, setTab] = React.useState('accounts');
+// State chip (reused from carrier status)
+const stateChip = (s) => {
+  const m = {
+    pending:  { label: 'Pending', bg: 'var(--badge-yellow-bg)', text: 'var(--badge-yellow-text)', border: 'var(--badge-yellow-border)' },
+    shadow:   { label: 'Shadow',  bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   border: 'var(--badge-blue-border)' },
+    live:     { label: 'Live',    bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+    active:   { label: 'Active',  bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+    inactive: { label: 'Inactive',bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+    exists:   { label: 'Exists',  bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+    missing:  { label: 'Missing', bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+    gated:    { label: 'Gated',   bg: 'var(--badge-yellow-bg)',  text: 'var(--badge-yellow-text)',  border: 'var(--badge-yellow-border)' },
+    error:    { label: 'Error',   bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+  };
+  const v = m[s] || { label: s || '?', bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '20px 32px 40px' }}>
-      {/* KPI strip */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-        <CarrierKpi label="Connected"     value="4 of 6"     accent="var(--badge-green-text)" />
-        <CarrierKpi label="Sandbox / Prod" value="3 / 1"      accent="var(--badge-blue-text)"  />
-        <CarrierKpi label="Webhooks 24h"   value="3,888"      accent="var(--text)"             />
-        <CarrierKpi label="Open Alerts"    value="1 · DPD AUTH_401" accent="var(--badge-red-text)" />
+    <span style={{
+      display: 'inline-flex', alignItems: 'center',
+      background: v.bg, color: v.text, border: '1px solid ' + v.border,
+      borderRadius: 4, padding: '2px 7px', fontSize: 10, fontWeight: 600,
+      letterSpacing: '0.03em', whiteSpace: 'nowrap',
+    }}>{v.label}</span>
+  );
+};
+
+// ============================================================================
+// CarriersPage — main component
+// ============================================================================
+
+function CarriersPage() {
+  const [tab, setTab] = React.useState('config');
+  const [carriers, setCarriers] = React.useState(null);
+  const [carrierStatus, setCarrierStatus] = React.useState(null);
+  const [loadErr, setLoadErr] = React.useState(null);
+
+  // Load carrier config + gate status on mount
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [cfgRes, statusRes] = await Promise.all([
+          PzApi.listCarriersConfig(),
+          PzApi.getCarrierStatus(),
+        ]);
+        if (cancelled) return;
+        setCarriers(cfgRes.carriers || []);
+        setCarrierStatus(statusRes);
+      } catch (e) {
+        if (!cancelled) setLoadErr(e.error || e.message || 'Failed to load carrier data');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // KPI strip — computed from live data
+  const activeCount = carriers ? carriers.filter(c => c.active !== false).length : 0;
+  const totalCount  = carriers ? carriers.length : 0;
+  const apiStatus   = carrierStatus ? carrierStatus.carrier_api_status : '...';
+  const pltStatus   = carrierStatus ? carrierStatus.carrier_plt_status : '...';
+
+  return (
+    <div data-testid="carriers-page" style={{ flex: 1, overflowY: 'auto', padding: '20px 32px 40px' }}>
+      {/* KPI strip — all from real backend data */}
+      <div data-testid="carriers-kpi-strip" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+        <CarrierKpi label="Registered Configs" value={carriers ? String(totalCount) : '...'} accent="var(--text)" />
+        <CarrierKpi label="Active Configs"     value={carriers ? String(activeCount) + ' of ' + totalCount : '...'} accent="var(--badge-green-text)" />
+        <CarrierKpi label="Carrier API Gate"   value={apiStatus} accent={apiStatus === 'live' ? 'var(--badge-green-text)' : apiStatus === 'shadow' ? 'var(--badge-blue-text)' : 'var(--badge-yellow-text)'} />
+        <CarrierKpi label="PLT Gate"           value={pltStatus} accent={pltStatus === 'live' ? 'var(--badge-green-text)' : pltStatus === 'shadow' ? 'var(--badge-blue-text)' : 'var(--badge-yellow-text)'} />
       </div>
 
-      {/* Inline tab strip for module-internal sections */}
+      {/* Error state */}
+      {loadErr && (
+        <div data-testid="carriers-load-error" style={{
+          background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+          color: 'var(--badge-red-text)', padding: '12px 16px', borderRadius: 6,
+          fontSize: 12, marginBottom: 16,
+        }}>Failed to load carrier data: {loadErr}</div>
+      )}
+
+      {/* Tab strip */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border)' }}>
         {CARRIER_TABS.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{
+          <button key={t.id} data-testid={'carrier-tab-' + t.id} onClick={() => setTab(t.id)} style={{
             background: 'transparent', border: 'none', cursor: 'pointer',
             padding: '8px 14px 10px', fontSize: 12,
             fontWeight: tab === t.id ? 700 : 500,
@@ -186,12 +186,10 @@ function CarriersPage() {
         ))}
       </div>
 
-      {tab === 'accounts'    && <CarrierAccountsTab />}
-      {tab === 'add'         && <AddCarrierTab />}
-      {tab === 'integration' && <ApiIntegrationTab />}
-      {tab === 'webhooks'    && <WebhooksTab />}
-      {tab === 'sessions'    && <SessionsTab />}
-      {tab === 'audit'       && <AuditTab />}
+      {tab === 'config'  && <ConfigRegistryTab carriers={carriers} />}
+      {tab === 'dhl_ops' && <DhlOperationsTab carrierStatus={carrierStatus} />}
+      {tab === 'gaps'    && <IntegrationGapsTab />}
+      {tab === 'audit'   && <ConfigAuditTab />}
     </div>
   );
 }
@@ -209,390 +207,347 @@ function CarrierKpi({ label, value, accent }) {
   );
 }
 
-// ─── Carrier Accounts ───────────────────────────────────────────────────────
 
-function CarrierAccountsTab() {
+// ============================================================================
+// Tab 1: Config Registry — live rows from GET /api/v1/carriers-config/
+// ============================================================================
+
+function ConfigRegistryTab({ carriers }) {
+  if (!carriers) {
+    return <div data-testid="config-loading" style={{ padding: 20, color: 'var(--text-2)', fontSize: 12 }}>Loading carrier configs...</div>;
+  }
+  if (carriers.length === 0) {
+    return (
+      <div data-testid="config-empty" style={{ padding: 20, color: 'var(--text-2)', fontSize: 12 }}>
+        No carrier configurations found. Add a carrier config via
+        <code style={{ marginLeft: 4 }}>PUT /api/v1/carriers-config/{'<carrier_code>'}</code>
+      </div>
+    );
+  }
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 14 }}>
-      {CARRIERS.map(c => <CarrierCard key={c.id} carrier={c} />)}
-      <AddCarrierCard />
-    </div>
-  );
-}
-
-function CarrierCard({ carrier }) {
-  const c = carrier;
-  const pct = c.quotaLimit ? Math.min(100, Math.round((c.quotaUsed / c.quotaLimit) * 100)) : 0;
-  return (
-    <div style={{
-      background: 'var(--card)', border: '1px solid var(--border)',
-      borderRadius: 8, padding: 16, boxShadow: '0 1px 3px var(--shadow)',
-      display: 'flex', flexDirection: 'column', gap: 10,
-    }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <div style={{
-          width: 38, height: 38, borderRadius: 6,
-          background: 'var(--accent-subtle)', border: '1px solid var(--accent-border)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 16, fontWeight: 700, color: 'var(--accent)',
-          fontFamily: '"DM Serif Display", serif',
-        }}>{c.logo}</div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{c.name}</div>
-          <div style={{ fontSize: 10, color: 'var(--text-3)' }}>{c.code} · {c.region}</div>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
-          {carrierStateChip(c.state)}
-          {carrierStateChip(c.env === 'production' ? 'connected' : 'sandbox')}
-        </div>
-      </div>
-
-      {c.state === 'error' && (
-        <div style={{
-          background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
-          color: 'var(--badge-red-text)', padding: '6px 10px', borderRadius: 4,
-          fontSize: 11, fontFamily: 'monospace',
-        }}>{c.errorMsg}</div>
-      )}
-
-      {/* Body */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 10, rowGap: 4, fontSize: 11 }}>
-        <span style={{ color: 'var(--text-3)' }}>Auth</span>
-        <span style={{ color: 'var(--text)', fontFamily: 'monospace' }}>{c.auth}</span>
-        <span style={{ color: 'var(--text-3)' }}>Prod acct</span>
-        <span style={{ color: 'var(--text)', fontFamily: 'monospace' }}>{c.account}</span>
-        <span style={{ color: 'var(--text-3)' }}>Sandbox</span>
-        <span style={{ color: 'var(--text)', fontFamily: 'monospace' }}>{c.sandboxAccount}</span>
-        <span style={{ color: 'var(--text-3)' }}>Last ping</span>
-        <span style={{ color: 'var(--text)', fontFamily: 'monospace' }}>
-          {c.lastPing}{c.pingMs ? <span style={{ color: 'var(--text-3)' }}> · {c.pingMs} ms</span> : null}
-        </span>
-      </div>
-
-      {/* Services */}
-      <div>
-        <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Services</div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-          {c.services.map(s => (
-            <span key={s} style={{
-              background: 'var(--bg-subtle)', border: '1px solid var(--border)',
-              color: 'var(--text-2)', fontSize: 10, padding: '2px 7px', borderRadius: 3,
-            }}>{s}</span>
-          ))}
-        </div>
-      </div>
-
-      {/* Quota bar */}
-      <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-3)', marginBottom: 3 }}>
-          <span>Monthly quota</span>
-          <span>{c.quotaUsed.toLocaleString()} / {c.quotaLimit.toLocaleString()}</span>
-        </div>
-        <div style={{ height: 5, background: 'var(--bg-subtle)', borderRadius: 3, overflow: 'hidden' }}>
-          <div style={{
-            width: `${pct}%`, height: '100%',
-            background: pct > 80 ? 'var(--badge-red-text)' : pct > 50 ? 'var(--accent)' : 'var(--badge-green-text)',
-          }} />
-        </div>
-      </div>
-
-      {/* Actions */}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
-        <ApiBtn title="POST /api/v1/carriers/{id}/test">⚡ Test Connection</ApiBtn>
-        <ApiBtn title="POST /api/v1/carriers/{id}/credentials">✎ Edit Credentials</ApiBtn>
-        {c.state === 'pending_oauth' && <ApiBtn variant="gold" title="POST /api/v1/carriers/{id}/oauth/start">↗ Complete OAuth</ApiBtn>}
-        {c.state === 'connected' && <ApiBtn variant="danger" title="POST /api/v1/carriers/{id}/disconnect">⊘ Disconnect</ApiBtn>}
-        {c.state === 'disconnected' && <ApiBtn variant="gold" title="POST /api/v1/carriers/{id}/connect">↗ Re-connect</ApiBtn>}
-        {c.state === 'error' && <ApiBtn variant="gold" title="POST /api/v1/carriers/{id}/credentials">↻ Rotate Token</ApiBtn>}
-      </div>
-    </div>
-  );
-}
-
-function AddCarrierCard() {
-  return (
-    <div style={{
-      background: 'var(--bg-subtle)', border: '1px dashed var(--border)',
-      borderRadius: 8, padding: 16,
-      display: 'flex', flexDirection: 'column', alignItems: 'center',
-      justifyContent: 'center', minHeight: 280, gap: 8,
-    }}>
-      <div style={{ fontSize: 24, color: 'var(--text-3)' }}>+</div>
-      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-2)' }}>Add Carrier</div>
-      <div style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center', maxWidth: 260 }}>
-        Connect a new carrier — supports API key, OAuth2, and bearer-token auth.
-      </div>
-      <ApiBtn variant="gold" title="POST /api/v1/carriers — opens new-carrier modal">+ Connect Carrier</ApiBtn>
-    </div>
-  );
-}
-
-// ─── Add Carrier tab — explicit form ───────────────────────────────────────
-
-function AddCarrierTab() {
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 16 }}>
-      <div style={{
-        background: 'var(--card)', border: '1px solid var(--border)',
-        borderRadius: 8, padding: 20, boxShadow: '0 1px 3px var(--shadow)',
-      }}>
-        <div style={{ fontSize: 14, fontWeight: 700, fontFamily: '"DM Serif Display", serif', color: 'var(--text)', marginBottom: 6 }}>
-          Connect a Carrier
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 16 }}>
-          Configure carrier credentials and environment. The system validates the connection
-          before storing tokens. All credentials are encrypted at rest.
-        </div>
-
-        <FormSection title="Carrier">
-          <FieldGrid>
-            <Field label="Carrier" type="select" options={['DHL Express','FedEx','UPS','GLS','InPost','DPD','TNT','PostNL','Aramex','Poczta Polska','Amazon Shipping','China Post','Other…']} />
-            <Field label="Display name" placeholder="e.g. DHL EU — Estrella Main" />
-            <Field label="Environment" type="select" options={['Sandbox','Production']} />
-            <Field label="Region scope" type="select" options={['EU only','Global','EU + APAC','EU + AMR','Custom…']} />
-          </FieldGrid>
-        </FormSection>
-
-        <FormSection title="Authentication">
-          <FieldGrid>
-            <Field label="Auth method" type="select" options={['API Key','OAuth2 Client Credentials','OAuth2 Authorization Code','Bearer Token','Username + Password','SOAP Auth']} />
-            <Field label="Site / Account ID" placeholder="954XXXXXXX" />
-            <Field label="API Key / Client ID" placeholder="••••••••••••••••" mono />
-            <Field label="API Secret / Client Secret" placeholder="••••••••••••••••" mono />
-            <Field label="OAuth Callback URL" value="https://app.estrella.pl/webhooks/oauth/callback" mono readOnly />
-            <Field label="Webhook Secret" placeholder="auto-generate on save" mono readOnly />
-          </FieldGrid>
-        </FormSection>
-
-        <FormSection title="Services & defaults">
-          <FieldGrid>
-            <Field label="Default service" placeholder="e.g. Express Worldwide" />
-            <Field label="Default incoterm" type="select" options={['DAP','DDP','DDU','FCA','EXW']} />
-            <Field label="Pickup mode" type="select" options={['Drop-off','Scheduled pickup','Daily pickup']} />
-            <Field label="Insurance default" type="select" options={['Off','Auto when value > €1,000','Always']} />
-          </FieldGrid>
-        </FormSection>
-
-        <div style={{ display: 'flex', gap: 8, marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-subtle)' }}>
-          <ApiBtn title="POST /api/v1/carriers/test (unsaved)">⚡ Test Connection</ApiBtn>
-          <ApiBtn variant="gold" title="POST /api/v1/carriers — saves + initiates OAuth if needed">✓ Save & Connect</ApiBtn>
-          <ApiBtn variant="outline" title="Resets form">✕ Cancel</ApiBtn>
-        </div>
-      </div>
-
-      {/* Side rail: integration checklist */}
-      <div style={{
-        background: 'var(--card)', border: '1px solid var(--border)',
-        borderRadius: 8, padding: 16, boxShadow: '0 1px 3px var(--shadow)',
-        height: 'fit-content',
-      }}>
-        <div style={{ fontSize: 12, fontWeight: 700, fontFamily: '"DM Serif Display", serif', color: 'var(--text)', marginBottom: 4 }}>
-          Integration Checklist
-        </div>
-        <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 12 }}>
-          Required for go-live with this carrier
-        </div>
-        {[
-          ['Carrier account number / Site ID', 'pending'],
-          ['API credentials (key / secret)',   'pending'],
-          ['OAuth2 callback whitelisted',      'pending'],
-          ['Sandbox connection test passed',   'pending'],
-          ['Webhook endpoints registered',     'pending'],
-          ['Production credentials',           'blocked'],
-          ['Approval from carrier rep',        'blocked'],
-          ['Insurance contract on file',       'optional'],
-          ['Tariff agreement uploaded',        'optional'],
-        ].map(([t, s], i) => (
-          <div key={i} style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            padding: '6px 0', borderBottom: '1px dashed var(--border-subtle)', fontSize: 11,
-          }}>
-            <span style={{ width: 14 }}>{s === 'optional' ? '○' : '◌'}</span>
-            <span style={{ flex: 1, color: 'var(--text)' }}>{t}</span>
-            {carrierStateChip(s === 'pending' ? 'pending' : s === 'blocked' ? 'error' : 'meta')}
-          </div>
-        ))}
-        <div style={{ marginTop: 12, padding: 10, background: 'var(--accent-subtle)', borderRadius: 4, fontSize: 10, color: 'var(--text-2)', border: '1px solid var(--accent-border)' }}>
-          <b>Note:</b> Production credentials require carrier-side approval and a signed tariff
-          agreement on file. Use sandbox to validate the integration end-to-end first.
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function FormSection({ title, children }) {
-  return (
-    <div style={{ marginBottom: 18 }}>
-      <div style={{
-        fontSize: 9.5, fontWeight: 700, color: 'var(--text-3)',
-        textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10,
-      }}>{title}</div>
-      {children}
-    </div>
-  );
-}
-function FieldGrid({ children }) {
-  return <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>{children}</div>;
-}
-function Field({ label, placeholder, value, type = 'text', options = [], mono, readOnly }) {
-  const inputStyle = {
-    width: '100%', boxSizing: 'border-box',
-    padding: '7px 10px', border: '1px solid var(--border)',
-    borderRadius: 4, fontSize: 12, color: 'var(--text)',
-    background: readOnly ? 'var(--bg-subtle)' : 'var(--card)',
-    fontFamily: mono ? 'monospace' : 'inherit',
-    outline: 'none',
-  };
-  return (
-    <div>
-      <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4, fontWeight: 600, letterSpacing: '0.02em' }}>{label}</div>
-      {type === 'select' ? (
-        <select defaultValue={value} style={inputStyle}>
-          {options.map(o => <option key={o}>{o}</option>)}
-        </select>
-      ) : (
-        <input defaultValue={value} placeholder={placeholder} readOnly={readOnly} style={inputStyle} />
-      )}
-    </div>
-  );
-}
-
-// ─── API Integration tab ───────────────────────────────────────────────────
-
-function ApiIntegrationTab() {
-  return (
-    <div style={{
-      background: 'var(--card)', border: '1px solid var(--border)',
-      borderRadius: 8, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)',
-    }}>
-      <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)', background: 'var(--bg-subtle)' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, fontFamily: '"DM Serif Display", serif', color: 'var(--text)' }}>
-          Backend API Surface
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>
-          Endpoint registry — every carrier integration call. All paths are wireframe stubs;
-          state column reflects readiness of the underlying carrier account.
-        </div>
-      </div>
-      <Tbl
-        cols={['Method','Endpoint','Auth','Rate limit','State']}
-        widths={['80px','1fr','220px','120px','120px']}
-        rows={API_ENDPOINTS.map(e => [
-          <span style={{
-            display: 'inline-block', padding: '1px 7px', borderRadius: 3,
-            fontSize: 9.5, fontWeight: 700, fontFamily: 'monospace',
-            background: e.method === 'GET' ? 'var(--badge-blue-bg)' : 'var(--accent-subtle)',
-            color: e.method === 'GET' ? 'var(--badge-blue-text)' : 'var(--accent)',
-            border: e.method === 'GET' ? '1px solid var(--badge-blue-border)' : '1px solid var(--accent-border)',
-          }}>{e.method}</span>,
-          <span style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text)' }}>{e.path}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{e.auth}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)', fontFamily: 'monospace' }}>{e.rateLimit}</span>,
-          carrierStateChip(e.status),
-        ])}
-      />
-    </div>
-  );
-}
-
-// ─── Webhooks tab ──────────────────────────────────────────────────────────
-
-function WebhooksTab() {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div data-testid="config-registry-tab" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* Info banner */}
       <div style={{
         background: 'var(--accent-subtle)', border: '1px solid var(--accent-border)',
         padding: 12, borderRadius: 6, fontSize: 11, color: 'var(--text-2)',
-        display: 'flex', alignItems: 'center', gap: 12,
       }}>
-        <span style={{ fontSize: 16, color: 'var(--accent)' }}>⚯</span>
-        <div style={{ flex: 1 }}>
-          <b style={{ color: 'var(--text)' }}>Receiver base URL</b>{' '}
-          <span style={{ fontFamily: 'monospace' }}>https://app.estrella.pl/webhooks/carriers/&#123;carrier&#125;/&#123;event&#125;</span>
+        <b style={{ color: 'var(--text)' }}>Carrier Config Registry</b> &mdash; local configuration metadata from
+        <code style={{ marginLeft: 4 }}>/api/v1/carriers-config/</code>.
+        This table stores parser routing, inbox references, and API type.
+        It does <b>not</b> store credentials (those are in <code>.env</code>) or connection state.
+        <div style={{ marginTop: 6, display: 'flex', gap: 8 }}>
+          <ApiBtn title="Backend pending: POST /api/v1/carriers/{id}/test — no health-check endpoint exists">Test Connection</ApiBtn>
+          <ApiBtn title="Backend pending: POST /api/v1/carriers/{id}/credentials — credentials managed via .env">Edit Credentials</ApiBtn>
+          <ApiBtn title="Backend pending: POST /api/v1/carriers/{id}/disconnect — no connection-state machine exists">Disconnect</ApiBtn>
+          <ApiBtn title="Backend pending: POST /api/v1/carriers/{id}/oauth/start — no OAuth infrastructure">Complete OAuth</ApiBtn>
+          <ApiBtn title="Backend pending: credential rotation API does not exist">Rotate Token</ApiBtn>
+          <ApiBtn title="Backend pending: POST /api/v1/carriers/onboard — carrier onboarding workflow does not exist">Add Carrier Integration</ApiBtn>
         </div>
-        <ApiBtn small title="POST /api/v1/webhooks/secret/rotate">↻ Rotate Secret</ApiBtn>
       </div>
 
-      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+      {/* Config table */}
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
         <Tbl
-          cols={['Carrier','Event','URL','State','24h count','Action']}
-          widths={['140px','190px','1fr','110px','100px','170px']}
-          rows={WEBHOOKS.map(w => [
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{w.carrier}</span>,
-            <span style={{ fontSize: 11, color: 'var(--text-2)', fontFamily: 'monospace' }}>{w.event}</span>,
-            <span style={{ fontSize: 10.5, color: 'var(--text-2)', fontFamily: 'monospace' }}>{w.url}</span>,
-            carrierStateChip(w.state),
-            <span style={{ fontSize: 11, color: 'var(--text)', fontFamily: 'monospace' }}>{w.last24h.toLocaleString()}</span>,
-            <div style={{ display: 'flex', gap: 4 }}>
-              <ApiBtn small title={`POST ${w.url}/test`}>⚡ Test</ApiBtn>
-              <ApiBtn small variant="ghost" title={`GET ${w.url}/log`}>Log</ApiBtn>
-            </div>,
+          cols={['Code', 'Name', 'Parser', 'Inbox Email', 'API Type', 'Services', 'Active']}
+          widths={['100px', '160px', '130px', '1fr', '100px', '1fr', '80px']}
+          rows={carriers.map(c => [
+            <span data-testid={'config-code-' + c.carrier_code} style={{ fontSize: 12, fontWeight: 700, fontFamily: 'monospace', color: 'var(--text)' }}>{c.carrier_code}</span>,
+            <span style={{ fontSize: 12, color: 'var(--text)' }}>{c.name || '—'}</span>,
+            <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-2)' }}>{c.parser_type || '—'}</span>,
+            <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{c.inbox_email || '—'}</span>,
+            <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-2)' }}>{c.api_type || '—'}</span>,
+            <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{c.supported_services || '—'}</span>,
+            c.active !== false ? stateChip('active') : stateChip('inactive'),
           ])}
         />
       </div>
+
+      {/* Carrier config CRUD note */}
+      <div style={{
+        background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+        padding: 12, borderRadius: 6, fontSize: 11, color: 'var(--text-2)',
+      }}>
+        <b style={{ color: 'var(--text)' }}>CRUD authority:</b> Full CRUD via
+        <code style={{ margin: '0 4px' }}>PUT /api/v1/carriers-config/{'{carrier_code}'}</code> (upsert),
+        <code style={{ margin: '0 4px' }}>DELETE /{'{carrier_code}'}</code> (soft/hard delete),
+        <code style={{ margin: '0 4px' }}>POST /{'{carrier_code}'}/restore</code>.
+        Write operations are gated on <code>master_editor</code> role.
+        UI write buttons are disabled pending Sprint 40+ (carrier config write forms).
+      </div>
     </div>
   );
 }
 
-// ─── Active Sessions tab ──────────────────────────────────────────────────
 
-function SessionsTab() {
+// ============================================================================
+// Tab 2: DHL Operations — real gate status + route-backed operational facts
+// ============================================================================
+
+function DhlOperationsTab({ carrierStatus }) {
+  const apiGate = carrierStatus ? carrierStatus.carrier_api_status : null;
+  const pltGate = carrierStatus ? carrierStatus.carrier_plt_status : null;
+
   return (
-    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-      <Tbl
-        cols={['Carrier','User','Token','Issued','Expires','IP','State','Action']}
-        widths={['130px','170px','170px','140px','140px','100px','100px','120px']}
-        rows={SESSIONS.map(s => [
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{s.carrier}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{s.user}</span>,
-          <span style={{ fontSize: 10.5, color: 'var(--text)', fontFamily: 'monospace' }}>{s.token}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)', fontFamily: 'monospace' }}>{s.issued}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)', fontFamily: 'monospace' }}>{s.expires}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)', fontFamily: 'monospace' }}>{s.ip}</span>,
-          carrierStateChip(s.state),
-          <ApiBtn small variant="danger" title="POST /api/v1/carriers/sessions/{id}/revoke">⊘ Revoke</ApiBtn>,
-        ])}
-      />
+    <div data-testid="dhl-ops-tab" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* Gate status card */}
+      <div style={{
+        background: 'var(--card)', border: '1px solid var(--border)',
+        borderRadius: 8, padding: 16, boxShadow: '0 1px 3px var(--shadow)',
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 700, fontFamily: '"DM Serif Display", serif', color: 'var(--text)', marginBottom: 10 }}>
+          Carrier Gate Status
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 12 }}>
+          Source: <code>GET /api/v1/carrier/status</code> &mdash; live from settings
+        </div>
+        <div data-testid="gate-status-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <GateCard
+            label="Carrier API Gate"
+            field="carrier_api_status"
+            value={apiGate}
+            desc="Controls POST /api/v1/carrier/{batch_id}/shipment. Returns 503 when 'pending'."
+          />
+          <GateCard
+            label="PLT Gate"
+            field="carrier_plt_status"
+            value={pltGate}
+            desc="Paperless Trade gate. Independent of carrier_api_status."
+          />
+          <GateCard
+            label="DHL Tracking API"
+            field="dhl_tracking_api_status"
+            value={null}
+            desc="Controls GET /api/v1/tracking/{tracking_no}. Not exposed by /carrier/status endpoint."
+            note="Route exists; status not exposed via REST. Check .env DHL_TRACKING_API_STATUS."
+          />
+        </div>
+      </div>
+
+      {/* DHL capabilities summary */}
+      <div style={{
+        background: 'var(--card)', border: '1px solid var(--border)',
+        borderRadius: 8, padding: 16, boxShadow: '0 1px 3px var(--shadow)',
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 700, fontFamily: '"DM Serif Display", serif', color: 'var(--text)', marginBottom: 4 }}>
+          DHL Express Operational Routes
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 12 }}>
+          {DHL_ROUTES.length} backend routes across {[...new Set(DHL_ROUTES.map(r => r.category))].length} categories.
+          All routes verified in backend source code &mdash; no live health endpoint exists per-route.
+        </div>
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          <Tbl
+            cols={['Category', 'Method', 'Route', 'Gate', 'Description']}
+            widths={['100px', '60px', '1fr', '100px', '1fr']}
+            rows={DHL_ROUTES.map(r => [
+              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>{r.category}</span>,
+              <span style={{
+                display: 'inline-block', padding: '1px 7px', borderRadius: 3,
+                fontSize: 9.5, fontWeight: 700, fontFamily: 'monospace',
+                background: r.method === 'GET' ? 'var(--badge-blue-bg)' : 'var(--accent-subtle)',
+                color: r.method === 'GET' ? 'var(--badge-blue-text)' : 'var(--accent)',
+                border: r.method === 'GET' ? '1px solid var(--badge-blue-border)' : '1px solid var(--accent-border)',
+              }}>{r.method}</span>,
+              <span style={{ fontFamily: 'monospace', fontSize: 10.5, color: 'var(--text)' }}>{r.path}</span>,
+              r.gated ? stateChip('gated') : stateChip('exists'),
+              <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{r.desc}</span>,
+            ])}
+          />
+        </div>
+      </div>
+
+      {/* Other carriers note */}
+      <div style={{
+        background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+        padding: 12, borderRadius: 6, fontSize: 11, color: 'var(--text-2)',
+      }}>
+        <b style={{ color: 'var(--text)' }}>FedEx / UPS / GLS / InPost / DPD:</b> Config-only (registered in carriers-config table).
+        No live integrations, no dedicated routes, no webhook receivers, no tracking auto-detection (except FedEx partial via digit-length heuristic).
+        Backend authority for these carriers is limited to the carriers-config CRUD endpoints.
+      </div>
     </div>
   );
 }
 
-// ─── Audit Log tab ────────────────────────────────────────────────────────
-
-function AuditTab() {
+function GateCard({ label, field, value, desc, note }) {
   return (
-    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-      <Tbl
-        cols={['Timestamp','Carrier','Actor','Event','Detail']}
-        widths={['140px','130px','170px','170px','1fr']}
-        rows={AUDIT.map(a => [
-          <span style={{ fontSize: 11, color: 'var(--text-2)', fontFamily: 'monospace' }}>{a.ts}</span>,
-          <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>{a.carrier}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{a.actor}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text)', fontFamily: 'monospace' }}>{a.event}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{a.detail}</span>,
-        ])}
-      />
+    <div data-testid={'gate-' + field} style={{
+      background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+      borderRadius: 6, padding: 12,
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>{label}</div>
+      <div style={{ marginBottom: 6 }}>
+        {value ? stateChip(value) : (
+          <span style={{ fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic' }}>not exposed</span>
+        )}
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--text-3)', lineHeight: 1.4 }}>{desc}</div>
+      {note && (
+        <div style={{ fontSize: 10, color: 'var(--badge-yellow-text)', marginTop: 4, fontStyle: 'italic' }}>{note}</div>
+      )}
     </div>
   );
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────
+
+// ============================================================================
+// Tab 3: Integration Gaps — missing APIs with disabled backend-pending buttons
+// ============================================================================
+
+function IntegrationGapsTab() {
+  return (
+    <div data-testid="gaps-tab" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* Info banner */}
+      <div style={{
+        background: 'var(--badge-yellow-bg)', border: '1px solid var(--badge-yellow-border)',
+        padding: 12, borderRadius: 6, fontSize: 11, color: 'var(--badge-yellow-text)',
+      }}>
+        <b>Integration Gaps</b> &mdash; APIs required for full carrier management that do not yet exist in the backend.
+        Each gap was identified in the Sprint 39 preflight audit. Buttons are visible but disabled with exact backend-pending reasons.
+      </div>
+
+      {/* Gaps table */}
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
+        <Tbl
+          cols={['Gap ID', 'Missing API', 'Description', 'Severity', 'Action']}
+          widths={['80px', '1fr', '1fr', '80px', '160px']}
+          rows={INTEGRATION_GAPS.map(g => [
+            <span data-testid={'gap-' + g.id} style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace', color: 'var(--text)' }}>{g.id}</span>,
+            <span style={{ fontSize: 10.5, fontFamily: 'monospace', color: 'var(--text)' }}>{g.api}</span>,
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>{g.label}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{g.note}</div>
+            </div>,
+            severityChip(g.severity),
+            <ApiBtn title={'Backend pending: ' + g.api + ' — ' + g.note}>{g.label.split(' ')[0]}</ApiBtn>,
+          ])}
+        />
+      </div>
+
+      {/* Gap summary */}
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12,
+      }}>
+        <CarrierKpi label="Critical Gaps" value={String(INTEGRATION_GAPS.filter(g => g.severity === 'critical').length)} accent="var(--badge-red-text)" />
+        <CarrierKpi label="High Gaps"     value={String(INTEGRATION_GAPS.filter(g => g.severity === 'high').length)}     accent="var(--badge-yellow-text)" />
+        <CarrierKpi label="Medium Gaps"    value={String(INTEGRATION_GAPS.filter(g => g.severity === 'medium').length)}   accent="var(--badge-blue-text)" />
+        <CarrierKpi label="Low Gaps"       value={String(INTEGRATION_GAPS.filter(g => g.severity === 'low').length)}      accent="var(--text-3)" />
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================================================
+// Tab 4: Config Audit — real audit trail from /api/v1/master/audit/
+// ============================================================================
+
+function ConfigAuditTab() {
+  const [rows, setRows] = React.useState(null);
+  const [err, setErr]   = React.useState(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await PzApi.listMasterAudit({ entity: 'carriers_config', limit: 50 });
+        if (!cancelled) setRows(data.rows || []);
+      } catch (e) {
+        if (!cancelled) setErr(e.error || e.message || 'Audit fetch failed');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  return (
+    <div data-testid="audit-tab" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* Info banner */}
+      <div style={{
+        background: 'var(--accent-subtle)', border: '1px solid var(--accent-border)',
+        padding: 12, borderRadius: 6, fontSize: 11, color: 'var(--text-2)',
+      }}>
+        <b style={{ color: 'var(--text)' }}>Config Audit Trail</b> &mdash; real audit rows from
+        <code style={{ marginLeft: 4 }}>GET /api/v1/master/audit/?entity=carriers_config</code>.
+        Every carriers-config create, update, delete, and restore operation is logged.
+      </div>
+
+      {/* Error state */}
+      {err && (
+        <div data-testid="audit-error" style={{
+          background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+          color: 'var(--badge-red-text)', padding: '12px 16px', borderRadius: 6, fontSize: 12,
+        }}>Audit load failed: {err}</div>
+      )}
+
+      {/* Loading */}
+      {!rows && !err && (
+        <div style={{ padding: 20, color: 'var(--text-2)', fontSize: 12 }}>Loading audit trail...</div>
+      )}
+
+      {/* Empty */}
+      {rows && rows.length === 0 && (
+        <div data-testid="audit-empty" style={{
+          padding: 20, color: 'var(--text-2)', fontSize: 12,
+          background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8,
+        }}>
+          No carriers_config audit entries found. Entries appear after carrier config create/update/delete operations.
+        </div>
+      )}
+
+      {/* Audit rows */}
+      {rows && rows.length > 0 && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
+          <Tbl
+            cols={['Timestamp', 'Operation', 'Carrier Code', 'Actor', 'Detail']}
+            widths={['160px', '100px', '130px', '170px', '1fr']}
+            rows={rows.map(a => [
+              <span style={{ fontSize: 11, color: 'var(--text-2)', fontFamily: 'monospace' }}>{a.created_at || a.ts || '—'}</span>,
+              <span style={{ fontSize: 11, fontWeight: 600, fontFamily: 'monospace', color: 'var(--text)' }}>{a.op || a.operation || '—'}</span>,
+              <span style={{ fontSize: 11, fontWeight: 600, fontFamily: 'monospace', color: 'var(--text)' }}>{a.pk || a.primary_key || '—'}</span>,
+              <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{a.actor || '—'}</span>,
+              <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{
+                a.diff ? (typeof a.diff === 'string' ? a.diff : JSON.stringify(a.diff)) :
+                a.reason || '—'
+              }</span>,
+            ])}
+          />
+        </div>
+      )}
+
+      {/* Webhook + session management disabled note */}
+      <div style={{
+        background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+        padding: 12, borderRadius: 6, fontSize: 11, color: 'var(--text-2)',
+      }}>
+        <b style={{ color: 'var(--text)' }}>Planned surfaces (backend pending):</b>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+          <ApiBtn title="Backend pending: GET /api/v1/carriers/{id}/webhooks — webhook registry endpoint does not exist">Webhook Registry</ApiBtn>
+          <ApiBtn title="Backend pending: GET /api/v1/carriers/{id}/sessions — session tracking backend does not exist">Session Management</ApiBtn>
+          <ApiBtn title="Backend pending: credential rotation audit — no credential lifecycle tracking">Credential Audit</ApiBtn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================================================
+// Shared helpers
+// ============================================================================
 
 function ApiBtn({ children, variant, small, title }) {
   const variants = {
-    gold:    { bg: 'var(--accent)', color: 'var(--accent-text)', border: 'var(--accent)' },
-    danger:  { bg: 'var(--badge-red-bg)',   color: 'var(--badge-red-text)',   border: 'var(--badge-red-border)' },
-    outline: { bg: 'transparent', color: 'var(--text)', border: 'var(--border)' },
-    ghost:   { bg: 'transparent', color: 'var(--text-2)', border: 'transparent' },
-    default: { bg: 'var(--bg-subtle)', color: 'var(--text)', border: 'var(--border)' },
+    gold:    { bg: 'var(--accent)',         color: 'var(--accent-text)',         border: 'var(--accent)' },
+    danger:  { bg: 'var(--badge-red-bg)',   color: 'var(--badge-red-text)',      border: 'var(--badge-red-border)' },
+    outline: { bg: 'transparent',          color: 'var(--text)',                border: 'var(--border)' },
+    ghost:   { bg: 'transparent',          color: 'var(--text-2)',              border: 'transparent' },
+    default: { bg: 'var(--bg-subtle)',     color: 'var(--text)',                border: 'var(--border)' },
   };
   const v = variants[variant] || variants.default;
   return (
-    <button disabled title={title || ''} style={{
-      background: v.bg, color: v.color, border: `1px solid ${v.border}`,
+    <button disabled title={title || ''} data-testid="carrier-btn-disabled" style={{
+      background: v.bg, color: v.color, border: '1px solid ' + v.border,
       borderRadius: 4, padding: small ? '3px 8px' : '5px 10px',
       fontSize: small ? 10 : 11, fontWeight: 600,
       cursor: 'not-allowed', opacity: 0.78,
@@ -629,6 +584,7 @@ function Tbl({ cols, widths, rows }) {
     </div>
   );
 }
+
 
 // Shared helpers (consumed by api-status-page.jsx and others)
 Object.assign(window, { CarriersPage, CarrierKpi, ApiBtn, Tbl });
