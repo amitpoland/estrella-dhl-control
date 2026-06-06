@@ -3395,6 +3395,61 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
+## Agent Install Pass (2026-06-06, docs/agent-files only)
+
+**Task**: classify all 54 user-level runtime agents and install the project-safe ones into the repo. Agent-tooling only — no product code, no deploy.
+
+**Installed (5 — repo agents 15 → 20, all inspect-only `Read,Grep,Glob`)**:
+- `reviewer-challenge` (R/G/G as-is) — CLAUDE.md-mandated on V2 PRs; was previously only runtime.
+- `ux-flow` (R/G/G as-is) — UI/UX review, complements frontend-flow-reviewer.
+- `integration-boundary` (Bash stripped) — FE/BE/seam verification (the Sprint 31 path-mismatch class).
+- `gap-detection` (Bash stripped) — pre-work 10-category gap scan, complements gap-hunter.
+- `final-consistency-review` (Bash stripped) — pre-operator last gate.
+
+**Classification of all 54** recorded in `RUNTIME_AGENT_AUDIT.md` addendum:
+- INSTALL_SAFE/REV but **deferred** (install when domain sprint starts): readiness-closure, business-process, finance-accounting-logic, product-owner-interpreter, planning-task-breakdown, multimodal-evidence, system-architect, compliance, button-functionality, security-permissions.
+- **DO_NOT_INSTALL**: generic intake scaffolding (natural-language-intake, intent-clarification, task-classification, etc.), generic builders (backend-api, frontend-ui, git-workflow, testing-verification, memory-lessons, prompt-engineering), orchestrator-covered (chief-orchestrator, agent-router, pr-author, ci-runner, release-manager, deployment-readiness, flow-continuity), 6 legal-* + 5 brand-voice:* (wrong domain).
+- **QUARANTINE_WRITE_RISK** (12): dhl-customs, wfirma-integration, pz-purchase-accounting, sales-proforma, inventory-state-machine, warehouse-ops, client-contractor-mapping, email-evidence-recovery, database-storage, deployment-windows-ops, document-intelligence, dashboard-operations — write-capable EJ-domain agents, never installed as actors, no shadow (existing repo reviewers cover the review need).
+
+**Phase-4 dispatch test (Lesson B confirmed)**: reviewer-challenge + final-consistency-review both dispatched and returned PASS — BUT final-consistency-review ran the **user-level copy (still Bash-capable)**, not the repo inspect-only copy. **Fresh-session required** to confirm repo (project-level) copies take precedence over user-level copies of the same name. Until then, tool-stripping is pending, not in force.
+
+**Browser-QA gap**: `browser-verifier` cannot be a pure-inspect repo agent (browser verification needs exec). Browser QA remains orchestrator-driven via Preview MCP (as Sprint 30/31). Accepted gap.
+
+**Sprint 32 WIP**: preserved untouched (dashboard-page.jsx, mock-badge.jsx, index.html, sprint-32-shipments-hub.md, test_sprint32_shipments_shell_wiring.py). **NOTE: this WIP grew between tasks (active concurrent session likely) — one-session-rule concern flagged for operator.**
+
+**No production impact** — only `.claude/agents/*.md` + registries + this entry committed.
+
+---
+
+## Sprint 32 — Shipments Hub: MERGED + DEPLOYED (2026-06-06)
+
+**Date**: 2026-06-06 (merge + deploy)
+**PR #464** — `feat(sprint32): shipments hub wiring — DashboardPage page==='shipments'`
+**Merge SHA**: `962dd71` (squash-merge to `origin/main`)
+**Source branch**: `feat/sprint32-shipments-hub` @ af42d3d (deleted after merge)
+
+**Static-only production deploy to C:\PZ\app\static\v2** (3 files: dashboard-page.jsx, mock-badge.jsx, index.html), sha256 byte-identical verified, PZService NOT restarted (static), no backend change.
+
+**DashboardPage (V2 route page==='shipments')** wired read-only to `GET /api/v1/dashboard/batches` (authority: routes_dashboard.py list_batches/_batch_summary). Replaced MOCK_SHIPMENTS. Removed dead action menu (Edit Draft/Reprocess/Archive/Delete), Prev/Next, static SUMMARY_CARDS, internal drill into mock-shaped ShipmentDetailPage (deferred). AWB → scheme-guarded external tracking_url (_safeHttpUrl). Read-only observer; no batch mutation.
+
+**WIRED_PAGES now = ['proforma','proforma_detail','inbox','inventory','dhl','shipments']** — 6 V2 domains live.
+
+**Verification**: Sprint 32 tests 27/27, PZ 160/160, Carrier 404 (≥381). GATE 6 browser (isolated dev server): 111 live rows, no MOCK banner, GET-only (1× /dashboard/batches 200), 0 console errors, 0 forbidden affordances. Full 7-agent deploy gate: READY-TO-DEPLOY (9 EXEMPLARY / 1 ACCEPTABLE).
+
+**Scorecard** (RULE 6 citation): `.claude/memory/scorecards/2026-06-06-sprint32-shipments-v2-deploy.md`. Also recorded: Sprint 30 scorecard `.claude/memory/scorecards/2026-06-06-sprint30-inventory-v2-deploy.md` and Sprint 31 scorecard `.claude/memory/scorecards/2026-06-06-sprint31-dhl-hub-deploy.md` (confirmed on disk).
+
+**GATE 4 salvage finding (needs disposition)**: deploy-git-diff-reviewer over-escalated a procedural dirty-tree condition to BLOCK on a file-scoped static deploy; observer flagged for prompt tuning. Disposition: ISSUE (to be filed). Also: Phase-0 DHL audit agent hallucinated non-existent endpoints (/api/v1/dhl/auto-scan-status, /daily-summary) — audits should cross-validate against route registrations.
+
+**Correction to prior chat memory**: Sprint 31 DHL Hub was ALREADY merged+deployed (a5a4e5e / PR #463) before this session; the earlier in-session "Sprint 31 corrected scope" analysis was based on the RETIRED scratch tree (C:\Users\Super Fashion\PZ APP) and is void.
+
+**Incident (2026-06-06)**: one-session-rule violation — a concurrent session committed/pushed docs directly to main and switched HEAD off the Sprint 32 feature branch, causing a commit to briefly land on main. Recovered: commit moved to feature branch, local main restored to origin/main, operator confirmed the other session stopped. Both sessions were mutually aware (the other session preserved Sprint 32 WIP).
+
+**Next sprint per brief**: Sprint 33 — Intelligence Hub (routes_intelligence read endpoints, verified real). Then Automation (ai-bridge), Proposals.
+
+**Open PRs**: 0.
+
+---
+
 # DECISIONS
 
 ## wFirma Push Layer Implementation Decisions (2026-05-24)
