@@ -3592,6 +3592,31 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
+## Issue #397 — Production drift recovery: shipment-detail.html (2026-06-06, CLOSED)
+
+**Date**: 2026-06-06
+**SHA**: `7b3f5fe` — fix(v1-recovery): recover uncommitted shipment-detail pzGenerated fix (Issue #397)
+**Lesson F exception**: V1 critical fix recovery only — no new features.
+
+**Background**: Production `C:\PZ` was ahead of repo HEAD by 5 files (discovered during closure verification). Four files were absorbed by prior hotfix commits. The remaining file:
+- `service/app/static/shipment-detail.html` — 13-line uncommitted V1 critical fix (applied directly to C:\PZ on 2026-06-03)
+
+**Recovery scope**: The uncommitted fix expanded `pzGenerated` in the Closure Evaluation gate from 3 fields (pz_pdf_filename, pz_generated_at, _pzDocId) to 7 fields.
+
+**Authority verification (all fields confirmed before commit)**:
+- `audit.pz_generated` → `shipment_closure.py:38` (evaluate_closure, field 1)
+- `audit.pz_filename` → `shipment_closure.py:39` (evaluate_closure, field 2)
+- `audit.polish_desc_filename` → `shipment_closure.py:40` (evaluate_closure, PZ-equivalent)
+- `audit.pz_output.pdf` → `export_service.py:457` (_build_pz_output, disk-existence check; None when no PDF)
+- `pz_pdf_filename`, `pz_generated_at`, `_pzDocId` → pre-existing, unchanged
+
+**Tests**: 5 new assertions in `TestClosureEvalIssue397Recovery`; lookback window in `_closure_eval_block` widened 800→1500 chars; 12/12 pass.
+**No production deploy**: production was already correct. Repo now mirrors production exactly.
+**Commit location**: directly on `origin/main` (reconciliation, not feature work)
+**Issue comment**: https://github.com/amitpoland/estrella-dhl-control/issues/397#issuecomment-4638252426
+
+---
+
 # DECISIONS
 
 ## wFirma Push Layer Implementation Decisions (2026-05-24)
