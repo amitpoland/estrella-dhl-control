@@ -3450,6 +3450,29 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
+## Atlas Capability Registry Installed (2026-06-06, commit 5e3c251)
+
+**Date**: 2026-06-06  
+**Commit**: `5e3c251`  
+**Title**: Atlas Capability Registry Installed
+
+- Created `.claude/capabilities/` directory (new governance surface)
+- Added `AGENTS.md` — 20 repo agents (A1–A20) + 54 user-level + built-ins + plugins; full per-agent classification
+- Added `SKILLS.md` — 3 repo skills (frontend-design, atlas-v2-render-gate, ui-ux-pro-max) + 1 user skill
+- Added `COMMANDS.md` — 12 commands with capability tiers, forbidden use, production-risk levels
+- Added `CONNECTORS.md` — 21 MCP connectors with R/W level, production risk, operator-approval requirements
+- Added `PLUGINS.md` — brand-voice/bio-research (wrong domain), PDF Viewer, auth-only plugin inventory
+- Added `RUNTIME_REGISTRY.md` — runtime counts, dispatch readiness table, hazard map, capability gaps
+- Added `CAPABILITY_MATRIX.md` — 17-domain matrix, 4 team templates (T1–T4)
+- Bundled: agent-install governance documentation (AGENT_REGISTRY.md + RUNTIME_AGENT_AUDIT.md updated 15→20 agents; 5 new repo agent files: reviewer-challenge, ux-flow, integration-boundary, gap-detection, final-consistency-review)
+- Fixed stale wired-pages table in `atlas-v2-render-gate.md` (Sprint 1 only → Sprint 1–32, 6 pages)
+- **No product code changed. No backend changed. No database changed. No production deploy executed.**
+- Purpose: future agent / skill / command / connector / plugin governance; capability audit surface for all Atlas V2 sprints
+
+**Scorecard**: N/A — docs-only task, no FINAL REPORT with ≥3 subagents; RULE 2 not triggered.
+
+---
+
 # DECISIONS
 
 ## wFirma Push Layer Implementation Decisions (2026-05-24)
