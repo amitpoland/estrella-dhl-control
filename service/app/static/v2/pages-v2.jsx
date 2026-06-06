@@ -584,176 +584,289 @@ function EmailQueuePage({ onViewShipment }) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// AI Bridge — task queue, results, errors, capabilities, prompt templates
+// Automation Hub — read-only observer over AI Bridge authority (Sprint 33)
+// Authority: routes_ai_bridge.py  (GET endpoints only)
+// Allowed:  GET /api/v1/ai-bridge/tasks  GET /api/v1/ai-bridge/errors
+//           GET /api/v1/ai-bridge/templates
+// Forbidden: POST /api/v1/ai-bridge/tasks/{batch_id}
+//            POST /api/v1/ai-bridge/results/{task_id}
+// Retired:  hardcoded tasks[] array, capabilities[] array, Retry/Edit/Save &
+//           Activate/Test/Diff buttons, static stat tiles, Capabilities tab.
 // ════════════════════════════════════════════════════════════════════════════
 function AiBridgePage() {
   const [tab, setTab] = React.useState('tasks');
 
-  const tasks = [
-    { id: 'T-8842', kind: 'classify_email',     input: 'em-872 · DHL-7733991122', model: 'haiku-4-5',   started: '14:42:09', dur: '1.4s', status: 'success', confidence: 0.94 },
-    { id: 'T-8841', kind: 'generate_dsk',       input: 'DHL-2244668800',          model: 'sonnet-4-5',  started: '14:38:21', dur: '3.7s', status: 'success', confidence: 0.88 },
-    { id: 'T-8840', kind: 'translate_pl',       input: 'inv-2294 · 12 lines',     model: 'haiku-4-5',   started: '14:36:05', dur: '2.1s', status: 'success', confidence: 0.97 },
-    { id: 'T-8839', kind: 'parse_sad',          input: 'sad-pdf-447.pdf',         model: 'sonnet-4-5',  started: '14:21:33', dur: '5.8s', status: 'success', confidence: 0.91 },
-    { id: 'T-8838', kind: 'classify_email',     input: 'em-869 · DHL-2244668800', model: 'haiku-4-5',   started: '14:08:14', dur: '0.9s', status: 'error',   error: 'MRN regex match failed; needs human review' },
-    { id: 'T-8837', kind: 'reconcile_pz',       input: 'PZ/2024/000891',          model: 'sonnet-4-5',  started: '13:55:02', dur: '4.2s', status: 'success', confidence: 0.96 },
-    { id: 'T-8836', kind: 'propose_action',     input: 'batch:DHL-april',         model: 'sonnet-4-5',  started: '13:30:00', dur: '11.4s', status: 'success', confidence: 0.82 },
-    { id: 'T-8835', kind: 'classify_invoice',   input: 'inv-2293.pdf',            model: 'haiku-4-5',   started: '12:44:28', dur: '1.7s', status: 'pending', confidence: null },
-  ];
+  const [pendingData,    setPendingData]    = React.useState(null);
+  const [pendingLoading, setPendingLoading] = React.useState(true);
+  const [pendingError,   setPendingError]   = React.useState(null);
 
-  const capabilities = [
-    { id: 'classify_email',   label: 'Classify DHL email',         desc: 'Detects pre-check / reply / SAD / error categories from inbox messages', model: 'haiku-4-5', enabled: true },
-    { id: 'generate_dsk',     label: 'Generate DSK recommendation', desc: 'Decides STANDARD vs PROBLEMATIC based on CIF / origin / category', model: 'sonnet-4-5', enabled: true },
-    { id: 'translate_pl',     label: 'Translate to Polish',         desc: 'Converts invoice descriptions to Polish customs descriptions', model: 'haiku-4-5', enabled: true },
-    { id: 'parse_sad',        label: 'Parse SAD / ZC429',           desc: 'Extracts MRN, A00 duty, VAT, line items from PDF', model: 'sonnet-4-5', enabled: true },
-    { id: 'reconcile_pz',     label: 'Reconcile PZ',                desc: 'Matches PZ values to invoice + SAD; flags discrepancies', model: 'sonnet-4-5', enabled: true },
-    { id: 'classify_invoice', label: 'Classify invoice items',      desc: 'Maps each line to HS code based on description + supplier history', model: 'haiku-4-5', enabled: true },
-    { id: 'propose_action',   label: 'Cross-batch action proposals', desc: 'Path-A: proposes operator actions across batches', model: 'sonnet-4-5', enabled: true },
-    { id: 'verify_carnet',    label: 'Verify ATA Carnet',           desc: 'Checks carnet completeness for temp import / export', model: 'sonnet-4-5', enabled: false },
-  ];
+  const [processedData,    setProcessedData]    = React.useState(null);
+  const [processedLoading, setProcessedLoading] = React.useState(true);
+  const [processedError,   setProcessedError]   = React.useState(null);
+
+  const [errorsData,     setErrorsData]     = React.useState(null);
+  const [errorsLoading,  setErrorsLoading]  = React.useState(true);
+  const [errorsFetchErr, setErrorsFetchErr] = React.useState(null);
+
+  const [templatesData,    setTemplatesData]    = React.useState(null);
+  const [templatesLoading, setTemplatesLoading] = React.useState(true);
+  const [templatesError,   setTemplatesError]   = React.useState(null);
+
+  const loadPending = React.useCallback(() => {
+    setPendingLoading(true); setPendingError(null);
+    window.EstrellaShared.apiFetch('/api/v1/ai-bridge/tasks?status=pending')
+      .then(d => { setPendingData(d); setPendingLoading(false); })
+      .catch(e => { setPendingError((e && e.message) || String(e)); setPendingLoading(false); });
+  }, []);
+
+  const loadProcessed = React.useCallback(() => {
+    setProcessedLoading(true); setProcessedError(null);
+    window.EstrellaShared.apiFetch('/api/v1/ai-bridge/tasks?status=processed')
+      .then(d => { setProcessedData(d); setProcessedLoading(false); })
+      .catch(e => { setProcessedError((e && e.message) || String(e)); setProcessedLoading(false); });
+  }, []);
+
+  const loadErrors = React.useCallback(() => {
+    setErrorsLoading(true); setErrorsFetchErr(null);
+    window.EstrellaShared.apiFetch('/api/v1/ai-bridge/errors')
+      .then(d => { setErrorsData(d); setErrorsLoading(false); })
+      .catch(e => { setErrorsFetchErr((e && e.message) || String(e)); setErrorsLoading(false); });
+  }, []);
+
+  const loadTemplates = React.useCallback(() => {
+    setTemplatesLoading(true); setTemplatesError(null);
+    window.EstrellaShared.apiFetch('/api/v1/ai-bridge/templates')
+      .then(d => { setTemplatesData(d); setTemplatesLoading(false); })
+      .catch(e => { setTemplatesError((e && e.message) || String(e)); setTemplatesLoading(false); });
+  }, []);
+
+  React.useEffect(() => {
+    loadPending(); loadProcessed(); loadErrors(); loadTemplates();
+  }, [loadPending, loadProcessed, loadErrors, loadTemplates]);
+
+  const reloadAll = React.useCallback(() => {
+    loadPending(); loadProcessed(); loadErrors(); loadTemplates();
+  }, [loadPending, loadProcessed, loadErrors, loadTemplates]);
+
+  const pendingList   = (pendingData   && Array.isArray(pendingData.tasks))   ? pendingData.tasks   : [];
+  const processedList = (processedData && Array.isArray(processedData.tasks)) ? processedData.tasks : [];
+  const errorList     = (errorsData    && Array.isArray(errorsData.errors))   ? errorsData.errors   : [];
+  const templateMap   = (templatesData && templatesData.templates)             ? templatesData.templates : {};
+
+  const anyLoading = pendingLoading || processedLoading || errorsLoading || templatesLoading;
 
   return (
-    <div style={{ padding: '20px 32px', overflowY: 'auto', flex: 1 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }} className="grid-stats">
-        <StatTile label="Tasks today" value="284" sub="✓ 271 success · ✗ 8 errors · ⏱ 5 pending" />
-        <StatTile label="Avg latency" value="2.4s" sub="Last 24h · p95 6.8s" accent="var(--badge-green-text)" />
-        <StatTile label="Token spend" value="$4.82" sub="Today · capped at $20/day" accent="var(--accent)" />
-        <StatTile label="Capabilities" value={capabilities.filter(c => c.enabled).length + '/' + capabilities.length} sub="Active capabilities" />
+    <div data-testid="automation-hub-root" style={{ padding: '20px 32px', overflowY: 'auto', flex: 1 }}>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button
+          data-testid="automation-hub-reload"
+          onClick={reloadAll}
+          disabled={anyLoading}
+          style={{
+            background: 'transparent', border: '1px solid var(--border)', borderRadius: 4,
+            padding: '4px 10px', fontSize: 11, color: 'var(--text-2)',
+            cursor: anyLoading ? 'default' : 'pointer',
+          }}
+        >↻ Reload</button>
+      </div>
+
+      <div data-testid="automation-hub-summary" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }} className="grid-stats">
+        <StatTile
+          label="Pending tasks"
+          value={pendingLoading ? '…' : pendingData != null ? String(pendingData.count) : '—'}
+          sub="Awaiting AI processing"
+        />
+        <StatTile
+          label="Processed"
+          value={processedLoading ? '…' : processedData != null ? String(processedData.count) : '—'}
+          sub="Completed task results"
+          accent="var(--badge-green-text)"
+        />
+        <StatTile
+          label="Errors"
+          value={errorsLoading ? '…' : errorsData != null ? String(errorsData.count) : '—'}
+          sub="Rejected results"
+          accent={errorsData && errorsData.count > 0 ? 'var(--badge-red-text)' : undefined}
+        />
+        <StatTile
+          label="Task types"
+          value={templatesLoading ? '…' : templatesData != null ? String(templatesData.count) : '—'}
+          sub="Registered templates"
+        />
       </div>
 
       <Tabs
         active={tab}
         onChange={setTab}
         tabs={[
-          { id: 'tasks',         label: 'Task Queue', count: tasks.filter(t => t.status === 'pending').length },
-          { id: 'results',       label: 'Recent Results' },
-          { id: 'errors',        label: 'Errors', count: tasks.filter(t => t.status === 'error').length },
-          { id: 'capabilities',  label: 'Capabilities' },
-          { id: 'templates',     label: 'Prompt Templates' },
+          { id: 'tasks',     label: 'Task Queue',     count: pendingData   ? pendingData.count   : null },
+          { id: 'results',   label: 'Recent Results', count: processedData ? processedData.count : null },
+          { id: 'errors',    label: 'Errors',         count: errorsData    ? errorsData.count    : null },
+          { id: 'templates', label: 'Templates',      count: templatesData ? templatesData.count : null },
         ]}
       />
 
-      {(tab === 'tasks' || tab === 'results' || tab === 'errors') && (
-        <Card style={{ overflow: 'hidden' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: 'var(--bg-subtle)' }}>
-                {['Task ID', 'Capability', 'Input', 'Model', 'Started', 'Duration', 'Confidence', 'Status', ''].map(h => (
-                  <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', borderBottom: '1px solid var(--border)' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {tasks.filter(t => tab === 'tasks' ? true : tab === 'results' ? t.status === 'success' : t.status === 'error').map(t => (
-                <tr key={t.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                  <td style={{ padding: '10px 12px', fontFamily: 'monospace', color: 'var(--text)', fontWeight: 600 }}>{t.id}</td>
-                  <td style={{ padding: '10px 12px' }}><Pill tone="purple" small>{t.kind}</Pill></td>
-                  <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)' }}>{t.input}</td>
-                  <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--text-3)' }}>{t.model}</td>
-                  <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-3)' }}>{t.started}</td>
-                  <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-3)' }}>{t.dur}</td>
-                  <td style={{ padding: '10px 12px', fontSize: 11, color: t.confidence == null ? 'var(--text-3)' : t.confidence > 0.9 ? 'var(--badge-green-text)' : 'var(--accent)', fontWeight: 600 }}>{t.confidence == null ? '—' : (t.confidence * 100).toFixed(0) + '%'}</td>
-                  <td style={{ padding: '10px 12px' }}>
-                    {t.status === 'success' && <Pill tone="green" small>✓ SUCCESS</Pill>}
-                    {t.status === 'error'   && <Pill tone="red"   small>✗ ERROR</Pill>}
-                    {t.status === 'pending' && <Pill tone="amber" small>⏱ PENDING</Pill>}
-                    {t.error && <div style={{ fontSize: 10, color: 'var(--badge-red-text)', marginTop: 4 }}>{t.error}</div>}
-                  </td>
-                  <td style={{ padding: '10px 12px' }}>
-                    <div style={{ display: 'flex', gap: 4 }}>
-                      {t.status === 'error' && <Btn small variant="gold">Retry</Btn>}
-                      <Btn small variant="outline">Inspect</Btn>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
+      {tab === 'tasks' && (
+        <AiBridgeTaskTable
+          rows={pendingList}
+          loading={pendingLoading}
+          error={pendingError}
+          testid="automation-hub-tasks-table"
+        />
       )}
 
-      {tab === 'capabilities' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
-          {capabilities.map(c => (
-            <Card key={c.id} style={{ padding: 16 }}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{c.label}</div>
-                    <Pill tone={c.enabled ? 'green' : 'neutral'} small>{c.enabled ? 'ENABLED' : 'DISABLED'}</Pill>
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 8, lineHeight: 1.5 }}>{c.desc}</div>
-                  <div style={{ display: 'flex', gap: 8, fontSize: 10, color: 'var(--text-3)' }}>
-                    <span><span style={{ fontWeight: 700 }}>capability:</span> <span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{c.id}</span></span>
-                    <span>·</span>
-                    <span><span style={{ fontWeight: 700 }}>model:</span> {c.model}</span>
-                  </div>
-                </div>
-                <Btn small variant="outline">Edit</Btn>
-              </div>
-            </Card>
-          ))}
-        </div>
+      {tab === 'results' && (
+        <AiBridgeTaskTable
+          rows={processedList}
+          loading={processedLoading}
+          error={processedError}
+          testid="automation-hub-results-table"
+        />
+      )}
+
+      {tab === 'errors' && (
+        <AiBridgeErrorTable
+          rows={errorList}
+          loading={errorsLoading}
+          error={errorsFetchErr}
+          testid="automation-hub-errors-table"
+        />
       )}
 
       {tab === 'templates' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 12 }}>
-          <Card style={{ padding: 6 }}>
-            {['classify_email.v3', 'generate_dsk.v2', 'translate_pl.v4', 'parse_sad.v2', 'reconcile_pz.v1', 'propose_action.v1'].map((id, i) => (
-              <button key={id} style={{
-                width: '100%', padding: '10px 12px', textAlign: 'left',
-                background: i === 0 ? 'var(--bg-subtle)' : 'transparent',
-                border: 'none', borderRadius: 4, cursor: 'pointer',
-                fontSize: 11, fontFamily: 'monospace', color: i === 0 ? 'var(--text)' : 'var(--text-2)',
-                fontWeight: i === 0 ? 600 : 500,
-                display: 'flex', justifyContent: 'space-between',
-              }}>
-                {id}
-                {i === 0 && <Pill tone="gold" small>Active</Pill>}
-              </button>
-            ))}
-          </Card>
-          <Card style={{ padding: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', fontFamily: 'monospace' }}>classify_email.v3</div>
-                <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Last edited 3 days ago by anna.k · 94% avg confidence over 1,284 calls</div>
-              </div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <Btn small variant="outline">Diff vs v2</Btn>
-                <Btn small variant="outline">Test</Btn>
-                <Btn small variant="gold">Save & Activate</Btn>
-              </div>
-            </div>
-            <div style={{ background: '#1a1a1a', color: '#e8e8e8', padding: 16, borderRadius: 6, fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
-{`SYSTEM: You are a Polish customs operations assistant.
-Classify the inbound DHL email into one of:
-  - PRE_CHECK_REQUEST   (DHL asks Estrella for pre-clearance docs)
-  - SAD_ATTACHED        (DHL forwards an issued SAD/ZC429)
-  - QUERY               (DHL asks a clarifying question)
-  - ERROR               (parser failure or unrecognised format)
+        <AiBridgeTemplatesView
+          templates={templateMap}
+          loading={templatesLoading}
+          error={templatesError}
+          testid="automation-hub-templates"
+        />
+      )}
 
-INPUT:
-  - email body (raw text)
-  - email subject
-  - any attachments metadata
-
-OUTPUT (strict JSON):
-{
-  "category": "PRE_CHECK_REQUEST | SAD_ATTACHED | QUERY | ERROR",
-  "awb": "string | null",
-  "confidence": "0.0-1.0",
-  "flags": ["string", ...],
-  "next_action": "string"
+      <div style={{
+        marginTop: 8, padding: '12px 16px', background: 'var(--bg-subtle)',
+        border: '1px solid var(--border)', borderRadius: 8,
+        fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5,
+      }}>
+        <strong style={{ color: 'var(--text-2)' }}>Observer only.</strong>{' '}
+        Task execution, result submission, and capability configuration remain the sole authority of the AI Bridge engine.
+        This surface is read-only — no task queuing, no result submission, no template editing.
+        {' '}Endpoints:{' '}
+        <code style={{ fontFamily: 'monospace', background: 'var(--card)', padding: '1px 5px', borderRadius: 3 }}>/api/v1/ai-bridge/tasks</code>
+        {' · '}
+        <code style={{ fontFamily: 'monospace', background: 'var(--card)', padding: '1px 5px', borderRadius: 3 }}>/api/v1/ai-bridge/errors</code>
+        {' · '}
+        <code style={{ fontFamily: 'monospace', background: 'var(--card)', padding: '1px 5px', borderRadius: 3 }}>/api/v1/ai-bridge/templates</code>
+      </div>
+    </div>
+  );
 }
 
-RULES:
-  · If CIF < EUR 6,000 and origin in [IT, CH, FR], add flag "CIF<EUR 6,000"
-  · For gold/silver jewellery, always include HS hint flag
-  · Return ERROR only if subject + body do not contain an AWB`}
+function AiBridgeTaskTable({ rows, loading, error, testid }) {
+  if (loading) return <div style={{ fontSize: 12, color: 'var(--text-3)', padding: 12 }}>Loading…</div>;
+  if (error)   return <div style={{ fontSize: 12, color: 'var(--badge-red-text)', padding: 12 }}>{error}</div>;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return <div style={{ fontSize: 12, color: 'var(--text-3)', padding: 12 }}>No tasks in this queue.</div>;
+  }
+  const PREF = ['task_id', 'task_type', 'batch_id', 'status', 'created_at', 'note'];
+  const present = PREF.filter(k => Object.prototype.hasOwnProperty.call(rows[0], k));
+  const cols = present.length > 0 ? present : Object.keys(rows[0]).slice(0, 6);
+  return (
+    <div data-testid={testid} style={{ overflowX: 'auto', marginBottom: 12 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, background: 'var(--card)', borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)' }}>
+        <thead>
+          <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+            {cols.map(h => (
+              <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: 10 }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 200).map((r, i) => (
+            <tr key={r.task_id || r.id || i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+              {cols.map(c => {
+                const v = r[c];
+                const disp = v == null ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+                return (
+                  <td key={c} style={{ padding: '6px 12px', fontFamily: (c === 'task_id' || c === 'batch_id') ? 'monospace' : undefined, color: 'var(--text-2)', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{disp}</td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rows.length > 200 && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>Showing first 200 of {rows.length}.</div>}
+    </div>
+  );
+}
+
+function AiBridgeErrorTable({ rows, loading, error, testid }) {
+  if (loading) return <div style={{ fontSize: 12, color: 'var(--text-3)', padding: 12 }}>Loading…</div>;
+  if (error)   return <div style={{ fontSize: 12, color: 'var(--badge-red-text)', padding: 12 }}>{error}</div>;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return <div style={{ fontSize: 12, color: 'var(--text-3)', padding: 12 }}>No error records.</div>;
+  }
+  const PREF = ['task_id', 'task_type', 'batch_id', 'reason', 'rejected_at', 'source'];
+  const present = PREF.filter(k => Object.prototype.hasOwnProperty.call(rows[0], k));
+  const cols = present.length > 0 ? present : Object.keys(rows[0]).slice(0, 6);
+  return (
+    <div data-testid={testid} style={{ overflowX: 'auto', marginBottom: 12 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, background: 'var(--card)', borderRadius: 8, overflow: 'hidden', border: '1px solid var(--badge-red-border)' }}>
+        <thead>
+          <tr style={{ background: 'var(--badge-red-bg)', borderBottom: '1px solid var(--badge-red-border)' }}>
+            {cols.map(h => (
+              <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 700, color: 'var(--badge-red-text)', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: 10 }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 100).map((r, i) => (
+            <tr key={r.task_id || r.id || i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+              {cols.map(c => {
+                const v = r[c];
+                const disp = v == null ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+                return (
+                  <td key={c} style={{ padding: '6px 12px', fontFamily: (c === 'task_id' || c === 'batch_id') ? 'monospace' : undefined, color: 'var(--text-2)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{disp}</td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AiBridgeTemplatesView({ templates, loading, error, testid }) {
+  if (loading) return <div style={{ fontSize: 12, color: 'var(--text-3)', padding: 12 }}>Loading…</div>;
+  if (error)   return <div style={{ fontSize: 12, color: 'var(--badge-red-text)', padding: 12 }}>{error}</div>;
+  const keys = Object.keys(templates || {});
+  if (keys.length === 0) {
+    return <div style={{ fontSize: 12, color: 'var(--text-3)', padding: 12 }}>No templates registered.</div>;
+  }
+  return (
+    <div data-testid={testid} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 12 }}>
+      {keys.map(key => {
+        const t = templates[key];
+        return (
+          <div key={key} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px', boxShadow: '0 1px 3px var(--shadow)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{key}</span>
+              <Pill tone="blue" small>TEMPLATE</Pill>
             </div>
-          </Card>
-        </div>
-      )}
+            {t && t.description && (
+              <div style={{ fontSize: 11, color: 'var(--text-2)', lineHeight: 1.5, marginBottom: 8 }}>{t.description}</div>
+            )}
+            {t && t.result_schema && (
+              <details style={{ fontSize: 10 }}>
+                <summary style={{ cursor: 'pointer', color: 'var(--text-3)', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>Result schema</summary>
+                <pre style={{ margin: '6px 0 0', padding: '8px 10px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 10, color: 'var(--text)', fontFamily: 'monospace', overflowX: 'auto', maxHeight: 160, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(t.result_schema, null, 2)}</pre>
+              </details>
+            )}
+            <div style={{ marginTop: 8, fontSize: 10, color: 'var(--text-3)' }}>Read-only. No template editing.</div>
+          </div>
+        );
+      })}
     </div>
   );
 }

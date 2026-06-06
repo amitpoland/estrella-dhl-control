@@ -6,7 +6,8 @@
 // Sprint 30:   'inventory' added — live hub from inventory-v2.html (Sprint 29).
 // Sprint 31:   'dhl' added — read-only observer over DHL projector + scan/summary cards.
 // Sprint 32:   'shipments' added — DashboardPage wired read-only to GET /api/v1/dashboard/batches.
-const WIRED_PAGES = ['proforma', 'proforma_detail', 'inbox', 'inventory', 'dhl', 'shipments'];
+// Sprint 33:   'automation' added — AiBridgePage wired read-only to ai-bridge authority.
+const WIRED_PAGES = ['proforma', 'proforma_detail', 'inbox', 'inventory', 'dhl', 'shipments', 'automation'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;
