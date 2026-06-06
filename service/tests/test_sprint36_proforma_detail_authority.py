@@ -247,7 +247,9 @@ def test_no_total_eur_times_fx_rate():
     assert "totalEur * " not in code, (
         "Browser-side PLN total (totalEur * fx.rate) must be removed"
     )
-    assert "detail.fx.rate" not in code or "totalEur" not in code, (
+    # Phase 2: both totalEur and detail.fx.rate may appear for display purposes,
+    # but must never be MULTIPLIED together (no totalEur * detail.fx.rate).
+    assert "totalEur * detail.fx.rate" not in code, (
         "No browser-side FX conversion: totalEur * detail.fx.rate is forbidden"
     )
 
@@ -411,4 +413,352 @@ def test_pdf_download_route_exists_in_backend():
     src = _ROUTES_PROFORMA.read_text(encoding="utf-8")
     assert "document.pdf" in src, (
         "PDF download endpoint (document.pdf) must exist in routes_proforma.py"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Sprint 36 Phase 2 — UI parity with atlas-proforma-preview.html
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── M. Full toolbar: 8 buttons with correct testids ──────────────────────────
+
+PHASE2_TOOLBAR_TESTIDS = [
+    "tb-edit",
+    "tb-delete",
+    "tb-duplicate",
+    "tb-post",
+    "tb-convert",
+    "proforma-detail-download-pdf",   # Print button reuses Phase 1 testid
+    "tb-send",
+    "tb-generate",
+    "tb-back",
+]
+
+
+def test_all_toolbar_testids_present():
+    src = _src()
+    for tid in PHASE2_TOOLBAR_TESTIDS:
+        assert f'data-testid="{tid}"' in src, (
+            f"Toolbar testid '{tid}' missing from proforma-detail.jsx"
+        )
+
+
+def test_duplicate_button_calls_clone_draft():
+    src = _src()
+    assert "cloneDraft" in src, (
+        "Duplicate toolbar button must call PzApi.cloneDraft"
+    )
+
+
+def test_post_to_wfirma_button_gates_on_can_post():
+    code = _code_only(_src())
+    assert "canPost" in code, (
+        "Post to wFirma toolbar button must be gated on canPost state"
+    )
+
+
+def test_convert_button_gates_on_can_convert():
+    code = _code_only(_src())
+    assert "canConvert" in code, (
+        "Convert to Invoice toolbar button must be gated on canConvert state"
+    )
+
+
+def test_edit_button_disabled_with_reason():
+    src = _src()
+    assert "tb-edit" in src, "tb-edit toolbar button must be present"
+    # Verify it is disabled (not just missing) — should have disabled attribute
+    assert "Inline editing not yet available" in src, (
+        "Edit toolbar button must be disabled with 'Inline editing not yet available' reason"
+    )
+
+
+def test_delete_button_disabled_with_reason():
+    src = _src()
+    assert "No delete-draft endpoint" in src, (
+        "Delete toolbar button must be disabled with reason citing missing endpoint"
+    )
+
+
+def test_send_button_disabled_with_reason():
+    src = _src()
+    assert "tb-send" in src, "tb-send toolbar button must be present"
+    assert "Email send not yet wired" in src, (
+        "Send toolbar button must be disabled with 'Email send not yet wired' reason"
+    )
+
+
+def test_generate_button_disabled_with_reason():
+    src = _src()
+    assert "tb-generate" in src, "tb-generate toolbar button must be present"
+    assert "not yet available" in src.lower(), (
+        "Generate toolbar button must be disabled with a not-yet-available reason"
+    )
+
+
+# ── N. Party cards: SELLER / BUYER / RECIPIENT ───────────────────────────────
+
+PARTY_CARD_TESTIDS = [
+    "party-seller",
+    "party-buyer",
+    "party-recipient",
+]
+
+
+def test_all_party_card_testids_present():
+    src = _src()
+    for tid in PARTY_CARD_TESTIDS:
+        assert f'data-testid="{tid}"' in src, (
+            f"Party card testid '{tid}' missing from proforma-detail.jsx"
+        )
+
+
+def test_seller_card_from_company_profile():
+    src = _src()
+    assert "party-seller" in src, "SELLER party card must be present"
+    assert "companyProfile" in src, (
+        "SELLER card must derive data from companyProfile (GET /api/v1/settings/company-profile)"
+    )
+
+
+def test_buyer_card_from_customer_resolution():
+    src = _src()
+    assert "party-buyer" in src, "BUYER party card must be present"
+    assert "customer_resolution" in src, (
+        "BUYER card must derive data from draft customer_resolution field"
+    )
+
+
+def test_recipient_card_same_as_buyer():
+    src = _src()
+    assert "party-recipient" in src, "RECIPIENT party card must be present"
+    assert "Same as Buyer" in src, (
+        "RECIPIENT card must have 'Same as Buyer' footer note"
+    )
+
+
+def test_party_cards_three_columns():
+    src = _src()
+    # All 3 party cards must be defined
+    assert src.count("party-seller") >= 1, "SELLER card must be present"
+    assert src.count("party-buyer") >= 1, "BUYER card must be present"
+    assert src.count("party-recipient") >= 1, "RECIPIENT card must be present"
+
+
+def test_seller_card_title_uppercase():
+    src = _src()
+    assert "SELLER" in src, "Party card title 'SELLER' must be present"
+
+
+def test_buyer_card_title_uppercase():
+    src = _src()
+    assert "BUYER" in src, "Party card title 'BUYER' must be present"
+
+
+def test_recipient_card_title_uppercase():
+    src = _src()
+    assert "RECIPIENT" in src, "Party card title 'RECIPIENT' must be present"
+
+
+# ── O. PostToWFirmaModal wired correctly ─────────────────────────────────────
+
+def test_post_to_wfirma_modal_defined():
+    src = _src()
+    assert "PostToWFirmaModal" in src, (
+        "PostToWFirmaModal must be defined in proforma-detail.jsx"
+    )
+
+
+def test_post_modal_confirm_checkbox_testid():
+    src = _src()
+    assert 'data-testid="post-modal-confirm-checkbox"' in src, (
+        "Post modal confirm checkbox must have data-testid='post-modal-confirm-checkbox'"
+    )
+
+
+def test_post_modal_submit_testid():
+    src = _src()
+    assert 'data-testid="post-modal-submit"' in src, (
+        "Post modal submit button must have data-testid='post-modal-submit'"
+    )
+
+
+def test_post_modal_confirm_token_correct():
+    src = _src()
+    assert "YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA" in src, (
+        "PostToWFirmaModal must pass confirm_token: 'YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA'"
+    )
+
+
+def test_post_modal_calls_post_draft_to_wfirma():
+    src = _src()
+    assert "postDraftToWfirma" in src, (
+        "PostToWFirmaModal must call PzApi.postDraftToWfirma"
+    )
+
+
+def test_post_modal_sends_expected_updated_at():
+    src = _src()
+    assert "expected_updated_at" in src, (
+        "PostToWFirmaModal must include expected_updated_at in the body"
+    )
+
+
+def test_post_modal_has_error_state():
+    src = _src()
+    assert 'data-testid="post-modal-error"' in src, (
+        "PostToWFirmaModal must display an error state with data-testid='post-modal-error'"
+    )
+
+
+def test_post_modal_exported_to_window():
+    src = _src()
+    assert "PostToWFirmaModal" in src
+    # Must be in the Object.assign(window, ...) export block
+    assert "PostToWFirmaModal" in src[src.rfind("Object.assign"):], (
+        "PostToWFirmaModal must be exported via Object.assign(window, ...)"
+    )
+
+
+# ── P. pz-api.js: postDraftToWfirma accepts body param ───────────────────────
+
+def test_post_draft_to_wfirma_accepts_body_param():
+    src = _PZ_API.read_text(encoding="utf-8")
+    # Must match: postDraftToWfirma: (draftId, body) =>
+    assert "postDraftToWfirma: (draftId, body)" in src, (
+        "pz-api.js postDraftToWfirma must accept a body parameter: (draftId, body)"
+    )
+
+
+def test_post_draft_to_wfirma_uses_body_or_default():
+    src = _PZ_API.read_text(encoding="utf-8")
+    assert "body || {}" in src, (
+        "pz-api.js postDraftToWfirma must pass 'body || {}' to the API call"
+    )
+
+
+# ── Q. ReservationTab wired (not placeholder) ─────────────────────────────────
+
+def test_reservation_tab_not_placeholder():
+    src = _src()
+    assert "Not yet wired" not in src, (
+        "ReservationTab placeholder 'Not yet wired — deferred post Sprint 36' must be replaced"
+    )
+
+
+def test_reservation_tab_wired_to_blocking_reasons():
+    src = _src()
+    assert "blockingReasons" in src, (
+        "ReservationTab must render blockingReasons from POST /proforma/preview endpoint"
+    )
+
+
+def test_reservation_tab_wired_to_export_blockers():
+    src = _src()
+    assert "exportBlockers" in src, (
+        "ReservationTab must render exportBlockers from POST /proforma/preview endpoint"
+    )
+
+
+def test_reservation_cap_strip_testid():
+    src = _src()
+    assert 'data-testid="reservation-cap-strip"' in src, (
+        "ReservationTab must have a cap-strip row with data-testid='reservation-cap-strip'"
+    )
+
+
+# ── R. 5 tabs present (overview / lines / customer_mapping / reservation / history)
+
+EXPECTED_TABS = ["overview", "lines", "customer_mapping", "reservation", "history"]
+
+
+def test_all_five_tabs_defined():
+    src = _src()
+    for tab_id in EXPECTED_TABS:
+        assert tab_id in src, (
+            f"Tab '{tab_id}' must be defined in PROFORMA_TABS or rendered in proforma-detail.jsx"
+        )
+
+
+def test_overview_tab_has_kv_grid():
+    src = _src()
+    assert "KvItem" in src, (
+        "OverviewTab must use KvItem components for the kv-grid layout"
+    )
+
+
+def test_overview_tab_shows_proforma_number():
+    src = _src()
+    assert "wfirma_proforma_fullnumber" in src, (
+        "OverviewTab kv-grid must include proforma number from wfirma_proforma_fullnumber"
+    )
+
+
+def test_overview_tab_shows_exchange_rate():
+    src = _src()
+    assert "exchange_rate" in src or "fxRate" in src, (
+        "OverviewTab must display the exchange rate from backend authority"
+    )
+
+
+def test_lines_tab_renders_table():
+    src = _src()
+    assert "ProformaLinesTab" in src, (
+        "Lines tab must be rendered by ProformaLinesTab component"
+    )
+    assert "proforma-lines-total" in src, (
+        "Lines tab table footer must carry data-testid='proforma-lines-total'"
+    )
+
+
+def test_customer_mapping_tab_renders():
+    src = _src()
+    assert "ProformaCustomerMappingTab" in src, (
+        "Customer Mapping tab must be rendered by ProformaCustomerMappingTab component"
+    )
+
+
+def test_history_tab_renders():
+    src = _src()
+    assert "ProformaHistoryTab" in src, (
+        "History tab must be rendered by ProformaHistoryTab component"
+    )
+
+
+# ── S. ConvertToInvoiceModal enhanced: includes line items in disclosure ───────
+
+def test_convert_modal_shows_line_items():
+    src = _src()
+    assert "detail.lines" in src or "lines.map" in src, (
+        "ConvertToInvoiceModal must disclose line items in its payload preview"
+    )
+
+
+def test_convert_modal_shows_fx_rate():
+    src = _src()
+    assert "detail.fx" in src or "fx.rate" in src, (
+        "ConvertToInvoiceModal payload disclosure must show the FX rate from backend"
+    )
+
+
+def test_convert_modal_shows_customer():
+    src = _src()
+    assert "wfirmaName" in src or "customer.wfirmaName" in src or "detail.customer" in src, (
+        "ConvertToInvoiceModal payload disclosure must show the resolved wFirma customer"
+    )
+
+
+# ── T. Clone action wired in backend ──────────────────────────────────────────
+
+def test_clone_draft_endpoint_exists_in_backend():
+    src = _ROUTES_PROFORMA.read_text(encoding="utf-8")
+    assert "clone" in src, (
+        "POST /api/v1/proforma/draft/{id}/clone must exist in routes_proforma.py"
+    )
+
+
+def test_post_draft_endpoint_exists_in_backend():
+    src = _ROUTES_PROFORMA.read_text(encoding="utf-8")
+    assert "/draft/{draft_id}/post" in src or "draft_id}/post" in src, (
+        "POST /api/v1/proforma/draft/{id}/post must exist in routes_proforma.py"
     )

@@ -14,6 +14,11 @@
 //   All fake data removed: exporter from GET /api/v1/settings/company-profile,
 //   lines from editable_lines, FX from exchange_rate, PDF download wired,
 //   ConvertToInvoiceModal calls draftToInvoice, no browser-side FX calculations.
+// Sprint 36 Phase 2 (2026-06-06): Full UI parity with atlas-proforma-preview.html.
+//   Full 8-button toolbar (Edit/Delete/Duplicate/PostToWFirma/Convert/Print/Send/Generate).
+//   SELLER/BUYER/RECIPIENT party cards. ReservationTab wired to blocking_reasons.
+//   OverviewTab KV grid (16 fields). PostToWFirmaModal added.
+//   pz-api.js: postDraftToWfirma now accepts body param for confirm_token.
 const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail'];
 
 function MockBanner({ page }) {

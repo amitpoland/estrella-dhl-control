@@ -229,8 +229,8 @@
     // Posts draft to wFirma as a proforma invoice.
     // Gated by wfirma_create_proforma_allowed flag — backend enforces; frontend should
     // gate the button on the visibility/disclose-post response.
-    postDraftToWfirma: (draftId) =>
-      _postM(`${BASE}/proforma/draft/${draftId}/post`, {}),
+    postDraftToWfirma: (draftId, body) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/post`, body || {}),
 
     // POST /api/v1/proforma/draft/{draft_id}/clone
     // Clones draft — creates a new draft from this one.
