@@ -3517,6 +3517,43 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
+## Sprint 34 — Intelligence Hub: MERGED + DEPLOYED (2026-06-06)
+
+**Date**: 2026-06-06 (merge + deploy)
+**Commit SHA**: `250f564` (pushed to `origin/main`)
+
+**Files changed (4)**:
+- `service/app/static/v2/pages-v2.jsx` — LearningParserPage (V1 mock: setTimeout, Math.random MRN, hardcoded rates) retired as intelligence route renderer; `IntelligencePage` added (read-only observer, 374 lines): 4 live GET endpoints, 7 data-testid attributes, 3 helper components (IntelligenceSugTable, IntelligenceWarnTable, IntelligenceLearningTable), observer-only disclaimer, IntelligencePage exported on window
+- `service/app/static/v2/mock-badge.jsx` — `'intelligence'` added to WIRED_PAGES (removes purple MOCK banner from intelligence page)
+- `service/app/static/v2/index.html` — intelligence route block: `<LearningParserPage />` → `<IntelligencePage />`; PageHeader updated to "Intelligence Hub"
+- `service/tests/test_sprint34_intelligence_hub_wiring.py` — NEW: 28 source-grep regression tests (sections A–J: wired pages, live apiFetch, endpoint contract, write method absence, affordance removal, mock retirement, index.html route, testids+disclaimer, NAV_TREE, backend not modified)
+
+**Endpoints wired (read-only GET only)**:
+- `GET /api/v1/intelligence/status`      → 200 (engine active)
+- `GET /api/v1/intelligence/suggestions` → 200 (17 live suggestions)
+- `GET /api/v1/intelligence/config`      → 404 (not generated — expected; amber advisory shown)
+- `GET /api/v1/invoice-learning/summary` → 200 (3 suppliers)
+
+**WIRED_PAGES now = ['proforma', 'proforma_detail', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence']** — 8 V2 domains live.
+
+**Authority owner**: `routes_intelligence.py` + `routes_learning.py` — GET-only surface. No backend changes, no schema changes, no write affordances.
+
+**Test results**: Sprint 34 28/28 ✅ · Sprint 33 30/30 ✅ (no regression) · PZ regression 160/160 ✅ · Carrier suite 404/381 ✅
+
+**7-agent gate**: ALL CLEAR — git-diff SAFE_CODE, backend-impact CLEAR, persistence CLEAR, security CLEAR (GET-only), QA CLEAR, release-manager CLEAR, lead-coordinator READY-TO-DEPLOY
+
+**Deploy**: Static-only robocopy `C:\PZ-verify\service\app\static\v2\` → `C:\PZ\app\static\v2\`. PZService NOT restarted. SHA256 hash-verified: MATCH (index.html, mock-badge.jsx, pages-v2.jsx).
+
+**GATE 6 browser** (https://pz.estrellajewels.eu/v2/intelligence): no MOCK banner, hub-root PRESENT, all 4 tab panels render (Engine Status / Suggestions (17) / Config / Invoice Learning (3)), zero console errors, all API calls GET-only, live data confirmed.
+
+**Scorecard** (RULE 6 citation): `.claude/memory/scorecards/2026-06-06-sprint34-intelligence-hub-deploy.md`
+
+**Render-gate updated**: `atlas-v2-render-gate.md` wired-pages table row for `intelligence` added.
+
+**Open PRs**: 0.
+
+---
+
 # DECISIONS
 
 ## wFirma Push Layer Implementation Decisions (2026-05-24)
