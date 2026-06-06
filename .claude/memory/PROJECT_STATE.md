@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-06-07 (PR #475 merged + deployed, PR #473 closed, Sprint 37 production-verified).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #476 merged + deployed, Sprint 38 production-verified).
 
-**Last-run-at:** 2026-06-07 (PR #475 merge + deploy). Origin/main HEAD: **900ed51** (Atlas Authority Cleanup Batch — Sprint 36 Phase 2 + Sprint 37 wFirma Mapping). Production: `C:\PZ` deployed with 8 static files (3 new + 5 modified), hash-verified 8/8 SHA256 MATCH. GATE 2: **0/3 open PRs** (clean board — #475 merged, #473 closed as stale duplicate). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 109/109 PR #475 tests (54 toolbar + 20 bridge + 35 wFirma). DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed (Classic/Modern/Bold proforma + CMR Classic/Modern previews). ATLAS-V2: **Sprint 37 COMPLETED** (SHA 900ed51), wFirma Mapping is 10th authority-backed V2 page, WIRED_PAGES count = 10. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
+**Last-run-at:** 2026-06-07 (PR #476 merge + deploy). Origin/main HEAD: **c4c89b1** (Sprint 38 — Master Data read authority conversion). Production: `C:\PZ` deployed with 3 static files (master-page.jsx, mock-badge.jsx, pz-api.js), hash-verified 3/3 SHA256 MATCH. GATE 2: **0/3 open PRs** (clean board). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 35/35 Sprint 37. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 38 COMPLETED** (SHA c4c89b1), Master Data is 11th authority-backed V2 page, WIRED_PAGES count = 11, **only Carriers remains MOCK** (1 of 12). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
 
 ---
 
@@ -3797,7 +3797,7 @@ Group D — Tests (3 new files):
 **Atlas-V2 WIRED_PAGES (10 entries):**
 `proforma, inbox, inventory, dhl, shipments, automation, intelligence, documents, proforma_detail, wfirma_setup`
 
-**Remaining MOCK pages**: Master Data, Carriers (2 of 12 total pages)
+**Remaining MOCK pages**: ~~Master Data~~, Carriers (1 of 12 total pages — Master Data cleared by Sprint 38 / PR #476)
 
 **Rollback**: `git revert 900ed51 --no-edit` + redeploy 8 static files from prior SHA
 
@@ -3818,6 +3818,46 @@ Group D — Tests (3 new files):
 **Sprint 38 scope**: Wire Master Data page. 10 entities LIVE, Users READ-ONLY, Roles DISABLED. Remove MOCK banner. Do not block the entire page because Roles are missing.
 
 **Sprint 39 scope**: Carriers page remains MOCK until authority exists for multi-carrier integration. Only carrier config CRUD + DHL status can be wired.
+
+---
+
+## PR #476 — Sprint 38: Master Data Read Authority Conversion (2026-06-07, MERGED + DEPLOYED)
+
+**Date**: 2026-06-07
+**PR #476** — `feat(atlas): Sprint 38 — Master Data read authority conversion (#476)`
+**Merge SHA**: `c4c89b1` (squash-merge to `origin/main`)
+**Source branch**: `feat/sprint-38-master-data-read-authority`
+
+**Diff scope (4 files, frontend-only)**:
+- `service/app/static/v2/master-page.jsx` — complete rewrite: removed 70-line SEED constant + mock modals, wired 12 entity tabs to live backend APIs
+- `service/app/static/v2/pz-api.js` — added 11 new transport functions (listSuppliers, listProductLocal, listDesigns, listHsCodes, listFxRates, listVatConfig, listIncoterms, listUnits, listCarriersConfig, listUsers, listMasterAudit)
+- `service/app/static/v2/mock-badge.jsx` — added `'master'` as 11th WIRED_PAGES entry
+- `service/tests/test_sprint38_master_data_wiring.py` — NEW: 104 source-grep regression tests (11 test classes)
+
+**Entity wiring**:
+- 10 entities via CRUD endpoints: clients (61 records), suppliers (6), products, designs, HS codes, FX rates, VAT rates, carriers config, incoterms, units
+- Users via `GET /auth/users` (admin-gated, 2 records in production)
+- Roles via static constants (4 system-defined roles)
+- All write buttons disabled with entity-specific reasons
+
+**Deploy**: 3 static files robocopy'd from `C:\PZ-verify\service\app\static\v2` to `C:\PZ\app\static\v2`. SHA256 hash-verified 3/3 MATCH.
+
+**Production smoke (pz.estrellajewels.eu/v2/master)**:
+- Clients: 61 live records (UAB Tomas Gold, Diamond Point B.V., DG GmbH, etc.)
+- Suppliers: 6 live records (OSO Smoke Supplier, ESTRELLA JEWELS LLP., Shah Diamonds, etc.)
+- Users: 2 live records (Tejal Prakash Manjrekar, Amit Saniya) — admin session active
+- Roles: 4 static roles with permission matrix and info banner
+- HS Codes / other entities: 0 records, empty state renders correctly
+- Console errors: 0
+- No MOCK banner
+
+**Test results**: 104/104 Sprint 38 + 35/35 Sprint 37 regression
+
+**ATLAS-V2 status**: Sprint 38 COMPLETED. WIRED_PAGES count = 11. **Remaining MOCK pages**: Carriers only (1 of 12 total pages).
+
+**GATE 2**: 0/3 open PRs after merge.
+
+**Rollback**: `git revert c4c89b1 --no-edit` + redeploy 3 static files from prior SHA (900ed51)
 
 ---
 
