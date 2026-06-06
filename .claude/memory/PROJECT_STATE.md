@@ -3345,6 +3345,30 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
+## Agent Orchestration Layer (2026-06-06, docs-only)
+
+**Task**: Build a reusable agent/skill orchestration layer for future Atlas V2 work. Governance/tooling only — no product/backend/frontend code, no deploy, no production mutation.
+
+**Files created (5, all docs)**:
+- `.claude/agents/AGENT_REGISTRY.md` — canonical registry of the **15 repo-installed agents** (capability matrix from verified `tools:` frontmatter, per-agent purpose / when-to-use / when-not / inspect-vs-write / domain-safety / output contract).
+- `.claude/skills/SKILL_REGISTRY.md` — **3 skills** (frontend-design, atlas-v2-render-gate, ui-ux-pro-max) with allowed/forbidden domains.
+- `.claude/commands/COMMAND_REGISTRY.md` — **8 commands** classified READ-ONLY / REVIEW-ONLY / WRITE-CAPABLE / DEPLOY-CAPABLE.
+- `.claude/campaigns/atlas-v2/agent-orchestration-playbook.md` — core principles, the binding safety rule, 4 standard agent groups (Planning / Impl-review / Deploy-gate / Post-run governance), universal output contract, runtime-only-agent policy, and the reusable future-task template.
+- This PROJECT_STATE entry.
+
+**Verified facts**:
+- 15 agent files on disk: 12 INSPECT-ONLY (Read/Grep/Glob) + 3 DOCS-WRITE (adr-historian → ADRs; agent-performance-observer → scorecards; flow-context-keeper → PROJECT_STATE). **Zero have product-code write access.**
+- Deploy gate group complete (7/7): git-diff, backend-impact, persistence-storage, security, qa, release-manager, lead-coordinator.
+- 3 skills + 8 commands all listed.
+
+**Binding rules established**: (1) 15 repo agents are canonical; runtime ~70 are optional helpers only, never final authority unless independently verified (Lesson B). (2) Agents inspect/verify/recommend — operator + deploy gate own production action. (3) One lead coordinator owns the final decision. (4) Write-risk domains require security-write-action-reviewer. (5) Production requires the 7-agent gate.
+
+**Usage**: future tasks invoke with "Use the Atlas V2 agent orchestration playbook."
+
+**No production impact.** No code, no deploy, no PR merge. Static-only docs added to the repo.
+
+---
+
 # DECISIONS
 
 ## wFirma Push Layer Implementation Decisions (2026-05-24)
