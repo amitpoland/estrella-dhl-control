@@ -494,11 +494,9 @@ function App() {
           {/* Shipments */}
           {!viewerDoc && page === 'shipments' && (
             <>
-              <PageHeader title="Shipments" subtitle="All shipments — click any AWB to open detail"
-                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn><Btn variant="outline" small>↓ Export CSV</Btn></div>}
-              />
+              <PageHeader title="Shipments" subtitle="Read-only batch list — completed shipments from the engine, newest first. AWB links out to carrier tracking. No write actions." />
               <SubTabStrip active={page} onNav={handleNav} />
-              <DashboardPage onViewShipment={handleViewShipment} />
+              <DashboardPage />
             </>
           )}
 

@@ -1,34 +1,98 @@
-// Dashboard Page — summary cards + shipment table
+// Shipments Hub (V2 shell `page === 'shipments'`) — read-only batch list.
+//
+// Sprint 32: replaced the inline MOCK_SHIPMENTS + static SUMMARY_CARDS with a
+// live, read-only projection of completed batches. Same observer pattern as
+// Sprint 30 (Inventory) and Sprint 31 (DHL Hub): existing authority → dumb
+// renderer → no mutation.
+//
+// Authority owner (backend, unchanged): routes_dashboard.py `list_batches()`
+// → `_batch_summary(audit.json)`. This page renders batch truth; it never
+// starts, reprocesses, regenerates, rechecks, archives, deletes, overrides, or
+// resends anything. Those authorities live in V1 + the engine and are out of
+// scope. See .claude/campaigns/atlas-v2/sprint-32-shipments-hub.md.
+//
+// The ONLY endpoint this page may consume:
+//   GET /api/v1/dashboard/batches   — completed batches, newest first, deduped
+//
+// Removed (P3) by this sprint: the `⋯` action menu (Edit Draft / Reprocess /
+// Archive / Delete), `← Prev` / `Next →` pagination, and the internal drill into
+// the mock-shaped ShipmentDetailPage. AWB renders as an external carrier-tracking
+// link (live `tracking_url`) only.
 
-const MOCK_SHIPMENTS = [
-  { id: 'SHP-001', awb: 'DHL-1234567890', carrier: 'DHL', dhlStatus: 'DHL Email Received', dhlRec: 'Reply Required', sadStatus: 'SAD Uploaded', mrn: 'PL12345678901234A', pzStatus: 'Ready for PZ', net: 'PLN 4,820', gross: 'PLN 5,640', duty: 'PLN 282', overall: 'Ready for PZ' },
-  { id: 'SHP-002', awb: 'DHL-9876543210', carrier: 'DHL', dhlStatus: 'Awaiting DHL Email', dhlRec: 'Pending', sadStatus: 'SAD Pending', mrn: '—', pzStatus: 'Locked', net: 'PLN 3,100', gross: 'PLN 3,720', duty: '—', overall: 'Awaiting DHL' },
-  { id: 'SHP-003', awb: 'FDX-0011223344', carrier: 'FedEx', dhlStatus: 'Pre-check Completed', dhlRec: 'No Reply Needed', sadStatus: 'Customs Verified', mrn: 'PL98765432101234B', pzStatus: 'Generated', net: 'PLN 7,250', gross: 'PLN 8,700', duty: 'PLN 435', overall: 'Ready for Booking' },
-  { id: 'SHP-004', awb: 'DHL-5544332211', carrier: 'DHL', dhlStatus: 'Reply Sent', dhlRec: 'Completed', sadStatus: 'Verification Needed', mrn: 'PL11223344556677C', pzStatus: 'Locked', net: 'PLN 2,400', gross: 'PLN 2,880', duty: '—', overall: 'Action Required' },
-  { id: 'SHP-005', awb: 'DHL-6677889900', carrier: 'DHL', dhlStatus: 'Pre-check Pending', dhlRec: '—', sadStatus: 'SAD Pending', mrn: '—', pzStatus: 'Locked', net: '—', gross: '—', duty: '—', overall: 'In Preparation' },
-  { id: 'SHP-006', awb: 'OTH-1122334455', carrier: 'Other', dhlStatus: 'Pre-check Completed', dhlRec: 'No Reply Needed', sadStatus: 'Customs Parsed', mrn: 'PL22334455667788D', pzStatus: 'Ready for PZ', net: 'PLN 9,100', gross: 'PLN 10,920', duty: 'PLN 546', overall: 'Ready for PZ' },
-  { id: 'SHP-007', awb: 'FDX-9988776655', carrier: 'FedEx', dhlStatus: 'Pre-check Completed', dhlRec: 'No Reply Needed', sadStatus: 'Customs Verified', mrn: 'PL33445566778899E', pzStatus: 'Exported', net: 'PLN 6,330', gross: 'PLN 7,596', duty: 'PLN 380', overall: 'Exported' },
-];
+const SHIPMENTS_ENDPOINT = '/api/v1/dashboard/batches';
 
-const SUMMARY_CARDS = [
-  { label: 'Total Shipments', value: 7, icon: '⬡', colorVar: 'var(--text)' },
-  { label: 'Awaiting DHL', value: 1, icon: '✈', colorVar: 'var(--badge-amber-text)' },
-  { label: 'Awaiting SAD', value: 2, icon: '⊟', colorVar: 'var(--badge-orange-text)' },
-  { label: 'Ready for PZ', value: 2, icon: '◈', colorVar: 'var(--badge-green-text)' },
-  { label: 'Verification Needed', value: 1, icon: '⚠', colorVar: 'var(--badge-red-text)' },
-  { label: 'Ready for Booking', value: 1, icon: '✓', colorVar: 'var(--badge-purple-text)' },
-  { label: 'Total Duty A00', value: 'PLN 1,643', icon: '₤', colorVar: 'var(--accent)', wide: true },
-  { label: 'Total Gross Value', value: 'PLN 45,456', icon: '◈', colorVar: 'var(--badge-blue-text)', wide: true },
-];
+// Overall-status buckets used by the filter bar (derived from live `status`).
+const OVERALL_FILTERS = ['all', 'success', 'partial', 'blocked'];
 
-function DashboardPage({ onViewShipment }) {
-  const [filter, setFilter] = React.useState('all');
+function _fmt(v) {
+  // The backend already formats most values; render raw, fall back to em-dash.
+  if (v === null || v === undefined || v === '') return '—';
+  return v;
+}
+
+function _safeHttpUrl(u) {
+  // Only allow http(s) tracking links — never render a javascript:/data:/vbscript:
+  // href even if the backend field were ever poisoned (defence in depth).
+  return (typeof u === 'string' && /^https?:\/\//i.test(u)) ? u : null;
+}
+
+function DashboardPage() {
+  // No internal detail-drill in this sprint: the V2 ShipmentDetailPage is
+  // mock-shaped (reads shipment.awb, does not fetch by batch_id), so drilling a
+  // live batch row would render an empty page. The AWB instead links out to the
+  // carrier tracking page (live tracking_url). Detail-drill is deferred to the
+  // shipment-detail sprint.
+
+  const [rows,    setRows]    = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error,   setError]   = React.useState(null);
+  const [filter,  setFilter]  = React.useState('all');
   const [sortCol, setSortCol] = React.useState(null);
   const [sortDir, setSortDir] = React.useState('asc');
-  const [actionMenu, setActionMenu] = React.useState(null);
 
-  const overallFilters = ['all', 'Ready for PZ', 'Awaiting DHL', 'Awaiting SAD', 'Action Required', 'Ready for Booking', 'Exported'];
-  const filtered = filter === 'all' ? MOCK_SHIPMENTS : MOCK_SHIPMENTS.filter(s => s.overall === filter);
+  const load = React.useCallback(() => {
+    setLoading(true); setError(null);
+    window.EstrellaShared.apiFetch(SHIPMENTS_ENDPOINT)
+      .then(d => {
+        // Backend returns a bare list; tolerate {batches:[...]} / {rows:[...]} too.
+        const list = Array.isArray(d) ? d : ((d && (d.batches || d.rows || d.items)) || []);
+        setRows(list); setLoading(false);
+      })
+      .catch(e => { setError((e && e.message) || String(e)); setLoading(false); });
+  }, []);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  const all = rows || [];
+
+  // ── Summary tiles derived from live rows (no static values) ─────────────────
+  const summary = React.useMemo(() => {
+    const count = pred => all.filter(pred).length;
+    return [
+      { label: 'Total Shipments',     value: all.length,                                     icon: '⬡', colorVar: 'var(--text)' },
+      { label: 'Success',             value: count(s => s.status === 'success'),             icon: '✓', colorVar: 'var(--badge-green-text)' },
+      { label: 'Partial',             value: count(s => s.status === 'partial'),             icon: '◑', colorVar: 'var(--badge-amber-text)' },
+      { label: 'Blocked',             value: count(s => s.status === 'blocked'),             icon: '⚠', colorVar: 'var(--badge-red-text)' },
+      { label: 'SAD Present',         value: count(s => s.has_sad),                          icon: '⊟', colorVar: 'var(--badge-blue-text)' },
+      { label: 'PZ Confirmed',        value: count(s => s.pz_confirmed),                     icon: '◈', colorVar: 'var(--badge-purple-text)' },
+    ];
+  }, [all]);
+
+  const filtered = filter === 'all' ? all : all.filter(s => s.status === filter);
+
+  const sorted = React.useMemo(() => {
+    if (!sortCol) return filtered;
+    const copy = filtered.slice();
+    copy.sort((a, b) => {
+      const av = a[sortCol], bv = b[sortCol];
+      if (av === bv) return 0;
+      if (av === null || av === undefined || av === '') return 1;
+      if (bv === null || bv === undefined || bv === '') return -1;
+      const r = String(av).localeCompare(String(bv), undefined, { numeric: true });
+      return sortDir === 'asc' ? r : -r;
+    });
+    return copy;
+  }, [filtered, sortCol, sortDir]);
 
   const handleSort = col => {
     if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -48,16 +112,30 @@ function DashboardPage({ onViewShipment }) {
   );
 
   return (
-    <div style={{ padding: '24px 32px', overflowY: 'auto', flex: 1 }}>
+    <div data-testid="shipments-hub-root" style={{ padding: '24px 32px', overflowY: 'auto', flex: 1 }}>
 
-      {/* Summary Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginBottom: 28 }}>
-        {SUMMARY_CARDS.map((c, i) => (
-          <Card key={i} style={{ padding: '16px 18px', cursor: 'pointer' }}>
+      {/* Reload bar (passive client-side GET re-issue; zero server side-effect) */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button
+          data-testid="shipments-hub-reload"
+          onClick={load}
+          disabled={loading}
+          style={{
+            background: 'transparent', border: '1px solid var(--border)', borderRadius: 4,
+            padding: '4px 10px', fontSize: 11, color: 'var(--text-2)',
+            cursor: loading ? 'default' : 'pointer',
+          }}
+        >↻ Reload</button>
+      </div>
+
+      {/* Summary tiles (derived from live rows) */}
+      <div data-testid="shipments-hub-summary" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginBottom: 28 }}>
+        {summary.map((c, i) => (
+          <Card key={i} style={{ padding: '16px 18px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
                 <div style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 500, marginBottom: 6 }}>{c.label}</div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: c.colorVar, fontFamily: '"DM Serif Display", serif' }}>{c.value}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: c.colorVar, fontFamily: '"DM Serif Display", serif' }}>{loading ? '—' : c.value}</div>
               </div>
               <div style={{
                 width: 30, height: 30, borderRadius: 6,
@@ -70,114 +148,115 @@ function DashboardPage({ onViewShipment }) {
         ))}
       </div>
 
-      {/* Filter bar */}
+      {/* Filter bar (client-side over live data) */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         <span style={{ fontSize: 11, color: '#8A8278', marginRight: 4 }}>Filter:</span>
-        {overallFilters.map(f => (
+        {OVERALL_FILTERS.map(f => (
           <button key={f} onClick={() => setFilter(f)} style={{
             padding: '4px 10px', borderRadius: 20,
             border: filter === f ? `1px solid ${GOLD}` : '1px solid #E4DDD2',
             background: filter === f ? GOLD + '22' : 'transparent',
             color: filter === f ? '#18160F' : '#6A6258',
             fontSize: 11, fontWeight: filter === f ? 600 : 400, cursor: 'pointer',
+            textTransform: f === 'all' ? 'none' : 'capitalize',
           }}>{f === 'all' ? 'All' : f}</button>
         ))}
       </div>
 
+      {/* Loading / error / empty states */}
+      {loading && <div data-testid="shipments-hub-loading" style={{ fontSize: 12, color: 'var(--text-3)', padding: '12px 4px' }}>Loading batches…</div>}
+      {error   && <div data-testid="shipments-hub-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', padding: '12px 4px' }}>Failed to load batches: {error}</div>}
+      {!loading && !error && all.length === 0 && (
+        <div data-testid="shipments-hub-empty" style={{ fontSize: 12, color: 'var(--text-3)', padding: '12px 4px' }}>No completed batches yet.</div>
+      )}
+
       {/* Table */}
-      <Card style={{ overflow: 'hidden' }}>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
-              <tr>
-                <TH col="awb">AWB / Tracking</TH>
-                <TH col="carrier">Carrier</TH>
-                <TH col="dhlStatus">DHL Status</TH>
-                <TH col="dhlRec">DHL Rec.</TH>
-                <TH col="sadStatus">SAD Status</TH>
-                <TH col="mrn">MRN</TH>
-                <TH col="pzStatus">PZ Status</TH>
-                <TH col="net">Net Value</TH>
-                <TH col="gross">Gross Value</TH>
-                <TH col="duty">Duty A00</TH>
-                <TH col="overall">Overall</TH>
-                <th style={{ padding: '10px 12px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', borderBottom: '1px solid var(--border)', background: '#FAFAF8' }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((row, i) => (
-                <tr key={row.id}
-                  onMouseEnter={e => e.currentTarget.style.background = 'var(--row-hover)'}
-                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                  style={{ borderBottom: '1px solid var(--border-subtle)', transition: 'background 0.1s' }}
-                >
-                  <td style={{ padding: '10px 12px' }}>
-                    <button onClick={() => onViewShipment(row)} style={{
-                      background: 'none', border: 'none', cursor: 'pointer',
-                      color: '#1A5FA8', fontSize: 12, fontWeight: 600,
-                      fontFamily: 'monospace', textDecoration: 'underline',
-                      textDecorationStyle: 'dotted',
-                    }}>{row.awb}</button>
-                  </td>
-                  <td style={{ padding: '10px 12px', color: '#18160F' }}>
-                    <span style={{
-                      display: 'inline-block', padding: '1px 6px',
-                      background: row.carrier === 'DHL' ? '#EBF3FB' : row.carrier === 'FedEx' ? '#F0EBFB' : '#F0EFEB',
-                      borderRadius: 4, fontSize: 10, fontWeight: 700,
-                      color: row.carrier === 'DHL' ? '#1A5FA8' : row.carrier === 'FedEx' ? '#5A1AA8' : '#5A5550',
-                    }}>{row.carrier}</span>
-                  </td>
-                  <td style={{ padding: '10px 12px' }}><Badge status={row.dhlStatus} small /></td>
-                  <td style={{ padding: '10px 12px', color: '#6A6258', fontSize: 11 }}>{row.dhlRec}</td>
-                  <td style={{ padding: '10px 12px' }}><Badge status={row.sadStatus} small /></td>
-                  <td style={{ padding: '10px 12px', color: '#18160F', fontSize: 11, fontFamily: 'monospace' }}>{row.mrn}</td>
-                  <td style={{ padding: '10px 12px' }}><Badge status={row.pzStatus} small /></td>
-                  <td style={{ padding: '10px 12px', color: '#18160F', fontWeight: 500, textAlign: 'right' }}>{row.net}</td>
-                  <td style={{ padding: '10px 12px', color: '#18160F', fontWeight: 500, textAlign: 'right' }}>{row.gross}</td>
-                  <td style={{ padding: '10px 12px', color: GOLD, fontWeight: 700, textAlign: 'right' }}>{row.duty}</td>
-                  <td style={{ padding: '10px 12px' }}><Badge status={row.overall} small /></td>
-                  <td style={{ padding: '10px 12px' }}>
-                    <div style={{ display: 'flex', gap: 4 }}>
-                      <Btn small variant="outline" onClick={() => onViewShipment(row)}>View</Btn>
-                      <div style={{ position: 'relative' }}>
-                        <Btn small variant="ghost" onClick={() => setActionMenu(actionMenu === row.id ? null : row.id)}>⋯</Btn>
-                        {actionMenu === row.id && (
-                          <div style={{
-                            position: 'absolute', right: 0, top: '100%', zIndex: 100,
-                            background: 'var(--card)', border: '1px solid var(--border)',
-                            borderRadius: 6, boxShadow: '0 4px 16px var(--shadow-heavy)',
-                            minWidth: 130, overflow: 'hidden',
-                          }}>
-                            {['Edit Draft', 'Reprocess', 'Archive', 'Delete'].map(a => (
-                              <button key={a} onClick={() => setActionMenu(null)} style={{
-                                display: 'block', width: '100%', padding: '8px 14px',
-                                textAlign: 'left', background: 'none', border: 'none',
-                                fontSize: 12, cursor: 'pointer', color: a === 'Delete' ? 'var(--badge-red-text)' : 'var(--text)',
-                              }}
-                                onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-subtle)'}
-                                onMouseLeave={e => e.currentTarget.style.background = 'none'}
-                              >{a}</button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </td>
+      {!loading && !error && all.length > 0 && (
+        <Card style={{ overflow: 'hidden' }}>
+          <div style={{ overflowX: 'auto' }}>
+            <table data-testid="shipments-hub-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <TH col="tracking_no">AWB / Tracking</TH>
+                  <TH col="carrier">Carrier</TH>
+                  <TH col="dhl_status">DHL / Clearance</TH>
+                  <TH col="action_reason">Rec.</TH>
+                  <TH col="sad_status">SAD Status</TH>
+                  <TH col="mrn">MRN</TH>
+                  <TH col="pz_status">PZ Status</TH>
+                  <TH col="net">Net Value</TH>
+                  <TH col="gross">Gross Value</TH>
+                  <TH col="duty">Duty A00</TH>
+                  <TH col="status">Overall</TH>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Showing {filtered.length} of {MOCK_SHIPMENTS.length} shipments</span>
-          <div style={{ display: 'flex', gap: 4 }}>
-            <Btn small variant="outline">← Prev</Btn>
-            <Btn small variant="outline">Next →</Btn>
+              </thead>
+              <tbody>
+                {sorted.map((row, i) => {
+                  const label = row.tracking_no || row.batch_id || '—';
+                  const trackUrl = _safeHttpUrl(row.tracking_url);
+                  return (
+                    <tr key={row.batch_id || i}
+                      onMouseEnter={e => e.currentTarget.style.background = 'var(--row-hover)'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                      style={{ borderBottom: '1px solid var(--border-subtle)', transition: 'background 0.1s' }}
+                    >
+                      <td style={{ padding: '10px 12px' }}>
+                        {trackUrl ? (
+                          <a href={trackUrl} target="_blank" rel="noopener noreferrer"
+                            title={row.tracking_label || 'Open carrier tracking'}
+                            style={{
+                              color: '#1A5FA8', fontSize: 12, fontWeight: 600,
+                              fontFamily: 'monospace', textDecoration: 'underline',
+                              textDecorationStyle: 'dotted',
+                            }}>{label} ↗</a>
+                        ) : (
+                          <span style={{ fontSize: 12, fontWeight: 600, fontFamily: 'monospace', color: 'var(--text)' }}>{label}</span>
+                        )}
+                      </td>
+                      <td style={{ padding: '10px 12px', color: '#18160F' }}>
+                        <span style={{
+                          display: 'inline-block', padding: '1px 6px',
+                          background: row.carrier === 'DHL' ? '#EBF3FB' : row.carrier === 'FedEx' ? '#F0EBFB' : '#F0EFEB',
+                          borderRadius: 4, fontSize: 10, fontWeight: 700,
+                          color: row.carrier === 'DHL' ? '#1A5FA8' : row.carrier === 'FedEx' ? '#5A1AA8' : '#5A5550',
+                        }}>{_fmt(row.carrier)}</span>
+                      </td>
+                      <td style={{ padding: '10px 12px' }}>{row.dhl_status ? <Badge status={row.dhl_status} small /> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
+                      <td style={{ padding: '10px 12px', color: '#6A6258', fontSize: 11 }}>{_fmt(row.action_reason)}</td>
+                      <td style={{ padding: '10px 12px' }}>{row.sad_status ? <Badge status={row.sad_status} small /> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
+                      <td style={{ padding: '10px 12px', color: '#18160F', fontSize: 11, fontFamily: 'monospace' }}>{_fmt(row.mrn)}</td>
+                      <td style={{ padding: '10px 12px' }}>{row.pz_status ? <Badge status={row.pz_status} small /> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
+                      <td style={{ padding: '10px 12px', color: '#18160F', fontWeight: 500, textAlign: 'right' }}>{_fmt(row.net)}</td>
+                      <td style={{ padding: '10px 12px', color: '#18160F', fontWeight: 500, textAlign: 'right' }}>{_fmt(row.gross)}</td>
+                      <td style={{ padding: '10px 12px', color: GOLD, fontWeight: 700, textAlign: 'right' }}>{_fmt(row.duty)}</td>
+                      <td style={{ padding: '10px 12px' }}>{row.status ? <Badge status={row.status} small /> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        </div>
-      </Card>
+          <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Showing {sorted.length} of {all.length} batches</span>
+          </div>
+        </Card>
+      )}
+
+      {/* Authority statement */}
+      <div style={{
+        marginTop: 16, padding: '12px 16px', background: 'var(--bg-subtle)',
+        border: '1px solid var(--border)', borderRadius: 8,
+        fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5,
+      }}>
+        <strong style={{ color: 'var(--text-2)' }}>Observer only.</strong>{' '}
+        This surface is read-only — it renders completed-batch truth and exposes no
+        action controls of any kind. Batch processing authority remains the engine
+        and the V1 dashboard.{' '}
+        <strong style={{ color: 'var(--text-2)' }}>Endpoint:</strong>{' '}
+        <code style={{ fontFamily: 'monospace', background: 'var(--card)', padding: '1px 5px', borderRadius: 3 }}>{SHIPMENTS_ENDPOINT}</code>.
+      </div>
     </div>
   );
 }
 
-Object.assign(window, { DashboardPage, MOCK_SHIPMENTS });
+Object.assign(window, { DashboardPage });
