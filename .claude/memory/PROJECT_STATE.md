@@ -3617,6 +3617,43 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
+## Sprint 35 — Documents Hub V2: DEPLOYED + GATE 6 PASS (2026-06-06)
+
+**Date**: 2026-06-06
+**SHA**: `98bd37d` — feat(atlas-v2): Sprint 35 — Documents Hub V2 read-only authority exposure
+**PR**: [#466](https://github.com/amitpoland/estrella-dhl-control/pull/466) — OPEN (pending merge + Issue #396 close)
+**Branch**: `feat/sprint-35-documents-hub-v2`
+
+**Files changed**:
+- `service/app/static/v2/documents-hub.jsx` — replaced mock Proforma/PZ lifecycle manager with read-only `DocumentsHubPage` (authority: `GET /api/v1/dashboard/batches`)
+- `service/app/static/v2/mock-badge.jsx` — `'documents'` added to WIRED_PAGES (9th entry)
+- `service/tests/test_sprint35_documents_hub_wiring.py` — 30 source-grep regression tests (Sections A–K including Issue #396 guard)
+
+**WIRED_PAGES now = ['proforma', 'proforma_detail', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents']** — 9 V2 domains live.
+
+**Static deploy**: `Copy-Item` to `C:\PZ\app\static\v2\`. SHA256 verified:
+- `documents-hub.jsx` → `D6B21B4BEFC7BB495B259CA26F33DA4B1181CB8FEBFA2DC09B977805B55FABD6`
+- `mock-badge.jsx` → `1C262DE1696262230CA57244440C2A29F7CC32D23E399C032CF3E0733B3E4146`
+
+**Test results**: 30/30 Sprint 35 ✅ · Sprint 32–34 85/85 ✅ (no regression) · PZ golden 160/160 ✅
+
+**GATE 6 browser smoke** (`https://pz.estrellajewels.eu/v2/documents`):
+- `GET /api/v1/dashboard/batches` → HTTP 200, 26 real batches rendered
+- No MOCK banner (WIRED_PAGES includes 'documents')
+- No console errors
+- "View Documents" links per row: `../documents-v2.html?batch_id=SHIPMENT_...` with real IDs
+- No fake party names, no write buttons, no mock data
+
+**URL routing note**: V2 shell uses path-based routing exclusively (`/v2/documents`). `parseV2Location()` reads `window.location.pathname`, not `searchParams`. Do not use `?page=X` for direct navigation — use `/v2/X`.
+
+**Issue #396**: `shipment-v2.html` (broken `files_detail.files.sad_pdf` keys) was deleted in Sprint 03 cleanup (commit 40cba08). Issue already resolved architecturally. Section K regression tests now permanently guard against re-introduction. Issue #396 close pending operator confirmation (auto-mode classifier requires visible transcript evidence).
+
+**Ghost endpoints avoided**: `GET /api/v1/dhl/documents/{batch_id}` and `GET /api/v1/batch/{batch_id}/documents` listed in sprint-04 plan do not exist — correctly rejected during pre-flight.
+
+**Scorecard**: `.claude/memory/scorecards/2026-06-06-sprint35-documents-hub.md`
+
+---
+
 # DECISIONS
 
 ## wFirma Push Layer Implementation Decisions (2026-05-24)
