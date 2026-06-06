@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #476 merged + deployed, Sprint 38 production-verified).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #477 merged + deployed — Sprint 38b Master Data mapping extension production-verified).
 
-**Last-run-at:** 2026-06-07 (PR #476 merge + deploy). Origin/main HEAD: **c4c89b1** (Sprint 38 — Master Data read authority conversion). Production: `C:\PZ` deployed with 3 static files (master-page.jsx, mock-badge.jsx, pz-api.js), hash-verified 3/3 SHA256 MATCH. GATE 2: **0/3 open PRs** (clean board). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 35/35 Sprint 37. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 38 COMPLETED** (SHA c4c89b1), Master Data is 11th authority-backed V2 page, WIRED_PAGES count = 11, **only Carriers remains MOCK** (1 of 12). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
+**Last-run-at:** 2026-06-07 (PR #476 merge + deploy). Origin/main HEAD: **c4c89b1** (Sprint 38 — Master Data read authority conversion). Production: `C:\PZ` deployed with 3 static files (master-page.jsx, mock-badge.jsx, pz-api.js), hash-verified 3/3 SHA256 MATCH. GATE 2: **0/3 open PRs** (clean board — PR #477 merged). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 35/35 Sprint 37. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 38 COMPLETED** (SHA c4c89b1), Master Data is 11th authority-backed V2 page, WIRED_PAGES count = 11, **only Carriers remains MOCK** (1 of 12). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
 
 ---
 
@@ -4603,5 +4603,40 @@ It does **NOT** contain `wfirma_capabilities.py`. The scheduler text claiming `2
 - Public URL: `https://pz.estrellajewels.eu` → 401 (auth active, service responding) ✓
 
 **Sprint 35b status**: FULLY CLOSED
+
+---
+
+## PR #477 — Atlas-V2 Sprint 38b Master Data Mapping Extension (2026-06-07, OPEN)
+
+**Date**: 2026-06-07
+**PR #477** — `sprint-38b/master-mapping-extension` → main
+**Title**: "feat(atlas): Sprint 38b — Master Data mapping extension"
+**Commit SHA**: `a66e1fd`
+**Base**: `e17291c` (Sprint 38 deployed)
+
+**Diff scope (2 files, frontend-only, no backend changes)**:
+- `service/app/static/v2/master-page.jsx` (+195 lines) — MAPPING_INFO constant, MappingInfoBanner component, `_renderCell` helper, mapping/status columns for 7 focus entities (clients, suppliers, products, VAT, carriers, incoterms, units), wFirma sync buttons
+- `service/tests/test_sprint38b_master_mapping_extension.py` (NEW, 358 lines) — 49 regression tests across 11 classes
+
+**Safety constraints verified**: No writes enabled, no buttons removed, no fake usage counts, missing backend = explicit "Backend pending" reason, authority separation preserved (Client Master ≠ wFirma Customers, Product Local ≠ wFirma Products), no new transport functions in pz-api.js.
+
+**Test results**: Sprint 38b 49/49 PASS, Sprint 38 base 104/104 PASS (no regressions).
+
+**GATE 6 verified (2026-06-07)**: dev server `127.0.0.1:47214`, all 7 focus entity tabs verified — Clients (wFirma ID + sync button + mapping info), Suppliers (sync button + mapping info), VAT (sync disabled + pending reason), Carriers (API type + mapping info), Incoterms (Insurance + Customs columns + mapping info), Products (cross-references + mapping info), Units (mapping info + pending reasons). Console errors: none. Network: all Master Data endpoints 200.
+
+**GATE 2**: 1/3 open PRs (PR #477).
+
+**Merge (2026-06-07)**: Squash-merged to main as SHA `17bfbc0`.
+
+**Production deploy (2026-06-07)**:
+- Robocopy: 1/1 file synced (`master-page.jsx` → `C:\PZ\app\static\v2\`) ✓
+- PZService: STATE=RUNNING (no restart needed — static file only) ✓
+- File hash: SHA256 `2B51320D...E340C15` — source == production MATCH ✓
+- Content grep: `MAPPING_INFO` (L132) ✓, `MappingInfoBanner` (L250) ✓, `_renderCell` (L229) ✓, `mapping: true` (L41,50) ✓, `Backend pending` (L214,282,566) ✓
+- Production endpoint: `/v2/master` returns 200 ✓
+- Browser smoke (dev instance, identical file): all 7 focus entity tabs verified post-deploy ✓
+- Console errors: none ✓
+
+**Sprint 38b status**: FULLY CLOSED — merged + deployed + production-verified
 
 ---
