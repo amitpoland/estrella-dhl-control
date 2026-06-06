@@ -475,4 +475,123 @@ function EJProformaModern({ docData }) {
   );
 }
 
-Object.assign(window, { EJProformaClassic, EJProformaModern });
+// ═══════════════════════════════════════════════════════════════════════════════
+// VARIANT C — BOLD
+// Full-bleed emerald left rail · gold accent · oversized total · compact body
+// ═══════════════════════════════════════════════════════════════════════════════
+function EJProformaBold({ docData }) {
+  const d = docData || {};
+  const lines = d.lines || [];
+  const totalEur = typeof d.total_eur === "number" ? d.total_eur : lines.reduce((s, l) => s + (l.netEur || 0), 0);
+  const totalPln = typeof d.total_pln === "number" ? d.total_pln : null;
+
+  return (
+    <div className="ej-a4" style={{ display: "flex" }}>
+      {/* Left rail */}
+      <div className="ej-rail">
+        <EJDocLogo size="md" mono/>
+        <div>
+          <div style={{ fontSize: 8.5, letterSpacing: "0.18em", textTransform: "uppercase", color: "#C9A24B", fontWeight: 600, marginBottom: 6 }}>
+            Pro Forma
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.1 }}>{d.doc_no || "—"}</div>
+          <div style={{ fontSize: 10, opacity: 0.75, marginTop: 4 }}>Faktura proforma · Predfaktúra</div>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {[
+            ["Issued",       d.date    || "—"],
+            ["Payment due",  d.due     || "—"],
+            ["Method",       d.payment || "—"],
+            ["FX · NBP",     d.rate && d.rate.eur ? `1 EUR = ${Number(d.rate.eur).toFixed(4)} PLN` : "—"],
+          ].map(([k, v]) => (
+            <div key={k}>
+              <div style={{ fontSize: 8.5, letterSpacing: "0.16em", textTransform: "uppercase", opacity: 0.6, fontWeight: 600 }}>{k}</div>
+              <div style={{ fontSize: 11, fontWeight: 600, marginTop: 2 }}>{v}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ marginTop: "auto", fontSize: 9, opacity: 0.75, lineHeight: 1.5 }}>
+          <div style={{ color: "#C9A24B", fontWeight: 600, marginBottom: 4 }}>Estrella Jewels</div>
+          {d.seller && d.seller.addr && <div>{d.seller.addr}</div>}
+          {d.seller && d.seller.email && <div>{d.seller.email}</div>}
+          {d.seller && d.seller.phone && <div>{d.seller.phone}</div>}
+        </div>
+      </div>
+
+      {/* Right body */}
+      <div style={{ flex: 1, padding: "32px 36px", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+
+        {/* Parties */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
+          <EJDocAddress label="Bill to · Nabywca"  party={d.buyer}/>
+          <EJDocAddress label="Ship to · Odbiorca" party={d.buyer}/>
+        </div>
+
+        {/* Carrier */}
+        {d.carrier && <EJDocCarrierRow carrier={d.carrier}/>}
+
+        {/* Lines */}
+        <table className="ej-table" style={{ marginBottom: 16 }}>
+          <thead>
+            <tr>
+              <th>Description · Nazwa</th>
+              <th style={{ width: 70 }}>SKU</th>
+              <th style={{ width: 44 }}>Origin</th>
+              <th className="ej-r" style={{ width: 32 }}>Qty</th>
+              <th className="ej-r" style={{ width: 64 }}>Unit</th>
+              <th className="ej-r" style={{ width: 70 }}>Net EUR</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.length === 0 && (
+              <tr>
+                <td colSpan={6} style={{ color: "#94A3B8", padding: "14px 10px" }}>No line items</td>
+              </tr>
+            )}
+            {lines.map((l, i) => (
+              <tr key={l.sku || i}>
+                <td>
+                  <div style={{ fontWeight: 600, fontSize: 10 }}>{l.desc || l.sku || "—"}</div>
+                  {l.purity && l.purity !== "Service" && (
+                    <div style={{ color: "#94A3B8", fontSize: 9 }}>{l.purity}</div>
+                  )}
+                </td>
+                <td className="ej-mono" style={{ fontSize: 9 }}>{l.sku || "—"}</td>
+                <td>{l.origin || "—"}</td>
+                <td className="ej-r ej-num">{l.qty}</td>
+                <td className="ej-r ej-num">{Number(l.unitEur || 0).toFixed(2)}</td>
+                <td className="ej-r ej-num" style={{ fontWeight: 600 }}>{Number(l.netEur || 0).toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        {/* Big total block */}
+        <div style={{ marginBottom: 18, padding: 16, background: "#FBF8F1", borderLeft: "4px solid #C9A24B", borderRadius: 4 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
+            <div>
+              <div className="ej-eyebrow ej-eyebrow-gold">Total due · WDT 0% intra-EU</div>
+              <div style={{ fontSize: 32, fontWeight: 700, color: "#0B3D2E", lineHeight: 1, marginTop: 4 }}>
+                EUR {totalEur.toFixed(2)}
+              </div>
+              {totalPln !== null && (
+                <div style={{ fontSize: 10, color: "#B0892F", marginTop: 2 }}>
+                  ≈ PLN {totalPln.toFixed(2)}
+                  {d.rate && d.rate.date ? ` · NBP ${d.rate.date}` : ""}
+                </div>
+              )}
+            </div>
+            <span className="ej-pill ej-pill-gold" style={{ fontSize: 10 }}>Due {d.due || "—"}</span>
+          </div>
+        </div>
+
+        <EJDocBank banks={d.banks || []}/>
+        <div style={{ marginTop: 16 }}><EJDocCompliance/></div>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { EJProformaClassic, EJProformaModern, EJProformaBold });

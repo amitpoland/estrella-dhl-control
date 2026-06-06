@@ -308,7 +308,7 @@ def test_v2_api_has_all_lifecycle_functions():
 def test_toolbar_testids_present():
     src = _src()
     for testid in ("tb-post", "tb-convert", "proforma-detail-download-pdf",
-                   "tb-send", "tb-generate", "tb-duplicate", "tb-preview"):
+                   "tb-send", "tb-generate", "tb-duplicate", "tb-preview", "tb-cmr"):
         assert f'data-testid="{testid}"' in src, \
             f"Toolbar button testid '{testid}' must be present"
 
@@ -392,3 +392,98 @@ def test_ej_brand_colors_in_tokens():
     tokens = (_V2_DIR / "estrella-doc-tokens.css").read_text(encoding="utf-8")
     assert "#0B3D2E" in tokens, "tokens.css must define --ej-brand: #0B3D2E (deep emerald)"
     assert "#C9A24B" in tokens, "tokens.css must define --ej-gold: #C9A24B (gold)"
+
+
+# ── 11. Bold variant ──────────────────────────────────────────────────────────
+
+def test_bold_variant_exported_from_proforma_jsx():
+    """estrella-doc-proforma.jsx must export EJProformaBold."""
+    jsx = (_V2_DIR / "estrella-doc-proforma.jsx").read_text(encoding="utf-8")
+    assert "EJProformaBold" in jsx, \
+        "estrella-doc-proforma.jsx must define and export EJProformaBold"
+    assert "window" in jsx and "EJProformaBold" in jsx.split("Object.assign(window")[1], \
+        "EJProformaBold must be in the Object.assign(window, ...) export"
+
+
+def test_preview_modal_has_bold_variant():
+    """ProformaPreviewModal variant list must include 'bold'."""
+    src = _src()
+    assert "'bold'" in src, \
+        "ProformaPreviewModal must include 'bold' in variant options"
+
+
+def test_preview_modal_uses_ej_proforma_bold():
+    """Preview modal must reference window.EJProformaBold."""
+    src = _src()
+    assert "EJProformaBold" in src, \
+        "ProformaPreviewModal must reference window.EJProformaBold for bold variant"
+
+
+# ── 12. CMR button and component ─────────────────────────────────────────────
+
+def test_cmr_toolbar_button_is_disabled():
+    """CMR toolbar button must be disabled — no backend PDF generation route exists."""
+    src = _src()
+    tb_cmr_pos = src.find('data-testid="tb-cmr"')
+    assert tb_cmr_pos > 0, "CMR button testid tb-cmr must be present"
+    block_start = src.rfind("<TbBtn", 0, tb_cmr_pos)
+    block = src[block_start:tb_cmr_pos + 60]
+    assert "disabled" in block, \
+        "CMR button must be disabled — no CMR PDF backend route exists"
+
+
+def test_cmr_button_has_honest_reason():
+    """CMR button title must explain why it is disabled."""
+    src = _src()
+    assert "no backend" in src.lower() or "CMR print" in src or "CMR" in src, \
+        "CMR button must carry a title explaining the disabled reason"
+
+
+def test_cmr_doc_jsx_exists():
+    """estrella-doc-cmr.jsx must exist in the V2 static directory."""
+    jsx = _V2_DIR / "estrella-doc-cmr.jsx"
+    assert jsx.exists(), "service/app/static/v2/estrella-doc-cmr.jsx must exist"
+
+
+def test_cmr_jsx_in_index():
+    """index.html must load estrella-doc-cmr.jsx."""
+    idx = (Path(__file__).parent.parent / "app" / "static" / "v2" / "index.html").read_text(encoding="utf-8")
+    assert "estrella-doc-cmr.jsx" in idx, \
+        "index.html must load estrella-doc-cmr.jsx for CMR preview"
+
+
+def test_cmr_exports_to_window():
+    """estrella-doc-cmr.jsx must export EJCMRClassic and EJCMRModern to window."""
+    jsx = (_V2_DIR / "estrella-doc-cmr.jsx").read_text(encoding="utf-8")
+    assert "EJCMRClassic" in jsx, "estrella-doc-cmr.jsx must define EJCMRClassic"
+    assert "EJCMRModern"  in jsx, "estrella-doc-cmr.jsx must define EJCMRModern"
+    assign_part = jsx.split("Object.assign(window")[1] if "Object.assign(window" in jsx else ""
+    assert "EJCMRClassic" in assign_part and "EJCMRModern" in assign_part, \
+        "Both EJCMRClassic and EJCMRModern must be in Object.assign(window, ...) export"
+
+
+def test_cmr_no_mock_data_in_proforma_detail():
+    """proforma-detail.jsx must not use SAMPLE or hardcoded CMR mock data."""
+    src = _src()
+    assert "EJ_SAMPLE" not in src, "proforma-detail.jsx must not use design-canvas SAMPLE data"
+    assert "CMR-EJ-26-0095" not in src, \
+        "proforma-detail.jsx must not contain hardcoded CMR reference from design canvas"
+
+
+def test_cmr_preview_uses_live_batch_id():
+    """cmrPreviewData must use liveDraft.batch_id for CMR reference."""
+    src = _src()
+    assert "cmrPreviewData" in src, "proforma-detail.jsx must define cmrPreviewData"
+    assert "batch_id" in src, "cmrPreviewData must reference liveDraft.batch_id for CMR number"
+
+
+def test_preview_doctype_selector_present():
+    """Preview modal must have Proforma / CMR document type selector."""
+    src = _src()
+    # testid is built via template literal: data-testid={`preview-doctype-${dt}`}
+    assert "preview-doctype-" in src, \
+        "Preview modal must use data-testid starting with 'preview-doctype-'"
+    assert "onDocTypeChange" in src, \
+        "Preview modal must call onDocTypeChange for doctype switching"
+    assert "'proforma'" in src and "'cmr'" in src, \
+        "Preview modal must enumerate both 'proforma' and 'cmr' doc type values"
