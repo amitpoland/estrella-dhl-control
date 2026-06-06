@@ -150,7 +150,13 @@ from any agent — including the lead coordinator — is never itself a producti
 
 ## Runtime-registry rule (binding)
 
-The ~70-entry runtime `subagent_type` menu is a convenience surface, not an authority.
+The ~80-entry runtime `subagent_type` menu is a convenience surface, not an authority.
 For final verdicts, use a repo-installed agent from this registry. A runtime-only agent
 (no file in `.claude/agents/`) may be used only as an optional helper, and its output must
 be independently verified before it influences any production-affecting decision (Lesson B).
+
+**Full runtime enumeration + hazard list:** `.claude/agents/RUNTIME_AGENT_AUDIT.md`
+(2026-06-06). It documents all ~80 dispatchable agents: 15 repo-canonical (this file),
+54 user-level runtime-only (~23 write-capable, incl. EJ-domain-named actors that are
+FORBIDDEN as actors), plus built-ins and wrong-domain plugin agents. Read it before
+dispatching any non-repo `subagent_type`.

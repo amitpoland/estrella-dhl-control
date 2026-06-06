@@ -141,6 +141,16 @@ re-verify independently.
 
 ## 6. Runtime-only agent policy
 
+> **Concrete hazard list (from `.claude/agents/RUNTIME_AGENT_AUDIT.md`, 2026-06-06):**
+> The dispatch menu contains ~80 agents — only **15 are repo-canonical**; **54 are
+> user-level runtime-only** and **~23 of those are write-capable**. The following
+> runtime-only agents are named like EJ write-risk domains and CAN mutate production —
+> **they are FORBIDDEN as actors; never dispatch them to act, never treat as authority:**
+> `dhl-customs` · `wfirma-integration` · `pz-purchase-accounting` · `sales-proforma` ·
+> `inventory-state-machine` · `warehouse-ops` · `client-contractor-mapping` ·
+> `email-evidence-recovery` · `database-storage` · `deployment-windows-ops`.
+> Also wrong-domain (never use for EJ): the 6 `legal-*` and 5 `brand-voice:*` agents.
+
 If a task seems to need a capability with no repo-installed agent:
 1. Prefer a repo-installed agent that covers the scope (see AGENT_REGISTRY matrix).
 2. If genuinely none exists, a runtime-only agent MAY be used as a helper, but:

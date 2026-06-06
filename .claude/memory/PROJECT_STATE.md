@@ -3369,6 +3369,32 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
+## Runtime Agent Audit (2026-06-06, docs-only)
+
+**Task**: Full audit of all repo agents, runtime subagents, skills, commands — find the true dispatch surface and which agents are project-safe. Audit/documentation only.
+
+**Verified counts**:
+- **Repo-installed (canonical): 15** (`C:\PZ-verify\.claude\agents`)
+- **User-level runtime-only: 54** (`C:\Users\Super Fashion\.claude\agents`)
+- **Built-in/helper: ~6** (claude, general-purpose, Explore, Plan, statusline-setup, claude-code-guide)
+- **Plugin: 5** (brand-voice:* — wrong domain)
+- **Total dispatchable subagent_type: ≈80**
+- **Overlap repo∩dispatchable = 15** (all repo agents dispatch); **overlap repo∩user-level = 0** (clean separation, no name collision)
+
+**Key safety finding**: ~23 user-level runtime agents are write-capable; **10 are named like EJ write-risk domains and can mutate production** (`dhl-customs`, `wfirma-integration`, `pz-purchase-accounting`, `sales-proforma`, `inventory-state-machine`, `warehouse-ops`, `client-contractor-mapping`, `email-evidence-recovery`, `database-storage`, `deployment-windows-ops`) — none version-controlled, none gate-bound. Flagged FORBIDDEN as actors. Wrong-domain noise: 6 legal-* + 5 brand-voice:* (never use for EJ).
+
+**Capability split (repo)**: 12 INSPECT-ONLY + 3 DOCS-WRITE (adr-historian, agent-performance-observer, flow-context-keeper); zero product-code write.
+
+**Gap identified**: no repo-installed browser-QA agent despite browser smoke being load-bearing in Sprint 30/31 (done manually via Preview MCP). `browser-verifier` is runtime-only. Candidate to repo-install in future (NOT auto-created).
+
+**Files**: created `.claude/agents/RUNTIME_AGENT_AUDIT.md`; cross-reference added to `AGENT_REGISTRY.md` + forbidden-actor list added to `agent-orchestration-playbook.md §6`; this entry.
+
+**Registry health**: AGENT_REGISTRY.md (15 entries) re-verified accurate against disk — no stale/incomplete entries.
+
+**Binding outcome**: only the 15 repo agents are canonical; all ~65 runtime-only agents are optional helpers, never final authority, never permitted to mutate production. **No production impact** — docs-only.
+
+---
+
 # DECISIONS
 
 ## wFirma Push Layer Implementation Decisions (2026-05-24)
