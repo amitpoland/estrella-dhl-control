@@ -554,12 +554,12 @@ function App() {
             </>
           )}
 
-          {/* Intelligence (was Learning / Parser) */}
+          {/* Intelligence Hub — wired to live intelligence + invoice-learning authority (Sprint 34) */}
           {!viewerDoc && page === 'intelligence' && (
             <>
-              <PageHeader title="Intelligence" subtitle="Parser tuning, locked formulas, classification rules, and learning feedback" />
+              <PageHeader title="Intelligence Hub" subtitle="Engine status, live trigger suggestions, risk warnings, config, and invoice-learning patterns" />
               <SubTabStrip active={page} onNav={handleNav} />
-              <LearningParserPage />
+              <IntelligencePage />
             </>
           )}
 

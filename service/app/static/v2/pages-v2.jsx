@@ -1279,12 +1279,386 @@ function ReportsDuty() {
   );
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// Intelligence Hub — read-only observer over intelligence + learning authority
+// Sprint 34: GET /api/v1/intelligence/status
+//            GET /api/v1/intelligence/suggestions
+//            GET /api/v1/intelligence/config
+//            GET /api/v1/invoice-learning/summary
+// All calls use window.EstrellaShared.apiFetch (auth-aware GET shim).
+// No POST / PUT / PATCH / DELETE. No write affordances. Observer only.
+// ════════════════════════════════════════════════════════════════════════════
+function IntelligencePage() {
+  const [tab, setTab] = React.useState('status');
+
+  const [statusData,    setStatusData]    = React.useState(null);
+  const [statusLoading, setStatusLoading] = React.useState(true);
+  const [statusError,   setStatusError]   = React.useState(null);
+
+  const [sugData,    setSugData]    = React.useState(null);
+  const [sugLoading, setSugLoading] = React.useState(true);
+  const [sugError,   setSugError]   = React.useState(null);
+
+  const [cfgData,    setCfgData]    = React.useState(null);
+  const [cfgLoading, setCfgLoading] = React.useState(true);
+  const [cfgError,   setCfgError]   = React.useState(null);
+
+  const [learnData,    setLearnData]    = React.useState(null);
+  const [learnLoading, setLearnLoading] = React.useState(true);
+  const [learnError,   setLearnError]   = React.useState(null);
+
+  const loadStatus = React.useCallback(() => {
+    setStatusLoading(true); setStatusError(null);
+    window.EstrellaShared.apiFetch('/api/v1/intelligence/status')
+      .then(d => { setStatusData(d); setStatusLoading(false); })
+      .catch(e => { setStatusError((e && e.message) || String(e)); setStatusLoading(false); });
+  }, []);
+
+  const loadSuggestions = React.useCallback(() => {
+    setSugLoading(true); setSugError(null);
+    window.EstrellaShared.apiFetch('/api/v1/intelligence/suggestions')
+      .then(d => { setSugData(d); setSugLoading(false); })
+      .catch(e => { setSugError((e && e.message) || String(e)); setSugLoading(false); });
+  }, []);
+
+  const loadConfig = React.useCallback(() => {
+    setCfgLoading(true); setCfgError(null);
+    window.EstrellaShared.apiFetch('/api/v1/intelligence/config')
+      .then(d => { setCfgData(d); setCfgLoading(false); })
+      .catch(e => { setCfgError((e && e.message) || String(e)); setCfgLoading(false); });
+  }, []);
+
+  const loadLearning = React.useCallback(() => {
+    setLearnLoading(true); setLearnError(null);
+    window.EstrellaShared.apiFetch('/api/v1/invoice-learning/summary')
+      .then(d => { setLearnData(d); setLearnLoading(false); })
+      .catch(e => { setLearnError((e && e.message) || String(e)); setLearnLoading(false); });
+  }, []);
+
+  React.useEffect(() => {
+    loadStatus(); loadSuggestions(); loadConfig(); loadLearning();
+  }, [loadStatus, loadSuggestions, loadConfig, loadLearning]);
+
+  const reloadAll = React.useCallback(() => {
+    loadStatus(); loadSuggestions(); loadConfig(); loadLearning();
+  }, [loadStatus, loadSuggestions, loadConfig, loadLearning]);
+
+  const anyLoading = statusLoading || sugLoading || cfgLoading || learnLoading;
+
+  const sugItems  = sugData && sugData.suggestions && Array.isArray(sugData.suggestions.items) ? sugData.suggestions.items : [];
+  const warnItems = sugData && sugData.warnings    && Array.isArray(sugData.warnings.items)    ? sugData.warnings.items    : [];
+  const suppliers = learnData && Array.isArray(learnData.suppliers) ? learnData.suppliers : [];
+
+  return (
+    <div data-testid="intelligence-hub-root" style={{ padding: '20px 32px', overflowY: 'auto', flex: 1 }}>
+
+      <div style={{ padding: 12, background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 12, fontSize: 11, color: 'var(--text-2)' }}>
+        Observer only — read-only view of the intelligence engine. No writes, no email sends, no automations.
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button
+          data-testid="intelligence-hub-reload"
+          onClick={reloadAll}
+          disabled={anyLoading}
+          style={{
+            background: 'transparent', border: '1px solid var(--border)', borderRadius: 4,
+            padding: '4px 10px', fontSize: 11, color: 'var(--text-2)',
+            cursor: anyLoading ? 'default' : 'pointer',
+          }}
+        >↻ Reload</button>
+      </div>
+
+      <div data-testid="intelligence-hub-summary" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }} className="grid-stats">
+        <StatTile
+          label="Engine status"
+          value={statusLoading ? '…' : statusData ? statusData.status : '—'}
+          sub="Intelligence engine"
+          accent={statusData && statusData.status === 'active' ? 'var(--badge-green-text)' : undefined}
+        />
+        <StatTile
+          label="Suggestions"
+          value={sugLoading ? '…' : sugData ? String(sugData.suggestions.count) : '—'}
+          sub="Live trigger suggestions"
+          accent="var(--accent)"
+        />
+        <StatTile
+          label="Risk warnings"
+          value={sugLoading ? '…' : sugData ? String(sugData.warnings.count) : '—'}
+          sub="Detected risk signals"
+          accent={sugData && sugData.warnings.count > 0 ? 'var(--badge-red-text)' : undefined}
+        />
+        <StatTile
+          label="Known suppliers"
+          value={learnLoading ? '…' : learnData ? String(learnData.total) : '—'}
+          sub="Invoice learning patterns"
+          accent="var(--badge-green-text)"
+        />
+      </div>
+
+      <Tabs
+        tabs={[
+          { id: 'status',      label: 'Engine Status' },
+          { id: 'suggestions', label: sugData && sugData.suggestions.count > 0 ? 'Suggestions (' + sugData.suggestions.count + ')' : 'Suggestions' },
+          { id: 'config',      label: 'Config' },
+          { id: 'learning',    label: learnData ? 'Invoice Learning (' + learnData.total + ')' : 'Invoice Learning' },
+        ]}
+        active={tab}
+        onChange={setTab}
+      />
+
+      {tab === 'status' && (
+        <div data-testid="intelligence-hub-status-panel">
+          {statusLoading && <div style={{ padding: 20, fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>}
+          {statusError   && <div style={{ padding: 20, fontSize: 12, color: 'var(--badge-red-text)' }}>Error: {statusError}</div>}
+          {!statusLoading && !statusError && statusData && (
+            <Card style={{ overflow: 'hidden' }}>
+              <div style={{ padding: 16 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Research Documents</div>
+                    {[
+                      ['Total',   String(statusData.research_docs.total)],
+                      ['Found',   String(statusData.research_docs.found)],
+                      ['Missing', String(statusData.research_docs.missing)],
+                    ].map(function(pair) { return (
+                      <div key={pair[0]} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 11 }}>
+                        <span style={{ color: 'var(--text-2)' }}>{pair[0]}</span>
+                        <span style={{ fontWeight: 600 }}>{pair[1]}</span>
+                      </div>
+                    ); })}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Config</div>
+                    {[
+                      ['Exists',       statusData.config.exists ? 'Yes' : 'No'],
+                      ['Age (hours)',  statusData.config.age_hours != null ? String(statusData.config.age_hours) : 'N/A'],
+                    ].map(function(pair) { return (
+                      <div key={pair[0]} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 11 }}>
+                        <span style={{ color: 'var(--text-2)' }}>{pair[0]}</span>
+                        <span style={{ fontWeight: 600 }}>{pair[1]}</span>
+                      </div>
+                    ); })}
+                  </div>
+                </div>
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Capabilities</div>
+                  {(statusData.capabilities || []).map(function(c, i) { return (
+                    <div key={i} style={{ fontSize: 11, color: 'var(--text-2)', padding: '3px 0', borderBottom: '1px solid var(--border-subtle)' }}>{c}</div>
+                  ); })}
+                </div>
+              </div>
+            </Card>
+          )}
+          {!statusLoading && !statusError && !statusData && (
+            <div style={{ padding: 20, fontSize: 12, color: 'var(--text-3)' }}>No data available.</div>
+          )}
+        </div>
+      )}
+
+      {tab === 'suggestions' && (
+        <div data-testid="intelligence-hub-suggestions-panel">
+          {sugLoading && <div style={{ padding: 20, fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>}
+          {sugError   && <div style={{ padding: 20, fontSize: 12, color: 'var(--badge-red-text)' }}>Error: {sugError}</div>}
+          {!sugLoading && !sugError && sugData && (
+            <Card style={{ overflow: 'hidden' }}>
+              <div style={{ padding: '10px 16px', fontSize: 11, color: 'var(--text-2)', borderBottom: '1px solid var(--border)' }}>
+                {sugData.batches_checked} batch{sugData.batches_checked !== 1 ? 'es' : ''} scanned · mode: {sugData.mode}
+              </div>
+              {sugItems.length === 0 && warnItems.length === 0 && (
+                <div style={{ padding: 16, fontSize: 12, color: 'var(--text-3)' }}>No active suggestions or warnings.</div>
+              )}
+              {sugItems.length > 0 && (
+                <div>
+                  <div style={{ padding: '8px 16px', fontSize: 11, fontWeight: 700, color: 'var(--text)', background: 'var(--bg-subtle)' }}>Trigger Suggestions ({sugItems.length})</div>
+                  <IntelligenceSugTable rows={sugItems} />
+                </div>
+              )}
+              {warnItems.length > 0 && (
+                <div>
+                  <div style={{ padding: '8px 16px', fontSize: 11, fontWeight: 700, color: 'var(--badge-amber-text)', background: 'var(--badge-amber-bg)', borderTop: '1px solid var(--border)' }}>Risk Warnings ({warnItems.length})</div>
+                  <IntelligenceWarnTable rows={warnItems} />
+                </div>
+              )}
+            </Card>
+          )}
+        </div>
+      )}
+
+      {tab === 'config' && (
+        <div data-testid="intelligence-hub-config-panel">
+          {cfgLoading && <div style={{ padding: 20, fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>}
+          {cfgError && (
+            <div style={{ padding: 16 }}>
+              <div style={{ fontSize: 12, padding: 12, background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, color: 'var(--badge-amber-text)' }}>
+                {cfgError.toLowerCase().indexOf('404') !== -1 || cfgError.toLowerCase().indexOf('not_generated') !== -1
+                  ? 'Intelligence config not yet generated. Use the backend CLI intelligence refresh command to generate.'
+                  : cfgError}
+              </div>
+            </div>
+          )}
+          {!cfgLoading && !cfgError && cfgData && (
+            <Card style={{ overflow: 'hidden' }}>
+              <div style={{ padding: 16 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Summary</div>
+                    {[
+                      ['Approval status', cfgData.approval_status || 'Unknown'],
+                      ['Trusted senders', String((cfgData.summary || {}).trusted_clearance_count || 0)],
+                      ['Do-not-trigger',  String((cfgData.summary || {}).do_not_trigger_count  || 0)],
+                      ['Trigger rules',   String((cfgData.summary || {}).trigger_rules_count   || 0)],
+                      ['Risk items',      String((cfgData.summary || {}).risk_items_count      || 0)],
+                    ].map(function(pair) { return (
+                      <div key={pair[0]} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 11 }}>
+                        <span style={{ color: 'var(--text-2)' }}>{pair[0]}</span>
+                        <span style={{ fontWeight: 600 }}>{pair[1]}</span>
+                      </div>
+                    ); })}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>SLA Thresholds</div>
+                    {Object.entries(cfgData.sla_thresholds || {}).length === 0
+                      ? <div style={{ fontSize: 11, color: 'var(--text-3)' }}>No thresholds configured.</div>
+                      : Object.entries(cfgData.sla_thresholds).map(function(e) { return (
+                          <div key={e[0]} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 11 }}>
+                            <span style={{ color: 'var(--text-2)' }}>{e[0]}</span>
+                            <span style={{ fontWeight: 600 }}>{String(e[1])}</span>
+                          </div>
+                        ); })
+                    }
+                  </div>
+                </div>
+                {(cfgData.trusted_clearance_senders || []).length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Trusted Clearance Senders</div>
+                    {cfgData.trusted_clearance_senders.map(function(s, i) { return (
+                      <div key={i} style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-2)', padding: '2px 0' }}>{s}</div>
+                    ); })}
+                  </div>
+                )}
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {tab === 'learning' && (
+        <div data-testid="intelligence-hub-learning-panel">
+          {learnLoading && <div style={{ padding: 20, fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>}
+          {learnError   && <div style={{ padding: 20, fontSize: 12, color: 'var(--badge-red-text)' }}>Error: {learnError}</div>}
+          {!learnLoading && !learnError && (
+            <Card style={{ overflow: 'hidden' }}>
+              {suppliers.length === 0
+                ? <div style={{ padding: 16, fontSize: 12, color: 'var(--text-3)' }}>No supplier patterns learned yet.</div>
+                : <IntelligenceLearningTable suppliers={suppliers} />
+              }
+            </Card>
+          )}
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+function IntelligenceSugTable({ rows }) {
+  if (!rows || !rows.length) return null;
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+        <thead>
+          <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+            {['batch_id', 'awb', 'trigger', 'priority', 'message'].map(function(h) { return (
+              <th key={h} style={{ padding: '7px 12px', textAlign: 'left', fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: 10 }}>{h}</th>
+            ); })}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 200).map(function(r, i) { return (
+            <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+              <td style={{ padding: '6px 12px', fontFamily: 'monospace', color: 'var(--text-2)' }}>{r.batch_id || '—'}</td>
+              <td style={{ padding: '6px 12px', fontFamily: 'monospace' }}>{r.awb || '—'}</td>
+              <td style={{ padding: '6px 12px', fontWeight: 600 }}>{r.trigger || '—'}</td>
+              <td style={{ padding: '6px 12px' }}>
+                <Pill tone={r.priority === 'HIGH' ? 'red' : r.priority === 'MEDIUM' ? 'amber' : 'green'}>{r.priority || 'LOW'}</Pill>
+              </td>
+              <td style={{ padding: '6px 12px', color: 'var(--text-2)', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.message || r.reason || '—'}</td>
+            </tr>
+          ); })}
+        </tbody>
+      </table>
+      {rows.length > 200 && <div style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 12px' }}>Showing first 200 of {rows.length}.</div>}
+    </div>
+  );
+}
+
+function IntelligenceWarnTable({ rows }) {
+  if (!rows || !rows.length) return null;
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+        <thead>
+          <tr style={{ background: 'var(--badge-amber-bg)', borderBottom: '1px solid var(--border)' }}>
+            {['code', 'severity', 'batch_id', 'description'].map(function(h) { return (
+              <th key={h} style={{ padding: '7px 12px', textAlign: 'left', fontWeight: 700, color: 'var(--badge-amber-text)', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: 10 }}>{h}</th>
+            ); })}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 200).map(function(r, i) { return (
+            <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+              <td style={{ padding: '6px 12px', fontWeight: 700, fontFamily: 'monospace' }}>{r.code || '—'}</td>
+              <td style={{ padding: '6px 12px' }}>
+                <Pill tone={r.severity === 'HIGH' ? 'red' : r.severity === 'MEDIUM' ? 'amber' : 'green'}>{r.severity || '—'}</Pill>
+              </td>
+              <td style={{ padding: '6px 12px', fontFamily: 'monospace', color: 'var(--text-2)' }}>{r.batch_id || '—'}</td>
+              <td style={{ padding: '6px 12px', color: 'var(--text-2)', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.description || r.message || '—'}</td>
+            </tr>
+          ); })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function IntelligenceLearningTable({ suppliers }) {
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+        <thead>
+          <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+            {['Supplier', 'Confidence', 'Confirmed', 'Failed', 'Reliability', 'Last Seen'].map(function(h) { return (
+              <th key={h} style={{ padding: '7px 12px', textAlign: 'left', fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: 10 }}>{h}</th>
+            ); })}
+          </tr>
+        </thead>
+        <tbody>
+          {suppliers.map(function(s, i) { return (
+            <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+              <td style={{ padding: '6px 12px', fontWeight: 600 }}>{s.supplier_key}</td>
+              <td style={{ padding: '6px 12px' }}>
+                <Pill tone={s.confidence === 'HIGH' ? 'green' : s.confidence === 'MEDIUM' ? 'amber' : 'red'}>{s.confidence}</Pill>
+              </td>
+              <td style={{ padding: '6px 12px', textAlign: 'center' }}>{s.confirmed_count}</td>
+              <td style={{ padding: '6px 12px', textAlign: 'center', color: s.failed_count > 0 ? 'var(--badge-red-text)' : undefined }}>{s.failed_count}</td>
+              <td style={{ padding: '6px 12px', textAlign: 'center' }}>{s.reliability_pct != null ? s.reliability_pct + '%' : 'N/A'}</td>
+              <td style={{ padding: '6px 12px', color: 'var(--text-2)' }}>{(s.last_seen || '').slice(0, 10) || '—'}</td>
+            </tr>
+          ); })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 Object.assign(window, {
   DhlCustomsPage,
   AccountingPage,
   EmailQueuePage,
   AiBridgePage,
   ActionProposalsPage,
+  IntelligencePage,
   ReportsPage,        // overrides the old one
   // small helpers also exported in case other files want them
   Tabs, StatTile, Pill,
