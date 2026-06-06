@@ -566,9 +566,7 @@ function App() {
           {/* AI Bridge — renamed Automation Center */}
           {!viewerDoc && page === 'automation' && (
             <>
-              <PageHeader title="Automation Center" subtitle="Cowork task queue, results, errors, capabilities, and prompt templates"
-                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small>System Status</Btn><Btn variant="outline" small>↓ Export Logs</Btn></div>}
-              />
+              <PageHeader title="Automation Center" subtitle="Cowork task queue, results, errors, capabilities, and prompt templates" />
               <SubTabStrip active={page} onNav={handleNav} />
               <AiBridgePage />
             </>

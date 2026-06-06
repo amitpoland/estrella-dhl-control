@@ -349,3 +349,41 @@ def test_existing_nav_entries_preserved():
         assert f"id: '{page_id}'" in nav_body, (
             f"top-level NAV_TREE entry '{page_id}' must remain"
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# J. No dead Automation header buttons (Sprint 33 hardening — post-audit fix)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_no_system_status_button_in_automation_header():
+    """'System Status' dead button must be absent from the Automation route block."""
+    block = _automation_route_block(_INDEX_HTML.read_text(encoding="utf-8"))
+    assert "System Status" not in block, (
+        "Automation route header must not contain dead 'System Status' button"
+    )
+
+
+def test_no_export_logs_button_in_automation_header():
+    """'Export Logs' dead button must be absent from the Automation route block."""
+    block = _automation_route_block(_INDEX_HTML.read_text(encoding="utf-8"))
+    assert "Export Logs" not in block, (
+        "Automation route header must not contain dead '↓ Export Logs' button"
+    )
+
+
+def test_automation_page_header_has_no_actions_prop():
+    """Automation PageHeader must not carry an 'actions=' prop (no dead action buttons)."""
+    block = _automation_route_block(_INDEX_HTML.read_text(encoding="utf-8"))
+    # Split on <AiBridgePage to get only the header region
+    header_region = block.split("<AiBridgePage")[0]
+    assert "actions=" not in header_region, (
+        "Automation PageHeader must not have an 'actions=' prop — dead buttons removed"
+    )
+
+
+def test_automation_route_still_renders_ai_bridge_page_after_hardening():
+    """Regression: removing header buttons must not break <AiBridgePage /> render."""
+    block = _automation_route_block(_INDEX_HTML.read_text(encoding="utf-8"))
+    assert "<AiBridgePage />" in block or "AiBridgePage" in block, (
+        "Automation route must still render <AiBridgePage /> after header hardening"
+    )
