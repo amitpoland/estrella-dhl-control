@@ -387,6 +387,11 @@
       return _get(`${BASE}/carriers-config${qs}`);
     },
 
+    // GET /api/v1/carrier/status
+    // Returns { carrier_api_status, carrier_plt_status }
+    getCarrierStatus: () =>
+      _get(`${BASE}/carrier/status`),
+
     // GET /auth/users  (requires admin cookie)
     // Returns [{id, full_name, email, role, is_active, ...}]
     listUsers: () =>

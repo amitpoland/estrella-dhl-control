@@ -25,7 +25,12 @@
 // Sprint 38 (2026-06-07): 'master' added — MasterPage wired to live GET endpoints
 //   for all 12 entity tabs (10 full CRUD, Users read-only, Roles static).
 //   All hardcoded SEED data removed; writes disabled with explicit reasons.
-const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master'];
+// Sprint 39 (2026-06-07): 'carriers' added — CarriersPage redesigned from mock
+//   multi-carrier management console to authority-honest Config Registry + DHL
+//   Operations page. All hardcoded CARRIERS/WEBHOOKS/SESSIONS/AUDIT/AVAILABLE_NEW
+//   removed. Live data from GET /api/v1/carriers-config/ and GET /api/v1/carrier/status.
+//   Audit tab wired to GET /api/v1/master/audit/?entity=carriers_config.
+const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;
