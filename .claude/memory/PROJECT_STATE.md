@@ -3554,6 +3554,24 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
+## Emergency stabilization + Sprint 34 `/intelligence/config` 404 investigation (2026-06-06)
+
+**Trigger**: a prior browser smoke (empty dev storage) flagged `GET /api/v1/intelligence/config → 404` on the Intelligence Hub and called it a deployed defect.
+
+**Root cause (verified by reading the route + the apiFetch shim + a live Config-tab smoke): NOT A DEFECT — by-design behavior.**
+- `routes_intelligence.py:396` `@router.get("/config")` **exists and is registered** (prefix `/api/v1/intelligence`). When the intelligence config file `_CONFIG_PATH` has not been generated yet, the handler intentionally returns HTTP 404 with a JSON body `{"status":"not_generated","message":"…POST /refresh to generate."}`.
+- On **empty dev storage** the config isn't generated → 404 by design. On **production with config generated** the same route returns 200.
+- `EstrellaShared.apiFetch` (dashboard-shared.js:47-49) throws `HTTP 404: …not_generated…` on a 404; the Intelligence component's `loadConfig.catch` sets `cfgError`, and the Config-panel render (pages-v2.jsx:1494-1496) detects `404`/`not_generated` and shows a **passive amber advisory**: "Intelligence config not yet generated. Use the backend CLI intelligence refresh command to generate."
+- Live Config-tab smoke (isolated dev server, empty storage): advisory shown, **no crash, no raw error, zero console errors**, all calls GET-only.
+
+**Resolution: NO CODE CHANGE.** Fixing a non-defect (Phase 3 Option A/B/C) would be a fake fix. The route is real, the 404 is intentional + structured, and the frontend already handles it gracefully (the Option-B behavior was already implemented). Sprint 34 test references `/config` as a valid source-grep endpoint (not a functional-200 assertion); 28/28 Sprint 34 + 30/30 Sprint 33 tests pass.
+
+**Single-session note**: across recent tasks the working tree advanced via concurrent-session commits (`962dd71`, `80bd027`, `250f564`, `5f55af2`). At this stabilization, local == origin == `5f55af2`, tree clean, 0 PRs. The one-session rule should be enforced going forward (only one session writing `C:\PZ-verify`).
+
+**No production impact** — investigation only; this is the sole change (docs).
+
+---
+
 # DECISIONS
 
 ## wFirma Push Layer Implementation Decisions (2026-05-24)
