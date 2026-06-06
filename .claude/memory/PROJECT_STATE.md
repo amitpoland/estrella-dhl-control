@@ -4478,3 +4478,38 @@ It does **NOT** contain `wfirma_capabilities.py`. The scheduler text claiming `2
 **Sprint 35b status**: FULLY CLOSED
 
 ---
+
+## Proforma API Bridge Repair — Phase 1 (2026-06-06, PR #473 OPEN)
+
+**FACTS entry** (append-only):
+
+**Date**: 2026-06-06  
+**Branch**: `fix/pz-api-v2-proforma-bridge`  
+**SHA**: `cd83eaa`  
+**PR #473**: https://github.com/amitpoland/estrella-dhl-control/pull/473 — OPEN
+
+**Root cause**: `static/v2/pz-api.js` was missing 4 proforma lifecycle functions that `proforma-detail.jsx` called at runtime. V1 `static/pz-api.js` had all 4 since Sprint 36 Phase 2; V2 was never backfilled. Any click that triggered these functions threw `TypeError: window.PzApi.<fn> is not a function`.
+
+**Functions added to `service/app/static/v2/pz-api.js`**:
+- `postDraftToWfirma(draftId, body)` → `POST /api/v1/proforma/draft/{id}/post` (_postM)
+- `cloneDraft(draftId)` → `POST /api/v1/proforma/draft/{id}/clone` (_postM)
+- `draftToInvoice(draftId, body)` → `POST /api/v1/proforma/draft/{id}/to-invoice` (_postM)
+- `getDraftEvents(draftId)` → `GET /api/v1/proforma/draft/{id}/events` (_get)
+
+**New test file**: `service/tests/test_pz_api_proforma_bridge.py` — 20 source-grep regression tests (functions exist in V2 pz-api.js, endpoint paths correct, transport helpers correct, backend routes exist, proforma-detail.jsx calls all 4).
+
+**Test results**: 20/20 new ✅ · 82/82 sprint36 authority ✅ · 22/22 proforma drilldown ✅
+
+**GATE 6 (backend-only transport addition, no new UI surface)**:
+- Dev server 127.0.0.1:47214 started, `/v2/pz-api.js` served — all 4 functions FOUND in served file content ✓
+- No live mutations called in smoke
+
+**Phase 2 — New Draft Wizard Authority Decision**: PARTIAL SPRINT
+- Create blank local draft → DEFER (no `POST /draft/create-local` endpoint; only `POST /create/{batch}/{}` which calls wFirma directly)
+- Clone existing → IMPLEMENT NOW (backend exists, V2 pz-api now wired)
+- Reset from packing → NOT a creation source (patches existing draft, requires existing draft_id)
+- Prior proforma cache → ABSENT (confirmed no endpoint)
+- Prior invoice cache → ABSENT (confirmed no endpoint)
+- Filing GitHub issue for missing blank-draft backend endpoint before wizard sprint opens
+
+---
