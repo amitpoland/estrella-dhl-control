@@ -22,7 +22,10 @@
 // Sprint 37 (2026-06-06): 'wfirma_setup' added — WfirmaMappingPage wired to
 //   GET /wfirma/capabilities, GET /wfirma/customers, GET /wfirma/products.
 //   All hardcoded mock data removed; live API rendering only.
-const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup'];
+// Sprint 38 (2026-06-07): 'master' added — MasterPage wired to live GET endpoints
+//   for all 12 entity tabs (10 full CRUD, Users read-only, Roles static).
+//   All hardcoded SEED data removed; writes disabled with explicit reasons.
+const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;
