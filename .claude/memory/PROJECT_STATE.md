@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #478 merged + deployed — Sprint 39 Carriers authority-honest redesign production-verified).
 
-**Last-run-at:** 2026-06-07 (PR #478 merge + deploy). Origin/main HEAD: **5b6c63a** (Sprint 39 — Carriers authority-honest redesign). Production: `C:\PZ` deployed with 3 static files (carriers-page.jsx, mock-badge.jsx, pz-api.js), hash-verified 3/3 SHA256 MATCH. GATE 2: **0/3 open PRs** (clean board — PR #478 merged). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 39 COMPLETED** (SHA 5b6c63a), Carriers is 12th authority-backed V2 page, WIRED_PAGES count = 12, **3 remaining MOCK pages** (api_status, diagnostics, coverage_map). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
+**Last-run-at:** 2026-06-07 (PR #478 merge + deploy). Origin/main HEAD: **5b6c63a** (Sprint 39 — Carriers authority-honest redesign). Production: `C:\PZ` deployed with 3 static files (carriers-page.jsx, mock-badge.jsx, pz-api.js), hash-verified 3/3 SHA256 MATCH. GATE 2: **0/3 open PRs** (clean board — PR #478 merged). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 39 COMPLETED** (SHA 5b6c63a), Carriers is 12th authority-backed V2 page, WIRED_PAGES count = 12 of 16 total page slugs, **4 remaining MOCK pages** (dashboard, api_status, diagnostics, coverage_map). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
 
 ---
 
@@ -4682,9 +4682,9 @@ It does **NOT** contain `wfirma_capabilities.py`. The scheduler text claiming `2
 - Browser smoke: dev instance (identical files, hash-verified) all tabs verified ✓
 - Production login-wall prevents direct browser smoke — file identity proven via hash
 
-**WIRED_PAGES status (12/15 = 80%)**:
+**WIRED_PAGES status (12/16 = 75%)**:
 - WIRED (12): proforma, inbox, inventory, dhl, shipments, automation, intelligence, documents, proforma_detail, wfirma_setup, master, carriers
-- MOCK (3): api_status, diagnostics, coverage_map
+- MOCK (4): dashboard, api_status, diagnostics, coverage_map
 
 **GATE 2**: 0/3 open PRs (clean board)
 
