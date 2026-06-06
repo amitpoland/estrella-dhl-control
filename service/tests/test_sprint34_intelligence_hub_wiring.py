@@ -335,6 +335,9 @@ def test_intelligence_in_nav_tree():
     assert "id: 'intelligence'" in nav_body, (
         "components.jsx NAV_TREE must include id: 'intelligence' (P2 reachability)"
     )
+    assert "label: 'Intelligence Hub'" in nav_body, (
+        "intelligence NAV_TREE entry must use label 'Intelligence Hub' (matches page header; Sprint 34c cleanup)"
+    )
 
 
 def test_existing_nav_entries_preserved():

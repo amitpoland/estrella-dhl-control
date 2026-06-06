@@ -30,7 +30,7 @@ const NAV_TREE = [
     { id: 'api_status',   label: 'API Status' },
     { id: 'diagnostics',  label: 'Diagnostics' },
     { id: 'automation',   label: 'Automation' },
-    { id: 'intelligence', label: 'Parser / Learning' },
+    { id: 'intelligence', label: 'Intelligence Hub' },
     { id: 'coverage',     label: 'Coverage Matrix' },
   ]},
 ];
