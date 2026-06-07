@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #483 merged — Write Enablement Phase 1A, proforma safe actions).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (PR #493 merged + deployed — M6 V2 search UI, campaign CLOSED).
 
-**Last-run-at:** 2026-06-07 (PR #492 merged — M6 API endpoint). Origin/main HEAD: **f8563e3** (PR #492 squash-merge — M6 cross-batch search API endpoint). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 16/16 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M6 Prior Proforma Search (PR 2/3 MERGED — DB layer + API endpoint done, V2 UI remaining), M3 CMR PDF (LOW), M4 Document Package (LOW). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration. **M6 PRIOR PROFORMA SEARCH**: PR 1/3 MERGED (DB layer) + PR 2/3 MERGED (API endpoint). Next: PR 3 — V2 search UI.
+**Last-run-at:** 2026-06-08 (PR #493 merged + deployed — M6 campaign CLOSED). Origin/main HEAD: **d696109** (PR #493 squash-merge — M6 cross-batch search V2 UI). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 56/56 M6 proforma search UI. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 16/16 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Browser smoke 11/11 PASS. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
 
 ---
 
@@ -98,6 +98,32 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 **Reviewers**: backend-safety (PASS), test-coverage (PASS).
 
 **Next**: PR 3 — V2 search UI (`proforma-search.jsx` + navigation integration).
+
+---
+
+## PR #493 — M6 Cross-Batch Proforma Search: V2 Search UI (2026-06-08, MERGED + DEPLOYED)
+
+**Date**: 2026-06-08 (merged to main + deployed to production)
+**PR #493** — `feat(proforma): M6 cross-batch search — V2 search UI (PR 3/3)`
+**Merge SHA**: `d696109` (squash-merge to `origin/main`)
+**Source branch**: `feature/m6-proforma-search-ui`
+**Deploy**: Deployed 2026-06-08 via `robocopy service/app → C:\PZ\app /MIR` + `nssm restart PZService`. All 6 file hashes verified MATCH.
+
+**What was built**: `ProformaSearchPage` component in `proforma-search.jsx` — full V2 cross-batch proforma draft search UI. 8 filter inputs (client_name, batch_id, wfirma_proforma_fullnumber, wfirma_proforma_id, draft_state, currency, date_from, date_to), results table with 8 columns, pagination, authority notice, 4 UI states (initial/loading/error/empty), row click navigates to batch proforma list. Integrated into `index.html` with navigation entry + "Search All Drafts" button. `PzApi.searchProformaDrafts` transport function added (GET only, read-only).
+
+**Authority**: `proforma_drafts` table via `GET /api/v1/proforma/search` (from PR #492). No wFirma calls, no invoice ledger, no email, no mutation. Read-only.
+
+**Files changed**: 5 files — `proforma-search.jsx` (NEW, 411 lines), `pz-api.js` (EDIT, +11 lines), `index.html` (EDIT, +12/-1 lines), `proforma-list.jsx` (EDIT, +1 line — ProformaStatusChip export), `test_proforma_search_ui.py` (NEW, 418 lines, 56 tests).
+
+**Test results**: 56/56 UI source-grep + 51/51 endpoint + 51/51 DB layer + 54/54 V2 contract = 212 pass, 0 fail.
+
+**Reviewers**: frontend-flow (PASS), security-write-action (PASS), test-coverage (PASS), governance (PASS — ProformaStatusChip export fix applied), lesson-m (PASS).
+
+**Browser smoke**: 11/11 PASS — search endpoint returns 200, 19 real results from production proforma_drafts, zero POST/PUT/PATCH/DELETE requests, zero console errors.
+
+**M6 Campaign status**: **CLOSED**. All 3 PRs merged and deployed (DB #491 + API #492 + UI #493).
+
+**Pre-existing issues noted** (not regressions): Row click batch_id handoff shows "No batch selected" (master-page.jsx `handleNav` overwrites URL); MOCK banner false positive (mock-detection system triggers despite real data being served).
 
 ---
 
