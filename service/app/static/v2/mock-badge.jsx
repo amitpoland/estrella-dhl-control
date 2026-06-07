@@ -46,7 +46,10 @@
 // Sprint 43: 'coverage' added — CoverageMapPage wired to GET /openapi.json.
 //   All 46 hardcoded COVERAGE_ROWS removed. Live OpenAPI spec is the authority.
 //   WIRED_PAGES = 16/16 — ALL V2 pages are now authority-honest. MOCK banner retired.
-const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard', 'api_status', 'diagnostics', 'coverage'];
+// M6-cleanup: 'proforma_search' added — ProformaSearchPage wired to
+//   GET /api/v1/proforma/search via PzApi.searchProformaDrafts. Read-only,
+//   no mock data. False positive MOCK banner resolved. WIRED_PAGES = 17/17.
+const WIRED_PAGES = ['proforma', 'proforma_search', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard', 'api_status', 'diagnostics', 'coverage'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;
