@@ -154,6 +154,35 @@ _INVOICE_OK = """<?xml version="1.0"?>
 </api>"""
 
 
+def _created_invoice_xml(*, inv_id="500001") -> str:
+    """Valid normal-type invoice XML for the verify-after-create step."""
+    return f"""<?xml version="1.0"?>
+<api>
+  <invoices>
+    <invoice>
+      <id>{inv_id}</id>
+      <type>normal</type>
+      <fullnumber>FA 1/5/2026</fullnumber>
+      <date>2026-06-08</date>
+      <paymentmethod>transfer</paymentmethod>
+      <paymentdate>2026-05-15</paymentdate>
+      <currency>EUR</currency>
+      <total>306.00</total>
+      <netto>306.00</netto>
+      <contractor><id>9001</id></contractor>
+      <invoicecontents>
+        <invoicecontent>
+          <name>RING</name><good><id>42</id></good>
+          <unit>szt.</unit><unit_count>1.0000</unit_count>
+          <price>306.00</price><vat_code><id>228</id></vat_code>
+        </invoicecontent>
+      </invoicecontents>
+    </invoice>
+  </invoices>
+  <status><code>OK</code></status>
+</api>"""
+
+
 _INVOICE_ERROR = ('<api><status><code>ERROR</code>'
                   '<description>wFirma said no</description></status></api>')
 
@@ -279,11 +308,13 @@ def test_helper_does_not_touch_proforma_issued_or_cancelled(storage):
 def test_execute_emits_event_on_success(client, storage):
     _seed_audit(storage)
     _seed_issued_proforma(storage)
+    # fetch_invoice_xml called twice: 1st=source proforma, 2nd=verify-after-create
+    fetch_calls = [_proforma_xml(), _created_invoice_xml()]
     def _fake_http(method, module, op, body):
         return 200, _INVOICE_OK
     with _gate_invoice_on(), \
          patch.object(wc, "fetch_invoice_xml",
-                      return_value=_proforma_xml()), \
+                      side_effect=fetch_calls), \
          patch.object(wc, "_http_request", side_effect=_fake_http):
         r = client.post(
             _EXECUTE_URL.format(b=_BATCH, c=_CLIENT),

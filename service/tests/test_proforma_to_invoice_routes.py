@@ -80,6 +80,45 @@ def _proforma_xml(*, pid="467236963", pnum="PROF 92/2026",
 </api>"""
 
 
+# ── Created invoice XML (for verify-after-create step) ─────────────────────
+
+def _created_invoice_xml(*, inv_id="500001", contractor_id="9001",
+                           currency="EUR", total="306.00",
+                           receiver_id: str = "") -> str:
+    """Minimal normal-type invoice XML returned by fetch_invoice_xml during
+    the verify-after-create step. Matches the standard proforma shape."""
+    rcv_block = (f"      <contractor_receiver><id>{receiver_id}</id></contractor_receiver>\n"
+                 if receiver_id else "")
+    return f"""<?xml version="1.0"?>
+<api>
+  <invoices>
+    <invoice>
+      <id>{inv_id}</id>
+      <type>normal</type>
+      <fullnumber>FA 1/5/2026</fullnumber>
+      <date>2026-06-08</date>
+      <paymentmethod>transfer</paymentmethod>
+      <paymentdate>2026-05-15</paymentdate>
+      <currency>{currency}</currency>
+      <total>{total}</total>
+      <netto>{total}</netto>
+      <contractor><id>{contractor_id}</id></contractor>
+{rcv_block}      <invoicecontents>
+        <invoicecontent>
+          <name>RING</name>
+          <good><id>42</id></good>
+          <unit>szt.</unit>
+          <unit_count>1.0000</unit_count>
+          <price>306.00</price>
+          <vat_code><id>228</id></vat_code>
+        </invoicecontent>
+      </invoicecontents>
+    </invoice>
+  </invoices>
+  <status><code>OK</code></status>
+</api>"""
+
+
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
@@ -326,6 +365,11 @@ def test_execute_preserves_contractor_receiver(client, storage):
     _seed_issued_proforma(storage)
     # Source proforma carries Odbiorca id 190263843.
     src_xml = _proforma_xml(receiver_id="190263843")
+    # fetch_invoice_xml called twice: 1st=source proforma, 2nd=verify-after-create
+    fetch_calls = [
+        src_xml,
+        _created_invoice_xml(inv_id="500001", receiver_id="190263843"),
+    ]
     captured = {}
     def _fake_http(method, module, op, body):
         captured["method"] = method
@@ -344,7 +388,7 @@ def test_execute_preserves_contractor_receiver(client, storage):
 </api>"""
 
     with _gate_invoice_on(), \
-         patch.object(wc, "fetch_invoice_xml", return_value=src_xml), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls), \
          patch.object(wc, "fetch_contractor_by_id",
                       return_value=wc.ContractorFetchResult(
                           ok=True, contractor_id="190263843",
@@ -374,6 +418,11 @@ def test_execute_omits_receiver_when_proforma_has_none(client, storage):
     """Source proforma has no receiver → final invoice payload also
     has no receiver block."""
     _seed_issued_proforma(storage)
+    # fetch_invoice_xml called twice: 1st=source proforma, 2nd=verify-after-create
+    fetch_calls = [
+        _proforma_xml(receiver_id=""),
+        _created_invoice_xml(inv_id="500002", receiver_id=""),
+    ]
     captured = {}
     def _fake_http(method, module, op, body):
         captured["body"] = body
@@ -381,8 +430,7 @@ def test_execute_omits_receiver_when_proforma_has_none(client, storage):
 <api><invoices><invoice><id>500002</id><fullnumber>FA 2/5/2026</fullnumber></invoice></invoices>
 <status><code>OK</code></status></api>"""
     with _gate_invoice_on(), \
-         patch.object(wc, "fetch_invoice_xml",
-                      return_value=_proforma_xml(receiver_id="")), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls), \
          patch.object(wc, "fetch_contractor_by_id",
                       side_effect=AssertionError(
                           "must not preflight when no receiver")), \
@@ -422,13 +470,17 @@ def test_execute_records_link_only_after_success(client, storage):
     """After successful conversion, proforma_invoice_links carries
     status=issued + invoice_id + invoice_number."""
     _seed_issued_proforma(storage)
+    # fetch_invoice_xml called twice: 1st=source proforma, 2nd=verify-after-create
+    fetch_calls = [
+        _proforma_xml(),
+        _created_invoice_xml(inv_id="500003"),
+    ]
     def _fake_http(method, module, op, body):
         return 200, """<?xml version="1.0"?>
 <api><invoices><invoice><id>500003</id><fullnumber>FA 3/5/2026</fullnumber></invoice></invoices>
 <status><code>OK</code></status></api>"""
     with _gate_invoice_on(), \
-         patch.object(wc, "fetch_invoice_xml",
-                      return_value=_proforma_xml()), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls), \
          patch.object(wc, "_http_request", side_effect=_fake_http):
         client.post(
             _EXECUTE_URL.format(batch=BATCH, client=CLIENT),
