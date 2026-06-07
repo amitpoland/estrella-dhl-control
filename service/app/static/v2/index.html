@@ -269,6 +269,7 @@ window.EstrellaShared = {
 <script type="text/babel" src="accounting-hub.jsx"></script>
 <script type="text/babel" src="dashboard-kanban.jsx"></script>
 <script type="text/babel" src="inbox-page.jsx"></script>
+<script type="text/babel" src="proforma-search.jsx"></script>
 <script type="text/babel" src="proforma-list.jsx"></script>
 <script type="text/babel" src="proforma-detail.jsx"></script>
 <script type="text/babel" src="global-search.jsx"></script>
@@ -622,9 +623,19 @@ function App() {
           {!viewerDoc && page === 'proforma' && (
             <>
               <PageHeader title="Pro Forma" subtitle="Draft pro forma invoices · Convert to invoice when ready"
-                actions={<Btn variant="outline" small>↓ Export CSV</Btn>}
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => handleNav('proforma_search')}>Search All Drafts</Btn><Btn variant="outline" small>↓ Export CSV</Btn></div>}
               />
               <ProformaListPage onDrill={handleProformaDrill} />
+            </>
+          )}
+
+          {/* Pro Forma — Screen C (cross-batch search, M6) */}
+          {!viewerDoc && page === 'proforma_search' && (
+            <>
+              <PageHeader title="Prior Proforma Search" subtitle="Cross-batch read-only search across all local proforma drafts"
+                actions={<Btn variant="outline" small onClick={() => handleNav('proforma')}>Back to Pro Forma</Btn>}
+              />
+              <ProformaSearchPage onNav={handleNav} />
             </>
           )}
 

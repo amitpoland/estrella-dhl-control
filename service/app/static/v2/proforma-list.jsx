@@ -133,4 +133,4 @@ function ProformaListPage({ onDrill }) {
   );
 }
 
-Object.assign(window, { ProformaListPage });
+Object.assign(window, { ProformaListPage, ProformaStatusChip });
