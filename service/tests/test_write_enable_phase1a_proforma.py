@@ -260,10 +260,10 @@ class TestPzApiTransport:
 # =============================================================================
 
 class TestLessonMPreservation:
-    """Send, CMR, Generate, More buttons must remain visible and disabled."""
+    """CMR, Generate, More buttons must remain visible and disabled.
+    Send button is now conditionally enabled (M2 Phase 1B)."""
 
     @pytest.mark.parametrize("testid,label_fragment", [
-        ("tb-send",     "Send"),
         ("tb-cmr",      "CMR"),
         ("tb-generate", "Generate"),
         ("tb-more",     "⋯"),
@@ -275,9 +275,10 @@ class TestLessonMPreservation:
         region = src[max(0, idx - 200):idx + 100]
         assert "disabled" in region, f"Button {testid} must still be disabled"
 
-    def test_send_has_explicit_reason(self):
+    def test_send_button_exists(self):
+        """Send button must still exist (Lesson M — no removal)."""
         src = _read(DETAIL)
-        assert "Email send not yet wired to backend" in src
+        assert 'data-testid="tb-send"' in src, "Send button must still exist"
 
     def test_cmr_has_explicit_reason(self):
         src = _read(DETAIL)

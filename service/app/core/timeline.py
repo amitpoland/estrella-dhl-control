@@ -104,6 +104,9 @@ EV_PROFORMA_DRAFT_AUTO_CREATED       = "proforma_draft_auto_created"        # dr
 EV_PROFORMA_DRAFT_SYNCED             = "proforma_draft_synced"              # editable draft lines reset from sales packing
 EV_PROFORMA_SYNC_BLOCKED_FINALIZED   = "proforma_sync_blocked_finalized"    # draft in finalized state, sync skipped
 
+# ── Proforma email events ────────────────────────────────────────────────────
+EV_PROFORMA_EMAIL_QUEUED             = "proforma_email_queued"              # proforma PDF emailed to customer via queue_email
+
 _MAX_EVENTS           = 200
 
 
