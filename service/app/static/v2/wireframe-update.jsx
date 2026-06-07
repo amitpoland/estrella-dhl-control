@@ -3,7 +3,7 @@
 // Status-aware additions for the Estrella Atlas wireframe:
 //   • FeatureStatus chip (Active / Partial / Backend pending / Future)
 //   • OperationalStatusStrip (top banner)
-//   • CoverageMatrix page (full feature × status × API placeholder table)
+//   • CoverageMapPage (Sprint 43: authority-honest, reads /openapi.json)
 //   • ActionCenter page  (operator queue — replaces scattered approval pop-ups)
 //   • AutomationCenterPage (replaces the AI Bridge page; same data)
 //   • Stub pages: Identity/Mapping, MoveStock, SampleOut, SampleReturn,
@@ -97,135 +97,242 @@ function OperationalStatusStrip() {
   );
 }
 
-// ── 3. Coverage Matrix page ───────────────────────────────────────────────
-const COVERAGE_ROWS = [
-  // [module, feature, status, api, notes]
-  ['Shipments',  'PZ batch import (process_batch)',          'active',  'POST /api/v1/pz/process',                    'Single source of truth'],
-  ['Shipments',  'PZ XLSX/PDF dual export',                  'active',  'GET /api/v1/pz/{id}/export?fmt=xlsx|pdf',    ''],
-  ['Shipments',  'Set PZ status (operator)',                 'active',  'POST /api/v1/pz/{id}/set-status',            'Approval required'],
-  ['DHL/Customs','Inbox monitor (DHL emails)',               'active',  'GET /api/v1/dhl/inbox',                      ''],
-  ['DHL/Customs','Reply queue + send',                       'partial', 'POST /api/v1/dhl/reply/{id}',                'Send gated by feature flag'],
-  ['DHL/Customs','Proactive dispatch (DSK package)',         'active',  'POST /api/v1/dhl/dispatch',                  ''],
-  ['DHL/Customs','SAD/ZC429 parse',                          'active',  'POST /api/v1/customs/parse',                 ''],
-  ['DHL/Customs','FedEx clearance flow',                     'future',  'POST /api/v1/fedex/clearance',               'Planned — mirrors DHL'],
-  ['Accounting', 'Purchase ledger / PZ list',                'active',  'GET /api/v1/accounting/pz',                  ''],
-  ['Accounting', 'Sales · Proforma create',                  'partial', 'POST /api/v1/sales/proforma',                'Write gated · approval req.'],
-  ['Accounting', 'Sales · Invoice convert',                  'partial', 'POST /api/v1/sales/proforma/{id}/convert',   'Write gated · approval req.'],
-  ['Accounting', 'Proforma view / download',                 'active',  'GET /api/v1/sales/proforma/{id}.pdf',        ''],
-  ['Accounting', 'Invoice view / download',                  'active',  'GET /api/v1/sales/invoice/{id}.pdf',         ''],
-  ['Ledgers',    'Client ledger · balances',                 'active',  'GET /api/v1/ledgers/clients',                'Source · wFirma'],
-  ['Ledgers',    'Client statement · entries',               'active',  'GET /api/v1/ledgers/clients/{id}/statement', 'Source · wFirma'],
-  ['Ledgers',    'Client aging buckets',                     'active',  'GET /api/v1/ledgers/clients/{id}/aging',     'Source · wFirma'],
-  ['Ledgers',    'Supplier ledger · balances',               'active',  'GET /api/v1/ledgers/suppliers',              'Source · wFirma'],
-  ['Ledgers',    'Supplier statement · entries',             'active',  'GET /api/v1/ledgers/suppliers/{id}/statement','Source · wFirma'],
-  ['Ledgers',    'PI ↔ PZ link',                             'partial', 'GET /api/v1/ledgers/documents/{id}/links',   'Operational links'],
-  ['Ledgers',    'Read-only document stream',                'active',  'GET /api/v1/ledgers/documents/{id}.pdf',     'Source · wFirma'],
-  ['Inventory',  'Stage 1 · Temp Purchase',                  'active',  'GET /api/v1/inventory/temp/purchase',        ''],
-  ['Inventory',  'Stage 1 · Temp Warehouse',                 'partial', 'GET /api/v1/inventory/temp/warehouse',       'Goods received, not yet final'],
-  ['Inventory',  'Stage 1 · Temp Sale',                      'partial', 'GET /api/v1/inventory/temp/sale',            'Reserved against proforma'],
-  ['Inventory',  'Stage 2 · Final Stock',                    'active',  'GET /api/v1/inventory/final',                ''],
-  ['Inventory',  'Move Stock (Temp → Final)',                'backend', 'POST /api/v1/inventory/move',                'Approval required'],
-  ['Inventory',  'Identity / Mapping (SKU ↔ design)',        'backend', 'POST /api/v1/inventory/identity',            'Two-way mapping required'],
-  ['Inventory',  'Consignment register',                     'active',  'GET /api/v1/inventory/consignment',          ''],
-  ['Inventory',  'Sample Out',                               'partial', 'POST /api/v1/inventory/samples/out',         'Approval required'],
-  ['Inventory',  'Sample Return',                            'backend', 'POST /api/v1/inventory/samples/return',      'Approval required'],
-  ['Inventory',  'Goods Return from Client',                 'backend', 'POST /api/v1/inventory/returns/from-client', 'Approval required'],
-  ['Inventory',  'Return to Producer',                       'future',  'POST /api/v1/inventory/returns/to-producer', 'Planned — supplier RMA'],
-  ['Clients',    'Client KYC',                               'partial', 'GET/PUT /api/v1/clients/{id}/kyc',           ''],
-  ['Clients',    'DHL / FedEx account fields',               'partial', 'PUT /api/v1/clients/{id}/carrier-accounts',  ''],
-  ['Clients',    'KUKE insurance limit',                     'backend', 'GET /api/v1/clients/{id}/kuke',              'Source · KUKE feed (planned)'],
-  ['Clients',    'Credit limit',                             'partial', 'PUT /api/v1/clients/{id}/credit-limit',      'Approval required'],
-  ['Documents',  'Upload Document (any module)',             'partial', 'POST /api/v1/documents/upload',              ''],
-  ['Operator',   'Action Center · operator queue',           'partial', 'GET /api/v1/actions',                        'Pending: bulk approve'],
-  ['Operator',   'Approve action',                           'partial', 'POST /api/v1/actions/{id}/approve',          'Approval required'],
-  ['Operator',   'Execute action (after approve)',           'partial', 'POST /api/v1/actions/{id}/execute',          ''],
-  ['Automation', 'Automation Center · task queue (Cowork)',  'active',  'GET /api/v1/cowork/tasks',                   'Was AI Bridge'],
-  ['Automation', 'Capability registry',                      'active',  'GET /api/v1/cowork/capabilities',            ''],
-  ['Automation', 'Prompt templates',                         'partial', 'GET/PUT /api/v1/cowork/templates',           ''],
-  ['Reports',    'Financial reports',                        'partial', 'GET /api/v1/reports/financial',              ''],
-  ['Reports',    'Sales reports',                            'partial', 'GET /api/v1/reports/sales',                  ''],
-  ['Reports',    'Purchase reports',                         'partial', 'GET /api/v1/reports/purchase',               ''],
-];
+// ── 3. Coverage Map page — authority-honest (Sprint 43) ──────────────────
+// Authority: GET /openapi.json (FastAPI built-in OpenAPI spec).
+// All hardcoded COVERAGE_ROWS deleted. The OpenAPI spec IS the route registry.
+// Deleted: 46-entry COVERAGE_ROWS array, fake status categories (active/partial/
+// backend/future), fake "Wireframe rules in effect" footer, FeatureStatus tiles
+// for coverage counts.
 
-function CoverageMatrix() {
-  const [filter, setFilter] = React.useState('all');
-  const [q, setQ] = React.useState('');
-  const filtered = COVERAGE_ROWS.filter(r =>
-    (filter==='all' || r[2]===filter) &&
-    (!q || (r[0]+r[1]+r[3]).toLowerCase().includes(q.toLowerCase()))
+// Derive a module group from an API path prefix.
+function _deriveModule(path) {
+  if (!path) return 'Other';
+  const s = path.replace(/^\/api\/v1\//, '');
+  const seg = s.split('/')[0] || 'root';
+  const MAP = {
+    pz: 'PZ Engine', dhl: 'DHL / Customs', customs: 'DHL / Customs',
+    sales: 'Accounting', proforma: 'Accounting', ledgers: 'Ledgers',
+    inventory: 'Inventory', 'customer-master': 'Clients', master: 'Master Data',
+    debug: 'Debug / Ops', admin: 'Admin', batch: 'Batch', health: 'System',
+    system: 'System', dashboard: 'Dashboard', cowork: 'Automation',
+    intelligence: 'Intelligence', ai: 'Intelligence', search: 'Search',
+    inbox: 'Inbox', tracking: 'Tracking', wfirma: 'wFirma',
+    warehouse: 'Warehouse', carrier: 'Carriers', 'carriers-config': 'Carriers',
+    agents: 'Agents', settings: 'Settings', upload: 'Upload',
+    monitor: 'Monitor', orchestrator: 'Orchestrator',
+  };
+  return MAP[seg] || seg.charAt(0).toUpperCase() + seg.slice(1);
+}
+
+// Parse OpenAPI paths into a flat array of route objects.
+function _parseOpenApiPaths(paths) {
+  const rows = [];
+  for (const [path, methods] of Object.entries(paths || {})) {
+    for (const [method, info] of Object.entries(methods || {})) {
+      if (method === 'parameters') continue; // path-level params, not a method
+      rows.push({
+        method: method.toUpperCase(),
+        path: path,
+        summary: (info.summary || '').replace(/\s+/g, ' ').trim(),
+        tags: (info.tags || []),
+        module: info.tags && info.tags[0] ? info.tags[0] : _deriveModule(path),
+        deprecated: !!info.deprecated,
+      });
+    }
+  }
+  rows.sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
+  return rows;
+}
+
+// Method badge color
+function _methodColor(m) {
+  if (m === 'GET')    return { bg: 'var(--badge-green-bg)',  text: 'var(--badge-green-text)',  border: 'var(--badge-green-border)' };
+  if (m === 'POST')   return { bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  border: 'var(--badge-amber-border)' };
+  if (m === 'PUT' || m === 'PATCH') return { bg: 'var(--badge-blue-bg)', text: 'var(--badge-blue-text)', border: 'var(--badge-blue-border)' };
+  if (m === 'DELETE') return { bg: 'var(--badge-red-bg)',    text: 'var(--badge-red-text)',    border: 'var(--badge-red-border)' };
+  return { bg: 'var(--card)', text: 'var(--text-2)', border: 'var(--border)' };
+}
+
+function _CoverageKpiStrip({ routes }) {
+  const gets = routes.filter(r => r.method === 'GET').length;
+  const posts = routes.filter(r => r.method === 'POST').length;
+  const muts = routes.filter(r => r.method === 'PUT' || r.method === 'PATCH' || r.method === 'DELETE').length;
+  const modules = new Set(routes.map(r => r.module));
+  const kpi = (label, val) => (
+    <div style={{ flex: 1, minWidth: 120, padding: '10px 14px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, textAlign: 'center' }}>
+      <div style={{ fontFamily: '"DM Serif Display", serif', fontSize: 24, color: 'var(--text)' }}>{val}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{label}</div>
+    </div>
   );
-  const counts = {
-    active:  COVERAGE_ROWS.filter(r=>r[2]==='active').length,
-    partial: COVERAGE_ROWS.filter(r=>r[2]==='partial').length,
-    backend: COVERAGE_ROWS.filter(r=>r[2]==='backend').length,
-    future:  COVERAGE_ROWS.filter(r=>r[2]==='future').length,
+  return (
+    <div data-testid="coverage-kpi-strip" style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+      {kpi('Total Routes', routes.length)}
+      {kpi('GET (read)', gets)}
+      {kpi('POST (write)', posts)}
+      {kpi('PUT/PATCH/DEL', muts)}
+      {kpi('Modules', modules.size)}
+    </div>
+  );
+}
+
+function CoverageMapPage() {
+  const { useState, useEffect } = React;
+  const { Card } = window.EstrellaShared || {};
+  const [spec, setSpec] = useState({ loading: true, data: null, error: null });
+  const [q, setQ] = useState('');
+  const [methodFilter, setMethodFilter] = useState('all');
+  const [moduleFilter, setModuleFilter] = useState('all');
+
+  useEffect(() => {
+    window.PzApi.getOpenApiSpec()
+      .then(res => {
+        if (res.ok) {
+          setSpec({ loading: false, data: res.data, error: null });
+        } else {
+          setSpec({ loading: false, data: null, error: res.error || 'Failed to load OpenAPI spec' });
+        }
+      })
+      .catch(err => {
+        setSpec({ loading: false, data: null, error: String(err) });
+      });
+  }, []);
+
+  if (spec.loading) {
+    return (
+      <div data-testid="coverage-map-page" style={{ padding: '18px 32px 32px', flex: 1 }}>
+        <div data-testid="coverage-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)' }}>
+          Loading route registry from OpenAPI spec...
+        </div>
+      </div>
+    );
+  }
+
+  if (spec.error) {
+    return (
+      <div data-testid="coverage-map-page" style={{ padding: '18px 32px 32px', flex: 1 }}>
+        <div data-testid="coverage-error" style={{
+          padding: 20, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+          borderRadius: 8, color: 'var(--badge-red-text)', fontSize: 13,
+        }}>
+          Failed to load route registry: {spec.error}
+        </div>
+      </div>
+    );
+  }
+
+  const routes = _parseOpenApiPaths(spec.data.paths);
+  const allModules = [...new Set(routes.map(r => r.module))].sort();
+  const allMethods = [...new Set(routes.map(r => r.method))].sort();
+
+  const filtered = routes.filter(r => {
+    if (methodFilter !== 'all' && r.method !== methodFilter) return false;
+    if (moduleFilter !== 'all' && r.module !== moduleFilter) return false;
+    if (q) {
+      const lq = q.toLowerCase();
+      return (r.path + ' ' + r.summary + ' ' + r.module + ' ' + r.method).toLowerCase().includes(lq);
+    }
+    return true;
+  });
+
+  const thStyle = {
+    textAlign: 'left', padding: '8px 12px', fontWeight: 700,
+    color: 'var(--text-2)', fontSize: 11, letterSpacing: '0.04em', textTransform: 'uppercase',
   };
 
-  const tile = (level, label, count) => (
-    <button onClick={()=>setFilter(filter===level?'all':level)} style={{
-      flex:1, minWidth:140, padding:'12px 14px', borderRadius:8,
-      border: filter===level ? '1.5px solid var(--accent)' : '1px solid var(--border)',
-      background: filter===level ? 'var(--accent-subtle)' : 'var(--card)',
-      cursor:'pointer', textAlign:'left',
-    }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
-        <FeatureStatus level={level}/>
-      </div>
-      <div style={{ fontFamily:'"DM Serif Display", serif', fontSize:26, color:'var(--text)' }}>{count}</div>
-      <div style={{ fontSize:11, color:'var(--text-3)' }}>{label}</div>
-    </button>
-  );
-
   return (
-    <div style={{ padding:'18px 32px 32px', overflowY:'auto', flex:1 }}>
-      <div style={{ display:'flex', gap:12, marginBottom:14, flexWrap:'wrap' }}>
-        {tile('active',  'Wired & shipping',       counts.active)}
-        {tile('partial', 'UI live · backend gaps', counts.partial)}
-        {tile('backend', 'Backend pending',        counts.backend)}
-        {tile('future',  'Planned · not scoped',   counts.future)}
+    <div data-testid="coverage-map-page" style={{ padding: '18px 32px 32px', overflowY: 'auto', flex: 1 }}>
+
+      <_CoverageKpiStrip routes={routes} />
+
+      <div data-testid="coverage-filters" style={{ display: 'flex', gap: 8, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input value={q} onChange={e => setQ(e.target.value)}
+               placeholder="Search paths, summaries, modules..."
+               data-testid="coverage-search"
+               style={{ flex: 1, maxWidth: 360, padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, color: 'var(--text)', background: 'var(--card)' }} />
+
+        <select value={methodFilter} onChange={e => setMethodFilter(e.target.value)}
+                data-testid="coverage-method-filter"
+                style={{ padding: '6px 10px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, background: 'var(--card)', color: 'var(--text)' }}>
+          <option value="all">All methods</option>
+          {allMethods.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+
+        <select value={moduleFilter} onChange={e => setModuleFilter(e.target.value)}
+                data-testid="coverage-module-filter"
+                style={{ padding: '6px 10px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, background: 'var(--card)', color: 'var(--text)' }}>
+          <option value="all">All modules</option>
+          {allModules.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+
+        {(methodFilter !== 'all' || moduleFilter !== 'all' || q) && (
+          <button onClick={() => { setMethodFilter('all'); setModuleFilter('all'); setQ(''); }}
+                  style={{ padding: '6px 10px', fontSize: 11, border: '1px solid var(--border)', background: 'var(--card)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-2)' }}>
+            Clear filters
+          </button>
+        )}
+
+        <span style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+          Showing {filtered.length} of {routes.length} routes
+        </span>
       </div>
 
-      <div style={{ display:'flex', gap:8, marginBottom:10, alignItems:'center' }}>
-        <input value={q} onChange={e=>setQ(e.target.value)}
-               placeholder="Filter by module, feature, or API path…"
-               style={{ flex:1, maxWidth:420, padding:'7px 10px', border:'1px solid var(--border)', borderRadius:6, fontSize:12, color:'var(--text)', background:'var(--card)' }}/>
-        {filter!=='all' && <button onClick={()=>setFilter('all')} style={{ padding:'6px 10px', fontSize:11, border:'1px solid var(--border)', background:'var(--card)', borderRadius:6, cursor:'pointer' }}>Clear filter</button>}
-        <span style={{ flex:1 }}/>
-        <span style={{ fontSize:11, color:'var(--text-3)' }}>Showing {filtered.length} of {COVERAGE_ROWS.length}</span>
-      </div>
-
-      <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, overflow:'hidden' }}>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+      <div data-testid="coverage-route-table" style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
-            <tr style={{ background:'var(--bg-subtle)', borderBottom:'1px solid var(--border)' }}>
-              <th style={{ textAlign:'left', padding:'8px 12px', fontWeight:700, color:'var(--text-2)', fontSize:11, letterSpacing:'0.04em', textTransform:'uppercase', width:130 }}>Module</th>
-              <th style={{ textAlign:'left', padding:'8px 12px', fontWeight:700, color:'var(--text-2)', fontSize:11, letterSpacing:'0.04em', textTransform:'uppercase' }}>Feature</th>
-              <th style={{ textAlign:'left', padding:'8px 12px', fontWeight:700, color:'var(--text-2)', fontSize:11, letterSpacing:'0.04em', textTransform:'uppercase', width:130 }}>Status</th>
-              <th style={{ textAlign:'left', padding:'8px 12px', fontWeight:700, color:'var(--text-2)', fontSize:11, letterSpacing:'0.04em', textTransform:'uppercase' }}>API placeholder</th>
-              <th style={{ textAlign:'left', padding:'8px 12px', fontWeight:700, color:'var(--text-2)', fontSize:11, letterSpacing:'0.04em', textTransform:'uppercase', width:200 }}>Notes</th>
+            <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+              <th style={{ ...thStyle, width: 70 }}>Method</th>
+              <th style={thStyle}>Path</th>
+              <th style={thStyle}>Summary</th>
+              <th style={{ ...thStyle, width: 140 }}>Module</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((r, i) => (
-              <tr key={i} style={{ borderBottom:'1px solid var(--border-subtle)' }}>
-                <td style={{ padding:'8px 12px', color:'var(--text-2)', fontWeight:600 }}>{r[0]}</td>
-                <td style={{ padding:'8px 12px', color:'var(--text)' }}>{r[1]}</td>
-                <td style={{ padding:'8px 12px' }}><FeatureStatus level={r[2]}/></td>
-                <td style={{ padding:'8px 12px', fontFamily:'ui-monospace, "SF Mono", Menlo, monospace', fontSize:11, color:'var(--text-2)' }}>{r[3]}</td>
-                <td style={{ padding:'8px 12px', color:'var(--text-3)', fontSize:11 }}>{r[4]}</td>
+            {filtered.map((r, i) => {
+              const mc = _methodColor(r.method);
+              return (
+                <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                  <td style={{ padding: '6px 12px' }}>
+                    <span style={{
+                      display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700,
+                      background: mc.bg, color: mc.text, border: '1px solid ' + mc.border, letterSpacing: '0.04em',
+                    }}>{r.method}</span>
+                  </td>
+                  <td style={{ padding: '6px 12px', fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace', fontSize: 11, color: r.deprecated ? 'var(--text-3)' : 'var(--text)', textDecoration: r.deprecated ? 'line-through' : 'none' }}>
+                    {r.path}
+                  </td>
+                  <td style={{ padding: '6px 12px', color: 'var(--text-2)', fontSize: 11 }}>
+                    {r.summary || '—'}
+                  </td>
+                  <td style={{ padding: '6px 12px', color: 'var(--text-3)', fontSize: 11, fontWeight: 600 }}>
+                    {r.module}
+                  </td>
+                </tr>
+              );
+            })}
+            {filtered.length === 0 && (
+              <tr>
+                <td colSpan={4} style={{ padding: 20, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+                  No routes match the current filters.
+                </td>
               </tr>
-            ))}
+            )}
           </tbody>
         </table>
       </div>
 
-      <div style={{ marginTop:18, padding:14, background:'var(--accent-subtle)', border:'1px solid var(--accent-border)', borderRadius:8, fontSize:11, color:'var(--text-2)', lineHeight:1.6 }}>
-        <strong style={{ color:'var(--text)' }}>Wireframe rules in effect:</strong>{' '}
-        Future / Backend-pending controls are rendered disabled with a tooltip · Read-only data shows <em>Source · wFirma</em> · Write actions show <em>Approval required</em> until executed · No real fetches or mutations are performed in this wireframe.
+      <div style={{ marginTop: 18, padding: 14, background: 'var(--accent-subtle)', border: '1px solid var(--accent-border)', borderRadius: 8, fontSize: 11, color: 'var(--text-2)', lineHeight: 1.6 }}>
+        <strong style={{ color: 'var(--text)' }}>Authority: /openapi.json</strong>{' '}
+        — This page reads the live FastAPI OpenAPI specification. Every route shown is registered and reachable.
+        Module grouping is derived from the first path segment. Route counts, methods, and summaries
+        come from the running backend, not from hardcoded data.
       </div>
     </div>
   );
 }
+
+// Backward-compat alias — index.html still references CoverageMatrix
+const CoverageMatrix = CoverageMapPage;
 
 // ── 4. Action Center page ─────────────────────────────────────────────────
 function ActionCenterPage() {
@@ -468,7 +575,7 @@ function ReturnToProducerPage() {
 // ── Export to window so the host HTML can mount these ─────────────────────
 Object.assign(window, {
   FeatureStatus, PendingBtn, OperationalStatusStrip,
-  CoverageMatrix, ActionCenterPage,
+  CoverageMapPage, CoverageMatrix, ActionCenterPage,
   IdentityMappingPage, MoveStockPage,
   SampleOutPage, SampleReturnPage,
   GoodsReturnPage, ReturnToProducerPage,
