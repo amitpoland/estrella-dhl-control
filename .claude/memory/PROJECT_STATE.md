@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #479 merged + deployed — Sprint 40 Dashboard authority-honest conversion production-verified).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #480 merged + deployed — Sprint 41 API Status authority-honest conversion production-verified).
 
-**Last-run-at:** 2026-06-07 (PR #480 opened — Sprint 41 API Status authority-honest conversion). Origin/main HEAD: **6f0d515** (Sprint 40 PROJECT_STATE update). GATE 2: **1/3 open PRs** (PR #480 pending). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 41 PR OPEN** (SHA 6e44d82 on `feat/atlas-sprint-41-api-status-authority`), API Status is 14th authority-backed V2 page, WIRED_PAGES count = 14 of 16 total page slugs, **2 remaining MOCK pages** (diagnostics, coverage_map). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
+**Last-run-at:** 2026-06-07 (PR #480 merged + deployed — Sprint 41 API Status authority-honest conversion production-verified). Origin/main HEAD: **650535c** (Sprint 41 squash-merge). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 41 MERGED + DEPLOYED** (SHA 650535c on `main`), API Status is 14th authority-backed V2 page, WIRED_PAGES count = 14 of 16 total page slugs, **2 remaining MOCK pages** (diagnostics, coverage_map). Sprint sequence: 42→Diagnostics, 43→Coverage Map → WIRED_PAGES=16/16. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
 
 ---
 
@@ -55,11 +55,12 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
-## PR #480 — Sprint 41: API Status authority-honest conversion (2026-06-07, PR OPEN)
+## PR #480 — Sprint 41: API Status authority-honest conversion (2026-06-07, MERGED + DEPLOYED)
 
-**Date**: 2026-06-07 (PR opened, pending merge)
+**Date**: 2026-06-07 (merged + deployed + production smoke verified)
 **PR #480** — `feat(atlas): Sprint 41 — API Status authority-honest conversion`
-**Branch SHA**: `6e44d82` on `feat/atlas-sprint-41-api-status-authority`
+**Merge SHA**: `650535c` (squash-merge to `origin/main`)
+**Source branch**: `feat/atlas-sprint-41-api-status-authority`
 
 **Scope**: Complete MOCK → authority-honest conversion of ApiStatusPage. Delete all 4 fake data arrays, replace with live subsystem health board.
 
@@ -69,7 +70,12 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - `service/app/static/v2/mock-badge.jsx` — added `'api_status'` to WIRED_PAGES (14/16 = 87.5%)
 - `service/tests/test_sprint41_api_status_authority_honest.py` — NEW: 115 regression tests across 17 test classes
 
-**Browser verification (127.0.0.1:47214/v2/api_status)**:
+**Deploy (static-only, 3 files)**:
+- `robocopy` 3 files to `C:\PZ\app\static\v2\` (api-status-page.jsx, pz-api.js, mock-badge.jsx)
+- MD5 hash verification: 3/3 MATCH between `C:\PZ-verify` and `C:\PZ`
+- Robocopy exit code 1 (files copied successfully)
+
+**Browser verification — dev (127.0.0.1:47214/v2/api_status)**:
 - No MOCK banner ✅
 - 12 subsystem cards rendered with live data ✅
 - 6 real KPIs populated (Systems Online: 8/12, Emails Pending: 0, DHL Scanner: Never run, Follow-up Queue: —, Bot Errors: 0, Active Carriers: 0) ✅
@@ -78,10 +84,22 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - Zero console errors ✅
 - All 12 endpoints called (10 return 200, 2 expected non-200: pz/health 404 dev-only, admin/email-queue 401 auth-required) ✅
 
+**Browser verification — production (pz.estrellajewels.eu/v2/api_status)**:
+- No MOCK banner ✅ (`mockBannerPresent: false`)
+- 12 subsystem cards rendered with real API data ✅
+- Real KPIs: Systems Online 8/12, Emails Pending 0, DHL Scanner Never run, Follow-up Queue —, Bot Errors 0, Active Carriers 0 ✅
+- All 5 tabs switch correctly (Integration Health, Guardian Diagnostic, DHL Operations, Recent Errors, Bot Activity) ✅
+- Per-card error states: PZ Engine=ERROR, DHL Scanner=OFFLINE, Carrier Config=OFFLINE, Intelligence=DEGRADED — page continues working ✅
+- Tab content verified: DHL Ops (Active Shipments, Waiting, Replies, Scanner Runs), Recent Errors ("No recent errors"), Bot Activity (Active Sessions, Pending Chats, Events Seen, PZ Posts) ✅
+- Zero console errors ✅
+- Network: 12 API calls observed (all 200 except /pz/health 404 → per-card ERROR, expected) ✅
+- `data-testid="api-status-page"` present ✅
+
 **WIRED_PAGES**: 14/16 (87.5%) — proforma, inbox, inventory, dhl, shipments, automation, intelligence, documents, proforma_detail, wfirma_setup, master, carriers, dashboard, api_status.
 **Remaining MOCK**: diagnostics, coverage_map (2 pages).
+**Sprint sequence**: 42→Diagnostics, 43→Coverage Map → WIRED_PAGES=16/16.
 
-**GATE 2**: 1/3 open PRs (PR #480 pending).
+**GATE 2**: 0/3 open PRs.
 **Test baseline**: +115 Sprint 41 tests.
 
 ---
