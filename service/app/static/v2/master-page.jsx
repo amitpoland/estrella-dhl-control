@@ -394,6 +394,8 @@ function MasterPage() {
   const [search, setSearch] = React.useState('');
   // Sprint 38b: record selected for the read-only View detail modal (null = closed).
   const [viewRecord, setViewRecord] = React.useState(null);
+  // Step 3: record selected for Client Detail edit modal (null = closed).
+  const [editRecord, setEditRecord] = React.useState(null);
 
   // Per-entity data cache: { entityId: { records: [], loading: bool, error: string|null } }
   const [cache, setCache] = React.useState({});
@@ -597,6 +599,12 @@ function MasterPage() {
                                 onClick={() => setViewRecord(r)}
                                 title="View full record (read-only)"
                                 data-testid="btn-view-record">View</Btn>
+                              {entity === 'clients' && (
+                                <Btn small variant="gold"
+                                  onClick={() => setEditRecord(r)}
+                                  title="Edit client record"
+                                  data-testid="btn-edit-record">Edit</Btn>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -668,6 +676,19 @@ function MasterPage() {
         entityLabel={currentEntity ? currentEntity.singular : 'Record'}
         onClose={() => setViewRecord(null)}
       />
+
+      {/* Step 3: Client Detail edit modal */}
+      {editRecord && (
+        <ClientDetailModal
+          clientKey={editRecord.bill_to_contractor_id || editRecord.id}
+          onClose={() => setEditRecord(null)}
+          onSaved={() => {
+            setEditRecord(null);
+            // Force reload of clients cache
+            setCache(prev => ({ ...prev, clients: { records: [], loading: false, error: null } }));
+          }}
+        />
+      )}
     </div>
   );
 }

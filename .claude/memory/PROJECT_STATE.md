@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #483 merged — Write Enablement Phase 1A, proforma safe actions).
 
-**Last-run-at:** 2026-06-07 (PR #487 merged + deployed — Customer Master direct resolver). Origin/main HEAD: **3b94c04** (PR #487 squash-merge — Customer Master resolver authority fix). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 16/16 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M6 Prior Proforma Search (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **CUSTOMER MASTER ADDRESS AUTHORITY**: Steps 1–2 COMPLETE (helpers + proforma send wiring). Next: Step 3 Client Detail UI → Step 4 DHL wiring → Step 5 tests.
+**Last-run-at:** 2026-06-07 (PR #489 merged + deployed — DHL doc_package address authority fix). Origin/main HEAD: **4d9f54c** (PR #489 squash-merge — Step 5 DHL Document Package Address Authority Fix). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 16/16 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M6 Prior Proforma Search (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **CUSTOMER MASTER ADDRESS AUTHORITY**: Steps 1–2 COMPLETE (helpers + proforma send wiring), Step 5 COMPLETE (PR #489, SHA `4d9f54c` — doc_package uses resolve_delivery_address, ship_to_use_alternate respected, Shape B isolated, 8 new tests). Next: Step 3 Client Detail UI (uncommitted), Step 4 DHL audit preflight (COMPLETE), remaining: dashboard stale ship_to display.
 
 ---
 
@@ -54,6 +54,28 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## PR #489 — Step 5: DHL Document Package Address Authority Fix (2026-06-07, MERGED + DEPLOYED)
+
+**Date**: 2026-06-07 (merged + production deployed + import verified)
+**PR #489** — `Step 5 — DHL Document Package Address Authority Fix`
+**Merge SHA**: `4d9f54c` (squash-merge to `origin/main`)
+**Source branch**: `feature/dhl-document-package-address-authority`
+**Deployed**: Full `service/app` robocopy to `C:\PZ\app`, `__pycache__` cleared, PZService restarted, import chain verified, file hash matched.
+
+**Bug fixed**: `doc_package.py` had 3 inline address-resolution blocks that checked only `ship_to_street` presence, ignoring the `ship_to_use_alternate` flag. A customer with `ship_to_use_alternate=0` and populated `ship_to_street` would incorrectly use the ship-to address instead of bill-to.
+
+**Fix**: Replaced all 3 inline blocks with `resolve_delivery_address(customer)` from `customer_master.py`. This function checks `ship_to_use_alternate=True` AND `_has_ship_to_address()` (street OR city populated) before using ship-to. Falls back to bill-to otherwise.
+
+**Shape B isolation confirmed**: `ship_to_contractor_id` (wFirma receiver concept) does NOT affect DHL physical delivery address resolution.
+
+**Changes**: `doc_package.py` (added `ship_to_person` to `_CustomerView`, replaced 3 inline blocks, added `delivery_addr` param to renderers), `test_carrier_doc_package.py` (8 new tests, 31 total).
+
+**Test results**: 31 doc_package + 85 customer_master + 37 address_authority = 153 passed, 0 failures.
+
+**Reviewers**: backend-safety (PASS), frontend-flow (PASS), security-write-action (PASS), test-coverage (PARTIAL PASS — gaps covered by companion test suites).
+
+---
 
 ## PR #487 — Customer Master Direct Resolver + M2 Send Pipeline Verification (2026-06-07, MERGED + DEPLOYED)
 
@@ -4228,16 +4250,19 @@ Customer Master
 - Helpers: ✅ **COMPLETE (PR #487)** — `pick_email()`, `resolve_billing_address()`, `resolve_delivery_address()` implemented in `customer_master.py`, exported via `__all__`, 37 tests pinning behavior
 - Customer resolution: ✅ **COMPLETE (PR #487)** — `_resolve_customer_via_master()` uses Customer Master as PRIMARY authority with 3 match strategies; wfirma_customers cache is fallback only; all 4 posted drafts return `found:true` in production; 25 tests pinning resolver + 27 tests pinning recipient resolution
 - Proforma send email: ✅ **COMPLETE (PR #487)** — `_resolve_proforma_recipient()` uses `pick_email(customer)`; pipeline verified through PDF fetch; SMTP path pending natural workflow
-- DHL integration: ❌ Zero DHL files reference Customer Master (no `customer_master` import in any `*dhl*` file) — **Step 4 pending**
-- V2 UI editing: ❌ `client-kyc-and-consignment.jsx` has fields but is NOT wired to Customer Master API — **Step 3 pending**
+- DHL doc package: ✅ **COMPLETE (PR #489)** — `doc_package.py` uses `resolve_delivery_address(customer)` from Customer Master; inline `ship_to_street` checks replaced; `ship_to_use_alternate` flag governs address selection; Shape B isolated; 8 new tests, 31 total passing
+- DHL live routes: ❌ Inbound DHL customs routes (`routes_dhl_clearance.py`) still use consignee/consignor party names from different authority — separate scope, not part of outbound delivery address
+- V2 UI editing: ❌ `client-kyc-and-consignment.jsx` has fields but is NOT wired to Customer Master API — **Step 3 pending** (uncommitted files exist on C:\PZ-verify)
 - V2 list display: ❌ `master-page.jsx` does not show `bill_to_email` in columns
 
 **Implementation sequence progress**:
 1. ✅ Add reusable Customer Master helpers — **DONE** (PR #487)
 2. ✅ Wire Proforma Send to `pick_email(customer)` — **DONE** (PR #487)
-3. ❌ Build V2 Client Detail UI for email, bill-to, ship-to editing — **NEXT PRIORITY**
-4. ❌ Wire DHL shipment/label generation to `resolve_delivery_address(customer)` — pending Step 3
-5. ❌ Add tests proving DHL uses ship-to first and bill-to fallback second — pending Step 4
+3. ❌ Build V2 Client Detail UI for email, bill-to, ship-to editing — **NEXT PRIORITY** (uncommitted files on C:\PZ-verify)
+4. ✅ DHL audit preflight — **DONE** (Step 4 read-only audit, same session)
+5. ✅ Wire DHL doc_package to `resolve_delivery_address(customer)` — **DONE** (PR #489, SHA `4d9f54c`, deployed 2026-06-07)
+6. ✅ Tests proving DHL uses ship-to first (flag-gated) and bill-to fallback second — **DONE** (8 new tests in PR #489, 37 address authority tests in PR #488)
+7. ❌ Dashboard stale ship_to display — `routes_dashboard.py` lines 2434-2469 read wfirma_customers for ship_to (stale authority) — **LOW PRIORITY**, separate task
 
 ---
 
