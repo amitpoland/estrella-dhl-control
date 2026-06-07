@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #483 merged — Write Enablement Phase 1A, proforma safe actions).
 
-**Last-run-at:** 2026-06-07 (PR #483 merged — Write Enablement Phase 1A). Origin/main HEAD: **0ce4e4a** (PR #483 squash-merge). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A MERGED** — Edit/Cancel Draft/Prior Invoices enabled; Send/CMR/Generate remain disabled with reasons (Lesson M). ATLAS-V2: **WIRED_PAGES = 16/16 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **PRODUCTION HASH STATUS**: proforma-detail.jsx `29AA287D` and pz-api.js `1C0BCB5C` match main — production was pre-synced, no redeploy needed. **REMAINING PROFORMA GAPS**: M2 Send Email (HIGH), M1 Hard Delete (MEDIUM), M6 Prior Proforma Search (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW).
+**Last-run-at:** 2026-06-07 (PR #487 merged + deployed — Customer Master direct resolver). Origin/main HEAD: **3b94c04** (PR #487 squash-merge — Customer Master resolver authority fix). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 16/16 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M6 Prior Proforma Search (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **CUSTOMER MASTER ADDRESS AUTHORITY**: Steps 1–2 COMPLETE (helpers + proforma send wiring). Next: Step 3 Client Detail UI → Step 4 DHL wiring → Step 5 tests.
 
 ---
 
@@ -55,6 +55,82 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
+## PR #487 — Customer Master Direct Resolver + M2 Send Pipeline Verification (2026-06-07, MERGED + DEPLOYED)
+
+**Date**: 2026-06-07 (merged + production deployed + API verified)
+**PR #487** — `feat(proforma): Customer Master direct resolver — primary authority for client identity`
+**Merge SHA**: `3b94c04` (squash-merge to `origin/main`)
+**Source branch**: `fix/customer-master-resolver-authority`
+**Deployed**: Full `service/app` robocopy to `C:\PZ\app`, PZService restarted, all 4 posted drafts verified `found:true` via production API.
+
+**What was fixed**: Customer resolution for proforma drafts previously used only the `wfirma_customers` cache, which was missing customers that existed in Customer Master. The resolver now uses Customer Master as PRIMARY AUTHORITY with three match strategies: `customer_master` (exact), `customer_master_prefix` (draft name is leading substring of CM name), `customer_master_reverse_prefix` (CM name is leading substring of draft name). wfirma_customers cache remains as fallback only.
+
+**Authority chain (now correct)**:
+```
+Customer Master (PRIMARY)
+  → _resolve_customer_via_master(norm)
+    → exact match → customer_master
+    → prefix match → customer_master_prefix
+    → reverse-prefix match → customer_master_reverse_prefix
+    → ambiguous (multiple matches) → ambiguous=true
+    → no match → None (fall through to wfirma cache)
+  → wfirma_customers cache (FALLBACK)
+  → found=false (no match anywhere)
+```
+
+**Email authority wiring**: `_resolve_proforma_recipient()` now uses `pick_email(customer)` from `customer_master.py` (bill_to_email primary, ship_to_email fallback). `_enrich_customer_resolution_with_email()` adds email to GET /draft/{id} response for frontend display.
+
+**Files changed**: `routes_proforma.py` (+`_resolve_customer_via_master`, modified `_resolve_customer`, `_enrich_customer_resolution_with_email`, modified `_resolve_proforma_recipient`, `get_proforma_draft`, `clone_proforma_draft`), `customer_master.py` (+`pick_email`, +`resolve_billing_address`, +`resolve_delivery_address`), `test_customer_master_resolver.py` (25 new tests), `test_proforma_recipient_resolver.py` (27 new tests), `test_customer_master_address_authority.py` (37 new tests).
+
+**Production verification (all 4 posted drafts)**:
+| Draft | Client | Strategy | Email |
+|---|---|---|---|
+| #1 | Anastazia Panakova | customer_master | ✅ |
+| #2 | OMARA s.r.o | customer_master | info@omara.sk |
+| #3 | Clear-Diamonds | customer_master | ✅ |
+| #4 | Impact Gallery sp. z o.o. | customer_master | ✅ |
+
+**M2 Send Pipeline verification** (dry run, Draft #2, `recipient_override=amitsaniya@gmail.com`):
+- Pipeline executed through: confirm_token → draft load → draft state check → wFirma PDF fetch (SUCCESS) → recipient_override applied → `queue_email()` → **BLOCKED by `shipment_delivered_guard`** (HTTP 409)
+- Correctly blocked: batch `SHIPMENT_6049349806_2026-05_7409ac77` is delivered (terminal). Lesson E P3 working as designed.
+- No side effects on block: no queue entry, no timeline event, no SMTP, temp PDF cleaned up.
+- **Operator decision (2026-06-07)**: Do NOT post Draft #7 (Verhoeven Joaillier, €8,097.25) to wFirma solely for testing. Wait for natural workflow occurrence. Creating real accounting documents for test purposes is not justified when 7/7 pipeline guards are already verified.
+
+**M2 milestone status**:
+- VERIFIED: Customer Master resolver, pick_email, recipient_override, confirm_token, X-Operator, draft terminal-state guard, wFirma PDF fetch, Lesson E P1/P3, cleanup on suppression
+- PENDING (natural workflow): queue_email success path, SMTP delivery, timeline event write, Lesson E P2/P4
+
+**Tests**: 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority (89 new tests total).
+
+---
+
+## PR #486 — Sprint 38b: Master "Clients / Importers" View-enable (2026-06-07, MERGED + DEPLOYED)
+
+**Date**: 2026-06-07 (merged + production deployed + served-content verified)
+**PR #486** — `feat(master-v2): enable Clients/Importers View action (read-only detail modal)`
+**Merge SHA**: `1b9d2f3` (squash-merge to `origin/main`; local main fast-forwarded `42d0949 → 1b9d2f3`)
+**Source branch**: `feat/sprint-38b-master-view-enable`
+**Deployed file**: `C:\PZ\app\static\v2\master-page.jsx` (single-file scoped robocopy; prod SHA256 `D3D6D075…` == merged-source — match). NO `service/app` blanket sync. NO service restart (handler reads file fresh per request, `no-store`).
+**Rollback**: restore `master-page.jsx` from `42d0949` (pre-deploy prod SHA256 `2B51320D…`; backup at `%TEMP%\master-page.jsx.pre486.bak`).
+
+**What was fixed**: the per-row **View** action on the V2 Master page was hardcoded `disabled` with a *write*-disabled reason (defect — View is a read action; `GET /customer-master/{id}` already exists). View is now ENABLED and opens a read-only `RecordDetailModal` rendering the already-loaded record. Universal across all 12 entity tabs. No fetch, no write path.
+
+**Defense-in-depth**: `SENSITIVE_KEY_RE` redacts sensitive-looking keys (pass/secret/token/hash/key/credential/session/otp/pin) + discloses count via `redacted-note`. Backend already sanitises (`GET /auth/users` → `_safe_user` allow-list strips `password_hash`); the deny-list makes the no-secret-in-UI property structural. (Resolved a reviewer-challenge CRITICAL that assumed raw `SELECT *` reached the client.)
+
+**Lesson M compliance**: New / Edit / Delete / Export CSV / Import CSV remain visible + disabled with explicit reasons. View-enable adds a capability; suppresses none.
+
+**Files changed** (commit `1b9d2f3`, exactly 2): `service/app/static/v2/master-page.jsx` (+98/-2), `service/tests/test_sprint38b_master_view_enable.py` (14 new tests).
+
+**Tests**: PZ regression **160/160** · Carrier **404** (≥381 floor) · Master change-suites **167** (incl. 14 new) · `@babel/standalone` (env,react) transpile of master-page.jsx **OK**.
+
+**GATE 1**: 6 reviewers PASS. **7-agent deploy gate**: all 7 clear (coordinator READY-TO-DEPLOY under merge-first sequence; Lesson-D N/A — deployed commit is on origin/main via PR).
+
+**GATE 2**: 0/3 open PRs (PR #486 merged).
+
+**Operator WIP untouched**: `customer_master.py`, `routes_proforma.py`, `PROJECT_STATE.md` (this file), and untracked `test_customer_master_address_authority.py` / `test_proforma_recipient_resolver.py` were never read-into-commit, staged, or modified by the PR #486 flow. Commit `1b9d2f3` contains only the 2 files above.
+
+**Next (PR-2)**: Master Edit/Delete wiring (`PUT`/`DELETE /customer-master/{id}`) — folds into the Customer Master Address Authority 5-step sequence (Step 3).
+
 ## PR #483 — Write Enablement Phase 1A: Proforma Safe Actions (2026-06-07, MERGED)
 
 **Date**: 2026-06-07 (merged + production hash verified)
@@ -79,7 +155,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 **GATE 2**: 0/3 open PRs (PR #483 merged).
 
-**Remaining proforma gaps**: M2 Send Email (HIGH), M1 Hard Delete (MEDIUM), M6 Prior Proforma Search (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW).
+**Remaining proforma gaps**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M6 Prior Proforma Search (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW).
 
 ## PR #482 — Sprint 43: Coverage Map authority-honest conversion (2026-06-07, MERGED + DEPLOYED)
 
@@ -4101,6 +4177,67 @@ Group D — Tests (3 new files):
 **Key principle**: Authority-honest does NOT mean feature removal. Authority-honest means clearly distinguishing what is available from what is planned. The UI is a truthful representation of both currently available functionality AND approved future functionality.
 
 **Enforcement**: reviewer-challenge and frontend-flow-reviewer must flag any PR that removes, hides, or relocates a visible capability without a formal cancellation or architectural migration as justification. Reject the PR if any of: removing a visible capability because backend is missing; replacing a disabled control with static text; hiding roadmap functionality without cancellation record; deleting placeholders that represent approved future scope. BACKEND_GAP_REGISTER.md and per-page disabled-reason strings are the evidence chain.
+
+---
+
+## Customer Master Address Authority Model (2026-06-07)
+
+**Origin**: Operator architectural directive, informed by Customer Master Email + Shipping Address Authority Audit (read-only, same session).
+
+**Authority separation**:
+- **bill-to** (`bill_to_street`, `bill_to_city`, `bill_to_postal_code`) = invoice / billing authority
+- **ship-to** (`ship_to_name`, `ship_to_street`, `ship_to_city`, `ship_to_zip`, `ship_to_country`, `ship_to_phone`, `ship_to_email`) = DHL delivery / shipping authority
+
+**Seven binding rules**:
+
+1. **DHL shipment and label generation must use ship-to address first.**
+2. **If ship-to address is empty, DHL must fall back to bill-to address.**
+3. **If ship-to differs from bill-to, preserve the separate ship-to address** — billing address must not override a separate ship-to address.
+4. **Master Data / Client Detail must allow operator editing** of client email, bill-to address, and ship-to address.
+5. **Proforma Send Email must use Customer Master email authority** (`bill_to_email` via `_resolve_proforma_recipient` chain).
+6. **Billing address must not override a separate ship-to address.**
+7. **Shape B / `ship_to_contractor_id` remains a wFirma document receiver concept** and must not replace DHL ship-to address authority. Shape B is about wFirma `<contractor_receiver>` XML identity, not physical delivery address.
+
+**Implementation sequence** (operator-approved order):
+
+1. Add reusable Customer Master helpers in `customer_master.py`:
+   - `pick_email(customer)` — returns `bill_to_email`
+   - `resolve_billing_address(customer)` — returns bill-to address dict
+   - `resolve_delivery_address(customer)` — returns ship-to address if populated, else falls back to bill-to
+2. Wire Proforma Send recipient resolution to `pick_email(customer)`.
+3. Build V2 Client Detail UI for email, bill-to, and ship-to editing (wired to `PUT /api/v1/customer-master/{cid}`).
+4. Wire DHL shipment/label generation to `resolve_delivery_address(customer)`.
+5. Add tests proving DHL uses ship-to first and bill-to fallback second.
+
+**Authority flow**:
+```
+Customer Master
+  ├── bill_to_* → invoice / billing / wFirma proforma
+  └── ship_to_* → DHL delivery address
+        ↓
+  resolve_delivery_address(customer)
+    if ship_to populated → ship_to
+    else → bill_to (fallback)
+        ↓
+  DHL shipment / label generation
+```
+
+**Current state (updated 2026-06-07, post PR #487)**:
+- Schema: ✅ Complete — all bill-to and ship-to fields exist in `customer_master_db.py`
+- Backend API: ✅ Complete — `PUT /api/v1/customer-master/{cid}` accepts all fields via `_STR_FIELDS`
+- Helpers: ✅ **COMPLETE (PR #487)** — `pick_email()`, `resolve_billing_address()`, `resolve_delivery_address()` implemented in `customer_master.py`, exported via `__all__`, 37 tests pinning behavior
+- Customer resolution: ✅ **COMPLETE (PR #487)** — `_resolve_customer_via_master()` uses Customer Master as PRIMARY authority with 3 match strategies; wfirma_customers cache is fallback only; all 4 posted drafts return `found:true` in production; 25 tests pinning resolver + 27 tests pinning recipient resolution
+- Proforma send email: ✅ **COMPLETE (PR #487)** — `_resolve_proforma_recipient()` uses `pick_email(customer)`; pipeline verified through PDF fetch; SMTP path pending natural workflow
+- DHL integration: ❌ Zero DHL files reference Customer Master (no `customer_master` import in any `*dhl*` file) — **Step 4 pending**
+- V2 UI editing: ❌ `client-kyc-and-consignment.jsx` has fields but is NOT wired to Customer Master API — **Step 3 pending**
+- V2 list display: ❌ `master-page.jsx` does not show `bill_to_email` in columns
+
+**Implementation sequence progress**:
+1. ✅ Add reusable Customer Master helpers — **DONE** (PR #487)
+2. ✅ Wire Proforma Send to `pick_email(customer)` — **DONE** (PR #487)
+3. ❌ Build V2 Client Detail UI for email, bill-to, ship-to editing — **NEXT PRIORITY**
+4. ❌ Wire DHL shipment/label generation to `resolve_delivery_address(customer)` — pending Step 3
+5. ❌ Add tests proving DHL uses ship-to first and bill-to fallback second — pending Step 4
 
 ---
 
