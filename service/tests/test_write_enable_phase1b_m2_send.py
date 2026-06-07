@@ -138,7 +138,7 @@ class TestM2BackendRoute:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def send_proforma_email")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 6000]
         assert '"ok"' in region or "'ok'" in region
         assert '"queued_id"' in region or "'queued_id'" in region
         assert '"recipient"' in region or "'recipient'" in region
@@ -425,3 +425,76 @@ class TestSafetyConstraints:
         matches = re.findall(r'deleteDraft\b(?!Line)', code)
         assert len(matches) == 0, \
             "No deleteDraft (whole-draft) transport — M1a uses cancelDraft"
+
+
+# =============================================================================
+# 8. Security — Email injection prevention (post-review gate)
+# =============================================================================
+
+class TestEmailInjectionPrevention:
+    """Route must sanitise email fields against CRLF injection and XSS."""
+
+    def test_sanitise_email_field_exists(self):
+        """_sanitise_email_field helper must exist."""
+        src = _read(ROUTES_PROFORMA)
+        assert "def _sanitise_email_field" in src, \
+            "_sanitise_email_field must exist for CRLF injection prevention"
+
+    def test_sanitise_subject_exists(self):
+        """_sanitise_subject helper must exist."""
+        src = _read(ROUTES_PROFORMA)
+        assert "def _sanitise_subject" in src, \
+            "_sanitise_subject must exist for header injection prevention"
+
+    def test_recipient_override_uses_sanitise(self):
+        """recipient_override must pass through _sanitise_email_field."""
+        src = _read(ROUTES_PROFORMA)
+        idx = src.find("def send_proforma_email")
+        assert idx > 0
+        region = src[idx:idx + 5000]
+        assert "_sanitise_email_field" in region and "recipient_override" in region, \
+            "recipient_override must be sanitised"
+
+    def test_cc_uses_sanitise(self):
+        """CC addresses must pass through _sanitise_email_field."""
+        src = _read(ROUTES_PROFORMA)
+        idx = src.find("def send_proforma_email")
+        assert idx > 0
+        region = src[idx:idx + 5000]
+        assert "_sanitise_email_field" in region, \
+            "CC addresses must be sanitised"
+
+    def test_subject_uses_sanitise(self):
+        """subject_override must pass through _sanitise_subject."""
+        src = _read(ROUTES_PROFORMA)
+        idx = src.find("def send_proforma_email")
+        assert idx > 0
+        region = src[idx:idx + 5000]
+        assert "_sanitise_subject" in region, \
+            "subject must be sanitised against header injection"
+
+    def test_email_body_html_escaped(self):
+        """_proforma_email_body must HTML-escape client_name and doc_no."""
+        src = _read(ROUTES_PROFORMA)
+        idx = src.find("def _proforma_email_body")
+        assert idx > 0
+        region = src[idx:idx + 500]
+        assert "_esc(" in region or "escape(" in region, \
+            "Email body must HTML-escape user content to prevent XSS"
+
+    def test_crlf_rejection_in_sanitise(self):
+        """_sanitise_email_field must reject \\r and \\n."""
+        src = _read(ROUTES_PROFORMA)
+        idx = src.find("def _sanitise_email_field")
+        assert idx > 0
+        region = src[idx:idx + 500]
+        assert '"\\r"' in region or "'\\r'" in region, \
+            "Must check for carriage return"
+        assert '"\\n"' in region or "'\\n'" in region, \
+            "Must check for newline"
+
+    def test_email_regex_validation(self):
+        """_sanitise_email_field must validate email format."""
+        src = _read(ROUTES_PROFORMA)
+        assert "_EMAIL_BASIC_RE" in src, \
+            "Must have email format regex for validation"

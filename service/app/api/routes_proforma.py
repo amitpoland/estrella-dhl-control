@@ -4529,6 +4529,39 @@ def cancel_proforma_draft(
 _PROFORMA_SEND_TOKEN = "YES_SEND_PROFORMA_EMAIL"
 _PROFORMA_TERMINAL_STATES = frozenset({"cancelled", "deleted", "converted", "invoiced"})
 
+import re as _re_proforma
+
+_EMAIL_BASIC_RE = _re_proforma.compile(r"^[^\s@\r\n]+@[^\s@\r\n]+\.[^\s@\r\n]+$")
+
+
+def _sanitise_email_field(value: str, field_name: str) -> str:
+    """Strip and reject CRLF injection in email-header fields.
+
+    Raises HTTPException(400) if the value contains \\r or \\n — these are
+    SMTP header injection vectors.  Also validates basic email format when
+    the value is non-empty.
+    """
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if "\r" in v or "\n" in v:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_name}: contains illegal newline characters",
+        )
+    if not _EMAIL_BASIC_RE.match(v):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_name}: '{v}' is not a valid email address",
+        )
+    return v
+
+
+def _sanitise_subject(value: str) -> str:
+    """Strip CRLF from subject to prevent header injection."""
+    v = (value or "").strip()
+    return v.replace("\r", "").replace("\n", "")
+
 
 def _resolve_proforma_recipient(draft: "pildb.ProformaDraft") -> str:
     """Resolve customer email from Customer Master via draft's client_name.
@@ -4562,8 +4595,9 @@ def _resolve_proforma_recipient(draft: "pildb.ProformaDraft") -> str:
 
 def _proforma_email_body(draft: "pildb.ProformaDraft", subject: str) -> str:
     """Build a simple HTML email body for proforma send."""
-    doc_no = draft.wfirma_proforma_fullnumber or f"Draft #{draft.id}"
-    client = draft.client_name or "Customer"
+    from html import escape as _esc
+    doc_no = _esc(draft.wfirma_proforma_fullnumber or f"Draft #{draft.id}")
+    client = _esc(draft.client_name or "Customer")
     return (
         f"<p>Dear {client},</p>"
         f"<p>Please find attached the proforma invoice: <strong>{doc_no}</strong>.</p>"
@@ -4633,7 +4667,10 @@ def send_proforma_email(
         )
 
     # 5. Resolve recipient (Lesson E P1: execution-time validation)
-    recipient_override = (body.get("recipient_override") or "").strip()
+    #    Sanitise against CRLF injection (security review gate).
+    recipient_override = _sanitise_email_field(
+        body.get("recipient_override") or "", "recipient_override"
+    )
     recipient = recipient_override or _resolve_proforma_recipient(d)
     if not recipient:
         raise HTTPException(
@@ -4642,19 +4679,25 @@ def send_proforma_email(
                    "or provide recipient_override.",
         )
 
-    # 6. Build email
+    # 6. Build email — sanitise subject + CC against header injection
     doc_no = d.wfirma_proforma_fullnumber or f"Draft #{d.id}"
-    subject = (body.get("subject_override") or "").strip() or f"Proforma {doc_no}"
+    subject = _sanitise_subject(
+        (body.get("subject_override") or "").strip() or f"Proforma {doc_no}"
+    )
     message_body = (body.get("message_body") or "").strip()
     html_body = message_body if message_body else _proforma_email_body(d, subject)
     cc_list = body.get("cc") or []
-    cc_str = ", ".join(cc_list) if isinstance(cc_list, list) else str(cc_list)
+    if isinstance(cc_list, list):
+        cc_validated = [_sanitise_email_field(c, "cc") for c in cc_list]
+        cc_str = ", ".join(c for c in cc_validated if c)
+    else:
+        cc_str = _sanitise_email_field(str(cc_list), "cc")
 
-    # 7. Resolve PDF path for attachment
+    # 7. PDF filename for response metadata
     batch_id = d.batch_id or ""
-    client_name = d.client_name or ""
-    # Build a download URL path — email_sender will resolve the actual file
-    # The proforma PDF lives at the wFirma document endpoint
+    # NOTE: Proforma PDF lives in wFirma (not local).  Attaching it requires
+    # a wFirma download step — that is a follow-up feature.  For now the email
+    # is sent without attachment; the body references the proforma number.
     pdf_filename = f"proforma-{doc_no.replace('/', '-').replace(' ', '_')}.pdf"
 
     # 8. Queue email (Lesson E P2+P4: idempotency + replay safety)
