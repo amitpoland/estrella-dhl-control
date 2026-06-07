@@ -4693,12 +4693,51 @@ def send_proforma_email(
     else:
         cc_str = _sanitise_email_field(str(cc_list), "cc")
 
-    # 7. PDF filename for response metadata
+    # 7. Fetch proforma PDF from wFirma (authority: wfirma_proforma_id)
+    #
+    # Authority chain:
+    #   draft.wfirma_proforma_id → wfirma_client.fetch_invoice_pdf (read-only)
+    #   → PDF bytes → temp file under storage_root → queue_email(attachments=...)
+    #   → email_sender._attachments_for_queue (security: path under storage_root)
+    #   → SMTP attachment → temp file cleanup
+    #
+    # The fetch is read-only (GET invoices/download/{id}).  If wFirma is
+    # unreachable or the PDF is missing, the send is blocked with 422.
     batch_id = d.batch_id or ""
-    # NOTE: Proforma PDF lives in wFirma (not local).  Attaching it requires
-    # a wFirma download step — that is a follow-up feature.  For now the email
-    # is sent without attachment; the body references the proforma number.
+    wfirma_id = d.wfirma_proforma_id.strip()
     pdf_filename = f"proforma-{doc_no.replace('/', '-').replace(' ', '_')}.pdf"
+
+    from ..services import wfirma_client as _wfc
+    try:
+        pdf_bytes = _wfc.fetch_invoice_pdf(wfirma_id)
+    except Exception as exc:
+        log.warning(
+            "send_proforma_email: fetch_invoice_pdf failed for wfirma_id=%s: %s",
+            wfirma_id, exc,
+        )
+        raise HTTPException(
+            status_code=422,
+            detail="Cannot send email: failed to fetch proforma PDF from wFirma. "
+                   f"wfirma_id={wfirma_id}. Try again later or check wFirma status.",
+        )
+
+    if not pdf_bytes or len(pdf_bytes) < 10:
+        raise HTTPException(
+            status_code=422,
+            detail="Cannot send email: wFirma returned empty PDF. "
+                   f"wfirma_id={wfirma_id}.",
+        )
+
+    # Write PDF to a temp file under storage_root so _attachments_for_queue
+    # security check passes (path must be under storage_root).
+    _pdf_dir = settings.storage_root / "proforma_email_pdfs"
+    _pdf_dir.mkdir(parents=True, exist_ok=True)
+    # Sanitise filename for filesystem safety (no path traversal)
+    _safe_fn = "".join(
+        c if (c.isalnum() or c in "._-") else "_" for c in pdf_filename
+    )
+    _pdf_path = _pdf_dir / _safe_fn
+    _pdf_path.write_bytes(pdf_bytes)
 
     # 8. Queue email (Lesson E P2+P4: idempotency + replay safety)
     from ..services import email_service
@@ -4711,12 +4750,25 @@ def send_proforma_email(
             cc=cc_str,
             from_address="import@estrellajewels.eu",
             email_type="proforma_send",
+            attachments=[{"label": _safe_fn, "path": str(_pdf_path)}],
         )
     except email_service.FollowupSuppressedError as fse:
+        # Clean up temp PDF on suppression
+        try:
+            _pdf_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise HTTPException(
             status_code=409,
             detail=f"Send suppressed: {fse.detail}",
         )
+    finally:
+        # Clean up temp PDF after queue_email() — SMTP is synchronous,
+        # so the file has been consumed by the time we get here.
+        try:
+            _pdf_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     # 9. Timeline event
     from ..core import timeline as tl
@@ -4728,11 +4780,13 @@ def send_proforma_email(
             "operator",
             operator,
             {
-                "draft_id":  draft_id,
-                "recipient": recipient,
-                "subject":   subject,
-                "queue_id":  queue_id,
-                "pdf":       pdf_filename,
+                "draft_id":     draft_id,
+                "recipient":    recipient,
+                "subject":      subject,
+                "queue_id":     queue_id,
+                "pdf":          pdf_filename,
+                "pdf_attached": True,
+                "pdf_bytes":    len(pdf_bytes),
             },
         )
 
@@ -4742,12 +4796,14 @@ def send_proforma_email(
     )
 
     return JSONResponse({
-        "ok":          True,
-        "queued_id":   queue_id,
-        "recipient":   recipient,
-        "subject":     subject,
+        "ok":           True,
+        "queued_id":    queue_id,
+        "recipient":    recipient,
+        "subject":      subject,
         "pdf_filename": pdf_filename,
-        "audit_event": "proforma_email_queued",
+        "pdf_attached": True,
+        "pdf_bytes":    len(pdf_bytes),
+        "audit_event":  "proforma_email_queued",
     })
 
 
