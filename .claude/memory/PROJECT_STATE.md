@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #479 merged + deployed — Sprint 40 Dashboard authority-honest conversion production-verified).
 
-**Last-run-at:** 2026-06-07 (PR #479 merge + deploy). Origin/main HEAD: **aa8d714** (Sprint 40 — Dashboard authority-honest conversion). Production: `C:\PZ` deployed with 3 static files (dashboard-kanban.jsx, mock-badge.jsx, pz-api.js), hash-verified 3/3 MD5 MATCH. GATE 2: **0/3 open PRs** (clean board — PR #479 merged). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 40 COMPLETED** (SHA aa8d714), Dashboard is 13th authority-backed V2 page, WIRED_PAGES count = 13 of 16 total page slugs, **3 remaining MOCK pages** (api_status, diagnostics, coverage_map). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
+**Last-run-at:** 2026-06-07 (PR #480 opened — Sprint 41 API Status authority-honest conversion). Origin/main HEAD: **6f0d515** (Sprint 40 PROJECT_STATE update). GATE 2: **1/3 open PRs** (PR #480 pending). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 41 PR OPEN** (SHA 6e44d82 on `feat/atlas-sprint-41-api-status-authority`), API Status is 14th authority-backed V2 page, WIRED_PAGES count = 14 of 16 total page slugs, **2 remaining MOCK pages** (diagnostics, coverage_map). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
 
 ---
 
@@ -54,6 +54,37 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## PR #480 — Sprint 41: API Status authority-honest conversion (2026-06-07, PR OPEN)
+
+**Date**: 2026-06-07 (PR opened, pending merge)
+**PR #480** — `feat(atlas): Sprint 41 — API Status authority-honest conversion`
+**Branch SHA**: `6e44d82` on `feat/atlas-sprint-41-api-status-authority`
+
+**Scope**: Complete MOCK → authority-honest conversion of ApiStatusPage. Delete all 4 fake data arrays, replace with live subsystem health board.
+
+**Changes (4 files, static-only, zero backend)**:
+- `service/app/static/v2/api-status-page.jsx` — REWRITE: deleted all 4 fake arrays (API_INTEGRATIONS 16 entries, API_ENDPOINT_REGISTRY 30 entries, RECENT_ERRORS 5, INCIDENTS 4); deleted fake carriers (FedEx/UPS/GLS/InPost/DPD); added SUBSYSTEMS array mapping 12 real backend endpoints; `_deriveStatus()` with per-subsystem switch cases; STATE_STYLES map + StateChip component; SubsystemCard with per-card loading/error states; HealthFullDetail (12-dimension Guardian diagnostic); RecentErrorsPanel (ring buffer); BotActivityPanel (sessions/events/stages/posts); DhlOpsSummary (lane_a_health + ops counters); 6 real KPIs (Systems Online, Emails Pending, DHL Scanner, Follow-up Queue, Bot Errors, Active Carriers); 5 tabs (Integration Health, Guardian Diagnostic, DHL Operations, Recent Errors, Bot Activity); independent per-subsystem useEffect fetching
+- `service/app/static/v2/pz-api.js` — 9 new transport functions (getHealthFull, getDebugPending, getStorageHealth, getPzHealth, getDhlAutoScanStatus, getDhlDailySummary, getDhlFollowupStatus, getEmailQueue, getIntelligenceStatus)
+- `service/app/static/v2/mock-badge.jsx` — added `'api_status'` to WIRED_PAGES (14/16 = 87.5%)
+- `service/tests/test_sprint41_api_status_authority_honest.py` — NEW: 115 regression tests across 17 test classes
+
+**Browser verification (127.0.0.1:47214/v2/api_status)**:
+- No MOCK banner ✅
+- 12 subsystem cards rendered with live data ✅
+- 6 real KPIs populated (Systems Online: 8/12, Emails Pending: 0, DHL Scanner: Never run, Follow-up Queue: —, Bot Errors: 0, Active Carriers: 0) ✅
+- All 5 tabs switch correctly ✅
+- Per-card error handling works (PZ Engine ERROR from 404, Email Queue fetch error from 401 — both graceful, no page crash) ✅
+- Zero console errors ✅
+- All 12 endpoints called (10 return 200, 2 expected non-200: pz/health 404 dev-only, admin/email-queue 401 auth-required) ✅
+
+**WIRED_PAGES**: 14/16 (87.5%) — proforma, inbox, inventory, dhl, shipments, automation, intelligence, documents, proforma_detail, wfirma_setup, master, carriers, dashboard, api_status.
+**Remaining MOCK**: diagnostics, coverage_map (2 pages).
+
+**GATE 2**: 1/3 open PRs (PR #480 pending).
+**Test baseline**: +115 Sprint 41 tests.
+
+---
 
 ## PR #479 — Sprint 40: Dashboard authority-honest conversion (2026-06-07, MERGED + DEPLOYED)
 
