@@ -376,6 +376,106 @@ def ship_to_shape(c: CustomerMaster) -> str:
     return SHIP_TO_NONE
 
 
+# ── Address authority helpers (2026-06-07) ─────────────────────────────────────
+#
+# Authority model (PROJECT_STATE.md DECISIONS 2026-06-07):
+#   bill_to_* = invoice / billing authority
+#   ship_to_* = DHL delivery / shipping authority
+#   DHL must use ship-to first, bill-to fallback second.
+#   Billing must never override a separate ship-to address.
+#   Shape B (ship_to_contractor_id) is wFirma document receiver identity,
+#   NOT DHL physical delivery address.
+#
+# These are pure functions — no I/O, no mutation, no side effects.
+
+def pick_email(c: CustomerMaster) -> str:
+    """Return the best available email for this customer.
+
+    Priority:
+      1. bill_to_email — the invoice/billing contact email (primary authority)
+      2. ship_to_email — fallback ONLY when bill_to_email is absent
+      3. "" — no usable email
+
+    Does NOT mutate the customer record.
+    """
+    email = (c.bill_to_email or "").strip()
+    if email:
+        return email
+    # Fallback: ship-to email only when billing email is missing
+    return (c.ship_to_email or "").strip()
+
+
+def resolve_billing_address(c: CustomerMaster) -> Dict[str, str]:
+    """Return the billing/invoice address fields as a flat dict.
+
+    All values are stripped strings; missing fields are empty strings.
+    Uses the top-level ``country`` field as the billing country
+    (``bill_to_country`` does not exist as a separate field — the
+    CustomerMaster ``country`` IS the billing country).
+
+    Does NOT mutate the customer record.
+    """
+    return {
+        "name":        (c.bill_to_name or "").strip(),
+        "street":      (c.bill_to_street or "").strip(),
+        "city":        (c.bill_to_city or "").strip(),
+        "postal_code": (c.bill_to_postal_code or "").strip(),
+        "country":     (c.country or "").strip(),
+        "phone":       (c.bill_to_phone or "").strip(),
+        "email":       (c.bill_to_email or "").strip(),
+    }
+
+
+def _has_ship_to_address(c: CustomerMaster) -> bool:
+    """True when at least one physical ship-to address field is populated.
+
+    Checks street OR city — an address with only a name/phone but no
+    location is not a usable delivery address.
+    """
+    return bool(
+        (c.ship_to_street or "").strip()
+        or (c.ship_to_city or "").strip()
+    )
+
+
+def resolve_delivery_address(c: CustomerMaster) -> Dict[str, str]:
+    """Return the DHL delivery address for this customer.
+
+    Authority (PROJECT_STATE.md DECISIONS 2026-06-07):
+      1. If ``ship_to_use_alternate`` is True AND ship-to address fields
+         are populated → use ship-to address.
+      2. Otherwise → fall back to billing address.
+
+    Billing NEVER overrides a populated ship-to address.
+    Shape B (``ship_to_contractor_id``) is a wFirma document receiver
+    concept — it does NOT affect DHL physical delivery address resolution.
+
+    Returns a flat dict with stripped strings; missing fields are empty strings.
+    The ``"source"`` key indicates which address was used: ``"ship_to"`` or
+    ``"bill_to_fallback"``.
+
+    Does NOT mutate the customer record.
+    """
+    if c.ship_to_use_alternate and _has_ship_to_address(c):
+        return {
+            "name":        (c.ship_to_name or "").strip(),
+            "person":      (c.ship_to_person or "").strip(),
+            "street":      (c.ship_to_street or "").strip(),
+            "city":        (c.ship_to_city or "").strip(),
+            "postal_code": (c.ship_to_zip or "").strip(),
+            "country":     (c.ship_to_country or "").strip(),
+            "phone":       (c.ship_to_phone or "").strip(),
+            "email":       (c.ship_to_email or "").strip(),
+            "source":      "ship_to",
+        }
+
+    # Fallback to billing address
+    billing = resolve_billing_address(c)
+    billing["person"] = ""  # billing address has no separate person field
+    billing["source"] = "bill_to_fallback"
+    return billing
+
+
 __all__ = [
     "CustomerMasterResolver",
     "CustomerNotFound",
@@ -394,4 +494,7 @@ __all__ = [
     "pick_proforma_series_id",
     "pick_vat_mode",
     "ship_to_shape",
+    "pick_email",
+    "resolve_billing_address",
+    "resolve_delivery_address",
 ]

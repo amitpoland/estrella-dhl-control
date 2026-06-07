@@ -33,7 +33,10 @@ from ..services import wfirma_db   as wfdb
 from ..services import inventory_state_engine as ise
 from ..services import proforma_invoice_link_db as pildb
 from ..services import wfirma_client
-from ..services.customer_master_db import get_customer as get_customer_master
+from ..services.customer_master_db import (
+    get_customer as get_customer_master,
+    list_customers as _list_customer_master,
+)
 from ..services.proforma_draft_governance import (
     check_top_patch, check_line_patch, check_post_readiness, check_convert_series,
 )
@@ -262,11 +265,116 @@ def _normalize_client_name(raw: str) -> str:
     return _re.sub(r"\s+", " ", raw.strip())
 
 
+def _resolve_customer_via_master(
+    norm: str,
+) -> Optional[Dict[str, Any]]:
+    """Try to resolve a normalized client name against Customer Master.
+
+    Customer Master is the PRIMARY AUTHORITY for client identity, email,
+    and address (PROJECT_STATE DECISIONS 2026-06-07). wfirma_customers
+    cache is a helper/fallback only.
+
+    Match strategies tried in order:
+      1. Exact normalized match (case-insensitive).
+      2. Prefix match — draft name is a leading substring of the
+         Customer Master ``bill_to_name`` (e.g. draft ``Anastazia
+         Panakova`` matches CM ``Anastazia Panakova - Zlatnictvo
+         Panaks``). Only word-boundary prefix is accepted (space or
+         separator after the draft name in the master name).
+      3. Reverse-prefix — CM ``bill_to_name`` is a leading substring
+         of the draft name. Same boundary rule.
+
+    Returns a dict suitable for ``out.update(...)`` in the caller when
+    exactly one unambiguous match is found.  Returns ``None`` when zero
+    matches (caller should fall through to wfirma cache).  Returns an
+    ambiguous-flagged dict when >1 match found.
+    """
+    cm_db = _customer_master_db_path()
+    all_cm = _list_customer_master(cm_db, limit=10000, active=True)
+    if not all_cm:
+        return None
+
+    norm_lc = norm.lower()
+    exact_matches = []
+    prefix_matches = []
+    rev_prefix_matches = []
+
+    for cm in all_cm:
+        cm_name_raw = (cm.bill_to_name or "").strip()
+        if not cm_name_raw or not cm.bill_to_contractor_id:
+            continue
+        cm_norm = _normalize_client_name(cm_name_raw).lower()
+
+        if cm_norm == norm_lc:
+            exact_matches.append(cm)
+        elif cm_norm.startswith(norm_lc + " ") or cm_norm.startswith(norm_lc + " - "):
+            prefix_matches.append(cm)
+        elif norm_lc.startswith(cm_norm + " ") or norm_lc.startswith(cm_norm + " - "):
+            rev_prefix_matches.append(cm)
+
+    # ── Exact match ─────────────────────────────────────────────────
+    if len(exact_matches) == 1:
+        cm = exact_matches[0]
+        return {
+            "found":                True,
+            "match_strategy":       "customer_master",
+            "customer":             {"client_name": cm.bill_to_name,
+                                     "wfirma_customer_id": str(cm.bill_to_contractor_id)},
+            "wfirma_customer_id":   str(cm.bill_to_contractor_id),
+            "resolved_wfirma_name": cm.bill_to_name,
+        }
+    if len(exact_matches) > 1:
+        return {
+            "ambiguous":      True,
+            "match_strategy": "ambiguous",
+            "candidates":     [c.bill_to_name for c in exact_matches],
+        }
+
+    # ── Prefix match (draft name ⊆ CM name) ────────────────────────
+    if len(prefix_matches) == 1:
+        cm = prefix_matches[0]
+        return {
+            "found":                True,
+            "match_strategy":       "customer_master_prefix",
+            "customer":             {"client_name": cm.bill_to_name,
+                                     "wfirma_customer_id": str(cm.bill_to_contractor_id)},
+            "wfirma_customer_id":   str(cm.bill_to_contractor_id),
+            "resolved_wfirma_name": cm.bill_to_name,
+        }
+    if len(prefix_matches) > 1:
+        return {
+            "ambiguous":      True,
+            "match_strategy": "ambiguous",
+            "candidates":     [c.bill_to_name for c in prefix_matches],
+        }
+
+    # ── Reverse-prefix match (CM name ⊆ draft name) ────────────────
+    if len(rev_prefix_matches) == 1:
+        cm = rev_prefix_matches[0]
+        return {
+            "found":                True,
+            "match_strategy":       "customer_master_reverse_prefix",
+            "customer":             {"client_name": cm.bill_to_name,
+                                     "wfirma_customer_id": str(cm.bill_to_contractor_id)},
+            "wfirma_customer_id":   str(cm.bill_to_contractor_id),
+            "resolved_wfirma_name": cm.bill_to_name,
+        }
+    if len(rev_prefix_matches) > 1:
+        return {
+            "ambiguous":      True,
+            "match_strategy": "ambiguous",
+            "candidates":     [c.bill_to_name for c in rev_prefix_matches],
+        }
+
+    # No match in Customer Master — caller falls through to wfirma cache
+    return None
+
+
 def _resolve_customer(
     client_name: str,
     batch_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Resolve a sales-list client name to a wfirma_customers row.
+    """Resolve a sales-list client name to a customer identity.
 
     Authority chain (highest priority first):
       0. **Packing-upload selection** — when ``batch_id`` is provided AND
@@ -277,15 +385,17 @@ def _resolve_customer(
          Display-name divergence between the proforma's free-text and the
          master record's ``bill_to_name`` becomes an advisory note, never
          a blocker. See ``services/customer_resolution_authority.py``.
-      1. Normalized exact match (case-insensitive) against
-         ``wfirma_customers`` cache.
-      2. Prefix tolerance — sales-side input is a leading substring of
-         the wFirma stored name (e.g. ``"Clear-Diamonds"`` ⇒
-         ``"Clear-Diamonds Ltd"``). Auto-resolves only when exactly ONE
-         candidate is found.
-      3. Reverse-prefix tolerance — wFirma name is a leading substring
-         of the sales input (rarer; covers the case where wFirma
-         stripped a suffix like " Ltd" the operator now includes).
+      1. **Customer Master direct match** — normalized name match against
+         ``customer_master.bill_to_name``. Customer Master is the primary
+         authority for client identity, email, and address (PROJECT_STATE
+         DECISIONS 2026-06-07). Supports exact, prefix (draft name is
+         leading substring of master name), and reverse-prefix matching.
+         Single unambiguous match required.
+      2. **wfirma_customers cache fallback** — normalized exact match
+         (case-insensitive) against ``wfirma_customers`` cache. This is
+         a helper cache, NOT the authority. Used only when Customer Master
+         match fails.
+      3. Prefix/reverse-prefix tolerance against wfirma_customers cache.
 
     Result dict shape::
 
@@ -294,7 +404,10 @@ def _resolve_customer(
           "normalized_name":        <stripped+collapsed>,
           "found":                  bool,           # exactly one match
           "ambiguous":              bool,           # 2+ candidates
-          "match_strategy":         "packing_master" | "exact" | "prefix" |
+          "match_strategy":         "packing_master" | "customer_master" |
+                                    "customer_master_prefix" |
+                                    "customer_master_reverse_prefix" |
+                                    "exact" | "prefix" |
                                     "reverse_prefix" | "ambiguous" | "none",
           "customer":               <full wfirma_customers row dict> | None,
           "wfirma_customer_id":     str | "",
@@ -305,10 +418,10 @@ def _resolve_customer(
         }
 
     The resolver does NOT call the live wFirma API. It reads only local
-    state: ``wfirma_customers`` (populated by a separate sync flow),
-    ``packing_contractor_resolution``, and ``customer_master``. No
-    mutation; no creation; safe for read-only preview gates and write
-    payload builders alike.
+    state: ``customer_master`` (primary authority), ``wfirma_customers``
+    (cache fallback), ``packing_contractor_resolution``, and
+    ``documents.db``. No mutation; no creation; safe for read-only
+    preview gates and write payload builders alike.
     """
     raw = client_name or ""
     norm = _normalize_client_name(raw)
@@ -395,10 +508,36 @@ def _resolve_customer(
                 batch_id, _pm_err,
             )
 
-    if not norm or wfdb._db_path is None:
+    if not norm:
         return out
 
-    # 1. Normalized exact match — current behaviour, preserved.
+    # ------------------------------------------------------------------
+    # 1. Customer Master direct match — PRIMARY AUTHORITY
+    #    Customer Master is the source of truth for client identity,
+    #    email, and address (PROJECT_STATE DECISIONS 2026-06-07).
+    #    wfirma_customers cache is a helper; Customer Master is authority.
+    # ------------------------------------------------------------------
+    try:
+        cm_match = _resolve_customer_via_master(norm)
+        if cm_match is not None:
+            out.update(cm_match)
+            return out
+    except Exception as _cm_err:  # pragma: no cover — defensive
+        log.warning(
+            "Customer Master direct match failed for %r: %s "
+            "— falling through to wfirma_customers cache",
+            raw, _cm_err,
+        )
+
+    # ------------------------------------------------------------------
+    # 2. wfirma_customers cache — FALLBACK only
+    #    Used when Customer Master match fails (e.g. customer not yet in
+    #    Customer Master, or name format differs).
+    # ------------------------------------------------------------------
+    if wfdb._db_path is None:
+        return out
+
+    # 2a. Normalized exact match against wfirma_customers cache.
     cust = wfdb.get_customer(norm)
     if cust and cust.get("wfirma_customer_id"):
         out.update({
@@ -410,7 +549,7 @@ def _resolve_customer(
         })
         return out
 
-    # 2/3. Walk wfirma_customers for prefix / reverse-prefix candidates.
+    # 2b/2c. Walk wfirma_customers for prefix / reverse-prefix candidates.
     norm_lc = norm.lower()
     all_rows = wfdb.list_customers()
     prefix_matches: List[Dict[str, Any]] = []
@@ -421,7 +560,7 @@ def _resolve_customer(
             continue
         wf_norm = _normalize_client_name(wf_name).lower()
         if wf_norm == norm_lc:
-            # Exact match got missed in step 1 only when match_status filter
+            # Exact match got missed in step 2a only when match_status filter
             # excluded it; treat as exact.
             out.update({
                 "found":                True,
@@ -3481,8 +3620,14 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
         raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
     full = _draft_to_full(d)
     # Customer resolution — defensive: failure must not 500 the GET.
+    # Pass batch_id so per-document and per-batch packing-master paths
+    # are used (strongest resolution). Enrich with Customer Master email
+    # so the frontend can display it without a separate lookup.
     try:
-        full["customer_resolution"] = _resolve_customer(d.client_name or "")
+        full["customer_resolution"] = _resolve_customer(
+            d.client_name or "", batch_id=d.batch_id,
+        )
+        _enrich_customer_resolution_with_email(full["customer_resolution"])
     except Exception as exc:
         log.warning("draft %s customer_resolution failed (non-fatal): %s",
                     draft_id, exc)
@@ -3587,7 +3732,10 @@ def clone_proforma_draft(draft_id: int) -> JSONResponse:
 
     full = _draft_to_full(clone)
     try:
-        full["customer_resolution"] = _resolve_customer(clone.client_name or "")
+        full["customer_resolution"] = _resolve_customer(
+            clone.client_name or "", batch_id=clone.batch_id,
+        )
+        _enrich_customer_resolution_with_email(full["customer_resolution"])
     except Exception:
         full["customer_resolution"] = {"raw_input": clone.client_name or "",
                                        "found": False, "ambiguous": False}
@@ -4563,21 +4711,52 @@ def _sanitise_subject(value: str) -> str:
     return v.replace("\r", "").replace("\n", "")
 
 
+def _enrich_customer_resolution_with_email(cr: Dict[str, Any]) -> None:
+    """Add Customer Master email to a customer_resolution dict (in-place).
+
+    When resolution found a wfirma_customer_id, look up the Customer Master
+    record and add ``customer.bill_to_email`` so the frontend can display
+    the customer's email without a separate API call.
+
+    Mutates ``cr`` dict in-place. Never raises — failures are silently
+    skipped (the GET must not 500 on enrichment errors).
+    """
+    if not cr.get("found"):
+        return
+    cid = cr.get("wfirma_customer_id") or ""
+    if not cid:
+        return
+    try:
+        from ..services.customer_master_db import get_customer as _get_cm
+        from ..services.customer_master import pick_email as _pick_email
+        cm = _get_cm(_customer_master_db_path(), int(cid))
+        if cm is None:
+            return
+        # Enrich the customer dict (or create one) with Customer Master email
+        cust = cr.get("customer") or {}
+        if not isinstance(cust, dict):
+            cust = {}
+        cust["bill_to_email"] = _pick_email(cm)
+        cr["customer"] = cust
+    except Exception:
+        pass
+
+
 def _resolve_proforma_recipient(draft: "pildb.ProformaDraft") -> str:
     """Resolve customer email from Customer Master via draft's client_name.
 
-    Authority: customer_master_db.bill_to_email (NOT wFirma — wFirma does
-    not surface email).  Resolution path:
-      draft.client_name → _resolve_customer() → wfirma_customer_id
-      → customer_master_db → bill_to_email
+    Authority chain (PROJECT_STATE.md DECISIONS 2026-06-07):
+      draft.client_name → _resolve_customer(batch_id) → wfirma_customer_id
+      → customer_master_db → pick_email(customer)
 
+    pick_email priority: bill_to_email first, ship_to_email fallback.
     Returns empty string if not resolvable.
     """
     cn = (draft.client_name or "").strip()
     if not cn:
         return ""
     try:
-        cr = _resolve_customer(cn)
+        cr = _resolve_customer(cn, batch_id=getattr(draft, "batch_id", None))
     except Exception:
         return ""
     cid = cr.get("wfirma_customer_id") or ""
@@ -4585,10 +4764,11 @@ def _resolve_proforma_recipient(draft: "pildb.ProformaDraft") -> str:
         return ""
     try:
         from ..services.customer_master_db import get_customer as _get_cm
+        from ..services.customer_master import pick_email as _pick_email
         cm = _get_cm(_customer_master_db_path(), int(cid))
         if cm is None:
             return ""
-        return (cm.bill_to_email or "").strip()
+        return _pick_email(cm)
     except Exception:
         return ""
 
