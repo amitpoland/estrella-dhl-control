@@ -594,6 +594,38 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
             (new, legacy, new),
         )
 
+    # ── M6 — Cross-batch search indexes (additive, non-breaking) ────────────
+    # These enable the search_drafts() function to filter efficiently
+    # across all batches. Only CREATE IF NOT EXISTS — safe to re-run.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pd_client_name "
+        "ON proforma_drafts(client_name)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pd_fullnumber "
+        "ON proforma_drafts(wfirma_proforma_fullnumber)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pd_created_at "
+        "ON proforma_drafts(created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pd_currency "
+        "ON proforma_drafts(currency)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pd_draft_state "
+        "ON proforma_drafts(draft_state)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pd_batch_id "
+        "ON proforma_drafts(batch_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pd_wfirma_proforma_id "
+        "ON proforma_drafts(wfirma_proforma_id)"
+    )
+
     # Per-draft event log — mirrors audit.timeline at draft granularity
     # so we don't pollute the per-batch audit with every edit. Keyed by
     # draft_id (stable across restarts).
@@ -1300,6 +1332,118 @@ def list_drafts_for_batch(db_path: Path, batch_id: str) -> List[ProformaDraft]:
             (str(batch_id),),
         ).fetchall()
     return [_row_to_draft(r) for r in rows]
+
+
+def search_drafts(
+    db_path: Path,
+    *,
+    filters: Optional[Dict[str, Any]] = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> Dict[str, Any]:
+    """Cross-batch proforma draft search with filtering and pagination.
+
+    M6 Prior Proforma Search — the first authoritative cross-batch
+    read-only index. Authority source: proforma_drafts table ONLY.
+
+    Args:
+        db_path: Path to proforma_links.db
+        filters: Dict with optional keys:
+            - batch_id: exact match
+            - client_name: partial match (LIKE %value%)
+            - wfirma_proforma_id: exact match
+            - wfirma_proforma_fullnumber: exact or prefix match (LIKE value%)
+            - draft_state: exact match
+            - currency: exact match
+            - date_from: created_at >= value (ISO 8601 string)
+            - date_to: created_at <= value (ISO 8601 string)
+        page: 1-based page number (default 1)
+        page_size: results per page (default 25, max 100)
+
+    Returns:
+        {
+            "results": [ProformaDraft, ...],
+            "total": int,
+            "page": int,
+            "page_size": int,
+        }
+    """
+    if filters is None:
+        filters = {}
+
+    # Clamp pagination
+    page = max(1, int(page))
+    page_size = max(1, min(100, int(page_size)))
+
+    if not Path(db_path).exists():
+        return {"results": [], "total": 0, "page": page, "page_size": page_size}
+
+    # Build WHERE clause from filters
+    conditions: List[str] = []
+    params: List[Any] = []
+
+    if filters.get("batch_id"):
+        conditions.append("batch_id = ?")
+        params.append(str(filters["batch_id"]))
+
+    if filters.get("client_name"):
+        conditions.append("client_name LIKE ?")
+        params.append(f"%{filters['client_name']}%")
+
+    if filters.get("wfirma_proforma_id"):
+        conditions.append("wfirma_proforma_id = ?")
+        params.append(str(filters["wfirma_proforma_id"]))
+
+    if filters.get("wfirma_proforma_fullnumber"):
+        conditions.append("wfirma_proforma_fullnumber LIKE ?")
+        params.append(f"{filters['wfirma_proforma_fullnumber']}%")
+
+    if filters.get("draft_state"):
+        conditions.append("draft_state = ?")
+        params.append(str(filters["draft_state"]))
+
+    if filters.get("currency"):
+        conditions.append("currency = ?")
+        params.append(str(filters["currency"]))
+
+    if filters.get("date_from"):
+        conditions.append("created_at >= ?")
+        params.append(str(filters["date_from"]))
+
+    if filters.get("date_to"):
+        conditions.append("created_at <= ?")
+        params.append(str(filters["date_to"]))
+
+    where_clause = ""
+    if conditions:
+        where_clause = "WHERE " + " AND ".join(conditions)
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_drafts_table(conn)
+
+        # Count total matching rows
+        count_sql = f"SELECT COUNT(*) FROM proforma_drafts {where_clause}"
+        total = conn.execute(count_sql, params).fetchone()[0]
+
+        # Fetch paginated results, newest first
+        offset = (page - 1) * page_size
+        query_sql = (
+            f"SELECT * FROM proforma_drafts {where_clause} "
+            f"ORDER BY created_at DESC, id DESC "
+            f"LIMIT ? OFFSET ?"
+        )
+        rows = conn.execute(
+            query_sql, params + [page_size, offset]
+        ).fetchall()
+
+    results = [_row_to_draft(r) for r in rows]
+    return {
+        "results": results,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 def auto_create_draft_from_sales_packing(
@@ -3028,6 +3172,7 @@ __all__ = [
     "record_post_orphan",
     "list_drafts_for_batch",
     "get_draft_by_id",
+    "search_drafts",
     "list_draft_events",
     "_record_draft_event",
 ]
