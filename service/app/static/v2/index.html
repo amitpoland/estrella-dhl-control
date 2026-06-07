@@ -381,6 +381,16 @@ function App() {
     setPage('proforma');
   };
 
+  // ── handleProformaSearchDrill: navigate from search results to batch list ──
+  const handleProformaSearchDrill = (batchId) => {
+    if (!batchId) return;
+    const qs = '?batch_id=' + encodeURIComponent(batchId);
+    setCurrentSearch(qs);
+    history.pushState({ page: 'proforma' }, '', '/v2/proforma' + qs);
+    setPage('proforma');
+    setActiveNav('proforma');
+  };
+
   // ── popstate: browser back/forward ─────────────────────────────────────────
   React.useEffect(() => {
     const onPop = () => {
@@ -635,7 +645,7 @@ function App() {
               <PageHeader title="Prior Proforma Search" subtitle="Cross-batch read-only search across all local proforma drafts"
                 actions={<Btn variant="outline" small onClick={() => handleNav('proforma')}>Back to Pro Forma</Btn>}
               />
-              <ProformaSearchPage onNav={handleNav} />
+              <ProformaSearchPage onNav={handleNav} onDrillBatch={handleProformaSearchDrill} />
             </>
           )}
 

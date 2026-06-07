@@ -335,12 +335,12 @@ class TestAuthorityNotice:
 
 
 # =============================================================================
-# 12. Row click navigates to proforma list
+# 12. Row click navigates via onDrillBatch (not direct pushState)
 # =============================================================================
 
 
 class TestRowClick:
-    """Clicking a result row should navigate to proforma list for that batch."""
+    """Clicking a result row should call onDrillBatch with the batch_id."""
 
     def test_row_has_onclick(self):
         src = _read(SEARCH_JSX)
@@ -356,6 +356,62 @@ class TestRowClick:
     def test_row_has_testid(self):
         src = _read(SEARCH_JSX)
         assert 'data-testid={`proforma-search-row-' in src
+
+    def test_uses_onDrillBatch(self):
+        """handleRowClick must call onDrillBatch, not pushState directly."""
+        src = _read(SEARCH_JSX)
+        idx = src.find("handleRowClick")
+        assert idx > 0
+        body = src[idx:idx + 300]
+        assert "onDrillBatch" in body
+
+    def test_no_direct_pushstate(self):
+        """ProformaSearchPage must NOT call history.pushState directly."""
+        src = _read(SEARCH_JSX)
+        assert "history.pushState" not in src
+        assert "window.history.pushState" not in src
+
+
+# =============================================================================
+# 12b. Navigation handoff in index.html (master-page)
+# =============================================================================
+
+
+class TestNavigationHandoff:
+    """index.html must define handleProformaSearchDrill and pass onDrillBatch."""
+
+    def test_handler_defined(self):
+        src = _read(INDEX_HTML)
+        assert "handleProformaSearchDrill" in src
+
+    def test_handler_validates_batch_id(self):
+        src = _read(INDEX_HTML)
+        idx = src.find("handleProformaSearchDrill")
+        assert idx > 0
+        body = src[idx:idx + 400]
+        assert "if (!batchId)" in body or "!batchId" in body
+
+    def test_handler_sets_current_search(self):
+        src = _read(INDEX_HTML)
+        idx = src.find("handleProformaSearchDrill")
+        assert idx > 0
+        body = src[idx:idx + 400]
+        assert "setCurrentSearch" in body
+
+    def test_handler_encodes_batch_id(self):
+        src = _read(INDEX_HTML)
+        idx = src.find("handleProformaSearchDrill")
+        assert idx > 0
+        body = src[idx:idx + 400]
+        assert "encodeURIComponent" in body
+
+    def test_passes_onDrillBatch_prop(self):
+        src = _read(INDEX_HTML)
+        assert "onDrillBatch={handleProformaSearchDrill}" in src
+
+    def test_component_accepts_onDrillBatch_prop(self):
+        src = _read(SEARCH_JSX)
+        assert "onDrillBatch" in src.split("function ProformaSearchPage(")[1][:100]
 
 
 # =============================================================================
