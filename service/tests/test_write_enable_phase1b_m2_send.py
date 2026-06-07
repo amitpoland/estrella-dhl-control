@@ -18,6 +18,17 @@ Source-grep tests verifying that:
 15. M2 Frontend: Send modal exported to window
 16. Lesson M: CMR/Generate/More remain visible and disabled with reasons
 17. Lesson M: No planned controls removed (all testids still present)
+18. M2 PDF Attachment: Fetches PDF via wfirma_client.fetch_invoice_pdf
+19. M2 PDF Attachment: Passes attachments to queue_email
+20. M2 PDF Attachment: Blocks send on PDF fetch failure (422)
+21. M2 PDF Attachment: Validates PDF bytes not empty
+22. M2 PDF Attachment: Sanitises PDF filename
+23. M2 PDF Attachment: Writes temp PDF under storage_root
+24. M2 PDF Attachment: Cleans up temp file after send
+25. M2 PDF Attachment: Response includes pdf_attached flag
+26. M2 PDF Attachment: Timeline records pdf_attached
+27. M2 PDF Attachment: No wFirma write calls (read-only fetch)
+28. M2 PDF Attachment: Email body says "find attached" (not "references")
 
 Sprint: Write Enablement Phase 1B — M2 Send Proforma Email
 Target: routes_proforma.py, proforma-detail.jsx, pz-api.js, timeline.py
@@ -65,7 +76,7 @@ class TestM2BackendRoute:
         # Find the send_proforma_email function region
         idx = src.find("def send_proforma_email")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 9000]
         assert "queue_email" in region, \
             "send_proforma_email must call queue_email"
 
@@ -79,7 +90,7 @@ class TestM2BackendRoute:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def send_proforma_email")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 9000]
         assert "cancelled" in region, "Must guard against cancelled state"
         assert "deleted" in region, "Must guard against deleted state"
         assert "converted" in region, "Must guard against converted state"
@@ -89,7 +100,7 @@ class TestM2BackendRoute:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def send_proforma_email")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 9000]
         assert "wfirma_proforma_id" in region, \
             "Must check wfirma_proforma_id presence"
 
@@ -120,7 +131,7 @@ class TestM2BackendRoute:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def send_proforma_email")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 9000]
         assert "FollowupSuppressedError" in region, \
             "Must catch FollowupSuppressedError for duplicate send handling"
 
@@ -129,27 +140,34 @@ class TestM2BackendRoute:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def send_proforma_email")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 9000]
         assert '"proforma_send"' in region or "'proforma_send'" in region, \
             "email_type must be 'proforma_send'"
 
     def test_returns_ok_response_shape(self):
-        """Response must include ok, queued_id, recipient, subject."""
+        """Response must include ok, queued_id, recipient, subject, pdf_attached."""
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def send_proforma_email")
         assert idx > 0
-        region = src[idx:idx + 6000]
+        # Find end of the function (next @router or def at module level)
+        end = len(src)
+        for marker in ["\n@router.", "\ndef "]:
+            pos = src.find(marker, idx + 100)
+            if pos > 0 and pos < end:
+                end = pos
+        region = src[idx:end]
         assert '"ok"' in region or "'ok'" in region
         assert '"queued_id"' in region or "'queued_id'" in region
         assert '"recipient"' in region or "'recipient'" in region
         assert '"subject"' in region or "'subject'" in region
+        assert '"pdf_attached"' in region or "'pdf_attached'" in region
 
     def test_no_direct_smtp_import(self):
         """Route must NOT import smtplib directly."""
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def send_proforma_email")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 9000]
         assert "smtplib" not in region, \
             "Must not use smtplib directly — use queue_email"
 
@@ -158,7 +176,7 @@ class TestM2BackendRoute:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def send_proforma_email")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 9000]
         assert "import@estrellajewels.eu" in region, \
             "From address should be import@estrellajewels.eu"
 
@@ -184,7 +202,7 @@ class TestM2TimelineEvent:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def send_proforma_email")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 9000]
         assert "EV_PROFORMA_EMAIL_QUEUED" in region or \
                "proforma_email_queued" in region
 
@@ -274,7 +292,7 @@ class TestSendProformaModal:
         src = _read(DETAIL)
         idx = src.find("function SendProformaModal")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 9000]
         assert "sendProformaEmail" in region
 
 
@@ -413,7 +431,7 @@ class TestSafetyConstraints:
         src = _read(DETAIL)
         idx = src.find("function SendProformaModal")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 9000]
         assert "YES_SEND_PROFORMA_EMAIL" in region, \
             "Modal must send confirmation token"
 
@@ -451,7 +469,7 @@ class TestEmailInjectionPrevention:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def send_proforma_email")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 9000]
         assert "_sanitise_email_field" in region and "recipient_override" in region, \
             "recipient_override must be sanitised"
 
@@ -460,7 +478,7 @@ class TestEmailInjectionPrevention:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def send_proforma_email")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 9000]
         assert "_sanitise_email_field" in region, \
             "CC addresses must be sanitised"
 
@@ -469,7 +487,7 @@ class TestEmailInjectionPrevention:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def send_proforma_email")
         assert idx > 0
-        region = src[idx:idx + 5000]
+        region = src[idx:idx + 9000]
         assert "_sanitise_subject" in region, \
             "subject must be sanitised against header injection"
 
@@ -498,3 +516,136 @@ class TestEmailInjectionPrevention:
         src = _read(ROUTES_PROFORMA)
         assert "_EMAIL_BASIC_RE" in src, \
             "Must have email format regex for validation"
+
+
+# =============================================================================
+# 9. PDF Attachment — wFirma fetch + queue_email attachment
+# =============================================================================
+
+class TestPdfAttachment:
+    """send_proforma_email must fetch proforma PDF from wFirma and attach it."""
+
+    def _send_region(self) -> str:
+        src = _read(ROUTES_PROFORMA)
+        idx = src.find("def send_proforma_email")
+        assert idx > 0
+        # Find the end of the function: next def or @router at same indent
+        end_markers = ["\n@router.", "\ndef "]
+        end = len(src)
+        for marker in end_markers:
+            pos = src.find(marker, idx + 100)
+            if pos > 0 and pos < end:
+                end = pos
+        return src[idx:end]
+
+    def test_fetches_pdf_via_wfirma_client(self):
+        """Must call wfirma_client.fetch_invoice_pdf for PDF bytes."""
+        region = self._send_region()
+        assert "fetch_invoice_pdf" in region, \
+            "Must call fetch_invoice_pdf to get PDF bytes from wFirma"
+
+    def test_passes_attachments_to_queue_email(self):
+        """queue_email must receive attachments= parameter."""
+        region = self._send_region()
+        assert "attachments=" in region, \
+            "queue_email call must include attachments= for PDF"
+
+    def test_attachment_has_label_and_path(self):
+        """Attachment dict must have 'label' and 'path' keys."""
+        region = self._send_region()
+        assert '"label"' in region or "'label'" in region, \
+            "Attachment must have label key"
+        assert '"path"' in region or "'path'" in region, \
+            "Attachment must have path key"
+
+    def test_blocks_send_on_pdf_fetch_failure(self):
+        """wFirma fetch failure must block the send with 422."""
+        region = self._send_region()
+        # Must catch fetch_invoice_pdf exception and raise 422
+        assert "fetch_invoice_pdf" in region
+        assert "422" in region, \
+            "PDF fetch failure must produce 422 status"
+        assert "failed to fetch proforma PDF" in region or \
+               "PROFORMA_PDF_FETCH_FAILED" in region, \
+            "Error message must indicate PDF fetch failure"
+
+    def test_validates_pdf_bytes_not_empty(self):
+        """Must reject empty/tiny PDF responses."""
+        region = self._send_region()
+        assert "len(pdf_bytes)" in region or "not pdf_bytes" in region, \
+            "Must validate PDF bytes are not empty"
+        assert "empty PDF" in region, \
+            "Error message must mention empty PDF"
+
+    def test_sanitises_pdf_filename(self):
+        """PDF filename must be sanitised for filesystem safety."""
+        region = self._send_region()
+        assert "isalnum" in region or "_safe_fn" in region, \
+            "Must sanitise filename for filesystem safety (path traversal)"
+
+    def test_writes_pdf_under_storage_root(self):
+        """Temp PDF must be written under storage_root for security."""
+        region = self._send_region()
+        assert "proforma_email_pdfs" in region, \
+            "Must write to proforma_email_pdfs dir under storage_root"
+        assert "storage_root" in region, \
+            "Must use settings.storage_root"
+
+    def test_cleans_up_temp_file(self):
+        """Temp PDF file must be cleaned up after queue_email."""
+        region = self._send_region()
+        assert "unlink" in region, \
+            "Must unlink temp PDF file after send"
+
+    def test_response_includes_pdf_attached(self):
+        """Response JSON must include pdf_attached: True."""
+        region = self._send_region()
+        assert '"pdf_attached"' in region or "'pdf_attached'" in region, \
+            "Response must include pdf_attached flag"
+
+    def test_timeline_records_pdf_attached(self):
+        """Timeline event must record pdf_attached and pdf_bytes."""
+        region = self._send_region()
+        # Find the timeline log_event section
+        tl_idx = region.find("EV_PROFORMA_EMAIL_QUEUED")
+        assert tl_idx > 0
+        tl_region = region[tl_idx:tl_idx + 500]
+        assert "pdf_attached" in tl_region, \
+            "Timeline event must include pdf_attached"
+        assert "pdf_bytes" in tl_region, \
+            "Timeline event must include pdf_bytes"
+
+    def test_no_wfirma_write_calls(self):
+        """send_proforma_email must NOT write to wFirma — read-only fetch."""
+        region = self._send_region()
+        # Must not call any wFirma write methods
+        for forbidden in ("invoices/add", "invoices/edit", "invoices/send",
+                          "create_invoice", "add_invoice"):
+            assert forbidden not in region, \
+                f"Must not call wFirma write method: {forbidden}"
+
+    def test_email_body_says_attached(self):
+        """Default email body must say 'find attached'."""
+        src = _read(ROUTES_PROFORMA)
+        idx = src.find("def _proforma_email_body")
+        assert idx > 0
+        region = src[idx:idx + 500]
+        assert "attached" in region.lower(), \
+            "Email body must mention 'attached' since PDF is now attached"
+
+    def test_no_pdf_fabrication(self):
+        """Must NOT generate/fabricate PDF — only fetch from wFirma."""
+        region = self._send_region()
+        # Must not import or call any PDF generation library
+        for forbidden in ("reportlab", "fpdf", "weasyprint", "pdfkit",
+                          "generate_pdf", "create_pdf", "render_pdf"):
+            assert forbidden not in region, \
+                f"Must not fabricate PDF via {forbidden} — fetch from wFirma only"
+
+    def test_no_wfirma_repost(self):
+        """Must NOT re-post draft to wFirma during send."""
+        region = self._send_region()
+        for forbidden in ("post_draft_to_wfirma", "postDraft", "create_proforma",
+                          "invoices/add"):
+            assert forbidden not in region, \
+                f"Must not re-post to wFirma during send: {forbidden}"

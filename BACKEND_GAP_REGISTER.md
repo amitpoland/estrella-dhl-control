@@ -105,7 +105,7 @@ Side effects:
   - Emit proforma_draft_deleted event to timeline
 ```
 
-### M2 — Send Proforma Email
+### M2 — Send Proforma Email — **ENABLED** (PR #484 + PDF attachment PR)
 
 ```
 POST /api/v1/proforma/draft/{draft_id}/send-email
@@ -113,13 +113,14 @@ Headers: X-Operator (required), X-API-Key
 Guards:
   - draft must exist (404)
   - draft.wfirma_proforma_id must be present (422 — cannot email a draft that has no PDF)
+  - PDF must be fetchable from wFirma (422 on fetch failure or empty PDF)
   - email_routing must resolve recipient (422 if no routing rule)
+  - CRLF injection rejected on recipient/CC/subject (400)
 Body: {
-  recipient_override?: string,   // optional — default from email_routing.py
+  recipient_override?: string,   // optional — default from customer_master bill_to_email
   cc?: string[],
   subject_override?: string,     // optional — default: "Proforma {doc_no}"
   message_body?: string,         // optional — default template
-  attach_pdf: true,              // always true for proforma send
   confirm_token: "YES_SEND_PROFORMA_EMAIL"
 }
 Response 200: {
@@ -128,14 +129,28 @@ Response 200: {
   recipient: string,
   subject: string,
   pdf_filename: string,
+  pdf_attached: true,
+  pdf_bytes: int,
   audit_event: "proforma_email_queued"
 }
+PDF attachment authority chain:
+  draft.wfirma_proforma_id → wfirma_client.fetch_invoice_pdf (read-only)
+  → PDF bytes → temp file under storage_root/proforma_email_pdfs/
+  → queue_email(attachments=[{label, path}])
+  → email_sender._attachments_for_queue (security: path under storage_root)
+  → SMTP attachment → temp file cleanup
 Lesson E compliance:
   1. Validate draft state + PDF existence at send time (not schedule time)
   2. Idempotency: AWB + email_type + date_window dedup
   3. Terminal-state suppression: check draft not cancelled/deleted
   4. Replay safety: durable sent-state before send returns
   5. Environment isolation: ENV=production guard
+Security:
+  - CRLF injection prevention on recipient/CC/subject (_sanitise_email_field)
+  - HTML escaping in email body (html.escape)
+  - PDF filename sanitised for filesystem safety (no path traversal)
+  - Temp PDF written under storage_root only
+  - Temp PDF cleaned up in finally block after queue_email
 ```
 
 ### M3 — CMR PDF Generation
@@ -267,13 +282,13 @@ selects one, a new draft is created from its line data.
 | ~~Edit~~ | ✅ ENABLED (PR #483) | ~~M5~~ | Wired to PATCH endpoint — batch edit mode |
 | ~~Delete~~ | ✅ ENABLED as Cancel Draft (PR #483) | ~~M1a~~ | Wired to POST /cancel — soft-state only |
 | CMR | DISABLED | M3 | "CMR print — no backend PDF generation route. Use Preview to view CMR layout." |
-| Send | DISABLED | M2 | "Email send not yet wired to backend" |
+| ~~Send~~ | ✅ ENABLED (PR #484 + PDF attachment) | ~~M2~~ | Wired to POST /send-email — PDF fetched from wFirma, attached to email |
 | Generate ▾ | DISABLED | M4 | "Document generation not yet available from this view" |
 | ⋯ (More) | DISABLED | N/A | "More actions" (placeholder) |
 
 ### Priority ranking for gap closure
 
-1. **M2 — Send Email** (HIGH) — most-requested operator workflow; all building blocks exist (email_service, email_routing, queue_email)
+1. ~~**M2 — Send Email** (HIGH)~~ — ✅ **CLOSED (PR #484 + PDF attachment)** — PDF fetched from wFirma, attached to email, CRLF/XSS protections, temp file cleanup
 2. **M1 — Hard Delete Draft** (MEDIUM) — cancel enabled (M1a, PR #483), but true DELETE route still needed if hard-delete is required
 3. **M6 — Prior Proforma Search** (MEDIUM) — enables clone-from-history workflow
 4. ~~**M7 — Prior Invoice History** (MEDIUM)~~ — ✅ **CLOSED (PR #483)** — wired to existing ledger route
