@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #478 merged + deployed — Sprint 39 Carriers authority-honest redesign production-verified).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #479 merged + deployed — Sprint 40 Dashboard authority-honest conversion production-verified).
 
-**Last-run-at:** 2026-06-07 (PR #478 merge + deploy). Origin/main HEAD: **5b6c63a** (Sprint 39 — Carriers authority-honest redesign). Production: `C:\PZ` deployed with 3 static files (carriers-page.jsx, mock-badge.jsx, pz-api.js), hash-verified 3/3 SHA256 MATCH. GATE 2: **0/3 open PRs** (clean board — PR #478 merged). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 39 COMPLETED** (SHA 5b6c63a), Carriers is 12th authority-backed V2 page, WIRED_PAGES count = 12 of 16 total page slugs, **4 remaining MOCK pages** (dashboard, api_status, diagnostics, coverage_map). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
+**Last-run-at:** 2026-06-07 (PR #479 merge + deploy). Origin/main HEAD: **aa8d714** (Sprint 40 — Dashboard authority-honest conversion). Production: `C:\PZ` deployed with 3 static files (dashboard-kanban.jsx, mock-badge.jsx, pz-api.js), hash-verified 3/3 MD5 MATCH. GATE 2: **0/3 open PRs** (clean board — PR #479 merged). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 40 COMPLETED** (SHA aa8d714), Dashboard is 13th authority-backed V2 page, WIRED_PAGES count = 13 of 16 total page slugs, **3 remaining MOCK pages** (api_status, diagnostics, coverage_map). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
 
 ---
 
@@ -54,6 +54,41 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## PR #479 — Sprint 40: Dashboard authority-honest conversion (2026-06-07, MERGED + DEPLOYED)
+
+**Date**: 2026-06-07 (merge + deploy)
+**PR #479** — `feat(atlas): Sprint 40 — Dashboard authority-honest conversion`
+**Merge SHA**: `aa8d714` (squash-merge to `origin/main`)
+**Source branch**: `feat/atlas-sprint-40-dashboard-authority`
+
+**Scope**: Complete MOCK → authority-honest conversion of DashboardKanban.
+
+**Changes (4 files, static-only, zero backend)**:
+- `service/app/static/v2/dashboard-kanban.jsx` — REWRITE: deleted all 15 fake PIPELINE_SHIPMENTS and 5 wrong LANES; added 6 PZ workflow lanes from V1 production (new→docs→customs→ready→booked→done); live useEffect fetch from GET /api/v1/dashboard/batches; KPI derivation (Active, Urgent, Awaiting DHL, Awaiting SAD, Ready for Booking); status mappers ported from V1 (_mapOverall, _mapDhlStatus, _mapSadStatus, _mapPzStatus); _batchLane() lane derivation ported from V1; loading/error/empty states; List view button wired; Quick Flow 4th CTA fixed to "Generate PZ"
+- `service/app/static/v2/pz-api.js` — added `listBatches()` transport (+8 lines)
+- `service/app/static/v2/mock-badge.jsx` — added `'dashboard'` to WIRED_PAGES (13/16 = 81%)
+- `service/tests/test_sprint40_dashboard_authority_honest.py` — NEW: 70 regression tests across 17 test classes
+
+**Deploy**: 3 static files robocopy'd to `C:\PZ\app\static\v2\`. Hash-verified 3/3 MD5 MATCH. No backend restart needed (static-only).
+
+**Production smoke (pz.estrellajewels.eu)**:
+- No MOCK banner ✅
+- GET /api/v1/dashboard/batches → 200 ✅
+- Real batch cards with live AWBs (8691361873, 3483447564, 2519243856, 8580992114, 8523214840) ✅
+- All 6 lane headers correct (New/Drafting, Awaiting Documents, Customs Clearance, Ready for PZ, PZ Generated, Exported) ✅
+- KPIs from live data (Active: 3, Urgent: 2, Awaiting DHL: 0, Awaiting SAD: 0, Ready for Booking: 23) ✅
+- List view navigates to /v2/shipments ✅
+- No fake client names ✅
+- Zero console errors ✅
+
+**WIRED_PAGES**: 13/16 (81%) — proforma, inbox, inventory, dhl, shipments, automation, intelligence, documents, proforma_detail, wfirma_setup, master, carriers, dashboard.
+**Remaining MOCK**: api_status, diagnostics, coverage_map (3 pages).
+
+**GATE 2**: 0/3 open PRs (clean board).
+**Test baseline**: +70 Sprint 40 tests (total: 201 PZ regression + 404 carrier + 104 Sprint 38 + 49 Sprint 38b + 54 Sprint 39 + 70 Sprint 40).
+
+---
 
 ## PR #399 — Test-suite green cleanup (2026-05-29, MERGED)
 
