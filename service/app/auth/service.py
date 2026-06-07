@@ -3,8 +3,7 @@ auth/service.py — User CRUD, password hashing, JWT creation, rate limiting.
 """
 from __future__ import annotations
 
-import random
-import string
+import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -210,8 +209,8 @@ def clear_attempts(email: str) -> None:
 # ── Password reset ────────────────────────────────────────────────────────────
 
 def create_reset_token(user_id: str) -> str:
-    """Generate a 6-digit code valid for 30 minutes."""
-    code = "".join(random.choices(string.digits, k=6))
+    """Generate an 8-hex-char code valid for 30 minutes (4-billion search space)."""
+    code = secrets.token_hex(4)
     expires = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
     with get_db() as con:
         # Invalidate old tokens for this user

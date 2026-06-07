@@ -67,6 +67,9 @@ def _safe_name(filename: str) -> str:
     return name or "file.pdf"
 
 
+_PDF_MAGIC = b"%PDF"
+
+
 def _validate_pdf(file: UploadFile) -> None:
     ext = Path(file.filename or "").suffix.lower()
     if ext not in _ALLOWED_EXT:
@@ -85,6 +88,8 @@ async def _save(file: UploadFile, dest: Path) -> None:
         )
     if len(content) == 0:
         raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
+    if dest.suffix.lower() == ".pdf" and not content[:4].startswith(_PDF_MAGIC):
+        raise HTTPException(status_code=400, detail=f"File does not appear to be a valid PDF: {file.filename}")
     dest.write_bytes(content)
 
 
@@ -237,6 +242,10 @@ def _mark_agency_documents_received(
         existing_files = existing_state.get("files") or []
         if not any(f.get("path") == abs_path for f in existing_files):
             existing_files = existing_files + [{"name": sad_name, "path": abs_path, "type": file_type}]
+
+        if not existing_files:
+            log.warning("[%s] _mark_agency_documents_received: no files present — not marking received", batch_id)
+            return
 
         received_at = existing_state.get("received_at") or now_iso
 

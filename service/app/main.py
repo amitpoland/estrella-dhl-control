@@ -131,8 +131,24 @@ _PUBLIC_PATHS = {"/login", "/signup", "/forgot-password"}
 _BOT_PREFIX = "/api/v1/cliq"
 
 
+_PLACEHOLDER_SECRET = "change-me-in-production-use-a-random-32-byte-hex"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ── Production security assertions ─────────────────────────────────────
+    if settings.environment == "prod":
+        if not settings.api_key:
+            raise RuntimeError(
+                "STARTUP BLOCKED: API_KEY must be set in production. "
+                "Generate with: python3 -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+        if not settings.auth_secret_key or settings.auth_secret_key == _PLACEHOLDER_SECRET:
+            raise RuntimeError(
+                "STARTUP BLOCKED: AUTH_SECRET_KEY must be set to a random secret in production. "
+                "Generate with: python3 -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+
     # Initialise auth DB
     init_db(_auth_db)
     log.info("Auth DB ready: %s", _auth_db)
@@ -365,12 +381,20 @@ app = FastAPI(
     lifespan    = lifespan,
 )
 
+# Wildcard origins and allow_credentials=True are mutually exclusive per the CORS spec.
+# Dev: wildcard origins, no credentials (browser will reject credentialed+wildcard anyway).
+# Prod: explicit public URL only, credentials allowed.
+_cors_origins = (
+    ["*"]
+    if settings.environment == "dev"
+    else [settings.fastapi_public_url]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = ["*"] if settings.environment == "dev" else [],
+    allow_origins     = _cors_origins,
     allow_methods     = ["GET", "POST"],
     allow_headers     = ["*"],
-    allow_credentials = True,
+    allow_credentials = settings.environment == "prod",
 )
 
 app.include_router(auth_router)
@@ -553,7 +577,11 @@ def serve_chrome_autofill(path: str, request: Request) -> Response:
     if not user:
         return RedirectResponse(url="/login", status_code=302)
 
-    file_path = _chrome_autofill_dir / path
+    file_path = (_chrome_autofill_dir / path).resolve()
+    try:
+        file_path.relative_to(_chrome_autofill_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path")
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail=f"chrome_wfirma_autofill/{path} not found")
 
