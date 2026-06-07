@@ -224,8 +224,8 @@ class _CustomerView:
         "bill_to_name", "country", "bill_to_street", "bill_to_city",
         "bill_to_postal_code", "bill_to_email", "bill_to_phone", "eori",
         # ship_to_* (primary receiver address when ship_to_use_alternate=1)
-        "ship_to_name", "ship_to_street", "ship_to_city", "ship_to_zip",
-        "ship_to_country", "ship_to_phone", "ship_to_email",
+        "ship_to_name", "ship_to_person", "ship_to_street", "ship_to_city",
+        "ship_to_zip", "ship_to_country", "ship_to_phone", "ship_to_email",
         "ship_to_use_alternate", "ship_to_contractor_id",
     )
 
@@ -245,6 +245,7 @@ class _CustomerView:
         self.eori               = _g("eori")
         # ship_to fields (alternate delivery address)
         self.ship_to_name           = _g("ship_to_name")
+        self.ship_to_person         = _g("ship_to_person")
         self.ship_to_street         = _g("ship_to_street")
         self.ship_to_city           = _g("ship_to_city")
         self.ship_to_zip            = _g("ship_to_zip")
@@ -395,6 +396,7 @@ def render_packing_list_pdf(
     company: Any,        # CompanyProfile or None
     customer: Any,       # CustomerMaster or None
     draft: Any,          # ProformaDraft or None
+    delivery_addr: Optional[Dict[str, str]] = None,
 ) -> bytes:
     """
     Generate an A4 packing list PDF.
@@ -444,14 +446,13 @@ def render_packing_list_pdf(
     meta_rows = []
     if company:
         meta_rows.append(["Shipper:", company.legal_name or ""])
+    # Consignee name: resolved via Customer Master resolve_delivery_address()
     client_name_str = ""
-    if customer:
-        # Prefer ship_to_name / ship_to_street for consignee display
-        has_ship_to = bool(getattr(customer, "ship_to_street", None))
-        if has_ship_to:
-            client_name_str = customer.ship_to_name or customer.bill_to_name or ""
-        else:
-            client_name_str = customer.bill_to_name or ""
+    if delivery_addr:
+        client_name_str = delivery_addr.get("name", "")
+    elif customer:
+        client_name_str = getattr(customer, "bill_to_name", "") or ""
+    if client_name_str:
         meta_rows.append(["Consignee:", client_name_str])
     if prof_ref:
         meta_rows.append(["Reference (PROF):", prof_ref])
@@ -551,6 +552,7 @@ def render_cn23_pdf(
     company: Any,
     customer: Any,
     draft: Any,
+    delivery_addr: Optional[Dict[str, str]] = None,
 ) -> bytes:
     """
     Generate a CN23 customs declaration PDF for non-EU international shipments.
@@ -599,26 +601,16 @@ def render_cn23_pdf(
         if company.nip:       shipper_lines.append(f"NIP: {company.nip}")
         if company.eori:      shipper_lines.append(f"EORI: {company.eori}")
 
-    # Receiver block: prefer ship_to_* (Shape A) then bill_to_* fallback
+    # Receiver block: resolved via Customer Master resolve_delivery_address()
     receiver_lines = []
-    if customer:
-        has_ship_to = bool(getattr(customer, "ship_to_street", None))
-        if has_ship_to:
-            recv_name    = customer.ship_to_name or customer.bill_to_name or ""
-            recv_street  = customer.ship_to_street or ""
-            recv_city    = customer.ship_to_city or ""
-            recv_zip     = customer.ship_to_zip or ""
-            recv_country = customer.ship_to_country or customer.country or ""
-            recv_phone   = customer.ship_to_phone or customer.bill_to_phone or ""
-            recv_email   = customer.ship_to_email or customer.bill_to_email or ""
-        else:
-            recv_name    = customer.bill_to_name or ""
-            recv_street  = customer.bill_to_street or ""
-            recv_city    = customer.bill_to_city or ""
-            recv_zip     = getattr(customer, "bill_to_postal_code", None) or ""
-            recv_country = customer.country or ""
-            recv_phone   = customer.bill_to_phone or ""
-            recv_email   = customer.bill_to_email or ""
+    if delivery_addr:
+        recv_name    = delivery_addr.get("name", "")
+        recv_street  = delivery_addr.get("street", "")
+        recv_city    = delivery_addr.get("city", "")
+        recv_zip     = delivery_addr.get("postal_code", "")
+        recv_country = delivery_addr.get("country", "")
+        recv_phone   = delivery_addr.get("phone", "")
+        recv_email   = delivery_addr.get("email", "")
         if recv_name:    receiver_lines.append(recv_name)
         if recv_street:  receiver_lines.append(recv_street)
         if recv_city:
@@ -895,25 +887,29 @@ def assemble_label_package(
 
     # ── 3. Soft gap checks (advisory, do not block) ───────────────────────────
 
-    # Receiver address: prefer ship_to_* (Shape A), fallback to bill_to_* + advisory
+    # Receiver address: resolved via Customer Master resolve_delivery_address()
+    # Authority: ship_to_use_alternate=True AND address populated → ship_to;
+    #            otherwise → bill_to fallback with advisory.
+    delivery_addr: Optional[Dict[str, str]] = None
     _using_ship_to = False
     if customer:
-        has_ship_to = bool(getattr(customer, "ship_to_street", None))
-        if has_ship_to:
+        from ..customer_master import resolve_delivery_address
+        delivery_addr = resolve_delivery_address(customer)
+        if delivery_addr.get("source") == "ship_to":
             _using_ship_to = True
         else:
-            # Fallback to bill_to_* — write advisory
-            has_bill_to = bool(getattr(customer, "bill_to_street", None))
+            # Fallback to bill_to — write advisory
+            cust_name = getattr(customer, "bill_to_name", "?") or "?"
             msg = (
-                f"Receiver {getattr(customer,'bill_to_name','?')}: ship_to address not set "
+                f"Receiver {cust_name}: ship_to address not active or not set "
                 "in customer_master — falling back to bill_to address. "
                 "Verify delivery address before dispatch."
             )
             _write_soft_advisory(audit_path, "ship_to_missing", msg)
             advisories.append(msg)
-            if not has_bill_to:
+            if not delivery_addr.get("street"):
                 msg2 = (
-                    f"Receiver {getattr(customer,'bill_to_name','?')} has no street address "
+                    f"Receiver {cust_name} has no street address "
                     "(neither ship_to nor bill_to) — label may be incomplete."
                 )
                 _write_soft_advisory(audit_path, "receiver_address_incomplete", msg2)
@@ -940,14 +936,16 @@ def assemble_label_package(
 
     # ── 5. Generate packing list ──────────────────────────────────────────────
     packing_pdf: bytes = render_packing_list_pdf(
-        batch_id, storage_root, company, customer, draft
+        batch_id, storage_root, company, customer, draft,
+        delivery_addr=delivery_addr,
     )
 
     # ── 6. Generate CN23 (non-EU only) ────────────────────────────────────────
     cn23_pdf: Optional[bytes] = None
     if not is_eu:
         cn23_pdf = render_cn23_pdf(
-            batch_id, storage_root, inputs, company, customer, draft
+            batch_id, storage_root, inputs, company, customer, draft,
+            delivery_addr=delivery_addr,
         )
 
     # ── 7. Assemble package ───────────────────────────────────────────────────

@@ -10,6 +10,7 @@ Tests (all wFirma calls mocked — no live API):
   6. unposted proforma → 422 "commercial invoice unavailable"
   7. blank receiver address → advisory proposal written, generation still proceeds
   8. route works with carrier_api_status=pending (proves ungated)
+  9. resolve_delivery_address authority — ship_to_use_alternate governs address
 """
 from __future__ import annotations
 
@@ -741,3 +742,212 @@ class TestWfirmaBoundary:
             assert isinstance(gap["field"], str)
             assert isinstance(gap["reason"], str)
             assert len(gap["reason"]) > 10
+
+
+# ── Test 9: resolve_delivery_address authority (ship_to_use_alternate) ────────
+
+def _seed_ship_to_flag_off(tmp_path: Path) -> None:
+    """Set ship_to data on CUST001 but leave ship_to_use_alternate=0.
+
+    This is THE bug scenario: ship_to_street is populated but the toggle
+    is OFF. The old inline logic checked only ship_to_street presence and
+    would incorrectly use ship_to.  The authority function checks the flag
+    first, so bill_to should be used.
+    """
+    cm_db = tmp_path / "customer_master.sqlite"
+    conn = sqlite3.connect(str(cm_db))
+    conn.execute(
+        """UPDATE customer_master SET
+               ship_to_use_alternate=0,
+               ship_to_name='Ship-To GmbH',
+               ship_to_street='Lieferstraße 5',
+               ship_to_city='Hamburg',
+               ship_to_zip='20095',
+               ship_to_country='DE'
+           WHERE bill_to_contractor_id='CUST001'""",
+    )
+    conn.commit()
+    conn.close()
+
+
+def _seed_ship_to_flag_on_empty(tmp_path: Path) -> None:
+    """Set ship_to_use_alternate=1 on CUST001 but leave address fields empty.
+
+    Authority function: flag is ON but no address → bill_to fallback.
+    """
+    cm_db = tmp_path / "customer_master.sqlite"
+    conn = sqlite3.connect(str(cm_db))
+    conn.execute(
+        """UPDATE customer_master SET
+               ship_to_use_alternate=1,
+               ship_to_name='',
+               ship_to_street='',
+               ship_to_city='',
+               ship_to_zip='',
+               ship_to_country=''
+           WHERE bill_to_contractor_id='CUST001'""",
+    )
+    conn.commit()
+    conn.close()
+
+
+def _seed_ship_to_contractor_only(tmp_path: Path) -> None:
+    """Set only ship_to_contractor_id on CUST001 (Shape B).
+
+    Shape B is a wFirma receiver concept — does NOT affect DHL delivery.
+    ship_to_use_alternate stays 0.
+    """
+    cm_db = tmp_path / "customer_master.sqlite"
+    conn = sqlite3.connect(str(cm_db))
+    conn.execute(
+        """UPDATE customer_master SET
+               ship_to_contractor_id='WF-RECV-99'
+           WHERE bill_to_contractor_id='CUST001'""",
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestDeliveryAddressAuthority:
+    """ship_to_use_alternate flag governs address resolution, not ship_to_street presence."""
+
+    def test_flag_off_with_ship_to_street_uses_bill_to(self, tmp_path):
+        """BUG FIX: ship_to_use_alternate=0 + ship_to_street populated → bill_to used.
+
+        The old inline logic checked only ship_to_street presence and would
+        incorrectly use ship_to.  The fix delegates to resolve_delivery_address
+        which checks the flag first.
+        """
+        storage = _full_setup(tmp_path, country="DE")
+        _seed_ship_to_flag_off(storage)
+        LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
+
+        inputs = _std_inputs(client_name="Test Client GmbH")
+
+        with patch("app.services.wfirma_client.fetch_invoice_pdf",
+                   return_value=FAKE_PDF):
+            result = assemble("BATCH_TEST", inputs, storage)
+
+        assert isinstance(result, LPR)
+        # Advisory must fire because bill_to fallback was used
+        assert any("ship_to" in a for a in result.advisories), (
+            "Advisory expected: flag is OFF → bill_to fallback, "
+            "but no ship_to advisory was emitted"
+        )
+        # Verify audit has ship_to_missing advisory
+        audit_path = storage / "outputs" / "BATCH_TEST" / "audit.json"
+        audit = json.loads(audit_path.read_text())
+        ship_adv = [
+            p for p in audit.get("action_proposals", [])
+            if p.get("type") == "ship_to_missing"
+        ]
+        assert len(ship_adv) >= 1, "ship_to_missing advisory not written to audit"
+
+    def test_flag_on_empty_address_uses_bill_to(self, tmp_path):
+        """ship_to_use_alternate=1 + empty ship_to fields → bill_to fallback."""
+        storage = _full_setup(tmp_path, country="DE")
+        _seed_ship_to_flag_on_empty(storage)
+        LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
+
+        inputs = _std_inputs(client_name="Test Client GmbH")
+
+        with patch("app.services.wfirma_client.fetch_invoice_pdf",
+                   return_value=FAKE_PDF):
+            result = assemble("BATCH_TEST", inputs, storage)
+
+        assert isinstance(result, LPR)
+        # Advisory must fire because bill_to fallback was used
+        assert any("ship_to" in a for a in result.advisories)
+
+    def test_ship_to_contractor_id_alone_does_not_affect_delivery(self, tmp_path):
+        """Shape B (ship_to_contractor_id only) → bill_to used, NOT ship_to."""
+        storage = _full_setup(tmp_path, country="DE")
+        _seed_ship_to_contractor_only(storage)
+        LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
+
+        inputs = _std_inputs(client_name="Test Client GmbH")
+
+        with patch("app.services.wfirma_client.fetch_invoice_pdf",
+                   return_value=FAKE_PDF):
+            result = assemble("BATCH_TEST", inputs, storage)
+
+        assert isinstance(result, LPR)
+        # bill_to fallback advisory expected
+        assert any("ship_to" in a for a in result.advisories)
+
+    def test_flag_on_with_address_uses_ship_to_no_advisory(self, tmp_path):
+        """ship_to_use_alternate=1 + populated address → ship_to used, no advisory."""
+        storage = _full_setup(tmp_path, country="DE")
+        _seed_ship_to(storage)  # flag=1 + full address
+        LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
+
+        inputs = _std_inputs(client_name="Test Client GmbH")
+
+        with patch("app.services.wfirma_client.fetch_invoice_pdf",
+                   return_value=FAKE_PDF):
+            result = assemble("BATCH_TEST", inputs, storage)
+
+        assert isinstance(result, LPR)
+        assert not any("ship_to_missing" in a for a in result.advisories), (
+            "No ship_to_missing advisory when flag=ON and address is populated"
+        )
+
+
+class TestDeliveryAddressSourceGrep:
+    """Source-grep: doc_package.py uses resolve_delivery_address, not inline logic."""
+
+    def test_imports_resolve_delivery_address(self):
+        """doc_package.py must import resolve_delivery_address from customer_master."""
+        src = (Path(__file__).parent.parent / "app" / "services" / "carrier"
+               / "doc_package.py").read_text(encoding="utf-8")
+        assert "resolve_delivery_address" in src, (
+            "doc_package.py must import resolve_delivery_address"
+        )
+        assert "from ..customer_master import resolve_delivery_address" in src
+
+    def test_no_inline_ship_to_street_check_outside_customerv(self):
+        """No inline 'has_ship_to = bool(getattr(customer, "ship_to_street"' pattern.
+
+        The _CustomerView class may reference ship_to_street in __slots__
+        and __init__, but the old inline address-resolution pattern
+        ('has_ship_to = bool(getattr(customer, "ship_to_street", None))')
+        must be gone from the renderer and assembler functions.
+        """
+        src = (Path(__file__).parent.parent / "app" / "services" / "carrier"
+               / "doc_package.py").read_text(encoding="utf-8")
+        import re
+        # The old pattern: has_ship_to = bool(getattr(customer, "ship_to_street"
+        matches = re.findall(
+            r'has_ship_to\s*=\s*bool\(getattr\(customer',
+            src,
+        )
+        assert len(matches) == 0, (
+            f"Found {len(matches)} inline ship_to_street check(s) — "
+            "these should be replaced by resolve_delivery_address()"
+        )
+
+    def test_delivery_addr_passed_to_renderers(self):
+        """Renderer calls must include delivery_addr keyword argument."""
+        src = (Path(__file__).parent.parent / "app" / "services" / "carrier"
+               / "doc_package.py").read_text(encoding="utf-8")
+        assert "delivery_addr=delivery_addr" in src, (
+            "render_packing_list_pdf / render_cn23_pdf must receive delivery_addr"
+        )
+
+    def test_renderers_accept_delivery_addr_param(self):
+        """Both render functions must have delivery_addr in their signature."""
+        src = (Path(__file__).parent.parent / "app" / "services" / "carrier"
+               / "doc_package.py").read_text(encoding="utf-8")
+        import re
+        # Find both renderer function signatures
+        packing_sig = re.search(
+            r'def render_packing_list_pdf\([^)]*delivery_addr[^)]*\)',
+            src, re.DOTALL,
+        )
+        assert packing_sig, "render_packing_list_pdf must accept delivery_addr param"
+
+        cn23_sig = re.search(
+            r'def render_cn23_pdf\([^)]*delivery_addr[^)]*\)',
+            src, re.DOTALL,
+        )
+        assert cn23_sig, "render_cn23_pdf must accept delivery_addr param"
