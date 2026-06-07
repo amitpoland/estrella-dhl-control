@@ -4,6 +4,13 @@
 // Write operations (create/edit/delete) are disabled with explicit reasons.
 // Users: read-only list from GET /auth/users.
 // Roles: static system definition from ROLE_MATRIX (no backend endpoint).
+//
+// Sprint 38b (View-enable, 2026-06-07): the per-row "View" action is now ENABLED
+// for every entity. It opens a READ-ONLY detail modal rendering the already-loaded
+// record's fields — no new fetch, no write path. Previously the View button was
+// hardcoded disabled with a *write*-disabled reason (defect: a read action carrying
+// a write justification). Edit/Delete remain unwired (separate PR) — backend
+// PUT/DELETE /customer-master/{id} exist; only the UI wiring is pending.
 
 const ENTITY_TYPES = [
   { id: 'clients',   label: 'Clients / Importers', icon: '\u{1F3E2}', singular: 'Client' },
@@ -304,10 +311,89 @@ function _entityApi(entityId) {
   }
 }
 
+// ── Sprint 38b: read-only record detail modal.
+// Renders the fields present on the already-loaded record as a key/value grid.
+// No fetch, no write — pure display of data the table already holds.
+//
+// Defense-in-depth: the master list endpoints return sanitised records (e.g.
+// GET /auth/users uses _safe_user, an allow-list that already strips
+// password_hash/tokens). This modal additionally REDACTS any key that looks
+// sensitive, so a future endpoint regression can never surface a secret here.
+const SENSITIVE_KEY_RE = /(pass(word)?|secret|token|hash|salt|api[_-]?key|priv(ate)?[_-]?key|credential|session|otp|pin)/i;
+function RecordDetailModal({ record, entityLabel, onClose }) {
+  if (!record) return null;
+  const allEntries = Object.entries(record).filter(([k]) => k !== '__proto__');
+  const entries = allEntries.filter(([k]) => !SENSITIVE_KEY_RE.test(k));
+  const redactedCount = allEntries.length - entries.length;
+  const fmtKey = (k) => String(k).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const fmtVal = (v) => {
+    if (v === null || v === undefined || v === '') return '—';
+    if (typeof v === 'boolean') return v ? '✓ Yes' : '✗ No';
+    if (typeof v === 'object') { try { return JSON.stringify(v); } catch (_) { return String(v); } }
+    return String(v);
+  };
+  return React.createElement('div', {
+    'data-testid': 'record-detail-modal',
+    onClick: onClose,
+    style: {
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.45)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+    },
+  },
+    React.createElement('div', {
+      onClick: e => e.stopPropagation(),
+      style: {
+        background: 'var(--bg)', color: 'var(--text)',
+        border: '1px solid var(--border)', borderRadius: 8,
+        maxWidth: 560, width: '100%', maxHeight: '80vh', overflowY: 'auto',
+        boxShadow: '0 12px 40px rgba(0,0,0,0.35)',
+      },
+    },
+      // Header
+      React.createElement('div', {
+        style: {
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '14px 18px', borderBottom: '1px solid var(--border-subtle)',
+          position: 'sticky', top: 0, background: 'var(--bg)',
+        },
+      },
+        React.createElement('div', null,
+          React.createElement('div', { style: { fontSize: 14, fontWeight: 700 } }, (entityLabel || 'Record') + ' — Details'),
+          React.createElement('div', { style: { fontSize: 10.5, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 2 } }, 'Read-only')
+        ),
+        React.createElement(Btn, { small: true, variant: 'outline', onClick: onClose, 'data-testid': 'btn-close-detail' }, '✕ Close')
+      ),
+      // Body — key/value grid
+      React.createElement('div', { style: { padding: '12px 18px' } },
+        entries.map(([k, v], i) =>
+          React.createElement('div', {
+            key: k,
+            style: {
+              display: 'grid', gridTemplateColumns: '180px 1fr', gap: 12,
+              padding: '7px 0',
+              borderBottom: i < entries.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+            },
+          },
+            React.createElement('div', { style: { fontSize: 11, color: 'var(--text-3)', fontWeight: 600 } }, fmtKey(k)),
+            React.createElement('div', { style: { fontSize: 12, color: 'var(--text)', wordBreak: 'break-word', fontFamily: 'monospace' } }, fmtVal(v))
+          )
+        ),
+        redactedCount > 0 && React.createElement('div', {
+          'data-testid': 'redacted-note',
+          style: { marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)', fontSize: 10.5, color: 'var(--text-3)', fontStyle: 'italic' },
+        }, redactedCount + ' sensitive field' + (redactedCount === 1 ? '' : 's') + ' hidden')
+      )
+    )
+  );
+}
+
 function MasterPage() {
   const [entity, setEntity] = React.useState('clients');
   const [role, setRole] = React.useState('admin');
   const [search, setSearch] = React.useState('');
+  // Sprint 38b: record selected for the read-only View detail modal (null = closed).
+  const [viewRecord, setViewRecord] = React.useState(null);
 
   // Per-entity data cache: { entityId: { records: [], loading: bool, error: string|null } }
   const [cache, setCache] = React.useState({});
@@ -507,7 +593,10 @@ function MasterPage() {
                           })}
                           <td style={{ padding: '10px 12px', textAlign: 'right' }}>
                             <div style={{ display: 'inline-flex', gap: 4 }}>
-                              <Btn small variant="outline" disabled title={writeDisabledReason(entity)}>View</Btn>
+                              <Btn small variant="outline"
+                                onClick={() => setViewRecord(r)}
+                                title="View full record (read-only)"
+                                data-testid="btn-view-record">View</Btn>
                             </div>
                           </td>
                         </tr>
@@ -572,8 +661,15 @@ function MasterPage() {
           <MappingInfoBanner entityId={entity} />
         </div>
       </div>
+
+      {/* Sprint 38b: read-only record detail modal */}
+      <RecordDetailModal
+        record={viewRecord}
+        entityLabel={currentEntity ? currentEntity.singular : 'Record'}
+        onClose={() => setViewRecord(null)}
+      />
     </div>
   );
 }
 
-Object.assign(window, { MasterPage, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner });
+Object.assign(window, { MasterPage, RecordDetailModal, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner });
