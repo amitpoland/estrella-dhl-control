@@ -8,7 +8,7 @@ Source-grep tests verifying that:
 5. _parseOpenApiPaths + _deriveModule helpers present
 6. Loading/error states
 7. data-testid attributes for browser verification
-8. 'coverage' in WIRED_PAGES (16 entries = 100%)
+8. 'coverage' in WIRED_PAGES (17 entries = 100%, including proforma_search)
 9. pz-api.js has getOpenApiSpec transport
 10. CoverageMapPage exported to window
 11. Method badge colors use CSS custom properties
@@ -179,7 +179,7 @@ class TestTestIds:
 
 
 # =============================================================================
-# 6. WIRED_PAGES includes 'coverage' (16/16 = 100%)
+# 6. WIRED_PAGES includes 'coverage' + 'proforma_search' (17/17 = 100%)
 # =============================================================================
 
 class TestWiredPages:
@@ -187,20 +187,20 @@ class TestWiredPages:
         src = _read(MOCK_BADGE)
         assert "'coverage'" in src, "'coverage' not found in WIRED_PAGES"
 
-    def test_wired_pages_count_16(self):
+    def test_wired_pages_count_17(self):
         src = _read(MOCK_BADGE)
         match = re.search(r"const WIRED_PAGES\s*=\s*\[([^\]]+)\]", src)
         assert match, "WIRED_PAGES array not found"
         entries = [e.strip().strip("'\"") for e in match.group(1).split(",") if e.strip()]
-        assert len(entries) == 16, f"Expected 16 WIRED_PAGES entries (100%), found {len(entries)}: {entries}"
+        assert len(entries) == 17, f"Expected 17 WIRED_PAGES entries (100%), found {len(entries)}: {entries}"
 
-    def test_all_16_slugs_present(self):
+    def test_all_17_slugs_present(self):
         """Every V2 page slug must be in WIRED_PAGES."""
         src = _read(MOCK_BADGE)
-        for slug in ['proforma', 'inbox', 'inventory', 'dhl', 'shipments',
-                     'automation', 'intelligence', 'documents', 'proforma_detail',
-                     'wfirma_setup', 'master', 'carriers', 'dashboard',
-                     'api_status', 'diagnostics', 'coverage']:
+        for slug in ['proforma', 'proforma_search', 'inbox', 'inventory', 'dhl',
+                     'shipments', 'automation', 'intelligence', 'documents',
+                     'proforma_detail', 'wfirma_setup', 'master', 'carriers',
+                     'dashboard', 'api_status', 'diagnostics', 'coverage']:
             assert f"'{slug}'" in src, f"Slug '{slug}' not in WIRED_PAGES"
 
 
