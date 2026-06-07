@@ -102,6 +102,17 @@
 
     // ── Proforma — read ──────────────────────────────────────────────
 
+    // GET /api/v1/proforma/search?client_name=&batch_id=&...
+    // M6 — cross-batch proforma search. Read-only. Authority: proforma_drafts.
+    // params: { client_name?, batch_id?, wfirma_proforma_id?,
+    //           wfirma_proforma_fullnumber?, draft_state?, currency?,
+    //           date_from?, date_to?, page?, page_size? }
+    // Returns { ok, data: { ok, results[], total, page, page_size, filters } }
+    searchProformaDrafts: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/proforma/search${qs}`);
+    },
+
     // GET /api/v1/proforma/drafts/{batch_id}
     // Returns { ok, data: { ok, batch_id, drafts[], count } }
     getProformaDrafts: (batchId) =>
