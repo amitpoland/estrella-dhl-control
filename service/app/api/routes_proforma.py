@@ -3578,6 +3578,88 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
     }
 
 
+# ── M6 — Cross-batch proforma search (read-only) ─────────────────────────────
+# Authority: proforma_drafts table ONLY. No wFirma, no invoice ledger,
+# no email, no mutation. Purely read-only index.
+
+
+@router.get("/search", dependencies=[_auth])
+def search_proforma_drafts(
+    client_name: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    wfirma_proforma_id: Optional[str] = None,
+    wfirma_proforma_fullnumber: Optional[str] = None,
+    draft_state: Optional[str] = None,
+    currency: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> JSONResponse:
+    """Cross-batch proforma draft search.
+
+    M6 Prior Proforma Search — read-only. Returns matching drafts from
+    the proforma_drafts table with pagination. Authority source is
+    proforma_drafts ONLY — no wFirma API, no invoice ledger, no
+    external queries.
+
+    Does NOT: mutate state, post, send, convert, cancel, create, delete.
+    """
+    filters: Dict[str, Any] = {}
+    if client_name:
+        filters["client_name"] = client_name
+    if batch_id:
+        filters["batch_id"] = batch_id
+    if wfirma_proforma_id:
+        filters["wfirma_proforma_id"] = wfirma_proforma_id
+    if wfirma_proforma_fullnumber:
+        filters["wfirma_proforma_fullnumber"] = wfirma_proforma_fullnumber
+    if draft_state:
+        filters["draft_state"] = draft_state
+    if currency:
+        filters["currency"] = currency
+    if date_from:
+        filters["date_from"] = date_from
+    if date_to:
+        filters["date_to"] = date_to
+
+    result = pildb.search_drafts(
+        _proforma_db_path(),
+        filters=filters,
+        page=page,
+        page_size=page_size,
+    )
+
+    return JSONResponse({
+        "ok": True,
+        "results": [_draft_to_search_result(d) for d in result["results"]],
+        "total": result["total"],
+        "page": result["page"],
+        "page_size": result["page_size"],
+        "filters": filters,
+    })
+
+
+def _draft_to_search_result(d: "pildb.ProformaDraft") -> Dict[str, Any]:
+    """Compact projection for the cross-batch search endpoint.
+
+    Returns only the fields needed for search result display —
+    no JSON blobs, no posting metadata, no governance fields.
+    """
+    return {
+        "id":                         d.id,
+        "batch_id":                   d.batch_id,
+        "client_name":                d.client_name,
+        "draft_state":                d.draft_state,
+        "status":                     d.status,
+        "currency":                   d.currency,
+        "wfirma_proforma_id":         d.wfirma_proforma_id,
+        "wfirma_proforma_fullnumber": d.wfirma_proforma_fullnumber,
+        "created_at":                 d.created_at,
+        "updated_at":                 d.updated_at,
+    }
+
+
 @router.get("/drafts/{batch_id}", dependencies=[_auth])
 def list_proforma_drafts(batch_id: str) -> JSONResponse:
     """List every editable Proforma Draft for *batch_id* (oldest first).
