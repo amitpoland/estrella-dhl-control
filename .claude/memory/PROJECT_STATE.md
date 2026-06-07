@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #482 merged + deployed — Sprint 43 Coverage Map authority-honest conversion production-verified. WIRED_PAGES=16/16, MOCK banner retired).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #483 merged — Write Enablement Phase 1A, proforma safe actions).
 
-**Last-run-at:** 2026-06-07 (PR #482 merged + deployed — Sprint 43 Coverage Map authority-honest conversion production-verified). Origin/main HEAD: **5585328** (Sprint 43 squash-merge). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: proforma_detail authority violations RESOLVED, Estrella Document Suite deployed. ATLAS-V2: **Sprint 43 MERGED + DEPLOYED** (SHA 5585328 on `main`), Coverage Map is 16th and FINAL authority-backed V2 page, **WIRED_PAGES = 16/16 (100%)** — ALL V2 pages are now authority-honest, **MOCK banner retired** (unreachable for any nav page). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently.
+**Last-run-at:** 2026-06-07 (PR #483 merged — Write Enablement Phase 1A). Origin/main HEAD: **0ce4e4a** (PR #483 squash-merge). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A MERGED** — Edit/Cancel Draft/Prior Invoices enabled; Send/CMR/Generate remain disabled with reasons (Lesson M). ATLAS-V2: **WIRED_PAGES = 16/16 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **PRODUCTION HASH STATUS**: proforma-detail.jsx `29AA287D` and pz-api.js `1C0BCB5C` match main — production was pre-synced, no redeploy needed. **REMAINING PROFORMA GAPS**: M2 Send Email (HIGH), M1 Hard Delete (MEDIUM), M6 Prior Proforma Search (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW).
 
 ---
 
@@ -55,12 +55,14 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
-## PR #483 — Write Enablement Phase 1A: Proforma Safe Actions (2026-06-07, PR OPEN)
+## PR #483 — Write Enablement Phase 1A: Proforma Safe Actions (2026-06-07, MERGED)
 
-**Date**: 2026-06-07 (PR opened, static files deployed to production, pending merge)
+**Date**: 2026-06-07 (merged + production hash verified)
 **PR #483** — `feat(proforma): Write Enablement Phase 1A — 3 safe proforma actions`
-**Branch**: `feat/write-enable-phase1a-proforma-safe-actions`
-**Commit SHA**: `cf0d7e1` (latest, includes BACKEND_GAP_REGISTER update)
+**Merge SHA**: `0ce4e4a` (squash-merge to `origin/main`)
+**Source branch**: `feat/write-enable-phase1a-proforma-safe-actions`
+**Production hash status**: pre-synced, no redeploy needed (proforma-detail.jsx `29AA287D`, pz-api.js `1C0BCB5C` — both match main)
+**Browser smoke**: Edit enabled, Cancel Draft label visible, Prior Invoices enabled, Send/CMR/Generate disabled with reasons, no console errors
 
 **What was enabled** (3 buttons, all using existing backend routes):
 - **M5 Inline Edit** (`tb-edit`): Batch-edit mode using `PATCH /draft/{id}`. Editable: remarks, payment_terms, currency, exchange_rate, incoterm. Optimistic locking via `expected_updated_at`.
@@ -73,13 +75,11 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 **Files changed**: `proforma-detail.jsx` (+CancelDraftModal, +PriorInvoiceHistoryModal, +EditableKvItem, edit state/handlers), `pz-api.js` (+getClientInvoiceLedger), `test_write_enable_phase1a_proforma.py` (51 tests, all pass), `BACKEND_GAP_REGISTER.md` (M5/M1a/M7 marked ENABLED).
 
-**Tests**: 51/51 Phase 1A pass. 253/254 full suite pass (1 pre-existing macOS path failure unrelated).
+**Tests**: 51/51 Phase 1A pass (re-verified pre-merge). Full suite pass (pre-existing macOS path failure unrelated).
 
-**Browser smoke**: Edit enabled on editing draft, Cancel Draft label visible, Prior Invoices button visible, Send/CMR/Generate disabled with reasons. No console errors.
+**GATE 2**: 0/3 open PRs (PR #483 merged).
 
-**GATE 2**: 1/3 open PRs (PR #483).
-
-**Remaining gaps**: M2 (Send Email — HIGH), M1 hard-delete (MEDIUM), M6 (Prior Proforma Search — MEDIUM), M3 (CMR PDF — LOW), M4 (Document Package — LOW).
+**Remaining proforma gaps**: M2 Send Email (HIGH), M1 Hard Delete (MEDIUM), M6 Prior Proforma Search (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW).
 
 ## PR #482 — Sprint 43: Coverage Map authority-honest conversion (2026-06-07, MERGED + DEPLOYED)
 
