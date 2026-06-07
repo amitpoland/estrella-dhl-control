@@ -4736,6 +4736,8 @@ def send_proforma_email(
     _safe_fn = "".join(
         c if (c.isalnum() or c in "._-") else "_" for c in pdf_filename
     )
+    # Add draft_id prefix to avoid race conditions on concurrent requests
+    _safe_fn = f"{draft_id}_{_safe_fn}"
     _pdf_path = _pdf_dir / _safe_fn
     _pdf_path.write_bytes(pdf_bytes)
 
