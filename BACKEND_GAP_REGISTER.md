@@ -56,13 +56,13 @@
 
 | # | Missing API | Required for | Priority | Contract required |
 |---|-------------|-------------|----------|-------------------|
-| M1 | `DELETE /api/v1/proforma/draft/{draft_id}` | **tb-delete** — Delete entire draft | MEDIUM | Soft-delete (mark `cancelled`) or hard-delete with audit trail. Must check `wfirma_proforma_id` is null (cannot delete a posted proforma). Response: `{ok, deleted_id, audit_event}`. |
+| M1 | `DELETE /api/v1/proforma/draft/{draft_id}` | **tb-delete** — Delete entire draft | MEDIUM | Original gap: hard-delete with audit trail. **M1a Cancel Draft enabled (PR #483)**: tb-delete relabeled to "Cancel Draft", wired to existing `POST /draft/{id}/cancel` (soft-state only). Remaining gap: true hard-delete route if needed (M1 DELETE still unimplemented). |
 | M2 | `POST /api/v1/proforma/draft/{draft_id}/send-email` | **tb-send** — Email proforma PDF to customer | HIGH | Requires: `wfirma_proforma_id` (PDF must exist), `recipient_email` (from customer master or operator input). Must queue via `email_service.queue_email` per Lesson E (5 mandatory safety properties). Body: `{recipient_email?, cc?, subject?, message?, attach_pdf: true}`. Response: `{ok, queued_id, recipient, subject}`. Backend resolves recipients from `email_routing.py`. |
 | M3 | `POST /api/v1/proforma/cmr/generate/{draft_id}` | **tb-cmr** — Generate CMR PDF | LOW | No CMR PDF generation engine exists. Would need: template engine (A4 layout matching `estrella-doc-cmr.jsx`), data assembly from draft + carrier + customer master, PDF renderer (WeasyPrint or similar). Response: `application/pdf` bytes. Requires carrier data (`awb`, `service`, `incoterm`, `origin`, `destination`). |
 | M4 | `POST /api/v1/proforma/draft/{draft_id}/generate-documents` | **tb-generate** — Generate document package | LOW | Umbrella endpoint for generating multiple documents (proforma PDF, packing list, CMR, CN23). Would orchestrate existing generators. Body: `{types: ["proforma_pdf", "packing_list", "cmr", "cn23"]}`. Response: `{ok, generated: [{type, url, size}], failed: [{type, reason}]}`. |
-| M5 | `PUT /api/v1/proforma/draft/{draft_id}/inline-edit` | **tb-edit** — Bulk inline editing mode | LOW | The individual PATCH endpoints exist (routes 3-4 above). This gap is about a **UI-level batch edit mode**, not a missing API. The PATCH endpoints support field-level updates; the toolbar Edit button implies a bulk inline-editing UX that toggles all fields editable simultaneously. No new route strictly required — the existing PATCH endpoints are sufficient. The gap is **UI-only**. |
+| M5 | ~~`PUT /api/v1/proforma/draft/{draft_id}/inline-edit`~~ | **tb-edit** — Bulk inline editing mode | ✅ **ENABLED (PR #483)** | Gap closed — UI-only. Edit button wired to batch-edit mode using existing `PATCH /draft/{id}` endpoint. Editable fields: remarks, payment_terms, currency, exchange_rate, incoterm. Optimistic locking via `expected_updated_at`. |
 | M6 | `GET /api/v1/proforma/drafts/search?customer={name}&prior=true` | Prior proforma clone | MEDIUM | Search proforma drafts across batches by customer name for "clone from prior proforma" workflow. Body: `{customer_name?, customer_vat?, status_filter?, limit?}`. Response: `{ok, drafts: [{draft_id, batch_id, client_name, doc_no, total_eur, created_at}]}`. |
-| M7 | `GET /api/v1/proforma/invoice-history/{contractor_id}` | Prior invoice clone | MEDIUM | Fetch wFirma invoice history for a contractor to enable "clone from prior invoice" workflow. Would call wFirma `invoices/find` with `conditions[contractor_id]`. Response: `{ok, invoices: [{wfirma_id, number, date, total, currency, line_count}]}`. |
+| M7 | ~~`GET /api/v1/proforma/invoice-history/{contractor_id}`~~ | Prior invoice history | ✅ **ENABLED (PR #483)** | Gap closed — wired to existing `GET /api/v1/ledgers/clients/{id}/invoice-ledger.json` route. Read-only modal shows 12-month invoice history from wFirma. New `getClientInvoiceLedger` transport in pz-api.js. |
 
 ---
 
@@ -70,8 +70,8 @@
 
 | testid | Label | State | Reason | Backend route |
 |--------|-------|-------|--------|---------------|
-| `tb-edit` | ✎ Edit | **DISABLED** | "Inline editing not yet available — edit lines individually on the Lines tab" | PATCH endpoints exist (routes 3-4). Gap is UI-only (M5). Individual line edits work on Lines tab. |
-| `tb-delete` | 🗑 Delete | **DISABLED** | "No delete-draft endpoint available" | No `DELETE /draft/{id}` route exists (M1). `cancel` endpoint exists but is soft-cancel, not delete. |
+| `tb-edit` | ✎ Edit | **ENABLED (PR #483)** | Conditionally enabled when draft in `draft/editing/post_failed` state | `PATCH /draft/{id}` (routes 3-4) — batch-edit mode with optimistic locking. Editable: remarks, payment_terms, currency, exchange_rate, incoterm. |
+| `tb-delete` | 🗑 Cancel Draft | **ENABLED (PR #483)** | Conditionally enabled when draft in `draft/editing/approved/post_failed` state | `POST /draft/{id}/cancel` (route 8) — relabeled from Delete to Cancel Draft. Soft-cancel with confirmation modal + reason. |
 | `tb-duplicate` | ⎘ Duplicate | **ENABLED** | Calls `PzApi.cloneDraft(draftId)` | `POST /draft/{draft_id}/clone` (route 9) — **confirmed working**. |
 | `tb-post` | ↑ Post to wFirma | **CONDITIONAL** | Enabled when `canPost` (draft in `draft/pending_local/approved/post_failed` state) | `POST /draft/{draft_id}/post` (route 10) + `GET /draft/{draft_id}/disclose-post` (route 14) — **confirmed working**. |
 | `tb-convert` | ⚠ Convert to Invoice | **CONDITIONAL** | Enabled when `canConvert` (draft in `posted/ready` state) | `POST /draft/{draft_id}/to-invoice` (route 11) + `GET /draft/{draft_id}/to-invoice-preview` (route 12) + `GET /draft/{draft_id}/disclose-convert` (route 15) — **confirmed working**. |
@@ -81,6 +81,7 @@
 | `tb-send` | ➤ Send | **DISABLED** | "Email send not yet wired to backend" | No proforma email-send endpoint exists (M2). |
 | `tb-generate` | ⚙ Generate ▾ | **DISABLED** | "Document generation not yet available from this view" | No umbrella document generation endpoint exists (M4). Individual generators exist elsewhere (carrier label-package, wFirma PDF). |
 | `tb-more` | ⋯ | **DISABLED** | "More actions" | Placeholder for future actions menu. No specific backend gap — this is a UI container. |
+| `tb-invoice-history` | 📋 Prior Invoices | **ENABLED (PR #483)** | Enabled when `contractorId` available; disabled with reason "wFirma contractor ID missing" otherwise | `GET /ledgers/clients/{id}/invoice-ledger.json` — read-only 12-month invoice history modal. |
 | `tb-back` | ← Back | **ENABLED** | Navigates back to proforma list | Client-side navigation. No backend route needed. |
 
 ---
@@ -263,8 +264,8 @@ selects one, a new draft is created from its line data.
 
 | Button | State | Gap ID | Reason displayed |
 |--------|-------|--------|------------------|
-| Edit | DISABLED | M5 (UI-only) | "Inline editing not yet available — edit lines individually on the Lines tab" |
-| Delete | DISABLED | M1 | "No delete-draft endpoint available" |
+| ~~Edit~~ | ✅ ENABLED (PR #483) | ~~M5~~ | Wired to PATCH endpoint — batch edit mode |
+| ~~Delete~~ | ✅ ENABLED as Cancel Draft (PR #483) | ~~M1a~~ | Wired to POST /cancel — soft-state only |
 | CMR | DISABLED | M3 | "CMR print — no backend PDF generation route. Use Preview to view CMR layout." |
 | Send | DISABLED | M2 | "Email send not yet wired to backend" |
 | Generate ▾ | DISABLED | M4 | "Document generation not yet available from this view" |
@@ -273,10 +274,10 @@ selects one, a new draft is created from its line data.
 ### Priority ranking for gap closure
 
 1. **M2 — Send Email** (HIGH) — most-requested operator workflow; all building blocks exist (email_service, email_routing, queue_email)
-2. **M1 — Delete Draft** (MEDIUM) — cancel exists but delete is different intent; straightforward to implement
+2. **M1 — Hard Delete Draft** (MEDIUM) — cancel enabled (M1a, PR #483), but true DELETE route still needed if hard-delete is required
 3. **M6 — Prior Proforma Search** (MEDIUM) — enables clone-from-history workflow
-4. **M7 — Prior Invoice History** (MEDIUM) — enables clone-from-invoice workflow
-5. **M5 — Inline Edit UI** (LOW) — backend already supports PATCH; gap is purely frontend UX
+4. ~~**M7 — Prior Invoice History** (MEDIUM)~~ — ✅ **CLOSED (PR #483)** — wired to existing ledger route
+5. ~~**M5 — Inline Edit UI** (LOW)~~ — ✅ **CLOSED (PR #483)** — wired to existing PATCH endpoint
 6. **M3 — CMR PDF Generation** (LOW) — requires new PDF template engine; client-side preview exists as interim
 7. **M4 — Document Package** (LOW) — orchestration wrapper; individual generators must exist first
 
