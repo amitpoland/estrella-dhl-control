@@ -881,7 +881,8 @@ function _DiagHealthSection({ health }) {
   const checks = health.data && health.data.checks ? Object.entries(health.data.checks) : [];
   if (!checks.length) return <Card style={{ padding: 18 }}><SectionHeader icon="❤" title="Health checks" subtitle="GET /api/v1/debug/health-full" /><div style={{ padding: 20, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No health checks returned.</div></Card>;
   return (
-    <Card data-testid="diag-health-grid" style={{ padding: 18 }}>
+    <Card style={{ padding: 18 }}>
+      <div data-testid="diag-health-grid">
       <SectionHeader icon="❤" title="Health checks" subtitle="GET /api/v1/debug/health-full" />
       <div className="responsive-grid-3" style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
         {checks.map(([key, c]) => {
@@ -902,6 +903,7 @@ function _DiagHealthSection({ health }) {
           );
         })}
       </div>
+      </div>
     </Card>
   );
 }
@@ -913,7 +915,8 @@ function _DiagStorageSection({ storage }) {
   const warnings = storage.data && storage.data.warnings ? storage.data.warnings : [];
   const errors   = storage.data && storage.data.errors ? storage.data.errors : [];
   return (
-    <Card data-testid="diag-storage-panel" style={{ padding: 18 }}>
+    <Card style={{ padding: 18 }}>
+      <div data-testid="diag-storage-panel">
       <SectionHeader icon="⊟" title="Storage health" subtitle="GET /api/v1/debug/storage/health" />
       <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
         {[
@@ -930,6 +933,7 @@ function _DiagStorageSection({ storage }) {
         {warnings.length > 0 && <div style={{ marginTop: 6, fontSize: 10, color: '#C09020' }}>{warnings.length} warning(s): {warnings.join('; ')}</div>}
         {errors.length > 0 && <div style={{ marginTop: 4, fontSize: 10, color: 'var(--badge-red-text)' }}>{errors.length} error(s): {errors.join('; ')}</div>}
       </div>
+      </div>
     </Card>
   );
 }
@@ -939,7 +943,8 @@ function _DiagLocksSection({ locks }) {
   if (locks.error)   return <Card style={{ padding: 18 }}><SectionHeader icon="🔒" title="Active locks" subtitle="GET /api/v1/debug/storage/locks" /><div data-testid="diag-locks-error" style={{ padding: 20, textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>Failed to load locks: {locks.error}</div></Card>;
   const details = locks.data && locks.data.details ? locks.data.details : [];
   return (
-    <Card data-testid="diag-locks-panel" style={{ padding: 18 }}>
+    <Card style={{ padding: 18 }}>
+      <div data-testid="diag-locks-panel">
       <SectionHeader icon="🔒" title="Active locks" subtitle="GET /api/v1/debug/storage/locks" />
       <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
         {locks.data ? `${locks.data.lock_files_found || 0} found · ${locks.data.actively_held || 0} held · ${locks.data.releasable || 0} releasable` : '–'}
@@ -959,13 +964,15 @@ function _DiagLocksSection({ locks }) {
         ))}
       </div>
       {locks.data && locks.data.probe_note && <div style={{ marginTop: 8, fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic' }}>{locks.data.probe_note}</div>}
+      </div>
     </Card>
   );
 }
 
 function _DiagCliSection() {
   return (
-    <Card data-testid="diag-cli-tools" style={{ padding: 18 }}>
+    <Card style={{ padding: 18 }}>
+      <div data-testid="diag-cli-tools">
       <SectionHeader icon="$" title="CLI diagnostic tools" subtitle="Surfaced from app/tools/* · execution disabled" />
       <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
         {CLI_TOOLS.map(t => (
@@ -986,6 +993,7 @@ function _DiagCliSection() {
             </Btn>
           </div>
         ))}
+      </div>
       </div>
     </Card>
   );
@@ -1040,14 +1048,16 @@ function DiagnosticsPage() {
       <_DiagCliSection />
       {/* Pending pipeline — compact summary if available */}
       {pending.data && (
-        <Card data-testid="diag-pending-summary" style={{ padding: 18 }}>
+        <Card style={{ padding: 18 }}>
+          <div data-testid="diag-pending-summary">
           <SectionHeader icon="⟳" title="Bot pipeline" subtitle="GET /api/v1/debug/pending" />
           <div style={{ marginTop: 12, display: 'flex', gap: 16, fontSize: 11, color: 'var(--text-2)' }}>
-            <span>Active sessions: <strong style={{ color: 'var(--text)' }}>{pending.data.active_sessions != null ? pending.data.active_sessions : '–'}</strong></span>
-            <span>Bot pending: <strong style={{ color: 'var(--text)' }}>{pending.data.bot_pending != null ? pending.data.bot_pending : '–'}</strong></span>
+            <span>Active sessions: <strong style={{ color: 'var(--text)' }}>{Array.isArray(pending.data.active_sessions) ? pending.data.active_sessions.length : (pending.data.counts && pending.data.counts.active_sessions != null ? pending.data.counts.active_sessions : '–')}</strong></span>
+            <span>Bot pending: <strong style={{ color: 'var(--text)' }}>{typeof pending.data.bot_pending === 'object' ? Object.keys(pending.data.bot_pending || {}).length : (pending.data.bot_pending != null ? pending.data.bot_pending : '–')}</strong></span>
             {pending.data.counts && Object.entries(pending.data.counts).map(([k, v]) => (
               <span key={k}>{k}: <strong style={{ color: 'var(--text)' }}>{v}</strong></span>
             ))}
+          </div>
           </div>
         </Card>
       )}
