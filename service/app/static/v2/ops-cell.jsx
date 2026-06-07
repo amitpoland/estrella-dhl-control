@@ -831,149 +831,236 @@ function CapPill({ label, ok, warn }) {
 // 4. DIAGNOSTICS — system health, storage, locks, CLI runners
 // ──────────────────────────────────────────────────────────────────────
 
-function DiagnosticsPage() {
-  const [running, setRunning] = React.useState(null);
+// Sprint 42: Authority-honest DiagnosticsPage — all fake data removed.
+// Fetches from 5 live endpoints independently with per-section loading/error.
+// CLI tools visible but disabled (no POST execution wired).
+// POST diagnostic actions visible but disabled: "Diagnostic POST exists but
+// execution requires explicit operator approval."
 
-  const healthChecks = [
-    { name: 'database.packing',         ok: true,  ms: 12  },
-    { name: 'database.documents',       ok: true,  ms: 9   },
-    { name: 'database.warehouse',       ok: true,  ms: 14  },
-    { name: 'database.wfirma',          ok: true,  ms: 11  },
-    { name: 'database.tracking',        ok: true,  ms: 8   },
-    { name: 'storage.locks_table',      ok: true,  ms: 6   },
-    { name: 'smtp.outbound',            ok: true,  ms: 142 },
-    { name: 'imap.dhl_inbox',           ok: true,  ms: 280 },
-    { name: 'workdrive.api',            ok: false, ms: 1820, err: 'OAuth token expired' },
-    { name: 'cliq.webhook',             ok: true,  ms: 95  },
-    { name: 'wfirma.api',               ok: false, ms: null, err: 'WFIRMA_WAREHOUSE_ID not set' },
-    { name: 'cowork.coordinator',       ok: true,  ms: 18  },
-  ];
+const CLI_TOOLS = [
+  { id: 'check_dhl',  name: 'check_dhl_config',           desc: 'Validate DHL Express IMAP + SMTP + classifier rules',
+    cmd: 'python3 -m app.tools.check_dhl_config',          hasRoute: false },
+  { id: 'check_wf',   name: 'check_wfirma_config',        desc: '10-check diagnostic for wFirma reservation gate',
+    cmd: 'python3 -m app.tools.check_wfirma_config',       hasRoute: false },
+  { id: 'regen',      name: 'regenerate_stale_batches',    desc: 'Re-run audit / outputs for batches >7d stale',
+    cmd: 'python3 -m app.tools.regenerate_stale_batches',   hasRoute: false },
+  { id: 'monitor',    name: 'run_active_shipment_monitor', desc: 'Sweep active shipments for tracking + email updates',
+    cmd: 'python3 -m service.scripts.run_active_shipment_monitor', hasRoute: true,
+    disabledReason: 'Diagnostic POST exists but execution requires explicit operator approval.' },
+];
 
-  const cliTools = [
-    { id: 'check_dhl',  name: 'check_dhl_config',          desc: 'Validate DHL Express IMAP + SMTP + classifier rules',
-      cmd: 'python3 -m app.tools.check_dhl_config', lastRun: '2026-05-08 14:02', state: 'ok'   },
-    { id: 'check_wf',   name: 'check_wfirma_config',       desc: '10-check diagnostic for wFirma reservation gate',
-      cmd: 'python3 -m app.tools.check_wfirma_config', lastRun: '2026-05-09 09:11', state: 'fail' },
-    { id: 'regen',      name: 'regenerate_stale_batches',  desc: 'Re-run audit / outputs for batches >7d stale',
-      cmd: 'python3 -m app.tools.regenerate_stale_batches', lastRun: '2026-05-02 18:33', state: 'idle' },
-    { id: 'monitor',    name: 'run_active_shipment_monitor',desc: 'Sweep active shipments for tracking + email updates',
-      cmd: 'python3 -m service.scripts.run_active_shipment_monitor', lastRun: '2026-05-10 06:00', state: 'scheduled' },
-  ];
+function _DiagKpiStrip({ health, version, storage, locks }) {
+  const hData = health.data;
+  const okCount = hData ? Object.values(hData.checks || {}).filter(c => c.status === 'ok').length : '–';
+  const total   = hData ? Object.keys(hData.checks || {}).length : '–';
+  const failCt  = hData ? (total - okCount) : 0;
 
-  const runTool = (id) => {
-    setRunning(id);
-    setTimeout(() => setRunning(null), 2200);
-  };
+  const ver     = version.data;
+  const verStr  = ver ? (ver.short || ver.commit || '–').substring(0, 12) : '–';
+  const verSub  = ver && ver.deployed_at ? `deployed ${ver.deployed_at}` : '–';
 
-  const okCount = healthChecks.filter(h => h.ok).length;
-  const failCount = healthChecks.length - okCount;
+  const sData   = storage.data;
+  const realB   = sData && sData.outputs ? (sData.outputs.real_batches || 0) : '–';
+
+  const lData   = locks.data;
+  const lockCt  = lData ? (lData.actively_held || 0) : '–';
 
   return (
-    <div style={{ padding: '0 32px 40px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-
-      {/* KPI strip */}
-      <div className="responsive-grid-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-        <MetricTile label="Health checks"   value={`${okCount}/${healthChecks.length}`} sub={`${failCount} failing`} tone={failCount ? 'red' : 'green'} />
-        <MetricTile label="Storage used"    value="2.4 GB" sub="of 100 GB"          tone="text" />
-        <MetricTile label="Active locks"    value="3"      sub="2 batch / 1 user"   tone="text" />
-        <MetricTile label="Version"         value="v2.14.3" sub="deployed 2026-05-09 11:30" tone="text" mono />
-      </div>
-
-      {/* Health checks grid */}
-      <Card style={{ padding: 18 }}>
-        <SectionHeader icon="❤" title="Health checks" subtitle="GET /api/v1/system/health-full · run every 60s" />
-        <div className="responsive-grid-3" style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-          {healthChecks.map((c, i) => (
-            <div key={i} style={{
-              padding: '10px 12px', borderRadius: 6,
-              border: `1px solid ${c.ok ? 'var(--border)' : 'var(--badge-red-border)'}`,
-              background: c.ok ? 'var(--card)' : 'var(--badge-red-bg)',
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
-                <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, fontWeight: 600, color: c.ok ? 'var(--text)' : 'var(--badge-red-text)' }}>{c.name}</code>
-                <StatusChip kind={c.ok ? 'ready' : 'blocked'}>{c.ok ? `${c.ms}ms` : 'FAIL'}</StatusChip>
-              </div>
-              {!c.ok && c.err && <div style={{ marginTop: 6, fontSize: 10, color: 'var(--badge-red-text)' }}>{c.err}</div>}
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      {/* Storage panel + Locks panel side by side */}
-      <div className="responsive-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <Card style={{ padding: 18 }}>
-          <SectionHeader icon="⊟" title="Storage health" subtitle="GET /api/v1/system/storage/health" />
-          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <BarRow label="Real shipments"   used="1.8 GB" pct={72} />
-            <BarRow label="Test fixtures"    used="0.3 GB" pct={12} />
-            <BarRow label="Quarantine"       used="0.2 GB" pct={8}  tone="amber" />
-            <BarRow label="Outputs / PZ"     used="0.1 GB" pct={4} />
-            <BarRow label="Locks DB"         used="2 MB"   pct={1} />
-          </div>
-        </Card>
-
-        <Card style={{ padding: 18 }}>
-          <SectionHeader icon="🔒" title="Active locks" subtitle="GET /api/v1/system/storage/locks" />
-          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6, fontSize: 11 }}>
-            {[
-              { id: 'lock-201', kind: 'batch.pz_export', subj: 'EJP-26-27-015', age: '2m 14s', actor: 'amit@estrella' },
-              { id: 'lock-202', kind: 'batch.wfirma_preview', subj: 'EJP-26-27-015', age: '1m 02s', actor: 'system' },
-              { id: 'lock-203', kind: 'user.session', subj: 'amit@estrella', age: '42m', actor: 'auth' },
-            ].map(l => (
-              <div key={l.id} style={{ padding: '8px 10px', background: 'var(--bg-subtle)', borderRadius: 6, display: 'grid', gridTemplateColumns: '1fr auto', gap: 8 }}>
-                <div>
-                  <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--text)' }}>{l.kind}</code>
-                  <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}><code>{l.subj}</code> · {l.actor} · {l.age}</div>
-                </div>
-                <Btn variant="ghost" small disabled>Release</Btn>
-              </div>
-            ))}
-          </div>
-        </Card>
-      </div>
-
-      {/* CLI tool runners */}
-      <Card style={{ padding: 18 }}>
-        <SectionHeader icon="$" title="CLI diagnostic tools" subtitle="Surfaced from app/tools/* · output streamed to operator log" />
-        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {cliTools.map(t => (
-            <div key={t.id} style={{
-              padding: '12px 14px', border: '1px solid var(--border)', borderRadius: 6,
-              display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, alignItems: 'center',
-            }}>
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                  <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{t.name}</code>
-                  <StatusChip kind={t.state === 'ok' ? 'ready' : t.state === 'fail' ? 'blocked' : t.state === 'scheduled' ? 'info' : 'neutral'}>
-                    {t.state === 'ok' ? 'Last run: OK' : t.state === 'fail' ? 'Last run: FAIL' : t.state === 'scheduled' ? 'Cron' : 'Idle'}
-                  </StatusChip>
-                  <StatusChip kind="cli">CLI</StatusChip>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-2)' }}>{t.desc}</div>
-                <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, color: 'var(--text-3)', display: 'block', marginTop: 4 }}>{t.cmd} · last run {t.lastRun}</code>
-              </div>
-              <Btn variant="outline" small onClick={() => runTool(t.id)} disabled={running === t.id}>
-                {running === t.id ? 'Running…' : 'Run'}
-              </Btn>
-            </div>
-          ))}
-        </div>
-      </Card>
+    <div data-testid="diag-kpi-strip" className="responsive-grid-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+      <MetricTile label="Health checks" value={hData ? `${okCount}/${total}` : '–'} sub={health.loading ? 'Loading…' : health.error ? 'Fetch error' : `${failCt} failing`} tone={health.error ? 'red' : failCt ? 'red' : 'green'} />
+      <MetricTile label="Real batches"  value={String(realB)} sub={storage.loading ? 'Loading…' : storage.error ? 'Fetch error' : 'from storage health'} tone="text" />
+      <MetricTile label="Active locks"  value={String(lockCt)} sub={locks.loading ? 'Loading…' : locks.error ? 'Fetch error' : `${lData ? (lData.lock_files_found || 0) : 0} lock files`} tone="text" />
+      <MetricTile label="Version"       value={verStr} sub={version.loading ? 'Loading…' : version.error ? 'Fetch error' : verSub} tone="text" mono />
     </div>
   );
 }
 
-function BarRow({ label, used, pct, tone }) {
-  const c = tone === 'amber' ? '#C09020' : tone === 'red' ? '#B82820' : 'var(--accent)';
+function _DiagHealthSection({ health }) {
+  if (health.loading) return <Card style={{ padding: 18 }}><SectionHeader icon="❤" title="Health checks" subtitle="GET /api/v1/debug/health-full" /><div style={{ padding: 20, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>Loading health checks…</div></Card>;
+  if (health.error)   return <Card style={{ padding: 18 }}><SectionHeader icon="❤" title="Health checks" subtitle="GET /api/v1/debug/health-full" /><div data-testid="diag-health-error" style={{ padding: 20, textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>Failed to load health checks: {health.error}</div></Card>;
+  const checks = health.data && health.data.checks ? Object.entries(health.data.checks) : [];
+  if (!checks.length) return <Card style={{ padding: 18 }}><SectionHeader icon="❤" title="Health checks" subtitle="GET /api/v1/debug/health-full" /><div style={{ padding: 20, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No health checks returned.</div></Card>;
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text)', marginBottom: 4 }}>
-        <span>{label}</span>
-        <code style={{ fontFamily: 'ui-monospace, monospace', color: 'var(--text-3)' }}>{used}</code>
+    <Card style={{ padding: 18 }}>
+      <div data-testid="diag-health-grid">
+      <SectionHeader icon="❤" title="Health checks" subtitle="GET /api/v1/debug/health-full" />
+      <div className="responsive-grid-3" style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+        {checks.map(([key, c]) => {
+          const ok = c.status === 'ok';
+          return (
+            <div key={key} data-testid={`diag-check-${key}`} style={{
+              padding: '10px 12px', borderRadius: 6,
+              border: `1px solid ${ok ? 'var(--border)' : 'var(--badge-red-border)'}`,
+              background: ok ? 'var(--card)' : 'var(--badge-red-bg)',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, fontWeight: 600, color: ok ? 'var(--text)' : 'var(--badge-red-text)' }}>{key}</code>
+                <StatusChip kind={ok ? 'ready' : 'blocked'}>{ok ? 'OK' : (c.status || 'FAIL').toUpperCase()}</StatusChip>
+              </div>
+              {c.detail && <div style={{ marginTop: 6, fontSize: 10, color: ok ? 'var(--text-3)' : 'var(--badge-red-text)' }}>{c.detail}</div>}
+              {c.fix && !ok && <div style={{ marginTop: 2, fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic' }}>Fix: {c.fix}</div>}
+            </div>
+          );
+        })}
       </div>
-      <div style={{ height: 6, background: 'var(--bg-subtle)', borderRadius: 3, overflow: 'hidden' }}>
-        <div style={{ height: '100%', width: pct + '%', background: c }} />
       </div>
+    </Card>
+  );
+}
+
+function _DiagStorageSection({ storage }) {
+  if (storage.loading) return <Card style={{ padding: 18 }}><SectionHeader icon="⊟" title="Storage health" subtitle="GET /api/v1/debug/storage/health" /><div style={{ padding: 20, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>Loading storage…</div></Card>;
+  if (storage.error)   return <Card style={{ padding: 18 }}><SectionHeader icon="⊟" title="Storage health" subtitle="GET /api/v1/debug/storage/health" /><div data-testid="diag-storage-error" style={{ padding: 20, textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>Failed to load storage health: {storage.error}</div></Card>;
+  const o = storage.data && storage.data.outputs ? storage.data.outputs : {};
+  const warnings = storage.data && storage.data.warnings ? storage.data.warnings : [];
+  const errors   = storage.data && storage.data.errors ? storage.data.errors : [];
+  return (
+    <Card style={{ padding: 18 }}>
+      <div data-testid="diag-storage-panel">
+      <SectionHeader icon="⊟" title="Storage health" subtitle="GET /api/v1/debug/storage/health" />
+      <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {[
+          { label: 'Real batches',    val: o.real_batches },
+          { label: 'Test batches',    val: o.test_batches },
+          { label: 'Quarantine dirs', val: o.quarantine_dirs },
+          { label: 'Anomalous dirs',  val: o.anomalous_dirs, tone: 'amber' },
+        ].map(r => (
+          <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '6px 8px', background: 'var(--bg-subtle)', borderRadius: 4 }}>
+            <span style={{ color: 'var(--text)' }}>{r.label}</span>
+            <code style={{ fontFamily: 'ui-monospace, monospace', color: r.tone === 'amber' && r.val ? '#C09020' : 'var(--text-3)' }}>{r.val != null ? r.val : '–'}</code>
+          </div>
+        ))}
+        {warnings.length > 0 && <div style={{ marginTop: 6, fontSize: 10, color: '#C09020' }}>{warnings.length} warning(s): {warnings.join('; ')}</div>}
+        {errors.length > 0 && <div style={{ marginTop: 4, fontSize: 10, color: 'var(--badge-red-text)' }}>{errors.length} error(s): {errors.join('; ')}</div>}
+      </div>
+      </div>
+    </Card>
+  );
+}
+
+function _DiagLocksSection({ locks }) {
+  if (locks.loading) return <Card style={{ padding: 18 }}><SectionHeader icon="🔒" title="Active locks" subtitle="GET /api/v1/debug/storage/locks" /><div style={{ padding: 20, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>Loading locks…</div></Card>;
+  if (locks.error)   return <Card style={{ padding: 18 }}><SectionHeader icon="🔒" title="Active locks" subtitle="GET /api/v1/debug/storage/locks" /><div data-testid="diag-locks-error" style={{ padding: 20, textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>Failed to load locks: {locks.error}</div></Card>;
+  const details = locks.data && locks.data.details ? locks.data.details : [];
+  return (
+    <Card style={{ padding: 18 }}>
+      <div data-testid="diag-locks-panel">
+      <SectionHeader icon="🔒" title="Active locks" subtitle="GET /api/v1/debug/storage/locks" />
+      <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+        {locks.data ? `${locks.data.lock_files_found || 0} found · ${locks.data.actively_held || 0} held · ${locks.data.releasable || 0} releasable` : '–'}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 11 }}>
+        {details.length === 0 && <div style={{ padding: 12, textAlign: 'center', color: 'var(--text-3)' }}>No lock files found.</div>}
+        {details.map((l, i) => (
+          <div key={i} style={{ padding: '8px 10px', background: 'var(--bg-subtle)', borderRadius: 6, display: 'grid', gridTemplateColumns: '1fr auto', gap: 8 }}>
+            <div>
+              <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--text)' }}>{l.batch_id || '–'}</code>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                held: {l.actively_held ? 'yes' : 'no'} · lock file: {l.lock_file_exists ? 'yes' : 'no'}
+              </div>
+            </div>
+            <Btn variant="ghost" small disabled title="Lock release requires explicit operator approval">Release</Btn>
+          </div>
+        ))}
+      </div>
+      {locks.data && locks.data.probe_note && <div style={{ marginTop: 8, fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic' }}>{locks.data.probe_note}</div>}
+      </div>
+    </Card>
+  );
+}
+
+function _DiagCliSection() {
+  return (
+    <Card style={{ padding: 18 }}>
+      <div data-testid="diag-cli-tools">
+      <SectionHeader icon="$" title="CLI diagnostic tools" subtitle="Surfaced from app/tools/* · execution disabled" />
+      <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {CLI_TOOLS.map(t => (
+          <div key={t.id} data-testid={`diag-cli-${t.id}`} style={{
+            padding: '12px 14px', border: '1px solid var(--border)', borderRadius: 6,
+            display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, alignItems: 'center',
+          }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{t.name}</code>
+                <StatusChip kind={t.hasRoute ? 'info' : 'neutral'}>{t.hasRoute ? 'POST available' : 'CLI only'}</StatusChip>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-2)' }}>{t.desc}</div>
+              <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, color: 'var(--text-3)', display: 'block', marginTop: 4 }}>{t.cmd}</code>
+            </div>
+            <Btn variant="outline" small disabled title={t.disabledReason || 'No HTTP route — CLI only, not wired to UI.'}>
+              Run
+            </Btn>
+          </div>
+        ))}
+      </div>
+      </div>
+    </Card>
+  );
+}
+
+function DiagnosticsPage() {
+  const [health,  setHealth]  = React.useState({ loading: true, data: null, error: null });
+  const [storage, setStorage] = React.useState({ loading: true, data: null, error: null });
+  const [locks,   setLocks]   = React.useState({ loading: true, data: null, error: null });
+  const [version, setVersion] = React.useState({ loading: true, data: null, error: null });
+  const [pending, setPending] = React.useState({ loading: true, data: null, error: null });
+
+  React.useEffect(() => {
+    const api = window.PzApi;
+    if (!api) return;
+
+    // Independent per-section fetching — no barrier
+    api.getHealthFull().then(r => {
+      if (r.ok) setHealth({ loading: false, data: r.data, error: null });
+      else      setHealth({ loading: false, data: null, error: r.error || 'Unknown error' });
+    }).catch(e => setHealth({ loading: false, data: null, error: String(e) }));
+
+    api.getStorageHealth().then(r => {
+      if (r.ok) setStorage({ loading: false, data: r.data, error: null });
+      else      setStorage({ loading: false, data: null, error: r.error || 'Unknown error' });
+    }).catch(e => setStorage({ loading: false, data: null, error: String(e) }));
+
+    api.getStorageLocks().then(r => {
+      if (r.ok) setLocks({ loading: false, data: r.data, error: null });
+      else      setLocks({ loading: false, data: null, error: r.error || 'Unknown error' });
+    }).catch(e => setLocks({ loading: false, data: null, error: String(e) }));
+
+    api.getSystemVersion().then(r => {
+      if (r.ok) setVersion({ loading: false, data: r.data, error: null });
+      else      setVersion({ loading: false, data: null, error: r.error || 'Unknown error' });
+    }).catch(e => setVersion({ loading: false, data: null, error: String(e) }));
+
+    api.getDebugPending().then(r => {
+      if (r.ok) setPending({ loading: false, data: r.data, error: null });
+      else      setPending({ loading: false, data: null, error: r.error || 'Unknown error' });
+    }).catch(e => setPending({ loading: false, data: null, error: String(e) }));
+  }, []);
+
+  return (
+    <div data-testid="diagnostics-page" style={{ padding: '0 32px 40px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <_DiagKpiStrip health={health} version={version} storage={storage} locks={locks} />
+      <_DiagHealthSection health={health} />
+      <div className="responsive-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <_DiagStorageSection storage={storage} />
+        <_DiagLocksSection locks={locks} />
+      </div>
+      <_DiagCliSection />
+      {/* Pending pipeline — compact summary if available */}
+      {pending.data && (
+        <Card style={{ padding: 18 }}>
+          <div data-testid="diag-pending-summary">
+          <SectionHeader icon="⟳" title="Bot pipeline" subtitle="GET /api/v1/debug/pending" />
+          <div style={{ marginTop: 12, display: 'flex', gap: 16, fontSize: 11, color: 'var(--text-2)' }}>
+            <span>Active sessions: <strong style={{ color: 'var(--text)' }}>{Array.isArray(pending.data.active_sessions) ? pending.data.active_sessions.length : (pending.data.counts && pending.data.counts.active_sessions != null ? pending.data.counts.active_sessions : '–')}</strong></span>
+            <span>Bot pending: <strong style={{ color: 'var(--text)' }}>{typeof pending.data.bot_pending === 'object' ? Object.keys(pending.data.bot_pending || {}).length : (pending.data.bot_pending != null ? pending.data.bot_pending : '–')}</strong></span>
+            {pending.data.counts && Object.entries(pending.data.counts).map(([k, v]) => (
+              <span key={k}>{k}: <strong style={{ color: 'var(--text)' }}>{v}</strong></span>
+            ))}
+          </div>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

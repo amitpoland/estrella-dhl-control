@@ -412,6 +412,17 @@
     getStorageHealth: () =>
       _get(`${BASE}/debug/storage/health`),
 
+    // GET /api/v1/debug/storage/locks
+    // Lock file probe: lock_files_found, actively_held, releasable,
+    // details[{batch_id, lock_file_exists, actively_held}], probe_note.
+    getStorageLocks: () =>
+      _get(`${BASE}/debug/storage/locks`),
+
+    // GET /api/v1/system/version
+    // Service version: { commit, deployed_at, short }.
+    getSystemVersion: () =>
+      _get(`${BASE}/system/version`),
+
     // GET /api/v1/pz/health
     // PZ engine: { status, engine, environment, detail }.
     getPzHealth: () =>

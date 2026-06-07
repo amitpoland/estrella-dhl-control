@@ -300,12 +300,12 @@ class TestWiredPages:
         assert "'api_status'" in src, "'api_status' not found in WIRED_PAGES"
 
     def test_wired_pages_count(self):
-        """After Sprint 41, WIRED_PAGES should have 14 entries."""
+        """After Sprint 41, WIRED_PAGES should have at least 14 entries (Sprint 42+ adds more)."""
         src = _read(MOCK_BADGE)
         match = re.search(r"const WIRED_PAGES\s*=\s*\[([^\]]+)\]", src)
         assert match, "WIRED_PAGES array not found"
         entries = [e.strip().strip("'\"") for e in match.group(1).split(",") if e.strip()]
-        assert len(entries) == 14, f"Expected 14 WIRED_PAGES entries, found {len(entries)}: {entries}"
+        assert len(entries) >= 14, f"Expected at least 14 WIRED_PAGES entries, found {len(entries)}: {entries}"
 
 
 # =============================================================================
