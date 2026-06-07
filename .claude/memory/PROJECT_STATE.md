@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (PR #493 merged + deployed — M6 V2 search UI, campaign CLOSED).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (PR #494 merged — navigation handoff fix).
 
-**Last-run-at:** 2026-06-08 (PR #493 merged + deployed — M6 campaign CLOSED). Origin/main HEAD: **d696109** (PR #493 squash-merge — M6 cross-batch search V2 UI). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 56/56 M6 proforma search UI. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 16/16 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Browser smoke 11/11 PASS. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
+**Last-run-at:** 2026-06-08 (PR #494 merged — search drill-through navigation fix). Origin/main HEAD: **b9836b3** (PR #494 squash-merge — search result drill-through preserves batch_id). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 16/16 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **REMAINING RESIDUAL**: MOCK banner false positive on search page (pre-existing, separate cleanup). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
 
 ---
 
@@ -54,6 +54,30 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## PR #494 — Proforma Search Navigation Handoff Fix (2026-06-08, MERGED + DEPLOYED)
+
+**Date**: 2026-06-08 (merged to main)
+**PR #494** — `fix(proforma): search result drill-through preserves batch_id`
+**Merge SHA**: `b9836b3` (squash-merge to `origin/main`)
+**Source branch**: `feature/proforma-search-navigation-handoff`
+**Deploy**: Already deployed before merge (browser smoke during implementation). Production hashes verified MATCH.
+
+**Root cause**: `ProformaSearchPage.handleRowClick` pushed the correct `/v2/proforma?batch_id=X` URL, then called `onNav('proforma')` which immediately overwrote it using stale `currentSearch` state — stripping `batch_id` and showing "No batch selected."
+
+**Fix**: Added dedicated `handleProformaSearchDrill(batchId)` handler in `index.html` that sets `currentSearch` before `pushState`. `ProformaSearchPage` now calls `onDrillBatch(row.batch_id)` instead of direct `pushState` + `onNav`. Single URL push, `batch_id` preserved.
+
+**Files changed**: 3 — `index.html` (+10 lines), `proforma-search.jsx` (-4/+3 lines), `test_proforma_search_ui.py` (+8 tests, 64 total).
+
+**Test results**: 64/64 UI + 51/51 endpoint + 51/51 DB + 54/54 contract = 220 pass, 0 fail.
+
+**Reviewers**: frontend-flow (PASS), test-coverage (PARTIAL PASS — non-blocking, runtime negative tests beyond source-grep scope), governance (PASS), lesson-m (PASS).
+
+**Browser smoke**: Search → click row → URL `/v2/proforma?batch_id=SHIPMENT_4218922912_2026-05_9040dd39` → 5 drafts loaded → "No batch selected" GONE. Zero console errors, zero write requests.
+
+**Remaining residual**: MOCK banner false positive on search page (pre-existing, separate cleanup campaign).
+
+---
 
 ## PR #491 — M6 Cross-Batch Proforma Search: DB Layer + Indexes (2026-06-07, MERGED)
 
