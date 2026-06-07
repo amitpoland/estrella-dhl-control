@@ -392,6 +392,14 @@
     getCarrierStatus: () =>
       _get(`${BASE}/carrier/status`),
 
+    // ── Dashboard — read ────────────────────────────────────────────
+
+    // GET /api/v1/dashboard/batches
+    // Returns { ok, data: [...batch summaries] }
+    // Each batch summary has 32+ fields from routes_dashboard._batch_summary().
+    listBatches: () =>
+      _get(`${BASE}/dashboard/batches`),
+
     // GET /auth/users  (requires admin cookie)
     // Returns [{id, full_name, email, role, is_active, ...}]
     listUsers: () =>

@@ -30,7 +30,11 @@
 //   Operations page. All hardcoded CARRIERS/WEBHOOKS/SESSIONS/AUDIT/AVAILABLE_NEW
 //   removed. Live data from GET /api/v1/carriers-config/ and GET /api/v1/carrier/status.
 //   Audit tab wired to GET /api/v1/master/audit/?entity=carriers_config.
-const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers'];
+// Sprint 40 (2026-06-07): 'dashboard' added — DashboardKanban wired to live
+//   GET /api/v1/dashboard/batches. All 15 fake PIPELINE_SHIPMENTS removed. 6 PZ
+//   workflow lanes from V1 production (new→docs→customs→ready→booked→done).
+//   KPIs derived from live batch data. Status mappers ported from V1.
+const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;
