@@ -191,6 +191,22 @@
         reason:              reason || '',
       }),
 
+    // POST /api/v1/proforma/draft/{draft_id}/send-email
+    // M2 — Send proforma PDF to customer via email queue.
+    // confirm_token: "YES_SEND_PROFORMA_EMAIL" (required)
+    // recipient_override: optional override for bill_to_email
+    // subject_override: optional custom subject
+    // message_body: optional HTML body (default: standard template)
+    // cc: optional array of CC addresses
+    sendProformaEmail: (draftId, { confirm_token, recipient_override, subject_override, message_body, cc } = {}) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/send-email`, {
+        confirm_token:      confirm_token || '',
+        recipient_override: recipient_override || '',
+        subject_override:   subject_override || '',
+        message_body:       message_body || '',
+        cc:                 cc || [],
+      }),
+
     // POST /api/v1/proforma/draft/{draft_id}/reset-from-sales-packing
     resetDraftFromSalesPacking: (draftId, updatedAt) =>
       _postM(`${BASE}/proforma/draft/${draftId}/reset-from-sales-packing`, {

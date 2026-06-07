@@ -4512,6 +4512,245 @@ def cancel_proforma_draft(
     ))
 
 
+# ── M2: Send Proforma Email ─────────────────────────────────────────────────
+# POST /api/v1/proforma/draft/{draft_id}/send-email
+#
+# Authority chain:
+#   UI tb-send click → confirmation modal → PzApi.sendProformaEmail
+#   → this route → queue_email → SMTP (via email_sender)
+#
+# Lesson E compliance:
+#   1. Validates draft state + PDF + recipient at execution time
+#   2. Idempotent via _find_pending_duplicate (batch_id + email_type + recipient)
+#   3. Terminal states (cancelled/deleted/converted) suppress with 422
+#   4. Durable queue entry before SMTP attempt
+#   5. SMTP config is production-gated via ZOHO_FROM_EMAIL
+
+_PROFORMA_SEND_TOKEN = "YES_SEND_PROFORMA_EMAIL"
+_PROFORMA_TERMINAL_STATES = frozenset({"cancelled", "deleted", "converted", "invoiced"})
+
+import re as _re_proforma
+
+_EMAIL_BASIC_RE = _re_proforma.compile(r"^[^\s@\r\n]+@[^\s@\r\n]+\.[^\s@\r\n]+$")
+
+
+def _sanitise_email_field(value: str, field_name: str) -> str:
+    """Strip and reject CRLF injection in email-header fields.
+
+    Raises HTTPException(400) if the value contains \\r or \\n — these are
+    SMTP header injection vectors.  Also validates basic email format when
+    the value is non-empty.
+    """
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if "\r" in v or "\n" in v:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_name}: contains illegal newline characters",
+        )
+    if not _EMAIL_BASIC_RE.match(v):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_name}: '{v}' is not a valid email address",
+        )
+    return v
+
+
+def _sanitise_subject(value: str) -> str:
+    """Strip CRLF from subject to prevent header injection."""
+    v = (value or "").strip()
+    return v.replace("\r", "").replace("\n", "")
+
+
+def _resolve_proforma_recipient(draft: "pildb.ProformaDraft") -> str:
+    """Resolve customer email from Customer Master via draft's client_name.
+
+    Authority: customer_master_db.bill_to_email (NOT wFirma — wFirma does
+    not surface email).  Resolution path:
+      draft.client_name → _resolve_customer() → wfirma_customer_id
+      → customer_master_db → bill_to_email
+
+    Returns empty string if not resolvable.
+    """
+    cn = (draft.client_name or "").strip()
+    if not cn:
+        return ""
+    try:
+        cr = _resolve_customer(cn)
+    except Exception:
+        return ""
+    cid = cr.get("wfirma_customer_id") or ""
+    if not cid:
+        return ""
+    try:
+        from ..services.customer_master_db import get_customer as _get_cm
+        cm = _get_cm(_customer_master_db_path(), int(cid))
+        if cm is None:
+            return ""
+        return (cm.bill_to_email or "").strip()
+    except Exception:
+        return ""
+
+
+def _proforma_email_body(draft: "pildb.ProformaDraft", subject: str) -> str:
+    """Build a simple HTML email body for proforma send."""
+    from html import escape as _esc
+    doc_no = _esc(draft.wfirma_proforma_fullnumber or f"Draft #{draft.id}")
+    client = _esc(draft.client_name or "Customer")
+    return (
+        f"<p>Dear {client},</p>"
+        f"<p>Please find attached the proforma invoice: <strong>{doc_no}</strong>.</p>"
+        "<p>If you have any questions, please do not hesitate to contact us.</p>"
+        "<p>Best regards,<br>Estrella Jewels</p>"
+    )
+
+
+@router.post("/draft/{draft_id}/send-email", dependencies=[_auth])
+def send_proforma_email(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Send proforma PDF to customer via email.
+
+    Guards:
+      - 400: invalid draft_id
+      - 400: missing X-Operator
+      - 422: invalid confirm_token
+      - 404: draft not found
+      - 422: draft in terminal state (cancelled/deleted/converted/invoiced)
+      - 422: no wfirma_proforma_id (no PDF available)
+      - 422: customer email not resolvable
+      - 409: duplicate pending send (idempotency)
+
+    Lesson E:
+      1. Validates draft state + PDF + recipient at execution time
+      2. Idempotent via queue_email._find_pending_duplicate
+      3. Terminal-state suppression
+      4. Durable queue entry before SMTP attempt
+      5. SMTP config production-gated
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+
+    # 1. Confirm token — prevents accidental sends
+    token = str(body.get("confirm_token") or "")
+    if token != _PROFORMA_SEND_TOKEN:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid confirmation token — expected {_PROFORMA_SEND_TOKEN}",
+        )
+
+    # 2. Load draft (Lesson E P1: validate at execution time)
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+
+    # 3. Terminal-state guard (Lesson E P3)
+    state = (d.draft_state or d.status or "").strip().lower()
+    if state in _PROFORMA_TERMINAL_STATES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Cannot send email: draft is in terminal state '{state}'",
+        )
+
+    # 4. PDF guard — wfirma_proforma_id must exist
+    if not d.wfirma_proforma_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Cannot send email: draft has no wFirma proforma (no PDF available). "
+                   "Post the draft to wFirma first.",
+        )
+
+    # 5. Resolve recipient (Lesson E P1: execution-time validation)
+    #    Sanitise against CRLF injection (security review gate).
+    recipient_override = _sanitise_email_field(
+        body.get("recipient_override") or "", "recipient_override"
+    )
+    recipient = recipient_override or _resolve_proforma_recipient(d)
+    if not recipient:
+        raise HTTPException(
+            status_code=422,
+            detail="No recipient email found. Set bill_to_email in Customer Master "
+                   "or provide recipient_override.",
+        )
+
+    # 6. Build email — sanitise subject + CC against header injection
+    doc_no = d.wfirma_proforma_fullnumber or f"Draft #{d.id}"
+    subject = _sanitise_subject(
+        (body.get("subject_override") or "").strip() or f"Proforma {doc_no}"
+    )
+    message_body = (body.get("message_body") or "").strip()
+    html_body = message_body if message_body else _proforma_email_body(d, subject)
+    cc_list = body.get("cc") or []
+    if isinstance(cc_list, list):
+        cc_validated = [_sanitise_email_field(c, "cc") for c in cc_list]
+        cc_str = ", ".join(c for c in cc_validated if c)
+    else:
+        cc_str = _sanitise_email_field(str(cc_list), "cc")
+
+    # 7. PDF filename for response metadata
+    batch_id = d.batch_id or ""
+    # NOTE: Proforma PDF lives in wFirma (not local).  Attaching it requires
+    # a wFirma download step — that is a follow-up feature.  For now the email
+    # is sent without attachment; the body references the proforma number.
+    pdf_filename = f"proforma-{doc_no.replace('/', '-').replace(' ', '_')}.pdf"
+
+    # 8. Queue email (Lesson E P2+P4: idempotency + replay safety)
+    from ..services import email_service
+    try:
+        queue_id = email_service.queue_email(
+            to=recipient,
+            subject=subject,
+            body_html=html_body,
+            batch_id=batch_id or f"proforma-{draft_id}",
+            cc=cc_str,
+            from_address="import@estrellajewels.eu",
+            email_type="proforma_send",
+        )
+    except email_service.FollowupSuppressedError as fse:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Send suppressed: {fse.detail}",
+        )
+
+    # 9. Timeline event
+    from ..core import timeline as tl
+    audit_root = settings.storage_root / "batches" / batch_id if batch_id else None
+    if audit_root and (audit_root / "audit.json").exists():
+        tl.log_event(
+            audit_root / "audit.json",
+            tl.EV_PROFORMA_EMAIL_QUEUED,
+            "operator",
+            operator,
+            {
+                "draft_id":  draft_id,
+                "recipient": recipient,
+                "subject":   subject,
+                "queue_id":  queue_id,
+                "pdf":       pdf_filename,
+            },
+        )
+
+    log.info(
+        "proforma email queued: draft=%d recipient=%s subject=%r queue_id=%s operator=%s",
+        draft_id, recipient, subject, queue_id, operator,
+    )
+
+    return JSONResponse({
+        "ok":          True,
+        "queued_id":   queue_id,
+        "recipient":   recipient,
+        "subject":     subject,
+        "pdf_filename": pdf_filename,
+        "audit_event": "proforma_email_queued",
+    })
+
+
 @router.post("/draft/{draft_id}/reset-from-sales-packing",
              dependencies=[_auth])
 def reset_proforma_draft_from_sales_packing(

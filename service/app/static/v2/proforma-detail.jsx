@@ -335,6 +335,170 @@ function CancelDraftModal({ draft, liveDraft, onClose, onSuccess }) {
   );
 }
 
+// ── Send Proforma Email Modal ────────────────────────────────────────────────
+// WIRED: POST /api/v1/proforma/draft/{id}/send-email — uses PzApi.sendProformaEmail
+// M2 — Send proforma PDF to customer via email queue.
+function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSuccess }) {
+  const [loading,    setLoading]    = React.useState(false);
+  const [apiError,   setApiError]   = React.useState(null);
+  const [recipientOverride, setRecipientOverride] = React.useState('');
+  const [subjectOverride,   setSubjectOverride]   = React.useState('');
+  const [result,     setResult]     = React.useState(null);
+
+  const docNo = liveDraft.wfirma_proforma_fullnumber || `Draft #${draft.id}`;
+  const defaultSubject = `Proforma ${docNo}`;
+  const effectiveRecipient = recipientOverride.trim() || recipientEmail || '';
+  const effectiveSubject   = subjectOverride.trim() || defaultSubject;
+
+  const handleSend = () => {
+    if (loading || !effectiveRecipient) return;
+    setLoading(true);
+    setApiError(null);
+    window.PzApi.sendProformaEmail(draft.id, {
+      confirm_token:      'YES_SEND_PROFORMA_EMAIL',
+      recipient_override: recipientOverride.trim() || '',
+      subject_override:   subjectOverride.trim() || '',
+    })
+      .then(r => {
+        if (r && r.ok) {
+          setResult(r);
+          setLoading(false);
+        } else {
+          setApiError((r && r.detail) || (r && r.error) || 'Send failed — check backend logs.');
+          setLoading(false);
+        }
+      })
+      .catch(e => {
+        const msg = (e && e.message) ? e.message : 'Send failed — check backend logs.';
+        setApiError(msg);
+        setLoading(false);
+      });
+  };
+
+  if (result) {
+    return (
+      <div style={{
+        position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px',
+      }} onClick={() => { onSuccess && onSuccess(); onClose(); }} data-testid="send-proforma-modal">
+        <div onClick={e => e.stopPropagation()} style={{
+          background: 'var(--card)', borderRadius: 12, width: 480, maxWidth: '92vw',
+          boxShadow: '0 20px 60px var(--shadow-heavy)',
+        }}>
+          <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--badge-green-text)' }}>✓ Email Queued</div>
+            <button onClick={() => { onSuccess && onSuccess(); onClose(); }} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
+          </div>
+          <div style={{ padding: '20px 24px' }} data-testid="send-proforma-success">
+            <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6 }}>
+              <p>Proforma <strong>{docNo}</strong> has been queued for delivery.</p>
+              <div style={{ marginTop: 12, padding: '12px 14px', background: 'var(--bg-subtle)', borderRadius: 8, fontSize: 12 }}>
+                <div><strong>Recipient:</strong> {result.recipient}</div>
+                <div><strong>Subject:</strong> {result.subject}</div>
+                <div><strong>Queue ID:</strong> <code>{result.queued_id}</code></div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
+              <Btn variant="primary" onClick={() => { onSuccess && onSuccess(); onClose(); }}>Done</Btn>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px',
+    }} onClick={onClose} data-testid="send-proforma-modal">
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--card)', borderRadius: 12, width: 520, maxWidth: '92vw',
+        maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px var(--shadow-heavy)',
+      }}>
+        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>➤ Send Proforma Email</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: '20px 24px' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>
+            Send proforma <strong>{docNo}</strong> as PDF attachment to the customer.
+            The email will be queued and delivered via SMTP.
+          </div>
+
+          {/* Recipient display */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>
+              Recipient {recipientEmail ? '' : '(no email on file — enter manually)'}
+            </label>
+            {recipientEmail ? (
+              <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', borderRadius: 8, fontSize: 13, color: 'var(--text)' }} data-testid="send-proforma-default-recipient">
+                {recipientEmail}
+              </div>
+            ) : null}
+            <input
+              type="email"
+              value={recipientOverride}
+              onChange={e => setRecipientOverride(e.target.value)}
+              placeholder={recipientEmail ? 'Override recipient (optional)' : 'Enter recipient email address'}
+              data-testid="send-proforma-recipient-override"
+              style={{
+                width: '100%', padding: '8px 12px', marginTop: 8,
+                border: '1px solid var(--border)', borderRadius: 8,
+                background: 'var(--bg)', color: 'var(--text)',
+                fontFamily: 'inherit', fontSize: 13,
+              }}
+            />
+          </div>
+
+          {/* Subject */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>
+              Subject
+            </label>
+            <input
+              type="text"
+              value={subjectOverride}
+              onChange={e => setSubjectOverride(e.target.value)}
+              placeholder={defaultSubject}
+              data-testid="send-proforma-subject"
+              style={{
+                width: '100%', padding: '8px 12px',
+                border: '1px solid var(--border)', borderRadius: 8,
+                background: 'var(--bg)', color: 'var(--text)',
+                fontFamily: 'inherit', fontSize: 13,
+              }}
+            />
+          </div>
+
+          {/* Attachment info */}
+          <div style={{ padding: '10px 14px', background: 'var(--bg-subtle)', borderRadius: 8, fontSize: 12, color: 'var(--text-2)', marginBottom: 16 }} data-testid="send-proforma-pdf-info">
+            📎 Attachment: <strong>proforma-{docNo.replace(/\//g, '-').replace(/\s+/g, '_')}.pdf</strong>
+          </div>
+
+          {apiError && (
+            <div style={{ marginTop: 0, marginBottom: 12, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }} data-testid="send-proforma-error">
+              ⚠ {apiError}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
+            <Btn variant="outline" onClick={onClose} disabled={loading}>Cancel</Btn>
+            <Btn
+              variant="primary"
+              disabled={!effectiveRecipient || loading}
+              onClick={handleSend}
+              data-testid="send-proforma-submit"
+            >
+              {loading ? '⏳ Sending…' : '➤ Send Email'}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Prior Invoice History Modal ──────────────────────────────────────────────
 // WIRED: GET /api/v1/ledgers/clients/{contractor_id}/invoice-ledger.json
 // Read-only — no writes.
@@ -470,6 +634,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
   // M7 — Prior Invoice History modal state
   const [showInvoiceHistory, setShowInvoiceHistory] = React.useState(false);
+
+  // M2 — Send Proforma Email modal state
+  const [showSendModal, setShowSendModal] = React.useState(false);
 
   // M5 — Inline Edit mode state
   const [editMode,         setEditMode]          = React.useState(false);
@@ -659,6 +826,17 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const canCancel     = ['draft', 'editing', 'approved', 'post_failed'].includes(draftState);
   // M7 — Prior Invoice History: enabled when wFirma contractor ID is available
   const contractorId  = (cr && cr.wfirma_customer_id) || null;
+  // M2 — Send Email: enabled when posted to wFirma (has PDF) and not in terminal state
+  const hasWfirmaId   = !!(liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id));
+  const sendableStates = ['posted', 'approved', 'ready'];
+  const canSend       = hasWfirmaId && sendableStates.includes(draftState);
+  // M2 — Customer email from Customer Master (bill_to_email)
+  const customerEmail = (cr && cr.customer && cr.customer.bill_to_email) || '';
+  const sendDisabledReason = !hasWfirmaId
+    ? 'Post draft to wFirma first — no PDF available for email'
+    : !sendableStates.includes(draftState)
+      ? `Cannot send in '${draftState}' state`
+      : '';
 
   const blockingReasons = (preview && preview.blocking_reasons) || [];
   const exportBlockers  = (preview && preview.export_blockers)  || [];
@@ -864,8 +1042,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           ⎙ Print
         </TbBtn>
         <TbBtn
-          disabled
-          title="Email send not yet wired to backend"
+          onClick={() => setShowSendModal(true)}
+          disabled={!canSend}
+          title={canSend
+            ? 'Send proforma PDF to customer via email'
+            : (sendDisabledReason || 'Email send not available')}
           data-testid="tb-send"
         >
           ➤ Send
@@ -1074,6 +1255,18 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           contractorId={contractorId}
           contractorName={customer.wfirmaName || customer.name}
           onClose={() => setShowInvoiceHistory(false)}
+        />
+      )}
+      {showSendModal && (
+        <SendProformaModal
+          draft={draft}
+          liveDraft={liveDraft}
+          recipientEmail={customerEmail}
+          onClose={() => setShowSendModal(false)}
+          onSuccess={() => {
+            setShowSendModal(false);
+            draftHook && draftHook.reload && draftHook.reload();
+          }}
         />
       )}
     </div>
@@ -1666,4 +1859,4 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
   );
 }
 
-Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal, CancelDraftModal, PriorInvoiceHistoryModal });
+Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal, CancelDraftModal, PriorInvoiceHistoryModal, SendProformaModal });

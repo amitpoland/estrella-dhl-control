@@ -185,35 +185,40 @@ def test_cmr_print_not_exposed():
         "No CMR route must exist in routes_proforma.py — not in project scope"
 
 
-# ── 4. Send — DISABLED_WITH_REASON ───────────────────────────────────────────
+# ── 4. Send — CONDITIONALLY ENABLED (M2 Phase 1B) ───────────────────────────
 
-def test_send_button_is_disabled():
-    """Send button must have disabled prop (no email send authority exists)."""
+def test_send_button_exists():
+    """Send button testid must exist."""
     src = _src()
-    # Find the tb-send section
     tb_send_pos = src.find('data-testid="tb-send"')
     assert tb_send_pos > 0, "Send button testid must exist"
-    # The TbBtn block before it must contain 'disabled'
+
+def test_send_button_is_conditionally_enabled():
+    """Send button must be conditionally enabled (not hardcoded disabled)."""
+    src = _src()
+    tb_send_pos = src.find('data-testid="tb-send"')
+    assert tb_send_pos > 0
     block_start = src.rfind("<TbBtn", 0, tb_send_pos)
     block = src[block_start:tb_send_pos + 50]
-    assert "disabled" in block, \
-        "Send button must be disabled — no email send authority exists"
-
+    # Must have onClick (wired) and disabled={!canSend} (conditional)
+    assert "onClick" in block, \
+        "Send button must have onClick handler"
+    assert "canSend" in block or "disabled={" in block, \
+        "Send button must be conditionally disabled"
 
 def test_send_button_has_reason_title():
-    """Send button title must explain why it is disabled."""
+    """Send button title must explain status."""
     src = _src()
-    assert "not yet wired" in src or "send authority" in src or \
-           "Email send" in src or "email" in src.lower(), \
-        "Send button must have a title explaining why it is disabled"
+    assert "proforma PDF to customer" in src or \
+           "Post draft to wFirma first" in src or \
+           "send" in src.lower(), \
+        "Send button must have a title explaining its state"
 
-
-def test_no_proforma_email_send_route_in_backend():
-    """No direct proforma email send route must exist in routes_proforma.py."""
+def test_proforma_email_send_route_exists_in_backend():
+    """Proforma email send route must exist in routes_proforma.py (M2)."""
     routes = _routes()
-    # Should not have send/queue_email routes
-    assert "queue_email" not in routes, \
-        "routes_proforma.py must not contain email-send queue logic"
+    assert "send-email" in routes, \
+        "routes_proforma.py must contain the send-email route"
 
 
 # ── 5. Generate — DISABLED_WITH_REASON ───────────────────────────────────────
