@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-07 (PR #483 merged — Write Enablement Phase 1A, proforma safe actions).
 
-**Last-run-at:** 2026-06-07 (PR #491 merged — M6 DB layer). Origin/main HEAD: **adf9435** (PR #491 squash-merge — M6 cross-batch search DB layer + indexes). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 16/16 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M6 Prior Proforma Search (PR 1/3 MERGED — DB layer done, endpoint + UI remaining), M3 CMR PDF (LOW), M4 Document Package (LOW). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration. **M6 PRIOR PROFORMA SEARCH**: PR 1/3 MERGED (DB layer — `search_drafts()` + 7 indexes + 51 tests). Next: PR 2 — `GET /api/v1/proforma/search` endpoint.
+**Last-run-at:** 2026-06-07 (PR #492 merged — M6 API endpoint). Origin/main HEAD: **f8563e3** (PR #492 squash-merge — M6 cross-batch search API endpoint). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 16/16 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M6 Prior Proforma Search (PR 2/3 MERGED — DB layer + API endpoint done, V2 UI remaining), M3 CMR PDF (LOW), M4 Document Package (LOW). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration. **M6 PRIOR PROFORMA SEARCH**: PR 1/3 MERGED (DB layer) + PR 2/3 MERGED (API endpoint). Next: PR 3 — V2 search UI.
 
 ---
 
@@ -78,6 +78,26 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 **Campaign brief**: `.claude/campaigns/m6-proforma-search.md`
 
 **Next**: PR 2 — `GET /api/v1/proforma/search` endpoint in `routes_proforma.py`.
+
+---
+
+## PR #492 — M6 Cross-Batch Proforma Search: API Endpoint (2026-06-07, MERGED)
+
+**Date**: 2026-06-07 (merged to main)
+**PR #492** — `feat(proforma): M6 cross-batch search — API endpoint (PR 2/3)`
+**Merge SHA**: `f8563e3` (squash-merge to `origin/main`)
+**Source branch**: `feature/m6-proforma-search-endpoint`
+**Deploy**: Not yet deployed — requires service restart. No production urgency (no UI calls the endpoint yet).
+
+**What was built**: `GET /api/v1/proforma/search` endpoint in `routes_proforma.py` — read-only cross-batch proforma draft search with 8 filters (client_name, batch_id, wfirma_proforma_id, wfirma_proforma_fullnumber, draft_state, currency, date_from, date_to) plus page/page_size pagination. Compact `_draft_to_search_result` projection (10 fields, no JSON blobs). Auth-guarded via `_auth = Depends(require_api_key)`.
+
+**Authority**: `proforma_drafts` table via `pildb.search_drafts()` (from PR #491). No wFirma calls, no invoice ledger, no email, no mutation.
+
+**Test results**: 51/51 endpoint tests + 51/51 DB layer + 32/32 existing DB + 54/54 V2 contract = 188 pass, 0 fail.
+
+**Reviewers**: backend-safety (PASS), test-coverage (PASS).
+
+**Next**: PR 3 — V2 search UI (`proforma-search.jsx` + navigation integration).
 
 ---
 
