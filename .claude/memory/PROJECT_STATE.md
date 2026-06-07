@@ -4046,21 +4046,24 @@ Group D — Tests (3 new files):
 
 ## Atlas V2 Governance Rule — Future Capability Preservation / Lesson M (2026-06-07)
 
-**Origin**: Operator directive following Atlas V2 Final Closure Audit. Permanent governance rule — applies to ALL future V2 work. Recorded as **Lesson M** in CLAUDE.md Engineering Lessons. (Note: Letter "L" was already assigned to the PowerShell BOM/JSON rule from 2026-05-28.)
+**Origin**: Operator directive following Atlas V2 Final Closure Audit. Permanent governance rule — applies to ALL future V2 work. Recorded as **Lesson M** in CLAUDE.md Engineering Lessons. (Note: Letter "L" was already assigned to the PowerShell BOM/JSON rule from 2026-05-28.) Scope expanded 2026-06-07 to cover the full taxonomy of capability suppression observed across Atlas sprints (not just button deletion — also tab hiding, section removal, static-text replacement, comment relocation, placeholder deletion).
 
-**Rule**: Do not remove UI actions, buttons, menu entries, workflow steps, or operator controls solely because the backend implementation does not yet exist.
+**Rule**: Do not remove, hide, collapse, replace, or silently relocate planned operator-visible capability unless the capability has been formally cancelled and the cancellation is recorded in PROJECT_STATE.md DECISIONS.
 
-**Seven binding requirements**:
+**Scope** — applies to all capability surfaces: buttons, menu items, tabs, panels, sections, workflow actions, and roadmap placeholders.
 
-1. **Keep the control visible** if a feature is planned, documented, or represented by an approved workflow.
-2. **Disable the control** when execution is not yet supported.
-3. **Display the exact reason** the action is unavailable.
+**Eight binding requirements**:
+
+1. **Keep the capability visible** in its current navigation and workflow surface.
+2. **Disable the capability** when execution is not yet supported.
+3. **Display the exact reason** the capability is unavailable.
 4. **Reference the corresponding backend gap**, roadmap item, ADR, or implementation task where applicable.
-5. **Do not replace planned functionality with deletion.**
+5. **Do not replace planned functionality with deletion, static text, or comments.**
 6. **Do not hide roadmap functionality** merely to increase completion percentages or reduce visible gaps.
-7. **Removal is permitted only when**: the feature has been formally cancelled AND the cancellation is recorded in PROJECT_STATE.md DECISIONS, OR architectural authority has moved permanently to another workflow.
+7. **Do not relocate** a capability out of its workflow surface without operator approval and a redirect or equivalent.
+8. **Removal is permitted only when**: the capability has been formally cancelled AND the cancellation is recorded in this DECISIONS section (with date, reason, and the cancelled capability named), OR architectural authority has moved permanently to another workflow.
 
-**Cancellation governance**: Deletion alone is not evidence of cancellation. A control may only be removed when a formal cancellation decision exists in this DECISIONS section with date, reason, and the cancelled feature named.
+**Cancellation governance**: Deletion alone is not evidence of cancellation. A capability may only be removed when a formal cancellation decision exists in this DECISIONS section. Without that record, the capability must remain visible and disabled.
 
 **Five-state UI truth model** — the UI must clearly distinguish:
 - `available` — backend exists, action enabled
@@ -4071,7 +4074,7 @@ Group D — Tests (3 new files):
 
 **Key principle**: Authority-honest does NOT mean feature removal. Authority-honest means clearly distinguishing what is available from what is planned. The UI is a truthful representation of both currently available functionality AND approved future functionality.
 
-**Enforcement**: reviewer-challenge and frontend-flow-reviewer must flag any PR that removes a visible control without a formal cancellation or architectural migration as justification. BACKEND_GAP_REGISTER.md and per-page disabled-reason strings are the evidence chain.
+**Enforcement**: reviewer-challenge and frontend-flow-reviewer must flag any PR that removes, hides, or relocates a visible capability without a formal cancellation or architectural migration as justification. Reject the PR if any of: removing a visible capability because backend is missing; replacing a disabled control with static text; hiding roadmap functionality without cancellation record; deleting placeholders that represent approved future scope. BACKEND_GAP_REGISTER.md and per-page disabled-reason strings are the evidence chain.
 
 ---
 
@@ -4081,6 +4084,21 @@ Group D — Tests (3 new files):
 - **Sprint 38 = Master Data** — 10/12 entities LIVE, Users READ-ONLY, Roles DISABLED. Do not block the page because 2 entities have partial gaps. Remove MOCK after wiring.
 - **Sprint 39 = Carriers** — remains MOCK until multi-carrier API authority exists. Only carrier config CRUD + DHL status can be partially wired. Page keeps MOCK banner.
 - **Source**: Operator directive 2026-06-06, informed by `MOCK_PAGE_AUTHORITY_AUDIT.md` (committed SHA `3b82dd2`).
+
+---
+
+## Post-Atlas V2 Phase Prioritization — Operator Guidance (2026-06-07)
+
+**Context**: Atlas V2 mock-elimination is complete (16/16 WIRED, 757 sprint tests, 0 open PRs, stable production). The biggest remaining architectural question is no longer mock elimination — it is what comes next.
+
+**Three candidate next-phases**:
+1. **Write enablement** — Master Data CRUD, Proforma actions (delete-draft, send-email), wFirma push actions. The operator can already see truth everywhere; the next value comes from safely acting on that truth.
+2. **Accounting / Reports / Admin conversion** — the three remaining nav-reachable MOCK pages (accounting, reports, admin). These are operator-visible but were never in the Sprint 31–43 scope.
+3. **Atlas workflow completion** — operator productivity features, cross-page workflows, guided actions.
+
+**Operator priority**: Write enablement before converting more read-only surfaces. The three MOCK pages (accounting, reports, admin) should not be forgotten but are lower priority than enabling safe operator actions on the 16 already-wired pages.
+
+**Note**: This is a strategic direction, not a sprint plan. Specific sprint sequencing to be determined when work resumes.
 
 ---
 

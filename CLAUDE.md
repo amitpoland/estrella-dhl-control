@@ -273,11 +273,14 @@ backend-safety-reviewer must flag any `FileResponse` /
 `StreamingResponse` for a regenerable file that does not explicitly
 set `Cache-Control: no-store`, and any generator that updates audit
 pointers without an intermediate forbidden-token validation step.
-**Lesson M binds at every V2 page PR and every PR that removes a
-visible control** — reviewer-challenge and frontend-flow-reviewer
-must flag any control removal that lacks a formal cancellation
-recorded in PROJECT_STATE.md DECISIONS. Deletion without
-cancellation documentation is incomplete by Lesson M.
+**Lesson M binds at every V2 page PR and every PR that removes,
+hides, collapses, replaces, or relocates any operator-visible
+capability** (buttons, menu items, tabs, panels, sections, workflow
+actions, roadmap placeholders) — reviewer-challenge and
+frontend-flow-reviewer must flag any capability suppression that
+lacks a formal cancellation recorded in PROJECT_STATE.md DECISIONS.
+Suppression without cancellation documentation is incomplete by
+Lesson M.
 
 ### Lesson A — Test stubs must match real production return shapes (2026-05-13)
 **GATE 1.** Stubs MUST match the real builder return shape; stub authors must read the real function first. Every coordinator/builder PR MUST include a real-builder regression test (no stub) asserting the type contract. Coordinators MUST normalise polymorphic inputs via `_normalise_X`. Post-merge Lesson-A failure → **GATE 4** salvage (SCHEDULED / ISSUE / REJECTED).
@@ -508,27 +511,35 @@ have prevented).
 
 **Reference**: `.claude/memory/engineering_lessons.md` Lesson K; scorecards `2026-05-23-pr303-merge-gate-register-one-refit.md` (DP1 drift), `2026-05-23-pr303-deploy-register-one-pending-adoption.md` (DP2 corrected), `2026-05-23-pr304-merge-gate-pending-adoption-ui.md` (DP3 sustained), `2026-05-23-pr304-deploy-pending-adoption-ui.md` (DP4 sustained).
 
-### Lesson M — UI controls for planned features must not be removed; they must be disabled with explicit reasons (2026-06-07)
+### Lesson M — Planned operator-visible capability must not be removed, hidden, collapsed, replaced, or silently relocated (2026-06-07)
 
-**GATE 1 + reviewer-challenge + frontend-flow-reviewer.** Origin: Atlas V2 Final Closure Audit — operator governance directive following completion of 16/16 WIRED_PAGES mock-elimination program.
+**GATE 1 + reviewer-challenge + frontend-flow-reviewer.** Origin: Atlas V2 Final Closure Audit — operator governance directive following completion of 16/16 WIRED_PAGES mock-elimination program. Scope expanded 2026-06-07 to cover the full taxonomy of capability suppression observed across Atlas sprints.
 
-**Binding rule** — do not remove UI actions, buttons, menu entries, workflow steps, or operator controls solely because the backend implementation does not yet exist. If a feature is planned, documented, or represented by an approved workflow:
+**Binding rule** — do not remove, hide, collapse, replace with static text, move into comments, or silently relocate any planned operator-visible capability solely because the backend implementation does not yet exist. This applies to all capability surfaces: **buttons, menu items, tabs, panels, sections, workflow actions, and roadmap placeholders**. If a capability is planned, documented, or represented by an approved workflow:
 
-1. Keep the control **visible**.
-2. **Disable** the control when execution is not yet supported.
-3. Display the **exact reason** the action is unavailable.
+1. Keep the capability **visible** in its current navigation and workflow surface.
+2. **Disable** the capability when execution is not yet supported.
+3. Display the **exact reason** the capability is unavailable.
 4. **Reference** the corresponding backend gap, roadmap item, ADR, or implementation task.
-5. Do not replace planned functionality with **deletion**.
+5. Do not replace planned functionality with **deletion, static text, or comments**.
 6. Do not hide roadmap functionality merely to increase **completion percentages** or reduce visible gaps.
-7. Removal is permitted **only** when: the feature has been formally cancelled AND the cancellation is recorded in PROJECT_STATE.md, OR architectural authority has moved permanently to another workflow.
+7. Do not **relocate** a capability out of its workflow surface without operator approval and a redirect or equivalent.
+8. Removal is permitted **only** when: the capability has been formally cancelled AND the cancellation is recorded in PROJECT_STATE.md DECISIONS (with date, reason, and the cancelled capability named), OR architectural authority has moved permanently to another workflow.
 
-**Cancellation governance**: Deletion alone is not evidence of cancellation. A control may only be removed when a formal cancellation decision exists in PROJECT_STATE.md DECISIONS section with date, reason, and the cancelled feature named. Without that record, the control must remain visible and disabled.
+**Cancellation governance**: Deletion alone is not evidence of cancellation. A capability may only be removed when a formal cancellation decision exists in PROJECT_STATE.md DECISIONS section. Without that record, the capability must remain visible and disabled.
 
 **Five-state UI truth model** — the UI must clearly distinguish: `available` (backend exists, action enabled), `unavailable` (backend exists but preconditions not met), `planned` (feature in roadmap, no backend yet), `backend-pending` (gap documented, implementation scheduled), `deprecated` (feature formally cancelled or superseded).
 
+**Reviewer enforcement checklist** — before approving any V2 UI change:
+1. Identify every operator-visible capability affected by the PR (buttons, menu items, tabs, panels, sections, workflow actions, roadmap placeholders).
+2. For every removed or hidden capability, classify it: AVAILABLE / UNAVAILABLE / PLANNED / BACKEND-PENDING / DEPRECATED / CANCELLED.
+3. If CANCELLED: verify cancellation is recorded in PROJECT_STATE.md DECISIONS; verify replacement path exists if applicable.
+4. If PLANNED or BACKEND-PENDING: capability must remain visible, may be disabled, must display an explicit reason, must not be removed from navigation or workflow surfaces.
+5. **Reject the PR** if any of: removing a visible capability because backend is missing; replacing a disabled control with static text; hiding roadmap functionality without cancellation record; deleting placeholders that represent approved future scope.
+
 **Key principle**: Authority-honest does NOT mean feature removal. Authority-honest means clearly distinguishing what is available from what is planned. The UI is a truthful representation of both currently available functionality AND approved future functionality.
 
-**Where it binds**: every V2 page PR; every PR that removes a visible control; every frontend-flow-reviewer run; every reviewer-challenge on V2 PRs. A PR that removes a visible control without a formal cancellation or architectural migration justification is incomplete by this lesson. Evidence chain: `BACKEND_GAP_REGISTER.md` and per-page disabled-reason strings.
+**Where it binds**: every V2 page PR; every PR that removes, hides, or relocates a visible capability; every frontend-flow-reviewer run; every reviewer-challenge on V2 PRs. A PR that suppresses a visible capability without a formal cancellation or architectural migration justification is incomplete by this lesson. Evidence chain: `BACKEND_GAP_REGISTER.md` and per-page disabled-reason strings.
 
 **Reference**: Atlas V2 Final Closure Audit (2026-06-07); operator governance directive; PROJECT_STATE.md DECISIONS section.
 
