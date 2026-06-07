@@ -6,7 +6,7 @@
 //
 // Sprint: M6 Prior Proforma Search (PR 3/3 — V2 UI)
 
-function ProformaSearchPage({ onNav }) {
+function ProformaSearchPage({ onNav, onDrillBatch }) {
   const [filters, setFilters] = React.useState({
     client_name: '',
     batch_id: '',
@@ -74,11 +74,8 @@ function ProformaSearchPage({ onNav }) {
   };
 
   const handleRowClick = (row) => {
-    if (row.batch_id && onNav) {
-      // Navigate to the proforma list for this batch
-      const url = '/v2/proforma?batch_id=' + encodeURIComponent(row.batch_id);
-      window.history.pushState({ page: 'proforma' }, '', url);
-      onNav('proforma');
+    if (row.batch_id && onDrillBatch) {
+      onDrillBatch(row.batch_id);
     }
   };
 
