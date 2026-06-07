@@ -481,5 +481,13 @@
       return _get(`${BASE}/master/audit${qs}`);
     },
 
+    // ── Ledger — read ───────────────────────────────────────────────
+
+    // GET /api/v1/ledgers/clients/{contractor_id}/invoice-ledger.json
+    // Returns { ok, data: { contractor, period, invoices_by_currency, ... } }
+    // from and to are YYYY-MM-DD strings (both required by backend)
+    getClientInvoiceLedger: (contractorId, from, to) =>
+      _get(`${BASE}/ledgers/clients/${encodeURIComponent(contractorId)}/invoice-ledger.json?from=${encodeURIComponent(from || '')}&to=${encodeURIComponent(to || '')}`),
+
   });
 })();

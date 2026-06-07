@@ -250,6 +250,211 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
   );
 }
 
+// ── Cancel Draft Modal ────────────────────────────────────────────────────────
+// WIRED: POST /api/v1/proforma/draft/{id}/cancel — uses PzApi.cancelDraft
+function CancelDraftModal({ draft, liveDraft, onClose, onSuccess }) {
+  const [reason,   setReason]   = React.useState('');
+  const [loading,  setLoading]  = React.useState(false);
+  const [apiError, setApiError] = React.useState(null);
+
+  const handleCancel = () => {
+    if (loading || !reason.trim()) return;
+    setLoading(true);
+    setApiError(null);
+    window.PzApi.cancelDraft(draft.id, liveDraft.updated_at || '', reason.trim())
+      .then(r => {
+        if (r && r.ok) {
+          onSuccess && onSuccess();
+        } else {
+          setApiError((r && r.error) || 'Cancel failed — check backend logs.');
+          setLoading(false);
+        }
+      })
+      .catch(e => {
+        setApiError((e && e.message) ? e.message : 'Cancel failed — check backend logs.');
+        setLoading(false);
+      });
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px',
+    }} onClick={onClose} data-testid="cancel-draft-modal">
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--card)', borderRadius: 12, width: 520, maxWidth: '92vw',
+        maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px var(--shadow-heavy)',
+      }}>
+        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>🗑 Cancel Draft</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: '20px 24px' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>
+            This will mark draft <strong>{liveDraft.wfirma_proforma_fullnumber || `#${draft.id}`}</strong> as <code style={{ background: 'var(--bg-subtle)', padding: '1px 5px', borderRadius: 3 }}>cancelled</code>.
+            The draft will remain in the system but will no longer be editable.
+            This action does not delete data from wFirma.
+          </div>
+
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>
+            Cancellation reason (required)
+          </label>
+          <textarea
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder="e.g. Client withdrew order, duplicate draft, incorrect data…"
+            data-testid="cancel-draft-reason"
+            style={{
+              width: '100%', minHeight: 80, padding: '10px 12px',
+              border: '1px solid var(--border)', borderRadius: 8,
+              background: 'var(--bg)', color: 'var(--text)',
+              fontFamily: 'inherit', fontSize: 13, resize: 'vertical',
+            }}
+          />
+
+          {apiError && (
+            <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }} data-testid="cancel-draft-error">
+              ⚠ {apiError}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
+            <Btn variant="outline" onClick={onClose} disabled={loading}>Close</Btn>
+            <Btn
+              variant="danger"
+              disabled={!reason.trim() || loading}
+              onClick={handleCancel}
+              data-testid="cancel-draft-submit"
+            >
+              {loading ? '⏳ Cancelling…' : '🗑 Cancel Draft'}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Prior Invoice History Modal ──────────────────────────────────────────────
+// WIRED: GET /api/v1/ledgers/clients/{contractor_id}/invoice-ledger.json
+// Read-only — no writes.
+function PriorInvoiceHistoryModal({ contractorId, contractorName, onClose }) {
+  const [ledger,   setLedger]   = React.useState(null);
+  const [loading,  setLoading]  = React.useState(true);
+  const [apiError, setApiError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!contractorId) return;
+    // Default window: last 12 months
+    const now  = new Date();
+    const to   = now.toISOString().slice(0, 10);
+    const from = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0, 10);
+    setLoading(true);
+    setApiError(null);
+    window.PzApi.getClientInvoiceLedger(contractorId, from, to)
+      .then(r => {
+        if (r && r.ok) {
+          setLedger(r.data);
+        } else {
+          setApiError((r && r.error) || 'Failed to load invoice ledger');
+        }
+        setLoading(false);
+      })
+      .catch(e => {
+        setApiError((e && e.message) || 'Failed to load invoice ledger');
+        setLoading(false);
+      });
+  }, [contractorId]);
+
+  // Flatten invoices from all currencies into one list
+  const invoices = [];
+  if (ledger && ledger.invoices_by_currency) {
+    Object.entries(ledger.invoices_by_currency).forEach(([cur, list]) => {
+      (list || []).forEach(inv => invoices.push({ ...inv, currency: cur }));
+    });
+  }
+  // Sort by date descending
+  invoices.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px',
+    }} onClick={onClose} data-testid="prior-invoice-modal">
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--card)', borderRadius: 12, width: 780, maxWidth: '95vw',
+        maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px var(--shadow-heavy)',
+      }}>
+        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>Prior Invoice History</div>
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+              wFirma contractor: {contractorName || contractorId} · Last 12 months · Read-only
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: '16px 24px' }}>
+          {loading && (
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }} data-testid="prior-invoice-loading">
+              Loading invoice history from wFirma…
+            </div>
+          )}
+          {apiError && (
+            <div style={{ padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }} data-testid="prior-invoice-error">
+              ⚠ {apiError}
+            </div>
+          )}
+          {!loading && !apiError && invoices.length === 0 && (
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }} data-testid="prior-invoice-empty">
+              No invoices found for this contractor in the last 12 months.
+            </div>
+          )}
+          {!loading && !apiError && invoices.length > 0 && (
+            <div style={{ overflow: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }} data-testid="prior-invoice-table">
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                    {['DATE', 'NUMBER', 'TYPE', 'NET', 'GROSS', 'CUR', 'STATUS'].map(h => (
+                      <th key={h} style={{ padding: '9px 12px', textAlign: h === 'NET' || h === 'GROSS' ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {invoices.map((inv, i) => (
+                    <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                      <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)' }}>{inv.date || '—'}</td>
+                      <td style={{ padding: '10px 12px', fontSize: 12, fontWeight: 600 }}>{inv.fullnumber || inv.number || '—'}</td>
+                      <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--text-2)' }}>{inv.type || '—'}</td>
+                      <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12 }}>{inv.netto != null ? parseFloat(inv.netto).toFixed(2) : '—'}</td>
+                      <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12, fontWeight: 600 }}>{inv.brutto != null ? parseFloat(inv.brutto).toFixed(2) : '—'}</td>
+                      <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--text-3)' }}>{inv.currency || '—'}</td>
+                      <td style={{ padding: '10px 12px', fontSize: 11 }}>
+                        <span style={{
+                          padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700,
+                          background: inv.status === 'paid' ? 'var(--badge-green-bg)' : 'var(--bg-subtle)',
+                          color: inv.status === 'paid' ? 'var(--badge-green-text)' : 'var(--text-3)',
+                          border: `1px solid ${inv.status === 'paid' ? 'var(--badge-green-border)' : 'var(--border)'}`,
+                        }}>
+                          {inv.status || 'issued'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ padding: '12px 0', fontSize: 11, color: 'var(--text-3)', display: 'flex', justifyContent: 'space-between' }}>
+                <span>{invoices.length} invoice{invoices.length !== 1 ? 's' : ''}</span>
+                <span>Source: wFirma invoices/find · Read-only</span>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
@@ -259,6 +464,18 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [showPreview,      setShowPreview]       = React.useState(false);
   const [previewVariant,   setPreviewVariant]    = React.useState('classic');
   const [previewDocType,   setPreviewDocType]    = React.useState('proforma');
+
+  // M1a — Cancel Draft modal state
+  const [showCancelModal,  setShowCancelModal]   = React.useState(false);
+
+  // M7 — Prior Invoice History modal state
+  const [showInvoiceHistory, setShowInvoiceHistory] = React.useState(false);
+
+  // M5 — Inline Edit mode state
+  const [editMode,         setEditMode]          = React.useState(false);
+  const [editFields,       setEditFields]        = React.useState({});
+  const [editSaving,       setEditSaving]        = React.useState(false);
+  const [editError,        setEditError]         = React.useState(null);
 
   // WIRED: fetch full draft detail (GET /api/v1/proforma/draft/{id})
   const draftHook = window.PzState.useDraft(draft && draft.id);
@@ -436,6 +653,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const alreadyPosted = draftState === 'posted' || draftState === 'invoiced';
   const canPrint      = !!(liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id));
 
+  // M5 — Edit mode: enabled when draft is in an editable state
+  const canEdit       = ['draft', 'editing', 'post_failed'].includes(draftState);
+  // M1a — Cancel: enabled when draft is in a cancellable state and not already cancelled
+  const canCancel     = ['draft', 'editing', 'approved', 'post_failed'].includes(draftState);
+  // M7 — Prior Invoice History: enabled when wFirma contractor ID is available
+  const contractorId  = (cr && cr.wfirma_customer_id) || null;
+
   const blockingReasons = (preview && preview.blocking_reasons) || [];
   const exportBlockers  = (preview && preview.export_blockers)  || [];
   const vatResolution   = disclosure && disclosure.vat_resolution;
@@ -462,6 +686,70 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       .catch(() => setCloning(false));
   };
 
+  // M5 — Edit mode handlers
+  const handleEnterEdit = () => {
+    if (!canEdit) return;
+    setEditFields({
+      remarks:       liveDraft.remarks || '',
+      payment_terms: typeof liveDraft.payment_terms === 'object'
+        ? JSON.stringify(liveDraft.payment_terms) : (liveDraft.payment_terms || ''),
+      currency:      liveDraft.currency || 'EUR',
+      exchange_rate: liveDraft.exchange_rate || '',
+      incoterm:      liveDraft.incoterm || '',
+    });
+    setEditError(null);
+    setEditMode(true);
+  };
+  const handleCancelEdit = () => {
+    setEditMode(false);
+    setEditFields({});
+    setEditError(null);
+  };
+  const handleSaveEdit = () => {
+    if (editSaving) return;
+    setEditSaving(true);
+    setEditError(null);
+    // Build patch from changed fields only
+    const patch = {};
+    if (editFields.remarks !== (liveDraft.remarks || ''))
+      patch.remarks = editFields.remarks;
+    if (editFields.currency !== (liveDraft.currency || 'EUR'))
+      patch.currency = editFields.currency;
+    if (editFields.exchange_rate !== (liveDraft.exchange_rate || ''))
+      patch.exchange_rate = editFields.exchange_rate;
+    if (editFields.incoterm !== (liveDraft.incoterm || ''))
+      patch.incoterm = editFields.incoterm;
+    // payment_terms: try to parse as JSON object, fallback to string
+    const origPt = typeof liveDraft.payment_terms === 'object'
+      ? JSON.stringify(liveDraft.payment_terms) : (liveDraft.payment_terms || '');
+    if (editFields.payment_terms !== origPt) {
+      let ptVal = editFields.payment_terms;
+      try { ptVal = JSON.parse(ptVal); } catch (_) { /* keep as string */ }
+      patch.payment_terms = ptVal;
+    }
+    if (Object.keys(patch).length === 0) {
+      // No changes
+      setEditSaving(false);
+      setEditMode(false);
+      return;
+    }
+    window.PzApi.patchDraft(draft.id, patch, liveDraft.updated_at || '')
+      .then(r => {
+        setEditSaving(false);
+        if (r && r.ok) {
+          setEditMode(false);
+          setEditFields({});
+          draftHook && draftHook.reload && draftHook.reload();
+        } else {
+          setEditError((r && r.error) || 'Save failed — check backend logs.');
+        }
+      })
+      .catch(e => {
+        setEditSaving(false);
+        setEditError((e && e.message) || 'Save failed — check backend logs.');
+      });
+  };
+
   return (
     <div data-testid="proforma-detail-root" style={{ flex: 1, overflowY: 'auto', background: 'var(--bg)', padding: '20px 24px 60px' }}>
 
@@ -473,19 +761,46 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       }}>
 
         {/* Group 1 — CRUD */}
+        {editMode ? (
+          <React.Fragment>
+            <TbBtn
+              onClick={handleSaveEdit}
+              disabled={editSaving}
+              title="Save changes to draft header fields"
+              data-testid="tb-edit-save"
+            >
+              {editSaving ? '⏳ Saving…' : '✓ Save'}
+            </TbBtn>
+            <TbBtn
+              onClick={handleCancelEdit}
+              disabled={editSaving}
+              title="Discard changes and exit edit mode"
+              data-testid="tb-edit-cancel"
+            >
+              ✕ Cancel Edit
+            </TbBtn>
+          </React.Fragment>
+        ) : (
+          <TbBtn
+            onClick={handleEnterEdit}
+            disabled={!canEdit}
+            title={canEdit
+              ? 'Edit draft header fields (remarks, currency, payment terms, exchange rate)'
+              : (draftState === 'cancelled' ? 'Draft is cancelled — cannot edit' : 'Draft cannot be edited in current state')}
+            data-testid="tb-edit"
+          >
+            ✎ Edit
+          </TbBtn>
+        )}
         <TbBtn
-          disabled
-          title="Inline editing not yet available — edit lines individually on the Lines tab"
-          data-testid="tb-edit"
-        >
-          ✎ Edit
-        </TbBtn>
-        <TbBtn
-          disabled
-          title="No delete-draft endpoint available"
+          onClick={() => canCancel && setShowCancelModal(true)}
+          disabled={!canCancel}
+          title={canCancel
+            ? 'Cancel this draft — soft-cancel, no data deleted'
+            : (draftState === 'cancelled' ? 'Already cancelled' : 'Cannot cancel in current state')}
           data-testid="tb-delete"
         >
-          🗑 Delete
+          🗑 Cancel Draft
         </TbBtn>
         <TbBtn
           onClick={handleDuplicate}
@@ -561,6 +876,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           data-testid="tb-generate"
         >
           ⚙ Generate ▾
+        </TbBtn>
+
+        <TbSep />
+
+        {/* Group 4 — History / Intelligence */}
+        <TbBtn
+          onClick={() => contractorId && setShowInvoiceHistory(true)}
+          disabled={!contractorId}
+          title={contractorId
+            ? 'View prior invoice history from wFirma for this customer'
+            : 'Backend/customer mapping pending: wFirma contractor ID missing'}
+          data-testid="tb-invoice-history"
+        >
+          📋 Prior Invoices
         </TbBtn>
         <TbBtn
           disabled
@@ -671,6 +1000,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             vatResolution={vatResolution}
             blockingReasons={blockingReasons}
             exportBlockers={exportBlockers}
+            editMode={editMode}
+            editFields={editFields}
+            onEditField={(k, v) => setEditFields(prev => ({ ...prev, [k]: v }))}
+            editError={editError}
           />
         )}
         {activeTab === 'lines' && <ProformaLinesTab lines={lines} />}
@@ -725,17 +1058,90 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           onClose={() => setShowPreview(false)}
         />
       )}
+      {showCancelModal && (
+        <CancelDraftModal
+          draft={draft}
+          liveDraft={liveDraft}
+          onClose={() => setShowCancelModal(false)}
+          onSuccess={() => {
+            setShowCancelModal(false);
+            draftHook && draftHook.reload && draftHook.reload();
+          }}
+        />
+      )}
+      {showInvoiceHistory && contractorId && (
+        <PriorInvoiceHistoryModal
+          contractorId={contractorId}
+          contractorName={customer.wfirmaName || customer.name}
+          onClose={() => setShowInvoiceHistory(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Editable field input ─────────────────────────────────────────────────────
+function EditableKvItem({ k, value, onChange, type }) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 3, fontWeight: 500 }}>{k}</div>
+      {type === 'textarea' ? (
+        <textarea
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          data-testid={`edit-field-${k.toLowerCase().replace(/\s+/g, '-')}`}
+          style={{
+            width: '100%', minHeight: 60, padding: '6px 8px',
+            border: '2px solid var(--accent)', borderRadius: 6,
+            background: 'var(--bg)', color: 'var(--text)',
+            fontFamily: 'inherit', fontSize: 13, resize: 'vertical',
+          }}
+        />
+      ) : (
+        <input
+          type={type || 'text'}
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          data-testid={`edit-field-${k.toLowerCase().replace(/\s+/g, '-')}`}
+          style={{
+            width: '100%', padding: '6px 8px',
+            border: '2px solid var(--accent)', borderRadius: 6,
+            background: 'var(--bg)', color: 'var(--text)',
+            fontFamily: 'inherit', fontSize: 13, fontWeight: 700,
+          }}
+        />
+      )}
     </div>
   );
 }
 
 // ── Overview tab ──────────────────────────────────────────────────────────────
-function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingReasons, exportBlockers }) {
+function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingReasons, exportBlockers, editMode, editFields, onEditField, editError }) {
   const totalEur = lines.reduce((s, l) => s + l.netEur, 0);
   const currency = detail.currency || 'EUR';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+      {/* Edit mode banner */}
+      {editMode && (
+        <div style={{ padding: '10px 14px', background: 'var(--badge-green-bg)', border: '2px solid var(--accent)', borderRadius: 6 }} data-testid="edit-mode-banner">
+          <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--accent)' }}>
+            ✎ Edit Mode — Modify header fields below and click Save in the toolbar
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 4 }}>
+            Uses PATCH /api/v1/proforma/draft/{'{id}'} with optimistic locking (expected_updated_at).
+            Line items are edited individually on the Lines tab.
+          </div>
+        </div>
+      )}
+
+      {/* Edit error banner */}
+      {editError && (
+        <div style={{ padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6 }} data-testid="edit-error-banner">
+          <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--badge-red-text)' }}>⚠ {editError}</div>
+        </div>
+      )}
 
       {/* Alert banners */}
       {blockingReasons.length > 0 && (
@@ -752,11 +1158,15 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
       )}
 
       {/* KV grid — 4 columns, all values from backend authority */}
+      {/* In edit mode: editable fields for remarks, currency, exchange_rate, payment_terms */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px 28px' }}>
         <KvItem k="Number" v={detail.wfirma_proforma_fullnumber} mono />
         <KvItem k="Shipment" v={detail.batch_id} mono />
         <KvItem k="KSeF" v={detail.ksef_number} muted={!detail.ksef_number} />
-        <KvItem k="Payment method" v={detail.paymentTerms} />
+        {editMode
+          ? <EditableKvItem k="Payment terms" value={editFields.payment_terms || ''} onChange={v => onEditField('payment_terms', v)} />
+          : <KvItem k="Payment method" v={detail.paymentTerms} />
+        }
 
         <KvItem k="Issue date" v={detail.created_at ? detail.created_at.slice(0, 10) : null} mono />
         <KvItem k="Payment due" v={detail.payment_due_date} mono />
@@ -766,16 +1176,29 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
         <KvItem k="Amount due" v={`${totalEur.toFixed(2)} ${currency}`} />
         <KvItem k="Accounting scheme" v={detail.accounting_scheme || 'Standard'} />
         <KvItem k="JPK codes" v={detail.jpk_codes || 'none'} muted={!detail.jpk_codes} />
-        <KvItem
-          k={`Total · FX ${fxRate ? fxRate.toFixed(4) : '—'} PLN`}
-          v={`${totalEur.toFixed(2)} ${currency}`}
-        />
+        {editMode
+          ? <EditableKvItem k="Exchange rate" value={editFields.exchange_rate || ''} onChange={v => onEditField('exchange_rate', v)} />
+          : <KvItem
+              k={`Total · FX ${fxRate ? fxRate.toFixed(4) : '—'} PLN`}
+              v={`${totalEur.toFixed(2)} ${currency}`}
+            />
+        }
 
         <KvItem k="Warehouse" v={detail.warehouse || 'Main'} />
         <KvItem k="wFirma proforma ID" v={detail.wfirma_proforma_id} mono />
         <KvItem k="wFirma invoice ID" v={detail.wfirma_invoice_id} mono />
-        <KvItem k="Source" v={detail.clone_source || detail.source_description || detail.source || '—'} />
+        {editMode
+          ? <EditableKvItem k="Currency" value={editFields.currency || ''} onChange={v => onEditField('currency', v)} />
+          : <KvItem k="Source" v={detail.clone_source || detail.source_description || detail.source || '—'} />
+        }
       </div>
+
+      {/* Editable remarks (only in edit mode) */}
+      {editMode && (
+        <div data-testid="edit-remarks-section">
+          <EditableKvItem k="Remarks" value={editFields.remarks || ''} onChange={v => onEditField('remarks', v)} type="textarea" />
+        </div>
+      )}
 
       {/* VAT resolution (from disclose-post) */}
       {vatResolution && (
@@ -1243,4 +1666,4 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
   );
 }
 
-Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal });
+Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal, CancelDraftModal, PriorInvoiceHistoryModal });
