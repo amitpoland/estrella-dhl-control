@@ -1,161 +1,456 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// API Status — consolidated single page replacing scattered API health
-// surfaces across Diagnostics / Carriers / Admin / module footers.
+// API Status — Integration Health Board (Sprint 41: authority-honest)
 //
-// Sections:
-//   1. KPI strip
-//   2. Integration cards grid (carriers, wFirma, customs, internal, webhooks)
-//   3. Endpoint registry — every API call in the system, searchable
-//   4. Recent errors panel
-//   5. Incidents log
+// Replaces 100% MOCK multi-carrier API gateway dashboard with live
+// subsystem health derived from 12 real backend endpoints.
 //
-// Backend hooks (all stubbed):
-//   GET /api/v1/admin/api-status            — aggregated health
-//   GET /api/v1/admin/api-status/endpoints  — endpoint registry
-//   GET /api/v1/admin/api-status/errors     — recent errors
-//   GET /api/v1/admin/api-status/incidents  — incident log
-//   POST /api/v1/admin/api-status/{id}/test — synthetic probe
+// Authority sources (all read-only, zero new backend routes):
+//   GET /api/v1/debug/health-full            — 12-dim Guardian diagnostic
+//   GET /api/v1/debug/pending                — bot pipeline + recent errors
+//   GET /api/v1/debug/storage/health         — storage health snapshot
+//   GET /api/v1/pz/health                    — PZ engine status
+//   GET /api/v1/dhl/auto-scan-status         — DHL inbox scanner
+//   GET /api/v1/dhl/daily-summary            — DHL ops report
+//   GET /api/v1/dhl/followup-automation/status — follow-up SLA card
+//   GET /api/v1/carrier/status               — carrier gate flags
+//   GET /api/v1/carriers-config/             — carrier config registry
+//   GET /api/v1/wfirma/capabilities          — wFirma capability map
+//   GET /api/v1/admin/email-queue            — email queue (admin)
+//   GET /api/v1/intelligence/status          — intelligence engine
+//
+// Sprint 41: DELETE all 4 fake arrays (API_INTEGRATIONS, API_ENDPOINT_REGISTRY,
+// RECENT_ERRORS, INCIDENTS). DELETE fake carriers (FedEx/UPS/GLS/InPost/DPD).
+// DELETE fake latency/call-count/incident metrics.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const API_INTEGRATIONS = [
-  // ── Carriers ───────────────────────────────────────────────────
-  { id: 'dhl-express', name: 'DHL Express',    group: 'Carriers',     state: 'healthy',     endpoints: 14, successPct: 99.7, latencyMs: 312, calls24h: 4218, lastError: null,                                                lastCall: '2026-05-11 09:42:14' },
-  { id: 'fedex',       name: 'FedEx',           group: 'Carriers',     state: 'healthy',     endpoints: 11, successPct: 99.2, latencyMs: 411, calls24h: 712,  lastError: null,                                                lastCall: '2026-05-11 09:38:02' },
-  { id: 'ups',         name: 'UPS',             group: 'Carriers',     state: 'pending',     endpoints: 9,  successPct: 0,    latencyMs: null,calls24h: 0,    lastError: 'OAuth not completed',                              lastCall: '—' },
-  { id: 'gls',         name: 'GLS',             group: 'Carriers',     state: 'disconnected',endpoints: 7,  successPct: 0,    latencyMs: null,calls24h: 0,    lastError: 'Carrier disconnected by operator',                  lastCall: '2026-04-22 14:01:00' },
-  { id: 'inpost',      name: 'InPost',          group: 'Carriers',     state: 'configured',  endpoints: 5,  successPct: 100,  latencyMs: 184, calls24h: 12,   lastError: null,                                                lastCall: '2026-05-09 11:24:00' },
-  { id: 'dpd',         name: 'DPD',             group: 'Carriers',     state: 'error',       endpoints: 6,  successPct: 0,    latencyMs: null,calls24h: 0,    lastError: 'AUTH_401 — token rejected',                         lastCall: '2026-05-10 22:17:44' },
+// ── Shared components (exported by carriers-page.jsx, loaded first) ─────────
+const CarrierKpi = window.CarrierKpi;
 
-  // ── Accounting / Tax ───────────────────────────────────────────
-  { id: 'wfirma',      name: 'wFirma',          group: 'Accounting',   state: 'healthy',     endpoints: 23, successPct: 99.8, latencyMs: 280, calls24h: 1820, lastError: null,                                                lastCall: '2026-05-11 09:41:00' },
-  { id: 'fx',          name: 'FX Rates',        group: 'Accounting',   state: 'healthy',     endpoints: 3,  successPct: 100,  latencyMs: 92,  calls24h: 24,   lastError: null,                                                lastCall: '2026-05-11 06:00:00' },
-
-  // ── Customs / Government ────────────────────────────────────────
-  { id: 'sad',         name: 'SAD (PUESC)',     group: 'Customs',      state: 'healthy',     endpoints: 8,  successPct: 98.4, latencyMs: 1812,calls24h: 64,   lastError: 'Timeout on /sad/declarations/lookup (last 18h ago)',lastCall: '2026-05-11 08:14:22' },
-  { id: 'zc429',       name: 'ZC429 (Customs)', group: 'Customs',      state: 'degraded',    endpoints: 5,  successPct: 87.1, latencyMs: 2240,calls24h: 31,   lastError: 'Intermittent 502 from PUESC (3 in last hr)',         lastCall: '2026-05-11 09:11:08' },
-
-  // ── Internal services ──────────────────────────────────────────
-  { id: 'cowork',      name: 'Cowork Engine',   group: 'Internal',     state: 'healthy',     endpoints: 17, successPct: 99.9, latencyMs: 142, calls24h: 8412, lastError: null,                                                lastCall: '2026-05-11 09:42:54' },
-  { id: 'aibridge',    name: 'AI Bridge',       group: 'Internal',     state: 'healthy',     endpoints: 12, successPct: 99.4, latencyMs: 1842,calls24h: 412,  lastError: null,                                                lastCall: '2026-05-11 09:40:11' },
-  { id: 'storage',     name: 'Storage',         group: 'Internal',     state: 'healthy',     endpoints: 9,  successPct: 100,  latencyMs: 38,  calls24h: 32844,lastError: null,                                                lastCall: '2026-05-11 09:43:01' },
-  { id: 'ocr',         name: 'OCR / Parser',    group: 'Internal',     state: 'healthy',     endpoints: 6,  successPct: 96.2, latencyMs: 3210,calls24h: 184,  lastError: 'Low-confidence parse on 2 invoices (queued)',        lastCall: '2026-05-11 09:39:48' },
-  { id: 'smtp',        name: 'SMTP / Mailer',   group: 'Internal',     state: 'healthy',     endpoints: 4,  successPct: 99.9, latencyMs: 412, calls24h: 287,  lastError: null,                                                lastCall: '2026-05-11 09:42:00' },
-  { id: 'imap',        name: 'IMAP (Inbound)',  group: 'Internal',     state: 'healthy',     endpoints: 3,  successPct: 100,  latencyMs: 218, calls24h: 412,  lastError: null,                                                lastCall: '2026-05-11 09:42:30' },
-
-  // ── Webhooks ───────────────────────────────────────────────────
-  { id: 'webhooks',    name: 'Webhook Ingest',  group: 'Webhooks',     state: 'healthy',     endpoints: 28, successPct: 99.6, latencyMs: 88,  calls24h: 4124, lastError: null,                                                lastCall: '2026-05-11 09:42:58' },
+// ── Subsystem definitions ───────────────────────────────────────────────────
+// Each entry maps to one real backend endpoint.
+const SUBSYSTEMS = [
+  { id: 'pz-engine',     name: 'PZ Engine',           group: 'Core',       fetch: () => PzApi.getPzHealth() },
+  { id: 'health-full',   name: 'System Health',       group: 'Core',       fetch: () => PzApi.getHealthFull() },
+  { id: 'storage',       name: 'Storage',             group: 'Core',       fetch: () => PzApi.getStorageHealth() },
+  { id: 'dhl-scanner',   name: 'DHL Inbox Scanner',   group: 'DHL',        fetch: () => PzApi.getDhlAutoScanStatus() },
+  { id: 'dhl-ops',       name: 'DHL Operations',      group: 'DHL',        fetch: () => PzApi.getDhlDailySummary() },
+  { id: 'dhl-followup',  name: 'DHL Follow-up SLA',   group: 'DHL',        fetch: () => PzApi.getDhlFollowupStatus() },
+  { id: 'carrier-gate',  name: 'Carrier Gate',        group: 'Carrier',    fetch: () => PzApi.getCarrierStatus() },
+  { id: 'carrier-config',name: 'Carrier Config',      group: 'Carrier',    fetch: () => PzApi.listCarriersConfig() },
+  { id: 'wfirma',        name: 'wFirma',              group: 'Accounting', fetch: () => PzApi.getWfirmaCapabilities() },
+  { id: 'email-queue',   name: 'Email Queue',         group: 'Comms',      fetch: () => PzApi.getEmailQueue() },
+  { id: 'intelligence',  name: 'Intelligence Engine', group: 'AI',         fetch: () => PzApi.getIntelligenceStatus() },
+  { id: 'bot-pipeline',  name: 'Bot Pipeline',        group: 'Comms',      fetch: () => PzApi.getDebugPending() },
 ];
 
-const API_ENDPOINT_REGISTRY = [
-  // (group, method, path, integration, auth, rateLimit, calls24h, p95ms, status, lastError)
-  { g: 'Carriers',  m: 'POST', p: '/api/v1/carriers/dhl/shipments',         i: 'DHL Express', a: 'API Key + Site ID',        rl: '60/min',  c: 412, l: 318,  s: 'healthy',  e: null },
-  { g: 'Carriers',  m: 'GET',  p: '/api/v1/carriers/dhl/tracking/{awb}',    i: 'DHL Express', a: 'API Key',                  rl: '300/min', c: 3018,l: 142,  s: 'healthy',  e: null },
-  { g: 'Carriers',  m: 'POST', p: '/api/v1/carriers/dhl/labels',            i: 'DHL Express', a: 'API Key',                  rl: '30/min',  c: 412, l: 380,  s: 'healthy',  e: null },
-  { g: 'Carriers',  m: 'POST', p: '/api/v1/carriers/fedex/oauth/token',     i: 'FedEx',       a: 'Client Credentials',       rl: '—',       c: 8,   l: 411,  s: 'healthy',  e: null },
-  { g: 'Carriers',  m: 'POST', p: '/api/v1/carriers/fedex/ship',            i: 'FedEx',       a: 'Bearer',                   rl: '60/min',  c: 27,  l: 514,  s: 'healthy',  e: null },
-  { g: 'Carriers',  m: 'POST', p: '/api/v1/carriers/fedex/track',           i: 'FedEx',       a: 'Bearer',                   rl: '120/min', c: 612, l: 218,  s: 'healthy',  e: null },
-  { g: 'Carriers',  m: 'POST', p: '/api/v1/carriers/ups/oauth/authorize',   i: 'UPS',         a: 'OAuth2 Code',              rl: '—',       c: 0,   l: null, s: 'pending',  e: 'awaiting operator callback' },
-  { g: 'Carriers',  m: 'POST', p: '/api/v1/carriers/inpost/shipments',      i: 'InPost',      a: 'Bearer',                   rl: '20/min',  c: 12,  l: 184,  s: 'healthy',  e: null },
-  { g: 'Carriers',  m: 'POST', p: '/api/v1/carriers/gls/parcels',           i: 'GLS',         a: 'API Key',                  rl: '40/min',  c: 0,   l: null, s: 'disconnected', e: 'carrier disconnected' },
-  { g: 'Carriers',  m: 'POST', p: '/api/v1/carriers/dpd/auth',              i: 'DPD',         a: 'Username + PW',            rl: '—',       c: 0,   l: null, s: 'error',    e: 'AUTH_401 — token rejected' },
-  { g: 'Accounting',m: 'POST', p: '/api/v1/wfirma/invoices/add',            i: 'wFirma',      a: 'AccessKey',                rl: '120/min', c: 142, l: 280,  s: 'healthy',  e: null },
-  { g: 'Accounting',m: 'GET',  p: '/api/v1/wfirma/invoices/{id}',           i: 'wFirma',      a: 'AccessKey',                rl: '300/min', c: 412, l: 188,  s: 'healthy',  e: null },
-  { g: 'Accounting',m: 'POST', p: '/api/v1/wfirma/contractors/add',         i: 'wFirma',      a: 'AccessKey',                rl: '60/min',  c: 21,  l: 312,  s: 'healthy',  e: null },
-  { g: 'Accounting',m: 'POST', p: '/api/v1/wfirma/goods/add',               i: 'wFirma',      a: 'AccessKey',                rl: '120/min', c: 84,  l: 314,  s: 'healthy',  e: null },
-  { g: 'Accounting',m: 'POST', p: '/api/v1/proforma/draft/{id}/post',       i: 'wFirma',      a: 'Server token',             rl: '20/min',  c: 12,  l: 642,  s: 'healthy',  e: null },
-  { g: 'Customs',   m: 'POST', p: '/api/v1/customs/sad/declarations/add',   i: 'SAD (PUESC)', a: 'mTLS + Cert',              rl: '20/min',  c: 18,  l: 1812, s: 'healthy',  e: null },
-  { g: 'Customs',   m: 'GET',  p: '/api/v1/customs/sad/declarations/{mrn}', i: 'SAD (PUESC)', a: 'mTLS',                     rl: '60/min',  c: 46,  l: 1280, s: 'healthy',  e: null },
-  { g: 'Customs',   m: 'POST', p: '/api/v1/customs/zc429/notice',           i: 'ZC429',       a: 'mTLS',                     rl: '20/min',  c: 31,  l: 2240, s: 'degraded', e: 'Intermittent 502 from PUESC' },
-  { g: 'Internal',  m: 'POST', p: '/api/v1/cowork/tasks',                   i: 'Cowork',      a: 'JWT',                      rl: '600/min', c: 412, l: 142,  s: 'healthy',  e: null },
-  { g: 'Internal',  m: 'GET',  p: '/api/v1/cowork/tasks/{id}',              i: 'Cowork',      a: 'JWT',                      rl: '1200/min',c: 8000,l: 78,   s: 'healthy',  e: null },
-  { g: 'Internal',  m: 'POST', p: '/api/v1/ai-bridge/complete',             i: 'AI Bridge',   a: 'JWT',                      rl: '60/min',  c: 412, l: 1842, s: 'healthy',  e: null },
-  { g: 'Internal',  m: 'POST', p: '/api/v1/ocr/parse',                      i: 'OCR',         a: 'JWT',                      rl: '120/min', c: 184, l: 3210, s: 'healthy',  e: null },
-  { g: 'Internal',  m: 'POST', p: '/api/v1/documents/{type}',               i: 'Storage',     a: 'JWT',                      rl: '300/min', c: 822, l: 42,   s: 'healthy',  e: null },
-  { g: 'Internal',  m: 'PATCH',p: '/api/v1/documents/{id}',                 i: 'Storage',     a: 'JWT',                      rl: '300/min', c: 412, l: 38,   s: 'healthy',  e: null },
-  { g: 'Internal',  m: 'DELETE',p:'/api/v1/documents/{id}',                 i: 'Storage',     a: 'JWT',                      rl: '60/min',  c: 18,  l: 41,   s: 'healthy',  e: null },
-  { g: 'Internal',  m: 'GET',  p: '/api/v1/documents/{id}/download',        i: 'Storage',     a: 'JWT',                      rl: '600/min', c: 2418,l: 28,   s: 'healthy',  e: null },
-  { g: 'Webhooks',  m: 'POST', p: '/webhooks/carriers/dhl/tracking',        i: 'Webhook',     a: 'HMAC',                     rl: '∞',       c: 3018,l: 88,   s: 'healthy',  e: null },
-  { g: 'Webhooks',  m: 'POST', p: '/webhooks/carriers/fedex/track',         i: 'Webhook',     a: 'HMAC',                     rl: '∞',       c: 612, l: 92,   s: 'healthy',  e: null },
-  { g: 'Webhooks',  m: 'POST', p: '/webhooks/customs/sad/status',           i: 'Webhook',     a: 'HMAC',                     rl: '∞',       c: 31,  l: 102,  s: 'healthy',  e: null },
-  { g: 'Webhooks',  m: 'POST', p: '/webhooks/wfirma/invoice/issued',        i: 'Webhook',     a: 'HMAC',                     rl: '∞',       c: 142, l: 71,   s: 'healthy',  e: null },
-];
+// ── Status derivation per subsystem ─────────────────────────────────────────
+// Each function receives the raw API response and returns { state, detail }.
+// state: 'healthy' | 'degraded' | 'error' | 'offline' | 'unknown'
+function _deriveStatus(id, data) {
+  if (!data) return { state: 'unknown', detail: 'No data' };
+  try {
+    switch (id) {
+      case 'pz-engine': {
+        const s = (data.status || '').toLowerCase();
+        return {
+          state: s === 'ok' ? 'healthy' : s === 'degraded' ? 'degraded' : 'error',
+          detail: `Engine: ${data.engine || '?'} · Env: ${data.environment || '?'}`,
+        };
+      }
+      case 'health-full': {
+        const steps = Object.entries(data).filter(([k]) => /^\d+_/.test(k));
+        const ok = steps.filter(([,v]) => v && v.status === 'ok').length;
+        const warn = steps.filter(([,v]) => v && v.status === 'warn').length;
+        const fail = steps.filter(([,v]) => v && v.status === 'fail').length;
+        const state = fail > 0 ? 'error' : warn > 0 ? 'degraded' : 'healthy';
+        return { state, detail: `${ok} ok · ${warn} warn · ${fail} fail of ${steps.length} checks` };
+      }
+      case 'storage': {
+        const ok = data.ok !== false;
+        return {
+          state: ok ? 'healthy' : 'degraded',
+          detail: ok ? 'Storage healthy' : (data.warnings || []).join('; ') || 'Issues detected',
+        };
+      }
+      case 'dhl-scanner': {
+        const s = (data.status || 'never_run').toLowerCase();
+        if (s === 'success') return { state: 'healthy', detail: `Checked ${data.batches_checked || 0} batches · ${data.received_set || 0} matched` };
+        if (s === 'running') return { state: 'healthy', detail: 'Scan in progress…' };
+        if (s === 'never_run') return { state: 'offline', detail: 'Scanner has never run' };
+        return { state: 'error', detail: data.last_error || `Status: ${s}` };
+      }
+      case 'dhl-ops': {
+        const sm = data.summary || {};
+        return {
+          state: (sm.scanner_failures_24h || 0) > 2 ? 'degraded' : 'healthy',
+          detail: `${sm.active_shipments || 0} active · ${sm.waiting_for_dhl || 0} waiting · ${sm.replies_sent_today || 0} replies today`,
+        };
+      }
+      case 'dhl-followup': {
+        const raw = data.traffic_light || data.summary_status || 'unknown';
+        const s = typeof raw === 'string' ? raw.toLowerCase() : 'unknown';
+        const state = s === 'green' ? 'healthy' : s === 'yellow' || s === 'amber' ? 'degraded' : s === 'red' ? 'error' : 'healthy';
+        const active = data.active_count ?? data.active ?? '?';
+        const eligible = data.eligible_count ?? data.eligible ?? '?';
+        return { state, detail: `Active: ${active} · Eligible: ${eligible}` };
+      }
+      case 'carrier-gate': {
+        const api = data.carrier_api_status || 'unknown';
+        const plt = data.carrier_plt_status || 'unknown';
+        const both = (api + ' ' + plt).toLowerCase();
+        const state = both.includes('error') || both.includes('fail') ? 'error'
+          : both.includes('disabled') || both.includes('off') ? 'offline' : 'healthy';
+        return { state, detail: `API: ${api} · PLT: ${plt}` };
+      }
+      case 'carrier-config': {
+        const count = data.count ?? (data.carriers || []).length;
+        const active = (data.carriers || []).filter(c => c.is_active !== false && !c.deleted_at).length;
+        return { state: count > 0 ? 'healthy' : 'offline', detail: `${active} active of ${count} configured` };
+      }
+      case 'wfirma': {
+        const caps = data;
+        const enabled = Object.values(caps).filter(v => v === true).length;
+        const total = Object.keys(caps).length;
+        return {
+          state: enabled > 0 ? 'healthy' : 'offline',
+          detail: `${enabled} of ${total} capabilities enabled`,
+        };
+      }
+      case 'email-queue': {
+        const pc = data.pending_count ?? 0;
+        return {
+          state: pc > 10 ? 'degraded' : pc > 0 ? 'healthy' : 'healthy',
+          detail: `${pc} pending · ${(data.emails || []).length} total`,
+        };
+      }
+      case 'intelligence': {
+        const docs = data.research_docs || {};
+        const cfg = data.config || {};
+        return {
+          state: cfg.exists ? 'healthy' : 'degraded',
+          detail: `Config: ${cfg.exists ? 'loaded' : 'missing'} · Docs: ${docs.found || 0}/${docs.total || 0}`,
+        };
+      }
+      case 'bot-pipeline': {
+        const c = data.counts || {};
+        const errs = c.errors || 0;
+        return {
+          state: errs > 5 ? 'degraded' : 'healthy',
+          detail: `Sessions: ${c.active_sessions || 0} · Events: ${c.bot_events_seen || 0} · Errors: ${errs}`,
+        };
+      }
+      default:
+        return { state: 'unknown', detail: JSON.stringify(data).slice(0, 80) };
+    }
+  } catch (e) {
+    return { state: 'error', detail: String(e) };
+  }
+}
 
-const RECENT_ERRORS = [
-  { ts: '2026-05-11 09:11:08', integration: 'ZC429',     endpoint: '/customs/zc429/notice',  code: '502', message: 'Bad Gateway — PUESC upstream',                actor: 'system', occurrences: 3 },
-  { ts: '2026-05-11 06:14:22', integration: 'SAD (PUESC)', endpoint: '/sad/declarations/lookup', code: 'TIMEOUT', message: 'Request exceeded 30s',                  actor: 'system', occurrences: 1 },
-  { ts: '2026-05-10 22:17:44', integration: 'DPD',       endpoint: '/dpd/auth',              code: '401', message: 'token rejected — credentials expired',         actor: 'system', occurrences: 14 },
-  { ts: '2026-05-10 18:02:11', integration: 'OCR',       endpoint: '/ocr/parse',             code: 'LOW_CONF', message: 'Confidence 0.42 — queued for manual review', actor: 'system', occurrences: 2 },
-  { ts: '2026-05-09 14:08:00', integration: 'GLS',       endpoint: '/gls/parcels',           code: 'DISCONN', message: 'Carrier disconnected by operator',         actor: 'admin@estrella.pl', occurrences: 1 },
-];
-
-const INCIDENTS = [
-  { id: 'INC-2026-014', opened: '2026-05-10 22:17', closed: null,                  severity: 'P2', integration: 'DPD',       title: 'DPD authentication failure',           status: 'open' },
-  { id: 'INC-2026-013', opened: '2026-05-11 09:00', closed: null,                  severity: 'P3', integration: 'ZC429',     title: 'PUESC intermittent 502s',              status: 'investigating' },
-  { id: 'INC-2026-012', opened: '2026-05-09 12:30', closed: '2026-05-09 13:48',    severity: 'P3', integration: 'wFirma',    title: 'Slow response on /invoices/add (>2s)', status: 'resolved' },
-  { id: 'INC-2026-011', opened: '2026-05-08 04:11', closed: '2026-05-08 04:42',    severity: 'P2', integration: 'AI Bridge', title: 'Cowork queue backup',                  status: 'resolved' },
-];
-
-const apiStateChip = (s) => {
-  const m = {
-    healthy:      { label: 'Healthy',      bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
-    degraded:     { label: 'Degraded',     bg: 'var(--badge-yellow-bg)',  text: 'var(--badge-yellow-text)',  border: 'var(--badge-yellow-border)' },
-    error:        { label: 'Error',        bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
-    pending:      { label: 'Pending',      bg: 'var(--badge-yellow-bg)',  text: 'var(--badge-yellow-text)',  border: 'var(--badge-yellow-border)' },
-    disconnected: { label: 'Disconnected', bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
-    configured:   { label: 'Configured',   bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
-    investigating:{ label: 'Investigating',bg: 'var(--badge-yellow-bg)',  text: 'var(--badge-yellow-text)',  border: 'var(--badge-yellow-border)' },
-    open:         { label: 'Open',         bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
-    resolved:     { label: 'Resolved',     bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
-  };
-  const v = m[s] || m.healthy;
+// ── State chip (reused from carriers-page.jsx pattern) ──────────────────────
+const STATE_STYLES = {
+  healthy:  { label: 'Healthy',  bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  degraded: { label: 'Degraded', bg: 'var(--badge-yellow-bg)',  text: 'var(--badge-yellow-text)',  border: 'var(--badge-yellow-border)' },
+  error:    { label: 'Error',    bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+  offline:  { label: 'Offline',  bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+  unknown:  { label: '…',       bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+  loading:  { label: 'Loading',  bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+  fetch_error:{ label: 'Fetch Error', bg: 'var(--badge-red-bg)', text: 'var(--badge-red-text)',   border: 'var(--badge-red-border)' },
+};
+function StateChip({ state }) {
+  const v = STATE_STYLES[state] || STATE_STYLES.unknown;
   return (
-    <span style={{
+    <span data-testid={`state-chip-${state}`} style={{
       display: 'inline-flex', alignItems: 'center',
       background: v.bg, color: v.text, border: `1px solid ${v.border}`,
       borderRadius: 4, padding: '2px 7px', fontSize: 10, fontWeight: 600,
       letterSpacing: '0.03em', whiteSpace: 'nowrap',
     }}>{v.label}</span>
   );
-};
+}
 
-// Pulled from carriers-page.jsx window exports (loaded first)
-const CarrierKpi = window.CarrierKpi;
-const ApiBtn     = window.ApiBtn;
-const Tbl        = window.Tbl;
-
-function ApiStatusPage() {
-  const [tab, setTab]   = React.useState('overview');
-  const [query, setQuery] = React.useState('');
-  const [grpFilter, setGrpFilter] = React.useState('All');
-
-  const filtered = API_ENDPOINT_REGISTRY.filter(e =>
-    (grpFilter === 'All' || e.g === grpFilter) &&
-    (query === '' || (e.p + ' ' + e.i).toLowerCase().includes(query.toLowerCase()))
-  );
-
-  const healthyCount = API_INTEGRATIONS.filter(i => i.state === 'healthy').length;
-  const totalCalls = API_INTEGRATIONS.reduce((s, i) => s + i.calls24h, 0);
-  const openIncidents = INCIDENTS.filter(i => i.status !== 'resolved').length;
+// ── Subsystem card ──────────────────────────────────────────────────────────
+function SubsystemCard({ sub, result }) {
+  const { state, detail } = result.status === 'loading'
+    ? { state: 'loading', detail: 'Fetching…' }
+    : result.status === 'error'
+      ? { state: 'fetch_error', detail: result.error || 'Failed to load' }
+      : _deriveStatus(sub.id, result.data);
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '20px 32px 40px' }}>
+    <div data-testid={`subsystem-card-${sub.id}`} style={{
+      background: 'var(--card)', border: '1px solid var(--border)',
+      borderRadius: 8, padding: 14, boxShadow: '0 1px 3px var(--shadow)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 8 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{sub.name}</div>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 1 }}>{sub.group}</div>
+        </div>
+        <StateChip state={state} />
+      </div>
+      <div style={{
+        fontSize: 11, color: 'var(--text-2)', lineHeight: 1.5,
+        fontFamily: state === 'loading' ? 'inherit' : 'monospace',
+        opacity: state === 'loading' ? 0.6 : 1,
+      }}>{detail}</div>
+    </div>
+  );
+}
+
+// ── Health-full detail expansion ────────────────────────────────────────────
+function HealthFullDetail({ data }) {
+  if (!data) return null;
+  const steps = Object.entries(data)
+    .filter(([k]) => /^\d+_/.test(k))
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (!steps.length) return null;
+
+  return (
+    <div data-testid="health-full-detail" style={{
+      background: 'var(--card)', border: '1px solid var(--border)',
+      borderRadius: 8, overflow: 'hidden',
+    }}>
+      <div style={{
+        padding: '10px 16px', fontSize: 11, fontWeight: 700,
+        color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em',
+        borderBottom: '1px solid var(--border)', background: 'var(--bg-subtle)',
+      }}>Guardian Diagnostic — 12 Dimensions</div>
+      <div style={{ padding: 4 }}>
+        {steps.map(([key, val]) => {
+          const label = key.replace(/^\d+_/, '').replace(/_/g, ' ');
+          const st = (val && val.status) || 'unknown';
+          const det = (val && val.detail) || '';
+          const color = st === 'ok' ? 'var(--badge-green-text)' : st === 'warn' ? 'var(--badge-yellow-text)' : 'var(--badge-red-text)';
+          return (
+            <div key={key} style={{
+              display: 'grid', gridTemplateColumns: '28px 160px 1fr',
+              alignItems: 'center', padding: '5px 12px', fontSize: 11,
+              borderBottom: '1px solid var(--border-subtle)',
+            }}>
+              <span style={{ color, fontWeight: 700, fontSize: 10 }}>{st === 'ok' ? '✓' : st === 'warn' ? '⚠' : '✗'}</span>
+              <span style={{ color: 'var(--text)', fontWeight: 600, textTransform: 'capitalize' }}>{label}</span>
+              <span style={{ color: 'var(--text-2)', fontFamily: 'monospace', fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{det}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Recent errors table ─────────────────────────────────────────────────────
+function RecentErrorsPanel({ errors }) {
+  if (!errors || !errors.length) {
+    return (
+      <div data-testid="recent-errors-empty" style={{
+        padding: 32, textAlign: 'center', color: 'var(--text-3)', fontSize: 12,
+      }}>No recent errors in the bot pipeline ring buffer.</div>
+    );
+  }
+  return (
+    <div data-testid="recent-errors-panel" style={{
+      background: 'var(--card)', border: '1px solid var(--border)',
+      borderRadius: 8, overflow: 'hidden',
+    }}>
+      <div style={{
+        padding: '10px 16px', fontSize: 11, fontWeight: 700,
+        color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em',
+        borderBottom: '1px solid var(--border)', background: 'var(--bg-subtle)',
+      }}>Recent Errors (bot pipeline, last 20)</div>
+      <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+        {errors.map((err, i) => (
+          <div key={i} style={{
+            display: 'grid', gridTemplateColumns: '150px 1fr',
+            padding: '6px 16px', fontSize: 11, borderBottom: '1px solid var(--border-subtle)',
+          }}>
+            <span style={{ color: 'var(--text-3)', fontFamily: 'monospace', fontSize: 10.5 }}>
+              {err.ts || err.timestamp || '—'}
+            </span>
+            <span style={{ color: 'var(--badge-red-text)', fontFamily: 'monospace', fontSize: 10.5 }}>
+              {err.msg || err.error_message || err.event || JSON.stringify(err).slice(0, 120)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Bot activity panel ──────────────────────────────────────────────────────
+function BotActivityPanel({ data }) {
+  if (!data) return null;
+  const events = data.last_bot_events || [];
+  const stages = data.last_stage_events || [];
+  const posts = data.last_pz_posts || [];
+  const counts = data.counts || {};
+
+  return (
+    <div data-testid="bot-activity-panel" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+        <_MiniKpi label="Active Sessions" value={counts.active_sessions || 0} />
+        <_MiniKpi label="Pending Chats" value={counts.pending_chats || 0} />
+        <_MiniKpi label="Events Seen" value={counts.bot_events_seen || 0} />
+        <_MiniKpi label="PZ Posts" value={counts.pz_posts || 0} />
+      </div>
+      {stages.length > 0 && (
+        <details style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8 }}>
+          <summary style={{ padding: '8px 16px', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', cursor: 'pointer' }}>
+            Last {stages.length} pipeline stage events
+          </summary>
+          <div style={{ maxHeight: 200, overflowY: 'auto', padding: '0 4px 4px' }}>
+            {stages.slice().reverse().map((ev, i) => (
+              <div key={i} style={{
+                padding: '4px 12px', fontSize: 10.5, fontFamily: 'monospace',
+                color: 'var(--text-2)', borderBottom: '1px solid var(--border-subtle)',
+              }}>
+                <span style={{ color: 'var(--text-3)' }}>{ev.ts || ev.timestamp || ''}</span>{' '}
+                {ev.event || ev.stage || JSON.stringify(ev).slice(0, 80)}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function _MiniKpi({ label, value }) {
+  return (
+    <div style={{
+      background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 6,
+      padding: '8px 12px', textAlign: 'center',
+    }}>
+      <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace' }}>{value}</div>
+      <div style={{ fontSize: 9.5, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 2 }}>{label}</div>
+    </div>
+  );
+}
+
+// ── DHL Operations summary ──────────────────────────────────────────────────
+function DhlOpsSummary({ data }) {
+  if (!data) return null;
+  const sm = data.summary || {};
+  const la = data.lane_a_health || {};
+
+  return (
+    <div data-testid="dhl-ops-summary" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+        <_MiniKpi label="Active Shipments" value={sm.active_shipments || 0} />
+        <_MiniKpi label="Waiting for DHL" value={sm.waiting_for_dhl || 0} />
+        <_MiniKpi label="Replies Today" value={sm.replies_sent_today || 0} />
+        <_MiniKpi label="Scanner Runs 24h" value={sm.scanner_runs_24h || 0} />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+        <_MiniKpi label="Scanner Failures" value={sm.scanner_failures_24h || 0} />
+        <_MiniKpi label="Lane B Eligible" value={sm.lane_b_eligible || 0} />
+        <_MiniKpi label="Excluded" value={sm.excluded_batches || 0} />
+      </div>
+      {la.last_run_at && (
+        <div style={{
+          padding: '8px 14px', background: 'var(--card)', border: '1px solid var(--border)',
+          borderRadius: 6, fontSize: 11, color: 'var(--text-2)',
+        }}>
+          <strong style={{ color: 'var(--text)' }}>Lane A last run:</strong>{' '}
+          {la.last_run_status} at {la.last_run_at}{' '}
+          {la.last_run_duration_s != null && `(${la.last_run_duration_s}s)`}
+          {la.avg_batches_checked != null && ` · avg ${la.avg_batches_checked} batches/run`}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Main page component
+// ═══════════════════════════════════════════════════════════════════════════════
+function ApiStatusPage() {
+  const [results, setResults] = React.useState(() => {
+    const init = {};
+    SUBSYSTEMS.forEach(s => { init[s.id] = { status: 'loading', data: null, error: null }; });
+    return init;
+  });
+  const [tab, setTab] = React.useState('overview');
+
+  // Fetch all subsystems independently — each fires its own .then/.catch
+  React.useEffect(() => {
+    SUBSYSTEMS.forEach(sub => {
+      sub.fetch()
+        .then(data => {
+          setResults(prev => ({ ...prev, [sub.id]: { status: 'ok', data, error: null } }));
+        })
+        .catch(err => {
+          setResults(prev => ({ ...prev, [sub.id]: { status: 'error', data: null, error: String(err) } }));
+        });
+    });
+  }, []);
+
+  // ── KPI derivation from live results ────────────────────────────────────
+  const systemsOnline = SUBSYSTEMS.filter(s => {
+    const r = results[s.id];
+    if (r.status !== 'ok') return false;
+    const d = _deriveStatus(s.id, r.data);
+    return d.state === 'healthy';
+  }).length;
+
+  const emailsPending = (() => {
+    const r = results['email-queue'];
+    if (r.status !== 'ok' || !r.data) return '—';
+    return r.data.pending_count ?? 0;
+  })();
+
+  const scannerStatus = (() => {
+    const r = results['dhl-scanner'];
+    if (r.status !== 'ok' || !r.data) return '—';
+    const s = (r.data.status || 'never_run');
+    return s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ');
+  })();
+
+  const followupQueue = (() => {
+    const r = results['dhl-followup'];
+    if (r.status !== 'ok' || !r.data) return '—';
+    return r.data.eligible_count ?? r.data.eligible ?? r.data.active_count ?? '—';
+  })();
+
+  const botErrors = (() => {
+    const r = results['bot-pipeline'];
+    if (r.status !== 'ok' || !r.data) return '—';
+    return (r.data.counts || {}).errors || 0;
+  })();
+
+  const activeCarriers = (() => {
+    const r = results['carrier-config'];
+    if (r.status !== 'ok' || !r.data) return '—';
+    return (r.data.carriers || []).filter(c => c.is_active !== false && !c.deleted_at).length;
+  })();
+
+  const isLoading = SUBSYSTEMS.some(s => results[s.id].status === 'loading');
+
+  // ── Group order for overview ────────────────────────────────────────────
+  const GROUP_ORDER = ['Core', 'DHL', 'Carrier', 'Accounting', 'Comms', 'AI'];
+
+  return (
+    <div data-testid="api-status-page" style={{ flex: 1, overflowY: 'auto', padding: '20px 32px 40px' }}>
       {/* KPI strip */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-        <CarrierKpi label="Healthy / Total"  value={`${healthyCount} of ${API_INTEGRATIONS.length}`} accent="var(--badge-green-text)" />
-        <CarrierKpi label="Calls (24 h)"      value={totalCalls.toLocaleString()}                     accent="var(--text)" />
-        <CarrierKpi label="P95 latency"       value="318 ms"                                           accent="var(--accent)" />
-        <CarrierKpi label="Open incidents"    value={openIncidents > 0 ? `${openIncidents} active`    : 'None'} accent={openIncidents ? 'var(--badge-red-text)' : 'var(--badge-green-text)'} />
+      <div data-testid="api-kpi-strip" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, marginBottom: 16 }}>
+        <CarrierKpi label="Systems Online" value={isLoading ? '…' : `${systemsOnline} / ${SUBSYSTEMS.length}`} accent={systemsOnline === SUBSYSTEMS.length ? 'var(--badge-green-text)' : 'var(--badge-yellow-text)'} />
+        <CarrierKpi label="Emails Pending" value={emailsPending} accent={emailsPending > 5 ? 'var(--badge-red-text)' : 'var(--text)'} />
+        <CarrierKpi label="DHL Scanner" value={scannerStatus} accent="var(--text)" />
+        <CarrierKpi label="Follow-up Queue" value={followupQueue} accent="var(--text)" />
+        <CarrierKpi label="Bot Errors" value={botErrors} accent={botErrors > 0 ? 'var(--badge-red-text)' : 'var(--badge-green-text)'} />
+        <CarrierKpi label="Active Carriers" value={activeCarriers} accent="var(--text)" />
       </div>
 
       {/* Sub-tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border)' }}>
         {[
-          { id: 'overview',  label: 'Integrations' },
-          { id: 'endpoints', label: 'Endpoint Registry' },
-          { id: 'errors',    label: 'Recent Errors' },
-          { id: 'incidents', label: 'Incidents' },
+          { id: 'overview',   label: 'Integration Health' },
+          { id: 'guardian',   label: 'Guardian Diagnostic' },
+          { id: 'dhl-ops',    label: 'DHL Operations' },
+          { id: 'errors',     label: 'Recent Errors' },
+          { id: 'bot',        label: 'Bot Activity' },
         ].map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{
+          <button key={t.id} data-testid={`tab-${t.id}`} onClick={() => setTab(t.id)} style={{
             background: 'transparent', border: 'none', cursor: 'pointer',
             padding: '8px 14px 10px', fontSize: 12,
             fontWeight: tab === t.id ? 700 : 500,
@@ -167,162 +462,69 @@ function ApiStatusPage() {
       </div>
 
       {/* Tab content */}
-      {tab === 'overview'  && <ApiStatusOverviewTab />}
-      {tab === 'endpoints' && <ApiStatusEndpointsTab query={query} setQuery={setQuery} grpFilter={grpFilter} setGrpFilter={setGrpFilter} rows={filtered} />}
-      {tab === 'errors'    && <ApiStatusErrorsTab />}
-      {tab === 'incidents' && <ApiStatusIncidentsTab />}
-    </div>
-  );
-}
-
-function ApiStatusOverviewTab() {
-  const byGroup = API_INTEGRATIONS.reduce((acc, i) => {
-    (acc[i.group] = acc[i.group] || []).push(i);
-    return acc;
-  }, {});
-  const order = ['Carriers','Accounting','Customs','Internal','Webhooks'];
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      {order.map(g => (
-        <div key={g}>
-          <div style={{
-            fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
-            textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8,
-          }}>{g}</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
-            {(byGroup[g] || []).map(it => <ApiIntegrationCard key={it.id} it={it} />)}
-          </div>
+      {tab === 'overview' && (
+        <div data-testid="tab-content-overview" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {GROUP_ORDER.map(g => {
+            const subs = SUBSYSTEMS.filter(s => s.group === g);
+            if (!subs.length) return null;
+            return (
+              <div key={g}>
+                <div style={{
+                  fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                  textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8,
+                }}>{g}</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+                  {subs.map(sub => <SubsystemCard key={sub.id} sub={sub} result={results[sub.id]} />)}
+                </div>
+              </div>
+            );
+          })}
         </div>
-      ))}
-    </div>
-  );
-}
-
-function ApiIntegrationCard({ it }) {
-  return (
-    <div style={{
-      background: 'var(--card)', border: '1px solid var(--border)',
-      borderRadius: 8, padding: 14, boxShadow: '0 1px 3px var(--shadow)',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10 }}>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{it.name}</div>
-          <div style={{ fontSize: 10, color: 'var(--text-3)' }}>{it.endpoints} endpoints</div>
-        </div>
-        {apiStateChip(it.state)}
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 10, rowGap: 4, fontSize: 11 }}>
-        <span style={{ color: 'var(--text-3)' }}>Success</span>
-        <span style={{ color: it.successPct > 95 ? 'var(--badge-green-text)' : it.successPct > 80 ? 'var(--badge-yellow-text)' : 'var(--badge-red-text)', fontFamily: 'monospace', fontWeight: 600 }}>{it.successPct}%</span>
-        <span style={{ color: 'var(--text-3)' }}>P95 latency</span>
-        <span style={{ color: 'var(--text)', fontFamily: 'monospace' }}>{it.latencyMs ? `${it.latencyMs} ms` : '—'}</span>
-        <span style={{ color: 'var(--text-3)' }}>Calls 24h</span>
-        <span style={{ color: 'var(--text)', fontFamily: 'monospace' }}>{it.calls24h.toLocaleString()}</span>
-        <span style={{ color: 'var(--text-3)' }}>Last call</span>
-        <span style={{ color: 'var(--text-2)', fontFamily: 'monospace', fontSize: 10.5 }}>{it.lastCall}</span>
-      </div>
-      {it.lastError && (
-        <div style={{
-          marginTop: 10, padding: '6px 10px', borderRadius: 4,
-          background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
-          color: 'var(--badge-red-text)', fontSize: 10.5, fontFamily: 'monospace',
-        }}>{it.lastError}</div>
       )}
-      <div style={{ display: 'flex', gap: 4, marginTop: 10 }}>
-        <ApiBtn small title={`POST /api/v1/admin/api-status/${it.id}/test`}>⚡ Probe</ApiBtn>
-        <ApiBtn small variant="ghost" title={`GET /api/v1/admin/api-status/${it.id}/logs`}>Logs</ApiBtn>
-      </div>
-    </div>
-  );
-}
 
-function ApiStatusEndpointsTab({ query, setQuery, grpFilter, setGrpFilter, rows }) {
-  const groups = ['All','Carriers','Accounting','Customs','Internal','Webhooks'];
-  return (
-    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-      <div style={{ padding: '12px 16px', display: 'flex', gap: 8, alignItems: 'center', borderBottom: '1px solid var(--border)', background: 'var(--bg-subtle)' }}>
-        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search path or integration…"
-          style={{ flex: 1, maxWidth: 360, padding: '6px 10px', border: '1px solid var(--border)', borderRadius: 4, fontSize: 12, background: 'var(--card)', color: 'var(--text)', outline: 'none' }} />
-        <div style={{ display: 'flex', gap: 4 }}>
-          {groups.map(g => (
-            <button key={g} onClick={() => setGrpFilter(g)} style={{
-              padding: '5px 10px', fontSize: 10.5, borderRadius: 4, cursor: 'pointer',
-              background: grpFilter === g ? 'var(--text)' : 'var(--card)',
-              color:      grpFilter === g ? 'var(--card)' : 'var(--text-2)',
-              border: '1px solid ' + (grpFilter === g ? 'var(--text)' : 'var(--border)'),
-              fontWeight: grpFilter === g ? 700 : 500,
-            }}>{g}</button>
-          ))}
+      {tab === 'guardian' && (
+        <div data-testid="tab-content-guardian">
+          {results['health-full'].status === 'loading'
+            ? <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-3)' }}>Loading Guardian diagnostic…</div>
+            : results['health-full'].status === 'error'
+              ? <div style={{ padding: 32, textAlign: 'center', color: 'var(--badge-red-text)' }}>Failed to load: {results['health-full'].error}</div>
+              : <HealthFullDetail data={results['health-full'].data} />
+          }
         </div>
-        <span style={{ marginLeft: 'auto', fontSize: 10.5, color: 'var(--text-3)' }}>{rows.length} of {API_ENDPOINT_REGISTRY.length}</span>
-      </div>
-      <Tbl
-        cols={['Method','Endpoint','Integration','Auth','Rate','Calls 24h','P95','State']}
-        widths={['72px','1fr','130px','170px','90px','90px','70px','110px']}
-        rows={rows.map(e => [
-          <span style={{
-            display: 'inline-block', padding: '1px 7px', borderRadius: 3,
-            fontSize: 9.5, fontWeight: 700, fontFamily: 'monospace',
-            background: e.m === 'GET' ? 'var(--badge-blue-bg)' : e.m === 'DELETE' ? 'var(--badge-red-bg)' : 'var(--accent-subtle)',
-            color:      e.m === 'GET' ? 'var(--badge-blue-text)' : e.m === 'DELETE' ? 'var(--badge-red-text)' : 'var(--accent)',
-            border: '1px solid ' + (e.m === 'GET' ? 'var(--badge-blue-border)' : e.m === 'DELETE' ? 'var(--badge-red-border)' : 'var(--accent-border)'),
-          }}>{e.m}</span>,
-          <span style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text)' }}>{e.p}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text)' }}>{e.i}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{e.a}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)', fontFamily: 'monospace' }}>{e.rl}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text)', fontFamily: 'monospace' }}>{e.c.toLocaleString()}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text)', fontFamily: 'monospace' }}>{e.l ? `${e.l} ms` : '—'}</span>,
-          apiStateChip(e.s),
-        ])}
-      />
-    </div>
-  );
-}
+      )}
 
-function ApiStatusErrorsTab() {
-  return (
-    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-      <Tbl
-        cols={['Timestamp','Integration','Endpoint','Code','Message','Actor','Count']}
-        widths={['140px','130px','230px','90px','1fr','170px','70px']}
-        rows={RECENT_ERRORS.map(r => [
-          <span style={{ fontSize: 11, color: 'var(--text-2)', fontFamily: 'monospace' }}>{r.ts}</span>,
-          <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>{r.integration}</span>,
-          <span style={{ fontSize: 10.5, color: 'var(--text-2)', fontFamily: 'monospace' }}>{r.endpoint}</span>,
-          <span style={{ fontSize: 10.5, color: 'var(--badge-red-text)', fontFamily: 'monospace', fontWeight: 700 }}>{r.code}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{r.message}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{r.actor}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text)', fontFamily: 'monospace', fontWeight: 600 }}>{r.occurrences}</span>,
-        ])}
-      />
-    </div>
-  );
-}
+      {tab === 'dhl-ops' && (
+        <div data-testid="tab-content-dhl-ops">
+          {results['dhl-ops'].status === 'loading'
+            ? <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-3)' }}>Loading DHL operations…</div>
+            : results['dhl-ops'].status === 'error'
+              ? <div style={{ padding: 32, textAlign: 'center', color: 'var(--badge-red-text)' }}>Failed to load: {results['dhl-ops'].error}</div>
+              : <DhlOpsSummary data={results['dhl-ops'].data} />
+          }
+        </div>
+      )}
 
-function ApiStatusIncidentsTab() {
-  return (
-    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-      <Tbl
-        cols={['ID','Opened','Closed','Sev','Integration','Title','Status','Action']}
-        widths={['130px','130px','130px','50px','130px','1fr','120px','110px']}
-        rows={INCIDENTS.map(i => [
-          <span style={{ fontSize: 11, color: 'var(--text)', fontFamily: 'monospace', fontWeight: 600 }}>{i.id}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)', fontFamily: 'monospace' }}>{i.opened}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)', fontFamily: 'monospace' }}>{i.closed || '—'}</span>,
-          <span style={{
-            fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 3,
-            color: i.severity === 'P1' ? 'var(--badge-red-text)' : i.severity === 'P2' ? 'var(--badge-yellow-text)' : 'var(--badge-blue-text)',
-            background: i.severity === 'P1' ? 'var(--badge-red-bg)' : i.severity === 'P2' ? 'var(--badge-yellow-bg)' : 'var(--badge-blue-bg)',
-            border: '1px solid ' + (i.severity === 'P1' ? 'var(--badge-red-border)' : i.severity === 'P2' ? 'var(--badge-yellow-border)' : 'var(--badge-blue-border)'),
-          }}>{i.severity}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>{i.integration}</span>,
-          <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{i.title}</span>,
-          apiStateChip(i.status),
-          <ApiBtn small variant="ghost" title={`GET /api/v1/admin/api-status/incidents/${i.id}`}>Open</ApiBtn>,
-        ])}
-      />
+      {tab === 'errors' && (
+        <div data-testid="tab-content-errors">
+          {results['bot-pipeline'].status === 'loading'
+            ? <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-3)' }}>Loading recent errors…</div>
+            : results['bot-pipeline'].status === 'error'
+              ? <div style={{ padding: 32, textAlign: 'center', color: 'var(--badge-red-text)' }}>Failed to load: {results['bot-pipeline'].error}</div>
+              : <RecentErrorsPanel errors={(results['bot-pipeline'].data || {}).last_errors || []} />
+          }
+        </div>
+      )}
+
+      {tab === 'bot' && (
+        <div data-testid="tab-content-bot">
+          {results['bot-pipeline'].status === 'loading'
+            ? <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-3)' }}>Loading bot activity…</div>
+            : results['bot-pipeline'].status === 'error'
+              ? <div style={{ padding: 32, textAlign: 'center', color: 'var(--badge-red-text)' }}>Failed to load: {results['bot-pipeline'].error}</div>
+              : <BotActivityPanel data={results['bot-pipeline'].data} />
+          }
+        </div>
+      )}
     </div>
   );
 }

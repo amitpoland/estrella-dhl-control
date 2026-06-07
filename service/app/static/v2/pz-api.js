@@ -392,6 +392,59 @@
     getCarrierStatus: () =>
       _get(`${BASE}/carrier/status`),
 
+    // ── System health / API Status — read ──────────────────────────
+
+    // GET /api/v1/debug/health-full
+    // Guardian Agent 12-dimension diagnostic snapshot (FastAPI, tunnel,
+    // routes, sessions, dashboard, bot, Cliq, OAuth, engine, PZ post,
+    // outputs, fonts).  Makes live HTTP probes — may be slow (~5s).
+    getHealthFull: () =>
+      _get(`${BASE}/debug/health-full`),
+
+    // GET /api/v1/debug/pending
+    // Bot pipeline state: active_sessions, bot_pending, last 20 events/
+    // stages/posts/errors, counts object.
+    getDebugPending: () =>
+      _get(`${BASE}/debug/pending`),
+
+    // GET /api/v1/debug/storage/health
+    // Storage health: real/test/quarantine batch dirs, lock files, ok flag.
+    getStorageHealth: () =>
+      _get(`${BASE}/debug/storage/health`),
+
+    // GET /api/v1/pz/health
+    // PZ engine: { status, engine, environment, detail }.
+    getPzHealth: () =>
+      _get(`${BASE}/pz/health`),
+
+    // GET /api/v1/dhl/auto-scan-status
+    // DHL inbox scanner: status, started_at, batches_checked, received_set,
+    // b2_triggered, errors_count, next_run_at.
+    getDhlAutoScanStatus: () =>
+      _get(`${BASE}/dhl/auto-scan-status`),
+
+    // GET /api/v1/dhl/daily-summary
+    // Full DHL ops report: lane_a_health, active_shipments, dhl_waiting_queue,
+    // lane_b_candidates, exceptions, summary counters.
+    getDhlDailySummary: () =>
+      _get(`${BASE}/dhl/daily-summary`),
+
+    // GET /api/v1/dhl/followup-automation/status
+    // Follow-up SLA card: flags, active/monitoring/eligible counts,
+    // next-due, last sent/suppressed, traffic light.
+    getDhlFollowupStatus: () =>
+      _get(`${BASE}/dhl/followup-automation/status`),
+
+    // GET /api/v1/admin/email-queue
+    // Email queue: { pending_count, emails: [...] }.  Requires admin session.
+    getEmailQueue: () =>
+      _get(`${BASE}/admin/email-queue`),
+
+    // GET /api/v1/intelligence/status
+    // Intelligence engine: config age, research docs, capabilities, actors.
+    getIntelligenceStatus: () =>
+      _get(`${BASE}/intelligence/status`),
+
     // ── Dashboard — read ────────────────────────────────────────────
 
     // GET /api/v1/dashboard/batches

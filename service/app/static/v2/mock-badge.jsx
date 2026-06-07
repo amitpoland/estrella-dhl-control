@@ -34,7 +34,13 @@
 //   GET /api/v1/dashboard/batches. All 15 fake PIPELINE_SHIPMENTS removed. 6 PZ
 //   workflow lanes from V1 production (new→docs→customs→ready→booked→done).
 //   KPIs derived from live batch data. Status mappers ported from V1.
-const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard'];
+// Sprint 41 (2026-06-07): 'api_status' added — ApiStatusPage wired to 12
+//   live subsystem endpoints (health-full, pending, storage/health, pz/health,
+//   dhl/auto-scan-status, dhl/daily-summary, dhl/followup-automation/status,
+//   carrier/status, carriers-config, wfirma/capabilities, admin/email-queue,
+//   intelligence/status). All 4 fake arrays removed (API_INTEGRATIONS,
+//   API_ENDPOINT_REGISTRY, RECENT_ERRORS, INCIDENTS). No fake carriers.
+const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard', 'api_status'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;
