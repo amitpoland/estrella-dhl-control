@@ -55,6 +55,32 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
+## PR #483 — Write Enablement Phase 1A: Proforma Safe Actions (2026-06-07, PR OPEN)
+
+**Date**: 2026-06-07 (PR opened, static files deployed to production, pending merge)
+**PR #483** — `feat(proforma): Write Enablement Phase 1A — 3 safe proforma actions`
+**Branch**: `feat/write-enable-phase1a-proforma-safe-actions`
+**Commit SHA**: `cf0d7e1` (latest, includes BACKEND_GAP_REGISTER update)
+
+**What was enabled** (3 buttons, all using existing backend routes):
+- **M5 Inline Edit** (`tb-edit`): Batch-edit mode using `PATCH /draft/{id}`. Editable: remarks, payment_terms, currency, exchange_rate, incoterm. Optimistic locking via `expected_updated_at`.
+- **M1a Cancel Draft** (`tb-delete` relabeled): Wired to `POST /draft/{id}/cancel` with confirmation modal + reason. Soft-cancel only, no data deleted.
+- **M7 Prior Invoice History** (`tb-invoice-history` — new button): Read-only modal showing 12-month wFirma invoice ledger via `GET /ledgers/clients/{id}/invoice-ledger.json`. New `getClientInvoiceLedger` transport in pz-api.js.
+
+**What was NOT changed** (Lesson M compliance):
+- Send (`tb-send`), CMR (`tb-cmr`), Generate (`tb-generate`), More (`tb-more`) remain visible + disabled with explicit reasons.
+- No backend routes created. No wFirma posts. No email sending. No destructive deletes.
+
+**Files changed**: `proforma-detail.jsx` (+CancelDraftModal, +PriorInvoiceHistoryModal, +EditableKvItem, edit state/handlers), `pz-api.js` (+getClientInvoiceLedger), `test_write_enable_phase1a_proforma.py` (51 tests, all pass), `BACKEND_GAP_REGISTER.md` (M5/M1a/M7 marked ENABLED).
+
+**Tests**: 51/51 Phase 1A pass. 253/254 full suite pass (1 pre-existing macOS path failure unrelated).
+
+**Browser smoke**: Edit enabled on editing draft, Cancel Draft label visible, Prior Invoices button visible, Send/CMR/Generate disabled with reasons. No console errors.
+
+**GATE 2**: 1/3 open PRs (PR #483).
+
+**Remaining gaps**: M2 (Send Email — HIGH), M1 hard-delete (MEDIUM), M6 (Prior Proforma Search — MEDIUM), M3 (CMR PDF — LOW), M4 (Document Package — LOW).
+
 ## PR #482 — Sprint 43: Coverage Map authority-honest conversion (2026-06-07, MERGED + DEPLOYED)
 
 **Date**: 2026-06-07 (merged + deployed + production smoke verified)
