@@ -40,7 +40,10 @@
 //   carrier/status, carriers-config, wfirma/capabilities, admin/email-queue,
 //   intelligence/status). All 4 fake arrays removed (API_INTEGRATIONS,
 //   API_ENDPOINT_REGISTRY, RECENT_ERRORS, INCIDENTS). No fake carriers.
-const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard', 'api_status'];
+// Sprint 42: 'diagnostics' added — DiagnosticsPage wired to 5 live GET endpoints
+//   (health-full, storage/health, storage/locks, system/version, debug/pending).
+//   All hardcoded fake data removed. CLI tools visible but disabled.
+const WIRED_PAGES = ['proforma', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard', 'api_status', 'diagnostics'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;
