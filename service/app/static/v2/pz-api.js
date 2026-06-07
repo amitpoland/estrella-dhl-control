@@ -423,6 +423,11 @@
     getSystemVersion: () =>
       _get(`${BASE}/system/version`),
 
+    // GET /openapi.json
+    // Returns FastAPI's OpenAPI spec — the authority for registered routes.
+    getOpenApiSpec: () =>
+      _get('/openapi.json'),
+
     // GET /api/v1/pz/health
     // PZ engine: { status, engine, environment, detail }.
     getPzHealth: () =>

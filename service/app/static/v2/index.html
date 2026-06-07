@@ -648,12 +648,12 @@ function App() {
             </>
           )}
 
-          {/* Coverage Matrix */}
+          {/* Coverage Map — authority: /openapi.json */}
           {!viewerDoc && page === 'coverage' && (
             <>
-              <PageHeader title="Coverage Matrix" subtitle="Feature × status × API placeholders — wireframe coverage of existing & planned modules" />
+              <PageHeader title="Coverage Map" subtitle="Live route registry from OpenAPI spec — every route registered in the running backend" />
               <SubTabStrip active={page} onNav={handleNav} />
-              <CoverageMatrix />
+              <CoverageMapPage />
             </>
           )}
 

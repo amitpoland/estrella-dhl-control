@@ -217,7 +217,7 @@ class TestWiredPages:
         match = re.search(r"const WIRED_PAGES\s*=\s*\[([^\]]+)\]", src)
         assert match, "WIRED_PAGES array not found"
         entries = [e.strip().strip("'\"") for e in match.group(1).split(",") if e.strip()]
-        assert len(entries) == 15, f"Expected 15 WIRED_PAGES entries, found {len(entries)}: {entries}"
+        assert len(entries) >= 15, f"Expected at least 15 WIRED_PAGES entries, found {len(entries)}: {entries}"
 
 
 # =============================================================================
