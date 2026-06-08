@@ -5528,7 +5528,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                   compatibility but the Sales tab is the canonical
                   operator entry point. */}
               <div data-testid="sales-tab-proforma-draft-panel">
-                <ProformaDraftPanel batchId={batchId} onToast={onToast} />
+                <ProformaDraftPanel batchId={batchId} onToast={onToast} clientList={clientList} />
               </div>
 
               {/* Phase 2: Readiness banner */}
@@ -12933,7 +12933,7 @@ function parseBulkPriceText(text) {
   return { ok: errors.length === 0 && prices.length > 0, prices, errors };
 }
 
-function ProformaDraftPanel({ batchId, onToast }) {
+function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
   const [drafts, setDrafts]       = React.useState([]);
   const [loading, setLoading]     = React.useState(true);
   const [openId, setOpenId]       = React.useState(null);

@@ -82,9 +82,56 @@ def test_summary_lists_per_row_missing_fields():
     assert missing_idx == {1, 2}
 
 
-def test_empty_audit_is_stale():
-    assert is_audit_stale({})[0] is True
+def test_empty_audit_not_yet_generated():
+    # {} has no rows and no stamp → "not-yet-engine-generated", not stale
+    stale, reason = is_audit_stale({})
+    assert stale is False, reason
+
+def test_none_audit_is_invalid():
+    # None is not a dict → always treated as stale (invalid input)
     assert is_audit_stale(None)[0] is True
+
+
+def test_invoice_intake_rows_not_flagged_stale():
+    """Audits with _rows_source='db_invoice_lines' and no row_schema_version
+    are invoice-intake preview rows written before the PZ engine runs.
+    SAD/ZC429 customs data is not yet available, so nazwa_pl/en/nazwa are
+    absent by design — not a cache staleness problem.  Regression for
+    AWB 9938632830 where the stale banner fired on a pre-clearance draft."""
+    audit = {
+        "_rows_source": "db_invoice_lines",
+        "rows": [
+            {"invoice_no": "EJL/25-26/1337", "product_code": "EJL/25-26/1337-1",
+             "quantity": 5, "item_type": ""},
+            {"invoice_no": "EJL/25-26/1337", "product_code": "EJL/25-26/1337-2",
+             "quantity": 3, "item_type": ""},
+        ],
+        # no row_schema_version — engine has not run yet
+    }
+    stale, reason = is_audit_stale(audit)
+    assert stale is False, f"expected not-stale for db_invoice_lines draft, got: {reason!r}"
+
+    summary = stale_field_summary(audit)
+    assert summary["stale"] is False
+    # rows_missing_fields is always computed from raw rows regardless of stale flag;
+    # intake rows lack nazwa_pl/en/nazwa by design — the stale=False gate is what matters
+
+
+def test_invoice_intake_escape_requires_exact_source_value():
+    """Only _rows_source='db_invoice_lines' escapes the stale check.
+    Any other value (or missing) still triggers the schema version gate."""
+    # Missing _rows_source — rows exist, no stamp → stale
+    audit_no_source = {"rows": [{"product_code": "X-1"}]}
+    stale, _ = is_audit_stale(audit_no_source)
+    assert stale is True
+
+    # Wrong _rows_source value → stale
+    audit_wrong_source = {
+        "_rows_source": "pz_engine_output",
+        "rows": [{"product_code": "X-1"}],
+    }
+    stale2, _ = is_audit_stale(audit_wrong_source)
+    assert stale2 is True
 
 
 def test_legacy_v1_batch_2824221912_audit_is_flagged_stale():
