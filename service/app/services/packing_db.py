@@ -180,6 +180,12 @@ def init_packing_db(db_path: Path) -> None:
                 ON supplier_header_templates (supplier_id, doc_type);
         """)
 
+        # Audit columns added after initial release — safe via _add_column_if_missing.
+        _add_column_if_missing(
+            con, "supplier_header_templates", "source_method",
+            "TEXT NOT NULL DEFAULT 'operator_approved'",
+        )
+
         # supplier_id on packing_documents links the document to its Supplier Master row.
         _add_column_if_missing(con, "packing_documents", "supplier_id", "INTEGER")
 
@@ -381,11 +387,14 @@ def upsert_supplier_template(
     canonical_field: str,
     col_index: Optional[int] = None,
     approved_by: str = "operator",
+    source_method: str = "operator_approved",
 ) -> int:
     """Insert or replace a supplier header template.
 
     Uses INSERT OR REPLACE so re-approval of the same raw_header updates
-    canonical_field, approved_by, and approved_at in place.
+    canonical_field, approved_by, approved_at, and source_method in place.
+    source_method records which tier produced the original suggestion
+    (alias / fuzzy / fuzzy_warning / llm / operator_approved).
     Returns the row id.
     """
     if _db_path is None:
@@ -396,16 +405,17 @@ def upsert_supplier_template(
             cur = con.execute(
                 """INSERT INTO supplier_header_templates
                        (supplier_id, doc_type, raw_header, canonical_field,
-                        col_index, approved_by, approved_at)
-                   VALUES (?,?,?,?,?,?,?)
+                        col_index, approved_by, approved_at, source_method)
+                   VALUES (?,?,?,?,?,?,?,?)
                    ON CONFLICT(supplier_id, doc_type, raw_header)
                    DO UPDATE SET
                        canonical_field = excluded.canonical_field,
                        col_index       = excluded.col_index,
                        approved_by     = excluded.approved_by,
-                       approved_at     = excluded.approved_at""",
+                       approved_at     = excluded.approved_at,
+                       source_method   = excluded.source_method""",
                 (supplier_id, doc_type, raw_header, canonical_field,
-                 col_index, approved_by, now),
+                 col_index, approved_by, now, source_method),
             )
             return cur.lastrowid or con.execute(
                 """SELECT id FROM supplier_header_templates

@@ -1566,6 +1566,8 @@ class _HeaderMappingItem(BaseModel):
     raw_header: str
     canonical_field: str
     col_index: Optional[int] = None
+    source_method: Optional[str] = None   # alias/fuzzy/fuzzy_warning/llm
+    operator_confirmed: bool = False       # must be True to persist llm-sourced rows
 
 
 class _ApproveHeaderMappingBody(BaseModel):
@@ -1634,7 +1636,20 @@ async def approve_header_mapping(
                 "reason": f"unknown canonical field: {field!r}",
             })
             continue
+        # LLM-sourced items require explicit per-item operator confirmation.
+        # Sending operator_confirmed=false (the default) is a hard block — the
+        # endpoint never auto-promotes AI suggestions into templates.
+        if item.source_method == "llm" and not item.operator_confirmed:
+            rejected.append({
+                "raw_header": raw,
+                "reason": (
+                    "LLM-sourced mapping requires operator_confirmed=true; "
+                    "AI suggestions are never saved automatically."
+                ),
+            })
+            continue
 
+        src = (item.source_method or "operator_approved").strip() or "operator_approved"
         try:
             template_id = pdb.upsert_supplier_template(
                 supplier_id     = supplier_id,
@@ -1643,11 +1658,13 @@ async def approve_header_mapping(
                 canonical_field = field,
                 col_index       = item.col_index,
                 approved_by     = operator,
+                source_method   = src,
             )
             saved.append({
-                "template_id": template_id,
-                "raw_header":  raw,
+                "template_id":    template_id,
+                "raw_header":     raw,
                 "canonical_field": field,
+                "source_method":  src,
             })
         except Exception as exc:
             log.warning(
