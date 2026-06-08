@@ -2,7 +2,7 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (PR #507 merged — reverification proposal approval gating fix).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (PR #509 opened — Description Engine Phase 1 grammar upgrade).
 
 **Last-run-at:** 2026-06-08 (PR #507 merged + deployed — reverification proposal gating). Origin/main HEAD: **a642c56** (PR #507 squash-merge — fix reverification proposal approval). GATE 2: **1/3 open PRs** (draft #498). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
 
@@ -54,6 +54,28 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## PR #509 — Description Engine Phase 1 Grammar Upgrade (2026-06-08, OPEN)
+
+**Date**: 2026-06-08 (PR opened, pending merge)
+**PR #509** — `feat(engine): Phase 1 Description Engine grammar upgrade`
+**SHA**: `d568481` on branch `feat/description-engine-phase1-grammar`
+**Scope**: Grammar/dictionary layer only in `customs_description_engine.py`. No consumer migration.
+
+**Changes**:
+- `_PURITY_GENITIVE`: Gold entries upgraded to karat-expanded genitive (`"14-karatowego złota (próba 585)"` instead of `"złota próby 585"`). Silver/platinum/steel unchanged.
+- `_GENDER_SETTING_VERB`: NEW table — 14 item_type_pl entries mapping to `wysadzany` (masculine), `wysadzana` (feminine), `wysadzane` (plural).
+- `_STONE_INSTRUMENTAL`: +2 entries (`kamienie jubilerskie`, `kamienie ozdobne`).
+- `material_pl`: conjunction changed from `"z"` to `"oraz"` (nominative listing).
+- `polish_customs_description`: setting verb replaces `"z"` before stones; sentence break `". Biżuteria"` replaces `", biżuteria"`.
+
+**Tests**: 57 new regression tests + 2 existing tests updated. All existing engine tests pass.
+**Consumer impact**: Customs PDF renderer is the only consumer. No other renderers modified.
+**Phase 1 safety**: Invoice totals, FOB/CIF, HSN, AWB state, DHL workflow, wFirma posting, PZ creation — all untouched.
+
+**Operator gate**: Merge after reviewing real sample output for AWB 9938632830.
+
+---
 
 ## PR #507 — Reverification Proposal Approval Gating Fix (2026-06-08, MERGED + DEPLOYED)
 
@@ -4501,7 +4523,7 @@ Group D — Tests (3 new files):
 - Material list: comma-separated with `oraz` conjunction
 - Stone terminology: `kamienie szlachetne` (precious), `kamienie jubilerskie` (semi-precious), `kamienie ozdobne` (decorative) — must match actual stone classification on invoice
 
-**Status**: APPROVED (operator directive). Implementation not yet started. Requires explicit operator "go ahead" before coding begins.
+**Status**: Phase 1 COMPLETE (PR #509, SHA `d568481`). Grammar/dictionary layer upgraded — karat-expanded genitive, gender setting verbs, sentence breaks, material conjunction, stone categories. No consumer migration. Customs PDF renderer is the sole consumer and automatically benefits. Phase 2 (renderer separation + consumer migration) requires separate operator campaign approval.
 
 **Governance**: This is a workflow-class change per Lesson I. Authority owner = Description Engine. Workflow class = product description generation. All existing consumers of `polish_description_generator.py` must migrate to the unified engine.
 
