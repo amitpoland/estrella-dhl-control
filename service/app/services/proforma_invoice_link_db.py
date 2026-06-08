@@ -1,4 +1,4 @@
-"""
+﻿"""
 proforma_invoice_link_db.py — local link table between an approved proforma
 and the final wFirma invoice we issue from it.
 
@@ -453,6 +453,10 @@ class ProformaDraft:
     vat_context:     Optional[str] = None   # "domestic"|"wdt"|"export"|"np"|…
     vat_code:        Optional[str] = None   # "23"|"WDT"|"EXP"|"NP"|… (code string)
     decision_source: Optional[str] = None   # "operator_vat_mode"|"derived"|"fallback_wfirma"
+    # ── Sales-price authority (PR #519) ──────────────────────────────────
+    sales_price_authority_total_eur: Optional[float] = None
+    sales_price_imported_at:         Optional[str]   = None
+    sales_price_invoice_ref:         Optional[str]   = None
 
 
 def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
@@ -520,6 +524,10 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         ("vat_context",     "TEXT"),
         ("vat_code",        "TEXT"),
         ("decision_source", "TEXT"),
+        # ── Sales price authority (PR #519) ──────────────────────────────────
+        ("sales_price_authority_total_eur", "REAL"),
+        ("sales_price_imported_at",         "TEXT"),
+        ("sales_price_invoice_ref",         "TEXT"),
     )
     for _col, _ddl in _ADDITIVE_DRAFT_COLUMNS:
         try:
@@ -793,6 +801,10 @@ def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
         vat_context                = _opt("vat_context"),
         vat_code                   = _opt("vat_code"),
         decision_source            = _opt("decision_source"),
+        # ── Sales price authority ────────────────────────────────────────
+        sales_price_authority_total_eur = _opt("sales_price_authority_total_eur"),
+        sales_price_imported_at         = _opt("sales_price_imported_at"),
+        sales_price_invoice_ref         = _opt("sales_price_invoice_ref"),
     )
 
 
@@ -1823,6 +1835,10 @@ def _commit_draft_update(
     new_insurance_eur:              Any                 = _UNCHANGED,
     new_fx_rate_date:               Any                 = _UNCHANGED,
     new_fx_rate_source:             Any                 = _UNCHANGED,
+    # ── Sales price authority ────────────────────────────────────────
+    new_sales_price_authority_total_eur: Any            = _UNCHANGED,
+    new_sales_price_imported_at:         Any            = _UNCHANGED,
+    new_sales_price_invoice_ref:         Any            = _UNCHANGED,
 ) -> ProformaDraft:
     """Commit a validated patch atomically, returning the refreshed row.
 
@@ -1909,6 +1925,16 @@ def _commit_draft_update(
     if new_fx_rate_source != _UNCHANGED:
         sets.append("fx_rate_source=?")
         args.append(new_fx_rate_source)
+    # ── Sales price authority ────────────────────────────────────────
+    if new_sales_price_authority_total_eur != _UNCHANGED:
+        sets.append("sales_price_authority_total_eur=?")
+        args.append(new_sales_price_authority_total_eur)
+    if new_sales_price_imported_at != _UNCHANGED:
+        sets.append("sales_price_imported_at=?")
+        args.append(new_sales_price_imported_at)
+    if new_sales_price_invoice_ref != _UNCHANGED:
+        sets.append("sales_price_invoice_ref=?")
+        args.append(new_sales_price_invoice_ref)
 
     args.append(int(draft_id))
     with sqlite3.connect(str(db_path)) as conn:
@@ -3166,6 +3192,75 @@ def record_post_orphan(
         return False
 
 
+_PATCHABLE_STATES = ("draft", "editing", "post_failed", "approved")
+
+
+def apply_sales_price_patch(
+    db_path:                   "Path",
+    draft_id:                  int,
+    operator:                  str,
+    expected_updated_at:       str,
+    *,
+    patched_lines:             "List[Dict[str, Any]]",
+    sales_authority_total_eur: float,
+    sales_invoice_ref:         str,
+) -> "ProformaDraft":
+    """Import sales-price authority into a draft.
+
+    Auto-reopens 'approved' drafts to 'editing' before patching.
+    Allowed from: draft, editing, post_failed, approved.
+    """
+    d = get_draft_by_id(db_path, draft_id)
+    if d is None:
+        raise DraftNotFound(f"draft id={draft_id} not found")
+    if d.draft_state not in _PATCHABLE_STATES:
+        raise DraftNotEditable(
+            f"draft id={draft_id} is in state {d.draft_state!r}; "
+            f"must be one of {_PATCHABLE_STATES}"
+        )
+
+    reopened = False
+    if d.draft_state == "approved":
+        _check_lock(d, expected_updated_at)
+        d = _commit_draft_update(
+            db_path, draft_id,
+            new_state="editing",
+            new_approved_at=None,
+            new_approved_by=None,
+        )
+        _record_draft_event(
+            db_path, draft_id=draft_id,
+            event="draft_reopened_for_price_import",
+            detail_json=json.dumps({"reason": "sales_price_import"}, ensure_ascii=False),
+            operator=operator,
+        )
+        reopened = True
+
+    if not reopened:
+        _check_lock(d, expected_updated_at)
+
+    now = _now_utc_iso()
+    refreshed = _commit_draft_update(
+        db_path, draft_id,
+        new_state=d.draft_state if not reopened else "editing",
+        new_editable_lines=patched_lines,
+        new_sales_price_authority_total_eur=sales_authority_total_eur,
+        new_sales_price_imported_at=now,
+        new_sales_price_invoice_ref=sales_invoice_ref,
+    )
+    _record_draft_event(
+        db_path, draft_id=draft_id,
+        event="sales_price_patch_applied",
+        detail_json=json.dumps({
+            "sales_invoice_ref":         sales_invoice_ref,
+            "sales_authority_total_eur": sales_authority_total_eur,
+            "lines_patched":             len(patched_lines),
+        }, ensure_ascii=False),
+        operator=operator,
+    )
+    return refreshed
+
+
 __all__ = [
     "ProformaInvoiceLink",
     "ProformaAlreadyConverted",
@@ -3236,4 +3331,5 @@ __all__ = [
     "search_drafts",
     "list_draft_events",
     "_record_draft_event",
+    "apply_sales_price_patch",
 ]
