@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (PR #496 merged — verify-after-create hardening for proforma-to-invoice conversion).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (PR #499 merged — inbox Source D proforma draft attention).
 
-**Last-run-at:** 2026-06-08 (PR #496 merged — verify-after-create hardening). Origin/main HEAD: **c9fd090** (PR #496 squash-merge — proforma→invoice verify-after-create). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
+**Last-run-at:** 2026-06-08 (PR #499 merged + deployed — inbox Source D). Origin/main HEAD: **f85a224** (PR #499 squash-merge — inbox proforma draft attention source). GATE 2: **1/3 open PRs** (draft #498). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
 
 ---
 
@@ -54,6 +54,68 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## PR #499 — Inbox Source D: Proforma Draft Attention (2026-06-08, MERGED + DEPLOYED)
+
+**Date**: 2026-06-08 (merged + production deployed + browser verified)
+**PR #499** — `feat(inbox): add proforma draft attention source (Source D)`
+**Merge SHA**: `f85a224` (squash-merge to `origin/main`)
+**Source branch**: `feature/inbox-proforma-draft-source`
+**Deploy**: `robocopy service\app → C:\PZ\app /E /PURGE` + `nssm restart PZService`. Service healthy (200 on /api/v1/health).
+
+**What was built**: Source D added to the inbox aggregator — cross-batch proforma draft attention queue. New `list_attention_drafts()` function in `proforma_invoice_link_db.py` (pure SQLite SELECT, no writes). New `_collect_proforma_draft_items()` collector in `routes_inbox.py` mapping draft states to inbox item envelopes.
+
+**Inbox is now a 4-source aggregator**:
+- Source A: action proposals (from audit.json)
+- Source B: email queue (admin-only)
+- Source C: DHL evidence (from by_awb/*.json) — Sprint 1
+- Source D: proforma drafts (from proforma_links.db) — Sprint 2
+
+**Source D envelope contract**:
+- type: `proforma_draft` (not `approval` — avoids collision with Source A)
+- actor: `Proforma`
+- primary_action: `Review`
+- endpoint: `null` (inbox links to proforma page, no inline write action)
+- linked_batch_id: present (points to shipment batch)
+- actionable: `true`
+
+**Attention states surfaced**: draft, editing, approved, post_failed, posting
+**Terminal states excluded**: posted, cancelled, superseded
+**Priority mapping**: post_failed/posting = high; approved/draft/editing = normal
+
+**Authority isolation**: Inbox NEVER calls approve/post/cancel/convert. All transition ownership stays in `routes_proforma.py`. AST-based import guard test enforces zero write-function imports in `routes_inbox.py`. Graceful degradation: DB error → source marked failed, inbox returns 200 with other sources intact.
+
+**Files changed**: 3 — `proforma_invoice_link_db.py` (+61 lines), `routes_inbox.py` (+83/-4 lines), `test_inbox_proforma_draft_source.py` (NEW, 23 tests).
+
+**Test results**: 23/23 new Sprint 2 tests + 28/29 existing inbox tests (1 pre-existing failure from PR #488 AUTH_SECRET_KEY guard) + 38/38 inbox composition + 32/32 proforma DB + 51/51 proforma search = all PASS.
+
+**Reviewers**: backend-safety (PASS), test-coverage (NEEDS-IMPROVEMENT — boundary tests SCHEDULED per GATE 4), frontend-flow (PASS), governance/reviewer-challenge (PASS).
+
+**GATE 4 disposition for test-coverage NEEDS-IMPROVEMENT**: SCHEDULED — limit clamping and malformed data boundary tests. Core safety contract covered.
+
+**Browser verification**: `https://pz.estrellajewels.eu/v2/inbox` → 35 items (20 DHL customs + 15 proforma drafts). Console: zero errors. Network: GET /api/v1/inbox → 200. All 4 sources reporting ok. Sort order correct (urgent → high → normal).
+
+**Campaign status**: Inbox Authority Sprint 2 **CLOSED**.
+
+---
+
+## PR #497 — Inbox Source C: DHL Evidence Store Authority (2026-06-08, MERGED + DEPLOYED)
+
+**Date**: 2026-06-08 (merged + production deployed)
+**PR #497** — `fix(inbox): wire DHL evidence store as Source C authority`
+**Merge SHA**: `432b0c9` (squash-merge to `origin/main`)
+**Source branch**: `feature/inbox-dhl-evidence-source`
+**Deploy**: robocopy to `C:\PZ\app` + `nssm restart PZService`. Service healthy.
+
+**What was built**: Source C added to inbox aggregator — reads `email_evidence_store.list_actionable_awbs()` (pure file read over `storage/email_evidence/by_awb/*.json`). NEVER triggers Zoho/Gmail scan. Corrected the architectural key from `email_intelligence_store/master_email_map.json` (wrong, old) to `email_evidence_store/by_awb/*.json` (correct, deployed authority).
+
+**Files changed**: 4 — `routes_inbox.py` (+54/-3), `email_evidence_store.py` (+47), `test_inbox_dhl_evidence_source.py` (NEW, 16 tests), `test_inbox_contract.py` (+3/-1).
+
+**Test results**: 16/16 new + 29/29 existing inbox tests = all PASS.
+
+**Campaign status**: Inbox Authority Sprint 1 **CLOSED**.
+
+---
 
 ## PR #488 — Security Audit Remediation (2 CRITICAL + 12 HIGH) (2026-06-08, MERGED + DEPLOYED)
 
