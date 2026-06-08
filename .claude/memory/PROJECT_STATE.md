@@ -55,6 +55,27 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
+## PR #488 — Security Audit Remediation (2 CRITICAL + 12 HIGH) (2026-06-08, MERGED + DEPLOYED)
+
+**Date**: 2026-06-08 (merged + production deployed + verified)
+**PR #488** — `fix(security): address 12 HIGH/CRITICAL findings from ultracode security audit`
+**Merge SHA**: `c1e1b1e` (squash-merge to `origin/main`)
+**Source branch**: `claude/ultracode-review-FLjL7` (rebased onto ca99912 before merge)
+
+**Deploy**: from a DEDICATED clean worktree **`C:\PZ-deploy-main`** @ `c1e1b1e` (NOT `C:\PZ-verify`, which was dirty on another flow's branch `feature/inbox-proforma-draft-source`). **13 gated service/app files** copied to `C:\PZ\app` (targeted deploy of exactly the reviewed diff — NOT a blanket `service/app` robocopy, which would have rewritten 430 files on fresh-checkout timestamps and deployed ungated #489–#497 deltas). All 13 hash-verified MATCH. `__pycache__` cleared (16→0). `PZService` restarted (pid 7100).
+
+**Verification (production, live)**: `/api/v1/health` → 200 `{status:ok, environment:prod}`; service started CLEAN with real secrets (fail-closed startup guard passed, not tripped); `forgot-password.html` served = 8-hex (8-Character label, hex input, maxlength 8, 6-digit gone); V2 dashboard → 200; deployed code on disk confirmed (CSPRNG reset code, security 503 fail-closed, PDF `_PDF_MAGIC`, `no-store` headers); startup log clean (no RuntimeError/traceback).
+
+**The 14 fixes (verified by 7-agent gate, all GO)**: C-1 auth fail-closed (503 in prod), C-2 CORS no wildcard+credentials, H-A1 startup RuntimeError on missing/placeholder secrets, H-A2 reset code 6-digit→8-hex CSPRNG (+forgot-password.html UI + 3 tests amended), H-A3 secure cookie in prod, H-A4 admin endpoint drops plaintext code (→has_active_code), H-R1 path-traversal guard, H-R2 PDF magic-byte (+new reject test), H-W4 no-store headers (routes_pz/routes_wfirma), H-E1 MIME header sanitisation, H-E2 attachment storage_root boundary, H-E3 SSRF attachment_id charset, H-W1 SQL identifier allowlist, H-F1 batch.html credentials.
+
+**Tests**: PZ regression 160/160 · Carrier 412 (≥381) · amendment suites 30 passed · startup secret matrix all-correct (prod+valid boots, missing/placeholder/empty fail-closed, dev boots). 17 pre-existing failures classified as NOT #488-caused (identical on clean main).
+
+**Rollback**: pre-deploy prod versions of the 13 files backed up at `%TEMP%\pr488_rollback`; or restore from `432b0c9` (c1e1b1e parent).
+
+**Deploy infra (permanent)**: `C:\PZ-deploy-main` is now a dedicated detached deploy-only worktree at merged main, so production deploys are never blocked by feature sessions holding `C:\PZ-verify`.
+
+**OPEN GATE-4 (3 deferred HIGH findings)**: H-R5 (viewer-role priv-esc on admin/runtime-flags/execute), H-W3 (caller-supplied `approved_by` on proposal approve), H-W2 (DDL injection in schema-migration helpers) — confirmed NOT introduced/worsened by #488; require SCHEDULED / ISSUE / REJECTED disposition.
+
 ## PR #496 — Verify-After-Create Hardening for Proforma→Invoice (2026-06-08, MERGED + DEPLOYED)
 
 **Date**: 2026-06-08 (merged to main)
