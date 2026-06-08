@@ -683,7 +683,9 @@
 
   function CustomerMappingTab({ draft, onRefresh }) {
     const cr = draft?.customer_resolution;
-    const [contractorId, setContractorId] = useState(cr?.wfirma_customer_id ? String(cr.wfirma_customer_id) : '');
+    // Priority: explicit operator selection (buyer_override.wfirma_customer_id) > resolution result
+    const storedContractorId = (draft?.buyer_override?.wfirma_customer_id || '').trim();
+    const [contractorId, setContractorId] = useState(storedContractorId || (cr?.wfirma_customer_id ? String(cr.wfirma_customer_id) : ''));
     const [country,      setCountry]      = useState('');
     const [saving,       setSaving]       = useState(false);
     const [saveMsg,      setSaveMsg]      = useState('');
@@ -709,6 +711,7 @@
       if (!idVal) { setSaveErr('wFirma contractor ID is required.'); return; }
       setSaving(true); setSaveMsg(''); setSaveErr('');
       try {
+        // 1. Upsert the Customer Master record so freight/insurance data exists
         const body = { bill_to_name: draft.client_name || idVal };
         if (country.trim()) body.country = country.trim().toUpperCase();
         await apiFetch(`/api/v1/customer-master/${encodeURIComponent(idVal)}`, {
@@ -716,16 +719,37 @@
           headers: { 'Content-Type': 'application/json', 'X-Operator': op() },
           body: JSON.stringify(body),
         });
-        setSaveMsg('Customer mapping saved.');
+        // 2. Record the explicit contractor selection in the draft's buyer_override
+        //    so _suggest_lookup uses it directly (bypasses ambiguous name resolution)
+        const existingOverride = draft.buyer_override || {};
+        const mergedOverride = { ...existingOverride, wfirma_customer_id: idVal };
+        await apiFetch(`/api/v1/proforma/draft/${draft.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'X-Operator': op() },
+          body: JSON.stringify({
+            expected_updated_at: draft.updated_at,
+            patch: { buyer_override: mergedOverride },
+          }),
+        });
+        setSaveMsg('Customer mapping saved — freight and insurance are now available.');
         if (onRefresh) onRefresh();
       } catch (e) { setSaveErr(e.message || 'Save failed.'); }
       setSaving(false);
     };
 
-    const sBg     = cr.found ? 'var(--badge-green-bg)'  : cr.ambiguous ? 'var(--badge-amber-bg)'  : 'var(--badge-red-bg)';
-    const sBorder = cr.found ? 'var(--badge-green-border)' : cr.ambiguous ? 'var(--badge-amber-border)' : 'var(--badge-red-border)';
-    const sColor  = cr.found ? 'var(--badge-green-text)' : cr.ambiguous ? 'var(--badge-amber-text)' : 'var(--badge-red-text)';
-    const sLabel  = cr.found ? '✓ Matched to Customer Master' : cr.ambiguous ? '⚠ Ambiguous — multiple candidates found' : '✗ Not mapped to Customer Master';
+    // If operator has explicitly selected a contractor, treat as resolved for banner purposes
+    const explicitSelection = storedContractorId;
+    const isResolved = cr.found || !!explicitSelection;
+    const sBg     = isResolved ? 'var(--badge-green-bg)'  : cr.ambiguous ? 'var(--badge-amber-bg)'  : 'var(--badge-red-bg)';
+    const sBorder = isResolved ? 'var(--badge-green-border)' : cr.ambiguous ? 'var(--badge-amber-border)' : 'var(--badge-red-border)';
+    const sColor  = isResolved ? 'var(--badge-green-text)' : cr.ambiguous ? 'var(--badge-amber-text)' : 'var(--badge-red-text)';
+    const sLabel  = cr.found
+      ? '✓ Matched to Customer Master'
+      : explicitSelection
+        ? `✓ Buyer selected — contractor ID ${explicitSelection} (freight & insurance available)`
+        : cr.ambiguous
+          ? '⚠ Ambiguous — select the correct buyer below to enable freight & insurance'
+          : '✗ Not mapped to Customer Master';
 
     return (
       <div data-testid="tab-customer-mapping" style={{ padding:'20px 24px', display:'flex', flexDirection:'column', gap:14 }}>
@@ -771,6 +795,7 @@
           <SectionHeader label="Customer Mapping" />
           <div style={{ padding:'0 16px' }}>
             {[['Sales client name',cr.raw_input||'—'],['Normalized',cr.normalized_name||'—'],['wFirma customer ID',cr.wfirma_customer_id||'—',true],['wFirma name',cr.resolved_wfirma_name||'—'],['Match strategy',cr.match_strategy||'—'],['Found',cr.found?'✓ Yes':'✗ No']].map(([k,v,mono])=><InfoRow key={k} label={k} value={v} mono={mono} />)}
+            {explicitSelection && <InfoRow label="Selected contractor ID (override)" value={explicitSelection} mono data-testid="selected-contractor-id-row" />}
           </div>
         </Card>
 
