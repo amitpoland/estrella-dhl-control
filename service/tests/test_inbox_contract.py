@@ -429,6 +429,10 @@ def test_requires_auth_in_prod(tmp_path):
     """GET /api/v1/inbox requires auth in prod mode (api_key set)."""
     with (
         patch.object(settings, "api_key", "prod-secret-key"),
+        # PR #488 fail-closed startup guard (main.py): prod requires a real
+        # AUTH_SECRET_KEY or startup raises RuntimeError. Set one so the app
+        # boots and we can exercise the auth-required path (not the guard).
+        patch.object(settings, "auth_secret_key", "test-secret-key-not-placeholder"),
         patch.object(settings, "environment", "prod"),
         patch.object(settings, "storage_root", tmp_path),
     ):
