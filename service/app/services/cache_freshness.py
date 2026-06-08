@@ -54,6 +54,13 @@ def is_audit_stale(audit: Dict[str, Any]) -> Tuple[bool, str]:
     if not stamped and (rows is None or rows == []):
         return False, ""
 
+    # Invoice-intake preview rows (_rows_source="db_invoice_lines"): rows exist
+    # from invoice parsing at intake, but the PZ engine has not run yet (no
+    # SAD/ZC429 customs data available). v2 fields (nazwa_pl, nazwa_en, nazwa)
+    # are only populated after the engine runs. Not stale — not-yet-generated.
+    if not stamped and audit.get("_rows_source") == "db_invoice_lines":
+        return False, ""
+
     if stamped != CURRENT_ROW_SCHEMA_VERSION:
         return True, (
             f"row_schema_version={stamped!r} (expected {CURRENT_ROW_SCHEMA_VERSION!r})"
