@@ -3,8 +3,9 @@ test_invoice_verify_after_create.py — Verify-after-create hardening for the
 Proforma → Invoice conversion route.
 
 After invoices/add succeeds, the route fetches the created invoice back and
-verifies 7 properties. If verification fails, the link is marked 'failed',
-an audit event is recorded, and the response indicates failure.
+verifies 7 header properties + per-line field matching. If verification fails,
+the link is marked 'failed', an audit event is recorded, and the response
+indicates failure.
 
 Pins:
   1. Verification passes when the created invoice matches (happy path).
@@ -20,6 +21,12 @@ Pins:
   11. On verification failure, response includes verify_after_create_failed=True.
   12. On verification failure, audit event is recorded with outcome='failed'.
   13. Verify-fetch network failure also marks link failed.
+  14. Per-line: verification fails when line name mismatches.
+  15. Per-line: verification fails when good_id mismatches.
+  16. Per-line: verification fails when unit_count mismatches.
+  17. Per-line: verification fails when price mismatches.
+  18. Per-line: verification fails when vat_code_id mismatches.
+  19. Per-line: multiple field mismatches on one line reported together.
 """
 from __future__ import annotations
 
@@ -92,18 +99,31 @@ def _proforma_xml(*, pid="467236963", pnum="PROF 92/2026",
 def _created_invoice_xml(*, inv_id="500001", inv_type="normal",
                           contractor_id="9001", currency="EUR",
                           total="306.00", line_count=1,
-                          receiver_id: str = "") -> str:
+                          receiver_id: str = "",
+                          line_overrides: "dict | None" = None) -> str:
+    """Build XML for the created invoice.
+
+    line_overrides: optional dict mapping 0-based line index to a dict of
+    field overrides (name, good_id, unit_count, price, vat_code_id).
+    """
     rcv_block = (f"      <contractor_receiver><id>{receiver_id}</id></contractor_receiver>\n"
                  if receiver_id else "")
+    overrides = line_overrides or {}
     lines = ""
     for i in range(line_count):
+        lo = overrides.get(i, {})
+        l_name = lo.get("name", "RING")
+        l_good_id = lo.get("good_id", "42")
+        l_unit_count = lo.get("unit_count", "1.0000")
+        l_price = lo.get("price", "306.00")
+        l_vat_code_id = lo.get("vat_code_id", "228")
         lines += f"""        <invoicecontent>
-          <name>RING</name>
-          <good><id>42</id></good>
+          <name>{l_name}</name>
+          <good><id>{l_good_id}</id></good>
           <unit>szt.</unit>
-          <unit_count>1.0000</unit_count>
-          <price>306.00</price>
-          <vat_code><id>228</id></vat_code>
+          <unit_count>{l_unit_count}</unit_count>
+          <price>{l_price}</price>
+          <vat_code><id>{l_vat_code_id}</id></vat_code>
         </invoicecontent>
 """
     return f"""<?xml version="1.0"?>
@@ -545,6 +565,159 @@ def test_verify_fetch_network_failure_marks_link_failed(client, storage):
     assert link.status == "failed"
 
 
+# ── 14. Per-line field verification: name mismatch ────────────────────────────
+
+def test_verify_fails_when_line_name_mismatches(client, storage):
+    """Check 4b: line name (product name) must match source proforma."""
+    _seed_issued_proforma(storage)
+    fetch_calls = [
+        _proforma_xml(),
+        _created_invoice_xml(line_overrides={0: {"name": "WRONG-PRODUCT"}}),
+    ]
+
+    def _fake_http(method, module, op, body):
+        return 200, _invoices_add_response()
+
+    with _gate_invoice_on(), \
+         patch.object(wc, "fetch_invoice_xml",
+                      side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http):
+        body = _execute(client)
+
+    assert body["ok"] is False
+    assert body["status"] == "failed"
+    assert body["verify_after_create_failed"] is True
+    assert "line 1 field mismatch" in body["error"]
+    assert "name:" in body["error"]
+
+
+# ── 15. Per-line field verification: good_id mismatch ─────────────────────────
+
+def test_verify_fails_when_line_good_id_mismatches(client, storage):
+    """Check 4b: good (product) ID must match."""
+    _seed_issued_proforma(storage)
+    fetch_calls = [
+        _proforma_xml(),
+        _created_invoice_xml(line_overrides={0: {"good_id": "999"}}),
+    ]
+
+    def _fake_http(method, module, op, body):
+        return 200, _invoices_add_response()
+
+    with _gate_invoice_on(), \
+         patch.object(wc, "fetch_invoice_xml",
+                      side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http):
+        body = _execute(client)
+
+    assert body["ok"] is False
+    assert body["status"] == "failed"
+    assert body["verify_after_create_failed"] is True
+    assert "good_id:" in body["error"]
+
+
+# ── 16. Per-line field verification: unit_count mismatch ──────────────────────
+
+def test_verify_fails_when_line_unit_count_mismatches(client, storage):
+    """Check 4b: unit_count (quantity) must match."""
+    _seed_issued_proforma(storage)
+    fetch_calls = [
+        _proforma_xml(),
+        _created_invoice_xml(line_overrides={0: {"unit_count": "5.0000"}}),
+    ]
+
+    def _fake_http(method, module, op, body):
+        return 200, _invoices_add_response()
+
+    with _gate_invoice_on(), \
+         patch.object(wc, "fetch_invoice_xml",
+                      side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http):
+        body = _execute(client)
+
+    assert body["ok"] is False
+    assert body["status"] == "failed"
+    assert body["verify_after_create_failed"] is True
+    assert "unit_count:" in body["error"]
+
+
+# ── 17. Per-line field verification: price mismatch ───────────────────────────
+
+def test_verify_fails_when_line_price_mismatches(client, storage):
+    """Check 4b: line price must match."""
+    _seed_issued_proforma(storage)
+    fetch_calls = [
+        _proforma_xml(),
+        _created_invoice_xml(line_overrides={0: {"price": "999.99"}}),
+    ]
+
+    def _fake_http(method, module, op, body):
+        return 200, _invoices_add_response()
+
+    with _gate_invoice_on(), \
+         patch.object(wc, "fetch_invoice_xml",
+                      side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http):
+        body = _execute(client)
+
+    assert body["ok"] is False
+    assert body["status"] == "failed"
+    assert body["verify_after_create_failed"] is True
+    assert "price:" in body["error"]
+
+
+# ── 18. Per-line field verification: vat_code_id mismatch ─────────────────────
+
+def test_verify_fails_when_line_vat_code_mismatches(client, storage):
+    """Check 4b: VAT code ID must match."""
+    _seed_issued_proforma(storage)
+    fetch_calls = [
+        _proforma_xml(),
+        _created_invoice_xml(line_overrides={0: {"vat_code_id": "111"}}),
+    ]
+
+    def _fake_http(method, module, op, body):
+        return 200, _invoices_add_response()
+
+    with _gate_invoice_on(), \
+         patch.object(wc, "fetch_invoice_xml",
+                      side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http):
+        body = _execute(client)
+
+    assert body["ok"] is False
+    assert body["status"] == "failed"
+    assert body["verify_after_create_failed"] is True
+    assert "vat_code_id:" in body["error"]
+
+
+# ── 19. Per-line field verification: multiple mismatches reported together ────
+
+def test_verify_reports_all_field_mismatches_on_one_line(client, storage):
+    """If multiple fields mismatch on one line, all are reported."""
+    _seed_issued_proforma(storage)
+    fetch_calls = [
+        _proforma_xml(),
+        _created_invoice_xml(line_overrides={0: {
+            "name": "X", "price": "0.01", "vat_code_id": "999"
+        }}),
+    ]
+
+    def _fake_http(method, module, op, body):
+        return 200, _invoices_add_response()
+
+    with _gate_invoice_on(), \
+         patch.object(wc, "fetch_invoice_xml",
+                      side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http):
+        body = _execute(client)
+
+    assert body["ok"] is False
+    assert "name:" in body["error"]
+    assert "price:" in body["error"]
+    assert "vat_code_id:" in body["error"]
+
+
 # ── Source-grep: verify-after-create step exists in routes_proforma.py ───────
 
 def test_source_grep_verify_after_create_exists():
@@ -556,7 +729,7 @@ def test_source_grep_verify_after_create_exists():
 
 
 def test_source_grep_verify_checks_seven_properties():
-    """All 7 verification checks must be present."""
+    """All 7 verification checks + per-line field matching must be present."""
     routes = Path(__file__).resolve().parent.parent / "app" / "api" / "routes_proforma.py"
     src = routes.read_text(encoding="utf-8")
     # Check 1: id
@@ -567,9 +740,19 @@ def test_source_grep_verify_checks_seven_properties():
     assert "contractor mismatch" in src
     # Check 4: line count
     assert "line count mismatch" in src
+    # Check 4b: per-line fields
+    assert "line {idx} field mismatch" in src or "per-line field verification" in src
     # Check 5: currency
     assert "currency mismatch" in src
     # Check 6: total
     assert "total mismatch" in src
     # Check 7: receiver
     assert "contractor_receiver mismatch" in src
+
+
+def test_source_grep_per_line_checks_all_fields():
+    """Check 4b verifies name, good_id, unit_count, price, vat_code_id."""
+    routes = Path(__file__).resolve().parent.parent / "app" / "api" / "routes_proforma.py"
+    src = routes.read_text(encoding="utf-8")
+    for field in ("_a_name", "_a_good_id", "_a_unit_count", "_a_price", "_a_vat_id"):
+        assert field in src, f"per-line verification variable {field!r} not found"

@@ -3460,6 +3460,50 @@ def proforma_to_invoice(
                 f"(wFirma silently dropped lines)"
             )
 
+        # Check 4b: per-line field verification (name, good_id, unit_count, price, vat)
+        for idx, (expected_line, actual_el) in enumerate(
+            zip(plan.contents, v_lines), start=1
+        ):
+            _a_name = (actual_el.findtext("name") or "").strip()
+            _a_good_node = actual_el.find("good")
+            _a_good_id = (
+                (_a_good_node.findtext("id") or "").strip()
+                if _a_good_node is not None else ""
+            )
+            _a_unit_count = (actual_el.findtext("unit_count") or "").strip()
+            _a_price = (actual_el.findtext("price") or "").strip()
+            _a_vat_node = actual_el.find("vat_code")
+            _a_vat_id = (
+                (_a_vat_node.findtext("id") or "").strip()
+                if _a_vat_node is not None else ""
+            )
+            _mismatches = []
+            if _a_name != expected_line.name:
+                _mismatches.append(
+                    f"name: expected={expected_line.name!r} got={_a_name!r}"
+                )
+            if _a_good_id != expected_line.good_id:
+                _mismatches.append(
+                    f"good_id: expected={expected_line.good_id!r} got={_a_good_id!r}"
+                )
+            if _a_unit_count != expected_line.unit_count:
+                _mismatches.append(
+                    f"unit_count: expected={expected_line.unit_count!r} got={_a_unit_count!r}"
+                )
+            if _a_price != expected_line.price:
+                _mismatches.append(
+                    f"price: expected={expected_line.price!r} got={_a_price!r}"
+                )
+            if _a_vat_id != expected_line.vat_code_id:
+                _mismatches.append(
+                    f"vat_code_id: expected={expected_line.vat_code_id!r} got={_a_vat_id!r}"
+                )
+            if _mismatches:
+                raise RuntimeError(
+                    f"verify-after-create: line {idx} field mismatch — "
+                    + "; ".join(_mismatches)
+                )
+
         # Check 5: currency matches
         v_currency = (v_inv.findtext("currency") or "").strip()
         if v_currency and v_currency != plan.currency:
