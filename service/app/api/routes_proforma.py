@@ -3405,6 +3405,174 @@ def proforma_to_invoice(
             "error":            f"{type(exc).__name__}: {exc}",
         })
 
+    # 6b. Verify-after-create: fetch the created invoice back from wFirma
+    # and confirm it matches the source proforma's shape. This mirrors the
+    # pattern in create_proforma_draft() but checks type, contractor,
+    # line count, currency, total (within rounding), and receiver.
+    # Failure here means the invoice EXISTS in wFirma but is malformed —
+    # mark_failed so the operator knows to inspect manually.
+    try:
+        verify_xml = wfirma_client.fetch_invoice_xml(wfirma_inv_id)
+        import xml.etree.ElementTree as _VET
+        verify_root = _VET.fromstring(verify_xml)
+        v_inv = verify_root.find(".//invoice")
+        if v_inv is None:
+            raise RuntimeError(
+                f"verify-after-create: fetched invoice {wfirma_inv_id} "
+                "but no <invoice> element in response"
+            )
+
+        # Check 1: invoice ID exists (already guaranteed by reaching here)
+        v_id = (v_inv.findtext("id") or "").strip()
+        if not v_id:
+            raise RuntimeError(
+                "verify-after-create: fetched invoice has empty <id>"
+            )
+
+        # Check 2: type is normal (not proforma)
+        v_type = (v_inv.findtext("type") or "").strip().lower()
+        if v_type not in ("normal", "vat"):
+            raise RuntimeError(
+                f"verify-after-create: expected type='normal' or 'vat', "
+                f"got type={v_type!r} — wFirma may have created wrong document type"
+            )
+
+        # Check 3: contractor matches source proforma
+        v_contractor_node = v_inv.find("contractor")
+        v_contractor_id = (
+            (v_contractor_node.findtext("id") or "").strip()
+            if v_contractor_node is not None else ""
+        )
+        if v_contractor_id != plan.contractor_id:
+            raise RuntimeError(
+                f"verify-after-create: contractor mismatch — "
+                f"expected={plan.contractor_id!r} got={v_contractor_id!r}"
+            )
+
+        # Check 4: line count matches source proforma
+        v_lines = verify_root.findall(".//invoicecontent")
+        expected_line_count = len(plan.contents)
+        actual_line_count = len(v_lines)
+        if actual_line_count != expected_line_count:
+            raise RuntimeError(
+                f"verify-after-create: line count mismatch — "
+                f"expected={expected_line_count} persisted={actual_line_count} "
+                f"(wFirma silently dropped lines)"
+            )
+
+        # Check 4b: per-line field verification (name, good_id, unit_count, price, vat)
+        for idx, (expected_line, actual_el) in enumerate(
+            zip(plan.contents, v_lines), start=1
+        ):
+            _a_name = (actual_el.findtext("name") or "").strip()
+            _a_good_node = actual_el.find("good")
+            _a_good_id = (
+                (_a_good_node.findtext("id") or "").strip()
+                if _a_good_node is not None else ""
+            )
+            _a_unit_count = (actual_el.findtext("unit_count") or "").strip()
+            _a_price = (actual_el.findtext("price") or "").strip()
+            _a_vat_node = actual_el.find("vat_code")
+            _a_vat_id = (
+                (_a_vat_node.findtext("id") or "").strip()
+                if _a_vat_node is not None else ""
+            )
+            _mismatches = []
+            if _a_name != expected_line.name:
+                _mismatches.append(
+                    f"name: expected={expected_line.name!r} got={_a_name!r}"
+                )
+            if _a_good_id != expected_line.good_id:
+                _mismatches.append(
+                    f"good_id: expected={expected_line.good_id!r} got={_a_good_id!r}"
+                )
+            if _a_unit_count != expected_line.unit_count:
+                _mismatches.append(
+                    f"unit_count: expected={expected_line.unit_count!r} got={_a_unit_count!r}"
+                )
+            if _a_price != expected_line.price:
+                _mismatches.append(
+                    f"price: expected={expected_line.price!r} got={_a_price!r}"
+                )
+            if _a_vat_id != expected_line.vat_code_id:
+                _mismatches.append(
+                    f"vat_code_id: expected={expected_line.vat_code_id!r} got={_a_vat_id!r}"
+                )
+            if _mismatches:
+                raise RuntimeError(
+                    f"verify-after-create: line {idx} field mismatch — "
+                    + "; ".join(_mismatches)
+                )
+
+        # Check 5: currency matches
+        v_currency = (v_inv.findtext("currency") or "").strip()
+        if v_currency and v_currency != plan.currency:
+            raise RuntimeError(
+                f"verify-after-create: currency mismatch — "
+                f"expected={plan.currency!r} got={v_currency!r}"
+            )
+
+        # Check 6: total matches within rounding tolerance (0.02)
+        from decimal import Decimal as _D, InvalidOperation as _DI
+        v_total_str = (v_inv.findtext("total") or "0").strip()
+        try:
+            v_total = _D(v_total_str)
+        except _DI:
+            v_total = _D("0")
+        total_diff = abs(v_total - plan.expected_total)
+        if total_diff > _D("0.02"):
+            raise RuntimeError(
+                f"verify-after-create: total mismatch beyond tolerance — "
+                f"expected={plan.expected_total} got={v_total} "
+                f"diff={total_diff} (tolerance=0.02)"
+            )
+
+        # Check 7: contractor_receiver preserved when present
+        if plan.contractor_receiver_id:
+            v_rcv_node = v_inv.find("contractor_receiver")
+            v_rcv_id = (
+                (v_rcv_node.findtext("id") or "").strip()
+                if v_rcv_node is not None else ""
+            )
+            if v_rcv_id != plan.contractor_receiver_id:
+                raise RuntimeError(
+                    f"verify-after-create: contractor_receiver mismatch — "
+                    f"expected={plan.contractor_receiver_id!r} "
+                    f"got={v_rcv_id!r}"
+                )
+
+    except Exception as exc:
+        _vac_note = f"verify-after-create FAILED: {type(exc).__name__}: {exc}"
+        try:
+            plink.mark_failed(link_db, pid, notes=_vac_note[:500])
+        except Exception:
+            pass
+        # Audit: record the verification failure as a failed attempt.
+        try:
+            from ..services.audit_persist import record_invoice_approval_attempt
+            from ..core.config import settings as _s4
+            record_invoice_approval_attempt(
+                _s4.storage_root / "outputs" / batch_id / "audit.json",
+                batch_id=batch_id,
+                client_name=cn,
+                wfirma_proforma_id=pid,
+                operator=operator,
+                outcome="failed",
+                blocking_reason=_vac_note[:500],
+            )
+        except Exception:
+            pass
+        return JSONResponse({
+            "ok":               False,
+            "status":           "failed",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "wfirma_proforma_id": pid,
+            "wfirma_invoice_id": wfirma_inv_id,
+            "error":            _vac_note[:500],
+            "verify_after_create_failed": True,
+        })
+
     # 7. Promote link to issued. The expected_total comes from wFirma's
     # own recalculation of the line items; we trust it as the canonical
     # value and store it alongside the source_total for audit.

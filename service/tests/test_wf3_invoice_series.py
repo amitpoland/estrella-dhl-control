@@ -206,6 +206,22 @@ class TestConvertRouteSeriesPrecedence:
         # --- wFirma HTTP (captures the XML payload) ---
         _bodies: list = captured_xml if captured_xml is not None else []
 
+        # Created invoice XML for verify-after-create (matches the single line
+        # in the proforma fixture: name=Ring, good=42001, unit_count=1, price=100.00, vat=228)
+        _created_inv_xml = (
+            '<?xml version="1.0"?><api><invoices><invoice>'
+            '<id>INV-NEW-001</id><type>normal</type>'
+            '<fullnumber>FV 1/2026</fullnumber>'
+            '<currency>EUR</currency><total>100.00</total><netto>100.00</netto>'
+            '<contractor><id>9001</id></contractor>'
+            '<invoicecontents><invoicecontent>'
+            '<name>Ring</name><good><id>42001</id></good>'
+            '<unit>szt.</unit><unit_count>1</unit_count>'
+            '<price>100.00</price><vat_code><id>228</id></vat_code>'
+            '</invoicecontent></invoicecontents>'
+            '</invoice></invoices><status><code>OK</code></status></api>'
+        )
+
         def _fake_http(method, controller, action, body=""):
             _bodies.append(body)
             if controller == "invoices" and action == "add":
@@ -215,10 +231,13 @@ class TestConvertRouteSeriesPrecedence:
                     f'<invoices><invoice><id>INV-NEW-001</id>'
                     '<fullnumber>FV 1/2026</fullnumber></invoice></invoices></api>'
                 )
-            # fetch_invoice_xml (proforma fetch) — returns the proforma XML
+            # fetch_invoice_xml — differentiate by ID in the URL path:
+            # get/INV-NEW-001 is the verify-after-create fetch (return normal invoice)
+            # get/<anything else> is the source proforma fetch
+            if controller == "invoices" and action == "get/INV-NEW-001":
+                return 200, _created_inv_xml
             if controller == "invoices" and action.startswith("get/"):
                 return 200, _proforma_xml(series="PROF-SERIES-SNAP")
-            # Also catch the verify-after-create fetch pattern used by create_proforma_draft
             if controller == "invoices" and action == "get":
                 return 200, _proforma_xml(series="PROF-SERIES-SNAP")
             return 200, '<api><status><code>OK</code></status></api>'
