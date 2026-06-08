@@ -848,6 +848,7 @@ def list_customers(db_path: Path,
                    country: Optional[str] = None,
                    risk_status: Optional[str] = None,
                    limit: int = 200,
+                   q: Optional[str] = None,
                    *,
                    active: Optional[bool] = None) -> List[CustomerMaster]:
     """Read with optional filters.
@@ -855,11 +856,15 @@ def list_customers(db_path: Path,
     Phase 4B Wave 3b-2: ``active`` filter — None=no filter (all rows);
     True=active only; False=soft-deleted only. The route layer applies its
     own default policy (active-only when the query param is omitted).
+
+    ``q`` — case-insensitive substring search on bill_to_name.
     """
     if not Path(db_path).is_file():
         return []
     sql = "SELECT * FROM customer_master WHERE 1=1"
     params: list = []
+    if q:
+        sql += " AND LOWER(bill_to_name) LIKE ?"; params.append(f"%{q.strip().lower()}%")
     if country:
         sql += " AND country = ?"; params.append(country.upper())
     if risk_status:

@@ -398,15 +398,17 @@ def list_customers_endpoint(
     active:      Optional[str] = Query(None,
         description="omit = active-only (default); 'false' = inactive only; 'true' = active only"),
     limit:       int           = Query(200, ge=1, le=1000, description="Max rows returned"),
+    q:           Optional[str] = Query(None, description="Case-insensitive name search (substring)"),
 ) -> JSONResponse:
     """List customers with optional filters. Returns up to `limit` records,
     ordered by most-recently-updated first.
 
     Phase 4B Wave 3b-2: defaults to active-only when ``active`` is omitted.
+    ``q`` filters by case-insensitive substring match on bill_to_name.
     """
     try:
         records = list_customers(_DB_PATH, country=country,
-                                 risk_status=risk_status, limit=limit,
+                                 risk_status=risk_status, limit=limit, q=q,
                                  active=_resolve_list_active(active))
     except Exception as exc:
         log.error("list_customers failed: %s", exc, exc_info=True)

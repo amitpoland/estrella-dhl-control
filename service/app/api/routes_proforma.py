@@ -328,6 +328,7 @@ def _resolve_customer_via_master(
             "ambiguous":      True,
             "match_strategy": "ambiguous",
             "candidates":     [c.bill_to_name for c in exact_matches],
+            "candidate_ids":  [str(c.bill_to_contractor_id) for c in exact_matches],
         }
 
     # ── Prefix match (draft name ⊆ CM name) ────────────────────────
@@ -346,6 +347,7 @@ def _resolve_customer_via_master(
             "ambiguous":      True,
             "match_strategy": "ambiguous",
             "candidates":     [c.bill_to_name for c in prefix_matches],
+            "candidate_ids":  [str(c.bill_to_contractor_id) for c in prefix_matches],
         }
 
     # ── Reverse-prefix match (CM name ⊆ draft name) ────────────────
@@ -364,6 +366,7 @@ def _resolve_customer_via_master(
             "ambiguous":      True,
             "match_strategy": "ambiguous",
             "candidates":     [c.bill_to_name for c in rev_prefix_matches],
+            "candidate_ids":  [str(c.bill_to_contractor_id) for c in rev_prefix_matches],
         }
 
     # No match in Customer Master — caller falls through to wfirma cache
@@ -5592,6 +5595,14 @@ def _suggest_lookup(draft_id: int):
     Returns ``(draft, draft_currency, customer_master | None, blocked_reason | None)``.
     ``blocked_reason`` is a non-empty string when the call should return a
     blocked response; the other values are only meaningful when it is ``None``.
+
+    Authority chain (Customer Master is primary):
+      1. buyer_override_json.wfirma_customer_id — explicit operator selection
+         (stored when operator picks a candidate from the CustomerMappingTab).
+         Use this contractor_id directly; do NOT run name resolution.
+      2. Name resolution via _resolve_customer.  If ambiguous (multiple CM
+         candidates) and no explicit selection: block with a clear message so
+         the operator knows they must select first.
     """
     d = pildb.get_draft_by_id(_proforma_db_path(), draft_id)
     if d is None:
@@ -5604,7 +5615,40 @@ def _suggest_lookup(draft_id: int):
             "only EUR and USD drafts can receive suggestions"
         )
 
-    # Resolve customer via wFirma name → contractor_id → customer master
+    # ── Priority 1: explicit contractor selection stored in buyer_override ──
+    try:
+        buyer_override = json.loads(d.buyer_override_json or "{}") or {}
+    except Exception:
+        buyer_override = {}
+    override_contractor_id = (buyer_override.get("wfirma_customer_id") or "").strip()
+
+    if override_contractor_id:
+        cm = get_customer_master(_customer_master_db_path(), override_contractor_id)
+        if cm is None:
+            return d, draft_currency, None, (
+                f"Customer Master record not found for selected "
+                f"contractor_id={override_contractor_id!r} — "
+                "update the Customer Master entry or re-select the correct buyer"
+            )
+        return d, draft_currency, cm, None
+
+    # ── Priority 2: name-based resolution ──────────────────────────────────
+    # First check for ambiguity so the error message is actionable.
+    norm = _normalize_client_name(d.client_name or "")
+    if norm:
+        try:
+            cm_probe = _resolve_customer_via_master(norm)
+            if cm_probe is not None and cm_probe.get("ambiguous"):
+                candidates = cm_probe.get("candidates") or []
+                cands_str = ", ".join(f'"{c}"' for c in candidates[:5])
+                return d, draft_currency, None, (
+                    f"Customer {d.client_name!r} matches multiple Customer Master records "
+                    f"({cands_str}) — open the Customer Mapping tab and select the correct "
+                    "buyer before suggesting freight or insurance"
+                )
+        except Exception:
+            pass  # defensive — fall through to full resolution
+
     resolution = _resolve_customer(d.client_name)
     if not resolution.get("found") or not resolution.get("wfirma_customer_id"):
         return d, draft_currency, None, (

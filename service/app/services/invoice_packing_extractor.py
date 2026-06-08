@@ -428,6 +428,9 @@ _FIELD_ALIASES: Dict[str, str] = {
     "stone_type": "stone_type", "stone": "stone_type",  "gemstone": "stone_type",
     # value (EJL packing list — used for fuzzy matching to invoice rate/amount)
     "value":       "unit_price",
+    "price":       "unit_price",
+    "unit_price":  "unit_price",
+    "rate_usd":    "unit_price",
     "total_value": "total_value",
     "size":        "size",
     "client_po":   "client_po",      # sales-side PO reference
