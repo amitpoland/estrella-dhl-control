@@ -16,7 +16,12 @@ def require_api_key(
     pz_session: Optional[str] = Cookie(default=None),
 ) -> None:
     if not settings.api_key:
-        return                          # auth disabled in dev (preserves current prod posture)
+        if settings.environment == "prod":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Server misconfiguration: API_KEY is not configured.",
+            )
+        return  # dev only — auth disabled
 
     if key is not None and hmac.compare_digest(key, settings.api_key):
         return

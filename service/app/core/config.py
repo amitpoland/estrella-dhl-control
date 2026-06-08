@@ -16,7 +16,8 @@ class Settings(BaseSettings):
 
     # ── Session / JWT auth ────────────────────────────────────────────────────
     # Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
-    auth_secret_key: str = "change-me-in-production-use-a-random-32-byte-hex"
+    # Must be non-empty and non-placeholder in production — startup raises if not set.
+    auth_secret_key: str = Field(default="")
     auth_db_path: str = ""   # defaults to storage_root/users.db if empty
 
     # ── Storage ───────────────────────────────────────────────────────────────

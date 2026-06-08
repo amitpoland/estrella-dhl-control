@@ -218,12 +218,22 @@ def _attachments_for_queue(queue_entry: Dict[str, Any]) -> Tuple[List[Path], Lis
 
     found_l: List[Path] = []
     missing_l: List[str] = []
+    _storage_root = settings.storage_root.resolve()
     for a in candidates:
         path_str = a.get("path") if isinstance(a, dict) else ""
         if path_str:
             p = Path(path_str)
-            if p.is_file():
-                found_l.append(p)
+            try:
+                resolved = p.resolve()
+                resolved.relative_to(_storage_root)
+            except (ValueError, OSError):
+                log.warning(
+                    "[email_sender] legacy attachment path outside storage_root — skipped: %s", path_str
+                )
+                missing_l.append(a.get("label") or path_str)
+                continue
+            if resolved.is_file():
+                found_l.append(resolved)
             else:
                 missing_l.append(a.get("label") or path_str)
     return found_l, missing_l
@@ -266,6 +276,12 @@ def _expected_attachment_count(queue_entry: Dict[str, Any]) -> int:
     return 0
 
 
+def _sanitize_header(value: str) -> str:
+    """Strip characters that enable MIME header injection."""
+    import re as _re
+    return _re.sub(r"[\r\n\x00]", "", value)
+
+
 def _build_mime(
     sender:     str,
     to_list:    List[str],
@@ -276,11 +292,11 @@ def _build_mime(
     attachments: List[Path],
 ) -> MIMEMultipart:
     msg = MIMEMultipart("mixed")
-    msg["From"]    = sender
-    msg["To"]      = ", ".join(to_list)
+    msg["From"]    = _sanitize_header(sender)
+    msg["To"]      = ", ".join(_sanitize_header(addr) for addr in to_list)
     if cc_list:
-        msg["Cc"]  = ", ".join(cc_list)
-    msg["Subject"] = subject
+        msg["Cc"]  = ", ".join(_sanitize_header(addr) for addr in cc_list)
+    msg["Subject"] = _sanitize_header(subject)
     msg["Date"]    = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid()
 

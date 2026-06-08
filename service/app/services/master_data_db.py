@@ -1854,8 +1854,19 @@ def upsert_company_profile(db_path: Path, **fields) -> CompanyProfile:
 # The legacy ``delete_X`` functions remain hard-delete primitives so callers
 # that test the low-level contract continue to work without change.
 
+import re as _re_md
+_SAFE_SQL_IDENTIFIER = _re_md.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+def _assert_safe_identifier(name: str) -> None:
+    if not _SAFE_SQL_IDENTIFIER.match(name):
+        raise ValueError(f"Unsafe SQL identifier rejected: {name!r}")
+
+
 def _soft_delete_by_pk(db_path: Path, table: str, pk_column: str,
                        pk_value: Any) -> bool:
+    _assert_safe_identifier(table)
+    _assert_safe_identifier(pk_column)
     db_path = Path(db_path)
     if not db_path.exists():
         return False
@@ -1872,6 +1883,8 @@ def _soft_delete_by_pk(db_path: Path, table: str, pk_column: str,
 
 def _restore_by_pk(db_path: Path, table: str, pk_column: str,
                    pk_value: Any) -> bool:
+    _assert_safe_identifier(table)
+    _assert_safe_identifier(pk_column)
     db_path = Path(db_path)
     if not db_path.exists():
         return False

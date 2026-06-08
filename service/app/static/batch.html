@@ -1206,7 +1206,7 @@ async function uploadSadFile(evt, batchId) {
   const fd = new FormData();
   fd.append('sad', file);
   try {
-    const r = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/sad`, { method: 'POST', body: fd });
+    const r = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/sad`, { method: 'POST', body: fd, credentials: 'include' });
     const d = await r.json();
     if (!r.ok) { alert('SAD upload failed: ' + (d.detail || r.status)); return; }
     alert('SAD uploaded. Shipment is now ready for processing.');
@@ -1218,7 +1218,7 @@ async function uploadSadFile(evt, batchId) {
 async function processShipment(batchId) {
   if (!confirm('Start processing this shipment now?')) return;
   try {
-    const r = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/process`, { method: 'POST' });
+    const r = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/process`, { method: 'POST', credentials: 'include' });
     const d = await r.json();
     if (!r.ok) { alert('Could not start processing: ' + (d.detail || r.status)); return; }
     alert('Processing started. The page will refresh automatically when done.');
@@ -1243,7 +1243,7 @@ async function confirmPzNumber(batchId) {
   const fd = new FormData();
   fd.append('pz_number', pz.trim());
   try {
-    const r = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/set_pz`, { method: 'POST', body: fd });
+    const r = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/set_pz`, { method: 'POST', body: fd, credentials: 'include' });
     const d = await r.json();
     if (!r.ok) { alert('Could not save PZ number: ' + (d.detail || r.status)); return; }
     window.location.reload();

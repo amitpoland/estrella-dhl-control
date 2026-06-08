@@ -1407,7 +1407,11 @@ async def download_source_file(batch_id: str, category: str, filename: str) -> F
         raise HTTPException(status_code=404, detail="Source file not found.")
 
     media = "application/pdf"  # all source files are PDFs
-    return FileResponse(path=str(file_path), media_type=media, filename=filename)
+    return FileResponse(
+        path=str(file_path), media_type=media, filename=filename,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                 "Pragma": "no-cache", "Expires": "0"},
+    )
 
 
 @router.get("/files/{batch_id}/{filename}", dependencies=[_auth])
@@ -1425,4 +1429,8 @@ async def download_file(batch_id: str, filename: str) -> FileResponse:
         media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     else:
         media = "text/plain; charset=utf-8"
-    return FileResponse(path=str(file_path), media_type=media, filename=filename)
+    return FileResponse(
+        path=str(file_path), media_type=media, filename=filename,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                 "Pragma": "no-cache", "Expires": "0"},
+    )

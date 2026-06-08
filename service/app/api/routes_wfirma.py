@@ -1431,6 +1431,8 @@ async def wfirma_json(batch_id: str) -> FileResponse:
         path=str(out_path),
         media_type="application/json",
         filename=f"PZ_READY_{batch_id}.json",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                 "Pragma": "no-cache", "Expires": "0"},
     )
 
 

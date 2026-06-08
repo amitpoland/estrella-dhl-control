@@ -99,6 +99,10 @@ def _download_attachment(token: str, account_id: str, message_id: str,
         import requests
     except ImportError:
         return False
+    import re as _re
+    if not _re.match(r'^[A-Za-z0-9._\-]+$', str(attachment_id)):
+        log.warning("[ingest] attachment_id contains unsafe chars — skipped: %r", attachment_id)
+        return False
     url = f"{api_base.rstrip('/')}/accounts/{account_id}/messages/{message_id}/attachments/{attachment_id}"
     headers = {"Authorization": f"Zoho-oauthtoken {token}"}
     try:

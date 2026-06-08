@@ -133,7 +133,7 @@ def _set_session_cookie(response: Response, token: str, remember: bool) -> None:
         value=token,
         httponly=True,
         samesite="lax",
-        secure=False,   # set True behind HTTPS / Cloudflare
+        secure=settings.environment == "prod",
         max_age=max_age,
         path="/",
     )
@@ -352,11 +352,11 @@ async def admin_get_active_reset_code(
             detail="No active reset code for this user. Ask the user to request a new one via /forgot-password.",
         )
     return {
-        "ok":         True,
-        "user_email": target["email"],
-        "code":       row["token"],
-        "expires_at": row["expires_at"],
-        "note":       "Share this code with the user via a secure channel. Code is single-use.",
+        "ok":             True,
+        "user_email":     target["email"],
+        "has_active_code": True,
+        "expires_at":     row["expires_at"],
+        "note":           "Use POST /auth/forgot-password to re-email the code. Direct code retrieval is disabled.",
     }
 
 

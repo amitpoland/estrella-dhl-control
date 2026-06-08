@@ -20,14 +20,18 @@ Tests:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
+
 _SVC = Path(__file__).parent.parent
 sys.path.insert(0, str(_SVC))
 
-from app.api.routes_upload import _mark_agency_documents_received
+from app.api.routes_upload import _mark_agency_documents_received, _save
 
 
 def _write_audit(audit_path: Path, data: dict) -> None:
@@ -199,3 +203,43 @@ def test_parser_guard_passes_after_direct_upload(tmp_path):
     docs = audit.get("agency_documents_received") or {}
     assert isinstance(docs, dict), "Parser expects dict, not bool — .get() would fail on True"
     assert docs.get("received") is True, "Parser G4a guard must pass"
+
+
+# ── 8. H-R2 (PR #488): PDF magic-byte validation in _save ────────────────────
+# A `.pdf` destination must reject content that does not begin with `%PDF`.
+# Scoped strictly to the PR #488 magic-byte fix — no broadening of upload
+# behaviour.
+
+class _FakeUpload:
+    """Minimal UploadFile stand-in. `_save` only uses `.filename` and
+    `await .read()`, so a tiny async shim is sufficient (no Starlette
+    SpooledTemporaryFile needed)."""
+
+    def __init__(self, filename: str, data: bytes) -> None:
+        self.filename = filename
+        self._data = data
+
+    async def read(self) -> bytes:
+        return self._data
+
+
+def test_pdf_upload_rejects_non_pdf_magic_bytes(tmp_path):
+    """A .pdf upload whose bytes do not start with %PDF is rejected (400)
+    and is NOT written to disk."""
+    dest = tmp_path / "fake.pdf"
+    upload = _FakeUpload("fake.pdf", b"NOT-A-PDF-payload-bytes-1234")
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(_save(upload, dest))
+    assert exc.value.status_code == 400
+    assert "valid PDF" in str(exc.value.detail)
+    assert not dest.exists(), "rejected upload must not be written to disk"
+
+
+def test_pdf_upload_accepts_valid_pdf_magic_bytes(tmp_path):
+    """A .pdf upload that begins with %PDF passes the magic-byte check and is
+    written (confirms the H-R2 guard does not false-reject real PDFs)."""
+    dest = tmp_path / "real.pdf"
+    upload = _FakeUpload("real.pdf", b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n")
+    asyncio.run(_save(upload, dest))
+    assert dest.exists()
+    assert dest.read_bytes().startswith(b"%PDF")

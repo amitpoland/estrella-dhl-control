@@ -1,6 +1,6 @@
 """
 test_auth_forgot_password_email.py — Production incident 2026-05-13 (Tejal
-lockout): the prior forgot-password endpoint generated a 6-digit reset code
+lockout): the prior forgot-password endpoint generated a reset code
 but returned it in the response body as `_debug_code` instead of emailing
 the user. The UI label "code routed to admin" was honest about the missing
 delivery path. This test suite covers the fix:
@@ -14,6 +14,7 @@ delivery path. This test suite covers the fix:
 from __future__ import annotations
 
 import json as _json
+import re as _re
 import sys
 from pathlib import Path
 
@@ -60,6 +61,19 @@ def _login(client, email: str, password: str):
     })
 
 
+# Reset codes are now secrets.token_hex(4) → exactly 8 lowercase hex chars
+# (PR #488 H-A2: replaced the old 6-digit numeric code).
+_HEX8 = _re.compile(r"^[0-9a-f]{8}$")
+
+
+def _extract_reset_code(body_text: str):
+    """Return the 8-hex reset code embedded in an email body, or None."""
+    for part in body_text.replace("\n", " ").split():
+        if _HEX8.match(part):
+            return part
+    return None
+
+
 # ── forgot-password emails the code ──────────────────────────────────────────
 
 def test_forgot_password_queues_email_with_code(client, tmp_path):
@@ -78,10 +92,9 @@ def test_forgot_password_queues_email_with_code(client, tmp_path):
     entry = entries[0]
     assert entry["to"] == "tejal@estrellajewels.com"
     assert "reset" in entry["subject"].lower()
-    # The 6-digit code must appear in both text and HTML bodies
-    assert any(part.isdigit() and len(part) == 6
-               for part in entry["body_text"].replace("\n", " ").split()), \
-        f"6-digit code not present in body_text: {entry['body_text'][:200]}"
+    # The 8-hex code must appear in the text body
+    assert _extract_reset_code(entry["body_text"]) is not None, \
+        f"8-hex reset code not present in body_text: {entry['body_text'][:200]}"
     assert "estrellajewels.eu/forgot-password" in entry["body_html"]
 
 
@@ -119,11 +132,7 @@ def test_forgot_password_reset_token_persisted(client, tmp_path):
 
     # Recover code from queue
     entries = _json.loads((tmp_path / "email_queue.json").read_text())
-    code_from_email = None
-    for part in entries[0]["body_text"].replace("\n", " ").split():
-        if part.isdigit() and len(part) == 6:
-            code_from_email = part
-            break
+    code_from_email = _extract_reset_code(entries[0]["body_text"])
     assert code_from_email is not None
 
     # The same code resets the password
@@ -142,8 +151,9 @@ def test_forgot_password_reset_token_persisted(client, tmp_path):
 # ── Admin reset-code recovery endpoint ───────────────────────────────────────
 
 def test_admin_can_recover_active_reset_code(client):
-    """Admin can fetch the latest active reset code if email delivery
-    failed — recovery surface for production incidents."""
+    """Admin can confirm an active reset code EXISTS (presence + expiry only).
+    H-A4 (PR #488): the plaintext code is no longer returned in the response —
+    admins re-email it via /auth/forgot-password instead."""
     signup_body = _signup(client)
     # Log in to get session cookie
     login_resp = _login(client, "tejal@estrellajewels.com", "Test1234!")
@@ -160,7 +170,9 @@ def test_admin_can_recover_active_reset_code(client):
     body = r.json()
     assert body["ok"] is True
     assert body["user_email"] == "tejal@estrellajewels.com"
-    assert body["code"].isdigit() and len(body["code"]) == 6
+    # H-A4: plaintext code must NOT be exposed; only presence + expiry.
+    assert "code" not in body
+    assert body["has_active_code"] is True
     assert "expires_at" in body
 
 
