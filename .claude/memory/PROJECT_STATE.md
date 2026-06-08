@@ -4458,6 +4458,55 @@ Group D — Tests (3 new files):
 
 # DECISIONS
 
+## Description Engine — Single Authority, Multiple Renderers (2026-06-08)
+
+**Origin**: Operator architectural directive during AWB 9938632830 Polish description review. Operator reviewed generated customs descriptions against commercial invoice and DHL AWB, identified language improvements, then elevated the scope: description generation is not a customs feature — it is a product authority feature.
+
+**Decision**: `polish_description_generator.py` must NOT remain a customs-only renderer. It must be refactored into a unified **Description Engine** that serves as the single authority for all jewelry descriptions across the platform.
+
+**Authority model** — source data (product master):
+- Product type (Ring, Pendant, Earrings, Bracelet, Necklace, etc.)
+- Metal type and purity (Gold 585, Silver 925, etc.)
+- Stone type(s) (Diamond, Ruby, Sapphire, etc.)
+- Product category
+
+**Output renderers** (all derived from same authority record):
+
+| Output | Purpose | Example (Ring, Gold 585, Diamond) |
+|--------|---------|-----------------------------------|
+| Product Description PL | Product master, invoice, proforma, PZ | Pierścionek z 14-karatowego złota próby 585 z diamentami |
+| Product Description EN | Product master, invoice, proforma | Diamond 14KT Gold Ring |
+| Customs Description PL | DHL, customs documents | Pierścionek z 14-karatowego złota (próba 585) wysadzany diamentami. Biżuteria do noszenia. |
+| Customs Description EN | DHL, customs documents | 14KT Gold Ring Set With Diamonds. Personal Jewellery. |
+| Short Description | PZ notes, audit notes | Ring Au585 DIA |
+| Marketing Description | Website/catalog (optional, future) | — |
+
+**Bilingual format for invoices/proformas/PZ/product master/wFirma**:
+`pierścionek z 14-karatowego złota próby 585 z diamentami / Diamond 14KT Gold Ring`
+(Polish first, then English after "/")
+
+**Architecture** — Description Engine components:
+1. Metal dictionary (type → purity → PL/EN names, karat equivalents)
+2. Stone dictionary (type → PL/EN names, precious vs. jubilerskie/ozdobne classification)
+3. Product type dictionary (category → PL/EN base nouns, grammatical gender for PL)
+4. Grammar engine (PL) — gender agreement (wysadzany/wysadzane), case declension
+5. Output renderers: `invoice_renderer`, `customs_renderer`, `pz_renderer`, `product_master_renderer`
+
+**Key principle**: Improve wording once → invoices, PZs, customs documents, and product masters all improve automatically. No duplicate description logic in multiple places.
+
+**Polish language corrections** (from operator review, apply in engine):
+- Gold: `z 14-karatowego złota (próba 585)` not `ze złota próby 585`
+- Stone setting: `wysadzany/wysadzane` with gender agreement, not `z diamentami`
+- Customs suffix: `Biżuteria do noszenia.` (Personal Jewellery)
+- Material list: comma-separated with `oraz` conjunction
+- Stone terminology: `kamienie szlachetne` (precious), `kamienie jubilerskie` (semi-precious), `kamienie ozdobne` (decorative) — must match actual stone classification on invoice
+
+**Status**: APPROVED (operator directive). Implementation not yet started. Requires explicit operator "go ahead" before coding begins.
+
+**Governance**: This is a workflow-class change per Lesson I. Authority owner = Description Engine. Workflow class = product description generation. All existing consumers of `polish_description_generator.py` must migrate to the unified engine.
+
+---
+
 ## Atlas V2 Governance Rule — Future Capability Preservation / Lesson M (2026-06-07)
 
 **Origin**: Operator directive following Atlas V2 Final Closure Audit. Permanent governance rule — applies to ALL future V2 work. Recorded as **Lesson M** in CLAUDE.md Engineering Lessons. (Note: Letter "L" was already assigned to the PowerShell BOM/JSON rule from 2026-05-28.) Scope expanded 2026-06-07 to cover the full taxonomy of capability suppression observed across Atlas sprints (not just button deletion — also tab hiding, section removal, static-text replacement, comment relocation, placeholder deletion).
