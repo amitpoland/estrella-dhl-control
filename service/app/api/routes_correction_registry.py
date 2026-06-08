@@ -22,12 +22,14 @@ from typing import Any, Dict, List, Optional
 
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..auth.dependencies import require_admin
 from ..services import correction_registry as cr
 
 log = get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/corrections", tags=["corrections"])
-_auth  = Depends(require_api_key)
+_auth       = Depends(require_api_key)
+_admin_auth = Depends(require_admin)
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -56,7 +58,7 @@ class CorrectionIn(BaseModel):
 
 # ── Append-only write ────────────────────────────────────────────────────────
 
-@router.post("", dependencies=[_auth])
+@router.post("", dependencies=[_admin_auth])
 def post_correction(body: CorrectionIn) -> Dict[str, Any]:
     """
     Append one correction. This is the only write endpoint. It does

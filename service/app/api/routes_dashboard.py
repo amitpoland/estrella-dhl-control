@@ -19,7 +19,7 @@ from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.security import require_api_key
 from ..utils.batch_lock import batch_write_lock
-from ..auth.dependencies import require_admin
+from ..auth.dependencies import require_admin, require_role
 from ..core import timeline as tl
 from ..services import cliq_service
 from ..utils.io import write_json_atomic
@@ -36,8 +36,10 @@ log = get_logger(__name__)
 DeliveryStatus = Literal["success", "failed", "skipped"]
 _ARCHIVE_RETENTION_DAYS = 14
 
-router = APIRouter(prefix="/dashboard", tags=["dashboard"])
-_auth  = Depends(require_api_key)
+router    = APIRouter(prefix="/dashboard", tags=["dashboard"])
+_auth     = Depends(require_api_key)
+_admin_auth = Depends(require_admin)
+_op_auth  = Depends(require_role("admin", "logistics", "accounts"))
 
 _OUTPUTS  = settings.storage_root / "outputs"
 _WORKING  = settings.storage_root / "working"
@@ -782,7 +784,7 @@ def batch_detail(batch_id: str) -> Dict[str, Any]:
 
 # ── Delete individual file from batch ────────────────────────────────────────
 
-@router.delete("/batches/{batch_id}/files/{filename}", dependencies=[_auth])
+@router.delete("/batches/{batch_id}/files/{filename}", dependencies=[_admin_auth])
 def delete_batch_file(batch_id: str, filename: str) -> Dict[str, Any]:
     """Delete a single file from a batch output folder."""
     if "/" in batch_id or ".." in batch_id:
@@ -809,7 +811,7 @@ def delete_batch_file(batch_id: str, filename: str) -> Dict[str, Any]:
     return {"ok": True, "deleted": filename, "files": _build_files_detail(batch_id)}
 
 
-@router.delete("/batches/{batch_id}/files/source/{category}/{filename}", dependencies=[_auth])
+@router.delete("/batches/{batch_id}/files/source/{category}/{filename}", dependencies=[_admin_auth])
 def delete_source_file(batch_id: str, category: str, filename: str) -> Dict[str, Any]:
     """Delete a source file (invoice, AWB, SAD) from a batch."""
     if "/" in batch_id or ".." in batch_id:
@@ -838,7 +840,7 @@ def delete_source_file(batch_id: str, category: str, filename: str) -> Dict[str,
             "files": _build_files_detail(batch_id)}
 
 
-@router.delete("/batches/{batch_id}/polish-description", dependencies=[_auth])
+@router.delete("/batches/{batch_id}/polish-description", dependencies=[_admin_auth])
 def delete_polish_description(batch_id: str) -> Dict[str, Any]:
     """
     Delete this batch's Polish customs description PDF.
@@ -923,7 +925,7 @@ def delete_polish_description(batch_id: str) -> Dict[str, Any]:
     return {"ok": True, "deleted": fn, "batch_id": batch_id}
 
 
-@router.post("/batches/{batch_id}/regenerate", dependencies=[_auth])
+@router.post("/batches/{batch_id}/regenerate", dependencies=[_op_auth])
 def regenerate_outputs(batch_id: str) -> Dict[str, Any]:
     """Delete existing output files and re-trigger processing for a batch."""
     if "/" in batch_id or ".." in batch_id:
@@ -979,7 +981,7 @@ class OperatorOverrideRequest(BaseModel):
     evidence_reference: str = ""
 
 
-@router.post("/batches/{batch_id}/operator-override", dependencies=[_auth])
+@router.post("/batches/{batch_id}/operator-override", dependencies=[_admin_auth])
 def add_operator_override(
     batch_id: str,
     body: OperatorOverrideRequest,
@@ -1226,7 +1228,7 @@ class BrokerFollowupSendRequest(BaseModel):
     from_address: str = ""    # optional sender override
 
 
-@router.post("/broker-followups/{batch_id}/send", dependencies=[_auth])
+@router.post("/broker-followups/{batch_id}/send", dependencies=[_op_auth])
 def send_broker_followup(
     batch_id: str,
     body:     BrokerFollowupSendRequest,
@@ -1526,7 +1528,7 @@ def _classify_broker_reply(text: str) -> Dict[str, Any]:
     }
 
 
-@router.post("/broker-reply/analyze", dependencies=[_auth])
+@router.post("/broker-reply/analyze", dependencies=[_op_auth])
 def analyze_broker_reply(body: BrokerReplyAnalyzeRequest) -> Dict[str, Any]:
     """Read-only classifier for pasted broker email replies.
 
@@ -2207,7 +2209,7 @@ def dhl_action_state(batch_id: str) -> Dict[str, Any]:
     return _compute_dhl_action_state(audit)
 
 
-@router.post("/batches/{batch_id}/email-evidence/rescan", dependencies=[_auth])
+@router.post("/batches/{batch_id}/email-evidence/rescan", dependencies=[_op_auth])
 def email_evidence_rescan(batch_id: str) -> Dict[str, Any]:
     """Scan Zoho Mail for this AWB and store any new messages in the evidence store."""
     _validate_batch_id(batch_id)
@@ -2227,7 +2229,7 @@ def email_evidence_rescan(batch_id: str) -> Dict[str, Any]:
         return {"ok": False, "awb": awb, "error": str(exc)}
 
 
-@router.post("/batches/{batch_id}/email-evidence/process", dependencies=[_auth])
+@router.post("/batches/{batch_id}/email-evidence/process", dependencies=[_op_auth])
 def email_evidence_process(batch_id: str) -> Dict[str, Any]:
     """Run the evidence processor against stored evidence (no Zoho call)."""
     _validate_batch_id(batch_id)
@@ -3064,7 +3066,7 @@ def _record_cn_decision(
     }
 
 
-@router.post("/batches/{batch_id}/cn-decision/accept-sad", dependencies=[_auth])
+@router.post("/batches/{batch_id}/cn-decision/accept-sad", dependencies=[_op_auth])
 def cn_decision_accept_sad(
     batch_id: str,
     body: CNDecisionRequest,
@@ -3086,7 +3088,7 @@ def cn_decision_accept_sad(
 
 
 @router.post("/batches/{batch_id}/cn-decision/correct-internal",
-             dependencies=[_auth])
+             dependencies=[_op_auth])
 def cn_decision_correct_internal(
     batch_id: str,
     body: CNDecisionRequest,
@@ -3107,7 +3109,7 @@ def cn_decision_correct_internal(
 
 
 @router.post("/batches/{batch_id}/cn-decision/escalate-agent",
-             dependencies=[_auth])
+             dependencies=[_op_auth])
 def cn_decision_escalate_agent(
     batch_id: str,
     body: CNDecisionRequest,
@@ -3132,7 +3134,7 @@ class ArchiveRequest(BaseModel):
     reason: str = ""
 
 
-@router.delete("/batches/{batch_id}", dependencies=[_auth])
+@router.delete("/batches/{batch_id}", dependencies=[_admin_auth])
 def delete_batch(batch_id: str, body: ArchiveRequest = ArchiveRequest()) -> Dict[str, Any]:
     """
     Archive a shipment: moves it to storage/archived/ with 14-day retention.
@@ -3205,7 +3207,7 @@ def list_archived() -> List[Dict[str, Any]]:
 
 # ── Restore a shipment ────────────────────────────────────────────────────────
 
-@router.post("/archive/{batch_id}/restore", dependencies=[_auth])
+@router.post("/archive/{batch_id}/restore", dependencies=[_admin_auth])
 def restore_batch(batch_id: str) -> Dict[str, Any]:
     """Restore an archived shipment back to active outputs."""
     _validate_batch_id(batch_id)
@@ -3378,7 +3380,7 @@ class RecheckRequest(BaseModel):
     mode: str = "all"
 
 
-@router.post("/batches/{batch_id}/recheck", dependencies=[_auth])
+@router.post("/batches/{batch_id}/recheck", dependencies=[_op_auth])
 async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) -> Dict[str, Any]:
     """
     Re-run parsers against existing uploaded source files.
@@ -3768,7 +3770,7 @@ async def _is_link_alive(url: str) -> bool:
 
 # ── Resend to Cliq ────────────────────────────────────────────────────────────
 
-@router.post("/batches/{batch_id}/resend", dependencies=[_auth])
+@router.post("/batches/{batch_id}/resend", dependencies=[_op_auth])
 async def resend_to_cliq(batch_id: str) -> Dict[str, Any]:
     if "/" in batch_id or ".." in batch_id:
         raise HTTPException(status_code=400, detail="Invalid batch_id.")

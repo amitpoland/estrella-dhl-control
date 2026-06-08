@@ -100,41 +100,17 @@ _MUTATION_METHODS: frozenset[str] = frozenset({"post", "put", "patch", "delete"}
 # ---------------------------------------------------------------------------
 
 # Area 1 — Proposals / control / dashboard ops
-_AREA1_ROUTES: frozenset[str] = frozenset({
-    "routes_action_proposals.py:POST:/{batch_id}/refresh",
-    "routes_action_proposals.py:POST:/{proposal_id}/approve",
-    "routes_action_proposals.py:POST:/{proposal_id}/queue",
-    "routes_action_proposals.py:POST:/{proposal_id}/reject",
-    "routes_action_proposals.py:POST:/{proposal_id}/resolve",
-    "routes_correction_registry.py:POST:",
-    "routes_customer_master.py:POST:/dictionaries/refresh",
-    "routes_customer_master.py:POST:/sync-from-wfirma/apply",
-    "routes_dashboard.py:DELETE:/batches/{batch_id}",
-    "routes_dashboard.py:DELETE:/batches/{batch_id}/files/source/{category}/{filename}",
-    "routes_dashboard.py:DELETE:/batches/{batch_id}/files/{filename}",
-    "routes_dashboard.py:DELETE:/batches/{batch_id}/polish-description",
-    "routes_dashboard.py:POST:/archive/{batch_id}/restore",
-    "routes_dashboard.py:POST:/batches/{batch_id}/cn-decision/accept-sad",
-    "routes_dashboard.py:POST:/batches/{batch_id}/cn-decision/correct-internal",
-    "routes_dashboard.py:POST:/batches/{batch_id}/cn-decision/escalate-agent",
-    "routes_dashboard.py:POST:/batches/{batch_id}/email-evidence/process",
-    "routes_dashboard.py:POST:/batches/{batch_id}/email-evidence/rescan",
-    "routes_dashboard.py:POST:/batches/{batch_id}/operator-override",
-    "routes_dashboard.py:POST:/batches/{batch_id}/recheck",
-    "routes_dashboard.py:POST:/batches/{batch_id}/regenerate",
-    "routes_dashboard.py:POST:/batches/{batch_id}/resend",
-    "routes_dashboard.py:POST:/broker-followups/{batch_id}/send",
-    "routes_dashboard.py:POST:/broker-reply/analyze",
-    "routes_monitor.py:POST:/active-shipments/run",
-    "routes_orchestrator.py:POST:/dry-run",
-    "routes_orchestrator.py:POST:/tick",
-    "routes_proposals.py:POST:/capture",
-    "routes_proposals.py:POST:/{proposal_id}/approve",
-    "routes_proposals.py:POST:/{proposal_id}/reject",
-    "routes_settings.py:PATCH:/company-profile",
-    "routes_suppliers.py:POST:/sync-from-wfirma",
-    "routes_suppliers.py:POST:/sync-from-wfirma/apply",
-})
+# PHASE C AREA 1 COMPLETE (2026-06-08) — all 33 routes upgraded to privileged guards.
+# routes_action_proposals: require_role("admin","logistics","accounts") [5]
+# routes_correction_registry: require_admin [1]
+# routes_customer_master: require_admin [2]
+# routes_dashboard: require_admin (DELETE+override+restore) + require_role(...) (ops) [16]
+# routes_monitor: require_admin [1]
+# routes_orchestrator: require_admin [2]
+# routes_proposals: require_role("admin","logistics","accounts") [3]
+# routes_settings: require_admin [1]
+# routes_suppliers: require_admin [2]
+_AREA1_ROUTES: frozenset[str] = frozenset()
 
 # Area 2 — DHL ops
 _AREA2_ROUTES: frozenset[str] = frozenset({
@@ -563,6 +539,7 @@ class TestRbacStructuralAllowlist:
 
         Allowlist total at Phase A inventory (2026-06-08): 167 routes.
         (Updated 2026-06-08: -5 stale from deleted files, +3 new from ingestion sprint PRs.)
+        (Phase C Area 1 complete 2026-06-08: -33 routes upgraded to privileged. Total: 134.)
         """
         routes = _all_mutation_routes()
         bare_count = sum(1 for r in routes if r.auth_level == "bare")

@@ -18,10 +18,12 @@ from pydantic import BaseModel
 
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..auth.dependencies import require_role
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/proposals", tags=["proposals"])
-_auth  = Depends(require_api_key)
+_auth   = Depends(require_api_key)
+_op_auth = Depends(require_role("admin", "logistics", "accounts"))
 
 # ── Lazy import ───────────────────────────────────────────────────────────────
 
@@ -89,7 +91,7 @@ class SummaryResponse(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.post("/capture", dependencies=[_auth])
+@router.post("/capture", dependencies=[_op_auth])
 def capture(req: CaptureRequest) -> dict:
     """Capture a new parser fix proposal (called internally by the processor)."""
     mod = _m()
@@ -163,7 +165,7 @@ def get_proposal(proposal_id: str) -> dict:
     return proposal
 
 
-@router.post("/{proposal_id}/approve", dependencies=[_auth])
+@router.post("/{proposal_id}/approve", dependencies=[_op_auth])
 def approve(proposal_id: str) -> dict:
     """
     Approve a proposal.
@@ -188,7 +190,7 @@ def approve(proposal_id: str) -> dict:
     return result
 
 
-@router.post("/{proposal_id}/reject", dependencies=[_auth])
+@router.post("/{proposal_id}/reject", dependencies=[_op_auth])
 def reject(proposal_id: str, req: RejectRequest = RejectRequest()) -> dict:
     """Reject a proposal with an optional reason."""
     mod = _m()

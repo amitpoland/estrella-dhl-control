@@ -25,11 +25,13 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..core.config import settings
 from ..core.security import require_api_key
+from ..auth.dependencies import require_admin
 from ..services import dhl_orchestrator as orch
 
 log    = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/orchestrator", tags=["orchestrator"])
-_auth  = Depends(require_api_key)
+_auth       = Depends(require_api_key)
+_admin_auth = Depends(require_admin)
 
 
 def _monitor_state(audit: Dict[str, Any]) -> Dict[str, Any]:
@@ -148,7 +150,7 @@ async def get_orchestrator_state(batch_id: str) -> Dict[str, Any]:
     }
 
 
-@router.post("/dry-run", dependencies=[_auth])
+@router.post("/dry-run", dependencies=[_admin_auth])
 async def orchestrator_dry_run() -> Dict[str, Any]:
     """Compute decisions for all active shipments without persisting.
 
@@ -164,7 +166,7 @@ async def orchestrator_dry_run() -> Dict[str, Any]:
     }
 
 
-@router.post("/tick", dependencies=[_auth])
+@router.post("/tick", dependencies=[_admin_auth])
 async def orchestrator_tick() -> Dict[str, Any]:
     """Manual operator-triggered tick.
 

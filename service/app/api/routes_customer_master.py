@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse, Response
 from ..core.config import settings
 from ..core.security import require_api_key
 from ..core.logging import get_logger
+from ..auth.dependencies import require_admin
 from ..core.audit import audit_safe
 from ..core.role_gate import require_role_or_apikey, MASTER_ADMIN, MASTER_EDITOR
 from ..services.customer_master_db import (
@@ -43,8 +44,9 @@ from ..services.customer_master_db import (
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/customer-master", tags=["customer-master"])
-_auth  = Depends(require_api_key)
+_auth       = Depends(require_api_key)
 _write_auth = Depends(require_role_or_apikey(MASTER_ADMIN, MASTER_EDITOR))
+_admin_auth = Depends(require_admin)
 
 _DB_PATH = settings.storage_root / "customer_master.sqlite"
 
@@ -593,7 +595,7 @@ def cm_wfirma_sync_preview() -> JSONResponse:
     })
 
 
-@router.post("/sync-from-wfirma/apply", dependencies=[_auth],
+@router.post("/sync-from-wfirma/apply", dependencies=[_admin_auth],
              summary="Apply only the wFirma rows the operator targeted at Customer Master")
 async def cm_wfirma_sync_apply(request: Request) -> JSONResponse:
     """Body: {"wfirma_ids": ["123", ...]}.
@@ -759,7 +761,7 @@ def client_master_dictionaries() -> JSONResponse:
     return JSONResponse(wdc.get_dictionaries())
 
 
-@router.post("/dictionaries/refresh", dependencies=[_auth],
+@router.post("/dictionaries/refresh", dependencies=[_admin_auth],
              summary="Operator-triggered refresh of live wFirma dictionaries")
 def client_master_dictionaries_refresh() -> JSONResponse:
     """Read-only refresh of the live wFirma dictionaries (series/find).
