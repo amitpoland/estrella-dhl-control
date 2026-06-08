@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (PR #495 merged — MOCK banner false positive resolved).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (PR #496 merged — verify-after-create hardening for proforma-to-invoice conversion).
 
-**Last-run-at:** 2026-06-08 (PR #494 merged — search drill-through navigation fix). Origin/main HEAD: **452b57e** (PR #495 squash-merge — MOCK banner false positive resolved). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
+**Last-run-at:** 2026-06-08 (PR #496 merged — verify-after-create hardening). Origin/main HEAD: **c9fd090** (PR #496 squash-merge — proforma→invoice verify-after-create). GATE 2: **0/3 open PRs**. TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
 
 ---
 
@@ -54,6 +54,40 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## PR #496 — Verify-After-Create Hardening for Proforma→Invoice (2026-06-08, MERGED + DEPLOYED)
+
+**Date**: 2026-06-08 (merged to main)
+**PR #496** — `feat: verify-after-create for proforma-to-invoice conversion`
+**Merge SHA**: `c9fd090` (squash-merge to `origin/main`)
+**Source branch**: `fix/invoice-verify-after-create`
+**Deploy**: robocopy to `C:\PZ\app` + `nssm restart PZService`. Service healthy (200 on /openapi.json).
+
+**What it does**: After `invoices/add` succeeds in the proforma→invoice conversion route, fetches the created invoice back from wFirma and verifies 7 header properties + per-line field matching before calling `mark_issued()`. If verification fails: marks link as 'failed', records audit event, returns failed response. Protects against wFirma's known silent-line-drop bug.
+
+**Verification checks added**:
+1. Invoice ID exists
+2. Type is normal/vat (not proforma)
+3. Contractor ID matches source
+4. Line count matches source
+5. Per-line fields: name, good_id, unit_count, price, vat_code_id
+6. Currency matches
+7. Total within 0.02 tolerance
+8. contractor_receiver preserved when present
+
+**Files changed**: 5 — `routes_proforma.py` (+168 lines), `test_invoice_verify_after_create.py` (NEW, 22 tests), `test_audit_proforma_converted.py` (+33/-1), `test_proforma_to_invoice_routes.py` (+62/-4), `test_wf3_invoice_series.py` (+23/-3).
+
+**Test results**: 146/146 proforma tests pass (excl. 1 pre-existing V1 frozen file issue).
+
+**Reviewers**: backend-safety (PASS), security-write-action (PASS), test-coverage (NEEDS-IMPROVEMENT — edge cases SCHEDULED for follow-up, non-blocking).
+
+**GATE 4 disposition for test-coverage NEEDS-IMPROVEMENT**: SCHEDULED — multi-line partial mismatch and zero-total edge case tests to be added in a follow-up PR. Core safety contract (catch field mutations) is covered.
+
+**Key safety property**: `WFIRMA_CREATE_INVOICE_ALLOWED` remains OFF (not set in .env, defaults False). Invoice conversion is code-complete but still disabled by env flag. No live conversion was executed.
+
+**Remaining enablement step**: Flip `WFIRMA_CREATE_INVOICE_ALLOWED=true` in `C:\PZ\.env` when operator is ready for first live conversion.
+
+---
 
 ## PR #495 — MOCK Banner False Positive Cleanup (2026-06-08, MERGED + DEPLOYED)
 
