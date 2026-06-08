@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (PR #509 opened — Description Engine Phase 1 grammar upgrade).
 
-**Last-run-at:** 2026-06-08 (PR #507 merged + deployed — reverification proposal gating). Origin/main HEAD: **a642c56** (PR #507 squash-merge — fix reverification proposal approval). GATE 2: **1/3 open PRs** (draft #498). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
+**Last-run-at:** 2026-06-08 (PR #509 merged — Description Engine Phase 1 grammar upgrade). Origin/main HEAD: **9c1c9df** (PR #509 squash-merge — Phase 1 grammar dictionaries + composition). GATE 2: **1/3 open PRs** (draft #498). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
 
 ---
 
@@ -55,11 +55,11 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
-## PR #509 — Description Engine Phase 1 Grammar Upgrade (2026-06-08, OPEN)
+## PR #509 — Description Engine Phase 1 Grammar Upgrade (2026-06-08, MERGED)
 
-**Date**: 2026-06-08 (PR opened, pending merge)
+**Date**: 2026-06-08 (merged at `9c1c9df`)
 **PR #509** — `feat(engine): Phase 1 Description Engine grammar upgrade`
-**SHA**: `d568481` on branch `feat/description-engine-phase1-grammar`
+**Merge SHA**: `9c1c9df` (squash-merge to main)
 **Scope**: Grammar/dictionary layer only in `customs_description_engine.py`. No consumer migration.
 
 **Changes**:
@@ -73,7 +73,9 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 **Consumer impact**: Customs PDF renderer is the only consumer. No other renderers modified.
 **Phase 1 safety**: Invoice totals, FOB/CIF, HSN, AWB state, DHL workflow, wFirma posting, PZ creation — all untouched.
 
-**Operator gate**: Merge after reviewing real sample output for AWB 9938632830.
+**Visual PDF verification**: PASSED (2026-06-08). All 5 grammar forms rendered correctly: karat-expanded genitive, gender-correct setting verbs, sentence break, "oraz" conjunction, stone instrumental. Polish diacritics clean. No line wrapping overflow. Row height expansion correct.
+
+**Phase 1 CLOSED.** Phase 2 (renderer separation + consumer migration) requires separate campaign approval from operator.
 
 ---
 
@@ -4523,7 +4525,7 @@ Group D — Tests (3 new files):
 - Material list: comma-separated with `oraz` conjunction
 - Stone terminology: `kamienie szlachetne` (precious), `kamienie jubilerskie` (semi-precious), `kamienie ozdobne` (decorative) — must match actual stone classification on invoice
 
-**Status**: Phase 1 COMPLETE (PR #509, SHA `d568481`). Grammar/dictionary layer upgraded — karat-expanded genitive, gender setting verbs, sentence breaks, material conjunction, stone categories. No consumer migration. Customs PDF renderer is the sole consumer and automatically benefits. Phase 2 (renderer separation + consumer migration) requires separate operator campaign approval.
+**Status**: Phase 1 CLOSED (PR #509, merge SHA `9c1c9df`, 2026-06-08). Grammar/dictionary layer upgraded — karat-expanded genitive, gender setting verbs, sentence breaks, material conjunction, stone categories. No consumer migration. Customs PDF renderer is the sole consumer and automatically benefits. Visual PDF verification PASSED. Phase 2 (renderer separation + consumer migration) requires separate operator campaign approval — NOT started.
 
 **Governance**: This is a workflow-class change per Lesson I. Authority owner = Description Engine. Workflow class = product description generation. All existing consumers of `polish_description_generator.py` must migrate to the unified engine.
 
