@@ -99,6 +99,12 @@ EV_AI_BRIDGE_RESULT_RECEIVED = "ai_bridge_result_received"       # result import
 EV_PACKING_LIST_EXTRACTED     = "packing_list_extracted"       # packing PDF/XLSX parsed + rows stored
 EV_PACKING_MATCHED_TO_INVOICE = "packing_matched_to_invoice"   # packing rows matched to invoice lines
 
+# ── AI advisory diagnostics events ────────────────────────────────────────────
+# These events record operator-triggered AI advisory actions.
+# Advisory-only: no write to business records (packing_lines, products,
+# customers, PZ, wFirma). Shown in the AI Bridge timeline filter tab.
+EV_COLUMN_MAPPING_LLM_REQUESTED = "column_mapping_llm_requested"  # operator requested LLM column-mapping suggestions
+
 # ── Proforma draft auto-sync events (triggered from packing upload) ────────────
 EV_PROFORMA_DRAFT_AUTO_CREATED       = "proforma_draft_auto_created"        # draft created for client from sales packing
 EV_PROFORMA_DRAFT_SYNCED             = "proforma_draft_synced"              # editable draft lines reset from sales packing

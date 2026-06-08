@@ -1525,15 +1525,17 @@ async def suggest_column_mapping(
 
     tl.log_event(
         output_dir / "audit.json",
-        "COLUMN_MAPPING_LLM_REQUESTED",
+        tl.EV_COLUMN_MAPPING_LLM_REQUESTED,
         trigger_source="suggest_column_mapping",
         actor="operator",
         detail={
-            "batch_id":      batch_id,
-            "document_id":   doc_id,
-            "file_name":     file_path.name,
-            "advisory_only": True,
-            "summary":       summary,
+            "batch_id":    batch_id,
+            "document_id": doc_id,
+            "file_name":   file_path.name,
+            "advisory_only":  True,
+            "write_scope":    "parser_diagnostic_json_only",
+            "llm_fallback":   True,
+            "summary":        summary,
         },
     )
 

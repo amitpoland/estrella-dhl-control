@@ -4775,7 +4775,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               ))}
               <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 6 }}>
                 {timelineFilter === 'ai_bridge'
-                  ? `${timeline.filter(e => (e.event||'').startsWith('ai_bridge')).length} events`
+                  ? `${timeline.filter(e => (e.event||'').startsWith('ai_bridge') || e.event === 'column_mapping_llm_requested').length} events`
                   : `${timeline.length} events`}
               </span>
             </div>
@@ -4893,7 +4893,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
             {/* ── Timeline list ── */}
             <Card style={{ padding: 28 }}>
               {(() => {
-                const AI_BRIDGE_EVENTS = new Set(['ai_bridge_task_created', 'ai_bridge_result_received']);
+                const AI_BRIDGE_EVENTS = new Set(['ai_bridge_task_created', 'ai_bridge_result_received', 'column_mapping_llm_requested']);
                 const filtered = timelineFilter === 'ai_bridge'
                   ? timeline.filter(e => AI_BRIDGE_EVENTS.has(e.event))
                   : timeline;
