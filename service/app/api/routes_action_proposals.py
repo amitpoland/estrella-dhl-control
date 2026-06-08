@@ -147,7 +147,10 @@ class DescriptionCorrection(BaseModel):
 
 
 class ApproveBody(BaseModel):
-    approved_by: str
+    # H-W3 (#502): the approver identity is derived SERVER-SIDE from the
+    # session — this field is IGNORED (kept only for backward-compat request
+    # shape so existing clients do not break).
+    approved_by: Optional[str] = None
     note: Optional[str] = None
     # Only consumed for customs_description_mismatch proposals.
     # Ignored for all other proposal types.
@@ -160,11 +163,38 @@ class ApproveBody(BaseModel):
 
 
 class RejectBody(BaseModel):
-    rejected_by: str
+    # H-W3 (#502): rejecter identity is derived SERVER-SIDE; this field is IGNORED.
+    rejected_by: Optional[str] = None
     reason: str
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+
+def _approver_from_session(pz_session: Optional[str]) -> str:
+    """Derive the approver / rejecter identity SERVER-SIDE from the session cookie.
+
+    H-W3 (#502): approve/reject must NEVER trust a caller-supplied approved_by /
+    rejected_by — an authenticated user could otherwise spoof the actor. This
+    decodes the session cookie (same auth as _get_resolve_operator) and returns
+    full_name → email → "session-user" (the last for API-key automation, which
+    has no session cookie). The returned value is never a request-controlled
+    string, so the recorded actor cannot be spoofed.
+    """
+    user = None
+    if pz_session:
+        try:
+            from ..auth.service import decode_token, get_user_by_id  # noqa: PLC0415
+            payload = decode_token(pz_session)
+            if payload:
+                user = get_user_by_id(payload.get("sub"))
+        except Exception:
+            user = None
+    return (
+        ((user or {}).get("full_name") or "").strip()
+        or ((user or {}).get("email") or "").strip()
+        or "session-user"
+    )
 
 def _audit_path(batch_id: str) -> Path:
     return _OUTPUTS / batch_id / "audit.json"
@@ -768,27 +798,31 @@ def list_proposals(batch_id: str) -> Dict[str, Any]:
 
 
 @router.post("/{proposal_id}/approve")
-def approve_proposal(proposal_id: str, body: ApproveBody) -> Dict[str, Any]:
+def approve_proposal(
+    proposal_id: str,
+    body: ApproveBody,
+    pz_session: Optional[str] = Cookie(default=None),
+) -> Dict[str, Any]:
     """
     Approve an action proposal.
 
-    Requires: approved_by (non-empty).
-    Sets status=approved and logs EV_ACTION_PROPOSAL_APPROVED to timeline.
+    H-W3 (#502): the approver identity is derived SERVER-SIDE from the session
+    cookie — any caller-supplied body.approved_by is IGNORED, so the recorded
+    approver cannot be spoofed. Sets status=approved and logs
+    EV_ACTION_PROPOSAL_APPROVED to timeline.
     """
-    if not (body.approved_by or "").strip():
-        raise HTTPException(status_code=422, detail="approved_by is required.")
+    approved_by = _approver_from_session(pz_session)
 
-    # Phase 2.3.1 (Finding 1.2): operator-supplied approved_by must NOT be
-    # in the auto-actor sentinel space. Otherwise an operator could approve
-    # an auto-created proposal as the same auto actor and bypass the
-    # implicit human-in-the-loop on auto-flow's self-approval exemption.
-    if _is_auto_actor((body.approved_by or "").strip()):
+    # Defensive: a server-derived identity must never equal an auto-actor
+    # sentinel (that would bypass the self-approval human-in-the-loop). Real
+    # session identities / "session-user" never match a sentinel.
+    if _is_auto_actor(approved_by):
         raise HTTPException(
             status_code=422,
             detail={
                 "code":  "auto_actor_sentinel_reserved",
                 "guard": "auto_actor_sentinel_reserved",
-                "error": "approved_by is reserved for system actors and cannot be set by request.",
+                "error": "approver identity resolved to a reserved system actor.",
             },
         )
 
@@ -815,7 +849,7 @@ def approve_proposal(proposal_id: str, body: ApproveBody) -> Dict[str, Any]:
         proposal = _get_proposal(audit, proposal_id)
 
     proposal["status"]      = "approved"
-    proposal["approved_by"] = body.approved_by.strip()
+    proposal["approved_by"] = approved_by
     proposal["approved_at"] = _now()
     if body.note:
         proposal["approval_note"] = body.note
@@ -856,7 +890,7 @@ def approve_proposal(proposal_id: str, body: ApproveBody) -> Dict[str, Any]:
                     mapping_id = write_mapping(
                         token              = token,
                         material_pl        = mat_pl,
-                        approved_by        = body.approved_by.strip(),
+                        approved_by        = approved_by,
                         approved_at        = approved_at,
                         source_proposal_id = proposal_id,
                         source_text        = source_text,
@@ -872,7 +906,7 @@ def approve_proposal(proposal_id: str, body: ApproveBody) -> Dict[str, Any]:
                         "token":            token,
                         "mapping_id":       mapping_id,
                         "material_pl":      mat_pl,
-                        "approved_by":      body.approved_by.strip(),
+                        "approved_by":      approved_by,
                         "approved_at":      approved_at,
                         "source_proposal_id": proposal_id,
                     }
@@ -888,7 +922,7 @@ def approve_proposal(proposal_id: str, body: ApproveBody) -> Dict[str, Any]:
                     corr_entry: Dict[str, Any] = {
                         "material_pl":        mat_pl,
                         "description_pl":     desc_pl,
-                        "approved_by":        body.approved_by.strip(),
+                        "approved_by":        approved_by,
                         "approved_at":        approved_at,
                         "source_proposal_id": proposal_id,
                     }
@@ -907,7 +941,7 @@ def approve_proposal(proposal_id: str, body: ApproveBody) -> Dict[str, Any]:
         _audit_path(batch_id),
         tl.EV_ACTION_PROPOSAL_APPROVED,
         "admin",
-        actor=body.approved_by,
+        actor=approved_by,
         detail={
             "proposal_id":    proposal_id,
             "proposal_type":  proposal["type"],
@@ -918,7 +952,7 @@ def approve_proposal(proposal_id: str, body: ApproveBody) -> Dict[str, Any]:
     resp: Dict[str, Any] = {
         "status":      "approved",
         "proposal_id": proposal_id,
-        "approved_by": body.approved_by,
+        "approved_by": approved_by,
     }
     if correction_applied:
         resp["correction_applied"] = correction_applied
@@ -926,15 +960,19 @@ def approve_proposal(proposal_id: str, body: ApproveBody) -> Dict[str, Any]:
 
 
 @router.post("/{proposal_id}/reject")
-def reject_proposal(proposal_id: str, body: RejectBody) -> Dict[str, Any]:
+def reject_proposal(
+    proposal_id: str,
+    body: RejectBody,
+    pz_session: Optional[str] = Cookie(default=None),
+) -> Dict[str, Any]:
     """
     Reject an action proposal.
 
-    Requires: rejected_by + reason.
+    H-W3 (#502): the rejecter identity is derived SERVER-SIDE from the session
+    — any caller-supplied body.rejected_by is IGNORED. Requires: reason.
     Sets status=rejected (terminal — cannot be re-queued).
     """
-    if not (body.rejected_by or "").strip():
-        raise HTTPException(status_code=422, detail="rejected_by is required.")
+    rejected_by = _approver_from_session(pz_session)
     if not (body.reason or "").strip():
         raise HTTPException(status_code=422, detail="reason is required.")
 
@@ -947,7 +985,7 @@ def reject_proposal(proposal_id: str, body: RejectBody) -> Dict[str, Any]:
         )
 
     proposal["status"]       = "rejected"
-    proposal["rejected_by"]  = body.rejected_by.strip()
+    proposal["rejected_by"]  = rejected_by
     proposal["rejected_at"]  = _now()
     proposal["reject_reason"] = body.reason.strip()
 
@@ -956,7 +994,7 @@ def reject_proposal(proposal_id: str, body: RejectBody) -> Dict[str, Any]:
         _audit_path(batch_id),
         tl.EV_ACTION_PROPOSAL_REJECTED,
         "admin",
-        actor=body.rejected_by,
+        actor=rejected_by,
         detail={
             "proposal_id":   proposal_id,
             "proposal_type": proposal["type"],

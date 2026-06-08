@@ -263,6 +263,9 @@ class TestApprovedProposalWritesCorrection:
                             lambda pid: (batch_id, audit, prop))
         monkeypatch.setattr(rap, "_save_audit", lambda bid, a: None)
         monkeypatch.setattr(rap, "tl", MagicMock())
+        # H-W3 (#502): approved_by is derived SERVER-SIDE; body.approved_by is
+        # ignored. Stub the derivation so the correction records the operator.
+        monkeypatch.setattr(rap, "_approver_from_session", lambda s: "test_operator")
 
         body = ApproveBody(
             approved_by="test_operator",
