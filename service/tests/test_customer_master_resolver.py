@@ -87,7 +87,7 @@ class TestCustomerMasterExactMatch:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         assert '"customer_master"' in region or "'customer_master'" in region, (
             "Exact Customer Master match must use strategy 'customer_master'"
         )
@@ -97,7 +97,7 @@ class TestCustomerMasterExactMatch:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         # Must return found: True for exact match
         assert '"found"' in region or "'found'" in region
         assert "True" in region
@@ -107,7 +107,7 @@ class TestCustomerMasterExactMatch:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         assert "wfirma_customer_id" in region
         assert "bill_to_contractor_id" in region
 
@@ -116,7 +116,7 @@ class TestCustomerMasterExactMatch:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         assert ".lower()" in region, "Must use case-insensitive comparison"
 
 
@@ -132,7 +132,7 @@ class TestCustomerMasterPrefixMatch:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         assert '"customer_master_prefix"' in region or "'customer_master_prefix'" in region
 
     def test_prefix_requires_word_boundary(self):
@@ -140,7 +140,7 @@ class TestCustomerMasterPrefixMatch:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         # Must use startswith with space or separator — not bare substring
         assert ".startswith(" in region, "Must use startswith for prefix match"
 
@@ -149,7 +149,7 @@ class TestCustomerMasterPrefixMatch:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         # Found strategy customer_master_prefix
         match = re.search(
             r'"customer_master_prefix".*?"found".*?True',
@@ -208,7 +208,7 @@ class TestCustomerMasterAmbiguous:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         assert '"ambiguous"' in region or "'ambiguous'" in region
 
     def test_ambiguous_returns_candidates(self):
@@ -216,7 +216,7 @@ class TestCustomerMasterAmbiguous:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         assert '"candidates"' in region or "'candidates'" in region
 
     def test_ambiguous_does_not_set_found_true(self):
@@ -224,7 +224,7 @@ class TestCustomerMasterAmbiguous:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         # Find all ambiguous blocks — they should NOT contain "found": True
         # Each ambiguous block has "ambiguous": True, "match_strategy": "ambiguous"
         # We check there's no "found" key in those blocks
@@ -258,7 +258,7 @@ class TestCustomerMasterFallThrough:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         assert "return None" in region, (
             "Must return None on no match — not a dict with found=false"
         )
@@ -298,7 +298,7 @@ class TestCustomerMasterWhitespaceNormalization:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         assert "_normalize_client_name" in region, (
             "Must use _normalize_client_name to normalize CM names"
         )
@@ -328,7 +328,7 @@ class TestCustomerMasterNoUnsafeMatch:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         # Filter to code lines only (no comments, no docstrings)
         lines = region.split("\n")
         code_lines = []
@@ -356,7 +356,7 @@ class TestCustomerMasterNoUnsafeMatch:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         assert ".startswith(" in region
 
     def test_no_fuzzywuzzy_or_difflib(self):
@@ -364,7 +364,7 @@ class TestCustomerMasterNoUnsafeMatch:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         assert "fuzz" not in region.lower()
         assert "difflib" not in region.lower()
         assert "SequenceMatcher" not in region
@@ -374,7 +374,7 @@ class TestCustomerMasterNoUnsafeMatch:
         src = _read(ROUTES_PROFORMA)
         idx = src.find("def _resolve_customer_via_master(")
         assert idx > 0
-        region = src[idx:idx + 3000]
+        region = src[idx:idx + 4500]
         # Should not have an inline import of customer_master_db
         assert "from ..services.customer_master_db import" not in region, (
             "Import must be at module level, not inline in the function"

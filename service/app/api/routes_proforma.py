@@ -328,6 +328,7 @@ def _resolve_customer_via_master(
             "ambiguous":      True,
             "match_strategy": "ambiguous",
             "candidates":     [c.bill_to_name for c in exact_matches],
+            "candidate_ids":  [str(c.bill_to_contractor_id) for c in exact_matches],
         }
 
     # ── Prefix match (draft name ⊆ CM name) ────────────────────────
@@ -346,6 +347,7 @@ def _resolve_customer_via_master(
             "ambiguous":      True,
             "match_strategy": "ambiguous",
             "candidates":     [c.bill_to_name for c in prefix_matches],
+            "candidate_ids":  [str(c.bill_to_contractor_id) for c in prefix_matches],
         }
 
     # ── Reverse-prefix match (CM name ⊆ draft name) ────────────────
@@ -364,6 +366,7 @@ def _resolve_customer_via_master(
             "ambiguous":      True,
             "match_strategy": "ambiguous",
             "candidates":     [c.bill_to_name for c in rev_prefix_matches],
+            "candidate_ids":  [str(c.bill_to_contractor_id) for c in rev_prefix_matches],
         }
 
     # No match in Customer Master — caller falls through to wfirma cache

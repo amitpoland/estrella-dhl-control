@@ -417,6 +417,18 @@ def sync_draft_from_packing_upload(
                         },
                     )
                 result["created"] += 1
+                # Annotate lines with product descriptions (item_type, name_pl, etc.).
+                # Best-effort: failures do NOT abort the sync.
+                try:
+                    pildb.enrich_draft_lines(
+                        db_path, draft.id, operator, draft.updated_at,
+                        lambda pc: ddb.get_product_description(pc),
+                    )
+                except Exception as _enrich_exc:
+                    log.debug(
+                        "[%s] proforma_draft_sync: enrich after create skipped: %s",
+                        batch_id, _enrich_exc,
+                    )
 
             elif draft.draft_state in pildb.EDITABLE_STATES:
                 # ── 3b. Existing editable draft — reset lines ─────────────
@@ -449,6 +461,17 @@ def sync_draft_from_packing_upload(
                             },
                         )
                     result["synced"] += 1
+                    # Annotate lines with product descriptions after reset.
+                    try:
+                        pildb.enrich_draft_lines(
+                            db_path, updated.id, operator, updated.updated_at,
+                            lambda pc: ddb.get_product_description(pc),
+                        )
+                    except Exception as _enrich_exc:
+                        log.debug(
+                            "[%s] proforma_draft_sync: enrich after sync skipped: %s",
+                            batch_id, _enrich_exc,
+                        )
 
                 except (pildb.DraftNotEditable, pildb.DraftConflict) as exc:
                     # TOCTOU race: another writer changed the draft between

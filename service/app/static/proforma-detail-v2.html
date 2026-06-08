@@ -693,6 +693,17 @@
 
     const op = () => localStorage.getItem('pz_operator_name') || 'operator';
 
+    const candidates    = Array.isArray(cr.candidates)   ? cr.candidates   : [];
+    const candidateIds  = Array.isArray(cr.candidate_ids) ? cr.candidate_ids : [];
+
+    const selectCandidate = (idx) => {
+      if (candidateIds[idx]) {
+        setContractorId(String(candidateIds[idx]));
+        setSaveErr('');
+        setSaveMsg('');
+      }
+    };
+
     const handleSave = async () => {
       const idVal = contractorId.trim();
       if (!idVal) { setSaveErr('wFirma contractor ID is required.'); return; }
@@ -714,11 +725,47 @@
     const sBg     = cr.found ? 'var(--badge-green-bg)'  : cr.ambiguous ? 'var(--badge-amber-bg)'  : 'var(--badge-red-bg)';
     const sBorder = cr.found ? 'var(--badge-green-border)' : cr.ambiguous ? 'var(--badge-amber-border)' : 'var(--badge-red-border)';
     const sColor  = cr.found ? 'var(--badge-green-text)' : cr.ambiguous ? 'var(--badge-amber-text)' : 'var(--badge-red-text)';
-    const sLabel  = cr.found ? '✓ Matched to Customer Master' : cr.ambiguous ? '⚠ Ambiguous — multiple candidates' : '✗ Not mapped to Customer Master';
+    const sLabel  = cr.found ? '✓ Matched to Customer Master' : cr.ambiguous ? '⚠ Ambiguous — multiple candidates found' : '✗ Not mapped to Customer Master';
 
     return (
       <div data-testid="tab-customer-mapping" style={{ padding:'20px 24px', display:'flex', flexDirection:'column', gap:14 }}>
         <div style={{ padding:'10px 14px', background:sBg, border:`1px solid ${sBorder}`, borderRadius:6, fontSize:12, fontWeight:700, color:sColor }}>{sLabel}</div>
+
+        {/* Ambiguous candidate picker — shown only when multiple CM records match */}
+        {cr.ambiguous && candidates.length > 0 && (
+          <Card style={{ padding:'12px 16px' }}>
+            <SectionHeader label="Select the Correct Customer" />
+            <div style={{ marginTop:6, fontSize:12, color:'var(--text-2)', marginBottom:10 }}>
+              {candidates.length} Customer Master records match "<strong>{cr.raw_input || draft.client_name}</strong>". Click a row to pre-fill the contractor ID below, then save.
+            </div>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign:'left', padding:'4px 8px', fontSize:10, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.05em', borderBottom:'1px solid var(--border)' }}>Customer Name</th>
+                  <th style={{ textAlign:'left', padding:'4px 8px', fontSize:10, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.05em', borderBottom:'1px solid var(--border)' }}>wFirma ID</th>
+                  <th style={{ padding:'4px 8px', borderBottom:'1px solid var(--border)' }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {candidates.map((name, idx) => {
+                  const cid = candidateIds[idx] || '—';
+                  const isSelected = contractorId === String(cid);
+                  return (
+                    <tr key={idx} data-testid={`candidate-row-${idx}`} style={{ background: isSelected ? 'var(--badge-green-bg)' : 'transparent' }}>
+                      <td style={{ padding:'6px 8px', fontWeight: isSelected ? 700 : 400 }}>{name}</td>
+                      <td style={{ padding:'6px 8px', fontFamily:'monospace', color:'var(--text-2)' }}>{cid}</td>
+                      <td style={{ padding:'6px 8px', textAlign:'right' }}>
+                        <Btn variant={isSelected ? 'primary' : 'outline'} small onClick={() => selectCandidate(idx)} data-testid={`btn-select-candidate-${idx}`}>
+                          {isSelected ? '✓ Selected' : 'Select'}
+                        </Btn>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Card>
+        )}
 
         <Card style={{ padding:'0 0 8px' }}>
           <SectionHeader label="Customer Mapping" />
@@ -728,11 +775,13 @@
         </Card>
 
         <Card style={{ padding:'14px 16px' }}>
-          <SectionHeader label={cr.found ? 'Update Customer Master Mapping' : 'Add to Customer Master'} />
+          <SectionHeader label={cr.found ? 'Update Customer Master Mapping' : cr.ambiguous ? 'Confirm & Save Mapping' : 'Add to Customer Master'} />
           <div style={{ marginTop:8, fontSize:12, color:'var(--text-2)', marginBottom:10 }}>
             {cr.found
               ? `Already linked as "${cr.resolved_wfirma_name}" (ID: ${cr.wfirma_customer_id}). Enter a different ID to re-map.`
-              : `"${cr.raw_input || draft.client_name}" is not in Customer Master. Enter the wFirma contractor ID (numeric) and country to create the entry.`}
+              : cr.ambiguous
+                ? `Select a candidate above or enter the wFirma contractor ID manually. Country is optional if the Customer Master record already exists.`
+                : `"${cr.raw_input || draft.client_name}" is not in Customer Master. Enter the wFirma contractor ID (numeric) and country to create the entry.`}
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'1fr 120px', gap:10, marginBottom:10 }}>
             <div>
