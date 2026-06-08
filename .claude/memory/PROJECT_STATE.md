@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (PR #499 merged — inbox Source D proforma draft attention).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (PR #507 merged — reverification proposal approval gating fix).
 
-**Last-run-at:** 2026-06-08 (PR #499 merged + deployed — inbox Source D). Origin/main HEAD: **f85a224** (PR #499 squash-merge — inbox proforma draft attention source). GATE 2: **1/3 open PRs** (draft #498). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
+**Last-run-at:** 2026-06-08 (PR #507 merged + deployed — reverification proposal gating). Origin/main HEAD: **a642c56** (PR #507 squash-merge — fix reverification proposal approval). GATE 2: **1/3 open PRs** (draft #498). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
 
 ---
 
@@ -54,6 +54,37 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## PR #507 — Reverification Proposal Approval Gating Fix (2026-06-08, MERGED + DEPLOYED)
+
+**Date**: 2026-06-08 (merged + production deployed + browser verified)
+**PR #507** — `fix(proposals): allow reverification proposals to be approved without PZ`
+**Merge SHA**: `a642c56` (squash-merge to `origin/main`)
+**Source branch**: `fix/reverification-proposal-approval-gating`
+**Deploy**: `robocopy service\app → C:\PZ\app /E /PURGE` + `nssm restart PZService`. Service healthy (200 on /api/v1/health).
+
+**Bug fixed**: Reverification proposals (channel=`ai_reverification`) were incorrectly blocked by the PZ existence gate in `_annotate_can_approve()`. These are pre-PZ verification steps (supplier_mismatch, client_mismatch, missing_hs_code, etc.) that feed INTO PZ generation — they must be approvable before PZ exists.
+
+**Root cause**: `_NON_EMAIL_TYPES` only contained `{"tracking_lookup"}`. All 10 reverification proposal types fell through to the PZ gate (rule 4), which requires `pz_pdf_filename` or `pz_generated_at` in the audit. For pre-clearance shipments without PZ, all reverification proposals were incorrectly blocked.
+
+**Fix**: Added rule 3b in `_annotate_can_approve()` — channel-based bypass: proposals with `channel="ai_reverification"` get `can_approve=True` without PZ. Placed after completed-batch check (rule 3) so completed batches are still locked. +16 lines (11 logic + 5 docstring).
+
+**AWB 9938632830 diagnosis** (investigated alongside the fix):
+- Empty `source/sad/` is CORRECT for pre-clearance stage — SAD/ZC429 don't exist yet
+- V1 rows missing v2 fields is EXPECTED — `item_type` populates after customs/PZ processing
+- DHL inbox scan WORKED — found email, created evidence store entry with 4 threads
+- Emails QUEUED but not SENT — `auto_send_dhl_reply: false` and `auto_send_agency: false` (needs operator approval)
+- V1 next-action shows "Scan DHL inbox for clearance email" — correct for current lifecycle state
+
+**Files changed**: 2 — `routes_action_proposals.py` (+16 lines), `test_reverification_proposal_approval_gating.py` (NEW, 39 tests).
+
+**Test results**: 39/39 new regression tests + 107/107 existing proposal tests = all PASS. Pre-existing `test_inbox_contract::test_requires_auth_in_prod` failure (from PR #488) NOT a regression.
+
+**Browser verification**: V1 shipment detail → Proposals tab → `supplier_mismatch` proposal shows enabled "Approve" button. Console: no new errors. GATE 6 PASS.
+
+**Reviewers**: 4 deploy-gate agents (diff-reviewer, backend-impact, persistence-storage, security) — all PASS verdicts.
+
+---
 
 ## PR #499 — Inbox Source D: Proforma Draft Attention (2026-06-08, MERGED + DEPLOYED)
 
