@@ -37,8 +37,21 @@ DB writes; no engine arithmetic touched.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+# Migration B2: import shared grammar authority for Polish plural types
+# and prepositional helpers (metal + stone phrases).
+# The shared grammar module is the SINGLE SOURCE OF TRUTH for these forms.
+# EN-side tables remain local — no shared EN equivalent exists yet.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from description_grammar import (          # noqa: E402
+    ITEM_TYPE_PL_PLURAL,
+    METAL_PREPOSITIONAL,
+    metal_prepositional,
+    stone_with_preposition,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -85,21 +98,10 @@ _RE_PRODUCT_ROW = re.compile(
 # Vocabulary mappings — operator-locked grammar
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Polish plural item-type forms (a position aggregates rows of the
-# SAME stone+metal+unit; multiple item types within one position list
-# them comma-separated in PL plural).
-_PL_PLURAL_TYPE: Dict[str, str] = {
-    "RING":      "Pierścionki",
-    "PENDANT":   "Wisiorki",
-    "EARRING":   "Kolczyki",
-    "EARRINGS":  "Kolczyki",
-    "BRACELET":  "Bransoletki",
-    "BANGLE":    "Bransoletki sztywne",
-    "NECKLACE":  "Naszyjniki",
-    "CHAIN":     "Łańcuszki",
-    "CUFFLINK":  "Spinki do mankietów",
-    "CUFFLINKS": "Spinki do mankietów",
-}
+# Migration B2: PL plural types now come from shared grammar authority.
+# The import alias preserves the local name so all callers continue to work.
+# This eliminates the duplicate dictionary that was previously maintained here.
+_PL_PLURAL_TYPE: Dict[str, str] = ITEM_TYPE_PL_PLURAL
 
 _EN_PLURAL_TYPE: Dict[str, str] = {
     "RING":      "RINGS",
@@ -117,6 +119,11 @@ _EN_PLURAL_TYPE: Dict[str, str] = {
 
 # Operator-locked metal vocabulary (PL preposition: "ze srebra próby N"
 # or "ze złota próby N").
+#
+# Migration B2: PL phrases are verified at import time against
+# METAL_PREPOSITIONAL from the shared grammar.  The _METAL_TABLE
+# structure is retained because _normalize_metal() needs header-substring
+# matching + EN labels, which have no shared equivalent yet.
 _METAL_TABLE: Tuple[Tuple[str, str, str], ...] = (
     # (header substring (case-insensitive),  PL phrase,                EN label)
     ("925 PURITY SILVER",                    "ze srebra próby 925",    "925 Silver"),
@@ -129,6 +136,20 @@ _METAL_TABLE: Tuple[Tuple[str, str, str], ...] = (
     ("PT950",                                "z platyny próby 950",    "PT950 Platinum"),
     ("PT900",                                "z platyny próby 900",    "PT900 Platinum"),
 )
+
+# ── Migration B2: import-time parity check ─────────────────────────────────
+# Verify every PL phrase in _METAL_TABLE matches METAL_PREPOSITIONAL.
+# This catches drift between the local table and shared grammar at module
+# load, not at runtime — fail loud, fail early.
+_METAL_TABLE_PL_VALUES = {pl for _, pl, _ in _METAL_TABLE}
+_SHARED_METAL_PL_VALUES = set(METAL_PREPOSITIONAL.values())
+_METAL_DRIFT = _METAL_TABLE_PL_VALUES - _SHARED_METAL_PL_VALUES
+if _METAL_DRIFT:
+    raise ImportError(
+        f"global_invoice_position_parser._METAL_TABLE PL phrases "
+        f"have drifted from description_grammar.METAL_PREPOSITIONAL: "
+        f"{_METAL_DRIFT!r}"
+    )
 
 
 def _normalize_metal(raw: str) -> Tuple[str, str, str]:
@@ -187,6 +208,31 @@ _STONE_RULES: Tuple[Tuple[str, str, str], ...] = (
      "",
      "Plain Jewellery"),
 )
+
+# ── Migration B2: import-time stone parity check ──────────────────────────
+# Verify simple (non-combo) stone PL phrases match stone_with_preposition().
+# Combo forms ("z cyrkoniami i kamieniami kolorowymi", "z diamentami i
+# cyrkoniami") and the colour-stone form ("z kamieniami kolorowymi") are
+# parser-specific — they combine/rename instrumental forms that don't have
+# a single STONE_INSTRUMENTAL entry.  These are documented gaps, not errors.
+#
+# Simple forms verified: "z diamentami", "z cyrkoniami",
+#   "z diamentami laboratoryjnymi"
+_STONE_SIMPLE_PL = {
+    "z diamentami laboratoryjnymi": stone_with_preposition("diamentami laboratoryjnymi"),
+    "z cyrkoniami":                 stone_with_preposition("cyrkoniami"),
+    "z diamentami":                 stone_with_preposition("diamentami"),
+}
+for _expected, _actual in _STONE_SIMPLE_PL.items():
+    if _expected != _actual:
+        raise ImportError(
+            f"global_invoice_position_parser._STONE_RULES simple PL phrase "
+            f"drift: expected {_expected!r}, shared grammar gives {_actual!r}"
+        )
+# Parser-specific combo/colour forms (no shared equivalent, verified by tests):
+#   "z cyrkoniami i kamieniami kolorowymi"  (CZ+CLS combo)
+#   "z diamentami i cyrkoniami"             (DIA+CZ combo)
+#   "z kamieniami kolorowymi"               (CLS → "colour stone", not "gemstone")
 
 
 def _normalize_stone(raw: str) -> Tuple[str, str]:
