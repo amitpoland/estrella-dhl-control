@@ -74,7 +74,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from ..core.config import settings
-from ..core.security import require_api_key
+from ..core.security import require_api_key, require_api_key_privileged
 from ..services.dhl_clearance_coordinator import (
     ForbiddenFlagCombination,
     _enforce_flag_combination,
@@ -86,6 +86,8 @@ router = APIRouter(prefix="/api/v1/admin/runtime-flags", tags=["admin"])
 
 # Reused auth seam (one-liner — applied to every route below).
 _auth = Depends(require_api_key)
+# H-R5 (#502): setting runtime kill-switches is a privileged action.
+_privileged = Depends(require_api_key_privileged)
 
 
 # ── Allowed flag map (frozen at P0) ──────────────────────────────────────────
@@ -1011,7 +1013,7 @@ def get_self_clearance_flags() -> Dict[str, Any]:
     return payload
 
 
-@router.post("/self-clearance", dependencies=[_auth])
+@router.post("/self-clearance", dependencies=[_privileged])
 def post_self_clearance_flag(body: FlagFlipBody = Body(...)) -> Dict[str, Any]:
     """
     Flip a single self-clearance flag. Audit-logged. Restartless.

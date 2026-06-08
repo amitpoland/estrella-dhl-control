@@ -51,7 +51,7 @@ from pydantic import BaseModel
 from ..utils.io import write_json_atomic
 
 from ..core.config import settings
-from ..core.security import require_api_key
+from ..core.security import require_api_key, require_api_key_privileged
 from ..services.dhl_clearance_coordinator import (
     DhlClearanceCoordinator,
     DispatchInput,
@@ -65,6 +65,8 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/admin/dhl-clearance", tags=["admin"])
 _auth = Depends(require_api_key)
+# H-R5 (#502): proactive-dispatch override triggers a real DHL dispatch — privileged.
+_privileged = Depends(require_api_key_privileged)
 
 # Operator accountability minimums per ADR-019.
 _FORCE_REASON_MIN_CHARS: int = 10
@@ -203,7 +205,7 @@ class ForceDispatchBody(BaseModel):
 
 @router.post(
     "/proactive-dispatch/{batch_id}",
-    dependencies=[_auth],
+    dependencies=[_privileged],
 )
 def admin_proactive_dispatch(
     batch_id: str,
