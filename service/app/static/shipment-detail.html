@@ -4910,7 +4910,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     <div style={{ position: 'absolute', left: 7, top: 0, bottom: 0, width: 2, background: 'var(--border)' }} />
                     {filtered.map((e, i) => {
                       const done = e.done || e.status === 'done' || e.completed;
-                      const label = e.label || e.event || e.action || e.message || `Event ${i+1}`;
+                      const EVENT_LABELS = {
+                        'column_mapping_llm_requested': 'AI: column mapping suggestions requested',
+                      };
+                      const label = e.label || EVENT_LABELS[e.event] || e.event || e.action || e.message || `Event ${i+1}`;
                       const ts = e.ts || e.timestamp || e.time || e.date;
                       const isAiBridge = AI_BRIDGE_EVENTS.has(e.event);
                       return (

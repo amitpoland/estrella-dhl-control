@@ -190,3 +190,40 @@ def test_constant_value_is_lowercase_snake_case():
     val = tl.EV_COLUMN_MAPPING_LLM_REQUESTED
     assert val == val.lower(), f"Event value must be lowercase: {val!r}"
     assert " " not in val, "Event value must not contain spaces"
+
+
+# ── Human-readable timeline label ─────────────────────────────────────────────
+
+def test_event_labels_map_exists_in_html():
+    """shipment-detail.html must contain an EVENT_LABELS map."""
+    src = _SD.read_text(encoding="utf-8")
+    assert "EVENT_LABELS" in src, (
+        "shipment-detail.html must define an EVENT_LABELS lookup map"
+    )
+
+
+def test_event_labels_contains_column_mapping_label():
+    """EVENT_LABELS must map column_mapping_llm_requested to the human-readable label."""
+    src = _SD.read_text(encoding="utf-8")
+    assert "AI: column mapping suggestions requested" in src, (
+        "shipment-detail.html must contain the human-readable label "
+        "'AI: column mapping suggestions requested'"
+    )
+
+
+def test_event_labels_key_matches_constant_value():
+    """The key in EVENT_LABELS must exactly match EV_COLUMN_MAPPING_LLM_REQUESTED's value."""
+    from app.core import timeline as tl
+    src = _SD.read_text(encoding="utf-8")
+    key_literal = f"'{tl.EV_COLUMN_MAPPING_LLM_REQUESTED}'"
+    assert key_literal in src, (
+        f"EVENT_LABELS must contain key {key_literal} matching the timeline constant value"
+    )
+
+
+def test_label_resolution_uses_event_labels_map():
+    """The label const must fall back through EVENT_LABELS before using e.event."""
+    src = _SD.read_text(encoding="utf-8")
+    assert "EVENT_LABELS[e.event]" in src, (
+        "Label resolution must use EVENT_LABELS[e.event] as a fallback lookup"
+    )
