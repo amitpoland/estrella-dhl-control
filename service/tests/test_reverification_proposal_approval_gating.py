@@ -199,3 +199,79 @@ class TestMissingChannelSafety:
         result = _annotate(proposal, audit)
         assert result["can_approve"] is False
         assert "PZ not yet generated" in result["approve_blocked_reason"]
+
+
+# ── Test 7: Cross-channel contamination safety ──────────────────────────────
+
+class TestCrossChannelContamination:
+
+    def test_email_type_with_reverification_channel_bypasses_pz(self):
+        """If a proposal has type=dhl_followup but channel=ai_reverification,
+        the channel check fires and allows approval.  This is by-design: the
+        channel is set by internal code and is authoritative.  A proposal with
+        channel=ai_reverification IS a reverification proposal regardless of
+        its type string."""
+        audit = _base_audit(pz_exists=False)
+        proposal = {
+            "proposal_id": "p_cross",
+            "type": "dhl_followup",
+            "channel": "ai_reverification",
+            "status": "pending_review",
+            "approved_by": None,
+        }
+        result = _annotate(proposal, audit)
+        # Channel is authoritative — if reverification channel is set,
+        # the proposal bypasses PZ gate
+        assert result["can_approve"] is True
+
+    def test_reverification_type_with_email_channel_still_gated(self):
+        """If a proposal has type=supplier_mismatch but channel=email,
+        it falls through to the PZ gate.  Channel determines bypass, not type."""
+        audit = _base_audit(pz_exists=False)
+        proposal = {
+            "proposal_id": "p_cross2",
+            "type": "supplier_mismatch",
+            "channel": "email",
+            "status": "pending_review",
+            "approved_by": None,
+        }
+        result = _annotate(proposal, audit)
+        assert result["can_approve"] is False
+        assert "PZ not yet generated" in result["approve_blocked_reason"]
+
+    def test_reverification_type_with_wfirma_channel_still_gated(self):
+        """wfirma_action channel proposals are not reverification."""
+        audit = _base_audit(pz_exists=False)
+        proposal = {
+            "proposal_id": "p_cross3",
+            "type": "supplier_mismatch",
+            "channel": "wfirma_action",
+            "status": "pending_review",
+            "approved_by": None,
+        }
+        result = _annotate(proposal, audit)
+        assert result["can_approve"] is False
+        assert "PZ not yet generated" in result["approve_blocked_reason"]
+
+
+# ── Test 8: Idempotency ─────────────────────────────────────────────────────
+
+class TestAnnotateIdempotency:
+
+    def test_annotate_is_idempotent(self):
+        """Calling _annotate_can_approve multiple times returns same result."""
+        audit = _base_audit(pz_exists=False)
+        proposal = _reverification_proposal("supplier_mismatch")
+        r1 = _annotate(proposal, audit)
+        r2 = _annotate(proposal, audit)
+        r3 = _annotate(proposal, audit)
+        assert r1["can_approve"] == r2["can_approve"] == r3["can_approve"] is True
+        assert r1["approve_blocked_reason"] == r2["approve_blocked_reason"] is None
+
+    def test_annotate_does_not_mutate_input(self):
+        """_annotate_can_approve must not modify the original proposal dict."""
+        audit = _base_audit(pz_exists=False)
+        proposal = _reverification_proposal("supplier_mismatch")
+        original = dict(proposal)
+        _annotate(proposal, audit)
+        assert proposal == original, "Input proposal was mutated"
