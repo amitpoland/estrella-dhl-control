@@ -4983,6 +4983,9 @@ def import_draft_sales_prices(
     if total_err:
         raise HTTPException(status_code=422, detail=f"Grand total mismatch: {total_err}")
 
+    # Sr-keyed lookup for precise 1:1 matching by draft line_id (= TSV Sr column)
+    sr_lookup = {r.sr: r for r in rows}
+    # Design-no fallback for formats without Sr tracking
     lookup = build_patch_lookup(rows)
 
     draft = pildb.get_draft_by_id(_proforma_db_path(), draft_id)
@@ -4992,8 +4995,13 @@ def import_draft_sales_prices(
     lines = _json_imp.loads(draft.editable_lines_json or "[]")
     matched, unmatched = 0, 0
     for ln in lines:
-        pc = ln.get("product_code") or ln.get("sku") or ""
-        row = lookup.get(pc)
+        # Prefer line_id → TSV Sr (exact 1:1 per-row match, correct per-variant pricing)
+        line_id = ln.get("line_id")
+        row = sr_lookup.get(int(line_id)) if line_id is not None else None
+        if row is None:
+            # Fallback: design_no / product_code / sku (first-occurrence only)
+            key = (ln.get("design_no") or ln.get("product_code") or ln.get("sku") or "").strip()
+            row = lookup.get(key)
         if row is None:
             unmatched += 1
             continue
@@ -5024,7 +5032,7 @@ def import_draft_sales_prices(
         "lines_matched":    matched,
         "lines_unmatched":  unmatched,
         "grand_total_eur":  authority_total,
-        "draft":            _serialise_draft(refreshed),
+        "draft":            _draft_to_summary(refreshed),
     })
 
 
