@@ -18,12 +18,13 @@ from fastapi import APIRouter, Depends
 
 from ..core.config import settings
 from ..core.logging import get_logger
-from ..core.security import require_api_key
+from ..core.security import require_api_key, require_api_key_or_admin
 from ..services import cliq_service
 from ..services.batch_manager import manager as batch_manager
 
 router = APIRouter(prefix="/api/v1/debug", tags=["debug"])
-_auth  = Depends(require_api_key)
+_auth       = Depends(require_api_key)         # read-only diagnostics
+_admin_auth = Depends(require_api_key_or_admin)  # destructive ops require admin session
 log    = get_logger(__name__)
 
 
@@ -375,7 +376,7 @@ async def health_full() -> Dict[str, Any]:
     }
 
 
-@router.post("/clear-test-sessions", dependencies=[_auth])
+@router.post("/clear-test-sessions", dependencies=[_admin_auth])
 async def clear_test_sessions(force: bool = False) -> Dict[str, Any]:
     """
     Remove sessions with synthetic/test user keys (user456, test, demo, …).
@@ -429,7 +430,7 @@ def storage_locks() -> Dict[str, Any]:
     return scan_locks(outputs_dir)
 
 
-@router.post("/post-pz-test", dependencies=[_auth])
+@router.post("/post-pz-test", dependencies=[_admin_auth])
 async def post_pz_test() -> Dict[str, Any]:
     """
     Fire a test message to #PZ and return whether delivery succeeded.

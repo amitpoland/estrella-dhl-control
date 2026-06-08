@@ -74,7 +74,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from ..core.config import settings
-from ..core.security import require_api_key
+from ..core.security import require_api_key_or_admin
 from ..services.dhl_clearance_coordinator import (
     ForbiddenFlagCombination,
     _enforce_flag_combination,
@@ -84,8 +84,9 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/admin/runtime-flags", tags=["admin"])
 
-# Reused auth seam (one-liner — applied to every route below).
-_auth = Depends(require_api_key)
+# Admin-gated auth seam: API-key accepted; session cookie requires admin role.
+# Closes H-R5 — viewer/auditor/logistics sessions cannot flip production flags.
+_auth = Depends(require_api_key_or_admin)
 
 
 # ── Allowed flag map (frozen at P0) ──────────────────────────────────────────
