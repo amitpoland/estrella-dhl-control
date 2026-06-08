@@ -1341,6 +1341,11 @@ def _annotate_can_approve(proposal: Dict[str, Any], audit: Dict[str, Any]) -> Di
     1. Non-pending statuses (approved/queued/rejected/sent/resolved) → blocked
     2. Non-email types (tracking_lookup) → always approvable
     3. Completed batch → blocked regardless of PZ state
+    3b. Reverification proposals (channel="ai_reverification") → approvable
+        without PZ.  These are pre-PZ verification steps (supplier mismatch,
+        customs description, HS codes, etc.) that must be resolved BEFORE PZ
+        can be generated.  Gating them on PZ existence is backwards.
+        Still blocked on completed batches (rule 3).
     4. PZ not generated (no pz_pdf_filename AND no pz_generated_at) → blocked
     5. Otherwise → approvable
     """
@@ -1362,6 +1367,17 @@ def _annotate_can_approve(proposal: Dict[str, Any], audit: Dict[str, Any]) -> Di
     if (audit.get("status") or "").lower() == "completed":
         p["can_approve"]          = False
         p["approve_blocked_reason"] = "Batch is completed — no further actions allowed"
+        return p
+
+    # Rule 3b: reverification proposals (channel="ai_reverification") bypass PZ gate.
+    # These are data-correction / verification tasks that feed INTO PZ generation,
+    # not tasks that require PZ to already exist.  Types include: supplier_mismatch,
+    # client_mismatch, product_design_mismatch, missing_hs_code, price_value_conflict,
+    # sales_purchase_line_mismatch, customs_description_mismatch, etc.
+    # Placed after completed-batch check (rule 3) so completed batches are still locked.
+    if p.get("channel") == "ai_reverification":
+        p["can_approve"]          = True
+        p["approve_blocked_reason"] = None
         return p
 
     pz_ready = bool(audit.get("pz_pdf_filename") or audit.get("pz_generated_at"))
