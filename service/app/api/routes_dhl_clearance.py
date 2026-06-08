@@ -47,6 +47,18 @@ from ..config.email_routing import (
     is_dsk_source,
 )
 
+# ── Shared grammar import (Phase 2C) ────────────────────────────────────────
+# Import shared grammar authority so the packing renderer's local PL
+# dictionaries are verified at import time against the single source of
+# truth.  The renderer keeps its composite dict-of-dicts structure (EN + PL
+# together) and key format ("14KT GOLD" vs "14KT"), but import-time parity
+# assertions catch any PL-side grammar drift.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from description_grammar import (  # noqa: E402
+    ITEM_TYPE_PL,
+    METAL_PREPOSITIONAL,
+)
+
 log      = get_logger(__name__)
 router   = APIRouter(prefix="/api/v1/dhl", tags=["dhl-clearance"])
 _auth    = Depends(require_api_key)
@@ -722,6 +734,44 @@ _GLOBAL_METAL_TABLE: Dict[str, Dict[str, str]] = {
 _KARAT_FINENESS: Dict[int, int] = {
     9: 375, 10: 417, 14: 585, 18: 750, 21: 875, 22: 916, 24: 999,
 }
+
+
+# ── Import-time grammar parity assertions (Phase 2C) ────────────────────────
+# Verify that the packing renderer's local PL values match the shared grammar
+# authority.  The renderer uses composite dict-of-dicts with a different key
+# format (e.g. "14KT GOLD" vs "14KT"), so we compare VALUES, not keys.
+#
+# TYPE TABLE: every PL value in _GLOBAL_TYPE_TABLE must exist in ITEM_TYPE_PL.
+# Note: CHAIN maps to "Łańcuszek" which IS in ITEM_TYPE_PL. The shared grammar
+# has more keys (BROOCH, SET, ANKLET, STUD, HOOP) not present here — that's
+# fine, the renderer only handles the subset it sees from packing lines.
+_SHARED_TYPE_PL_VALUES = set(ITEM_TYPE_PL.values())
+_RENDERER_TYPE_PL_VALUES = {v["pl"] for v in _GLOBAL_TYPE_TABLE.values()}
+_TYPE_PL_DRIFT = _RENDERER_TYPE_PL_VALUES - _SHARED_TYPE_PL_VALUES
+if _TYPE_PL_DRIFT:
+    raise ImportError(
+        f"routes_dhl_clearance: _GLOBAL_TYPE_TABLE PL values drifted from "
+        f"shared grammar ITEM_TYPE_PL: {_TYPE_PL_DRIFT!r}. "
+        f"Update description_grammar.py or fix the local table."
+    )
+
+# METAL TABLE: every PL value in _GLOBAL_METAL_TABLE must exist in
+# METAL_PREPOSITIONAL.  Key format differs ("14KT GOLD" here vs "14KT" in
+# shared), so compare value sets.
+# Note: "9 GOLD" is a normalisation alias that maps to the same PL as "9KT GOLD".
+_SHARED_METAL_PL_VALUES = set(METAL_PREPOSITIONAL.values())
+_RENDERER_METAL_PL_VALUES = {v["pl"] for v in _GLOBAL_METAL_TABLE.values()}
+_METAL_PL_DRIFT = _RENDERER_METAL_PL_VALUES - _SHARED_METAL_PL_VALUES
+if _METAL_PL_DRIFT:
+    raise ImportError(
+        f"routes_dhl_clearance: _GLOBAL_METAL_TABLE PL values drifted from "
+        f"shared grammar METAL_PREPOSITIONAL: {_METAL_PL_DRIFT!r}. "
+        f"Update description_grammar.py or fix the local table."
+    )
+
+# Clean up module namespace
+del _SHARED_TYPE_PL_VALUES, _RENDERER_TYPE_PL_VALUES, _TYPE_PL_DRIFT
+del _SHARED_METAL_PL_VALUES, _RENDERER_METAL_PL_VALUES, _METAL_PL_DRIFT
 
 
 def _normalise_type_key(item_type: str) -> str:
