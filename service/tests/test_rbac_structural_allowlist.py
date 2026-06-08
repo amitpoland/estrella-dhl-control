@@ -113,27 +113,20 @@ _MUTATION_METHODS: frozenset[str] = frozenset({"post", "put", "patch", "delete"}
 _AREA1_ROUTES: frozenset[str] = frozenset()
 
 # Area 2 — DHL ops
+# PHASE C AREA 2 COMPLETE (2026-06-08) — 18 routes upgraded to require_role("admin","logistics").
+# routes_agency: require_role [1]
+# routes_dhl_clearance: require_role (7 operator routes; 2 scheduler routes retained below) [7]
+# routes_dhl_documents: require_role [2]
+# routes_dhl_followup: require_role [4]
+# routes_dsk: require_role [2]
+# routes_tracking: require_role (batch/update + cowork-result) [2]
 _AREA2_ROUTES: frozenset[str] = frozenset({
-    "routes_agency.py:POST:/email-package/{batch_id}",
-    "routes_dhl_clearance.py:POST:/approve/{batch_id}",
-    "routes_dhl_clearance.py:POST:/generate-customs-package/{batch_id}",
-    "routes_dhl_clearance.py:POST:/generate-description/{batch_id}",
-    "routes_dhl_clearance.py:POST:/mark-email-received/{batch_id}",
-    "routes_dhl_clearance.py:POST:/match-and-handle",
-    "routes_dhl_clearance.py:POST:/proactive-dispatch/{batch_id}",
-    "routes_dhl_clearance.py:POST:/scheduled-followup-check",
+    # AUTOMATION — Windows Task Scheduler (API key callers); cannot use require_role.
+    # Lane A: dhl-email-auto-scan.ps1 — confirmed X-API-Key caller.
+    # Lane B: scheduled follow-up; same pattern when Lane B .ps1 is written.
     "routes_dhl_clearance.py:POST:/scheduled-inbox-check",
-    "routes_dhl_clearance.py:POST:/send-reply/{batch_id}",
-    "routes_dhl_documents.py:POST:/{batch_id}/received",
-    "routes_dhl_documents.py:POST:/{batch_id}/upload",
-    "routes_dhl_followup.py:POST:/{batch_id}/mode",
-    "routes_dhl_followup.py:POST:/{batch_id}/recalculate",
-    "routes_dhl_followup.py:POST:/{batch_id}/send-now",
-    "routes_dhl_followup.py:POST:/{batch_id}/stop",
-    "routes_dsk.py:POST:/email-package",
-    "routes_dsk.py:POST:/generate",
-    "routes_tracking.py:POST:/batch/{batch_id}/update",
-    "routes_tracking.py:POST:/{awb}/cowork-result",
+    "routes_dhl_clearance.py:POST:/scheduled-followup-check",
+    # Deferred to later area — not in Area 2 implementation scope.
     "routes_tracking.py:POST:/{tracking_no}/refresh",
     "routes_tracking_db.py:POST:/events/export",
 })
@@ -540,6 +533,7 @@ class TestRbacStructuralAllowlist:
         Allowlist total at Phase A inventory (2026-06-08): 167 routes.
         (Updated 2026-06-08: -5 stale from deleted files, +3 new from ingestion sprint PRs.)
         (Phase C Area 1 complete 2026-06-08: -33 routes upgraded to privileged. Total: 134.)
+        (Phase C Area 2 complete 2026-06-08: -18 routes upgraded to privileged. Total: 116.)
         """
         routes = _all_mutation_routes()
         bare_count = sum(1 for r in routes if r.auth_level == "bare")

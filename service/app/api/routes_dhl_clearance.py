@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..auth.dependencies import require_role
 from ..core.guards import guard_dhl_requires_email
 from ..services.clearance_path_alias import (
     is_agency_clearance,
@@ -46,9 +47,10 @@ from ..config.email_routing import (
     is_dsk_source,
 )
 
-log = get_logger(__name__)
-router = APIRouter(prefix="/api/v1/dhl", tags=["dhl-clearance"])
-_auth = Depends(require_api_key)
+log      = get_logger(__name__)
+router   = APIRouter(prefix="/api/v1/dhl", tags=["dhl-clearance"])
+_auth    = Depends(require_api_key)
+_op_auth = Depends(require_role("admin", "logistics"))
 
 # ── Engine path setup ─────────────────────────────────────────────────────────
 _engine_dir = str(settings.engine_dir)
@@ -2691,7 +2693,7 @@ def run_scheduled_followup_check() -> Dict[str, Any]:
     return out
 
 
-@router.post("/match-and-handle", dependencies=[_auth])
+@router.post("/match-and-handle", dependencies=[_auth, _op_auth])
 async def match_and_handle(body: MatchAndHandleRequest) -> Dict[str, Any]:
     """
     Match an AWB number to a batch and run the DHL clearance handler.
@@ -2838,7 +2840,7 @@ async def get_clearance_status(batch_id: str) -> ClearanceStatusResponse:
     )
 
 
-@router.post("/generate-description/{batch_id}", dependencies=[_auth])
+@router.post("/generate-description/{batch_id}", dependencies=[_auth, _op_auth])
 async def generate_description(
     batch_id: str,
     awb: str = "",
@@ -3290,7 +3292,7 @@ async def download_dhl_file(filename: str) -> FileResponse:
 
 # ── New endpoints: customs description package, SAD-ready JSON, approval ──────
 
-@router.post("/generate-customs-package/{batch_id}", dependencies=[_auth])
+@router.post("/generate-customs-package/{batch_id}", dependencies=[_auth, _op_auth])
 async def generate_customs_package(
     batch_id: str,
     body: GenerateCustomsPackageRequest,
@@ -3553,7 +3555,7 @@ async def get_reply_status(batch_id: str) -> Dict[str, Any]:
     }
 
 
-@router.post("/send-reply/{batch_id}", dependencies=[_auth])
+@router.post("/send-reply/{batch_id}", dependencies=[_auth, _op_auth])
 async def send_dhl_reply(batch_id: str) -> Dict[str, Any]:
     """
     Queue the prepared DHL reply email for sending.
@@ -3787,7 +3789,7 @@ async def send_dhl_reply(batch_id: str) -> Dict[str, Any]:
     }
 
 
-@router.post("/approve/{batch_id}", dependencies=[_auth])
+@router.post("/approve/{batch_id}", dependencies=[_auth, _op_auth])
 async def approve_description(
     batch_id: str,
     body: ApproveDescriptionRequest,
@@ -3841,7 +3843,7 @@ async def approve_description(
     }
 
 
-@router.post("/mark-email-received/{batch_id}", dependencies=[_auth])
+@router.post("/mark-email-received/{batch_id}", dependencies=[_auth, _op_auth])
 async def mark_email_received(
     batch_id: str,
     body: Optional[MarkEmailReceivedRequest] = Body(default=None),
@@ -4083,7 +4085,7 @@ def _check_proactive_preconditions(audit: Dict[str, Any]) -> Optional[Dict[str, 
     return None
 
 
-@router.post("/proactive-dispatch/{batch_id}", dependencies=[_auth])
+@router.post("/proactive-dispatch/{batch_id}", dependencies=[_auth, _op_auth])
 def request_proactive_dispatch(
     batch_id: str,
     body: ProactiveDispatchRequest,

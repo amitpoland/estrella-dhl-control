@@ -15,15 +15,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
 
-from ..auth.dependencies import get_current_user
+from ..auth.dependencies import get_current_user, require_role
 from ..core import timeline as tl
 from ..core.config import settings
 from ..services.tracking_service import get_tracking_status
 from ..utils.batch_lock import batch_write_lock
 from ..utils.io import write_json_atomic
 
-router = APIRouter(prefix="/api/v1/tracking", tags=["tracking"])
-_auth  = Depends(get_current_user)
+router   = APIRouter(prefix="/api/v1/tracking", tags=["tracking"])
+_auth    = Depends(get_current_user)
+_op_auth = Depends(require_role("admin", "logistics"))
 
 _OUTPUTS = settings.storage_root / "outputs"
 
@@ -210,7 +211,7 @@ class TrackingUpdateBody(BaseModel):
     proposal_id:  Optional[str] = None   # if closing a tracking_lookup proposal
 
 
-@router.post("/batch/{batch_id}/update", dependencies=[_auth])
+@router.post("/batch/{batch_id}/update", dependencies=[_op_auth])
 def update_tracking_for_batch(
     batch_id: str,
     body:     TrackingUpdateBody,
@@ -320,7 +321,7 @@ class CoworkTrackingResult(BaseModel):
     note:          Optional[str] = None
 
 
-@router.post("/{awb}/cowork-result", dependencies=[_auth])
+@router.post("/{awb}/cowork-result", dependencies=[_op_auth])
 def submit_cowork_tracking_result(
     awb:  str,
     body: CoworkTrackingResult,

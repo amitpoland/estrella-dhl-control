@@ -32,12 +32,14 @@ from pydantic import BaseModel
 
 from ..core.config import settings
 from ..core.security import require_api_key
+from ..auth.dependencies import require_role
 from ..core import timeline as tl
 from ..utils.io import write_json_atomic
 
-log    = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1/dhl-documents", tags=["dhl-documents"])
-_auth  = Depends(require_api_key)
+log      = logging.getLogger(__name__)
+router   = APIRouter(prefix="/api/v1/dhl-documents", tags=["dhl-documents"])
+_auth    = Depends(require_api_key)
+_op_auth = Depends(require_role("admin", "logistics"))
 
 _ALLOWED_EXTENSIONS = {".pdf", ".xml", ".html", ".htm", ".jpg", ".jpeg", ".png"}
 _MAX_UPLOAD_BYTES   = 50 * 1024 * 1024   # 50 MB per file
@@ -141,7 +143,7 @@ def _write_dhl_docs_to_audit(
     return new_files
 
 
-@router.post("/{batch_id}/received", dependencies=[_auth])
+@router.post("/{batch_id}/received", dependencies=[_auth, _op_auth])
 def record_received_documents(batch_id: str, body: ReceivedReq) -> Dict[str, Any]:
     """
     Register DHL-received customs documents on the batch audit.
@@ -186,7 +188,7 @@ def record_received_documents(batch_id: str, body: ReceivedReq) -> Dict[str, Any
     }
 
 
-@router.post("/{batch_id}/upload", dependencies=[_auth])
+@router.post("/{batch_id}/upload", dependencies=[_auth, _op_auth])
 async def upload_dhl_documents(
     batch_id: str,
     files:  List[UploadFile],
