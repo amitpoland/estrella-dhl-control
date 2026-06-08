@@ -45,6 +45,11 @@ from ..services.customer_master import (
     pick_proforma_series_id, pick_invoice_series_id,
 )
 from ..services.master_data_db import get_company_profile
+from .sales_packing_parser import (
+    parse_ejl_sales_packing,
+    validate_grand_total,
+    build_patch_lookup,
+)
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/proforma", tags=["proforma"])
@@ -4819,6 +4824,56 @@ def post_proforma_draft_service_charge(
     ))
 
 
+def _preflight_approve(db_path, draft_id: int):
+    """Return error string if draft fails sales-price/description checks, else None."""
+    import json as _json_pf
+    draft = pildb.get_draft_by_id(db_path, draft_id)
+    if draft is None:
+        return None  # let approve_draft surface the 404
+    lines = _json_pf.loads(draft.editable_lines_json or "[]")
+
+    blank_desc = [
+        ln.get("product_code", f"line_{i}")
+        for i, ln in enumerate(lines)
+        if not (ln.get("name_pl") or "").strip()
+    ]
+    if blank_desc:
+        first_five = blank_desc[:5]
+        return (
+            f"Approval blocked: {len(blank_desc)} line(s) have blank commercial "
+            f"description (name_pl). Import sales prices first. "
+            f"First affected: {first_five}"
+        )
+
+    zero_price = [
+        ln.get("product_code", f"line_{i}")
+        for i, ln in enumerate(lines)
+        if not (ln.get("unit_price") or 0)
+    ]
+    if zero_price:
+        first_five = zero_price[:5]
+        return (
+            f"Approval blocked: {len(zero_price)} line(s) have zero/missing unit_price. "
+            f"Import sales prices first. First affected: {first_five}"
+        )
+
+    authority = draft.sales_price_authority_total_eur
+    if authority is not None:
+        line_total = sum(
+            float(ln.get("total_eur") or ln.get("net") or 0)
+            for ln in lines
+        )
+        diff = abs(line_total - float(authority))
+        if diff > 0.05:
+            return (
+                f"Approval blocked: draft total {line_total:.2f} EUR differs from "
+                f"sales-packing authority {authority:.2f} EUR by {diff:.2f} EUR "
+                f"(tolerance 0.05). Reimport or correct lines."
+            )
+
+    return None
+
+
 # ── Phase 4 — lifecycle controls + line add/remove ─────────────────────────
 
 @router.post("/draft/{draft_id}/approve", dependencies=[_auth])
@@ -4844,6 +4899,9 @@ def approve_proforma_draft(
     operator = _require_operator(x_operator)
     expected = str(body.get("expected_updated_at") or "")
     token    = str(body.get("confirm_token") or "")
+    preflight_err = _preflight_approve(_proforma_db_path(), int(draft_id))
+    if preflight_err:
+        raise HTTPException(status_code=422, detail=preflight_err)
     return _draft_edit_dispatch(draft_id, lambda: pildb.approve_draft(
         _proforma_db_path(),
         int(draft_id),
@@ -4883,6 +4941,91 @@ def reopen_proforma_draft(
         expected,
         confirm_token=token,
     ))
+
+
+
+
+@router.post("/draft/{draft_id}/import-sales-prices", dependencies=[_auth])
+def import_draft_sales_prices(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Import sales-side prices and commercial descriptions from a TSV packing list.
+
+    Body::
+        {
+          "expected_updated_at": "...",
+          "tsv_text":            "<tab-separated EJL packing list>",
+          "invoice_ref":         "EJL/26-27/244"    (optional, for audit)
+        }
+
+    Parses the TSV, validates the grand total, patches matching draft lines
+    with sales unit_price, line total (EUR), and PL/EN descriptions.
+    Auto-reopens an approved draft to editing before patching.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    operator   = _require_operator(x_operator)
+    expected   = str(body.get("expected_updated_at") or "")
+    tsv_text   = str(body.get("tsv_text") or "")
+    invoice_ref = str(body.get("invoice_ref") or "")
+
+    if not tsv_text.strip():
+        raise HTTPException(status_code=400, detail="tsv_text is required")
+
+    import json as _json_imp
+    rows, grand_total = parse_ejl_sales_packing(tsv_text)
+    if not rows:
+        raise HTTPException(status_code=422, detail="No data rows found in TSV")
+
+    total_err = validate_grand_total(rows, grand_total)
+    if total_err:
+        raise HTTPException(status_code=422, detail=f"Grand total mismatch: {total_err}")
+
+    lookup = build_patch_lookup(rows)
+
+    draft = pildb.get_draft_by_id(_proforma_db_path(), draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+
+    lines = _json_imp.loads(draft.editable_lines_json or "[]")
+    matched, unmatched = 0, 0
+    for ln in lines:
+        pc = ln.get("product_code") or ln.get("sku") or ""
+        row = lookup.get(pc)
+        if row is None:
+            unmatched += 1
+            continue
+        ln["unit_price"]   = float(row.unit_price)
+        ln["total_eur"]    = float(row.line_total)
+        ln["currency"]     = "EUR"
+        ln["name_pl"]      = row.desc_pl
+        ln["remarks"]      = row.desc_en
+        matched += 1
+
+    authority_total = float(grand_total) if grand_total is not None else sum(
+        float(r.line_total) for r in rows
+    )
+
+    refreshed = pildb.apply_sales_price_patch(
+        _proforma_db_path(),
+        draft_id,
+        operator,
+        expected,
+        patched_lines=lines,
+        sales_authority_total_eur=authority_total,
+        sales_invoice_ref=invoice_ref,
+    )
+
+    return JSONResponse({
+        "ok":               True,
+        "rows_parsed":      len(rows),
+        "lines_matched":    matched,
+        "lines_unmatched":  unmatched,
+        "grand_total_eur":  authority_total,
+        "draft":            _serialise_draft(refreshed),
+    })
 
 
 @router.post("/draft/{draft_id}/cancel", dependencies=[_auth])
