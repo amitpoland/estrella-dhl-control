@@ -1,4 +1,9 @@
-"""excel_column_mapper.py — Three-tier advisory column-mapping for packing list headers.
+"""excel_column_mapper.py — Four-tier advisory column-mapping for packing list headers.
+
+Tier 0 — Supplier template (operator-approved):
+    Exact raw_header lookup in operator-approved supplier_header_templates table.
+    Result is authoritative (confidence=1.0, method="supplier_template").
+    Requires supplier_id kwarg to be supplied; silently skipped when None.
 
 Tier 1 — Deterministic alias:
     Exact normalised-key lookup in the caller-supplied field_aliases dict.
@@ -16,9 +21,10 @@ Tier 3 — LLM advisory (optional, off by default):
 
 Safety contract
 ---------------
-build_col_map() only returns Tier-1 ("alias") and accepted Tier-2 ("fuzzy",
-score >= 90) mappings.  Everything else is advisory — the caller must show
-unresolved / warning mappings to an operator before acting on them.
+build_col_map() returns Tier-0 ("supplier_template"), Tier-1 ("alias"),
+and accepted Tier-2 ("fuzzy", score >= 90) mappings.  Everything else is
+advisory — the caller must show unresolved / warning mappings to an
+operator before acting on them.
 """
 from __future__ import annotations
 
@@ -70,7 +76,7 @@ class ColumnMapping:
     original_header: str
     normalised:      str
     canonical_field: Optional[str]   # None when unresolved
-    method:          str             # "alias"|"fuzzy"|"fuzzy_warning"|"llm"|"unresolved"
+    method:          str             # "supplier_template"|"alias"|"fuzzy"|"fuzzy_warning"|"llm"|"unresolved"
     confidence:      float           # 1.0 exact alias; 0-1 fuzzy/llm; 0.0 unresolved
     reason:          str
 
@@ -174,8 +180,10 @@ def map_all_headers(
     field_aliases: Dict[str, str],
     *,
     llm_fallback: bool = False,
+    supplier_id: Optional[int] = None,
+    doc_type: str = "purchase_packing_list",
 ) -> List[ColumnMapping]:
-    """Map every header through the three-tier pipeline.
+    """Map every header through the four-tier pipeline.
 
     Parameters
     ----------
@@ -188,6 +196,12 @@ def map_all_headers(
         When True, unresolved headers after the fuzzy pass are submitted to
         the LLM advisory tier.  Default False to keep tests fast and
         deterministic without network access.
+    supplier_id:
+        Supplier Master id (suppliers.id integer PK).  When supplied, Tier 0
+        looks up operator-approved templates for this supplier and doc_type
+        before the alias pass.  None skips Tier 0 entirely.
+    doc_type:
+        Document type for template lookup (default: "purchase_packing_list").
 
     Returns
     -------
@@ -196,10 +210,36 @@ def map_all_headers(
     alias_keys       = list(field_aliases.keys())
     canonical_list   = sorted(CANONICAL_FIELDS)
 
+    # ── Tier 0: supplier template lookup ─────────────────────────────────────
+    # Build a raw_header → canonical_field dict from operator-approved templates
+    # for this supplier. Only populated when supplier_id is provided.
+    _template_map: Dict[str, str] = {}
+    if supplier_id is not None:
+        try:
+            from .packing_db import get_supplier_templates
+            _templates = get_supplier_templates(supplier_id, doc_type)
+            _template_map = {t["raw_header"]: t["canonical_field"] for t in _templates}
+        except Exception:
+            _template_map = {}
+
     result: List[ColumnMapping] = []
 
     for i, raw in enumerate(raw_headers):
         normalised = _preprocess(raw)
+
+        # ── Tier 0: operator-approved supplier template ───────────────────────
+        if raw in _template_map:
+            canonical = _template_map[raw]
+            result.append(ColumnMapping(
+                col_index=i,
+                original_header=raw,
+                normalised=normalised,
+                canonical_field=canonical,
+                method="supplier_template",
+                confidence=1.0,
+                reason=f"Supplier template: '{raw}' → '{canonical}'",
+            ))
+            continue
 
         # ── Tier 1: exact alias ───────────────────────────────────────────────
         if normalised in field_aliases:
@@ -306,13 +346,15 @@ def map_all_headers(
 
 
 def build_col_map(mappings: List[ColumnMapping]) -> Dict[int, str]:
-    """Return {col_index: canonical_field} for Tier-1 and accepted Tier-2 only.
+    """Return {col_index: canonical_field} for Tier-0, Tier-1, and accepted Tier-2.
 
+    Includes supplier_template (operator-approved), alias, and fuzzy (score >= 90).
     Excludes fuzzy_warning, llm, and unresolved — those are advisory and
     require operator review before inclusion in parse output.
     """
     return {
         m.col_index: m.canonical_field
         for m in mappings
-        if m.method in ("alias", "fuzzy") and m.canonical_field is not None
+        if m.method in ("supplier_template", "alias", "fuzzy")
+        and m.canonical_field is not None
     }

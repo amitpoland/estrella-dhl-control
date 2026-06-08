@@ -26,7 +26,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
@@ -1545,6 +1545,132 @@ async def suggest_column_mapping(
         "document_id":      doc_id,
         "llm_mapping_meta": diag["llm_mapping_meta"],
         "column_mapping_summary": summary,
+    }
+
+
+# ── POST /api/v1/packing/{batch_id}/approve-header-mapping ───────────────────
+#
+# Operator explicitly approves one or more header→field mappings and saves them
+# as supplier-specific templates (Tier 0). Requires the packing document to have
+# a supplier_id set (from intake dropdown selection).
+#
+# Safety contract:
+#   1. Read-only except for supplier_header_templates — no packing_lines, no
+#      products, no PZ, no wFirma, no invoice writes.
+#   2. supplier_id MUST come from the packing document (operator-selected via
+#      intake dropdown). Never inferred from file content or LLM output.
+#   3. LLM suggestions are NEVER auto-saved. Only explicit operator POST saves.
+#   4. Operator may provide a doc_type override (default: purchase_packing_list).
+
+class _HeaderMappingItem(BaseModel):
+    raw_header: str
+    canonical_field: str
+    col_index: Optional[int] = None
+
+
+class _ApproveHeaderMappingBody(BaseModel):
+    document_id: str
+    mappings: List[_HeaderMappingItem]
+    doc_type: str = "purchase_packing_list"
+
+
+@router.post("/{batch_id}/approve-header-mapping", dependencies=[_auth])
+async def approve_header_mapping(
+    batch_id: str,
+    body: _ApproveHeaderMappingBody,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> Dict[str, Any]:
+    """Save operator-approved header→field mappings as supplier templates (Tier 0).
+
+    The packing document must have a supplier_id (set at intake when the operator
+    selected a supplier from the Supplier Master dropdown). Mappings are stored in
+    supplier_header_templates and applied automatically on the next upload from
+    the same supplier.
+
+    Returns: approved_count, supplier_id, doc_type, saved mappings.
+    """
+    from ..services.excel_column_mapper import CANONICAL_FIELDS
+
+    doc_id = (body.document_id or "").strip()
+    if not doc_id:
+        raise HTTPException(status_code=400, detail="document_id is required.")
+    if not body.mappings:
+        raise HTTPException(status_code=400, detail="mappings list must not be empty.")
+
+    doc = pdb.get_packing_document(doc_id)
+    if not doc or doc.get("batch_id") != batch_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Packing document {doc_id!r} not found for batch {batch_id!r}.",
+        )
+
+    supplier_id = doc.get("supplier_id")
+    if not supplier_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This packing document has no supplier_id. "
+                "Upload via the intake form with a supplier selected from the "
+                "Supplier Master dropdown to enable template learning."
+            ),
+        )
+
+    operator = (x_operator or "operator").strip()
+    doc_type  = (body.doc_type or "purchase_packing_list").strip()
+
+    saved: List[Dict[str, Any]] = []
+    rejected: List[Dict[str, Any]] = []
+
+    for item in body.mappings:
+        raw    = (item.raw_header or "").strip()
+        field  = (item.canonical_field or "").strip()
+
+        if not raw:
+            rejected.append({"raw_header": raw, "reason": "empty header"})
+            continue
+        if field not in CANONICAL_FIELDS:
+            rejected.append({
+                "raw_header": raw,
+                "reason": f"unknown canonical field: {field!r}",
+            })
+            continue
+
+        try:
+            template_id = pdb.upsert_supplier_template(
+                supplier_id     = supplier_id,
+                doc_type        = doc_type,
+                raw_header      = raw,
+                canonical_field = field,
+                col_index       = item.col_index,
+                approved_by     = operator,
+            )
+            saved.append({
+                "template_id": template_id,
+                "raw_header":  raw,
+                "canonical_field": field,
+            })
+        except Exception as exc:
+            log.warning(
+                "[%s] approve-header-mapping save failed: %s → %s: %s",
+                batch_id, raw, field, exc,
+            )
+            rejected.append({"raw_header": raw, "reason": str(exc)})
+
+    log.info(
+        "[%s] approve-header-mapping: supplier_id=%s doc_type=%s saved=%d rejected=%d",
+        batch_id, supplier_id, doc_type, len(saved), len(rejected),
+    )
+
+    return {
+        "ok":             True,
+        "batch_id":       batch_id,
+        "document_id":    doc_id,
+        "supplier_id":    supplier_id,
+        "doc_type":       doc_type,
+        "approved_count": len(saved),
+        "rejected_count": len(rejected),
+        "saved":          saved,
+        "rejected":       rejected,
     }
 
 

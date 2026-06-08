@@ -162,6 +162,27 @@ def init_packing_db(db_path: Path) -> None:
             "CREATE INDEX IF NOT EXISTS idx_pl_scan_code ON packing_lines (scan_code)"
         )
 
+        # Supplier header templates — Tier 0 operator-approved column mappings.
+        # Keyed by (supplier_id, doc_type, raw_header); UNIQUE prevents duplicates.
+        con.executescript("""
+            CREATE TABLE IF NOT EXISTS supplier_header_templates (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id     INTEGER NOT NULL,
+                doc_type        TEXT    NOT NULL DEFAULT 'purchase_packing_list',
+                raw_header      TEXT    NOT NULL,
+                canonical_field TEXT    NOT NULL,
+                col_index       INTEGER,
+                approved_by     TEXT    NOT NULL DEFAULT 'operator',
+                approved_at     TEXT    NOT NULL,
+                UNIQUE(supplier_id, doc_type, raw_header)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sht_supplier
+                ON supplier_header_templates (supplier_id, doc_type);
+        """)
+
+        # supplier_id on packing_documents links the document to its Supplier Master row.
+        _add_column_if_missing(con, "packing_documents", "supplier_id", "INTEGER")
+
 
 def _add_column_if_missing(con: sqlite3.Connection, table: str, column: str, definition: str) -> None:
     cols = [r[1] for r in con.execute(f"PRAGMA table_info({table})").fetchall()]
@@ -192,6 +213,7 @@ def upsert_packing_document(
     extraction_status: str = "pending",
     parser_diagnostic: Optional[Dict[str, Any]] = None,
     document_id: Optional[str] = None,
+    supplier_id: Optional[int] = None,
 ) -> str:
     """Insert or update a packing document record. Returns document id.
 
@@ -224,22 +246,25 @@ def upsert_packing_document(
                             """UPDATE packing_documents
                                SET invoice_no=?, source_file_path=?, source_file_hash=?,
                                    parser_name=?, parser_version=?, extraction_status=?,
+                                   supplier_id=COALESCE(?, supplier_id),
                                    updated_at=?
                                WHERE id=?""",
                             (invoice_no, source_file_path, source_file_hash,
                              parser_name, parser_version, extraction_status,
-                             now, document_id),
+                             supplier_id, now, document_id),
                         )
                     else:
                         con.execute(
                             """UPDATE packing_documents
                                SET invoice_no=?, source_file_path=?, source_file_hash=?,
                                    parser_name=?, parser_version=?, extraction_status=?,
-                                   parser_diagnostic_json=?, updated_at=?
+                                   parser_diagnostic_json=?,
+                                   supplier_id=COALESCE(?, supplier_id),
+                                   updated_at=?
                                WHERE id=?""",
                             (invoice_no, source_file_path, source_file_hash,
                              parser_name, parser_version, extraction_status,
-                             diag_json, now, document_id),
+                             diag_json, supplier_id, now, document_id),
                         )
                     return document_id
 
@@ -269,11 +294,11 @@ def upsert_packing_document(
                 """INSERT INTO packing_documents
                        (id, batch_id, invoice_no, source_file_path, source_file_hash,
                         parser_name, parser_version, extraction_status,
-                        parser_diagnostic_json, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        parser_diagnostic_json, supplier_id, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (doc_id, batch_id, invoice_no, source_file_path, source_file_hash,
                  parser_name, parser_version, extraction_status,
-                 diag_json or "{}", now, now),
+                 diag_json or "{}", supplier_id, now, now),
             )
             return doc_id
 
@@ -320,6 +345,83 @@ def update_packing_document_diagnostic(document_id: str, diagnostic: Dict[str, A
                    SET parser_diagnostic_json=?, updated_at=?
                    WHERE id=?""",
                 (diag_json, now, document_id),
+            )
+    return (cur.rowcount or 0) > 0
+
+
+# ── Supplier header templates (Tier 0) ───────────────────────────────────────
+
+def get_supplier_templates(
+    supplier_id: int,
+    doc_type: str = "purchase_packing_list",
+) -> List[Dict[str, Any]]:
+    """Return all operator-approved header templates for a supplier + doc_type.
+
+    Returns a list of dicts with keys: id, supplier_id, doc_type, raw_header,
+    canonical_field, col_index, approved_by, approved_at.
+    Returns [] when the DB is uninitialised or no templates exist.
+    """
+    if _db_path is None:
+        return []
+    with _connect() as con:
+        rows = con.execute(
+            """SELECT * FROM supplier_header_templates
+               WHERE supplier_id=? AND doc_type=?
+               ORDER BY raw_header""",
+            (supplier_id, doc_type),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_supplier_template(
+    *,
+    supplier_id: int,
+    doc_type: str = "purchase_packing_list",
+    raw_header: str,
+    canonical_field: str,
+    col_index: Optional[int] = None,
+    approved_by: str = "operator",
+) -> int:
+    """Insert or replace a supplier header template.
+
+    Uses INSERT OR REPLACE so re-approval of the same raw_header updates
+    canonical_field, approved_by, and approved_at in place.
+    Returns the row id.
+    """
+    if _db_path is None:
+        raise RuntimeError("packing_db not initialised")
+    now = _now_iso()
+    with _lock:
+        with _connect() as con:
+            cur = con.execute(
+                """INSERT INTO supplier_header_templates
+                       (supplier_id, doc_type, raw_header, canonical_field,
+                        col_index, approved_by, approved_at)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(supplier_id, doc_type, raw_header)
+                   DO UPDATE SET
+                       canonical_field = excluded.canonical_field,
+                       col_index       = excluded.col_index,
+                       approved_by     = excluded.approved_by,
+                       approved_at     = excluded.approved_at""",
+                (supplier_id, doc_type, raw_header, canonical_field,
+                 col_index, approved_by, now),
+            )
+            return cur.lastrowid or con.execute(
+                """SELECT id FROM supplier_header_templates
+                   WHERE supplier_id=? AND doc_type=? AND raw_header=?""",
+                (supplier_id, doc_type, raw_header),
+            ).fetchone()[0]
+
+
+def delete_supplier_template(template_id: int) -> bool:
+    """Delete a single supplier header template by id. Returns True if deleted."""
+    if _db_path is None:
+        return False
+    with _lock:
+        with _connect() as con:
+            cur = con.execute(
+                "DELETE FROM supplier_header_templates WHERE id=?", (template_id,)
             )
     return (cur.rowcount or 0) > 0
 
