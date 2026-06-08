@@ -84,6 +84,8 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 **Reviewers**: 4 deploy-gate agents (diff-reviewer, backend-impact, persistence-storage, security) — all PASS verdicts.
 
+**Scorecard**: `.claude/memory/scorecards/2026-06-08-pr507-reverification-proposal-gating.md` — overall verdict STRONG.
+
 ---
 
 ## PR #499 — Inbox Source D: Proforma Draft Attention (2026-06-08, MERGED + DEPLOYED)
