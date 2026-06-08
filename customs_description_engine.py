@@ -50,138 +50,20 @@ def _try_load_description_engine():
 _DESCRIPTION_ENGINE = _try_load_description_engine()
 
 # ── Normalization dictionaries ─────────────────────────────────────────────────
+# Imported from description_grammar.py — the single source of truth for all
+# Polish grammar tables.  Re-exported here so existing consumers that access
+# cde.GOLD_PURITY, cde._PURITY_GENITIVE, etc. continue to work unchanged.
+#
+# Migration A (Phase 2): extraction only — no behavioral change.
 
-# Item type → Polish name (title case, used in running text)
-ITEM_TYPE_PL: dict[str, str] = {
-    "RING":      "Pierścionek",
-    "EARRINGS":  "Kolczyki",
-    "EARRING":   "Kolczyki",
-    "BRACELET":  "Bransoletka",
-    "BANGLE":    "Bransoletka sztywna",
-    "PENDANT":   "Wisiorek",
-    "NECKLACE":  "Naszyjnik",
-    "BROOCH":    "Broszka",
-    "SET":       "Komplet biżuterii",
-    "CHAIN":     "Łańcuszek",
-    "ANKLET":    "Bransoletka na kostkę",
-    "STUD":      "Kolczyki wkrętki",
-    "HOOP":      "Kolczyki kółka",
-    "CUFFLINKS": "Spinki do mankietów",
-    "CUFFLINK":  "Spinki do mankietów",
-}
-
-# Gold/silver purity → Polish name (nominative — used in field displays)
-GOLD_PURITY: dict[str, str] = {
-    # Gold — karat codes resolve to confirmed próby values
-    "9KT":    "złoto próby 375",
-    "09KT":   "złoto próby 375",
-    "10KT":   "złoto próby 417",
-    "14KT":   "złoto próby 585",
-    "18KT":   "złoto próby 750",
-    "22KT":   "złoto próby 916",
-    "24KT":   "złoto próby 999",
-    # Silver — numeric próby codes only
-    # "SILVER" removed: word alone carries no próby → falls to "metal szlachetny"
-    #                   → checker creates Inbox proposal → operator specifies próby
-    "925":    "srebro próby 925",
-    "SL925":  "srebro próby 925",
-    # Steel
-    "SS":     "stal szlachetna",
-    # Platinum — specific approved próby codes only
-    # "PLATINUM" removed: word alone carries no próby → falls to "metal szlachetny"
-    #                     → checker creates Inbox proposal → operator specifies próby
-    # Governance rule: PT961 Platinum → unknown purity → proposal, not "platyna"
-    "PT950":  "platyna próby 950",
-    "PT900":  "platyna próby 900",
-    "PT850":  "platyna próby 850",
-}
-
-# Genitive forms — used after preposition "z" in Polish sentences
-# e.g. "Pierścionek z 14-karatowego złota (próba 585) wysadzany diamentami"
-# e.g. "Pierścionek z platyny próby 950 wysadzany diamentami"
-# Gold entries use karat-expanded form; silver/platinum stay as-is.
-# Generic SILVER and PLATINUM entries removed — see GOLD_PURITY comment above.
-_PURITY_GENITIVE: dict[str, str] = {
-    # Gold — karat-expanded genitive: "N-karatowego złota (próba NNN)"
-    # Used after preposition "z" in sentence context.
-    # Origin: operator review of AWB 9938632830 (2026-06-08).
-    "9KT":    "9-karatowego złota (próba 375)",
-    "09KT":   "9-karatowego złota (próba 375)",
-    "10KT":   "10-karatowego złota (próba 417)",
-    "14KT":   "14-karatowego złota (próba 585)",
-    "18KT":   "18-karatowego złota (próba 750)",
-    "22KT":   "22-karatowego złota (próba 916)",
-    "24KT":   "24-karatowego złota (próba 999)",
-    # Silver — numeric codes only (no karat system)
-    "925":    "srebra próby 925",
-    "SL925":  "srebra próby 925",
-    # Steel
-    "SS":     "stali szlachetnej",
-    # Platinum — specific próby codes only (no karat system)
-    "PT950":  "platyny próby 950",
-    "PT900":  "platyny próby 900",
-    "PT850":  "platyny próby 850",
-}
-
-# Stone instrumental forms — used after setting verb (wysadzany/a/e + instr.)
-# Prior to Phase 1 these followed "z" — now they follow "wysadzany/a/e".
-_STONE_INSTRUMENTAL: dict[str, str] = {
-    "diamenty":                            "diamentami",
-    "diamenty i kamienie szlachetne":      "diamentami i kamieniami szlachetnymi",
-    "kamienie szlachetne":                 "kamieniami szlachetnymi",
-    "kamienie jubilerskie":                "kamieniami jubilerskimi",
-    "kamienie ozdobne":                    "kamieniami ozdobnymi",
-    "diamenty laboratoryjne":              "diamentami laboratoryjnymi",
-    "diamenty laboratoryjne laboratoryjne": "diamentami laboratoryjnymi",
-    "cyrkonie":                            "cyrkoniami",
-    "rubiny":                              "rubinami",
-    "szmaragdy":                           "szmaragdami",
-    "szafiry":                             "szafirami",
-    "perły":                               "perłami",
-    "moissanit":                           "moissanitem",
-}
-
-# Gender-specific setting verb — agrees with item_type_pl noun gender.
-# Used when stones are present: "Pierścionek ... wysadzany diamentami"
-# Masculine → wysadzany, Feminine → wysadzana, Plural → wysadzane
-# Origin: operator review of AWB 9938632830 (2026-06-08).
-_GENDER_SETTING_VERB: dict[str, str] = {
-    # Masculine (wysadzany)
-    "Pierścionek":           "wysadzany",
-    "Wisiorek":              "wysadzany",
-    "Naszyjnik":             "wysadzany",
-    "Łańcuszek":             "wysadzany",
-    "Komplet biżuterii":    "wysadzany",
-    # Feminine (wysadzana)
-    "Bransoletka":           "wysadzana",
-    "Bransoletka sztywna":   "wysadzana",
-    "Broszka":               "wysadzana",
-    "Bransoletka na kostkę": "wysadzana",
-    # Plural (wysadzane)
-    "Kolczyki":              "wysadzane",
-    "Kolczyki wkrętki":      "wysadzane",
-    "Kolczyki kółka":        "wysadzane",
-    "Spinki do mankietów":   "wysadzane",
-}
-
-# Stone abbreviations → Polish name (None = no stones)
-STONE_ABBR: dict[str, Optional[str]] = {
-    "DIA":     "diamenty",
-    "DIA&CLS": "diamenty i kamienie szlachetne",
-    "DIAM":    "diamenty",
-    "CLS":     "kamienie szlachetne",
-    "LGD":     "diamenty laboratoryjne",
-    "LG":      "diamenty laboratoryjne",
-    "LAB":     "diamenty laboratoryjne",
-    "PLAIN":   None,
-    "CZ":      "cyrkonie",
-    "RUBY":    "rubiny",
-    "EMERALD": "szmaragdy",
-    "SAPPHIRE": "szafiry",
-    "PEARL":   "perły",
-    "CUBIC":   "cyrkonie",
-    "MOISS":   "moissanit",
-}
+from description_grammar import (                       # noqa: E402
+    ITEM_TYPE_PL,
+    GOLD_PURITY,
+    PURITY_GENITIVE   as _PURITY_GENITIVE,
+    STONE_INSTRUMENTAL as _STONE_INSTRUMENTAL,
+    GENDER_SETTING_VERB as _GENDER_SETTING_VERB,
+    STONE_ABBR,
+)
 
 # Valid HS chapter ranges for jewellery (prefix → description)
 HS_VALID_RANGES: dict[str, str] = {
