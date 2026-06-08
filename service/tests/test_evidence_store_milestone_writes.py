@@ -104,11 +104,15 @@ def clearance_client(tmp_storage):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from app.core.security import require_api_key
+    from app.auth.dependencies import get_current_user
     from app.api.routes_dhl_clearance import router
 
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[require_api_key] = lambda: None
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "test-user", "role": "admin", "is_active": True, "is_approved": True,
+    }
     return TestClient(app, raise_server_exceptions=True), tmp_storage
 
 
@@ -206,11 +210,15 @@ def _make_reply_client(tmp_storage, monkeypatch=None):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from app.core.security import require_api_key
+    from app.auth.dependencies import get_current_user
     from app.api.routes_dhl_clearance import router
 
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[require_api_key] = lambda: None
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "test-user", "role": "admin", "is_active": True, "is_approved": True,
+    }
     return TestClient(app, raise_server_exceptions=True)
 
 
