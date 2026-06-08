@@ -1446,6 +1446,67 @@ def search_drafts(
     }
 
 
+def list_attention_drafts(
+    db_path: Path,
+    *,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Cross-batch scan for proforma drafts that need operator attention.
+
+    Returns a list of lightweight dicts (NOT full ProformaDraft objects)
+    suitable for the inbox aggregator.  Read-only.  Never mutates.
+
+    Attention states (non-terminal, non-completed):
+        draft       — new draft, needs operator review
+        editing     — operator is working on it
+        approved    — locked, ready to post to wFirma
+        post_failed — wFirma rejected, needs operator retry
+        posting     — submission in progress (may be stuck)
+
+    Excluded states (terminal / completed):
+        posted, cancelled, superseded
+
+    Sorted by updated_at DESC so the most recently touched drafts
+    appear first — same ordering convention as the inbox aggregator.
+    """
+    limit = max(1, min(200, int(limit)))
+    if not Path(db_path).exists():
+        return []
+
+    attention_states = ("draft", "editing", "approved", "post_failed", "posting")
+    placeholders = ", ".join("?" for _ in attention_states)
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_drafts_table(conn)
+        rows = conn.execute(
+            f"SELECT id, batch_id, client_name, draft_state, currency, "
+            f"       wfirma_proforma_fullnumber, updated_at, created_at, "
+            f"       post_failed_at "
+            f"FROM proforma_drafts "
+            f"WHERE draft_state IN ({placeholders}) "
+            f"ORDER BY updated_at DESC "
+            f"LIMIT ?",
+            (*attention_states, limit),
+        ).fetchall()
+
+    results: List[Dict[str, Any]] = []
+    for row in rows:
+        state = row["draft_state"]
+        results.append({
+            "id":               row["id"],
+            "batch_id":         row["batch_id"],
+            "client_name":      row["client_name"],
+            "draft_state":      state,
+            "currency":         row["currency"] or "",
+            "fullnumber":       row["wfirma_proforma_fullnumber"] or "",
+            "updated_at":       row["updated_at"] or "",
+            "created_at":       row["created_at"] or "",
+            "post_failed_at":   row["post_failed_at"] or "",
+        })
+    return results
+
+
 def auto_create_draft_from_sales_packing(
     db_path:     Path,
     *,

@@ -2,10 +2,11 @@
 routes_inbox.py — Global action-queue aggregator for the /v2/ Inbox surface.
 
 GET /api/v1/inbox
-  Aggregates three read-only sources:
+  Aggregates four read-only sources:
     A) Pending action proposals (all batches, require_api_key)
     B) Email queue pending items (require_admin — included ONLY when caller is admin)
     C) DHL evidence store — AWBs with unresolved customs actions (require_api_key)
+    D) Proforma drafts needing attention — cross-batch draft queue (require_api_key)
 
 HARD CONSTRAINTS (enforced by design, not just convention):
   - ZERO SIDE EFFECTS on GET.  Never calls scan_for_dhl_customs_emails.
@@ -182,6 +183,69 @@ def _collect_dhl_cache_items() -> List[Dict[str, Any]]:
     return items
 
 
+# ── Source D: Proforma drafts needing attention (pure DB read) ───────────────
+
+_PROFORMA_DRAFT_PRIORITY: Dict[str, str] = {
+    "post_failed": "high",
+    "posting":     "high",
+    "approved":    "normal",
+    "editing":     "normal",
+    "draft":       "normal",
+}
+
+_PROFORMA_DRAFT_TITLE: Dict[str, str] = {
+    "post_failed": "Proforma post failed — retry needed",
+    "posting":     "Proforma posting in progress",
+    "approved":    "Proforma approved — ready to post",
+    "editing":     "Proforma draft being edited",
+    "draft":       "Proforma draft — review needed",
+}
+
+
+def _collect_proforma_draft_items() -> List[Dict[str, Any]]:
+    """Return proforma drafts needing operator attention as inbox items.
+
+    HARD CONSTRAINT: reads proforma_invoice_link_db.list_attention_drafts() ONLY.
+    This is a pure SQLite read over proforma_drafts table.
+    NEVER calls approve, post, cancel, convert, or any write endpoint.
+    NEVER mutates any proforma state.
+    """
+    from ..services import proforma_invoice_link_db as pildb  # noqa: PLC0415
+
+    db_path = settings.storage_root / "proforma_links.db"
+    records = pildb.list_attention_drafts(db_path, limit=30)
+    items: List[Dict[str, Any]] = []
+    for rec in records:
+        draft_id   = rec.get("id", "")
+        batch_id   = rec.get("batch_id", "")
+        client     = rec.get("client_name", "")
+        state      = rec.get("draft_state", "draft")
+        fullnumber = rec.get("fullnumber", "")
+
+        title = _PROFORMA_DRAFT_TITLE.get(state, f"Proforma: {state}")
+        detail_parts = [batch_id]
+        if client:
+            detail_parts.append(client)
+        if fullnumber:
+            detail_parts.append(fullnumber)
+
+        items.append({
+            "id":             f"proforma-draft-{draft_id}",
+            "type":           "proforma_draft",
+            "priority":       _PROFORMA_DRAFT_PRIORITY.get(state, "normal"),
+            "title":          title,
+            "detail":         " · ".join(detail_parts),
+            "age":            rec.get("updated_at", ""),
+            "actor":          "Proforma",
+            "primary_action": "Review",
+            "linked_batch_id":batch_id or None,
+            "actionable":     True,
+            # Inbox links to the proforma page; no inline action.
+            "endpoint":       None,
+        })
+    return items
+
+
 # ── GET /api/v1/inbox ─────────────────────────────────────────────────────────
 
 @router.get("", dependencies=[_auth])
@@ -194,14 +258,16 @@ def get_inbox(
     """
     Global action-queue inbox.
 
-    Returns a merged, priority-sorted list of items from all three sources.
+    Returns a merged, priority-sorted list of items from all four sources.
     Email queue items are included ONLY when the caller is an admin (OQ-1).
-    GET is read-only — no Zoho scan, no email send, no lifecycle mutation.
+    GET is read-only — no Zoho scan, no email send, no lifecycle mutation,
+    no proforma approve/post/cancel.
 
     Response shape:
       { ok, count, items: [{id,type,priority,title,detail,age,actor,
                              primary_action,linked_batch_id,actionable,endpoint}],
-        sources: { proposals:{ok,count}, email_queue:{ok,count,note?}, dhl_cache:{ok,count} } }
+        sources: { proposals:{ok,count}, email_queue:{ok,count,note?},
+                   dhl_cache:{ok,count}, proforma_drafts:{ok,count} } }
     """
     # Derive admin status from session for role-conditional email queue (OQ-1).
     # Uses get_current_user_optional (does not raise) — non-session callers are non-admin.
@@ -248,6 +314,15 @@ def get_inbox(
     except Exception as exc:
         log.warning("[inbox] dhl_cache source failed: %s", exc)
         sources["dhl_cache"] = {"ok": False, "error": str(exc)[:200]}
+
+    # ── Source D: proforma drafts needing attention (pure DB read) ────────────
+    try:
+        d_items = _collect_proforma_draft_items()
+        all_items.extend(d_items)
+        sources["proforma_drafts"] = {"ok": True, "count": len(d_items)}
+    except Exception as exc:
+        log.warning("[inbox] proforma_drafts source failed: %s", exc)
+        sources["proforma_drafts"] = {"ok": False, "error": str(exc)[:200]}
 
     # ── Sort: priority asc (urgent first), then age asc (oldest first) ────────
     all_items.sort(key=lambda it: (
