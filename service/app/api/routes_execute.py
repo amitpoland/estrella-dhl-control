@@ -26,11 +26,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Any, Dict, Optional
 
-from ..core.security import require_api_key
+from ..core.security import require_api_key, require_api_key_privileged
 from fastapi import Depends
 
 router = APIRouter(prefix="/api/v1/execute", tags=["execute"])
 _auth  = Depends(require_api_key)
+# H-R5 (#502): /execute triggers controlled write actions — privileged.
+_privileged = Depends(require_api_key_privileged)
 
 
 class ExecuteRequest(BaseModel):
@@ -38,7 +40,7 @@ class ExecuteRequest(BaseModel):
     payload:  Optional[Dict[str, Any]] = None
 
 
-@router.post("/{action}", dependencies=[_auth])
+@router.post("/{action}", dependencies=[_privileged])
 def execute(action: str, req: ExecuteRequest) -> JSONResponse:
     """
     Execute one controlled write action.
