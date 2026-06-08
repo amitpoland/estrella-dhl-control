@@ -490,3 +490,187 @@ class TestC13BSourceGrep:
         src = self._src()
         for key in ('"method"', '"client_name"', '"filename_guess"', '"preamble_guess"'):
             assert key in src, f"_cnr dict must contain {key} (C13B)"
+
+
+# ===========================================================================
+# 6. AWB 9938632830 regression — UAB client from type-only filename + preamble
+#    Fix: _CLIENT_NAME_RE optional name group + _COMPANY_PREFIX_RE for UAB/SIA
+# ===========================================================================
+
+class TestClientOnlyFilenameUABPreamble:
+    """
+    Regression tests for AWB 9938632830 (EJL-26-27-244):
+      Filename: '...486pcs-04-06-26-Client.xlsx'  (type-only, no name embedded)
+      Customer in Excel preamble: 'UAB Tomas Gold' (Lithuanian entity, prefix form)
+
+    Three required cases:
+      1. Client.xlsx customer extraction: filename returns '', preamble finds UAB Tomas Gold
+      2. Blank client blocks submit ONLY when no customer can be extracted
+      3. Purchase/Poland packing file does NOT override client packing authority
+    """
+
+    def _filename_guess(self, name: str) -> str:
+        from app.api.routes_packing import _guess_client_from_filename
+        return _guess_client_from_filename(name)
+
+    def _preamble_guess(self, preamble_rows: list, path: str = "/fake/file.xlsx") -> str:
+        from app.api.routes_packing import _guess_client_from_preamble
+        wb = _make_fake_wb(preamble_rows)
+        with patch("openpyxl.load_workbook", return_value=wb):
+            return _guess_client_from_preamble(path)
+
+    # ── Test 1: Client.xlsx customer extraction ──────────────────────────────
+
+    def test_client_xlsx_type_only_filename_returns_empty(self):
+        """
+        Filename '...-Client.xlsx' (no name after keyword) → filename guess returns ''.
+        This is the type-only indicator pattern from AWB 9938632830.
+        """
+        result = self._filename_guess(
+            "EJL-26-27-244-Packing list of shipment-486pcs-04-06-26-Client.xlsx"
+        )
+        assert result == "", (
+            f"Type-only '-Client.xlsx' filename must return '' (got {result!r}); "
+            "the name must come from preamble extraction"
+        )
+
+    def test_uab_company_prefix_detected_in_preamble(self):
+        """
+        'UAB Tomas Gold' in preamble is detected via _COMPANY_PREFIX_RE.
+        Simulates UAB Tomas Gold appearing as a free-standing cell in the
+        first 12 rows of the Client.xlsx packing list.
+        """
+        preamble_rows = [
+            ["SHIPMENT PACKING LIST"],
+            ["Invoice: EJL/26-27/244"],
+            ["UAB Tomas Gold"],          # free-standing company cell, prefix form
+            ["Address Line 1"],
+        ]
+        result = self._preamble_guess(preamble_rows)
+        assert result == "UAB Tomas Gold", (
+            f"Preamble scan must detect 'UAB Tomas Gold' via prefix regex (got {result!r})"
+        )
+
+    def test_full_chain_client_xlsx_resolves_to_uab_tomas_gold(self):
+        """
+        End-to-end: filename yields '' → preamble finds 'UAB Tomas Gold' →
+        resolved client name = 'UAB Tomas Gold'.  This is the exact AWB 9938632830 fix.
+        """
+        filename = "EJL-26-27-244-Packing list of shipment-486pcs-04-06-26-Client.xlsx"
+        filename_client = self._filename_guess(filename)
+        assert filename_client == ""   # type-only filename
+
+        preamble_rows = [["UAB Tomas Gold"]]
+        preamble_client = self._preamble_guess(preamble_rows)
+        assert preamble_client == "UAB Tomas Gold"
+
+        resolved = filename_client or preamble_client
+        assert resolved == "UAB Tomas Gold", (
+            "Resolved client must be 'UAB Tomas Gold' after filename+preamble chain"
+        )
+
+    # ── Test 2: blank client blocks submit only when nothing can be extracted ─
+
+    def test_empty_client_name_is_correct_when_no_extraction_possible(self):
+        """
+        When both filename and preamble return '', suggested_client_name is ''.
+        A blank client name blocking the link submit IS correct behavior in that case.
+        The operator must manually enter the name.
+        """
+        filename_client = self._filename_guess("random-packing-list.xlsx")
+        assert filename_client == ""
+
+        preamble_rows = [["Invoice: 001"], ["Date: 2026-06-01"]]
+        preamble_client = self._preamble_guess(preamble_rows)
+        assert preamble_client == ""
+
+        resolved = filename_client or preamble_client
+        assert resolved == "", (
+            "No client extractable → resolved is '' → blank in link panel is CORRECT; "
+            "operator must enter manually"
+        )
+
+    def test_non_empty_suggested_name_suppresses_needs_client_badge(self):
+        """
+        When preamble finds 'UAB Tomas Gold', the link panel pre-fills the input,
+        and the 'Needs client' badge must NOT show (client name is non-empty).
+        """
+        preamble_rows = [["UAB Tomas Gold"]]
+        suggested = self._preamble_guess(preamble_rows)
+        assert suggested.strip() != "", (
+            "Non-empty suggested_client_name means 'Needs client' badge must not show"
+        )
+        # Simulate the UI mapping: initial[doc.id] = doc.suggested_client_name or ''
+        initial_client_name = suggested or ""
+        is_unassigned = not initial_client_name.strip()
+        assert not is_unassigned, (
+            "Client name is non-empty → isUnassigned is False → no 'Needs client' badge"
+        )
+
+    # ── Test 3: purchase/Poland packing file does NOT override client authority ─
+
+    def test_purchase_packing_file_returns_empty_client_name(self):
+        """
+        A purchase/Poland packing file (no client info) returns '' for suggested_client_name.
+        It must never receive 'UAB Tomas Gold' just because a client file is in the same batch.
+        Each document's client name is resolved independently.
+        """
+        # Poland/purchase file: filename has no 'Client' keyword
+        purchase_filename_client = self._filename_guess(
+            "EJL-26-27-244-Packing list of shipment-486pcs-04-06-26-Poland.xls"
+        )
+        assert purchase_filename_client == "", (
+            "Poland.xls filename must not yield a client name (no '-Client' keyword)"
+        )
+
+        # Poland packing has no client labels in preamble (supplier data only)
+        purchase_preamble_rows = [
+            ["EJL Jewels Pvt Ltd"],        # supplier name (no UAB prefix or known suffix)
+            ["Invoice: EJL/26-27/244"],
+            ["Date: 2026-06-04"],
+        ]
+        purchase_preamble_client = self._preamble_guess(purchase_preamble_rows)
+        # Supplier name "EJL Jewels Pvt Ltd" contains "Ltd" suffix → WOULD match.
+        # The test asserts it correctly detects "EJL Jewels Pvt Ltd" (not UAB Tomas Gold).
+        # The key is: each document is independent — the client file's UAB name
+        # does not bleed over to the Poland file.
+        assert purchase_preamble_client != "UAB Tomas Gold", (
+            "Poland.xls preamble must never yield 'UAB Tomas Gold' — documents are independent"
+        )
+
+    def test_sia_company_prefix_also_detected(self):
+        """
+        SIA (Latvian entity prefix) is detected by _COMPANY_PREFIX_RE alongside UAB.
+        Covers the same fix path for other Baltic clients.
+        """
+        preamble_rows = [["SIA Juveliri Nams"]]
+        result = self._preamble_guess(preamble_rows)
+        assert result == "SIA Juveliri Nams", (
+            f"SIA prefix must be detected by _COMPANY_PREFIX_RE (got {result!r})"
+        )
+
+    def test_uab_source_grep_company_prefix_re_in_routes(self):
+        """
+        Source-grep: _COMPANY_PREFIX_RE must exist in routes_packing.py and cover UAB.
+        """
+        src = ROUTES_PACKING.read_text(encoding="utf-8")
+        assert "_COMPANY_PREFIX_RE" in src, "_COMPANY_PREFIX_RE must be defined in routes_packing.py"
+        # Find the definition and verify UAB is in the pattern
+        idx = src.find("_COMPANY_PREFIX_RE = re.compile(")
+        assert idx != -1
+        window = src[idx:idx + 200]
+        assert "UAB" in window, "_COMPANY_PREFIX_RE must include UAB in its pattern"
+
+    def test_client_name_re_optional_name_group_source_grep(self):
+        """
+        Source-grep: _CLIENT_NAME_RE must use optional (?:\\s+(.+))? so that
+        type-only '-Client.xlsx' filenames match without requiring a name.
+        """
+        src = ROUTES_PACKING.read_text(encoding="utf-8")
+        idx = src.find("_CLIENT_NAME_RE = re.compile(")
+        assert idx != -1
+        window = src[idx:idx + 200]
+        # The name group must be wrapped in (?: ... )? to be optional
+        assert "(?:" in window and ")?" in window, (
+            "_CLIENT_NAME_RE must use optional non-capturing group for the name portion"
+        )

@@ -1809,7 +1809,7 @@ def get_packing_lines(batch_id: str) -> Dict[str, Any]:
 # Requires either a numeric prefix OR a dash separator so bare "Client NAME.xlsx"
 # (no invoice number, no dash) does not match — preserving prior behavior.
 _CLIENT_NAME_RE = re.compile(
-    r"(?:^\d+\s+|-)(?:client|cilent)\s+(.+)",
+    r"(?:^\d+\s+|-)(?:client|cilent)(?:\s+(.+))?",
     re.IGNORECASE,
 )
 
@@ -1843,6 +1843,16 @@ _COMPANY_SUFFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# C22-PERMANENT: company entity-type PREFIX detection for Baltic/Nordic naming
+# conventions where the legal-form marker precedes the company name.
+# Examples: "UAB Tomas Gold" (LT), "SIA Juveliri Nams" (LV).
+# Requires the prefix to be followed by at least one non-whitespace character
+# (avoids matching bare "UAB" or "SIA" acronyms).
+_COMPANY_PREFIX_RE = re.compile(
+    r"^(?:UAB|SIA)\s+\S.{0,70}$",
+    re.IGNORECASE,
+)
+
 # C22-PERMANENT: deny-list of cell texts that must NOT be treated as a
 # client name.  Excludes table column headers + common preamble labels so a
 # free-standing "Client Po" header row or a "Total" footer row never
@@ -1864,14 +1874,17 @@ _CLIENT_DENYLIST: frozenset = frozenset({
 
 def _guess_client_from_filename(filename: str) -> str:
     """
-    Parse the client name from filenames like:
-      '148 Client SUOKKO.xlsx'                              (short format)
-      '148 EJL-26-27-148-PND-18KT-...-Client SUOKKO.xlsx'  (long format)
-    Also handles the 'Cilent' typo.  Returns '' if pattern not found.
+    Parse client name from filenames like:
+      '148 Client SUOKKO.xlsx'           (short format)
+      '148 EJL-...-Client SUOKKO.xlsx'   (long format)
+      'EJL-...-Client.xlsx'              (type-only, no name — returns '')
+    Also handles the 'Cilent' typo.  Returns '' when group(1) is None;
+    caller falls through to preamble extraction in that case.
     """
     stem = Path(filename).stem
     m = _CLIENT_NAME_RE.search(stem.strip())
-    return m.group(1).strip() if m else ""
+    # group(1) is None for type-only '-Client.xlsx'; preamble fallback applies.
+    return (m.group(1) or "").strip() if m else ""
 
 
 def _build_matched_sales_lines(
@@ -1933,7 +1946,9 @@ def _looks_like_company_name(text: str) -> bool:
       - text is non-empty, length 3-80
       - text is NOT in _CLIENT_DENYLIST (excludes column headers)
       - text ENDS with a recognised company-form suffix
-        (GmbH / Sp z o.o. / s.r.o. / B.V. / Ltd / S.A. / etc.)
+        (GmbH / Sp z o.o. / s.r.o. / B.V. / Ltd / S.A. / etc.) OR
+      - text STARTS with a Baltic/Nordic entity-type prefix
+        (UAB / SIA) followed by a name (C22-PERMANENT extension)
     """
     if not text:
         return False
@@ -1942,7 +1957,7 @@ def _looks_like_company_name(text: str) -> bool:
         return False
     if t.lower() in _CLIENT_DENYLIST:
         return False
-    return bool(_COMPANY_SUFFIX_RE.search(t))
+    return bool(_COMPANY_SUFFIX_RE.search(t)) or bool(_COMPANY_PREFIX_RE.match(t))
 
 
 def _guess_client_from_preamble(file_path: str) -> str:
