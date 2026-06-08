@@ -96,35 +96,41 @@ GOLD_PURITY: dict[str, str] = {
     "PT850":  "platyna próby 850",
 }
 
-# Genitive forms — used after preposition "z/ze" in Polish sentences
-# e.g. "Pierścionek ze złota próby 585 z diamentami"
-# e.g. "Pierścionek z platyny próby 950"
+# Genitive forms — used after preposition "z" in Polish sentences
+# e.g. "Pierścionek z 14-karatowego złota (próba 585) wysadzany diamentami"
+# e.g. "Pierścionek z platyny próby 950 wysadzany diamentami"
+# Gold entries use karat-expanded form; silver/platinum stay as-is.
 # Generic SILVER and PLATINUM entries removed — see GOLD_PURITY comment above.
 _PURITY_GENITIVE: dict[str, str] = {
-    # Gold
-    "9KT":    "złota próby 375",
-    "09KT":   "złota próby 375",
-    "10KT":   "złota próby 417",
-    "14KT":   "złota próby 585",
-    "18KT":   "złota próby 750",
-    "22KT":   "złota próby 916",
-    "24KT":   "złota próby 999",
-    # Silver — numeric codes only
+    # Gold — karat-expanded genitive: "N-karatowego złota (próba NNN)"
+    # Used after preposition "z" in sentence context.
+    # Origin: operator review of AWB 9938632830 (2026-06-08).
+    "9KT":    "9-karatowego złota (próba 375)",
+    "09KT":   "9-karatowego złota (próba 375)",
+    "10KT":   "10-karatowego złota (próba 417)",
+    "14KT":   "14-karatowego złota (próba 585)",
+    "18KT":   "18-karatowego złota (próba 750)",
+    "22KT":   "22-karatowego złota (próba 916)",
+    "24KT":   "24-karatowego złota (próba 999)",
+    # Silver — numeric codes only (no karat system)
     "925":    "srebra próby 925",
     "SL925":  "srebra próby 925",
     # Steel
     "SS":     "stali szlachetnej",
-    # Platinum — specific próby codes only
+    # Platinum — specific próby codes only (no karat system)
     "PT950":  "platyny próby 950",
     "PT900":  "platyny próby 900",
     "PT850":  "platyny próby 850",
 }
 
-# Stone ablative forms — used after "z" (instrumental in Polish)
+# Stone instrumental forms — used after setting verb (wysadzany/a/e + instr.)
+# Prior to Phase 1 these followed "z" — now they follow "wysadzany/a/e".
 _STONE_INSTRUMENTAL: dict[str, str] = {
     "diamenty":                            "diamentami",
     "diamenty i kamienie szlachetne":      "diamentami i kamieniami szlachetnymi",
     "kamienie szlachetne":                 "kamieniami szlachetnymi",
+    "kamienie jubilerskie":                "kamieniami jubilerskimi",
+    "kamienie ozdobne":                    "kamieniami ozdobnymi",
     "diamenty laboratoryjne":              "diamentami laboratoryjnymi",
     "diamenty laboratoryjne laboratoryjne": "diamentami laboratoryjnymi",
     "cyrkonie":                            "cyrkoniami",
@@ -133,6 +139,29 @@ _STONE_INSTRUMENTAL: dict[str, str] = {
     "szafiry":                             "szafirami",
     "perły":                               "perłami",
     "moissanit":                           "moissanitem",
+}
+
+# Gender-specific setting verb — agrees with item_type_pl noun gender.
+# Used when stones are present: "Pierścionek ... wysadzany diamentami"
+# Masculine → wysadzany, Feminine → wysadzana, Plural → wysadzane
+# Origin: operator review of AWB 9938632830 (2026-06-08).
+_GENDER_SETTING_VERB: dict[str, str] = {
+    # Masculine (wysadzany)
+    "Pierścionek":           "wysadzany",
+    "Wisiorek":              "wysadzany",
+    "Naszyjnik":             "wysadzany",
+    "Łańcuszek":             "wysadzany",
+    "Komplet biżuterii":    "wysadzany",
+    # Feminine (wysadzana)
+    "Bransoletka":           "wysadzana",
+    "Bransoletka sztywna":   "wysadzana",
+    "Broszka":               "wysadzana",
+    "Bransoletka na kostkę": "wysadzana",
+    # Plural (wysadzane)
+    "Kolczyki":              "wysadzane",
+    "Kolczyki wkrętki":      "wysadzane",
+    "Kolczyki kółka":        "wysadzane",
+    "Spinki do mankietów":   "wysadzane",
 }
 
 # Stone abbreviations → Polish name (None = no stones)
@@ -459,27 +488,34 @@ def normalize_item_description(
         return "ze" if word and word[0].lower() in ("z", "ż", "ź") else "z"
 
     # ── Compose material_pl (nominative — for field display) ─────────────────
+    # Uses "oraz" conjunction between metal and stones (nominative listing).
+    # "z" is grammatically wrong in nominative context — "z" + instrumental
+    # is for sentence construction, not for field display.
     if purity_pl and stones_pl:
-        material_pl = f"{purity_pl} z {stones_pl}"
+        material_pl = f"{purity_pl} oraz {stones_pl}"
     elif purity_pl:
         material_pl = purity_pl
     elif stones_pl:
-        material_pl = f"metal z {stones_pl}"
+        material_pl = f"metal oraz {stones_pl}"
     else:
         material_pl = "metal szlachetny"
 
     # ── Compose polish_customs_description (correct Polish grammar) ───────────
+    # Gender-specific setting verb (wysadzany/a/e) replaces "z" before stones.
+    # Sentence break ". Biżuteria" replaces ", biżuteria".
+    # Origin: operator review of AWB 9938632830 (2026-06-08).
+    setting_verb = _GENDER_SETTING_VERB.get(item_type_pl, "wysadzany") if stones_instr else ""
     if purity_gen and stones_instr:
         prep = _prep(purity_gen)
         item_desc = (
             f"{item_type_pl} {prep} {purity_gen} "
-            f"z {stones_instr}, biżuteria do noszenia."
+            f"{setting_verb} {stones_instr}. Biżuteria do noszenia."
         )
     elif purity_gen:
         prep = _prep(purity_gen)
-        item_desc = f"{item_type_pl} {prep} {purity_gen}, biżuteria do noszenia."
+        item_desc = f"{item_type_pl} {prep} {purity_gen}. Biżuteria do noszenia."
     elif stones_instr:
-        item_desc = f"{item_type_pl} z {stones_instr}, biżuteria do noszenia."
+        item_desc = f"{item_type_pl} {setting_verb} {stones_instr}. Biżuteria do noszenia."
     else:
         item_desc = f"{item_type_pl} — wyrób jubilerski do noszenia."
 

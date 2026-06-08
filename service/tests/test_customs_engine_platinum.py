@@ -50,7 +50,7 @@ class TestPlatinumMaterialPl:
     @pytest.mark.parametrize("description,expected_material", [
         # Exact invoice lines from AWB 8400636576 (the failing batch)
         ("PCS, PT950 Platinum,Plain Jewel RING",         "platyna próby 950"),
-        ("PCS, PT950 Platinum,Stud With Diam Jewel RING","platyna próby 950"),
+        ("PCS, PT950 Platinum,Stud With Diam Jewel RING","platyna próby 950 oraz diamenty"),
         # Variant purities
         ("PT900 Platinum Ring",                          "platyna próby 900"),
         ("PT850 Platinum Ring",                          "platyna próby 850"),

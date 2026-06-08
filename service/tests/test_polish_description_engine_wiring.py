@@ -88,9 +88,9 @@ def test_description_content_uses_polish_then_slash_then_english(storage):
     text = _read_pdf_text(res["output_path"])
     # Polish-first half (name_pl="Pierścionek", description_pl uses Polish noun
     # phrase). Look for the canonical Polish lemma rather than a 2-char prefix:
-    # the engine produces "Pierścionek z diamentami i kamieniami szlachetnymi,
-    # biżuteria do noszenia." which the generator surfaces in the "Pozycja"
-    # heading and in the "Co to za towar" content line.
+    # the engine produces "Pierścionek z platyny próby 950 wysadzany diamentami
+    # i kamieniami szlachetnymi. Biżuteria do noszenia." which the generator
+    # surfaces in the "Pozycja" heading and in the "Co to za towar" content line.
     assert "Pierścionek" in text
     assert "biżuteria" in text  # appears in description body
     # English half
@@ -100,10 +100,13 @@ def test_description_content_uses_polish_then_slash_then_english(storage):
     # Same row in DB carries the composed line in Polish-first / slash /
     # English-after-slash form. The Polish half is the engine's full
     # description_pl phrase, not a compact "Biżuteria — pierścionek" form.
+    # Grammar upgrade (Phase 1): karat-expanded genitive, setting verb,
+    # sentence break. PT950 is not karat-based so genitive stays as-is,
+    # but setting verb (wysadzany) and sentence break now apply.
     row = ddb.get_product_description("RING")
     assert row["description_line"] == (
-        "Pierścionek z diamentami i kamieniami szlachetnymi, "
-        "biżuteria do noszenia. / "
+        "Pierścionek z platyny próby 950 wysadzany diamentami i kamieniami szlachetnymi. "
+        "Biżuteria do noszenia. / "
         "Diamond & Colour Stone PT950 Platinum Jewellery RING"
     )
 
