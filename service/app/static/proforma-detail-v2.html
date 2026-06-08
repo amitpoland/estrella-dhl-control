@@ -270,37 +270,112 @@
   }
 
   // ── Edit Draft modal (PATCH /draft/{id} metadata) ────────────────────────
+  const PAYMENT_METHODS = [
+    { value: '', label: '— not set —' },
+    { value: 'transfer', label: 'Transfer (przelew)' },
+    { value: 'cash', label: 'Cash (gotówka)' },
+    { value: 'card', label: 'Card (karta)' },
+    { value: 'compensation', label: 'Compensation (kompensata)' },
+    { value: 'advance', label: 'Advance (zaliczka)' },
+  ];
+  const INCOTERMS = ['', 'EXW', 'FCA', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP', 'FAS', 'FOB', 'CFR', 'CIF'];
+
   function EditDraftModal({ draft, onClose, onDone }) {
-    const [currency, setCurrency] = useState(draft?.currency||'');
-    const [remarks, setRemarks] = useState(draft?.remarks||'');
+    const pt = draft?.payment_terms || {};
+    const [currency,      setCurrency]      = useState(draft?.currency || '');
+    const [paymentMethod, setPaymentMethod] = useState(pt.paymentmethod || '');
+    const [paymentDate,   setPaymentDate]   = useState(pt.paymentdate || '');
+    const [saleDate,      setSaleDate]      = useState(pt.saledate || '');
+    const [incoterm,      setIncoterm]      = useState(draft?.incoterm || '');
+    const [exchangeRate,  setExchangeRate]  = useState(draft?.exchange_rate != null ? String(draft.exchange_rate) : '');
+    const [remarks,       setRemarks]       = useState(draft?.remarks || '');
     const [busy, setBusy] = useState(false);
-    const [err, setErr] = useState('');
+    const [err,  setErr]  = useState('');
+
     const submit = async () => {
       if (!currency.trim()) { setErr('Currency required.'); return; }
       setBusy(true); setErr('');
+      const patch = { currency: currency.trim() };
+      const newPt = {};
+      if (paymentMethod) newPt.paymentmethod = paymentMethod;
+      if (paymentDate)   newPt.paymentdate   = paymentDate;
+      if (saleDate)      newPt.saledate      = saleDate;
+      if (Object.keys(newPt).length || pt.paymentmethod || pt.paymentdate || pt.saledate) {
+        patch.payment_terms = {
+          ...(pt.paymentmethod ? { paymentmethod: pt.paymentmethod } : {}),
+          ...(pt.paymentdate   ? { paymentdate:   pt.paymentdate   } : {}),
+          ...(pt.saledate      ? { saledate:       pt.saledate      } : {}),
+          ...newPt,
+        };
+      }
+      if (incoterm.trim())        patch.incoterm      = incoterm.trim().toUpperCase();
+      if (exchangeRate.trim())    patch.exchange_rate = parseFloat(exchangeRate);
+      if (remarks.trim() !== (draft?.remarks || '')) patch.remarks = remarks.trim();
       try {
         await apiFetch(`/api/v1/proforma/draft/${draft.id}`, {
-          method:'PATCH', headers:{'Content-Type':'application/json','X-Operator':localStorage.getItem('pz_operator_name')||'operator'},
-          body:JSON.stringify({ currency:currency.trim(), remarks:remarks.trim(), expected_updated_at:draft.updated_at||'' }),
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'X-Operator': localStorage.getItem('pz_operator_name') || 'operator' },
+          body: JSON.stringify({ expected_updated_at: draft.updated_at || '', patch }),
         });
         onDone('Draft updated.');
       } catch (e) { setErr(e.message); setBusy(false); }
     };
+
+    const field = (label, children) => (
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', display: 'block', marginBottom: 4 }}>{label}</label>
+        {children}
+      </div>
+    );
+    const inputStyle = { width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12, background: 'var(--bg-subtle)', color: 'var(--text)', fontFamily: 'inherit' };
+    const selectStyle = { ...inputStyle, cursor: 'pointer' };
+
     return (
       <div style={{ position:'fixed', inset:0, background:'var(--overlay)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000 }} onClick={e=>e.target===e.currentTarget&&!busy&&onClose()}>
-        <div style={{ background:'var(--card)', borderRadius:10, padding:24, maxWidth:440, width:'92%', boxShadow:'0 16px 48px var(--shadow-heavy)', border:'1px solid var(--border)' }}>
-          <div style={{ fontWeight:700, fontSize:15, fontFamily:'"DM Serif Display",serif', marginBottom:16, color:'var(--text)' }}>Edit Draft #{draft?.id}</div>
-          <label style={{ fontSize:11, fontWeight:600, color:'var(--text-2)', display:'block', marginBottom:4 }}>Currency</label>
-          <input value={currency} onChange={e=>setCurrency(e.target.value)} placeholder="USD" maxLength={4}
-            style={{ width:'100%', padding:'8px 10px', borderRadius:6, border:'1px solid var(--border)', fontSize:12, background:'var(--bg-subtle)', color:'var(--text)', marginBottom:12 }} />
-          <label style={{ fontSize:11, fontWeight:600, color:'var(--text-2)', display:'block', marginBottom:4 }}>Remarks</label>
-          <textarea value={remarks} onChange={e=>setRemarks(e.target.value)} rows={2} placeholder="Optional note"
-            style={{ width:'100%', padding:'8px 10px', borderRadius:6, border:'1px solid var(--border)', fontSize:12, background:'var(--bg-subtle)', color:'var(--text)', fontFamily:'inherit', resize:'vertical' }} />
-          {err && <div style={{ color:'var(--badge-red-text)', fontSize:12, marginTop:6 }}>{err}</div>}
-          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:16 }}>
+        <div style={{ background:'var(--card)', borderRadius:10, padding:'20px 24px', maxWidth:480, width:'94%', boxShadow:'0 16px 48px var(--shadow-heavy)', border:'1px solid var(--border)', maxHeight:'90vh', overflowY:'auto' }}>
+          <div style={{ fontWeight:700, fontSize:15, fontFamily:'"DM Serif Display",serif', marginBottom:16, color:'var(--text)' }}>
+            Edit Draft #{draft?.id}
+          </div>
+
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0 16px' }}>
+            {field('Currency *',
+              <input value={currency} onChange={e=>setCurrency(e.target.value.toUpperCase())} placeholder="EUR" maxLength={4}
+                style={inputStyle} data-testid="edit-currency" />
+            )}
+            {field('Incoterm',
+              <select value={incoterm} onChange={e=>setIncoterm(e.target.value)} style={selectStyle} data-testid="edit-incoterm">
+                {INCOTERMS.map(t => <option key={t} value={t}>{t || '— not set —'}</option>)}
+              </select>
+            )}
+            {field('Payment Method',
+              <select value={paymentMethod} onChange={e=>setPaymentMethod(e.target.value)} style={selectStyle} data-testid="edit-payment-method">
+                {PAYMENT_METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+              </select>
+            )}
+            {field('Payment Due Date',
+              <input type="date" value={paymentDate} onChange={e=>setPaymentDate(e.target.value)}
+                style={inputStyle} data-testid="edit-payment-date" />
+            )}
+            {field('Sale Date',
+              <input type="date" value={saleDate} onChange={e=>setSaleDate(e.target.value)}
+                style={inputStyle} data-testid="edit-sale-date" />
+            )}
+            {field('Exchange Rate',
+              <input type="number" step="0.0001" min="0" value={exchangeRate} onChange={e=>setExchangeRate(e.target.value)}
+                placeholder="e.g. 4.2800" style={inputStyle} data-testid="edit-exchange-rate" />
+            )}
+          </div>
+
+          {field('Remarks',
+            <textarea value={remarks} onChange={e=>setRemarks(e.target.value)} rows={2} placeholder="Optional note"
+              style={{ ...inputStyle, resize:'vertical' }} data-testid="edit-remarks" />
+          )}
+
+          {err && <div style={{ color:'var(--badge-red-text)', fontSize:12, marginTop:4, marginBottom:4 }}>{err}</div>}
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:12, borderTop:'1px solid var(--border-subtle)', paddingTop:12 }}>
             <Btn variant="ghost" onClick={onClose} disabled={busy} small>Cancel</Btn>
             <Btn variant="default" onClick={submit} disabled={busy} small data-testid="btn-confirm-edit">
-              {busy?<><span className="spinner" style={{ marginRight:6 }}/>Saving…</>:'Save changes'}
+              {busy ? <><span className="spinner" style={{ marginRight:6 }}/>Saving…</> : 'Save changes'}
             </Btn>
           </div>
         </div>
@@ -527,6 +602,8 @@
       ['FX Rate', d.exchange_rate?`${d.exchange_rate} (${d.fx_rate_source||'NBP'})`:'—'],
       ['Payment Method', fmt(pt.paymentmethod||d.wfirma_payment_method)],
       ['Payment Due', fmt(pt.paymentdate||d.wfirma_payment_due)],
+      ['Sale Date', fmt(pt.saledate)],
+      ['Issue Date', fmt(d.wfirma_issue_date)],
       ['Incoterm', fmt(d.incoterm)],
       ['Created', fmt((d.created_at||'').slice(0,16))],
       ['Updated', fmt((d.updated_at||'').slice(0,16))],
@@ -604,18 +681,94 @@
     );
   }
 
-  function CustomerMappingTab({ draft }) {
+  function CustomerMappingTab({ draft, onRefresh }) {
     const cr = draft?.customer_resolution;
+    const [contractorId, setContractorId] = useState(cr?.wfirma_customer_id ? String(cr.wfirma_customer_id) : '');
+    const [country,      setCountry]      = useState('');
+    const [saving,       setSaving]       = useState(false);
+    const [saveMsg,      setSaveMsg]      = useState('');
+    const [saveErr,      setSaveErr]      = useState('');
+
     if (!cr) return <EmptyState state="empty" message="No resolution data." />;
+
+    const op = () => localStorage.getItem('pz_operator_name') || 'operator';
+
+    const handleSave = async () => {
+      const idVal = contractorId.trim();
+      if (!idVal) { setSaveErr('wFirma contractor ID is required.'); return; }
+      setSaving(true); setSaveMsg(''); setSaveErr('');
+      try {
+        const body = { bill_to_name: draft.client_name || idVal };
+        if (country.trim()) body.country = country.trim().toUpperCase();
+        await apiFetch(`/api/v1/customer-master/${encodeURIComponent(idVal)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'X-Operator': op() },
+          body: JSON.stringify(body),
+        });
+        setSaveMsg('Customer mapping saved.');
+        if (onRefresh) onRefresh();
+      } catch (e) { setSaveErr(e.message || 'Save failed.'); }
+      setSaving(false);
+    };
+
+    const sBg     = cr.found ? 'var(--badge-green-bg)'  : cr.ambiguous ? 'var(--badge-amber-bg)'  : 'var(--badge-red-bg)';
+    const sBorder = cr.found ? 'var(--badge-green-border)' : cr.ambiguous ? 'var(--badge-amber-border)' : 'var(--badge-red-border)';
+    const sColor  = cr.found ? 'var(--badge-green-text)' : cr.ambiguous ? 'var(--badge-amber-text)' : 'var(--badge-red-text)';
+    const sLabel  = cr.found ? '✓ Matched to Customer Master' : cr.ambiguous ? '⚠ Ambiguous — multiple candidates' : '✗ Not mapped to Customer Master';
+
     return (
-      <div data-testid="tab-customer-mapping" style={{ padding:'20px 24px' }}>
+      <div data-testid="tab-customer-mapping" style={{ padding:'20px 24px', display:'flex', flexDirection:'column', gap:14 }}>
+        <div style={{ padding:'10px 14px', background:sBg, border:`1px solid ${sBorder}`, borderRadius:6, fontSize:12, fontWeight:700, color:sColor }}>{sLabel}</div>
+
         <Card style={{ padding:'0 0 8px' }}>
           <SectionHeader label="Customer Mapping" />
           <div style={{ padding:'0 16px' }}>
             {[['Sales client name',cr.raw_input||'—'],['Normalized',cr.normalized_name||'—'],['wFirma customer ID',cr.wfirma_customer_id||'—',true],['wFirma name',cr.resolved_wfirma_name||'—'],['Match strategy',cr.match_strategy||'—'],['Found',cr.found?'✓ Yes':'✗ No']].map(([k,v,mono])=><InfoRow key={k} label={k} value={v} mono={mono} />)}
           </div>
         </Card>
-        {!cr.found && <div style={{ marginTop:12, padding:'10px 14px', background:'var(--badge-amber-bg)', border:'1px solid var(--badge-amber-border)', borderRadius:6, fontSize:12, color:'var(--badge-amber-text)' }}>⚠ Not mapped to wFirma customer — <a href="/dashboard/customer-master-v2.html" style={{ color:'var(--badge-amber-text)', fontWeight:700 }}>Open Customer Master</a></div>}
+
+        <Card style={{ padding:'14px 16px' }}>
+          <SectionHeader label={cr.found ? 'Update Customer Master Mapping' : 'Add to Customer Master'} />
+          <div style={{ marginTop:8, fontSize:12, color:'var(--text-2)', marginBottom:10 }}>
+            {cr.found
+              ? `Already linked as "${cr.resolved_wfirma_name}" (ID: ${cr.wfirma_customer_id}). Enter a different ID to re-map.`
+              : `"${cr.raw_input || draft.client_name}" is not in Customer Master. Enter the wFirma contractor ID (numeric) and country to create the entry.`}
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 120px', gap:10, marginBottom:10 }}>
+            <div>
+              <div style={{ fontSize:10, fontWeight:700, color:'var(--text-3)', letterSpacing:'0.06em', textTransform:'uppercase', marginBottom:4 }}>wFirma Contractor ID *</div>
+              <input
+                type="text"
+                value={contractorId}
+                onChange={e => { setContractorId(e.target.value); setSaveErr(''); }}
+                placeholder="numeric wFirma ID"
+                data-testid="customer-contractor-id-input"
+                style={{ fontSize:12, padding:'6px 10px', border:'1px solid var(--border)', borderRadius:4, fontFamily:'monospace', color:'var(--text)', background:'var(--bg-subtle)', width:'100%' }}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize:10, fontWeight:700, color:'var(--text-3)', letterSpacing:'0.06em', textTransform:'uppercase', marginBottom:4 }}>Country (ISO-2)</div>
+              <input
+                type="text"
+                value={country}
+                onChange={e => { setCountry(e.target.value); setSaveErr(''); }}
+                maxLength={2}
+                placeholder="IN / PL"
+                data-testid="customer-country-input"
+                style={{ fontSize:12, padding:'6px 10px', border:'1px solid var(--border)', borderRadius:4, fontFamily:'monospace', color:'var(--text)', background:'var(--bg-subtle)', width:'100%' }}
+              />
+            </div>
+          </div>
+          <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+            <Btn variant="primary" small onClick={handleSave} disabled={saving || !contractorId.trim()} data-testid="btn-save-customer-mapping">
+              {saving ? '…' : cr.found ? 'Update Mapping' : 'Create & Map'}
+            </Btn>
+            <Btn variant="ghost" small onClick={() => onRefresh && onRefresh()} data-testid="btn-refresh-customer-mapping">↻ Refresh</Btn>
+            <a href="/dashboard/customer-master-v2.html" target="_blank" style={{ fontSize:11, color:'var(--accent)', textDecoration:'none' }}>Open Customer Master →</a>
+          </div>
+          {saveMsg && <div style={{ marginTop:8, fontSize:11, color:'var(--badge-green-text)', fontWeight:600 }}>{saveMsg}</div>}
+          {saveErr && <div style={{ marginTop:8, fontSize:11, color:'var(--badge-red-text)', fontWeight:600 }}>{saveErr}</div>}
+        </Card>
       </div>
     );
   }
@@ -828,7 +981,7 @@
                 </div>
                 {activeTab==='Overview' && <OverviewTab draft={draft} invoiceLink={invoiceLink} />}
                 {activeTab==='Lines' && <LinesTab draft={draft} onRefresh={loadDraft} />}
-                {activeTab==='Customer Mapping' && <CustomerMappingTab draft={draft} />}
+                {activeTab==='Customer Mapping' && <CustomerMappingTab draft={draft} onRefresh={loadDraft} />}
                 {activeTab==='Reservation' && <ReservationTab draft={draft} onRefresh={loadDraft} />}
                 {activeTab==='History' && <HistoryTab draftId={DRAFT_ID} />}
               </Card>
