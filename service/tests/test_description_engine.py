@@ -235,8 +235,8 @@ def test_description_pl_uses_customs_grade_when_english_provided(db):
     )
     # Customs phrase should mention metal+purity+stones
     assert "Pierścionek" in row["description_pl"]
-    assert "ze złota" in row["description_pl"]
-    assert "próby 585" in row["description_pl"]
+    assert "14-karatowego złota" in row["description_pl"]
+    assert "próba 585" in row["description_pl"]
     # Must NOT be the generic ITEM_TRANSLATIONS text
     assert "Biżuteria — pierścionek" not in row["description_pl"]
     # And must NOT lead the description_line either

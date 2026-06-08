@@ -59,10 +59,16 @@ _DESCRIPTION_ENGINE = _try_load_description_engine()
 from description_grammar import (                       # noqa: E402
     ITEM_TYPE_PL,
     GOLD_PURITY,
-    PURITY_GENITIVE   as _PURITY_GENITIVE,
-    STONE_INSTRUMENTAL as _STONE_INSTRUMENTAL,
-    GENDER_SETTING_VERB as _GENDER_SETTING_VERB,
+    PURITY_GENITIVE          as _PURITY_GENITIVE,
+    PURITY_GENITIVE_PRODUCT  as _PURITY_GENITIVE_PRODUCT,
+    STONE_INSTRUMENTAL       as _STONE_INSTRUMENTAL,
+    GENDER_SETTING_VERB      as _GENDER_SETTING_VERB,
     STONE_ABBR,
+    # Phase 2B - new renderer dictionaries
+    ITEM_TYPE_EN,
+    STONE_EN                 as _STONE_EN,
+    SHORT_DESC_METAL         as _SHORT_DESC_METAL,
+    SHORT_DESC_STONE         as _SHORT_DESC_STONE,
 )
 
 # Valid HS chapter ranges for jewellery (prefix → description)
@@ -436,8 +442,9 @@ def normalize_item_description(
         hsn_from_invoice = hsn_from_invoice,
     )
 
+    _item_key = detected_type or lookup_type
     return {
-        "item_type":                   detected_type or lookup_type,
+        "item_type":                   _item_key,
         "item_type_pl":                item_type_pl,
         "gold_purity_raw":             purity_raw,
         "gold_purity_pl":              purity_pl,
@@ -453,10 +460,76 @@ def normalize_item_description(
         "classification_flag":         hs_validation["classification_flag"],
         "classification_note":         hs_validation["classification_note"],
         "hsn_from_invoice":            hsn_from_invoice,
+        # Phase 2B - additive renderer outputs
+        "product_description_pl":      render_product_description_pl(purity_raw, stones_pl, _item_key),
+        "product_description_en":      render_product_description_en(_item_key, purity_raw, stones_pl),
+        "short_description":           render_short_description(_item_key, purity_raw, stones_pl),
     }
 
 
-# ── Batch-level processing ─────────────────────────────────────────────────────
+def render_product_description_pl(purity_raw, stones_pl, item_type):
+    """Polish product description for invoices, proformas, PZ, product master."""
+    lookup = (item_type or '').upper().strip()
+    noun = ITEM_TYPE_PL.get(lookup, '')
+    if not noun and lookup:
+        noun = ITEM_TYPE_PL.get(lookup.rstrip('S'), '')
+    if not noun:
+        noun = 'Wyrób jubilerski'
+
+    purity_gen   = _PURITY_GENITIVE_PRODUCT.get((purity_raw or '').upper().strip(), '')
+    stones_instr = _STONE_INSTRUMENTAL.get((stones_pl or '').strip(), '')
+
+    # Broad preposition rule -- 'ze' before z/ż/ź/s/ś/w (METAL_PREPOSITIONAL convention).
+    def _prep_prod(word):
+        return 'ze' if word and word[0].lower() in ('z', 'ż', 'ź', 's', 'ś', 'w') else 'z'
+
+    if purity_gen and stones_instr:
+        return f'{noun} {_prep_prod(purity_gen)} {purity_gen} z {stones_instr}'
+    if purity_gen:
+        return f'{noun} {_prep_prod(purity_gen)} {purity_gen}'
+    if stones_instr:
+        return f'{noun} z {stones_instr}'
+    return noun + ' — wyrób jubilerski'
+
+
+def render_product_description_en(item_type, purity_raw, stones_pl):
+    """English product description: stone-first format."""
+    lookup = (item_type or '').upper().strip()
+    type_en = ITEM_TYPE_EN.get(lookup, lookup.title() if lookup else '')
+
+    purity_key = (purity_raw or '').upper().strip()
+    stone_key  = (stones_pl or '').strip()
+    stone_adj  = _STONE_EN.get(stone_key, '') if stone_key else ''
+
+    _METAL_LABEL = {
+        '9KT':   '9KT Gold',   '09KT':  '9KT Gold',  '10KT':  '10KT Gold',
+        '14KT':  '14KT Gold',  '18KT':  '18KT Gold', '22KT':  '22KT Gold', '24KT': '24KT Gold',
+        '925':   'Silver 925', 'SL925': 'Silver 925',
+        'SS':    'Stainless Steel',
+        'PT950': 'Platinum 950', 'PT900': 'Platinum 900', 'PT850': 'Platinum 850',
+    }
+    metal_label = _METAL_LABEL.get(purity_key, '')
+
+    parts = [p for p in (stone_adj, metal_label, type_en) if p]
+    return ' '.join(parts) if parts else ''
+
+
+def render_short_description(item_type, purity_raw, stones_pl):
+    """Compact description for PZ notes and audit notes."""
+    lookup = (item_type or '').upper().strip()
+    type_en = ITEM_TYPE_EN.get(lookup, lookup.title() if lookup else '')
+
+    purity_key = (purity_raw or '').upper().strip()
+    stone_key  = (stones_pl or '').strip()
+
+    metal_code = _SHORT_DESC_METAL.get(purity_key, '')
+    stone_code = _SHORT_DESC_STONE.get(stone_key, '') if stone_key else ''
+
+    parts = [p for p in (type_en, metal_code, stone_code) if p]
+    return ' '.join(parts) if parts else ''
+
+
+# ── Batch-level processing ─# ── Batch-level processing ─# ── Batch-level processing ─
 
 def process_batch_items(batch: dict) -> list[dict]:
     """
