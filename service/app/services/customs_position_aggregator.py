@@ -57,25 +57,27 @@ new list). Does NOT compute CIF / freight / insurance / duty / VAT.
 from __future__ import annotations
 
 import re
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+# Migration B3: import shared grammar authority for Polish plural types
+# and prepositional metal forms (for parity verification).
+# EN-side tables remain local — no shared EN equivalent exists yet.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from description_grammar import (          # noqa: E402
+    ITEM_TYPE_PL_PLURAL,
+    METAL_PREPOSITIONAL,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PL plural forms for item types (for the concatenated position label)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_PL_PLURAL: Dict[str, str] = {
-    "RING":      "Pierścionki",
-    "PENDANT":   "Wisiorki",
-    "EARRINGS":  "Kolczyki",
-    "EARRING":   "Kolczyki",
-    "BRACELET":  "Bransoletki",
-    "BANGLE":    "Bransoletki sztywne",
-    "NECKLACE":  "Naszyjniki",
-    "CHAIN":     "Łańcuszki",
-    "CUFFLINKS": "Spinki do mankietów",
-    "CUFFLINK":  "Spinki do mankietów",
-}
+# Migration B3: PL plural types now come from shared grammar authority.
+# This eliminates the duplicate dictionary that was previously maintained here.
+_PL_PLURAL: Dict[str, str] = ITEM_TYPE_PL_PLURAL
 
 _EN_PLURAL: Dict[str, str] = {
     "RING":      "RINGS",
@@ -110,6 +112,17 @@ def _en_plural(item_type_upper: str) -> str:
 # routes_dhl_clearance._global_render_pl_en. We extract the stone
 # phrase from existing per-row PL/EN text so this aggregator stays
 # decoupled from the renderer module.
+#
+# Migration B3 note: 3 of 6 entries use OLD "wysadzany" grammar
+# (packing renderer convention). These CANNOT be replaced with shared
+# grammar "z" forms until the packing renderer is also migrated
+# (Phase C scope). The other 3 entries already use "z" forms which
+# match stone_with_preposition() from the shared grammar.
+#
+# OLD (packing renderer):  "wysadzany cyrkoniami"
+# NEW (parser/shared):     "z cyrkoniami"
+# Both forms coexist because the aggregator extracts from ALREADY
+# RENDERED text — whichever renderer produced it determines the form.
 _PL_STONE_PATTERNS: Tuple[str, ...] = (
     "wysadzany cyrkoniami i kamieniami kolorowymi",
     "wysadzany diamentami i cyrkoniami",
@@ -159,6 +172,18 @@ _PL_METAL_PATTERNS: Tuple[str, ...] = (
     "z platyny próby 950",
     "z platyny próby 900",
 )
+
+# ── Migration B3: import-time metal parity check ─────────────────────────
+# Every PL metal pattern used for substring extraction must exist in
+# METAL_PREPOSITIONAL. If a pattern drifts, aggregation silently fails
+# to extract the metal phrase from per-row descriptions.
+_SHARED_METAL_VALUES = set(METAL_PREPOSITIONAL.values())
+_AGG_METAL_DRIFT = set(_PL_METAL_PATTERNS) - _SHARED_METAL_VALUES
+if _AGG_METAL_DRIFT:
+    raise ImportError(
+        f"customs_position_aggregator._PL_METAL_PATTERNS has drifted "
+        f"from description_grammar.METAL_PREPOSITIONAL: {_AGG_METAL_DRIFT!r}"
+    )
 
 
 def _extract_pl_metal(desc_pl: str) -> str:
