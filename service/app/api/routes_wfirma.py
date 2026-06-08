@@ -31,11 +31,20 @@ from __future__ import annotations
 
 import json
 import os
+import re as _re_compat  # for import-time grammar compatibility check
+import sys
 import time
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# ── Shared grammar import (Phase 2B4) ───────────────────────────────────────
+# Import METAL_PREPOSITIONAL so we can verify at import time that
+# _material_from_pl_desc()'s regex patterns can extract every shared
+# grammar metal form.  This catches grammar drift at import, not runtime.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from description_grammar import METAL_PREPOSITIONAL  # noqa: E402
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -53,6 +62,41 @@ from ..services import wfirma_client
 from ..services import wfirma_db
 from ..services import suppliers_db as _sdb
 from ..utils.io import write_json_atomic
+
+
+# ── Import-time grammar compatibility gate (Phase 2B4) ──────────────────────
+# Verify that _material_from_pl_desc()'s regex patterns can extract every
+# shared grammar metal form.  The function uses two regexes:
+#   1) r"\s+ze\s+(.+)$"                         — "ze" forms (gold, silver, steel)
+#   2) r"\s+z\s+(\S+\s+próby\s+\S+.*)$"        — "z" forms (platinum)
+# If a METAL_PREPOSITIONAL value fails both regexes, grammar has drifted and
+# wFirma product descriptions would silently fall back to raw text.
+#
+# Note: PURITY_GENITIVE (karat genitive) forms are NOT checked here because
+# they flow through customs_description_engine -> Polish Description PDF,
+# never through pz_rows.json -> wFirma.  The input to _material_from_pl_desc
+# is always packing-renderer output which uses METAL_PREPOSITIONAL forms.
+_RE_ZE = _re_compat.compile(r"\s+ze\s+(.+)$")
+_RE_Z  = _re_compat.compile(r"\s+z\s+(\S+\s+próby\s+\S+.*)$")
+
+_WFIRMA_METAL_COMPAT_FAILURES = []
+for _metal_key, _metal_form in METAL_PREPOSITIONAL.items():
+    # Construct a synthetic PL description matching production shape:
+    #   "<ItemType> <metal_form>"
+    _test_desc = f"Testowy {_metal_form}"
+    if not (_RE_ZE.search(_test_desc) or _RE_Z.search(_test_desc)):
+        _WFIRMA_METAL_COMPAT_FAILURES.append((_metal_key, _metal_form))
+
+if _WFIRMA_METAL_COMPAT_FAILURES:
+    raise ImportError(
+        f"routes_wfirma: _material_from_pl_desc regex cannot extract "
+        f"{len(_WFIRMA_METAL_COMPAT_FAILURES)} METAL_PREPOSITIONAL form(s): "
+        f"{_WFIRMA_METAL_COMPAT_FAILURES!r}. "
+        f"Grammar drift detected — fix regex or grammar before deploying."
+    )
+
+# Clean up module namespace
+del _metal_key, _metal_form, _test_desc, _WFIRMA_METAL_COMPAT_FAILURES
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/upload", tags=["wfirma"])
