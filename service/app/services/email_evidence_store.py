@@ -483,3 +483,77 @@ def mark_processed(awb: str, message_id_or_idx: Any) -> bool:
                     write_json_atomic(p, doc)
                     return True
         return False
+
+
+# ── Inbox integration — actionable AWBs ───────────────────────────────────────
+
+def _derive_next_action(summary: Optional[Dict[str, bool]]) -> Optional[Dict[str, str]]:
+    """From 9-flag summary, derive the highest-priority unresolved action.
+
+    Priority ladder (first match wins):
+      urgent: DHL request received but no reply sent/queued
+      high:   DHL documents received but not forwarded to agency
+      high:   SAD received from agency (PZ creation may be ready)
+      normal: DHL invoice received (reconciliation needed)
+      normal: Agency invoice received (reconciliation needed)
+
+    Returns None if all flags are resolved or summary is empty/None.
+    """
+    if not summary:
+        return None
+    if summary.get("dhl_request_received") and not (
+        summary.get("our_dhl_reply_sent") or summary.get("our_dhl_reply_queued")
+    ):
+        return {"title": "DHL request — reply needed", "priority": "urgent"}
+    if summary.get("dhl_documents_received") and not (
+        summary.get("agency_forward_sent") or summary.get("agency_forward_queued")
+    ):
+        return {"title": "DHL documents — forward to agency", "priority": "high"}
+    if summary.get("agency_sad_received"):
+        return {"title": "SAD received — PZ creation ready", "priority": "high"}
+    if summary.get("dhl_invoice_received"):
+        return {"title": "DHL invoice — reconciliation needed", "priority": "normal"}
+    if summary.get("agency_invoice_received"):
+        return {"title": "Agency invoice — reconciliation needed", "priority": "normal"}
+    return None
+
+
+def list_actionable_awbs(limit: int = 30) -> List[Dict[str, Any]]:
+    """Return AWBs with unresolved customs actions, sorted by most-recent event desc.
+
+    Pure file read over storage/email_evidence/by_awb/*.json.
+    NEVER triggers a scan, NEVER calls Gmail/Zoho, NEVER mutates files.
+    Graceful: missing directory or malformed JSON → skipped silently.
+    """
+    by_awb = _by_awb_dir()
+    if not by_awb.is_dir():
+        return []
+    results: List[Dict[str, Any]] = []
+    for f in sorted(by_awb.iterdir()):
+        if f.suffix != ".json":
+            continue
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            log.debug("[evidence_store] skipping malformed file: %s", f.name)
+            continue
+        # Use cached summary if present; recompute from threads otherwise
+        summary = data.get("summary") or _summarise(data.get("threads") or [])
+        action = _derive_next_action(summary)
+        if not action:
+            continue
+        msg_count = sum(
+            len(t.get("messages", [])) for t in data.get("threads", [])
+        )
+        results.append({
+            "awb": data.get("awb") or f.stem,
+            "batch_ids": data.get("batch_ids") or [],
+            "summary": summary,
+            "next_action": action["title"],
+            "priority": action["priority"],
+            "message_count": msg_count,
+            "last_event_at": data.get("last_message_at") or data.get("last_scan_at") or "",
+        })
+    # Most recent first
+    results.sort(key=lambda r: r.get("last_event_at") or "", reverse=True)
+    return results[:limit]

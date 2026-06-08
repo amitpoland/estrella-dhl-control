@@ -64,12 +64,16 @@ def _make_email_queue_item(eid: str, batch_id: str = "BATCH-001") -> Dict[str, A
 
 
 def _make_dhl_cache_record(awb: str) -> Dict[str, Any]:
+    """Matches the shape returned by email_evidence_store.list_actionable_awbs()."""
     return {
-        "awb":                    awb,
-        "matched":                2,
-        "last_scanned_at":        "2026-06-03T08:00:00Z",
-        "recommended_next_action":"Verify AWB against SAD",
-        "linked_batches":         ["BATCH-001"],
+        "awb":           awb,
+        "batch_ids":     ["BATCH-001"],
+        "summary":       {"dhl_request_received": True, "our_dhl_reply_sent": False,
+                          "our_dhl_reply_queued": False},
+        "next_action":   "DHL request — reply needed",
+        "priority":      "urgent",
+        "message_count": 3,
+        "last_event_at": "2026-06-03T08:00:00Z",
     }
 
 
@@ -107,7 +111,7 @@ def test_aggregator_returns_merged_priority_sorted_items(client, tmp_path):
     dhl_record = _make_dhl_cache_record("AWB-9999")
 
     with (
-        patch("app.services.email_intelligence_store.list_recent", return_value=[dhl_record]),
+        patch("app.services.email_evidence_store.list_actionable_awbs", return_value=[dhl_record]),
         patch("app.services.email_service.get_all_emails", return_value=[]),
         patch.object(settings, "storage_root", tmp_path),
     ):
@@ -146,7 +150,7 @@ def test_admin_caller_receives_email_queue_items(tmp_path):
 
     with (
         patch("app.auth.dependencies.get_current_user_optional", return_value=admin_user),
-        patch("app.services.email_intelligence_store.list_recent", return_value=[]),
+        patch("app.services.email_evidence_store.list_actionable_awbs", return_value=[]),
         patch("app.services.email_service.get_all_emails", return_value=[email_item]),
         patch.object(settings, "storage_root", tmp_path),
     ):
@@ -181,7 +185,7 @@ def test_non_admin_no_session_receives_zero_email_queue_items(tmp_path):
     email_item = _make_email_queue_item("email-002a")
 
     with (
-        patch("app.services.email_intelligence_store.list_recent", return_value=[]),
+        patch("app.services.email_evidence_store.list_actionable_awbs", return_value=[]),
         patch("app.services.email_service.get_all_emails", return_value=[email_item]),
         patch.object(settings, "storage_root", tmp_path),
     ):
@@ -217,7 +221,7 @@ def test_non_admin_with_session_receives_zero_email_queue_items(tmp_path):
 
     with (
         patch("app.auth.dependencies.get_current_user_optional", return_value=non_admin_user),
-        patch("app.services.email_intelligence_store.list_recent", return_value=[]),
+        patch("app.services.email_evidence_store.list_actionable_awbs", return_value=[]),
         patch("app.services.email_service.get_all_emails", return_value=[email_item]),
         patch.object(settings, "storage_root", tmp_path),
     ):
@@ -243,31 +247,26 @@ def test_non_admin_with_session_receives_zero_email_queue_items(tmp_path):
     assert eq_source.get("note") == "not_admin"
 
 
-# ── Test 4: GET reads DHL state from cache — no scan triggered ───────────────
+# ── Test 4: GET reads DHL state from evidence store — no scan triggered ───────
 
-def test_get_reads_dhl_from_cache_not_scan(tmp_path):
-    """GET /api/v1/inbox must read DHL state from email_intelligence_store cache only.
+def test_get_reads_dhl_from_evidence_not_scan(tmp_path):
+    """GET /api/v1/inbox must read DHL state from email_evidence_store only.
 
     Two-pronged proof:
 
     1. STATIC: routes_inbox.py source contains no reference to
-       scan_for_dhl_customs_emails.  A module-level reference (import or inline call)
-       would create a code path to the Zoho scan from the GET handler.  Its absence
-       is the architectural guarantee.
+       scan_for_dhl_customs_emails or dhl_email_monitor.  A module-level
+       reference (import or inline call) would create a code path to the Zoho
+       scan from the GET handler.  Its absence is the architectural guarantee.
 
-    2. DYNAMIC: mock email_intelligence_store._load_master (the underlying cache read
-       that list_recent() calls) with a canned record carrying recommended_next_action.
-       The inbox must surface the DHL item from that record — proving the data comes
-       from the cache read path, not a live scan.
+    2. DYNAMIC: mock email_evidence_store.list_actionable_awbs with a canned
+       record.  The inbox must surface the DHL item from that record — proving
+       the data comes from the evidence store file-read path, not a live scan.
     """
     import importlib.util
     from pathlib import Path as _Path
 
     # ── Static proof: dhl_email_monitor not imported in routes_inbox ─────────
-    # Use AST-based import scan rather than a raw string search: the module
-    # docstring deliberately mentions scan_for_dhl_customs_emails as a
-    # constraint ("NEVER calls ..."), so a substring check would false-positive.
-    # An actual import statement is the only way the scan could be reached.
     import ast as _ast
     spec = importlib.util.find_spec("app.api.routes_inbox")
     assert spec is not None, "routes_inbox module not found"
@@ -290,23 +289,22 @@ def test_get_reads_dhl_from_cache_not_scan(tmp_path):
         "either would create a code path to the Zoho scan trigger from GET /api/v1/inbox"
     )
 
-    # ── Dynamic proof: DHL item surfaces from _load_master cache, not a scan ──
-    # Mock at _load_master (one level below list_recent) to prove the full data
-    # flow: GET /inbox → _collect_dhl_cache_items → list_recent → _load_master.
-    canned_master = {
-        "rec-cache-proof": {
-            "awb":                    "AWB-CACHE-PROOF",
-            "matched":                1,
-            "last_scanned_at":        "2026-06-03T07:00:00Z",
-            "recommended_next_action": "Review matching documents",
-            "linked_batches":         ["BATCH-PROOF"],
-        }
-    }
+    # ── Dynamic proof: DHL item surfaces from evidence store, not a scan ─────
+    canned_evidence = [{
+        "awb":           "AWB-EVIDENCE-PROOF",
+        "batch_ids":     ["BATCH-PROOF"],
+        "summary":       {"dhl_request_received": True, "our_dhl_reply_sent": False,
+                          "our_dhl_reply_queued": False},
+        "next_action":   "DHL request — reply needed",
+        "priority":      "urgent",
+        "message_count": 5,
+        "last_event_at": "2026-06-03T07:00:00Z",
+    }]
 
     with (
         patch(
-            "app.services.email_intelligence_store._load_master",
-            return_value=canned_master,
+            "app.services.email_evidence_store.list_actionable_awbs",
+            return_value=canned_evidence,
         ),
         patch("app.services.email_service.get_all_emails", return_value=[]),
         patch.object(settings, "storage_root", tmp_path),
@@ -319,9 +317,9 @@ def test_get_reads_dhl_from_cache_not_scan(tmp_path):
     assert r.status_code == 200
     body = r.json()
     dhl_ids = [i["id"] for i in body["items"] if i["type"] == "customs"]
-    assert "dhl-AWB-CACHE-PROOF" in dhl_ids, (
-        "DHL item must appear in inbox sourced from _load_master cache — "
-        "proves the GET path reads from cache, not a live Zoho scan"
+    assert "dhl-AWB-EVIDENCE-PROOF" in dhl_ids, (
+        "DHL item must appear in inbox sourced from email_evidence_store — "
+        "proves the GET path reads from evidence store, not a live scan"
     )
     assert body["sources"]["dhl_cache"]["ok"] is True
 
@@ -337,7 +335,7 @@ def test_one_source_dead_returns_200_with_error_marker(tmp_path):
             "app.api.routes_inbox._collect_pending_proposals",
             side_effect=RuntimeError("disk error"),
         ),
-        patch("app.services.email_intelligence_store.list_recent", return_value=[dhl_record]),
+        patch("app.services.email_evidence_store.list_actionable_awbs", return_value=[dhl_record]),
         patch("app.services.email_service.get_all_emails", return_value=[]),
         patch.object(settings, "storage_root", tmp_path),
     ):
@@ -368,7 +366,7 @@ def test_limit_filter(tmp_path):
     _seed_batch_with_proposals(tmp_path, "BATCH-LIMIT", proposals)
 
     with (
-        patch("app.services.email_intelligence_store.list_recent", return_value=[]),
+        patch("app.services.email_evidence_store.list_actionable_awbs", return_value=[]),
         patch("app.services.email_service.get_all_emails", return_value=[]),
         patch.object(settings, "storage_root", tmp_path),
     ):
@@ -389,7 +387,7 @@ def test_priority_filter(tmp_path):
     _seed_batch_with_proposals(tmp_path, "BATCH-PRI", [urgent, normal])
 
     with (
-        patch("app.services.email_intelligence_store.list_recent", return_value=[]),
+        patch("app.services.email_evidence_store.list_actionable_awbs", return_value=[]),
         patch("app.services.email_service.get_all_emails", return_value=[]),
         patch.object(settings, "storage_root", tmp_path),
     ):
@@ -412,7 +410,7 @@ def test_type_filter(tmp_path):
     dhl_record = _make_dhl_cache_record("AWB-TYPE-TEST")
 
     with (
-        patch("app.services.email_intelligence_store.list_recent", return_value=[dhl_record]),
+        patch("app.services.email_evidence_store.list_actionable_awbs", return_value=[dhl_record]),
         patch("app.services.email_service.get_all_emails", return_value=[]),
         patch.object(settings, "storage_root", tmp_path),
     ):
@@ -465,7 +463,7 @@ def test_only_pending_review_proposals_surface(tmp_path):
     )
 
     with (
-        patch("app.services.email_intelligence_store.list_recent", return_value=[]),
+        patch("app.services.email_evidence_store.list_actionable_awbs", return_value=[]),
         patch("app.services.email_service.get_all_emails", return_value=[]),
         patch.object(settings, "storage_root", tmp_path),
     ):

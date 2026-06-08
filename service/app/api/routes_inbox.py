@@ -5,13 +5,14 @@ GET /api/v1/inbox
   Aggregates three read-only sources:
     A) Pending action proposals (all batches, require_api_key)
     B) Email queue pending items (require_admin — included ONLY when caller is admin)
-    C) Recent DHL scan state from email_intelligence_store cache (require_api_key)
+    C) DHL evidence store — AWBs with unresolved customs actions (require_api_key)
 
 HARD CONSTRAINTS (enforced by design, not just convention):
   - ZERO SIDE EFFECTS on GET.  Never calls scan_for_dhl_customs_emails.
     Never sends email.  Never mutates any lifecycle state.
-  - Source C reads email_intelligence_store.list_recent() — a pure JSON-file read.
-    scan-inbox is NOT called on this path.  A refresh must NOT fire a Zoho scan.
+  - Source C reads email_evidence_store.list_actionable_awbs() — a pure file read
+    over storage/email_evidence/by_awb/*.json.  scan-inbox is NOT called on this
+    path.  A refresh must NOT fire a Zoho/Gmail scan.
   - GRACEFUL DEGRADATION: each source is wrapped independently. One dead source
     returns a per-source {"ok": false, "error": "..."} marker; the inbox returns
     200 with the other sources intact — never 500 on one dead source.
@@ -148,38 +149,34 @@ def _collect_email_queue_items() -> List[Dict[str, Any]]:
     return items
 
 
-# ── Source C: DHL scan cache (pure read, never triggers scan) ─────────────────
+# ── Source C: DHL evidence (pure read, never triggers scan) ───────────────────
 
 def _collect_dhl_cache_items() -> List[Dict[str, Any]]:
-    """Return recent DHL scan intelligence records that have a recommended next action.
+    """Return DHL AWBs with unresolved customs actions from the evidence store.
 
-    HARD CONSTRAINT: reads email_intelligence_store.list_recent() ONLY.
+    HARD CONSTRAINT: reads email_evidence_store.list_actionable_awbs() ONLY.
     scan_for_dhl_customs_emails is NEVER called on this path.
-    list_recent() is a pure file read (storage/email_intelligence/master_email_map.json).
+    list_actionable_awbs() is a pure file read over storage/email_evidence/by_awb/*.json.
+    It NEVER triggers a Zoho/Gmail scan, NEVER mutates evidence files.
     """
-    from ..services.email_intelligence_store import list_recent  # noqa: PLC0415
-    records = list_recent(limit=20)
+    from ..services.email_evidence_store import list_actionable_awbs  # noqa: PLC0415
+    records = list_actionable_awbs(limit=20)
     items: List[Dict[str, Any]] = []
     for rec in records:
-        if not rec.get("recommended_next_action"):
-            continue
-        awb             = rec.get("awb", "")
-        linked_batches  = rec.get("linked_batches") or []
+        awb = rec.get("awb", "")
+        batch_ids = rec.get("batch_ids") or []
         items.append({
             "id":             f"dhl-{awb}",
             "type":           "customs",
-            "priority":       "high",
-            "title":          f"DHL: AWB {awb}",
-            "detail":         (
-                f"matched={rec.get('matched', 0)} · "
-                f"{(rec.get('recommended_next_action') or '')[:80]}"
-            ),
-            "age":            rec.get("last_scanned_at", ""),
-            "actor":          "DHL scanner",
+            "priority":       rec.get("priority", "normal"),
+            "title":          rec.get("next_action", f"DHL: AWB {awb}"),
+            "detail":         f"AWB {awb} · {rec.get('message_count', 0)} messages",
+            "age":            rec.get("last_event_at", ""),
+            "actor":          "DHL evidence",
             "primary_action": "Review",
-            "linked_batch_id":linked_batches[0] if linked_batches else None,
+            "linked_batch_id":batch_ids[0] if batch_ids else None,
             "actionable":     True,
-            # Scan is an explicit operator action; not wired inline.
+            # Review is an explicit operator action; not wired inline.
             "endpoint":       None,
         })
     return items
@@ -243,7 +240,7 @@ def get_inbox(
         # Non-admin: source B entirely omitted. No partial data, no leakage.
         sources["email_queue"] = {"ok": True, "count": 0, "note": "not_admin"}
 
-    # ── Source C: DHL scan cache (pure file read, NO scan triggered) ──────────
+    # ── Source C: DHL evidence store (pure file read, NO scan triggered) ──────
     try:
         c_items = _collect_dhl_cache_items()
         all_items.extend(c_items)
