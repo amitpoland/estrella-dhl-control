@@ -575,8 +575,14 @@ def test_proactive_endpoint_rejects_padded_auto_actor_operator_id(tmp_path):
     assert r.json().get("detail", {}).get("code") == "auto_actor_sentinel_reserved"
 
 
-def test_approve_endpoint_rejects_auto_actor_approved_by(tmp_path):
-    """Same guard on approve_proposal: approved_by cannot be a sentinel."""
+def test_approve_ignores_auto_actor_supplied_in_body(tmp_path):
+    """H-W3 (#502): approved_by is now derived SERVER-SIDE from the session and
+    the request body is IGNORED. A sentinel supplied in body.approved_by no
+    longer triggers the old 422 'auto_actor_sentinel_reserved' guard — it is
+    simply discarded (an X-API-Key caller resolves to 'session-user', never a
+    sentinel). That a body sentinel can NEVER be recorded as the actor is
+    proven by test_hw3_approver_identity.py (which inspects the persisted record).
+    """
     from fastapi.testclient import TestClient
     from app.main import app
     from app.core.config import settings
@@ -588,8 +594,10 @@ def test_approve_endpoint_rejects_auto_actor_approved_by(tmp_path):
         json={"approved_by": "system:path_a_auto_queue"},
         headers=headers,
     )
-    assert r.status_code == 422
-    assert r.json().get("detail", {}).get("code") == "auto_actor_sentinel_reserved"
+    # Body sentinel is ignored (no reserved-sentinel 422); with no such
+    # proposal the request resolves to 404 *after* the body is discarded.
+    assert r.status_code != 422
+    assert r.status_code == 404
 
 
 # ── ITEM-F: validation-failure preserves operator's created_by ─────────────

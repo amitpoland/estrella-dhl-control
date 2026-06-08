@@ -354,8 +354,12 @@ class TestQueueGuards:
         bid, _, ap = _make_batch(tmp_path)
         r1 = _post_proactive(client, bid, "alice")
         proposal_id = r1.json()["proposal_id"]
-        # Approve as the SAME operator who created it
-        _approve(client, proposal_id, "alice")
+        # Approve as the SAME operator who created it. H-W3 (#502): the approver
+        # identity is derived SERVER-SIDE, so stub the derivation to "alice"
+        # (= created_by) so the self-approval guard (created_by == approved_by) fires.
+        from app.api import routes_action_proposals as _rap
+        with patch.object(_rap, "_approver_from_session", return_value="alice"):
+            _approve(client, proposal_id, "alice")
 
         with patch("app.services.email_service.queue_email", return_value="email-123"):
             r = _queue(client, proposal_id)
