@@ -572,6 +572,14 @@ async def shipment_intake(
             supplier_contractor_id=supplier_cid,
         ) or ""
 
+        # Parse supplier_cid as int supplier_id (suppliers.id PK stored as string).
+        _supplier_id: Optional[int] = None
+        if supplier_cid and supplier_cid.isdigit():
+            try:
+                _supplier_id = int(supplier_cid)
+            except ValueError:
+                pass
+
         # Run packing extraction pipeline
         pack_summary: Dict[str, Any] = {"file": name, "status": "skipped", "rows": 0}
         try:
@@ -580,6 +588,7 @@ async def shipment_intake(
                 batch_output_dir=output_dir,
                 packing_file_path=path,
                 force_reextract=False,
+                supplier_id=_supplier_id,
             )
             inv_lines_source = result.get("invoice_lines_source", "unknown")
             doc_id_pdb = pdb.upsert_packing_document(**result["document"])

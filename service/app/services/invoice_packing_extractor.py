@@ -289,6 +289,7 @@ def extract_packing(
     path: Path,
     *,
     llm_fallback: bool = False,
+    supplier_id: Optional[int] = None,
 ) -> Tuple[List[Dict[str, Any]], str, str, Dict[str, Any]]:
     """
     Dispatch to PDF or Excel extractor based on file extension.
@@ -338,10 +339,16 @@ def extract_packing(
 
     try:
         if suffix == ".xlsx":
-            rows = _extract_packing_excel(path, engine="openpyxl", _audit_dict=diag, llm_fallback=llm_fallback)
+            rows = _extract_packing_excel(
+                path, engine="openpyxl", _audit_dict=diag,
+                llm_fallback=llm_fallback, supplier_id=supplier_id,
+            )
             _collect_excel_diagnostic(path, "openpyxl", diag)
         elif suffix == ".xls":
-            rows = _extract_packing_excel(path, engine="xlrd", _audit_dict=diag, llm_fallback=llm_fallback)
+            rows = _extract_packing_excel(
+                path, engine="xlrd", _audit_dict=diag,
+                llm_fallback=llm_fallback, supplier_id=supplier_id,
+            )
             _collect_excel_diagnostic(path, "xlrd", diag)
         elif suffix == ".pdf":
             rows = _extract_packing_pdf(path)
@@ -621,19 +628,23 @@ def _map_headers_with_audit(
     raw_headers: List[str],
     *,
     llm_fallback: bool = False,
+    supplier_id: Optional[int] = None,
 ) -> Tuple[Dict[int, str], List]:
-    """Three-tier header mapping with per-column audit trail.
+    """Four-tier header mapping with per-column audit trail.
 
-    Returns (col_map, column_mapping_audit) where col_map is identical in
-    format to _map_headers() (Tier-1 aliases + accepted fuzzy >= 0.90 only)
-    and column_mapping_audit is a List[ColumnMapping] for inclusion in the
-    parser diagnostic dict.
+    Returns (col_map, column_mapping_audit) where col_map includes Tier-0
+    (supplier_template), Tier-1 (alias), and accepted Tier-2 (fuzzy >= 0.90),
+    and column_mapping_audit is a List[ColumnMapping] for the parser diagnostic.
 
     _map_headers() is left unchanged for backward-compatibility; this
     function delegates to excel_column_mapper.map_all_headers.
     """
     from .excel_column_mapper import build_col_map, map_all_headers
-    mappings = map_all_headers(raw_headers, _FIELD_ALIASES, llm_fallback=llm_fallback)
+    mappings = map_all_headers(
+        raw_headers, _FIELD_ALIASES,
+        llm_fallback=llm_fallback,
+        supplier_id=supplier_id,
+    )
     col_map  = build_col_map(mappings)
     return col_map, mappings
 
@@ -703,6 +714,7 @@ def _extract_packing_excel(
     _audit_dict: Optional[Dict] = None,
     *,
     llm_fallback: bool = False,
+    supplier_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     Read an EJL packing list (XLSX via openpyxl, XLS via xlrd).
@@ -765,7 +777,9 @@ def _extract_packing_excel(
     headers = [str(c) if c is not None else "" for c in rows[hdr_idx]]
     if _audit_dict is not None:
         import dataclasses as _dc
-        col_map, _mapping_audit = _map_headers_with_audit(headers, llm_fallback=llm_fallback)
+        col_map, _mapping_audit = _map_headers_with_audit(
+            headers, llm_fallback=llm_fallback, supplier_id=supplier_id,
+        )
         _audit_dict["column_mapping_audit"] = [_dc.asdict(m) for m in _mapping_audit]
     else:
         col_map = _map_headers(headers)
@@ -1244,6 +1258,7 @@ def process_packing_upload(
     batch_output_dir: Path,
     packing_file_path: Path,
     force_reextract: bool = False,
+    supplier_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Full pipeline: extract invoice lines from pz_rows.json, extract packing rows
@@ -1259,7 +1274,9 @@ def process_packing_upload(
         "total_rows": int,
       }
     """
-    raw_rows, parser_name, parser_version, parser_diagnostic = extract_packing(packing_file_path)
+    raw_rows, parser_name, parser_version, parser_diagnostic = extract_packing(
+        packing_file_path, supplier_id=supplier_id,
+    )
 
     # ── Supplier-specific pipeline (Global Jewellery) ─────────────────────
     if parser_diagnostic.get("supplier") == "global_jewellery":
@@ -1299,6 +1316,7 @@ def process_packing_upload(
             "parser_version":   parser_version,
             "extraction_status": "complete" if enriched else "empty",
             "parser_diagnostic": parser_diagnostic,
+            "supplier_id":       supplier_id,
         },
         "matched_count":   matched,
         "unmatched_count": unmatched,
