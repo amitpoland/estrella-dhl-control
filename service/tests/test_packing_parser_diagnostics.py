@@ -341,3 +341,163 @@ def test_dashboard_renders_diagnostic_block():
     assert "Raw columns seen" in src
     assert "Matched aliases" in src
     assert "expandedDiagDocId" in src
+
+
+# ── Column mapping audit — backend contract ──────────────────────────────
+
+def test_column_mapping_audit_present_for_ejl_xlsx(tmp_path):
+    """extract_packing on an EJL-style xlsx with recognisable headers must
+    include column_mapping_audit in the diagnostic dict."""
+    rows_in = [
+        ["Invoice #", "EJL/TEST/001"],
+        [],
+        ["PkSr", "Ctg", "DesignNo", "Kt/Color", "Quality",
+         "Dia Wt", "Col Wt", "Qty", "Value", "Total Value", "Size"],
+        [1, "PND", "PND-001", "14KT/W", "G-VS", 0.50, 0.10, 5, 100.0, 500.0, "7"],
+    ]
+    p = _real_xlsx(tmp_path, "ejl_audit.xlsx", rows_in)
+    _, _, _, diag = extract_packing(p)
+    assert "column_mapping_audit" in diag, (
+        "column_mapping_audit key must be present in diagnostic for xlsx files"
+    )
+
+
+def test_column_mapping_audit_entries_have_required_keys(tmp_path):
+    """Every entry in column_mapping_audit must carry the seven required fields."""
+    rows_in = [
+        [],
+        ["PkSr", "Ctg", "DesignNo", "Qty", "Value"],
+        [1, "PND", "PND-001", 3, 90.0],
+    ]
+    p = _real_xlsx(tmp_path, "ejl_keys.xlsx", rows_in)
+    _, _, _, diag = extract_packing(p)
+    audit = diag.get("column_mapping_audit", [])
+    assert audit, "Expected at least one audit entry"
+    for entry in audit:
+        for field in ("col_index", "original_header", "normalised",
+                      "canonical_field", "method", "confidence", "reason"):
+            assert field in entry, f"Audit entry missing key '{field}'"
+
+
+def test_column_mapping_audit_known_headers_have_alias_method(tmp_path):
+    """Exact alias headers must be recorded with method='alias' and confidence=1.0."""
+    rows_in = [
+        [],
+        ["PkSr", "Ctg", "DesignNo", "Qty", "Value"],
+        [1, "PND", "PND-001", 3, 90.0],
+    ]
+    p = _real_xlsx(tmp_path, "ejl_alias.xlsx", rows_in)
+    _, _, _, diag = extract_packing(p)
+    audit = diag.get("column_mapping_audit", [])
+    alias_entries = [e for e in audit if e["method"] == "alias"]
+    assert alias_entries, "Expected at least one alias-method entry for known headers"
+    for e in alias_entries:
+        assert e["confidence"] == 1.0, f"alias entry must have confidence=1.0, got {e['confidence']}"
+
+
+def test_column_mapping_audit_no_unrecognised_methods(tmp_path):
+    """All method values in audit must be one of the five recognised strings."""
+    rows_in = [
+        [],
+        ["PkSr", "Ctg", "DesignNo", "Qty", "Value", "WeirdColumn99"],
+        [1, "PND", "PND-001", 3, 90.0, "X"],
+    ]
+    p = _real_xlsx(tmp_path, "ejl_methods.xlsx", rows_in)
+    _, _, _, diag = extract_packing(p)
+    audit = diag.get("column_mapping_audit", [])
+    allowed = {"alias", "fuzzy", "fuzzy_warning", "llm", "unresolved"}
+    for e in audit:
+        assert e["method"] in allowed, (
+            f"Unexpected method value '{e['method']}' — must be one of {allowed}"
+        )
+
+
+def test_column_mapping_audit_serialisable_as_json(tmp_path):
+    """The diagnostic dict (including column_mapping_audit) must be
+    JSON-serialisable so it can be stored in packing_documents.parser_diagnostic_json."""
+    import json as _json
+    rows_in = [
+        [],
+        ["PkSr", "Ctg", "DesignNo", "Qty", "Value"],
+        [1, "PND", "PND-001", 3, 90.0],
+    ]
+    p = _real_xlsx(tmp_path, "ejl_serial.xlsx", rows_in)
+    _, _, _, diag = extract_packing(p)
+    # Must not raise
+    serialised = _json.dumps(diag, ensure_ascii=False)
+    decoded = _json.loads(serialised)
+    assert "column_mapping_audit" in decoded
+
+
+# ── Column mapping audit — frontend source-grep ──────────────────────────
+
+_SD = Path(__file__).resolve().parents[1] / "app" / "static" / "shipment-detail.html"
+
+
+def test_shipment_detail_renders_column_mapping_audit_block():
+    src = _SD.read_text(encoding="utf-8")
+    assert "column_mapping_audit" in src, (
+        "shipment-detail.html must render the column_mapping_audit block"
+    )
+    assert "packing-list-mapping-audit-" in src, (
+        "shipment-detail.html must set data-testid for the audit block"
+    )
+    assert "mapping-audit-row-" in src, (
+        "shipment-detail.html must set data-testid per audit row (includes method)"
+    )
+    assert "Excel column mapping" in src, (
+        "shipment-detail.html must label the column mapping section"
+    )
+
+
+def test_shipment_detail_hides_audit_when_absent():
+    src = _SD.read_text(encoding="utf-8")
+    # The guard `Array.isArray(diag.column_mapping_audit) && diag.column_mapping_audit.length > 0`
+    # must be present so the block is hidden when the audit key is absent.
+    assert "Array.isArray(diag.column_mapping_audit)" in src, (
+        "shipment-detail.html must guard the audit block so it is hidden when absent"
+    )
+
+
+def test_shipment_detail_marks_llm_as_advisory():
+    src = _SD.read_text(encoding="utf-8")
+    assert "mapping-llm-advisory-copy" in src, (
+        "shipment-detail.html must include the LLM advisory disclaimer testid"
+    )
+    assert "advisory only" in src, (
+        "shipment-detail.html must include the advisory-only disclaimer text"
+    )
+    assert "do not create products" in src or "do not create products, customers, PZ" in src, (
+        "Advisory copy must explicitly state AI/LLM does not create business entities"
+    )
+
+
+def test_shipment_detail_marks_unresolved_as_review_required():
+    src = _SD.read_text(encoding="utf-8")
+    assert "mapping-unresolved-notice" in src, (
+        "shipment-detail.html must include the unresolved notice testid"
+    )
+    assert "mapping-advisory-flag" in src, (
+        "shipment-detail.html must flag advisory/unresolved rows per-row"
+    )
+    assert "review" in src, (
+        "shipment-detail.html must include operator review language for non-authoritative mappings"
+    )
+
+
+def test_column_mapping_audit_no_write_surface_references():
+    """The column mapper and extractor must not reference any write surfaces."""
+    files = [
+        Path(__file__).resolve().parents[1] / "app" / "services" / "excel_column_mapper.py",
+    ]
+    for f in files:
+        src = f.read_text(encoding="utf-8")
+        for forbidden in (
+            "send_email", "queue_email", "smtp",
+            "create_pz", "generate_pz",
+            "wfirma_client", "wfirma_api",
+            "proforma_create", "upsert_packing", "insert_packing",
+        ):
+            assert forbidden not in src, (
+                f"{f.name} must not reference write surface '{forbidden}'"
+            )

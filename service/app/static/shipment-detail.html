@@ -4221,6 +4221,96 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                 ))}
                               </div>
                             )}
+                            {/* ── Excel column mapping audit ──────────────────────────────────
+                                Shows per-column method (alias/fuzzy/fuzzy_warning/llm/unresolved)
+                                and confidence. Only present when extractor ran the three-tier
+                                column-mapping layer (xlsx/xls EJL path). Advisory methods are
+                                flagged; LLM suggestions include explicit safety disclaimer.    */}
+                            {Array.isArray(diag.column_mapping_audit) && diag.column_mapping_audit.length > 0 && (
+                              <div
+                                data-testid={`packing-list-mapping-audit-${doc.id || i}`}
+                                style={{ marginTop: 8, borderTop: '1px solid var(--border-subtle)', paddingTop: 6 }}
+                              >
+                                <div style={{ color: 'var(--text-3)', marginBottom: 4, fontWeight: 600 }}>
+                                  Excel column mapping ({diag.column_mapping_audit.length} columns):
+                                </div>
+                                {diag.column_mapping_audit.map((m, mi) => {
+                                  const methodColor =
+                                    m.method === 'alias'         ? 'var(--badge-green-text)'  :
+                                    m.method === 'fuzzy'         ? 'var(--badge-blue-text)'   :
+                                    m.method === 'fuzzy_warning' ? 'var(--badge-amber-text)'  :
+                                    m.method === 'llm'           ? 'var(--badge-purple-text)' :
+                                    /* unresolved */               'var(--badge-red-text)';
+                                  const methodBg =
+                                    m.method === 'alias'         ? 'var(--badge-green-bg)'  :
+                                    m.method === 'fuzzy'         ? 'var(--badge-blue-bg)'   :
+                                    m.method === 'fuzzy_warning' ? 'var(--badge-amber-bg)'  :
+                                    m.method === 'llm'           ? 'var(--badge-purple-bg)' :
+                                    /* unresolved */               'var(--badge-red-bg)';
+                                  const isAdvisory = m.method === 'llm' || m.method === 'unresolved' || m.method === 'fuzzy_warning';
+                                  return (
+                                    <div
+                                      key={mi}
+                                      data-testid={`mapping-audit-row-${m.method}`}
+                                      style={{
+                                        display: 'flex', gap: 6, alignItems: 'center',
+                                        marginBottom: 3, paddingLeft: 4, flexWrap: 'wrap',
+                                      }}
+                                    >
+                                      <span
+                                        style={{
+                                          color: 'var(--text-2)', minWidth: 0, maxWidth: 140,
+                                          overflow: 'hidden', textOverflow: 'ellipsis',
+                                          whiteSpace: 'nowrap', flex: '0 0 auto',
+                                        }}
+                                        title={m.original_header}
+                                      >{m.original_header || '(empty)'}</span>
+                                      <span style={{ color: 'var(--text-3)' }}>&rarr;</span>
+                                      <span style={{
+                                        color: m.canonical_field ? 'var(--text)' : 'var(--badge-red-text)',
+                                        fontWeight: 600,
+                                      }}>{m.canonical_field || '—'}</span>
+                                      <span style={{
+                                        fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+                                        background: methodBg, color: methodColor,
+                                        border: '1px solid ' + methodBg, flexShrink: 0,
+                                      }}>{m.method}</span>
+                                      {typeof m.confidence === 'number' && m.method !== 'alias' && (
+                                        <span style={{ color: 'var(--text-3)', fontSize: 10, flexShrink: 0 }}>
+                                          {Math.round(m.confidence * 100)}%
+                                        </span>
+                                      )}
+                                      {isAdvisory && (
+                                        <span
+                                          data-testid="mapping-advisory-flag"
+                                          style={{ color: 'var(--badge-amber-text)', fontSize: 9, flexShrink: 0 }}
+                                        >&#9888; review</span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                {diag.column_mapping_audit.some(m => m.method === 'llm') && (
+                                  <div
+                                    data-testid="mapping-llm-advisory-copy"
+                                    style={{
+                                      marginTop: 6, padding: '4px 8px',
+                                      background: 'var(--badge-purple-bg)', color: 'var(--badge-purple-text)',
+                                      borderRadius: 4, fontSize: 10, fontStyle: 'italic',
+                                    }}
+                                  >AI/LLM suggestions are advisory only. They do not create products, customers, PZ, or wFirma records.</div>
+                                )}
+                                {diag.column_mapping_audit.some(m => m.method === 'unresolved' || m.method === 'fuzzy_warning') && (
+                                  <div
+                                    data-testid="mapping-unresolved-notice"
+                                    style={{
+                                      marginTop: 4, padding: '3px 8px',
+                                      background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
+                                      borderRadius: 4, fontSize: 10,
+                                    }}
+                                  >{diag.column_mapping_audit.filter(m => m.method === 'unresolved').length} unresolved column(s) — operator review required before use.</div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                         </React.Fragment>

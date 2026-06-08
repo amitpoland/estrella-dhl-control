@@ -35,6 +35,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .excel_reader import read_excel_rows as _read_excel_rows
+
 log = logging.getLogger(__name__)
 
 _PARSER_NAME    = "global_packing_v1"
@@ -362,25 +364,6 @@ def parse_global_packing_excel(
     diag["total_net_wt"]   = round(diag["total_net_wt"], 3)
 
     return rows, _PARSER_NAME, _PARSER_VERSION, diag
-
-
-# ── Excel reader ──────────────────────────────────────────────────────────────
-
-def _read_excel_rows(path: Path) -> List[List[Any]]:
-    """Read all rows from the active sheet. Returns list of lists."""
-    suffix = path.suffix.lower()
-    if suffix == ".xlsx":
-        import openpyxl
-        wb = openpyxl.load_workbook(str(path), data_only=True)
-        ws = wb.active
-        return [list(r) for r in ws.iter_rows(values_only=True)]
-    elif suffix == ".xls":
-        import xlrd
-        wb = xlrd.open_workbook(str(path))
-        ws = wb.sheet_by_index(0)
-        return [ws.row_values(i) for i in range(ws.nrows)]
-    else:
-        raise ValueError(f"Unsupported extension for global packing parser: {suffix}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

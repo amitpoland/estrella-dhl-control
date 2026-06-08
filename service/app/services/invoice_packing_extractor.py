@@ -22,6 +22,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .excel_reader import read_excel_rows as _read_excel_rows
+
 log = logging.getLogger(__name__)
 
 _PARSER_NAME    = "invoice_packing_extractor"
@@ -334,10 +336,10 @@ def extract_packing(
 
     try:
         if suffix == ".xlsx":
-            rows = _extract_packing_excel(path, engine="openpyxl")
+            rows = _extract_packing_excel(path, engine="openpyxl", _audit_dict=diag)
             _collect_excel_diagnostic(path, "openpyxl", diag)
         elif suffix == ".xls":
-            rows = _extract_packing_excel(path, engine="xlrd")
+            rows = _extract_packing_excel(path, engine="xlrd", _audit_dict=diag)
             _collect_excel_diagnostic(path, "xlrd", diag)
         elif suffix == ".pdf":
             rows = _extract_packing_pdf(path)
@@ -613,6 +615,27 @@ def _map_headers(raw_headers: List[str]) -> Dict[int, str]:
     return mapping
 
 
+def _map_headers_with_audit(
+    raw_headers: List[str],
+    *,
+    llm_fallback: bool = False,
+) -> Tuple[Dict[int, str], List]:
+    """Three-tier header mapping with per-column audit trail.
+
+    Returns (col_map, column_mapping_audit) where col_map is identical in
+    format to _map_headers() (Tier-1 aliases + accepted fuzzy >= 0.90 only)
+    and column_mapping_audit is a List[ColumnMapping] for inclusion in the
+    parser diagnostic dict.
+
+    _map_headers() is left unchanged for backward-compatibility; this
+    function delegates to excel_column_mapper.map_all_headers.
+    """
+    from .excel_column_mapper import build_col_map, map_all_headers
+    mappings = map_all_headers(raw_headers, _FIELD_ALIASES, llm_fallback=llm_fallback)
+    col_map  = build_col_map(mappings)
+    return col_map, mappings
+
+
 def _row_to_dict(cells: List[Any], col_map: Dict[int, str]) -> Dict[str, Any]:
     row: Dict[str, Any] = {}
     for idx, field in col_map.items():
@@ -624,29 +647,6 @@ def _row_to_dict(cells: List[Any], col_map: Dict[int, str]) -> Dict[str, Any]:
     return row
 
 
-def _read_excel_rows(path: Path, engine: str) -> List[List[Any]]:
-    """Read every cell of the active sheet. Returns list of rows (list of cell values)."""
-    if engine == "openpyxl":
-        import openpyxl
-        wb = openpyxl.load_workbook(str(path), data_only=True)
-        ws = wb.active
-        return [list(r) for r in ws.iter_rows(values_only=True)]
-
-    if engine == "xlrd":
-        import xlrd
-        wb = xlrd.open_workbook(str(path))
-        sh = wb.sheet_by_index(0)
-        out: List[List[Any]] = []
-        for r in range(sh.nrows):
-            row: List[Any] = []
-            for c in range(sh.ncols):
-                v = sh.cell_value(r, c)
-                # xlrd represents empty cells as ''. Keep None → '' equivalence.
-                row.append(v if v != "" else None)
-            out.append(row)
-        return out
-
-    raise ValueError(f"Unknown excel engine: {engine}")
 
 
 def _find_header_row(rows: List[List[Any]]) -> int:
@@ -695,7 +695,11 @@ def _is_subtotal_row(cells: List[Any], col_map: Dict[int, str]) -> bool:
     return False
 
 
-def _extract_packing_excel(path: Path, engine: str = "openpyxl") -> List[Dict[str, Any]]:
+def _extract_packing_excel(
+    path: Path,
+    engine: str = "openpyxl",
+    _audit_dict: Optional[Dict] = None,
+) -> List[Dict[str, Any]]:
     """
     Read an EJL packing list (XLSX via openpyxl, XLS via xlrd).
 
@@ -755,7 +759,12 @@ def _extract_packing_excel(path: Path, engine: str = "openpyxl") -> List[Dict[st
         return []
 
     headers = [str(c) if c is not None else "" for c in rows[hdr_idx]]
-    col_map = _map_headers(headers)
+    if _audit_dict is not None:
+        import dataclasses as _dc
+        col_map, _mapping_audit = _map_headers_with_audit(headers)
+        _audit_dict["column_mapping_audit"] = [_dc.asdict(m) for m in _mapping_audit]
+    else:
+        col_map = _map_headers(headers)
     if not col_map:
         log.warning("Header row %d had no aliasable cells: %s", hdr_idx, headers)
         return []

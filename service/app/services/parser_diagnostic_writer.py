@@ -37,7 +37,7 @@ def _collect_raw_header_rows(path: Path, file_type: str) -> List[Dict[str, Any]]
     out: List[Dict[str, Any]] = []
     try:
         if file_type in (".xlsx", ".xls"):
-            from .invoice_packing_extractor import _read_excel_rows
+            from .excel_reader import read_excel_rows as _read_excel_rows
             engine = "openpyxl" if file_type == ".xlsx" else "xlrd"
             try:
                 import openpyxl as _opx
@@ -80,7 +80,7 @@ def _collect_preview(path: Path, file_type: str) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     try:
         if file_type in (".xlsx", ".xls"):
-            from .invoice_packing_extractor import _read_excel_rows
+            from .excel_reader import read_excel_rows as _read_excel_rows
             engine = "openpyxl" if file_type == ".xlsx" else "xlrd"
             try:
                 import openpyxl as _opx
