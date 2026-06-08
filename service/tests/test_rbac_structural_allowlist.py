@@ -106,8 +106,6 @@ _AREA1_ROUTES: frozenset[str] = frozenset({
     "routes_action_proposals.py:POST:/{proposal_id}/queue",
     "routes_action_proposals.py:POST:/{proposal_id}/reject",
     "routes_action_proposals.py:POST:/{proposal_id}/resolve",
-    "routes_admin_dhl_clearance.py:POST:/proactive-dispatch/{batch_id}",
-    "routes_admin_runtime_flags.py:POST:/self-clearance",
     "routes_correction_registry.py:POST:",
     "routes_customer_master.py:POST:/dictionaries/refresh",
     "routes_customer_master.py:POST:/sync-from-wfirma/apply",
@@ -127,8 +125,6 @@ _AREA1_ROUTES: frozenset[str] = frozenset({
     "routes_dashboard.py:POST:/batches/{batch_id}/resend",
     "routes_dashboard.py:POST:/broker-followups/{batch_id}/send",
     "routes_dashboard.py:POST:/broker-reply/analyze",
-    "routes_debug.py:POST:/clear-test-sessions",
-    "routes_debug.py:POST:/post-pz-test",
     "routes_monitor.py:POST:/active-shipments/run",
     "routes_orchestrator.py:POST:/dry-run",
     "routes_orchestrator.py:POST:/tick",
@@ -149,6 +145,8 @@ _AREA2_ROUTES: frozenset[str] = frozenset({
     "routes_dhl_clearance.py:POST:/mark-email-received/{batch_id}",
     "routes_dhl_clearance.py:POST:/match-and-handle",
     "routes_dhl_clearance.py:POST:/proactive-dispatch/{batch_id}",
+    "routes_dhl_clearance.py:POST:/scheduled-followup-check",
+    "routes_dhl_clearance.py:POST:/scheduled-inbox-check",
     "routes_dhl_clearance.py:POST:/send-reply/{batch_id}",
     "routes_dhl_documents.py:POST:/{batch_id}/received",
     "routes_dhl_documents.py:POST:/{batch_id}/upload",
@@ -172,7 +170,6 @@ _AREA3_ROUTES: frozenset[str] = frozenset({
     "routes_batch.py:POST:/start",
     "routes_batch.py:POST:/status",
     "routes_batch.py:POST:/submit",
-    "routes_execute.py:POST:/{action}",
     "routes_intake.py:POST:/intake",
     "routes_intake.py:POST:/sales-packing/reingest",
     "routes_intake.py:POST:/{batch_id}/add-document",
@@ -236,6 +233,7 @@ _AREA4_ROUTES: frozenset[str] = frozenset({
     "routes_proforma.py:POST:/draft/{draft_id}/post",
     "routes_proforma.py:POST:/draft/{draft_id}/re-open",
     "routes_proforma.py:POST:/draft/{draft_id}/reset-from-sales-packing",
+    "routes_proforma.py:POST:/draft/{draft_id}/send-email",
     "routes_proforma.py:POST:/draft/{draft_id}/service-charges",
     "routes_proforma.py:POST:/draft/{draft_id}/to-invoice",
     "routes_proforma.py:POST:/preview/{batch_id}/{client_name:path}",
@@ -563,7 +561,8 @@ class TestRbacStructuralAllowlist:
         This is a secondary sanity check. The exact count is documented
         here so that any bulk rename / deletion is visible in review diffs.
 
-        Allowlist total at Phase A inventory (2026-06-08): 169 routes.
+        Allowlist total at Phase A inventory (2026-06-08): 167 routes.
+        (Updated 2026-06-08: -5 stale from deleted files, +3 new from ingestion sprint PRs.)
         """
         routes = _all_mutation_routes()
         bare_count = sum(1 for r in routes if r.auth_level == "bare")
