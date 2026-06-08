@@ -299,6 +299,31 @@ def get_packing_documents_for_batch(batch_id: str) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def update_packing_document_diagnostic(document_id: str, diagnostic: Dict[str, Any]) -> bool:
+    """Update ONLY parser_diagnostic_json for one packing document.
+
+    Returns True when a row was updated, False when document_id not found.
+    Does NOT touch extraction_status, rows, or any other column.
+    """
+    if _db_path is None:
+        return False
+    now = _now_iso()
+    try:
+        diag_json = json.dumps(diagnostic, ensure_ascii=False)
+    except Exception as exc:
+        log.warning("update_packing_document_diagnostic JSON serialise failed: %s", exc)
+        return False
+    with _lock:
+        with _connect() as con:
+            cur = con.execute(
+                """UPDATE packing_documents
+                   SET parser_diagnostic_json=?, updated_at=?
+                   WHERE id=?""",
+                (diag_json, now, document_id),
+            )
+    return (cur.rowcount or 0) > 0
+
+
 # ── Packing lines ─────────────────────────────────────────────────────────────
 
 def upsert_packing_lines(

@@ -287,6 +287,8 @@ def _collect_pdf_diagnostic(path: Path, diag: Dict[str, Any]) -> None:
 
 def extract_packing(
     path: Path,
+    *,
+    llm_fallback: bool = False,
 ) -> Tuple[List[Dict[str, Any]], str, str, Dict[str, Any]]:
     """
     Dispatch to PDF or Excel extractor based on file extension.
@@ -336,10 +338,10 @@ def extract_packing(
 
     try:
         if suffix == ".xlsx":
-            rows = _extract_packing_excel(path, engine="openpyxl", _audit_dict=diag)
+            rows = _extract_packing_excel(path, engine="openpyxl", _audit_dict=diag, llm_fallback=llm_fallback)
             _collect_excel_diagnostic(path, "openpyxl", diag)
         elif suffix == ".xls":
-            rows = _extract_packing_excel(path, engine="xlrd", _audit_dict=diag)
+            rows = _extract_packing_excel(path, engine="xlrd", _audit_dict=diag, llm_fallback=llm_fallback)
             _collect_excel_diagnostic(path, "xlrd", diag)
         elif suffix == ".pdf":
             rows = _extract_packing_pdf(path)
@@ -699,6 +701,8 @@ def _extract_packing_excel(
     path: Path,
     engine: str = "openpyxl",
     _audit_dict: Optional[Dict] = None,
+    *,
+    llm_fallback: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Read an EJL packing list (XLSX via openpyxl, XLS via xlrd).
@@ -761,7 +765,7 @@ def _extract_packing_excel(
     headers = [str(c) if c is not None else "" for c in rows[hdr_idx]]
     if _audit_dict is not None:
         import dataclasses as _dc
-        col_map, _mapping_audit = _map_headers_with_audit(headers)
+        col_map, _mapping_audit = _map_headers_with_audit(headers, llm_fallback=llm_fallback)
         _audit_dict["column_mapping_audit"] = [_dc.asdict(m) for m in _mapping_audit]
     else:
         col_map = _map_headers(headers)

@@ -2275,6 +2275,8 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   // P2 "Reparse all" busy + summary state.
   const [reparseBusy, setReparseBusy]         = React.useState(false);
   const [reparseSummary, setReparseSummary]   = React.useState('');
+  // LLM column-mapping suggest: null when idle, doc_id string while running.
+  const [llmSuggestBusyDocId, setLlmSuggestBusyDocId] = React.useState(null);
   const [packingInfo, setPackingInfo] = React.useState(null);            // null | {documents,packing_lines,...}
   const [packingInfoLoading, setPackingInfoLoading] = React.useState(false);
   // Lane readiness (sales + purchase) — single read-only banner fetch
@@ -4308,6 +4310,60 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                       borderRadius: 4, fontSize: 10,
                                     }}
                                   >{diag.column_mapping_audit.filter(m => m.method === 'unresolved').length} unresolved column(s) — operator review required before use.</div>
+                                )}
+                                {/* ── "Suggest column mapping with AI" button ───────────────────
+                                    Only shown when unresolved or fuzzy_warning columns exist.
+                                    Operator must click explicitly — never fires automatically.
+                                    LLM output is advisory only; does not write business records. */}
+                                {diag.column_mapping_audit.some(m => m.method === 'unresolved' || m.method === 'fuzzy_warning') && (
+                                  <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                    <Btn
+                                      small
+                                      variant="outline"
+                                      data-testid="suggest-column-mapping-btn"
+                                      disabled={llmSuggestBusyDocId !== null}
+                                      onClick={async () => {
+                                        const docIdForLlm = doc.id || '';
+                                        if (!docIdForLlm || llmSuggestBusyDocId !== null) return;
+                                        setLlmSuggestBusyDocId(docIdForLlm);
+                                        try {
+                                          const r = await fetch(
+                                            `/api/v1/packing/${encodeURIComponent(batchId)}/suggest-column-mapping`,
+                                            {
+                                              method: 'POST',
+                                              headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ document_id: docIdForLlm }),
+                                            }
+                                          );
+                                          if (!r.ok) {
+                                            const msg = await r.text().catch(() => r.statusText);
+                                            throw new Error(msg);
+                                          }
+                                          setPackingInfoLoading(true);
+                                          try {
+                                            const pr = await fetch(`/api/v1/packing/${encodeURIComponent(batchId)}`);
+                                            if (pr.ok) setPackingInfo(await pr.json());
+                                          } finally {
+                                            setPackingInfoLoading(false);
+                                          }
+                                        } catch (e) {
+                                          onToast('AI column mapping failed: ' + (e.message || 'unknown'));
+                                        } finally {
+                                          setLlmSuggestBusyDocId(null);
+                                        }
+                                      }}
+                                    >{llmSuggestBusyDocId === (doc.id || '') ? 'Requesting AI suggestions…' : 'Suggest column mapping with AI'}</Btn>
+                                    <span
+                                      data-testid="suggest-column-mapping-advisory-note"
+                                      style={{ fontSize: 9, color: 'var(--text-3)' }}
+                                    >Advisory only — does not create business records.</span>
+                                  </div>
+                                )}
+                                {diag.llm_mapping_meta && (
+                                  <div
+                                    data-testid="llm-mapping-meta"
+                                    style={{ marginTop: 4, fontSize: 9, color: 'var(--text-3)' }}
+                                  >AI run: {diag.llm_mapping_meta.triggered_at || '?'} · advisory_only: true</div>
                                 )}
                               </div>
                             )}
