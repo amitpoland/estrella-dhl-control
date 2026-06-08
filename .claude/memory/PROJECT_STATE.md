@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (Description Engine Phase 2A deployed — PR #513 SHA 3d7ebf9, shared grammar dictionaries live in C:\PZ\engine\).
 
-**Last-run-at:** 2026-06-08 (Description Engine Phase 2A — PR #513 merged SHA 3d7ebf9 + deployed to C:\PZ\engine\, production import verified). Origin/main HEAD: **3d7ebf9** (feat(engine): Phase 2A — extract shared grammar dictionaries). GATE 2: **1/3 open PRs** (draft #498). **RBAC PHASE C AREA 1 COMPLETE (PR #511, DEPLOYED)**: 33 mutation routes upgraded from bare `require_api_key` to `require_admin`/`require_role(...)`. Allowlist 167→134. Structural gate 5/5 PASS. Auth guard tests 31/31 PASS. GATE 4: Issue #512 filed (viewer-403 negative-path tests for Area 1 routes). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
+**Last-run-at:** 2026-06-09 (EJL/26-27/244 sales-price import — Draft #24 approved at €78,636 / 146 lines; PR #525 deployed; PR #527 open for parser hotfix reconciliation). Origin/main HEAD: **cf14b81** (feat(proforma): sales-price authority import + PL/EN commercial descriptions #525). GATE 2: **2/3 open PRs** (#527 parser fixes + any draft PRs). See FACTS below for full PR #525 + hotfix details. (feat(engine): Phase 2A — extract shared grammar dictionaries). GATE 2: **1/3 open PRs** (draft #498). **RBAC PHASE C AREA 1 COMPLETE (PR #511, DEPLOYED)**: 33 mutation routes upgraded from bare `require_api_key` to `require_admin`/`require_role(...)`. Allowlist 167→134. Structural gate 5/5 PASS. Auth guard tests 31/31 PASS. GATE 4: Issue #512 filed (viewer-403 negative-path tests for Area 1 routes). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
 
 ---
 
@@ -54,6 +54,36 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## PR #525 — Sales-Price Authority Import + Draft #24 Approved (2026-06-09, MERGED + DEPLOYED)
+
+**Date**: 2026-06-09 (PR merged as cf14b81; production deployed; Draft #24 approved)
+**PR #525** — `feat(proforma): sales-price authority import + PL/EN commercial descriptions`
+**Merge SHA**: `cf14b81`
+**Scope**: New endpoint `POST /api/v1/proforma/draft/{id}/import-sales-prices`. New `sales_packing_parser.py` (EJL TSV parser). New `apply_sales_price_patch()` in `proforma_invoice_link_db.py`. Pre-approve gate in `_preflight_approve()`. 36 new tests.
+
+**Live session (2026-06-09)**: EJL/26-27/244 packing list imported into Draft #24 (UAB, SHIPMENT_9938632830).
+- 146/146 lines matched using `line_id → TSV Sr` 1:1 matching
+- Grand total: €78,636.00 (authority = TSV grand total)
+- `approved_at: 2026-06-09T?` | `approved_by: amit`
+- Per-variant unit prices correct (e.g. JR05545-0.10 ring sizes: 248, 256, 258, 254, 255 EUR per size)
+- PL descriptions: `pierścionek z 14-karatowego złota z diamentami` etc. — all 146 lines populated
+
+**Hotfixes applied directly to production (C:\PZ\app\)** — reconciled in PR #527:
+1. `sales_packing_parser._parse_eur`: strip `€` prefix (`€ 211` format)
+2. `sales_packing_parser` Grand Total detection: scan all cells (leading empty cells)
+3. `sales_packing_parser` qty: `int(float(qty))` for `3.00` format
+4. `routes_proforma` import response: `_serialise_draft` → `_draft_to_summary` (NameError)
+5. `routes_proforma` import matching: `line_id → Sr` (was `design_no` first-occurrence, gave wrong prices for size-variant rings)
+
+**PR #527** — `fix/sales-price-import-ejl-parser` — open, pending merge. 36 tests pass.
+
+**Safety constraints (honored throughout)**:
+- No wFirma posting / no invoice creation / no DHL or PZ mutations
+- Customer Master untouched / draft lifecycle only
+- `draft_state: approved`, `sales_price_authority_total_eur: 78636.0`, `sales_price_invoice_ref: EJL/26-27/244`
+
+---
 
 ## PR #509 — Description Engine Phase 1 Grammar Upgrade (2026-06-08, MERGED)
 

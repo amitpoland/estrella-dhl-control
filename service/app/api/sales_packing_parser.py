@@ -176,7 +176,7 @@ class SalesPackingRow:
 
 def _parse_eur(s: str) -> Optional[Decimal]:
     """Parse a EUR amount cell, returning None if blank or non-numeric."""
-    s = (s or "").strip().replace(",", "")
+    s = (s or "").strip().replace(",", "").lstrip("€").strip()
     if not s:
         return None
     try:
@@ -217,11 +217,24 @@ def parse_ejl_sales_packing(
             continue
 
         # ── Grand Total sentinel ──────────────────────────────────────────
-        first = cells[0].strip().lower()
-        if first == "grand total":
-            last_val = cells[-1].strip().replace(",", "")
+        # Row may have leading empty cells; scan all cells for "grand total"
+        joined_lower = "\t".join(cells).lower()
+        if "grand total" in joined_lower:
+            # The total value is in the "total_value" column if headers exist,
+            # otherwise take the last non-empty numeric cell
+            total_val_raw = ""
+            if col_idx:
+                tv_idx = col_idx.get("total_value")
+                if tv_idx is not None and tv_idx < len(cells):
+                    total_val_raw = cells[tv_idx].strip().lstrip("€").strip().replace(",", "")
+            if not total_val_raw:
+                for c in reversed(cells):
+                    stripped = c.strip().lstrip("€").strip().replace(",", "")
+                    if stripped:
+                        total_val_raw = stripped
+                        break
             try:
-                grand_total = Decimal(last_val)
+                grand_total = Decimal(total_val_raw)
             except InvalidOperation:
                 pass
             continue
@@ -244,9 +257,11 @@ def parse_ejl_sales_packing(
         col = _get("col")
         quality = _get("quality")
 
-        qty_raw = _get("qty")
+        qty_raw = _get("qty").replace(",", "").strip()
         try:
-            qty = int(qty_raw)
+            qty = int(float(qty_raw)) if qty_raw else 0
+            if qty <= 0:
+                continue
         except (ValueError, TypeError):
             continue
 
