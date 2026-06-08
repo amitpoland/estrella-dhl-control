@@ -4302,7 +4302,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                       background: 'var(--badge-purple-bg)', color: 'var(--badge-purple-text)',
                                       borderRadius: 4, fontSize: 10, fontStyle: 'italic',
                                     }}
-                                  >AI/LLM suggestions are advisory only. They do not create products, customers, PZ, or wFirma records.</div>
+                                  >AI/LLM suggestions are advisory only. They do not create products, customers, PZ, or wFirma records. Supplier templates are reused only after operator approval. AI suggestions are not saved automatically.</div>
                                 )}
                                 {diag.column_mapping_audit.some(m => m.method === 'llm') && (
                                   <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -4313,8 +4313,13 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                       onClick={async () => {
                                         const llmMappings = diag.column_mapping_audit
                                           .filter(m => m.method === 'llm' && m.canonical_field)
-                                          .map(m => ({ raw_header: m.original_header, canonical_field: m.canonical_field, col_index: m.col_index }));
+                                          .map(m => ({ raw_header: m.original_header, canonical_field: m.canonical_field, col_index: m.col_index, source_method: m.method, operator_confirmed: true }));
                                         if (!llmMappings.length) return;
+                                        const preview = llmMappings.map(m => `  "${m.raw_header}" → ${m.canonical_field}`).join('\n');
+                                        const confirmed = window.confirm(
+                                          `Save ${llmMappings.length} AI-suggested mapping(s) as supplier templates?\n\n${preview}\n\nThis stores them for all future uploads from this supplier.`
+                                        );
+                                        if (!confirmed) return;
                                         try {
                                           const r = await fetch(
                                             `/api/v1/packing/${encodeURIComponent(batchId)}/approve-header-mapping`,
@@ -4328,17 +4333,17 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                           if (!r.ok) {
                                             onToast('Approval failed: ' + (data.detail || r.statusText));
                                           } else {
-                                            onToast(`${data.approved_count || 0} header mapping(s) saved as supplier templates.`);
+                                            onToast(`${data.approved_count || 0} mapping(s) approved and saved as supplier templates.`);
                                           }
                                         } catch (e) {
                                           onToast('Approve failed: ' + (e.message || 'unknown'));
                                         }
                                       }}
-                                    >Save AI suggestions as supplier templates</Btn>
+                                    >Approve selected mappings for this supplier</Btn>
                                     <span
                                       data-testid="approve-header-mapping-note"
                                       style={{ fontSize: 9, color: 'var(--text-3)' }}
-                                    >Operator approval — saves to Supplier Master for future uploads.</span>
+                                    >Supplier templates are reused only after operator approval. AI suggestions are not saved automatically.</span>
                                   </div>
                                 )}
                                 {diag.column_mapping_audit.some(m => m.method === 'unresolved' || m.method === 'fuzzy_warning') && (
