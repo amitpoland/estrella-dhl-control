@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..auth.dependencies import get_current_user
+from ..auth.dependencies import get_current_user, require_role
 from ..core.config import settings
 from ..services.clearance_path_alias import is_agency_clearance
 from ..core.logging import get_logger
@@ -28,8 +28,9 @@ from ..utils.io import write_json_atomic
 
 log = get_logger(__name__)
 
-router = APIRouter(prefix="/api/v1/agency", tags=["agency"])
-_auth  = Depends(get_current_user)
+router   = APIRouter(prefix="/api/v1/agency", tags=["agency"])
+_auth    = Depends(get_current_user)
+_op_auth = Depends(require_role("admin", "logistics"))
 
 _OUTPUTS = settings.storage_root / "outputs"
 
@@ -89,7 +90,7 @@ def _audit_path(batch_id: str) -> Path | None:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.post("/email-package/{batch_id}", response_model=AgencyPackageResponse, dependencies=[_auth])
+@router.post("/email-package/{batch_id}", response_model=AgencyPackageResponse, dependencies=[_op_auth])
 async def build_agency_email_package(batch_id: str) -> AgencyPackageResponse:
     """
     Build the customs agency email package for a high-value shipment.

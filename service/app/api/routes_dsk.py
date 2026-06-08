@@ -22,14 +22,16 @@ from pydantic import BaseModel
 from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..auth.dependencies import require_role
 from ..core.guards import guard_dhl_requires_email
 from ..core import timeline as tl
 from ..utils.io import write_json_atomic
 
-log = get_logger(__name__)
+log      = get_logger(__name__)
 
-router = APIRouter(prefix="/api/v1/dsk", tags=["dsk"])
-_auth = Depends(require_api_key)
+router   = APIRouter(prefix="/api/v1/dsk", tags=["dsk"])
+_auth    = Depends(require_api_key)
+_op_auth = Depends(require_role("admin", "logistics"))
 
 # ── Output directory ──────────────────────────────────────────────────────────
 _DSK_OUTPUT_DIR = (
@@ -140,7 +142,7 @@ def _find_dsk_file(awb: str) -> Optional[Path]:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.post("/generate", response_model=DskResponse, dependencies=[_auth])
+@router.post("/generate", response_model=DskResponse, dependencies=[_auth, _op_auth])
 async def generate_dsk_endpoint(body: DskRequest) -> DskResponse:
     """
     Generate a DSK broker notification PDF for a DHL shipment.
@@ -294,7 +296,7 @@ async def download_dsk(filename: str) -> FileResponse:
     )
 
 
-@router.post("/email-package", response_model=EmailPackageResponse, dependencies=[_auth])
+@router.post("/email-package", response_model=EmailPackageResponse, dependencies=[_auth, _op_auth])
 async def build_email_package_endpoint(body: EmailPackageRequest) -> EmailPackageResponse:
     """
     Build a DHL broker email package for a batch.

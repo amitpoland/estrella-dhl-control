@@ -20,12 +20,14 @@ from pydantic import BaseModel
 
 from ..core.config import settings
 from ..core.security import require_api_key
+from ..auth.dependencies import require_role
 from ..core import timeline as tl
 from ..utils.io import write_json_atomic
 
-log    = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1/dhl-followup", tags=["dhl-followup"])
-_auth  = Depends(require_api_key)
+log      = logging.getLogger(__name__)
+router   = APIRouter(prefix="/api/v1/dhl-followup", tags=["dhl-followup"])
+_auth    = Depends(require_api_key)
+_op_auth = Depends(require_role("admin", "logistics"))
 
 
 def _audit_path(batch_id: str):
@@ -45,7 +47,7 @@ class StopReq(BaseModel):
     operator: Optional[str] = None
 
 
-@router.post("/{batch_id}/stop", dependencies=[_auth])
+@router.post("/{batch_id}/stop", dependencies=[_auth, _op_auth])
 def stop_followup_endpoint(batch_id: str, body: StopReq) -> Dict[str, Any]:
     """Manually stop follow-up SLA. Reason is required."""
     if not body.reason or not body.reason.strip():
@@ -78,7 +80,7 @@ class SendNowReq(BaseModel):
     approved_by: str
 
 
-@router.post("/{batch_id}/send-now", dependencies=[_auth])
+@router.post("/{batch_id}/send-now", dependencies=[_auth, _op_auth])
 def send_now_endpoint(batch_id: str, body: SendNowReq) -> Dict[str, Any]:
     """Fire one follow-up email immediately, regardless of next_followup_at."""
     if not body.approved_by or not body.approved_by.strip():
@@ -153,7 +155,7 @@ def get_mode_endpoint(batch_id: str) -> Dict[str, Any]:
     return mode_telemetry(audit)
 
 
-@router.post("/{batch_id}/mode", dependencies=[_auth])
+@router.post("/{batch_id}/mode", dependencies=[_auth, _op_auth])
 def set_mode_endpoint(batch_id: str, body: SetModeReq) -> Dict[str, Any]:
     """Persist a new follow-up mode on the shipment. Audited.
 
@@ -248,7 +250,7 @@ def auto_preview_endpoint(batch_id: str) -> Dict[str, Any]:
 
 # ── Recalculate ──────────────────────────────────────────────────────────────
 
-@router.post("/{batch_id}/recalculate", dependencies=[_auth])
+@router.post("/{batch_id}/recalculate", dependencies=[_auth, _op_auth])
 def recalculate_endpoint(batch_id: str) -> Dict[str, Any]:
     """Recompute next_followup_at from last_followup_at (or trigger_time if none)."""
     from ..services.dhl_followup_sla import (
