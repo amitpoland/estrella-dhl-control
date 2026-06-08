@@ -706,3 +706,72 @@ class TestNewUIControlsAndMigration:
         # And NOT a hardcoded lone dash literal in the lines cell
         # (The old code was: <span ...>—</span> with no JS expression)
         assert 'doc.line_count != null' in html
+
+
+# ── 29: _build_matched_sales_lines unit_price fallback ───────────────────────
+
+class TestBuildMatchedSalesLinesUnitPriceFallback:
+    """
+    _build_matched_sales_lines must use unit_price when unit_price_eur is 0/None.
+    Regression for the bug where promoted lines always got unit_price=0 on
+    batches where unit_price_eur was never backfilled.
+    """
+
+    def _build(self, lines, client="UAB"):
+        from app.api.routes_packing import _build_matched_sales_lines
+        result, skipped = _build_matched_sales_lines(lines, client)
+        return result, skipped
+
+    def test_uses_unit_price_when_unit_price_eur_is_zero(self):
+        """unit_price_eur=0 → fall back to unit_price."""
+        packing_lines = [
+            {"product_code": "PC-1", "quantity": 3.0, "unit_price": 201.0,
+             "unit_price_eur": 0.0, "currency": "USD", "invoice_no": "INV-1",
+             "design_no": "D001", "bag_id": "", "remarks": ""},
+            {"product_code": "PC-2", "quantity": 5.0, "unit_price": 302.0,
+             "unit_price_eur": 0.0, "currency": "USD", "invoice_no": "INV-1",
+             "design_no": "D002", "bag_id": "", "remarks": ""},
+        ]
+        result, skipped = self._build(packing_lines)
+        assert len(result) == 2
+        assert result[0]["unit_price"] == 201.0
+        assert result[1]["unit_price"] == 302.0
+        assert result[0]["price_source"] == "packing_xlsx_value"
+        assert result[1]["price_source"] == "packing_xlsx_value"
+        assert result[0]["total_value"] == 3.0 * 201.0
+
+    def test_uses_unit_price_eur_when_present(self):
+        """unit_price_eur present and >0 → prefer it over unit_price."""
+        packing_lines = [
+            {"product_code": "PC-1", "quantity": 2.0, "unit_price": 100.0,
+             "unit_price_eur": 90.0, "currency": "EUR", "invoice_no": "INV-2",
+             "design_no": "D001", "bag_id": "", "remarks": ""},
+        ]
+        result, skipped = self._build(packing_lines)
+        assert len(result) == 1
+        assert result[0]["unit_price"] == 90.0
+        assert result[0]["price_source"] == "packing_xlsx_value"
+
+    def test_uses_zero_when_both_absent(self):
+        """Both unit_price_eur and unit_price absent → 0.0 with packing_promote."""
+        packing_lines = [
+            {"product_code": "PC-1", "quantity": 1.0, "unit_price": 0.0,
+             "unit_price_eur": 0.0, "currency": "EUR", "invoice_no": "INV-3",
+             "design_no": "D001", "bag_id": "", "remarks": ""},
+        ]
+        result, skipped = self._build(packing_lines)
+        assert len(result) == 1
+        assert result[0]["unit_price"] == 0.0
+        assert result[0]["price_source"] == "packing_promote"
+
+    def test_uses_unit_price_when_unit_price_eur_is_none(self):
+        """unit_price_eur=None → fall back to unit_price."""
+        packing_lines = [
+            {"product_code": "PC-1", "quantity": 4.0, "unit_price": 150.0,
+             "unit_price_eur": None, "currency": "USD", "invoice_no": "INV-4",
+             "design_no": "D001", "bag_id": "", "remarks": ""},
+        ]
+        result, skipped = self._build(packing_lines)
+        assert len(result) == 1
+        assert result[0]["unit_price"] == 150.0
+        assert result[0]["price_source"] == "packing_xlsx_value"
