@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from ..core.config import settings
 from ..core.security import require_api_key
+from ..auth.dependencies import require_role
 from ..config.email_routing import resolve_dhl_to, resolve_dhl_cc
 from ..services.clearance_path_alias import (
     is_agency_clearance,
@@ -37,10 +38,9 @@ from ..core import timeline as tl
 from ..utils.io import write_json_atomic
 from ..utils.proposal_lock import proposal_write_lock
 
-# Router-level auth — every endpoint protected. Closes the pre-existing
-# CRITICAL gap from the SECURITY review: previously /list, /approve,
-# /reject, /queue, /refresh were all unauthenticated.
-_auth = Depends(require_api_key)
+# Router-level auth — every endpoint protected.
+# Phase C: upgraded from bare require_api_key to role-based guard.
+_auth = Depends(require_role("admin", "logistics", "accounts"))
 router = APIRouter(
     prefix="/api/v1/action-proposals",
     tags=["action_proposals"],

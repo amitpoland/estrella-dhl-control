@@ -11,14 +11,16 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, Query
 
 from ..core.security import require_api_key
+from ..auth.dependencies import require_admin
 from ..services.active_shipment_monitor import scan_active_shipments
 
 log    = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/monitor", tags=["monitor"])
 _auth  = Depends(require_api_key)
+_admin_auth = Depends(require_admin)
 
 
-@router.post("/active-shipments/run", dependencies=[_auth])
+@router.post("/active-shipments/run", dependencies=[_admin_auth])
 async def run_active_shipment_monitor(
     force: bool = Query(False, description="Include terminal shipments (testing/backfill)."),
 ) -> Dict[str, Any]:

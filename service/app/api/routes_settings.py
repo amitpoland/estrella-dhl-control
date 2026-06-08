@@ -12,11 +12,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..core.config import settings
 from ..core.security import require_api_key
+from ..auth.dependencies import require_admin
 from ..services.master_data_db import CompanyProfile, get_company_profile, upsert_company_profile
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
-_auth = Depends(require_api_key)
+_auth       = Depends(require_api_key)
+_admin_auth = Depends(require_admin)
 
 # Field names that callers may supply (excludes id and updated_at)
 _ALLOWED_FIELDS = frozenset({
@@ -38,7 +40,7 @@ async def get_company_profile_endpoint() -> Dict[str, Any]:
     return {"ok": True, "profile": dataclasses.asdict(profile)}
 
 
-@router.patch("/company-profile", dependencies=[_auth])
+@router.patch("/company-profile", dependencies=[_admin_auth])
 async def patch_company_profile_endpoint(request: Request) -> Dict[str, Any]:
     try:
         body: Dict[str, Any] = await request.json()

@@ -31,6 +31,7 @@ from fastapi.responses import JSONResponse, Response
 from ..core.config import settings
 from ..core.security import require_api_key
 from ..core.logging import get_logger
+from ..auth.dependencies import require_admin
 from ..core.audit import audit_safe
 from ..core.role_gate import require_role_or_apikey, MASTER_ADMIN, MASTER_EDITOR
 from ..services.suppliers_db import (
@@ -50,8 +51,9 @@ from ..services.suppliers_db import (
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/suppliers", tags=["suppliers"])
-_auth  = Depends(require_api_key)
+_auth       = Depends(require_api_key)
 _write_auth = Depends(require_role_or_apikey(MASTER_ADMIN, MASTER_EDITOR))
+_admin_auth = Depends(require_admin)
 
 _DB_PATH = settings.storage_root / "suppliers.sqlite"
 
@@ -323,7 +325,7 @@ def suppliers_sync_preview_endpoint() -> JSONResponse:
     })
 
 
-@router.post("/sync-from-wfirma/apply", dependencies=[_auth],
+@router.post("/sync-from-wfirma/apply", dependencies=[_admin_auth],
              summary="Apply only the wFirma rows the operator selected")
 async def suppliers_sync_apply_endpoint(request: Request) -> JSONResponse:
     """Per-row apply. Body: ``{"wfirma_ids": ["123", "456"]}``.
@@ -444,7 +446,7 @@ async def suppliers_sync_apply_endpoint(request: Request) -> JSONResponse:
     return JSONResponse(body_out)
 
 
-@router.post("/sync-from-wfirma", dependencies=[_auth],
+@router.post("/sync-from-wfirma", dependencies=[_admin_auth],
              summary="Pull wFirma contractors into local suppliers (read wFirma only)")
 def suppliers_sync_from_wfirma_endpoint(
     write: bool = Query(False, description="true → apply; false → dry-run preview"),

@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (PR #509 opened — Description Engine Phase 1 grammar upgrade).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (Phase C Area 1 RBAC merged — PR #511, 33 routes upgraded, allowlist 167→134).
 
-**Last-run-at:** 2026-06-08 (PR #509 merged — Description Engine Phase 1 grammar upgrade). Origin/main HEAD: **9c1c9df** (PR #509 squash-merge — Phase 1 grammar dictionaries + composition). GATE 2: **1/3 open PRs** (draft #498). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
+**Last-run-at:** 2026-06-08 (PR #509 merged — Description Engine Phase 1 grammar upgrade; Phase C Area 1 RBAC — PR #511 merged, 33 routes upgraded to privileged guards, allowlist 167→134). Origin/main HEAD: **9c1c9df** (PR #509 squash-merge — Phase 1 grammar dictionaries + composition). GATE 2: **1/3 open PRs** (draft #498). **RBAC PHASE C AREA 1 COMPLETE (PR #511)**: 33 mutation routes upgraded from bare `require_api_key` to `require_admin`/`require_role(...)`. Allowlist 167→134. Structural gate 5/5 PASS. Auth guard tests 31/31 PASS. GATE 4: Issue #512 filed (viewer-403 negative-path tests for Area 1 routes). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
 
 ---
 
@@ -5502,5 +5502,39 @@ It does **NOT** contain `wfirma_capabilities.py`. The scheduler text claiming `2
 **GATE 2**: 0/3 open PRs (clean board)
 
 **Sprint 39 status**: FULLY CLOSED — merged + deployed + production-verified
+
+---
+
+## Phase B — RBAC Structural Allowlist Gate (2026-06-08, LIVE ON MAIN)
+
+**Date**: 2026-06-08
+**PR #508** — `test(security): Phase B -- structural RBAC allowlist gate`
+**Merge SHA**: `2a50616` (squash-merge to `origin/main`)
+**Reconciliation SHA**: `88a18f9` (allowlist reconciled after 103-commit merge)
+
+**What was built**: Pure AST structural test `service/tests/test_rbac_structural_allowlist.py` (596 lines) that gates any new bare-auth mutation route. No runtime code changed. 5 tests:
+1. `test_no_new_bare_mutation_routes` — GATE: fails if new bare route added outside allowlist
+2. `test_no_stale_allowlist_entries` — hygiene: fails if allowlist entry has no matching route
+3. `test_allowlist_count_matches_scan` — snapshot: bare count must equal allowlist size
+4. `test_scanner_finds_mutation_routes` — sanity: scanner finds ≥100 mutation routes
+5. `test_privileged_routes_still_present` — regression: privileged routes not accidentally removed
+
+**Allowlist state (post-reconciliation 2026-06-08)**:
+- Total bare-auth mutation routes: **167**
+- Area 1 (Proposals / control / dashboard ops): 32 routes
+- Area 2 (DHL ops): 22 routes
+- Area 3 (PZ / warehouse / intake / inventory): 49 routes
+- Area 4 (Proforma): 32 routes
+- Area 5 (wFirma / accounting-sensitive / carrier / AI): 32 routes
+
+**Reconciliation reason**: 103 commits merged to main (PRs #445+others). 5 stale entries removed (4 route files deleted: `routes_admin_dhl_clearance.py`, `routes_admin_runtime_flags.py`, `routes_debug.py`, `routes_execute.py`). 3 new entries added (2 DHL scheduled-check routes, 1 proforma send-email).
+
+**GATE 4 SCHEDULED items** (from test-coverage-reviewer, 2 findings):
+1. SCHEDULED — add meta-test verifying stale-entry detection actually catches removed routes
+2. SCHEDULED — add negative-path test proving scanner catches newly-added bare routes
+GitHub Issue filed: **#510** — "test(rbac): Phase B follow-up tests — meta-test + negative-path coverage"
+
+**Phase C status**: UNBLOCKED — Area 1 next (32 routes across proposals/control/dashboard)
+**Allowlist key format**: `"<filename>:<METHOD>:<path_template>"` (e.g., `"routes_dashboard.py:POST:/batches/{batch_id}/regenerate"`)
 
 ---
