@@ -4245,6 +4245,7 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
 
     from html import escape as _esc
     import json as _json
+    import datetime as _dt
     from pathlib import Path as _Path
 
     def _safe(s) -> str:
@@ -4356,14 +4357,26 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
                 f"<dd></dd>"
             )
 
+    def _bilingual_desc(ln) -> str:
+        """Combine PL + EN descriptions in wFirma bilingual format.
+
+        Priority: description_pl (full customs sentence) over name_pl (short label).
+        Format: "{Polish}. / {English}"  — mirrors the wFirma proforma PDF layout.
+        """
+        pl = (ln.get("description_pl") or ln.get("name_pl") or "").strip()
+        en = (ln.get("description_en") or "").strip()
+        if pl and en:
+            return f"{pl} / {en}"
+        return pl or en
+
     rows_html: List[str] = []
     for ln in lines:
         rows_html.append(
             "<tr>"
             f"<td>{_safe(ln.get('product_code'))}</td>"
             f"<td>{_safe(ln.get('item_type'))}</td>"
-            f"<td>{_safe(ln.get('name_pl'))}</td>"
-            f"<td>{_safe(ln.get('name_en'))}</td>"
+            f"<td style='max-width:340px;white-space:normal;'>"
+            f"{_safe(_bilingual_desc(ln))}</td>"
             f"<td>{_safe(ln.get('design_no'))}</td>"
             f"<td>{_safe(ln.get('hs_code'))}</td>"
             f"<td>{_vat_label}</td>"
@@ -4488,16 +4501,49 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
         )
 
     # ── Phase 3 — wFirma post-posting enrichment display ──────────────────────
+    # When wFirma post-posting dates are absent (draft not yet posted, or
+    # enrichment fetch not yet run), compute Payment Due By from
+    # payment_terms_json["days"] so the operator sees the expected due date
+    # even before the proforma is issued.
     _wfirma_dates_html = ""
     _issue_date   = getattr(d, "wfirma_issue_date", None)
     _payment_due  = getattr(d, "wfirma_payment_due", None)
     _pay_method   = getattr(d, "wfirma_payment_method", None)
+
+    _due_estimated = False
+    _pt_days_val   = 0
+    # Enrich payment method from payment_terms_json when wFirma field is absent
+    if not _pay_method and terms:
+        _pay_method = str(terms.get("method") or "").strip() or None
+    # Compute estimated payment due when wFirma hasn't stored it yet
+    if not _payment_due and terms:
+        try:
+            _pt_days_val = int(terms.get("days") or 0)
+            if _pt_days_val > 0:
+                _base = (
+                    _dt.date.fromisoformat(str(_issue_date)[:10])
+                    if _issue_date
+                    else _dt.date.today()
+                )
+                _payment_due  = (_base + _dt.timedelta(days=_pt_days_val)).isoformat()
+                _due_estimated = True
+        except Exception:
+            pass
+
     if any((_issue_date, _payment_due, _pay_method)):
         _rows = []
         if _issue_date:
             _rows.append(f"<dt>Issue date:</dt><dd>{_safe(_issue_date)}</dd>")
         if _payment_due:
-            _rows.append(f"<dt>Payment due:</dt><dd>{_safe(_payment_due)}</dd>")
+            _note = (
+                f" <span style='font-size:10px;color:#888;font-style:italic;'>"
+                f"(estimated — {_pt_days_val}-day terms)</span>"
+                if _due_estimated else ""
+            )
+            _rows.append(
+                f"<dt>Termin p&#322;atno&#347;ci / Payment due by:</dt>"
+                f"<dd>{_safe(_payment_due)}{_note}</dd>"
+            )
         if _pay_method:
             _rows.append(f"<dt>Payment method:</dt><dd>{_safe(_pay_method)}</dd>")
         _wfirma_dates_html = (
@@ -4621,13 +4667,14 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
   <h2>Lines ({len(lines)})</h2>
   <table>
     <thead><tr>
-      <th>Product code</th><th>Item type</th><th>Name (PL)</th>
-      <th>Name (EN)</th><th>Design</th><th>HS code</th><th>VAT</th>
+      <th>Product code</th><th>Item type</th>
+      <th>Description (PL / EN)</th>
+      <th>Design</th><th>HS code</th><th>VAT</th>
       <th class="num">Qty</th>
       <th class="num">Unit price</th><th>Currency</th>
       <th class="num">Line total</th>
     </tr></thead>
-    <tbody>{''.join(rows_html) or '<tr><td colspan="11" style="color:#aaa;text-align:center;">(no lines)</td></tr>'}</tbody>
+    <tbody>{''.join(rows_html) or '<tr><td colspan="10" style="color:#aaa;text-align:center;">(no lines)</td></tr>'}</tbody>
   </table>
 
   <h2>Service charges ({len(charges)})</h2>
