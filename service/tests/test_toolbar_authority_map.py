@@ -312,8 +312,11 @@ def test_v2_api_has_all_lifecycle_functions():
 
 def test_toolbar_testids_present():
     src = _src()
+    # tb-cmr intentionally removed from toolbar (operator request 2026-06-09):
+    # CMR permanently disabled in toolbar, now accessible only via Preview modal.
     for testid in ("tb-post", "tb-convert", "proforma-detail-download-pdf",
-                   "tb-send", "tb-generate", "tb-duplicate", "tb-preview", "tb-cmr"):
+                   "tb-send", "tb-generate", "tb-duplicate", "tb-preview",
+                   "tb-approve"):
         assert f'data-testid="{testid}"' in src, \
             f"Toolbar button testid '{testid}' must be present"
 
@@ -426,15 +429,24 @@ def test_preview_modal_uses_ej_proforma_bold():
 
 # ── 12. CMR button and component ─────────────────────────────────────────────
 
-def test_cmr_toolbar_button_is_disabled():
-    """CMR toolbar button must be disabled — no backend PDF generation route exists."""
+def test_cmr_toolbar_button_removed():
+    """CMR toolbar button removed at operator request (2026-06-09).
+    No backend PDF generation route exists. CMR is accessible via Preview modal."""
     src = _src()
-    tb_cmr_pos = src.find('data-testid="tb-cmr"')
-    assert tb_cmr_pos > 0, "CMR button testid tb-cmr must be present"
-    block_start = src.rfind("<TbBtn", 0, tb_cmr_pos)
-    block = src[block_start:tb_cmr_pos + 60]
-    assert "disabled" in block, \
-        "CMR button must be disabled — no CMR PDF backend route exists"
+    assert 'data-testid="tb-cmr"' not in src, \
+        "CMR toolbar button must be removed (was permanently disabled, now via Preview only)"
+
+
+def test_cmr_accessible_via_preview_modal():
+    """CMR must remain accessible via the Preview modal doctype selector.
+    The doctype testid is generated dynamically: data-testid={`preview-doctype-${dt}`}
+    so we check for the 'cmr' entry in the doctype array instead."""
+    src = _src()
+    assert "'cmr'" in src or '"cmr"' in src, \
+        "CMR doctype must still be present in Preview modal doctype selector"
+    # Testid is dynamic: preview-doctype-${dt} — check for the template literal pattern
+    assert "preview-doctype-${dt}" in src or "preview-doctype-" in src, \
+        "Preview modal must generate preview-doctype-{dt} testids for doctype tabs"
 
 
 def test_cmr_button_has_honest_reason():
