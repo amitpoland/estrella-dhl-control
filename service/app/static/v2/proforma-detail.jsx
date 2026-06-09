@@ -1,6 +1,6 @@
 // proforma-detail.jsx — Sprint 36 Phase 2: UI parity with atlas-proforma-preview.html
 // Authority sources (no fake/hardcoded data):
-//   GET /api/v1/proforma/draft/{id}                → editable_lines, exchange_rate, customer_resolution
+//   GET /api/v1/proforma/draft/{id}                → editable_lines (incl. name_pl), buyer_override, exchange_rate
 //   GET /api/v1/settings/company-profile             → exporter identity (SELLER card)
 //   GET /api/v1/proforma/draft/{id}/disclose-post    → VAT context, post payload
 //   POST /api/v1/proforma/draft/{id}/post            → post to wFirma (toolbar + modal)
@@ -677,7 +677,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     seq:      i + 1,
     lineId:   ln.line_id || '',
     sku:      ln.product_code || '—',
-    desc:     ln.design_no || ln.product_code || '—',
+    desc:     ln.name_pl || ln.description_pl || ln.design_no || ln.product_code || '—',
     qty:      parseFloat(ln.qty || 0),
     unitEur:  parseFloat(ln.unit_price || 0),
     netEur:   parseFloat(ln.unit_price || 0) * parseFloat(ln.qty || 0),
@@ -707,15 +707,34 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       }
     : { name: '—', vatEu: '—', address: '—', country: '—' };
 
-  // BUYER from draft customer_resolution
+  // BUYER — authority split:
+  //   name / VAT / address / country → buyer_override (operator-confirmed buyer data)
+  //   wfirmaId / wfirmaName          → customer_resolution (wFirma resolution metadata)
+  // customer_resolution is present in the response but only carries wFirma resolution
+  // metadata (wfirma_customer_id, resolved_wfirma_customer_name, match_strategy).
+  // It does NOT carry vat_eu, address, or country — buyer_override is the only authority
+  // for those fields.
+  const bo = liveDraft.buyer_override || {};
   const cr = liveDraft.customer_resolution || {};
   const customer = {
-    name:       liveDraft.client_name || (draft && draft.client_name) || '—',
-    vatEu:      cr.vat_eu || '—',
-    address:    cr.address || '—',
-    country:    cr.country || '—',
-    wfirmaId:   cr.wfirma_customer_id || null,
-    wfirmaName: cr.resolved_wfirma_customer_name || null,
+    name:       bo.name || liveDraft.client_name || (draft && draft.client_name) || '—',
+    vatEu:      bo.vat_id || '—',
+    address:    [bo.street, bo.city, bo.zip].filter(Boolean).join(', ') || '—',
+    country:    bo.country || '—',
+    // wfirmaId: explicit selection in buyer_override > name-resolution in cr > posted proof
+    wfirmaId:   bo.wfirma_customer_id || cr.wfirma_customer_id ||
+                (liveDraft.wfirma_proforma_id ? String(liveDraft.wfirma_proforma_id) : null),
+    wfirmaName: cr.resolved_wfirma_customer_name || bo.name || null,
+  };
+
+  // SHIP-TO — authority: ship_to_override first, buyer_override fallback.
+  // When ship_to_override is not set, ship-to equals the buyer.
+  const sto = liveDraft.ship_to_override || {};
+  const shipTo = {
+    name:    sto.name    || bo.name || liveDraft.client_name || '—',
+    address: [sto.street || bo.street, sto.city || bo.city, sto.zip || bo.zip]
+               .filter(Boolean).join(', ') || '—',
+    country: sto.country || bo.country || '—',
   };
 
   const detail = {
@@ -789,10 +808,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       phone: (companyProfile && companyProfile.phone) || '',
     },
     shipto:   {
-      name:    customer.name,
-      addr:    customer.address,
-      city:    customer.country,
-      country: customer.country,
+      name:    shipTo.name,
+      addr:    shipTo.address,
+      city:    shipTo.country,
+      country: shipTo.country,
     },
     buyer:    { vat: customer.vatEu },
     carrier:  liveDraft.batch_id ? {
@@ -801,7 +820,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       service:     'EXPRESS WORLDWIDE',
       incoterm:    liveDraft.incoterm || 'DAP',
       origin:      exporter.country  || '—',
-      destination: customer.country  || '—',
+      destination: shipTo.country    || customer.country || '—',
     } : null,
     lines: lines.map(l => ({
       sku:    l.sku,
@@ -1121,7 +1140,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             data-testid="party-seller"
           />
 
-          {/* BUYER — authority: draft customer_resolution */}
+          {/* BUYER — authority: draft buyer_override (name/vat_id/address) */}
           <ProformaPartyCard
             title="BUYER"
             name={customer.name}
@@ -1129,16 +1148,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             footer={`VAT EU: ${customer.vatEu}`}
             warn={!customer.wfirmaId}
             warnMsg={!customer.wfirmaId ? 'Not mapped to wFirma customer' : null}
-            mappedMsg={customer.wfirmaId ? `✓ Mapped: ${customer.wfirmaName}` : null}
+            mappedMsg={customer.wfirmaId
+              ? (customer.wfirmaName ? `✓ Mapped: ${customer.wfirmaName}` : '✓ Mapped to wFirma')
+              : null}
             data-testid="party-buyer"
           />
 
-          {/* RECIPIENT — same as buyer */}
+          {/* RECIPIENT — ship_to_override if set, otherwise same as buyer */}
           <ProformaPartyCard
             title="RECIPIENT"
-            name={customer.name}
-            lines={[customer.address, customer.country]}
-            footer="Same as Buyer"
+            name={shipTo.name}
+            lines={[shipTo.address, shipTo.country]}
+            footer={liveDraft.ship_to_override && liveDraft.ship_to_override.name
+              ? 'Ship-to override' : 'Same as Buyer'}
             footerMuted
             data-testid="party-recipient"
           />
