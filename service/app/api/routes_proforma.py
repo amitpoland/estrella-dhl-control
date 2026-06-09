@@ -2786,7 +2786,13 @@ async def proforma_document_pdf(batch_id: str, client_name: str) -> Response:
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
+            # inline keeps the browser PDF viewer open (UX preference).
+            # Lesson G: regenerable/live-fetched artifacts MUST carry no-store
+            # so the browser never serves a stale cached version after a repost.
             "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma":        "no-cache",
+            "Expires":       "0",
         },
     )
 
