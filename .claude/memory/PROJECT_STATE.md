@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-09 (Proforma toolbar campaign — print dialog fix + CMR button removal — SHA 471c519 + d325eb6 + 9046a5f deployed; governance violation GATE 4 finding; scorecard 2026-06-09-proforma-toolbar-gate.md).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-10 (PR #542 print/edit/AWB PDF campaign — GATE 6 browser verification COMPLETE; SHA 914414e8 deployed; scorecard 2026-06-09-pr542-print-edit-awb-pdf.md; GATE 2: 2/3 open PRs remaining).
 
-**Last-run-at:** 2026-06-09 (Draft #24 → PROF 123/2026 posted, wfirma_proforma_id=477781731, €79,000.23 confirmed; EJL/26-27/244 three-authority audit; PZ engine frozen; GATE 4 issues #529–#533 filed; PR #527 MERGED 5c7ee0b; PR #524 MERGED dbfc845 [Excel column mapper]; PR #528 MERGED d34d743 [Tier-0 supplier headers]; origin/main HEAD cf14b81→9046a5f [proforma toolbar campaign]). GATE 2: **3/3 open PRs** (#522, #523, #498) — AT LIMIT, no new PRs until one merges. Origin/main HEAD: **9046a5f** (fix(tests): fix test_cmr_accessible_via_preview_modal assertion). GATE 2: **2/3 open PRs** (#527 parser fixes + any draft PRs). See FACTS below for full PR #525 + hotfix details. (feat(engine): Phase 2A — extract shared grammar dictionaries). GATE 2: **1/3 open PRs** (draft #498). **RBAC PHASE C AREA 1 COMPLETE (PR #511, DEPLOYED)**: 33 mutation routes upgraded from bare `require_api_key` to `require_admin`/`require_role(...)`. Allowlist 167→134. Structural gate 5/5 PASS. Auth guard tests 31/31 PASS. GATE 4: Issue #512 filed (viewer-403 negative-path tests for Area 1 routes). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
+**Last-run-at:** 2026-06-10 (PR #542 campaign fully closed — SHA 914414e8 deployed; GATE 6 browser verification complete; task_be43486b filed for URL-param hydration; scorecard all ACCEPTABLE/EXEMPLARY). GATE 2: **2/3 open PRs** (#498, #522) — one slot freed by PR #542 close. Origin/main HEAD: **914414e8** (fix(print): add Content-Disposition attachment for PDF downloads). GATE 2: **2/3 open PRs** (#527 parser fixes + any draft PRs). See FACTS below for full PR #525 + hotfix details. (feat(engine): Phase 2A — extract shared grammar dictionaries). GATE 2: **1/3 open PRs** (draft #498). **RBAC PHASE C AREA 1 COMPLETE (PR #511, DEPLOYED)**: 33 mutation routes upgraded from bare `require_api_key` to `require_admin`/`require_role(...)`. Allowlist 167→134. Structural gate 5/5 PASS. Auth guard tests 31/31 PASS. GATE 4: Issue #512 filed (viewer-403 negative-path tests for Area 1 routes). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
 
 ---
 
@@ -4655,6 +4655,36 @@ Group D — Tests (3 new files):
 **GATE 4 finding**: deploy_lead_coordinator NEEDS-TUNING verdict — incorrectly applied Lesson D (LOCAL-COMMIT-ONLY) to normal PR-branch commits (#523, #539). Pattern confirmed across ≥2 data points. Lesson D only governs commits deployed without any PR, not tracked PR branches.
 
 **Disposition: SCHEDULED** — Fix deploy_lead_coordinator agent prompt to clarify Lesson D trigger condition. Target: next prompt-engineering session.
+
+---
+
+## PR #542 — Fix Print/Edit/AWB PDF Buttons Campaign (2026-06-10, MERGED + DEPLOYED)
+
+**Date**: 2026-06-10
+**PR #542**: `fix/print-edit-awb-pdf` — print dialog fix + edit button state + AWB button compliance
+**Merge SHA**: `914414e8`
+**Scope**: Fixed print/download PDF functionality in Proforma/CMR/Packing List modals + edit button visibility fixes + AWB Generate compliance with Lesson M.
+
+**GATE 6 browser verification COMPLETE** (2026-06-10). SHA `914414e8` deployed to `C:\PZ`. All 5 user-specified items confirmed live:
+1. **Print/Download PDF**: `Content-Disposition: attachment` working correctly — new tab download triggered properly
+2. **Preview modal**: Opens without TDZ crash (Fix A: activeType-before-SCALE resolved)
+3. **Proforma preview**: 146-line multi-page render confirmed functional
+4. **Packing List preview**: Landscape format, 146 lines, EUR 78,636.00, Quality/Dia Wt/Col Wt/Size columns all visible
+5. **AWB Generate button**: Visible + disabled + carrier gate reason displayed (Lesson M compliant)
+
+**Console verification**: Zero console errors confirmed during verification testing.
+
+**GATE 2 status update**: 2/3 open PRs remaining (#498, #522) — one slot freed.
+
+**Routing gap noted** (not a blocker): `/v2/proforma_detail?...` direct URL shows blank because `ProformaDetailPage` requires `proformaDraft` React state set via drill-down navigation. Task chip `task_be43486b` filed for URL-param hydration fix.
+
+---
+
+## Scorecard — PR #542 Campaign (2026-06-10)
+
+**Scorecard written**: `.claude/memory/scorecards/2026-06-09-pr542-print-edit-awb-pdf.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). All 7 deploy gate agents scored: ACCEPTABLE or EXEMPLARY verdicts. No NEEDS-TUNING verdicts produced.
+
+**Campaign status**: Fully closed. All verification gates passed. No remaining action items.
 
 ---
 
