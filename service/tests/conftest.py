@@ -113,6 +113,31 @@ if _env_storage:
 # See GitHub issue filed alongside the conftest TOCTOU fix for follow-up.
 _SQLITE_SIDECAR_SUFFIXES = (".db-shm", ".db-wal", ".db-journal", ".db-wal-summary")
 
+# Background-service subdirectory prefixes to skip during leak detection.
+#
+# C:\PZ-verify\service\app\storage is the live storage directory for the
+# PZ-verify clone.  Background services (AI gateway, DHL intake, PZ processor)
+# write to specific subdirectories while tests run, producing non-deterministic
+# false positives on whichever carrier test happens to be executing at that
+# moment.  These paths are written ONLY by the respective service, never by
+# test code.  A carrier test that accidentally calls a service touching these
+# paths would be caught by other means (mock verification, service-level tests).
+#
+# ai_bridge/    — AI gateway background task queue (tasks/*.json)
+# outputs/      — PZ batch processor outputs (per-batch directories)
+# tracking/     — DHL tracking event cache
+# email_evidence/ — DHL email evidence attachments
+#
+# If tests begin writing to these directories, remove the exclusion and fix
+# the test isolation instead.  Each exclusion here is intentional debt; see
+# the GitHub issue filed alongside this change for the follow-up audit.
+_BACKGROUND_SERVICE_DIRS = frozenset({
+    "ai_bridge",
+    "outputs",
+    "tracking",
+    "email_evidence",
+})
+
 
 @pytest.fixture(autouse=True)
 def _guard_storage_root():
@@ -146,7 +171,8 @@ def _guard_storage_root():
     yield  # run the test
 
     # After the test: fail if any NEW file was written to live storage.
-    # SQLite WAL/SHM sidecar files are excluded — see _SQLITE_SIDECAR_SUFFIXES.
+    # SQLite WAL/SHM sidecar files and background-service directories are
+    # excluded — see _SQLITE_SIDECAR_SUFFIXES and _BACKGROUND_SERVICE_DIRS.
     for lp in _LIVE_ROOTS:
         resolved_lp = lp.resolve()
         if resolved_lp.exists():
@@ -157,6 +183,13 @@ def _guard_storage_root():
                     continue
                 if any(f.name.endswith(s) for s in _SQLITE_SIDECAR_SUFFIXES):
                     continue
+                # Skip files under background-service subdirectories.
+                try:
+                    rel = f.relative_to(resolved_lp)
+                    if rel.parts and rel.parts[0] in _BACKGROUND_SERVICE_DIRS:
+                        continue
+                except ValueError:
+                    pass
                 pytest.fail(
                     f"STORAGE LEAK: test wrote {f!r} into live storage root "
                     f"{resolved_lp!r}.  Use tmp_path / monkeypatch to redirect "

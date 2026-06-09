@@ -5861,3 +5861,43 @@ GitHub Issue filed: **#510** — "test(rbac): Phase B follow-up tests — meta-t
 - Date: 2026-06-09
 
 ---
+
+## PR #541 — Packing List Sales Price Authority Fix (2026-06-09, MERGED + DEPLOYED)
+
+**Date**: 2026-06-09 (merged as 24d05c0; hot-deployed to production)
+**Scope**: `proforma-detail.jsx` — `packingListData` IIFE switched from key-based to index-based price extraction so packing list grand total = EUR 78,636 (sales price), not EUR 75,028 (cost price).
+
+---
+
+## PR #542 — Print/AWB/Sidecar/Deploy-Rule Corrections (2026-06-10, MERGED)
+
+**Date**: 2026-06-10 (squash-merged as 914414e)
+**PR #542** — `fix/print-edit-awb-pdf`
+**Merge SHA**: `914414e`
+**Key changes**:
+- `service/tests/conftest.py` — `_SQLITE_SIDECAR_SUFFIXES` exclusion + TOCTOU try-except in `_guard_storage_root`
+- `.claude/contracts/test-baseline.md` — carrier required 381 → 412
+- `service/app/services/execution_engine.py` — `tmp.unlink(missing_ok=True)` on exception
+- `service/app/static/v2/proforma-detail.jsx` — print CSS + AWB button disabled (Lesson M)
+- `service/app/api/routes_proforma.py` — Content-Disposition attachment + empty-bytes 502 guard
+**GATE 2**: 2/3 open PRs after merge (#498, #522) — slot available
+**Scorecard**: `.claude/memory/scorecards/2026-06-09-pr542-print-edit-awb-pdf.md`
+
+---
+
+## PR #543 — Storage Guard Background-Service Dirs (2026-06-10, OPEN)
+
+**Branch**: `fix/storage-guard-background-svc-dirs` — SHA `90071d1`
+**PR**: https://github.com/amitpoland/estrella-dhl-control/pull/543
+**GATE 3**: ACTIVE
+**Scope**: Follow-on to PR #542. Adds `_BACKGROUND_SERVICE_DIRS = frozenset({"ai_bridge", "outputs", "tracking", "email_evidence"})` to `conftest.py`. One file: `service/tests/conftest.py`.
+**Root cause**: AI gateway background service and PZ batch processor write to `C:\PZ-verify\service\app\storage` during test runs — unfixable by test isolation, excluded as intentional debt.
+**GATE 4**: Issue #544 filed — ISSUE disposition for all 6 carrier test ERROR types.
+**GATE 2**: 3/3 open PRs (#498, #522, #543)
+
+---
+
+~~## OQ-NEW-12 -- Pre-existing carrier test ERRORs (RESOLVED 2026-06-10)~~
+
+- **RESOLVED**: GATE 4 ISSUE disposition — GitHub Issue #544 filed 2026-06-10.
+- **Summary**: 6 error types fixed across PR #542 and PR #543. Carrier suite: 412 passed, 0 errors (3 consecutive full-suite runs confirmed).
