@@ -455,6 +455,11 @@ function App() {
         setProformaHydrating(false);
       })
       .catch(err => { setProformaHydrateError((err && err.message) || 'Failed to load draft.'); setProformaHydrating(false); });
+  // `proformaDraft` is intentionally excluded from the dependency array.
+  // The guard at the top of the effect (`|| proformaDraft`) already prevents a
+  // double-fetch when the draft is already loaded. Including it in deps would
+  // cause the effect to re-fire on every field update inside the draft object,
+  // creating an infinite re-fetch loop.
   }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Cmd-K / Ctrl-K: global search ─────────────────────────────────────────

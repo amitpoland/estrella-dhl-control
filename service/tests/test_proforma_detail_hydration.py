@@ -168,7 +168,7 @@ class TestHydrationEffect:
     def test_sets_proforma_draft_on_success(self):
         """Effect must call setProformaDraft on successful fetch."""
         block = self._effect_block()
-        assert "setProformaDraft(r.draft)" in block or "setProformaDraft(r.draft)" in block, (
+        assert "setProformaDraft(r.draft)" in block or 'setProformaDraft(r.draft)' in block.replace('"', "'"), (
             "Hydration effect must call setProformaDraft(r.draft) on success"
         )
 
