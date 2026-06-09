@@ -794,15 +794,37 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     banks:    [],
   };
   // ── cmrData for CMR preview (EJCMRClassic / EJCMRModern) ─────────────────
-  // Uses real data from liveDraft; carrier detail limited to batch_id + incoterm.
   // No CMR backend route exists — this is client-side preview only.
+
+  // Country code → full name for CMR origin display (ISO 3166-1 alpha-2 subset)
+  const _CMR_COUNTRY_NAMES = {
+    PL: 'Poland',       LT: 'Lithuania',  DE: 'Germany',      IN: 'India',
+    CZ: 'Czech Republic', SK: 'Slovakia', HU: 'Hungary',      RO: 'Romania',
+    UA: 'Ukraine',      FR: 'France',     IT: 'Italy',        ES: 'Spain',
+    NL: 'Netherlands',  BE: 'Belgium',    AT: 'Austria',      CH: 'Switzerland',
+    GB: 'United Kingdom', DK: 'Denmark',  SE: 'Sweden',       FI: 'Finland',
+    NO: 'Norway',       EE: 'Estonia',    LV: 'Latvia',       BY: 'Belarus',
+  };
+  const _cmrCountryName = (code) => (code && (_CMR_COUNTRY_NAMES[code] || code)) || '';
+
+  // Insurance: show canonical wording when a non-zero insurance charge exists on the draft
+  const _CMR_INSURANCE_TEXT =
+    'Yes — Insurance covers the Door to Door delivery of this package by Future Generali India Insurance Company Limited';
+  const _cmrHasInsurance = (liveDraft.service_charges || []).some(
+    c => (c.charge_type || '').toLowerCase() === 'insurance' && (Number(c.amount) || 0) > 0
+  );
+
+  // Total pieces: sum of proforma editable lines (= SALES packing list qty total)
+  const _cmrTotalPcs = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
+
   const cmrPreviewData = {
     cmr_no:   batchId ? `CMR-EJ-${batchId}` : '—',
     doc_ref:  _previewLabel,
     seller:   {
       name:  exporter.name,
       addr:  exporter.address,
-      city:  exporter.country,
+      // FIX #2: sender city (not country code)
+      city:  (companyProfile && companyProfile.postal_city) || '—',
       vat:   exporter.vatEu,
       email: (companyProfile && companyProfile.email) || '',
       phone: (companyProfile && companyProfile.phone) || '',
@@ -810,7 +832,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     shipto:   {
       name:    shipTo.name,
       addr:    shipTo.address,
-      city:    shipTo.country,
+      // FIX #1: actual delivery city (not country code)
+      city:    (sto.city || bo.city) || '—',
+      zip:     (sto.zip  || bo.zip)  || '',   // FIX #1: postal code for Box 3 display
       country: shipTo.country,
     },
     buyer:    { vat: customer.vatEu },
@@ -819,8 +843,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       awb:         liveDraft.batch_id,
       service:     'EXPRESS WORLDWIDE',
       incoterm:    liveDraft.incoterm || 'DAP',
-      origin:      exporter.country  || '—',
-      destination: shipTo.country    || customer.country || '—',
+      // FIX #2: origin = sender city + country name (e.g. "Warszawa, Poland")
+      origin:      [
+        (companyProfile && companyProfile.postal_city) || null,
+        _cmrCountryName(exporter.country) || null,
+      ].filter(Boolean).join(', ') || '—',
+      destination: (sto.city || bo.city) || shipTo.country || customer.country || '—',
+      // FIX #3: total pieces from SALES packing list (proforma lines sum)
+      pieces:      _cmrTotalPcs > 0 ? _cmrTotalPcs : null,
+      // FIX #4+5: weight_kg / dim_cm from AWB — not yet available in draft data
+      weight_kg:   null,
+      dim_cm:      null,
+      // FIX #6: insurance wording when an insurance service charge exists on the proforma
+      insurance:   _cmrHasInsurance ? _CMR_INSURANCE_TEXT : null,
     } : null,
     lines: lines.map(l => ({
       sku:    l.sku,
