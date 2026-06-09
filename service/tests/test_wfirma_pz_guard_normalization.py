@@ -260,3 +260,101 @@ class TestPzAdoptCapabilityFlag:
             f"Expected wfirma_create_pz_allowed guard in both pz_create and pz_adopt "
             f"(found {occurrences} occurrences)"
         )
+
+
+# ── Path B: pz_output evidence normalises "blocked" when MRN not parsed ─────
+#
+# AWB 9938632830 (2026-06-09): ZC429 PDF raster-scanned; MRN not extracted by
+# parser.  Amendment flag: "Parse warning: MRN not found in ZC429".
+# audit.status = "blocked", failed_checks = [], pz_output.pdf set,
+# pz_output.generated_at set.  Without Path B, _guard_wfirma_export raises
+# WFIRMA_PZ_NOT_GENERATED even though the engine ran successfully.
+
+class TestComputeEffectivePzStatusPathB:
+    """Path B: MRN absent but pz_output artifacts confirm engine ran."""
+
+    def _audit_path_b(self, **overrides):
+        base = {
+            "status":              "blocked",
+            "failed_checks":       [],
+            "inputs":              {"zc429": "ZC.pdf"},
+            # No MRN — typical for raster/barcode-only ZC429 PDFs
+            "customs_declaration": {"mrn": ""},
+            "verification":        {"cn_match": True},
+            "cn_decision":         {"approved": False},
+            # pz_output evidence written by process_batch()
+            "pz_output": {
+                "pdf":          "PZ_AWB_9938632830_MRN_UNKNOWN_UNKNOWN.pdf",
+                "xlsx":         "PZ_Calc_AWB_9938632830.xlsx",
+                "generated_at": "2026-06-09T12:10:41Z",
+            },
+        }
+        base.update(overrides)
+        return base
+
+    def test_path_b_normalises_blocked_when_pz_output_set(self):
+        """Core Path B case: engine ran (pdf + generated_at), no MRN parsed,
+        failed_checks empty, cn_match True → normalise to 'partial'."""
+        eff, norm = rw._compute_effective_pz_status(self._audit_path_b())
+        assert eff == "partial"
+        assert norm is True
+
+    def test_path_b_normalises_failed_status_too(self):
+        """The fix applies regardless of whether stored status is 'blocked'
+        or 'failed'."""
+        eff, norm = rw._compute_effective_pz_status(
+            self._audit_path_b(status="failed"))
+        assert eff == "partial"
+        assert norm is True
+
+    def test_path_b_requires_generated_at(self):
+        """pdf alone is not enough; generated_at must also be present."""
+        audit = self._audit_path_b()
+        audit["pz_output"]["generated_at"] = ""
+        eff, norm = rw._compute_effective_pz_status(audit)
+        assert eff == "blocked"
+        assert norm is False
+
+    def test_path_b_requires_pdf(self):
+        """generated_at alone is not enough; pdf must also be present."""
+        audit = self._audit_path_b()
+        audit["pz_output"]["pdf"] = ""
+        eff, norm = rw._compute_effective_pz_status(audit)
+        assert eff == "blocked"
+        assert norm is False
+
+    def test_path_b_absent_pz_output_does_not_normalise(self):
+        """Neither Path A nor Path B applies → stored status returned."""
+        audit = self._audit_path_b(pz_output={})
+        eff, norm = rw._compute_effective_pz_status(audit)
+        assert eff == "blocked"
+        assert norm is False
+
+    def test_path_b_real_failed_check_blocks_even_with_pz_output(self):
+        """Real engine failure (failed_checks non-empty) blocks Path B."""
+        audit = self._audit_path_b(failed_checks=["cif_match"])
+        eff, norm = rw._compute_effective_pz_status(audit)
+        assert eff == "blocked"
+        assert norm is False
+
+    def test_path_b_cn_not_resolved_blocks(self):
+        """CN unresolved blocks both Path A and Path B."""
+        audit = self._audit_path_b(
+            verification={"cn_match": False},
+            cn_decision={"approved": False},
+        )
+        eff, norm = rw._compute_effective_pz_status(audit)
+        assert eff == "blocked"
+        assert norm is False
+
+    def test_guard_passes_for_path_b_audit(self):
+        """_guard_wfirma_export must not raise for a Path B audit."""
+        rw._guard_wfirma_export(self._audit_path_b())
+
+    def test_path_a_takes_priority_when_mrn_present(self):
+        """Path A (MRN present) fires before Path B — verify no double-counting."""
+        audit = self._audit_path_b()
+        audit["customs_declaration"] = {"mrn": "26PL44302D00DL8YU2"}
+        eff, norm = rw._compute_effective_pz_status(audit)
+        assert eff == "partial"
+        assert norm is True  # Path A, but result is the same
