@@ -53,7 +53,13 @@ from ..config.email_routing import (
 # truth.  The renderer keeps its composite dict-of-dicts structure (EN + PL
 # together) and key format ("14KT GOLD" vs "14KT"), but import-time parity
 # assertions catch any PL-side grammar drift.
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+#
+# Path fix (Lesson J): use settings.engine_dir instead of parents[3].
+#   dev:  parents[3] = C:\PZ-verify (repo root) ✓ but settings.engine_dir is also correct
+#   prod: parents[3] = C:\ (system root) ✗ — settings.engine_dir = C:\PZ\engine ✓
+_grammar_engine_dir = str(settings.engine_dir)
+if _grammar_engine_dir not in sys.path:
+    sys.path.insert(0, _grammar_engine_dir)
 from description_grammar import (  # noqa: E402
     ITEM_TYPE_PL,
     METAL_PREPOSITIONAL,
