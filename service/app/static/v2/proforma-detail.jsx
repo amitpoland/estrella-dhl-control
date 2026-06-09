@@ -166,6 +166,21 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
       data-testid="proforma-preview-modal"
     >
+      {/* A4 print CSS — hides modal chrome, resets scale, sets page size */}
+      <style>{`
+        @media print {
+          @page { size: A4 portrait; margin: 0.8cm; }
+          body > *:not(.ej-preview-overlay) { display: none !important; }
+          .ej-preview-overlay {
+            position: static !important; background: none !important;
+            overflow: visible !important; inset: auto !important;
+          }
+          .ej-preview-bar { display: none !important; }
+          .ej-preview-body { overflow: visible !important; height: auto !important; }
+          .ej-preview-sheet { transform: none !important; transform-origin: top left !important; }
+          .ej-preview-wrap { box-shadow: none !important; }
+        }
+      `}</style>
       <div className="ej-preview-wrap">
         {/* Control bar */}
         <div className="ej-preview-bar">
@@ -213,6 +228,25 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
               </button>
             ))}
             <div style={{ width: 1, height: 20, background: '#2A3A52', margin: '0 4px' }}/>
+            <button
+              data-testid="preview-download"
+              onClick={() => {
+                // Temporarily remove scale so print renders at true A4 size
+                const sheet = document.querySelector('.ej-preview-sheet');
+                const prevT = sheet ? sheet.style.transform : null;
+                const prevO = sheet ? sheet.style.transformOrigin : null;
+                if (sheet) { sheet.style.transform = 'none'; sheet.style.transformOrigin = 'top left'; }
+                window.print();
+                if (sheet) { sheet.style.transform = prevT; sheet.style.transformOrigin = prevO; }
+              }}
+              style={{
+                padding: '4px 12px', borderRadius: 5, border: '1px solid #2A5A3A',
+                background: '#0B3D2E20', color: '#4CAF82',
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              }}
+            >
+              ↓ Download PDF
+            </button>
             <button
               onClick={onClose}
               data-testid="preview-close"
@@ -671,6 +705,18 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       .catch(() => setCompanyProfile(null));
   }, []);
 
+  // WIRED: packing lines authority for CMR goods table
+  // Source: GET /api/v1/packing/{batchId}/lines — aggregated by item_type+metal+stone
+  // New CMR line shape: { item_type, metal, stone, qty, net_weight, origin }
+  // HS/CN codes NOT included — kept in DB only; shown outside Europe only (operator decision 2026-06-09)
+  const [batchPackingLines, setBatchPackingLines] = React.useState([]);
+  React.useEffect(() => {
+    if (!batchId) { setBatchPackingLines([]); return; }
+    window.EstrellaShared.apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/lines`)
+      .then(r => setBatchPackingLines((r && r.lines) || []))
+      .catch(() => setBatchPackingLines([]));
+  }, [batchId]);
+
   // ── Authority-wired data construction ──────────────────────────────────────
   // Product lines from backend editable_lines
   const lines = (liveDraft.editable_lines || []).map((ln, i) => ({
@@ -807,6 +853,65 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   };
   const _cmrCountryName = (code) => (code && (_CMR_COUNTRY_NAMES[code] || code)) || '';
 
+  // ── CMR packing-line parsers (human-readable labels, no HS/CN codes) ─────────
+  // Metal code → human label: "14KT/W" → "14 Karat White Gold"
+  const _CMR_KARAT = { '18KT': '18 Karat', '14KT': '14 Karat', '22KT': '22 Karat', '9KT': '9 Karat' };
+  const _CMR_COLOR = {
+    W: 'White Gold',  Y: 'Yellow Gold', P: 'Pink Gold',   RG: 'Rose Gold',
+    WY: 'White & Yellow Gold', WP: 'White & Pink Gold',  YP: 'Yellow & Pink Gold',
+    TRI: 'Tri-Color Gold',
+  };
+  const _parseMetal = (metal) => {
+    if (!metal) return '';
+    const parts = (metal || '').toUpperCase().split('/');
+    const karat = _CMR_KARAT[parts[0]] || parts[0] || '';
+    const color = _CMR_COLOR[parts[1]] || parts[1] || '';
+    return [karat, color].filter(Boolean).join(' ');
+  };
+  // Stone type → human label
+  const _CMR_STONE = {
+    DIA: 'Diamond',     CLS: 'Coloured Stone', CS: 'Coloured Stone',
+    RUBY: 'Ruby',       EMERALD: 'Emerald',    SAPPHIRE: 'Sapphire',
+    PEARL: 'Pearl',     CORAL: 'Coral',
+  };
+  const _parseStone = (s) => {
+    if (!s) return '';
+    return _CMR_STONE[(s || '').toUpperCase()] || s;
+  };
+  // Item type → human label
+  const _CMR_ITEM = {
+    PND: 'Pendant', PENDANT: 'Pendant', RNG: 'Ring', RING: 'Ring',
+    EAR: 'Earrings', EARRINGS: 'Earrings', BRL: 'Bracelet', BRACELET: 'Bracelet',
+    NKL: 'Necklace', NECKLACE: 'Necklace', BRO: 'Brooch', SET: 'Set',
+    CHAIN: 'Chain',  BANGLE: 'Bangle',
+  };
+  const _cmrItemLabel = (t) => _CMR_ITEM[(t || '').toUpperCase()] || t || '';
+
+  // Aggregate packing lines by item_type + metal + stone_type
+  // Returns sorted array of { item_type, metal, stone, qty, net_weight, origin }
+  const _cmrAggPackingLines = (() => {
+    if (!batchPackingLines || !batchPackingLines.length) return [];
+    const groups = {};
+    for (const l of batchPackingLines) {
+      const key = [l.item_type || '', l.metal || '', l.stone_type || ''].join('||');
+      if (!groups[key]) {
+        groups[key] = {
+          item_type:  _cmrItemLabel(l.item_type),
+          metal:      _parseMetal(l.metal),
+          stone:      _parseStone(l.stone_type),
+          qty:        0,
+          net_weight: null,   // sum only when non-zero data present
+          origin:     'India',
+        };
+      }
+      groups[key].qty += Number(l.quantity) || 0;
+      const nw = Number(l.net_weight) || 0;
+      if (nw > 0) groups[key].net_weight = (groups[key].net_weight || 0) + nw;
+    }
+    return Object.values(groups).sort((a, b) => (a.item_type > b.item_type ? 1 : -1));
+  })();
+  // ────────────────────────────────────────────────────────────────────────────
+
   // Insurance: show canonical wording when a non-zero insurance charge exists on the draft
   const _CMR_INSURANCE_TEXT =
     'Yes — Insurance covers the Door to Door delivery of this package by Future Generali India Insurance Company Limited';
@@ -857,13 +962,18 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       // FIX #6: insurance wording when an insurance service charge exists on the proforma
       insurance:   _cmrHasInsurance ? _CMR_INSURANCE_TEXT : null,
     } : null,
-    lines: lines.map(l => ({
-      sku:    l.sku,
-      desc:   l.desc,
-      purity: l.purity,
-      qty:    l.qty,
-      origin: l.origin,
-    })),
+    // Lines authority: packing list (aggregated by item_type+metal+stone)
+    // Fallback: proforma editable_lines when packing data not yet loaded
+    lines: _cmrAggPackingLines.length > 0
+      ? _cmrAggPackingLines
+      : lines.map(l => ({
+          item_type:  l.desc,
+          metal:      l.purity || '',
+          stone:      '',
+          qty:        l.qty,
+          net_weight: null,
+          origin:     l.origin || 'India',
+        })),
   };
   // ──────────────────────────────────────────────────────────────────────────
 
