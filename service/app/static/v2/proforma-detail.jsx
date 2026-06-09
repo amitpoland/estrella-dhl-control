@@ -997,17 +997,28 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // ──────────────────────────────────────────────────────────────────────────
 
   // Packing List PDF data — full design-level detail (146 lines for AWB 9938632830)
-  // Authority: batchPackingLines → unit_price = sales price per piece
-  // Total value must equal proforma total (€78,636 for AWB 9938632830)
+  // Price authority: liveDraft.editable_lines[i].unit_price (proforma sales price, EUR)
+  //   Matched by INDEX — both editable_lines and sortedPackingLines are in pack_sr order.
+  //   editable_lines are created from packing lines at packing-sync time, preserving that order.
+  //   Do NOT match by product_code (= invoice no, same for all lines in one invoice)
+  //   or by design_no alone (design_no can repeat across different bags/colours).
+  //   Index match is O(1) and robust for single-invoice batches.
+  //
+  //   Fallback chain: editable_lines[i].unit_price → unit_price_eur → unit_price (supplier rate)
   // Currency: from draft (can vary per client — not hardcoded to EUR)
   const packingListData = (() => {
-    const currency    = liveDraft.currency || 'EUR';
-    const sortedLines = [...batchPackingLines].sort(
+    const currency      = liveDraft.currency || 'EUR';
+    const _editableLines = liveDraft.editable_lines || [];
+    const sortedLines   = [...batchPackingLines].sort(
       (a, b) => (Number(a.pack_sr) || 0) - (Number(b.pack_sr) || 0)
     );
     const rows = sortedLines.map((l, i) => {
       const qty       = Number(l.quantity)   || 0;
-      const unitPrice = Number(l.unit_price) || 0;
+      const _dl       = _editableLines[i];
+      // Sales price authority: editable_lines[i] (index-matched, pack_sr order)
+      const unitPrice = (_dl && Number(_dl.unit_price) > 0)
+        ? Number(_dl.unit_price)
+        : (Number(l.unit_price_eur) || Number(l.unit_price) || 0);
       return {
         sr:          l.pack_sr  || (i + 1),
         ctg:         _cmrItemLabel(l.item_type),          // Pendant / Ring / Earrings
