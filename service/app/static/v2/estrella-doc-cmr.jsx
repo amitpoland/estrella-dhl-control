@@ -6,7 +6,7 @@
 //   .cmr_no      string                 CMR reference number
 //   .doc_ref     string                 linked proforma number
 //   .seller      { name, addr, city, vat, email, phone }
-//   .shipto      { name, addr, city, country }
+//   .shipto      { name, addr, city, zip, country }
 //   .buyer       { vat }               buyer VAT (CMR field 2 consignee)
 //   .carrier     { name, awb, service, incoterm, origin, destination,
 //                  pickup, eta, weight_kg, dim_cm, pieces, insurance, path } | null
@@ -156,7 +156,10 @@ function EJCMRClassic({ cmrData }) {
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", borderTop: "1px solid #CBD5E1" }}>
             <EJCMRBox n="3" label="Place of delivery">
-              {d.shipto ? `${d.shipto.city || "—"}, ${d.shipto.country || ""}` : "—"}
+              {d.shipto
+                ? [d.shipto.city || "—", d.shipto.zip || null, d.shipto.country || null]
+                    .filter(Boolean).join(", ")
+                : "—"}
             </EJCMRBox>
             <EJCMRBox n="4" label="Place / date of taking over" border="left">
               {carrier ? `${carrier.origin || "—"} · ${carrier.pickup || "—"}` : "—"}
