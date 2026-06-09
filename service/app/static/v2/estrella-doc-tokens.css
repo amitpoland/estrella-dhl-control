@@ -174,13 +174,33 @@
    Applied when window.print() fires from the portal-mounted preview overlay.
    The overlay is a direct body child (ReactDOM.createPortal), so the rule
    `body > *:not(.ej-preview-overlay) { display: none }` in proforma-detail.jsx
-   already hides the SPA shell. These rules fix the document layout itself. */
+   already hides the SPA shell. These rules fix the document layout itself.
+   Page sizes and orientation are set inline in the ProformaPreviewModal style tag
+   so they can be dynamic (portrait for Proforma/CMR, landscape for Packing List). */
 @media print {
+  /* ── Page counter — printed page number at bottom-right of every page ── */
+  /* Uses CSS Paged Media (supported in Chrome / Edge / modern Webkit). */
+  @page {
+    @bottom-right {
+      content: "Page " counter(page) " of " counter(pages);
+      font-size: 8pt;
+      color: #94A3B8;
+      font-family: var(--ej-sans, system-ui, sans-serif);
+    }
+  }
+
   /* ── Portrait A4 (Proforma / CMR) ── */
-  /* Remove fixed 1123 px height so content flows naturally to page 2+ */
+  /* Remove fixed height so content flows naturally to page 2+ */
   .ej-a4 {
     height: auto !important;
     overflow: visible !important;
+  }
+  /* Landscape A4 (Packing List): already uses min-height, ensure no clip */
+  .ej-a4-landscape {
+    height: auto !important;
+    overflow: visible !important;
+    /* Remove fixed width constraint so printer margin maths applies */
+    max-width: 100% !important;
   }
   /* Unpin absolute seller-footer: flows after content on the last page
      instead of floating at the bottom of page 1 only.
@@ -192,11 +212,11 @@
   }
 
   /* ── Both orientations ── */
-  /* Repeat <thead> column labels on every page (CSS built-in behaviour) */
+  /* Repeat <thead> column labels on every printed page (CSS built-in) */
   .ej-table thead {
     display: table-header-group;
   }
-  /* Keep footer row (totals) with the table body */
+  /* Keep tfoot (totals row) at the very end of the table on the last page */
   .ej-table tfoot {
     display: table-footer-group;
   }

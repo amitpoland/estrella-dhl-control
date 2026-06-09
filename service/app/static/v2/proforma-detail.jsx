@@ -136,8 +136,9 @@ function ProformaPartyCard({ title, name, lines, footer, footerMuted, warn, warn
 function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, packingData, onClose }) {
   // Portrait A4 (794px) → 0.88 fits 900px wrap.
   // Landscape A4 (1123px) → 0.87 fits 1200px wrap.
-  const SCALE = activeType === 'packing' ? 0.87 : 0.88;
+  // activeType MUST be declared before SCALE — SCALE depends on it.
   const activeType = docType || 'proforma';
+  const SCALE = activeType === 'packing' ? 0.87 : 0.88;
 
   // Variant selection per document type
   const variantOptions = activeType === 'cmr'     ? ['classic', 'modern']
@@ -1334,6 +1335,22 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           data-testid="tb-generate"
         >
           ⚙ Generate ▾
+        </TbBtn>
+        {/* M8 — DHL Express AWB generation (BACKEND-PENDING per Lesson M).
+            Carrier gate is pending (CARRIER_API_STATUS=pending in production).
+            Button is visible and disabled with an explicit reason per Lesson M §3-4.
+            Enable by setting CARRIER_API_STATUS=shadow|live and wiring the
+            AWB generation modal to POST /api/v1/carrier/{batch_id}/shipment. */}
+        <TbBtn
+          disabled
+          title={
+            'Generate DHL Express AWB — Carrier gate not yet active. ' +
+            'CARRIER_API_STATUS must be "shadow" or "live" to enable AWB generation. ' +
+            'Contact admin to activate the carrier integration.'
+          }
+          data-testid="tb-awb-generate"
+        >
+          ⚡ AWB Generate
         </TbBtn>
 
         <TbSep />

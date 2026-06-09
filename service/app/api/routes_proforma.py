@@ -2778,6 +2778,29 @@ async def proforma_document_pdf(batch_id: str, client_name: str) -> Response:
     else:
         filename = f"proforma-{wfirma_id}.pdf"
 
+    # Guard: wFirma sometimes returns an empty or near-empty response body
+    # that passes the XML/base64 path but yields zero actual PDF content.
+    # Treat < 200 bytes as a broken response — return 502 rather than serving
+    # a blank PDF that appears to open but prints blank pages in the browser.
+    if len(pdf_bytes) < 200:
+        log.warning(
+            "[%s/%s] proforma_document_pdf: suspiciously small PDF (%d bytes) "
+            "for wfirma_id=%s — returning 502 instead of serving blank",
+            batch_id, cn, len(pdf_bytes), wfirma_id,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": (
+                    f"wFirma returned an unusably small PDF ({len(pdf_bytes)} bytes) "
+                    f"for proforma id={wfirma_id}. "
+                    "Use the Atlas Print Preview (◫ Preview → ↓ Download PDF) as an alternative."
+                ),
+                "code": "PROFORMA_PDF_EMPTY",
+                "wfirma_proforma_id": wfirma_id,
+            },
+        )
+
     log.info(
         "[%s/%s] proforma_document_pdf: served %d bytes for wfirma_id=%s",
         batch_id, cn, len(pdf_bytes), wfirma_id,
@@ -2786,10 +2809,12 @@ async def proforma_document_pdf(batch_id: str, client_name: str) -> Response:
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
-            # inline keeps the browser PDF viewer open (UX preference).
-            # Lesson G: regenerable/live-fetched artifacts MUST carry no-store
-            # so the browser never serves a stale cached version after a repost.
-            "Content-Disposition": f'inline; filename="{filename}"',
+            # attachment: forces browser download rather than inline display.
+            # Chrome's built-in inline PDF viewer can print blank pages for
+            # some wFirma-generated PDFs. Forcing a download lets the OS native
+            # PDF viewer handle print, which renders correctly.
+            # Lesson G: regenerable/live-fetched artifacts MUST carry no-store.
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma":        "no-cache",
             "Expires":       "0",
