@@ -169,3 +169,44 @@
   box-shadow: 0 8px 32px rgba(0,0,0,0.2);
   transform-origin: top center;
 }
+
+/* ── Print media — multi-page support ──────────────────────────────────────────
+   Applied when window.print() fires from the portal-mounted preview overlay.
+   The overlay is a direct body child (ReactDOM.createPortal), so the rule
+   `body > *:not(.ej-preview-overlay) { display: none }` in proforma-detail.jsx
+   already hides the SPA shell. These rules fix the document layout itself. */
+@media print {
+  /* ── Portrait A4 (Proforma / CMR) ── */
+  /* Remove fixed 1123 px height so content flows naturally to page 2+ */
+  .ej-a4 {
+    height: auto !important;
+    overflow: visible !important;
+  }
+  /* Unpin absolute seller-footer: flows after content on the last page
+     instead of floating at the bottom of page 1 only.
+     The .ej-proforma-footer class is added in estrella-doc-proforma.jsx. */
+  .ej-proforma-footer {
+    position: static !important;
+    left: auto !important; right: auto !important; bottom: auto !important;
+    margin-top: 24px;
+  }
+
+  /* ── Both orientations ── */
+  /* Repeat <thead> column labels on every page (CSS built-in behaviour) */
+  .ej-table thead {
+    display: table-header-group;
+  }
+  /* Keep footer row (totals) with the table body */
+  .ej-table tfoot {
+    display: table-footer-group;
+  }
+  /* Prevent individual data rows from splitting across a page break */
+  .ej-table tbody tr {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  /* Hide decorative watermark dot pattern — reduces ink and avoids artefacts */
+  .ej-pattern {
+    display: none !important;
+  }
+}

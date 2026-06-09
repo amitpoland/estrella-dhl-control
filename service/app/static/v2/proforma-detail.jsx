@@ -1033,13 +1033,17 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         kt:          (l.metal || '').split('/')[0] || '', // "14KT"
         col:         (l.metal || '').split('/')[1] || '', // "W", "P", "Y"
         quality:     l.quality_string  || '',
-        dia_wt:      null,   // not parsed separately yet — column visible, data pending
-        col_wt:      null,   // not parsed separately yet
+        // diamond_weight / color_weight stored since 2026-06-09 schema migration.
+        // Existing rows show null (—) until packing is re-uploaded or force_reextract=True.
+        dia_wt:      Number(l.diamond_weight) > 0 ? Number(l.diamond_weight) : null,
+        col_wt:      Number(l.color_weight)   > 0 ? Number(l.color_weight)   : null,
         net_wt:      Number(l.net_weight) > 0 ? Number(l.net_weight) : null,
         qty,
         unit_price:  unitPrice,
         total_value: unitPrice * qty,
-        size:        l.scan_code || '',
+        // size: stored from packing XLSX "Size" column since 2026-06-09.
+        // scan_code is a barcode key (EJL/…|sr…|…), NOT the ring/piece size.
+        size:        l.size || '',
       };
     });
     const grand_total = rows.reduce((s, r) => s + r.total_value, 0);

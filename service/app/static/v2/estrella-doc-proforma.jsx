@@ -305,8 +305,9 @@ function EJProformaClassic({ docData }) {
         </div>
       </div>
 
-      {/* Footer */}
-      <div style={{
+      {/* Footer — ej-proforma-footer class lets @media print unpin this
+          from position:absolute so it flows after content on page 2+ */}
+      <div className="ej-proforma-footer" style={{
         position: "absolute", bottom: 22, left: 48, right: 48,
         display: "flex", justifyContent: "space-between",
         fontSize: 8.5, color: "#94A3B8",

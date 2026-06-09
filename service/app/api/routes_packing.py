@@ -464,6 +464,13 @@ async def upload_packing_list(
             #   list (may be compound, e.g. "G-VS LAB,E-VVS LAB"). Captures both
             #   the standard "Quality" column and the "Qualtity" typo variant.
             "quality_string":       str(row.get("quality_string", "") or ""),
+            # Display fields — canonical names from invoice_packing_extractor
+            # field alias map (dia_wt→diamond_weight, col_wt→color_weight, size→size).
+            # Previously extracted but not stored; added 2026-06-09.
+            # Re-upload or force_reextract=True will populate these for existing batches.
+            "size":             str(row.get("size", "") or ""),
+            "diamond_weight":   float(row.get("diamond_weight", 0) or 0),
+            "color_weight":     float(row.get("color_weight", 0) or 0),
         })
 
     inserted = pdb.upsert_packing_lines(line_records, force_reextract=force_reextract)
