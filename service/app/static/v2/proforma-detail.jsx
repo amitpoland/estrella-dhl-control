@@ -165,7 +165,9 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  return (
+  // Portal: render directly on <body> so print CSS `body > *:not(.ej-preview-overlay)`
+  // correctly hides the SPA container without hiding the overlay inside it.
+  return ReactDOM.createPortal(
     <div
       className="ej-preview-overlay"
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
@@ -292,8 +294,8 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
           )}
         </div>
       </div>
-    </div>
-  );
+    </div>,
+  document.body);
 }
 
 // ── Cancel Draft Modal ────────────────────────────────────────────────────────
