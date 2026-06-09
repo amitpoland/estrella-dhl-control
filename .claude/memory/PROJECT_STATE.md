@@ -5749,6 +5749,7 @@ GitHub Issue filed: **#510** — "test(rbac): Phase B follow-up tests — meta-t
 - **Safety**: diagnostic-only; no extracted row change; no PZ/wFirma/DHL/customer/product/inventory writes; writes only `parser_diagnostic_json`
 - **Tests**: 112 passed / PZ regression 160/160; 1 pre-existing failure (`test_dashboard_renders_diagnostic_block`) confirmed on base `d34d743`
 - **GATE 2 block**: 3/3 open PRs (#498, #522, #523) at time of commit — PR not opened
-- **Next action**: After any of #498, #522, #523 merges or closes, run `git push origin main` then open PR with title above
+- **Unblock order (operator decision 2026-06-09)**: (1) #498 first if reviewed/security complete → (2) open xlsx diagnostic refresh PR → (3) leave #522/#523 untouched unless already ready
+- **Next action**: After #498 merges or closes, run `git push origin main` then open PR with title above
 
 ---
