@@ -692,6 +692,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [editSaving,       setEditSaving]        = React.useState(false);
   const [editError,        setEditError]         = React.useState(null);
 
+  // Approval state
+  const [approving,        setApproving]         = React.useState(false);
+  const [approveError,     setApproveError]      = React.useState(null);
+
   // WIRED: fetch full draft detail (GET /api/v1/proforma/draft/{id})
   const draftHook = window.PzState.useDraft(draft && draft.id);
   const liveDraft = (draftHook.data && draftHook.data.draft) ? draftHook.data.draft : (draft || {});
@@ -1061,6 +1065,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const isBlocked     = draftState === 'post_failed' || draftState === 'convert_blocked';
   const alreadyPosted = draftState === 'posted' || draftState === 'invoiced';
   const canPrint      = !!(liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id));
+  const canApprove    = ['draft', 'editing', 'post_failed'].includes(draftState);
+  const alreadyApproved = draftState === 'approved';
 
   // M5 — Edit mode: enabled when draft is in an editable state
   const canEdit       = ['draft', 'editing', 'post_failed'].includes(draftState);
@@ -1092,7 +1098,29 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     const bid = liveDraft.batch_id || (draft && draft.batch_id) || '';
     const cn  = liveDraft.client_name || (draft && draft.client_name) || '';
     if (!bid || !cn) return;
-    window.open(`/api/v1/proforma/${encodeURIComponent(bid)}/${encodeURIComponent(cn)}/document.pdf`, '_blank');
+    // Use anchor-click instead of window.open — never blocked by popup blockers.
+    const url = `/api/v1/proforma/${encodeURIComponent(bid)}/${encodeURIComponent(cn)}/document.pdf`;
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  };
+
+  const handleApprove = () => {
+    if (approving) return;
+    setApproving(true);
+    setApproveError(null);
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    window.PzApi.approveDraft(id, updatedAt)
+      .then(r => {
+        if (r && r.ok) {
+          draftHook && draftHook.reload && draftHook.reload();
+        } else {
+          setApproveError((r && r.error) || 'Approval failed — check backend logs.');
+        }
+      })
+      .catch(e => setApproveError(e.message || 'Network error'))
+      .finally(() => setApproving(false));
   };
 
   const handleDuplicate = () => {
@@ -1200,18 +1228,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               ✕ Cancel Edit
             </TbBtn>
           </React.Fragment>
-        ) : (
+        ) : canEdit ? (
           <TbBtn
             onClick={handleEnterEdit}
-            disabled={!canEdit}
-            title={canEdit
-              ? 'Edit draft header fields (remarks, currency, payment terms, exchange rate)'
-              : (draftState === 'cancelled' ? 'Draft is cancelled — cannot edit' : 'Draft cannot be edited in current state')}
+            title="Edit draft header fields (remarks, currency, payment terms, exchange rate)"
             data-testid="tb-edit"
           >
             ✎ Edit
           </TbBtn>
-        )}
+        ) : null}
         <TbBtn
           onClick={() => canCancel && setShowCancelModal(true)}
           disabled={!canCancel}
@@ -1230,6 +1255,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         >
           {cloning ? '⏳' : '⎘'} {cloning ? 'Cloning…' : 'Duplicate'}
         </TbBtn>
+        <TbBtn
+          onClick={handleApprove}
+          disabled={!canApprove || approving}
+          title={canApprove
+            ? 'Mark this draft as approved — locks lines before posting to wFirma'
+            : (alreadyApproved ? 'Already approved' : 'Cannot approve in current state')}
+          data-testid="tb-approve"
+        >
+          {approving ? '⏳ Approving…' : '✓ Approve'}
+        </TbBtn>
+        {approveError && (
+          <span style={{ color: '#F44', fontSize: 11, maxWidth: 180 }}>{approveError}</span>
+        )}
 
         <TbSep />
 
@@ -1265,13 +1303,6 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           data-testid="tb-preview"
         >
           ◫ Preview
-        </TbBtn>
-        <TbBtn
-          disabled
-          title="CMR print — no backend PDF generation route. Use Preview to view CMR layout."
-          data-testid="tb-cmr"
-        >
-          ≡ CMR
         </TbBtn>
         <TbBtn
           onClick={handleDownloadPdf}
