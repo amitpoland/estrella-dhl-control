@@ -104,15 +104,22 @@ def _save_log(entries: list[Dict[str, Any]]) -> bool:
     return value — a False result means the idempotency record was NOT persisted.
     """
     p = _log_path()
+    tmp = p.with_suffix(".tmp")
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write via temp-then-rename
-        tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(entries, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(p)
         return True
     except Exception as exc:
         log.error("execution_log write error: %s", exc)
+        # Clean up the .tmp file so it does not persist on disk on failure.
+        # On Windows, tmp.replace(p) can fail if execution_log.json is held open,
+        # leaving a stale .tmp file. Ignore any error in the cleanup itself.
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
         return False
 
 

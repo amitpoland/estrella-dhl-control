@@ -9,7 +9,7 @@ Triggers the full production deployment procedure defined in `service/docs/produ
 ## Step 1 — Inspect
 
 ```powershell
-cd "C:\Users\Super Fashion\PZ APP"
+cd "C:\PZ-verify"
 git status
 git branch --show-current
 git fetch origin
@@ -54,13 +54,13 @@ git rev-parse HEAD
 ## Step 4 — Test
 
 ```powershell
-cd "C:\Users\Super Fashion\PZ APP"
+cd "C:\PZ-verify"
 $env:PYTHONIOENCODING = "utf-8"
 python test_pz_regression.py
 ```
 
 ```powershell
-cd "C:\Users\Super Fashion\PZ APP\service"
+cd "C:\PZ-verify\service"
 python -m pytest tests/test_carrier_*.py -q
 ```
 
@@ -71,8 +71,8 @@ Required: counts per `.claude/contracts/test-baseline.md`. Stop if any test fail
 ## Step 5 — Safe sync to production
 
 ```powershell
-robocopy "C:\Users\Super Fashion\PZ APP\service\app" "C:\PZ\app" /E /XO `
-  /XD __pycache__ .pytest_cache `
+robocopy "C:\PZ-verify\service\app" "C:\PZ\app" /E /XO `
+  /XD __pycache__ .pytest_cache storage `
   /XF "*.pyc" "*.pyo" "*.zip"
 ```
 
@@ -115,7 +115,7 @@ Carrier gate POST must return 503 (gate closed).
 
 ```
 Pulled SHA:
-Tests:           PZ [x/160]  Carrier [x/366]
+Tests:           PZ [x/160]  Carrier [x/412]
 Sync result:     robocopy exit [n]
 Service status:  [RUNNING | ERROR]
 Local health:    [200 | ERROR]
