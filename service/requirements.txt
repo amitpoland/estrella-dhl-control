@@ -19,3 +19,11 @@ pypdf>=6.0             # PDF text extraction for polish-description engine tests
 requests>=2.31         # NBP API
 tzdata>=2024.1         # IANA tz database for ZoneInfo on Windows (warsaw_today())
 anthropic>=0.50.0      # Anthropic Python SDK — required by ai_gateway._anthropic_call()
+
+# Excel ingestion stack — shipment uploads, packing lists, customer master, invoice parsing
+pandas>=2.0.0          # DataFrame engine for all Excel/CSV ingestion
+pyxlsb>=1.0.10         # Binary .xlsb Excel format support
+rapidfuzz>=3.0.0       # Fuzzy string matching for AI column mapping
+xlsxwriter>=3.0.0      # XLSX generation (reports, exports)
+python-dateutil>=2.9.0 # Robust date parsing across Excel date formats
+chardet>=5.0.0         # Byte-stream charset detection for uploaded files

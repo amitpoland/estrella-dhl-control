@@ -1428,6 +1428,126 @@ async def reprocess_packing_documents(
     }
 
 
+# ── POST /api/v1/packing/{batch_id}/suggest-column-mapping ───────────────────
+#
+# Re-runs Excel column-header mapping with the LLM advisory tier enabled for
+# ONE packing document chosen by the operator.
+#
+# Hard constraints (safety gates — immutable):
+#   1. Writes ONLY packing_documents.parser_diagnostic_json.
+#   2. Does NOT write packing_lines, products, customers, PZ, or wFirma records.
+#   3. LLM output is advisory.  It does not enter build_col_map and cannot be
+#      used to create or mutate any business entity.
+#   4. Scoped to one document.  No cross-batch or cross-document side effects.
+#   5. Only applicable to Excel files (.xlsx / .xls).
+#   6. Requires explicit operator POST — never fires on a regular upload.
+
+class _SuggestColumnMappingRequest(BaseModel):
+    document_id: str
+
+
+@router.post("/{batch_id}/suggest-column-mapping", dependencies=[_auth])
+async def suggest_column_mapping(
+    batch_id: str,
+    body: _SuggestColumnMappingRequest,
+) -> Dict[str, Any]:
+    """Re-run Excel column mapping with LLM advisory tier for one document.
+
+    Writes ONLY parser_diagnostic_json.  No business records are created or
+    mutated.  LLM output is advisory only and is never included in the
+    extraction col_map used to write packing rows.
+    """
+    import datetime as _dt
+
+    output_dir = _validate_batch(batch_id)
+
+    doc_id = (body.document_id or "").strip()
+    if not doc_id:
+        raise HTTPException(status_code=400, detail="document_id is required.")
+
+    doc = pdb.get_packing_document(doc_id)
+    if not doc or doc.get("batch_id") != batch_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Packing document {doc_id!r} not found for batch {batch_id!r}.",
+        )
+
+    file_path_str = doc.get("source_file_path") or ""
+    file_path = Path(file_path_str) if file_path_str else None
+    if not file_path or not file_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Source file not found on disk for document {doc_id!r}.",
+        )
+
+    suffix = file_path.suffix.lower()
+    if suffix not in (".xlsx", ".xls"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"LLM column mapping applies to Excel files only (.xlsx / .xls). "
+                f"Document suffix: {suffix!r}."
+            ),
+        )
+
+    from ..services.invoice_packing_extractor import extract_packing
+
+    # Re-run extraction with llm_fallback=True.
+    # Extracted rows are DISCARDED — only the diagnostic (column_mapping_audit)
+    # is kept and written back to the document record.
+    _, _, _, diag = extract_packing(file_path, llm_fallback=True)
+
+    diag["llm_mapping_meta"] = {
+        "triggered_by": "operator",
+        "triggered_at": _dt.datetime.utcnow().isoformat() + "Z",
+        "advisory_only": True,
+        "document_id":   doc_id,
+        "file_name":     file_path.name,
+    }
+
+    # Write ONLY parser_diagnostic_json — no rows, no lines, no business records.
+    pdb.update_packing_document_diagnostic(doc_id, diag)
+
+    audit_entries = diag.get("column_mapping_audit") or []
+    summary = {
+        "total_columns":  len(audit_entries),
+        "alias":          sum(1 for m in audit_entries if m.get("method") == "alias"),
+        "fuzzy":          sum(1 for m in audit_entries if m.get("method") == "fuzzy"),
+        "fuzzy_warning":  sum(1 for m in audit_entries if m.get("method") == "fuzzy_warning"),
+        "llm":            sum(1 for m in audit_entries if m.get("method") == "llm"),
+        "unresolved":     sum(1 for m in audit_entries if m.get("method") == "unresolved"),
+    }
+
+    log.info(
+        "[%s] suggest-column-mapping: doc=%s summary=%s",
+        batch_id, doc_id, summary,
+    )
+
+    tl.log_event(
+        output_dir / "audit.json",
+        tl.EV_COLUMN_MAPPING_LLM_REQUESTED,
+        trigger_source="suggest_column_mapping",
+        actor="operator",
+        detail={
+            "batch_id":    batch_id,
+            "document_id": doc_id,
+            "file_name":   file_path.name,
+            "advisory_only":  True,
+            "write_scope":    "parser_diagnostic_json_only",
+            "llm_fallback":   True,
+            "summary":        summary,
+        },
+    )
+
+    return {
+        "ok":               True,
+        "batch_id":         batch_id,
+        "document_id":      doc_id,
+        "llm_mapping_meta": diag["llm_mapping_meta"],
+        "column_mapping_summary": summary,
+    }
+
+
 # ── GET /api/v1/packing/{batch_id}/lane-readiness ────────────────────────────
 #
 # Read-only operator dashboard. Aggregates lane-level readiness from

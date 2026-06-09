@@ -2275,6 +2275,8 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   // P2 "Reparse all" busy + summary state.
   const [reparseBusy, setReparseBusy]         = React.useState(false);
   const [reparseSummary, setReparseSummary]   = React.useState('');
+  // LLM column-mapping suggest: null when idle, doc_id string while running.
+  const [llmSuggestBusyDocId, setLlmSuggestBusyDocId] = React.useState(null);
   const [packingInfo, setPackingInfo] = React.useState(null);            // null | {documents,packing_lines,...}
   const [packingInfoLoading, setPackingInfoLoading] = React.useState(false);
   // Lane readiness (sales + purchase) — single read-only banner fetch
@@ -4221,6 +4223,150 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                 ))}
                               </div>
                             )}
+                            {/* ── Excel column mapping audit ──────────────────────────────────
+                                Shows per-column method (alias/fuzzy/fuzzy_warning/llm/unresolved)
+                                and confidence. Only present when extractor ran the three-tier
+                                column-mapping layer (xlsx/xls EJL path). Advisory methods are
+                                flagged; LLM suggestions include explicit safety disclaimer.    */}
+                            {Array.isArray(diag.column_mapping_audit) && diag.column_mapping_audit.length > 0 && (
+                              <div
+                                data-testid={`packing-list-mapping-audit-${doc.id || i}`}
+                                style={{ marginTop: 8, borderTop: '1px solid var(--border-subtle)', paddingTop: 6 }}
+                              >
+                                <div style={{ color: 'var(--text-3)', marginBottom: 4, fontWeight: 600 }}>
+                                  Excel column mapping ({diag.column_mapping_audit.length} columns):
+                                </div>
+                                {diag.column_mapping_audit.map((m, mi) => {
+                                  const methodColor =
+                                    m.method === 'alias'         ? 'var(--badge-green-text)'  :
+                                    m.method === 'fuzzy'         ? 'var(--badge-blue-text)'   :
+                                    m.method === 'fuzzy_warning' ? 'var(--badge-amber-text)'  :
+                                    m.method === 'llm'           ? 'var(--badge-purple-text)' :
+                                    /* unresolved */               'var(--badge-red-text)';
+                                  const methodBg =
+                                    m.method === 'alias'         ? 'var(--badge-green-bg)'  :
+                                    m.method === 'fuzzy'         ? 'var(--badge-blue-bg)'   :
+                                    m.method === 'fuzzy_warning' ? 'var(--badge-amber-bg)'  :
+                                    m.method === 'llm'           ? 'var(--badge-purple-bg)' :
+                                    /* unresolved */               'var(--badge-red-bg)';
+                                  const isAdvisory = m.method === 'llm' || m.method === 'unresolved' || m.method === 'fuzzy_warning';
+                                  return (
+                                    <div
+                                      key={mi}
+                                      data-testid={`mapping-audit-row-${m.method}`}
+                                      style={{
+                                        display: 'flex', gap: 6, alignItems: 'center',
+                                        marginBottom: 3, paddingLeft: 4, flexWrap: 'wrap',
+                                      }}
+                                    >
+                                      <span
+                                        style={{
+                                          color: 'var(--text-2)', minWidth: 0, maxWidth: 140,
+                                          overflow: 'hidden', textOverflow: 'ellipsis',
+                                          whiteSpace: 'nowrap', flex: '0 0 auto',
+                                        }}
+                                        title={m.original_header}
+                                      >{m.original_header || '(empty)'}</span>
+                                      <span style={{ color: 'var(--text-3)' }}>&rarr;</span>
+                                      <span style={{
+                                        color: m.canonical_field ? 'var(--text)' : 'var(--badge-red-text)',
+                                        fontWeight: 600,
+                                      }}>{m.canonical_field || '—'}</span>
+                                      <span style={{
+                                        fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+                                        background: methodBg, color: methodColor,
+                                        border: '1px solid ' + methodBg, flexShrink: 0,
+                                      }}>{m.method}</span>
+                                      {typeof m.confidence === 'number' && m.method !== 'alias' && (
+                                        <span style={{ color: 'var(--text-3)', fontSize: 10, flexShrink: 0 }}>
+                                          {Math.round(m.confidence * 100)}%
+                                        </span>
+                                      )}
+                                      {isAdvisory && (
+                                        <span
+                                          data-testid="mapping-advisory-flag"
+                                          style={{ color: 'var(--badge-amber-text)', fontSize: 9, flexShrink: 0 }}
+                                        >&#9888; review</span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                {diag.column_mapping_audit.some(m => m.method === 'llm') && (
+                                  <div
+                                    data-testid="mapping-llm-advisory-copy"
+                                    style={{
+                                      marginTop: 6, padding: '4px 8px',
+                                      background: 'var(--badge-purple-bg)', color: 'var(--badge-purple-text)',
+                                      borderRadius: 4, fontSize: 10, fontStyle: 'italic',
+                                    }}
+                                  >AI/LLM suggestions are advisory only. They do not create products, customers, PZ, or wFirma records.</div>
+                                )}
+                                {diag.column_mapping_audit.some(m => m.method === 'unresolved' || m.method === 'fuzzy_warning') && (
+                                  <div
+                                    data-testid="mapping-unresolved-notice"
+                                    style={{
+                                      marginTop: 4, padding: '3px 8px',
+                                      background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
+                                      borderRadius: 4, fontSize: 10,
+                                    }}
+                                  >{diag.column_mapping_audit.filter(m => m.method === 'unresolved').length} unresolved column(s) — operator review required before use.</div>
+                                )}
+                                {/* ── "Suggest column mapping with AI" button ───────────────────
+                                    Only shown when unresolved or fuzzy_warning columns exist.
+                                    Operator must click explicitly — never fires automatically.
+                                    LLM output is advisory only; does not write business records. */}
+                                {diag.column_mapping_audit.some(m => m.method === 'unresolved' || m.method === 'fuzzy_warning') && (
+                                  <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                    <Btn
+                                      small
+                                      variant="outline"
+                                      data-testid="suggest-column-mapping-btn"
+                                      disabled={llmSuggestBusyDocId !== null}
+                                      onClick={async () => {
+                                        const docIdForLlm = doc.id || '';
+                                        if (!docIdForLlm || llmSuggestBusyDocId !== null) return;
+                                        setLlmSuggestBusyDocId(docIdForLlm);
+                                        try {
+                                          const r = await fetch(
+                                            `/api/v1/packing/${encodeURIComponent(batchId)}/suggest-column-mapping`,
+                                            {
+                                              method: 'POST',
+                                              headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ document_id: docIdForLlm }),
+                                            }
+                                          );
+                                          if (!r.ok) {
+                                            const msg = await r.text().catch(() => r.statusText);
+                                            throw new Error(msg);
+                                          }
+                                          setPackingInfoLoading(true);
+                                          try {
+                                            const pr = await fetch(`/api/v1/packing/${encodeURIComponent(batchId)}`);
+                                            if (pr.ok) setPackingInfo(await pr.json());
+                                          } finally {
+                                            setPackingInfoLoading(false);
+                                          }
+                                        } catch (e) {
+                                          onToast('AI column mapping failed: ' + (e.message || 'unknown'));
+                                        } finally {
+                                          setLlmSuggestBusyDocId(null);
+                                        }
+                                      }}
+                                    >{llmSuggestBusyDocId === (doc.id || '') ? 'Requesting AI suggestions…' : 'Suggest column mapping with AI'}</Btn>
+                                    <span
+                                      data-testid="suggest-column-mapping-advisory-note"
+                                      style={{ fontSize: 9, color: 'var(--text-3)' }}
+                                    >Advisory only — does not create business records.</span>
+                                  </div>
+                                )}
+                                {diag.llm_mapping_meta && (
+                                  <div
+                                    data-testid="llm-mapping-meta"
+                                    style={{ marginTop: 4, fontSize: 9, color: 'var(--text-3)' }}
+                                  >AI run: {diag.llm_mapping_meta.triggered_at || '?'} · advisory_only: true</div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                         </React.Fragment>
@@ -4629,7 +4775,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               ))}
               <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 6 }}>
                 {timelineFilter === 'ai_bridge'
-                  ? `${timeline.filter(e => (e.event||'').startsWith('ai_bridge')).length} events`
+                  ? `${timeline.filter(e => (e.event||'').startsWith('ai_bridge') || e.event === 'column_mapping_llm_requested').length} events`
                   : `${timeline.length} events`}
               </span>
             </div>
@@ -4747,7 +4893,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
             {/* ── Timeline list ── */}
             <Card style={{ padding: 28 }}>
               {(() => {
-                const AI_BRIDGE_EVENTS = new Set(['ai_bridge_task_created', 'ai_bridge_result_received']);
+                const AI_BRIDGE_EVENTS = new Set(['ai_bridge_task_created', 'ai_bridge_result_received', 'column_mapping_llm_requested']);
                 const filtered = timelineFilter === 'ai_bridge'
                   ? timeline.filter(e => AI_BRIDGE_EVENTS.has(e.event))
                   : timeline;
@@ -4764,7 +4910,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     <div style={{ position: 'absolute', left: 7, top: 0, bottom: 0, width: 2, background: 'var(--border)' }} />
                     {filtered.map((e, i) => {
                       const done = e.done || e.status === 'done' || e.completed;
-                      const label = e.label || e.event || e.action || e.message || `Event ${i+1}`;
+                      const EVENT_LABELS = {
+                        'column_mapping_llm_requested': 'AI: column mapping suggestions requested',
+                      };
+                      const label = e.label || EVENT_LABELS[e.event] || e.event || e.action || e.message || `Event ${i+1}`;
                       const ts = e.ts || e.timestamp || e.time || e.date;
                       const isAiBridge = AI_BRIDGE_EVENTS.has(e.event);
                       return (
