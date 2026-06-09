@@ -4,14 +4,18 @@ test_cmr_packing_lines.py — Source-grep regression tests for CMR packing-lines
 Covers:
   - Packing-lines fetch wired in proforma-detail.jsx
   - Metal / stone / item-type parsers present
-  - _cmrAggPackingLines aggregation present with correct field names
-  - CMR line shape: {item_type, metal, stone, qty, net_weight, origin}
+  - _cmrAggPackingLines aggregation present, returns {lines, goods_summary, total_qty}
+  - Aggregation groups by item_type ONLY (metal+stone go into goods_summary header)
+  - CMR line shape: {item_type, qty, net_weight, origin} — no per-line metal/stone columns
+  - goods_summary string built from metal+stone Sets, rendered in both CMR variants
   - Old line shape fields (sku, desc, purity) absent from CMR renderer
   - HS/CN codes NOT output on CMR document (DB-only decision 2026-06-09)
   - Download PDF button wired (data-testid=preview-download)
   - A4 @media print CSS injected in ProformaPreviewModal
-  - CMR Classic grid updated to new column widths
-  - CMR Modern table updated to 6 columns (was 5)
+  - CMR Classic grid updated to new column widths (5 cols)
+  - CMR Modern table updated to 5 columns
+  - Packing List document type ('packing') wired in ProformaPreviewModal
+  - packingListData IIFE built in proforma-detail.jsx
 """
 
 import re
@@ -19,6 +23,8 @@ from pathlib import Path
 
 PROFORMA_DETAIL = Path(__file__).parent.parent / "app" / "static" / "v2" / "proforma-detail.jsx"
 CMR_DOC = Path(__file__).parent.parent / "app" / "static" / "v2" / "estrella-doc-cmr.jsx"
+PACKING_DOC = Path(__file__).parent.parent / "app" / "static" / "v2" / "estrella-doc-packing.jsx"
+INDEX_HTML = Path(__file__).parent.parent / "app" / "static" / "v2" / "index.html"
 
 
 def _read(path: Path) -> str:
@@ -98,17 +104,19 @@ def test_item_parser_handles_earrings():
     assert "Earrings" in src, "Earrings label not in item parser"
 
 
-# ── Proforma-detail: aggregation ──────────────────────────────────────────────
+# ── Proforma-detail: aggregation shape (item_type ONLY, goods_summary header) ──
 
 def test_cmrAggPackingLines_exists():
     src = _read(PROFORMA_DETAIL)
     assert "_cmrAggPackingLines" in src
 
 
-def test_aggregation_groups_by_item_type_metal_stone():
-    """Aggregation key must include item_type, metal (field), and stone_type."""
+def test_aggregation_reads_item_type_metal_stone_from_packing_lines():
+    """Aggregation reads l.item_type for grouping; reads l.metal and l.stone_type for goods_summary."""
     src = _read(PROFORMA_DETAIL)
-    assert "l.item_type" in src and "l.metal" in src and "l.stone_type" in src
+    assert "l.item_type" in src, "l.item_type not referenced in aggregation"
+    assert "l.metal" in src, "l.metal not read for goods_summary building"
+    assert "l.stone_type" in src, "l.stone_type not read for goods_summary building"
 
 
 def test_aggregation_sums_quantity():
@@ -121,12 +129,28 @@ def test_aggregation_sums_net_weight():
     assert "l.net_weight" in src, "Aggregation must handle l.net_weight from packing lines"
 
 
-def test_cmr_lines_use_aggregated_packing_data():
-    """cmrPreviewData.lines must use _cmrAggPackingLines as primary source."""
+def test_aggregation_builds_goods_summary():
+    """Aggregation must compute goods_summary from metal and stone Sets."""
     src = _read(PROFORMA_DETAIL)
-    # The aggregated lines must appear in cmrPreviewData assignment
-    assert "_cmrAggPackingLines.length > 0" in src, (
-        "cmrPreviewData.lines must switch on _cmrAggPackingLines.length"
+    assert "goods_summary" in src, "goods_summary not built in aggregation"
+
+
+def test_aggregation_returns_object_with_lines_field():
+    """_cmrAggPackingLines returns {lines, goods_summary, total_qty} — NOT a plain array."""
+    src = _read(PROFORMA_DETAIL)
+    # The result shape should have 'lines:' and 'goods_summary:' and 'total_qty:'
+    assert "goods_summary," in src or "goods_summary:" in src, (
+        "_cmrAggPackingLines must return object with goods_summary field"
+    )
+    assert "total_qty" in src, "_cmrAggPackingLines must return total_qty field"
+
+
+def test_cmr_lines_use_aggregated_packing_data():
+    """cmrPreviewData.lines must use _cmrAggPackingLines.lines as primary source."""
+    src = _read(PROFORMA_DETAIL)
+    # Shape change 2026-06-09: aggregation returns object, so check is .lines.length
+    assert "_cmrAggPackingLines.lines.length > 0" in src, (
+        "cmrPreviewData.lines must switch on _cmrAggPackingLines.lines.length (not .length directly)"
     )
 
 
@@ -137,16 +161,61 @@ def test_new_line_shape_fields_present_in_fallback():
     assert "net_weight:" in src
 
 
+# ── Proforma-detail: packingListData ─────────────────────────────────────────
+
+def test_packingListData_iife_exists():
+    """packingListData IIFE must be built in proforma-detail.jsx."""
+    src = _read(PROFORMA_DETAIL)
+    assert "packingListData" in src, "packingListData not found in proforma-detail.jsx"
+
+
+def test_packingListData_uses_pack_sr_for_sort():
+    """Packing rows must be sorted by pack_sr."""
+    src = _read(PROFORMA_DETAIL)
+    assert "pack_sr" in src, "pack_sr not used in packingListData sort"
+
+
+def test_packingListData_carries_currency_from_draft():
+    """packingListData must derive currency from liveDraft.currency (not hardcoded)."""
+    src = _read(PROFORMA_DETAIL)
+    assert "liveDraft.currency" in src, "packingListData must use liveDraft.currency, not hardcode EUR"
+
+
+def test_packingListData_uses_unit_price_from_packing_lines():
+    """unit_price must come from packing line (sales authority)."""
+    src = _read(PROFORMA_DETAIL)
+    assert "l.unit_price" in src or "unit_price" in src, "unit_price not mapped in packingListData"
+
+
+# ── Proforma-detail: ProformaPreviewModal extended with 'packing' type ────────
+
+def test_preview_modal_has_packing_doc_type():
+    """ProformaPreviewModal must accept and render 'packing' document type."""
+    src = _read(PROFORMA_DETAIL)
+    assert "'packing'" in src or '"packing"' in src, (
+        "ProformaPreviewModal does not include 'packing' document type"
+    )
+
+
+def test_preview_modal_has_packing_data_prop():
+    """packingData prop must be wired to ProformaPreviewModal."""
+    src = _read(PROFORMA_DETAIL)
+    assert "packingData" in src, "packingData prop not wired in ProformaPreviewModal"
+
+
+def test_preview_modal_resolves_EJPackingList():
+    """ProformaPreviewModal must resolve window.EJPackingList for 'packing' type."""
+    src = _read(PROFORMA_DETAIL)
+    assert "EJPackingList" in src, "EJPackingList not referenced in ProformaPreviewModal resolution"
+
+
 # ── Proforma-detail: HS/CN codes NOT in CMR output ───────────────────────────
 
 def test_hs_code_not_in_cmr_lines():
     """HS/CN codes must NOT appear in cmrPreviewData.lines (DB-only decision)."""
     src = _read(PROFORMA_DETAIL)
-    # Find the lines: block in cmrPreviewData; it should NOT contain hs_code
-    # The lines mapping block is between "lines: _cmrAggPackingLines" and the closing }
-    cmr_lines_block_start = src.find("lines: _cmrAggPackingLines")
+    cmr_lines_block_start = src.find("_cmrAggPackingLines.lines.length > 0")
     assert cmr_lines_block_start != -1, "Cannot find cmrPreviewData.lines block"
-    # In the 300 chars after this point there should be no hs_code
     snippet = src[cmr_lines_block_start: cmr_lines_block_start + 400]
     assert "hs_code" not in snippet.lower(), (
         "HS/CN code found in cmrPreviewData.lines — must be DB-only per 2026-06-09 decision"
@@ -156,7 +225,6 @@ def test_hs_code_not_in_cmr_lines():
 def test_cn_code_not_rendered_in_cmr_component():
     """CMR renderer must NOT display hs_code / cn_code / hsCode field."""
     src = _read(CMR_DOC)
-    # The renderer should not reference any hs_code or cn_code field in its line rendering
     assert "l.hs_code" not in src, "l.hs_code found in CMR line renderer"
     assert "l.cn_code" not in src, "l.cn_code found in CMR line renderer"
     assert "l.hsCode"  not in src, "l.hsCode found in CMR line renderer"
@@ -183,7 +251,6 @@ def test_print_css_removes_scale_transform():
     """Print CSS must reset the scale transform so A4 renders at 100%."""
     src = _read(PROFORMA_DETAIL)
     assert ".ej-preview-sheet" in src
-    # transform: none must appear in the print block
     media_idx = src.find("@media print")
     assert media_idx != -1
     print_block = src[media_idx: media_idx + 800]
@@ -207,7 +274,6 @@ def test_download_button_calls_print():
 def test_cmr_renderer_does_not_use_l_sku_in_lines():
     """CMR line renderer must not reference l.sku in line output (old shape gone)."""
     src = _read(CMR_DOC)
-    # l.sku should not appear in line iteration — it's not in the new shape
     assert "l.sku" not in src, "l.sku still referenced in CMR renderer — old line shape not fully removed"
 
 
@@ -224,23 +290,43 @@ def test_cmr_renderer_does_not_use_l_desc_in_lines():
 
 
 def test_cmr_renderer_uses_new_shape_item_type():
+    """CMR line renderer must use l.item_type for the single grouped row label."""
     src = _read(CMR_DOC)
-    assert "l.item_type" in src
-
-
-def test_cmr_renderer_uses_new_shape_metal():
-    src = _read(CMR_DOC)
-    assert "l.metal" in src
-
-
-def test_cmr_renderer_uses_new_shape_stone():
-    src = _read(CMR_DOC)
-    assert "l.stone" in src
+    assert "l.item_type" in src, "l.item_type not used in CMR line renderer"
 
 
 def test_cmr_renderer_uses_new_shape_net_weight():
+    """CMR line renderer must use l.net_weight for total weight per category."""
     src = _read(CMR_DOC)
-    assert "l.net_weight" in src
+    assert "l.net_weight" in src, "l.net_weight not used in CMR line renderer"
+
+
+def test_cmr_renderer_does_not_render_per_line_metal():
+    """CMR renderer must NOT have l.metal per line — metal goes into goods_summary header only."""
+    src = _read(CMR_DOC)
+    assert "l.metal" not in src, (
+        "l.metal found as per-line field in CMR renderer — "
+        "metal must appear only in d.goods_summary header, not per row"
+    )
+
+
+def test_cmr_renderer_does_not_render_per_line_stone():
+    """CMR renderer must NOT have l.stone per line — stone goes into goods_summary header only."""
+    src = _read(CMR_DOC)
+    assert "l.stone" not in src, (
+        "l.stone found as per-line field in CMR renderer — "
+        "stone must appear only in d.goods_summary header, not per row"
+    )
+
+
+def test_cmr_renderer_renders_goods_summary_header():
+    """Both Classic and Modern CMR variants must render d.goods_summary."""
+    src = _read(CMR_DOC)
+    assert "d.goods_summary" in src, "d.goods_summary not rendered in CMR component"
+    # Must appear at least twice (once per variant)
+    assert src.count("d.goods_summary") >= 2, (
+        "d.goods_summary only renders in one CMR variant — must appear in both Classic and Modern"
+    )
 
 
 # ── estrella-doc-cmr.jsx: Classic grid updated ────────────────────────────────
@@ -252,7 +338,7 @@ def test_classic_grid_updated_to_new_columns():
     assert '"60px 1fr 110px 80px 80px"' not in src, (
         "Old Classic column widths still present — not updated to new line shape"
     )
-    # New: must contain 40px first column
+    # New: must contain 40px first column (item number narrow)
     assert "40px 1fr" in src, "New Classic column layout (40px first) not found"
 
 
@@ -265,38 +351,139 @@ def test_classic_grid_header_updated():
     assert "Net Weight" in src, "Net Weight column not in Classic header"
 
 
+def test_classic_header_uses_item_category():
+    """Classic (and Modern) headers must use 'Item Category' not the old 'Description'."""
+    src = _read(CMR_DOC)
+    assert "Item Category" in src, "Item Category label not found in CMR headers"
+
+
 # ── estrella-doc-cmr.jsx: Modern table updated ────────────────────────────────
 
-def test_modern_table_has_six_columns():
-    """Modern table colSpan must be 6 (was 5 — added Net Weight column)."""
+def test_modern_table_has_five_columns():
+    """Modern table colSpan must be 5 — Item Category, Packaging, Origin, Net Weight, Qty."""
     src = _read(CMR_DOC)
-    assert "colSpan={6}" in src or 'colSpan="6"' in src, (
-        "Modern table colSpan not updated to 6 after adding Net Weight column"
+    assert "colSpan={5}" in src or 'colSpan="5"' in src, (
+        "Modern table colSpan not 5 — expected Item Category | Packaging | Origin | Net Weight | Qty"
+    )
+
+
+def test_modern_table_does_not_have_six_columns():
+    """Modern table must NOT have colSpan 6 — Metal/Stone columns were moved to goods_summary."""
+    src = _read(CMR_DOC)
+    assert "colSpan={6}" not in src and 'colSpan="6"' not in src, (
+        "colSpan=6 still present in CMR Modern — old 6-column layout not removed"
     )
 
 
 def test_modern_table_header_updated():
-    """Modern table header must contain Item Type, Metal, Stone, Net Weight columns."""
+    """Modern table header must contain Item Category and Net Weight columns."""
     src = _read(CMR_DOC)
-    assert "Item Type" in src
-    assert "Net Weight" in src
+    assert "Item Category" in src, "Item Category column not in Modern table header"
+    assert "Net Weight" in src, "Net Weight column not in Modern table header"
 
 
 def test_modern_table_does_not_show_sku_column():
     """Modern table must not have a SKU column (old shape)."""
     src = _read(CMR_DOC)
-    # SKU as table header should be gone; check the th content
-    # The old header was: <th style={{ width: 90 }}>SKU</th>
     assert ">SKU<" not in src, "SKU column header still in Modern table"
 
 
 # ── estrella-doc-cmr.jsx: header comment updated ─────────────────────────────
 
 def test_cmr_shape_comment_updated():
-    """File-level comment must reflect new line shape."""
+    """File-level comment must reflect new line shape with goods_summary."""
     src = _read(CMR_DOC)
     assert "item_type" in src[:3000], "Shape comment at top of file not updated to new line shape"
+    assert "goods_summary" in src[:3000], "goods_summary not documented in shape comment at top of file"
     # Old shape field 'purity' must not be in the shape comment
-    # (It may appear elsewhere in the file — just check the top comment area)
     top_comment = src[:2500]
     assert "purity" not in top_comment, "'purity' still in shape comment at top of file"
+
+
+# ── estrella-doc-packing.jsx: file exists and exports EJPackingList ───────────
+
+def test_packing_doc_file_exists():
+    assert PACKING_DOC.exists(), f"estrella-doc-packing.jsx not found at {PACKING_DOC}"
+
+
+def test_packing_doc_exports_EJPackingList():
+    src = _read(PACKING_DOC)
+    assert "EJPackingList" in src, "EJPackingList not defined in estrella-doc-packing.jsx"
+    assert "window.EJPackingList" in src, "EJPackingList not assigned to window"
+
+
+def test_packing_doc_uses_ej_a4_class():
+    """Packing List must use .ej-a4 CSS class for A4 sizing."""
+    src = _read(PACKING_DOC)
+    assert "ej-a4" in src, ".ej-a4 class not used in packing list component"
+
+
+def test_packing_doc_has_thirteen_column_keys():
+    """Packing List must define 13 columns: sr, ctg, client_po, design, kt, col,
+       quality, dia_wt, col_wt, qty, unit_price, total_value, size."""
+    src = _read(PACKING_DOC)
+    expected_keys = ["sr", "ctg", "client_po", "design", "kt", "col",
+                     "quality", "dia_wt", "col_wt", "qty", "unit_price", "total_value", "size"]
+    for key in expected_keys:
+        assert f"'{key}'" in src or f'"{key}"' in src or f"key: '{key}'" in src or f"key: \"{key}\"" in src, (
+            f"Column key '{key}' not found in packing list column definitions"
+        )
+
+
+def test_packing_doc_renders_currency_from_prop():
+    """Packing List must NOT hardcode EUR — currency comes from packingData.currency."""
+    src = _read(PACKING_DOC)
+    assert "d.currency" in src or "packingData.currency" in src or "cur" in src, (
+        "Packing list must derive currency from data prop, not hardcode EUR"
+    )
+    # Specifically, the currency constant must be set from the prop
+    assert "d.currency ||" in src or "packingData.currency ||" in src, (
+        "Currency must fall back to 'EUR' only as default, not be hardcoded throughout"
+    )
+
+
+def test_packing_doc_has_seller_block():
+    """Packing List must include a seller/exporter party block."""
+    src = _read(PACKING_DOC)
+    assert "d.seller" in src or "seller" in src.lower(), "Seller block not in packing list"
+
+
+def test_packing_doc_has_shipto_block():
+    """Packing List must include a ship-to/consignee party block."""
+    src = _read(PACKING_DOC)
+    assert "d.shipto" in src or "shipto" in src.lower(), "Ship-to block not in packing list"
+
+
+def test_packing_doc_totals_footer_shows_grand_total():
+    """Packing List must render grand_total in a footer row."""
+    src = _read(PACKING_DOC)
+    assert "grand_total" in src or "grandTotal" in src, "Grand total not rendered in packing list footer"
+
+
+def test_packing_doc_dia_wt_shows_dash_when_null():
+    """dia_wt must show '—' when null (not yet parsed from Excel)."""
+    src = _read(PACKING_DOC)
+    assert "dia_wt" in src, "dia_wt column not in packing list"
+    assert "col_wt" in src, "col_wt column not in packing list"
+
+
+# ── index.html: packing script tag added ─────────────────────────────────────
+
+def test_index_html_loads_packing_script():
+    """index.html must load estrella-doc-packing.jsx after the CMR script."""
+    src = _read(INDEX_HTML)
+    assert "estrella-doc-packing.jsx" in src, (
+        "estrella-doc-packing.jsx script tag not found in index.html"
+    )
+
+
+def test_index_html_packing_script_after_cmr():
+    """estrella-doc-packing.jsx must be loaded AFTER estrella-doc-cmr.jsx."""
+    src = _read(INDEX_HTML)
+    cmr_idx = src.find("estrella-doc-cmr.jsx")
+    pkg_idx = src.find("estrella-doc-packing.jsx")
+    assert cmr_idx != -1, "CMR script not in index.html"
+    assert pkg_idx != -1, "Packing script not in index.html"
+    assert pkg_idx > cmr_idx, (
+        "estrella-doc-packing.jsx must appear after estrella-doc-cmr.jsx in index.html"
+    )

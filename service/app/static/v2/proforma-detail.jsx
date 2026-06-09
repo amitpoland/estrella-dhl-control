@@ -133,13 +133,15 @@ function ProformaPartyCard({ title, name, lines, footer, footerMuted, warn, warn
 // ── Print-preview modal ────────────────────────────────────────────────────────
 // READ-ONLY. Never mutates draft state. Uses real docData/cmrData from ProformaDetailPage.
 // Requires: estrella-doc-tokens.css + estrella-doc-proforma.jsx + estrella-doc-cmr.jsx loaded in index.html.
-function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, onClose }) {
+function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, packingData, onClose }) {
   // Scale A4 (794px) to fit within 860px modal body → ~0.9 scale
   const SCALE = 0.88;
   const activeType = docType || 'proforma';
 
   // Variant selection per document type
-  const variantOptions = activeType === 'cmr' ? ['classic', 'modern'] : ['classic', 'modern', 'bold'];
+  const variantOptions = activeType === 'cmr'     ? ['classic', 'modern']
+                       : activeType === 'packing'  ? ['classic']
+                       : ['classic', 'modern', 'bold'];
 
   // Component resolution
   let DocVariant = null;
@@ -147,6 +149,8 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
     DocVariant = variant === 'modern'
       ? (window.EJCMRModern  || null)
       : (window.EJCMRClassic || null);
+  } else if (activeType === 'packing') {
+    DocVariant = window.EJPackingList || null;
   } else {
     DocVariant = variant === 'modern' ? (window.EJProformaModern || null)
                : variant === 'bold'   ? (window.EJProformaBold   || null)
@@ -190,12 +194,12 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
           </span>
           <div style={{ display: 'flex', gap: 6, marginLeft: 'auto', alignItems: 'center' }}>
             {/* Document type selector */}
-            {[['proforma', 'Proforma'], ['cmr', 'CMR']].map(([dt, label]) => (
+            {[['proforma', 'Proforma'], ['cmr', 'CMR'], ['packing', 'Packing List']].map(([dt, label]) => (
               <button
                 key={dt}
                 onClick={() => {
                   onDocTypeChange(dt);
-                  if (dt === 'cmr' && variant === 'bold') onVariantChange('classic');
+                  if ((dt === 'cmr' || dt === 'packing') && variant === 'bold') onVariantChange('classic');
                 }}
                 data-testid={`preview-doctype-${dt}`}
                 style={{
@@ -270,12 +274,18 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
             >
               {activeType === 'cmr'
                 ? <DocVariant cmrData={cmrData}/>
+                : activeType === 'packing'
+                ? <DocVariant packingData={packingData}/>
                 : <DocVariant docData={docData}/>
               }
             </div>
           ) : (
             <div style={{ padding: 40, color: '#64748B', fontSize: 13 }}>
-              Print preview requires {activeType === 'cmr' ? 'estrella-doc-cmr.jsx' : 'estrella-doc-proforma.jsx'} to be loaded.
+              Print preview requires {
+                activeType === 'cmr'     ? 'estrella-doc-cmr.jsx'
+                : activeType === 'packing' ? 'estrella-doc-packing.jsx'
+                : 'estrella-doc-proforma.jsx'
+              } to be loaded.
             </div>
           )}
         </div>
@@ -887,28 +897,38 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   };
   const _cmrItemLabel = (t) => _CMR_ITEM[(t || '').toUpperCase()] || t || '';
 
-  // Aggregate packing lines by item_type + metal + stone_type
-  // Returns sorted array of { item_type, metal, stone, qty, net_weight, origin }
+  // CMR transport summary — aggregated by item_type ONLY (not metal/stone per line)
+  // CMR is a logistics document; carrier needs item totals, not 146 design rows.
+  // Metal and stone types surface as a single goods_summary description, not per-line columns.
+  // Returns { lines: [{item_type, qty, net_weight, origin}], goods_summary, total_qty }
   const _cmrAggPackingLines = (() => {
-    if (!batchPackingLines || !batchPackingLines.length) return [];
+    if (!batchPackingLines || !batchPackingLines.length) {
+      return { lines: [], goods_summary: '', total_qty: 0 };
+    }
     const groups = {};
+    const metals  = new Set();
+    const stones  = new Set();
+    let totalQty  = 0;
     for (const l of batchPackingLines) {
-      const key = [l.item_type || '', l.metal || '', l.stone_type || ''].join('||');
+      const key = (l.item_type || 'other').toUpperCase();
       if (!groups[key]) {
-        groups[key] = {
-          item_type:  _cmrItemLabel(l.item_type),
-          metal:      _parseMetal(l.metal),
-          stone:      _parseStone(l.stone_type),
-          qty:        0,
-          net_weight: null,   // sum only when non-zero data present
-          origin:     'India',
-        };
+        groups[key] = { item_type: _cmrItemLabel(l.item_type), qty: 0, net_weight: null, origin: 'India' };
       }
       groups[key].qty += Number(l.quantity) || 0;
+      totalQty        += Number(l.quantity) || 0;
       const nw = Number(l.net_weight) || 0;
       if (nw > 0) groups[key].net_weight = (groups[key].net_weight || 0) + nw;
+      const m = _parseMetal(l.metal);       if (m) metals.add(m);
+      const s = _parseStone(l.stone_type);  if (s) stones.add(s);
     }
-    return Object.values(groups).sort((a, b) => (a.item_type > b.item_type ? 1 : -1));
+    const metalsStr    = Array.from(metals).join(' & ');
+    const stonesStr    = Array.from(stones).join(' & ');
+    const goods_summary = [metalsStr, stonesStr].filter(Boolean).join(' · ');
+    return {
+      lines:       Object.values(groups).sort((a, b) => (a.item_type > b.item_type ? 1 : -1)),
+      goods_summary,    // e.g. "14 Karat Pink Gold & 14 Karat White Gold · Diamond"
+      total_qty:   totalQty,
+    };
   })();
   // ────────────────────────────────────────────────────────────────────────────
 
@@ -919,8 +939,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     c => (c.charge_type || '').toLowerCase() === 'insurance' && (Number(c.amount) || 0) > 0
   );
 
-  // Total pieces: sum of proforma editable lines (= SALES packing list qty total)
-  const _cmrTotalPcs = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
+  // Total pieces: packing list authority when available, otherwise proforma editable lines
+  const _cmrTotalPcs = _cmrAggPackingLines.total_qty > 0
+    ? _cmrAggPackingLines.total_qty
+    : lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
 
   const cmrPreviewData = {
     cmr_no:   batchId ? `CMR-EJ-${batchId}` : '—',
@@ -962,19 +984,60 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       // FIX #6: insurance wording when an insurance service charge exists on the proforma
       insurance:   _cmrHasInsurance ? _CMR_INSURANCE_TEXT : null,
     } : null,
-    // Lines authority: packing list (aggregated by item_type+metal+stone)
-    // Fallback: proforma editable_lines when packing data not yet loaded
-    lines: _cmrAggPackingLines.length > 0
-      ? _cmrAggPackingLines
-      : lines.map(l => ({
-          item_type:  l.desc,
-          metal:      l.purity || '',
-          stone:      '',
-          qty:        l.qty,
-          net_weight: null,
-          origin:     l.origin || 'India',
-        })),
+    goods_summary: _cmrAggPackingLines.goods_summary || '',
+    // CMR lines: aggregated by item_type ONLY — transport summary, not commercial detail
+    // Each entry: { item_type, qty, net_weight, origin } — 3-6 rows max
+    // Fallback to proforma lines when packing data not yet loaded
+    lines: _cmrAggPackingLines.lines.length > 0
+      ? _cmrAggPackingLines.lines
+      : lines.map(l => ({ item_type: l.desc, qty: l.qty, net_weight: null, origin: l.origin || 'India' })),
   };
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // Packing List PDF data — full design-level detail (146 lines for AWB 9938632830)
+  // Authority: batchPackingLines → unit_price = sales price per piece
+  // Total value must equal proforma total (€78,636 for AWB 9938632830)
+  // Currency: from draft (can vary per client — not hardcoded to EUR)
+  const packingListData = (() => {
+    const currency    = liveDraft.currency || 'EUR';
+    const sortedLines = [...batchPackingLines].sort(
+      (a, b) => (Number(a.pack_sr) || 0) - (Number(b.pack_sr) || 0)
+    );
+    const rows = sortedLines.map((l, i) => {
+      const qty       = Number(l.quantity)   || 0;
+      const unitPrice = Number(l.unit_price) || 0;
+      return {
+        sr:          l.pack_sr  || (i + 1),
+        ctg:         _cmrItemLabel(l.item_type),          // Pendant / Ring / Earrings
+        client_po:   l.invoice_no      || '',
+        design:      l.design_no       || l.product_code || '—',
+        kt:          (l.metal || '').split('/')[0] || '', // "14KT"
+        col:         (l.metal || '').split('/')[1] || '', // "W", "P", "Y"
+        quality:     l.quality_string  || '',
+        dia_wt:      null,   // not parsed separately yet — column visible, data pending
+        col_wt:      null,   // not parsed separately yet
+        net_wt:      Number(l.net_weight) > 0 ? Number(l.net_weight) : null,
+        qty,
+        unit_price:  unitPrice,
+        total_value: unitPrice * qty,
+        size:        l.scan_code || '',
+      };
+    });
+    const grand_total = rows.reduce((s, r) => s + r.total_value, 0);
+    const total_qty   = rows.reduce((s, r) => s + r.qty,         0);
+    return {
+      doc_ref:     _previewLabel,
+      invoice_ref: liveDraft.wfirma_invoice_id ? String(liveDraft.wfirma_invoice_id) : null,
+      issued_date: liveDraft.created_at ? (liveDraft.created_at || '').split('T')[0] : '',
+      seller:      cmrPreviewData.seller,
+      shipto:      cmrPreviewData.shipto,
+      buyer:       cmrPreviewData.buyer,
+      currency,
+      rows,
+      grand_total,
+      total_qty,
+    };
+  })();
   // ──────────────────────────────────────────────────────────────────────────
 
   const draftState    = liveDraft.draft_state || liveDraft.status || (draft && draft.status) || '';
@@ -1399,6 +1462,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         <ProformaPreviewModal
           docData={previewDocData}
           cmrData={cmrPreviewData}
+          packingData={packingListData}
           variant={previewVariant}
           onVariantChange={setPreviewVariant}
           docType={previewDocType}
