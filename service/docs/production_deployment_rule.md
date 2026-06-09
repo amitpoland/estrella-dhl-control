@@ -13,7 +13,7 @@
 | Live app root | `C:\PZ` |
 | Service | `PZService` (NSSM, port 47213) |
 | Public URL | `https://pz.estrellajewels.eu` |
-| Git repo (staging) | `C:\Users\Super Fashion\PZ APP` |
+| Git repo (verify) | `C:\PZ-verify` (canonical — `C:\Users\Super Fashion\PZ APP` RETIRED 2026-06-04) |
 | Production secrets | `C:\PZ\.env` |
 | Production data | `C:\PZ\storage` |
 | Production logs | `C:\PZ\logs` |
@@ -104,12 +104,12 @@ git rev-parse HEAD                # record exact deployed SHA
 
 ```bash
 # PZ regression
-cd "C:\Users\Super Fashion\PZ APP"
+cd "C:\PZ-verify"
 PYTHONIOENCODING=utf-8 python test_pz_regression.py    # must be 160/160
 
 # Carrier suite
 cd service
-python -m pytest tests/test_carrier_*.py -q            # must be 366/366
+python -m pytest tests/test_carrier_*.py -q            # must be 412/412
 ```
 
 **Stop if any test fails.**
@@ -118,8 +118,8 @@ python -m pytest tests/test_carrier_*.py -q            # must be 366/366
 
 ```powershell
 # Allowed: /E /XO (newer-only, no deletes, no overwrite)
-robocopy "C:\Users\Super Fashion\PZ APP\service\app" "C:\PZ\app" /E /XO `
-  /XD __pycache__ .pytest_cache `
+robocopy "C:\PZ-verify\service\app" "C:\PZ\app" /E /XO `
+  /XD __pycache__ .pytest_cache storage `
   /XF "*.pyc" "*.pyo" "*.zip"
 
 # Robocopy exit codes: 0=nothing to copy, 1=copied, 2=extras retained, 3=both
