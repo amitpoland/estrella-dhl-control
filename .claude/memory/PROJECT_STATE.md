@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-08 (Description Engine Phase 2A deployed — PR #513 SHA 3d7ebf9, shared grammar dictionaries live in C:\PZ\engine\).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-09 (Draft #24 posted as PROF 123/2026; EJL/26-27/244 authority audit; PZ engine frozen; GATE 4 issues #529–#533 filed; three-authority architecture decision recorded).
 
-**Last-run-at:** 2026-06-09 (EJL/26-27/244 sales-price import — Draft #24 approved at €78,636 / 146 lines; PR #525 deployed; PR #527 open for parser hotfix reconciliation). Origin/main HEAD: **cf14b81** (feat(proforma): sales-price authority import + PL/EN commercial descriptions #525). GATE 2: **2/3 open PRs** (#527 parser fixes + any draft PRs). See FACTS below for full PR #525 + hotfix details. (feat(engine): Phase 2A — extract shared grammar dictionaries). GATE 2: **1/3 open PRs** (draft #498). **RBAC PHASE C AREA 1 COMPLETE (PR #511, DEPLOYED)**: 33 mutation routes upgraded from bare `require_api_key` to `require_admin`/`require_role(...)`. Allowlist 167→134. Structural gate 5/5 PASS. Auth guard tests 31/31 PASS. GATE 4: Issue #512 filed (viewer-403 negative-path tests for Area 1 routes). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
+**Last-run-at:** 2026-06-09 (Draft #24 → PROF 123/2026 posted, wfirma_proforma_id=477781731, €79,000.23 confirmed; EJL/26-27/244 three-authority audit completed; PZ engine frozen by operator directive; GATE 4 issues #529–#533 filed; PR #527 open for parser hotfixes). Origin/main HEAD: **cf14b81** (feat(proforma): sales-price authority import + PL/EN commercial descriptions #525). GATE 2: **2/3 open PRs** (#527 parser fixes + any draft PRs). See FACTS below for full PR #525 + hotfix details. (feat(engine): Phase 2A — extract shared grammar dictionaries). GATE 2: **1/3 open PRs** (draft #498). **RBAC PHASE C AREA 1 COMPLETE (PR #511, DEPLOYED)**: 33 mutation routes upgraded from bare `require_api_key` to `require_admin`/`require_role(...)`. Allowlist 167→134. Structural gate 5/5 PASS. Auth guard tests 31/31 PASS. GATE 4: Issue #512 filed (viewer-403 negative-path tests for Area 1 routes). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
 
 ---
 
@@ -82,6 +82,53 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - No wFirma posting / no invoice creation / no DHL or PZ mutations
 - Customer Master untouched / draft lifecycle only
 - `draft_state: approved`, `sales_price_authority_total_eur: 78636.0`, `sales_price_invoice_ref: EJL/26-27/244`
+
+---
+
+## Draft #24 → PROF 123/2026 Posted + EJL/26-27/244 Authority Audit (2026-06-09)
+
+**Date**: 2026-06-09
+
+**Posted proforma (wFirma — verified)**:
+- Draft #24 posted as **PROF 123/2026** — `wfirma_proforma_id=477781731`
+- Grand total: **€79,000.23** (merchandise €78,636.00 + freight €89.00 + insurance €275.23) ✅
+- Buyer: **UAB Tomas Gold**, VAT LT100007135616 ✅
+- VAT treatment: WDT (zero-rated EU export, vat_mode=228 from Customer Master)
+- Incoterm: DAP | currency: EUR
+- Service charges: freight ID 13002743 (€89) + insurance ID 13102217 (€275.23)
+- `posted_at=2026-06-09T02:53:56Z` | `posted_by=amit` | `draft_state=posted`
+- Preview saved: `C:\Temp\PROF_123_2026_draft24_posted_preview.html` (43,476 bytes)
+- `WFIRMA_CREATE_PROFORMA_ALLOWED=true` added to `C:\PZ\.env` (was absent, defaults False). Remains live — operator to disable when restricting future postings.
+
+**EJL/26-27/244 price authority audit (read-only — no code changed)**:
+- `sales_packing_lines` for SHIPMENT_9938632830_2026-06_1a80f9c5: 292 rows total (146 per price source)
+- 146 rows `price_source="packing_xlsx_value"` → total EUR **75,028.00** (import/cost prices — Estrella's purchase value from supplier)
+- 146 rows `price_source="excel_symbol"` → total EUR **78,636.00** (sales prices to UAB — proforma authority)
+- Consistent ~4.8% markup across all design_nos (Estrella's margin = €3,608)
+- PZ engine (`pz_import_processor.py`) uses USD invoice values → PLN landed cost — **entirely separate** from both EUR columns (CORRECT by design — see DECISIONS)
+- `pz_documents` = 0 rows for this batch — PZ not yet generated
+- Three-authority architecture CONFIRMED by operator — see DECISIONS entry below
+
+**Freight/insurance service audit (Audit 1)**:
+- wFirma service ID 13002743: name = "FedEx Courier" — used on DHL shipment (carrier mismatch)
+- wFirma service ID 13102217: name = India-specific, no VAT code assigned
+
+**GATE 4 issues filed (2026-06-09)**:
+- Issue **#529** (CRITICAL): `price_source` label stale — `import-sales-prices` endpoint patches `unit_price`/`total_eur` but does NOT update `price_source` from "packing_xlsx_value" to "sales_packing_list". Frontend readers see the wrong authority label. Root cause: `routes_proforma.py` `import_draft_sales_prices()` (~L4948) patches prices but not the source label.
+- Issue **#530**: Freight service ID 13002743 = "FedEx Courier" used on DHL shipment — permanent carrier guard needed (freight_service.carrier must match shipment.carrier)
+- Issue **#531**: Insurance service 13102217 is India-specific with no VAT code — DHL EU shipments need a dedicated insurance service ID
+- Issue **#532**: Zero-price `packing_promote` lines (labeled from `routes_packing.py` L1904) — no invoice guard before proforma/invoice generation
+- Issue **#533**: `name_pl` derivation path not locked — must come from Description Engine, not ad-hoc per-row logic
+
+**Safety constraints honored throughout**:
+- No invoice conversion (WFIRMA_CREATE_INVOICE_ALLOWED remains OFF/absent)
+- No DHL or PZ mutations
+- No fiscal hardcoding
+- PZ calculation engine untouched (operator freeze directive — see DECISIONS)
+
+**Pre-PZ reconciliation requirement (pending)**:
+- Quantity reconciliation required before PZ generation for EJL/26-27/244: verify customs declaration quantities == packing quantities per design_no
+- Operator directive: pause before PZ generation; run reconciliation first
 
 ---
 
@@ -4539,6 +4586,40 @@ Group D — Tests (3 new files):
 ---
 
 # DECISIONS
+
+## Three-Authority Architecture Lock + PZ Engine Freeze (2026-06-09)
+
+**Origin**: Operator directive following EJL/26-27/244 price authority audit (2026-06-09). Permanent architectural constraint — binds ALL future work touching proforma, PZ, invoice generation, or price authority fields.
+
+**Decision**: The three-authority split is correct by design. Do NOT unify, reconcile, or equate these authorities. A discrepancy between proforma value and PZ landed cost is not a bug — it is Estrella's margin.
+
+**Three authorities** (for SHIPMENT_9938632830 / EJL/26-27/244, and generalized to all shipments):
+
+| Authority | Price Column | Used For | Example Total |
+|-----------|-------------|----------|---------------|
+| Sales Authority | `excel_symbol` | Proforma → Customer Invoice → Customer relations | €78,636 (UAB UAB) |
+| Import/Cost Authority | `packing_xlsx_value` | Internal costing, Estrella cost basis | €75,028 |
+| Customs/Landed Authority | `unit_price_usd` / `fob_usd` (supplier invoice USD) → PLN via ZC429 | PZ → Warehouse → Landed cost | separate (PLN) |
+
+**PZ engine frozen — permanent until evidence of defect**:
+- `pz_import_processor.py` uses `unit_price_usd`, `total_usd`, `fob_usd`, `freight_usd`, `insurance_usd` from supplier commercial invoice (in USD)
+- Converts to PLN via exchange rate; allocates duty from ZC429/A00; produces `line_netto_pln` (landed cost per line)
+- Authority = supplier invoice (USD) — NOT `excel_symbol` (EUR sales), NOT `packing_xlsx_value` (EUR cost)
+- **Do not change** PZ valuation formulas, currency conversion logic, or customs allocation without documented evidence of actual defect
+
+**Four binding operator constraints (permanent)**:
+1. **Do NOT change PZ valuation formulas**
+2. **Do NOT force PZ to use €78,636 (sales values)**
+3. **Do NOT replace supplier-invoice currency logic with EUR logic**
+4. **Do NOT change customs allocation logic**
+
+**Governance scope for EJL/26-27/244**: Investigate only metadata/governance issues — price source labels (Issue #529), freight service mapping (Issue #530), insurance service mapping (Issue #531), quantity reconciliation. Do not modify landed-cost calculations, currency conversions, customs allocations, or PZ valuation without evidence of defect.
+
+**Risk narrative (operator-provided)**: Someone could incorrectly see the €78,636 proforma vs. lower PZ landed cost and assume the engine is wrong. This DECISIONS entry exists to prevent that error. The discrepancy is intentional — it is Estrella's margin (€3,608 = ~4.8%). The PZ engine must remain the authority for inventory/landed cost. The proforma must remain the authority for customer-facing sales price. They are supposed to be different.
+
+**Reference**: EJL/26-27/244 price authority audit session (2026-06-09); GATE 4 issues #529–#533; operator governance directive; Draft #24 → PROF 123/2026 posting.
+
+---
 
 ## Description Engine — Single Authority, Multiple Renderers (2026-06-08)
 
