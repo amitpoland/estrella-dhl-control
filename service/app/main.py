@@ -626,7 +626,7 @@ def serve_v2_static(path: str, request: Request) -> Response:
     mime    = mime or "application/octet-stream"
     headers = (
         {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
-        if file_path.suffix in (".html", ".js", ".jsx")
+        if file_path.suffix in (".html", ".js", ".jsx", ".css")
         else {"Cache-Control": "public, max-age=3600"}
     )
     return Response(content=content, media_type=mime, headers=headers)
