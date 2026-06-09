@@ -355,6 +355,44 @@ def update_packing_document_diagnostic(document_id: str, diagnostic: Dict[str, A
     return (cur.rowcount or 0) > 0
 
 
+def delete_packing_document_and_lines(doc_id: str) -> Dict[str, Any]:
+    """Atomically delete one packing document and all its extracted lines.
+
+    Deletes packing_lines WHERE packing_document_id = doc_id, then deletes
+    the packing_documents row itself.  Both deletes occur inside a single
+    transaction so the DB is never left in a half-deleted state.
+
+    Returns:
+        {'doc_id': str, 'deleted_lines': int, 'source_file_path': str}
+
+    Raises:
+        RuntimeError  — packing_db not initialised
+        KeyError      — doc_id does not exist in packing_documents
+    """
+    if _db_path is None:
+        raise RuntimeError("packing_db not initialised — call init_packing_db() first")
+    with _lock:
+        with _connect() as con:
+            row = con.execute(
+                "SELECT source_file_path FROM packing_documents WHERE id=?",
+                (doc_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"packing document {doc_id!r} not found")
+            source_file_path: str = row["source_file_path"] or ""
+            cur = con.execute(
+                "DELETE FROM packing_lines WHERE packing_document_id=?",
+                (doc_id,),
+            )
+            deleted_lines: int = cur.rowcount or 0
+            con.execute("DELETE FROM packing_documents WHERE id=?", (doc_id,))
+    return {
+        "doc_id":           doc_id,
+        "deleted_lines":    deleted_lines,
+        "source_file_path": source_file_path,
+    }
+
+
 # ── Supplier header templates (Tier 0) ───────────────────────────────────────
 
 def get_supplier_templates(

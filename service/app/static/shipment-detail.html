@@ -2284,6 +2284,8 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   // Reparse-all completes.
   const [laneReadiness, setLaneReadiness] = React.useState(null);
   const [packingUploading, setPackingUploading] = React.useState(false);
+  // Per-document delete busy tracker: { [doc_id]: true } while DELETE is in-flight.
+  const [packingDeleting, setPackingDeleting] = React.useState({});
   const [timelineFilter, setTimelineFilter] = React.useState('all'); // 'all' | 'ai_bridge'
   // Phase 2: batch + DHL readiness (read-only)
   const [batchReadiness, setBatchReadiness] = React.useState(null);
@@ -3973,6 +3975,42 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               setPackingUploading(false);
             };
 
+            const handlePackingDelete = async (doc) => {
+              const docId   = doc.id;
+              const fname   = (doc.source_file_path || '').split('/').pop() || doc.file_name || docId;
+              const sideRaw = (doc.side || '').toLowerCase();
+              const isSalesDoc = sideRaw === 'sales' || doc.document_type === 'sales_packing_list';
+              const sideWord   = isSalesDoc ? 'SALES' : 'PURCHASE';
+              if (!window.confirm(
+                `Delete ${sideWord} packing file?\n\n${fname}\n\n` +
+                `This will permanently remove the file and all ${doc.row_count ?? '?'} extracted rows from the database. ` +
+                (isSalesDoc ? 'The proforma draft must be deleted first if one exists. ' : '') +
+                'This cannot be undone.'
+              )) return;
+
+              setPackingDeleting(prev => ({ ...prev, [docId]: true }));
+              try {
+                const r = await apiFetch(
+                  `/api/v1/packing/${encodeURIComponent(batchId)}/document/${encodeURIComponent(docId)}`,
+                  { method: 'DELETE' }
+                );
+                onToast(`Packing file deleted — ${r.deleted_lines ?? 0} rows removed.`, 'success');
+                await loadPackingInfo();
+                await loadBatchReadiness();
+              } catch (ex) {
+                const detail = ex.detail || ex.message || String(ex);
+                if (ex.status === 409 || (detail && detail.includes('PROFORMA'))) {
+                  const msg = (typeof detail === 'object' ? detail.message : detail) ||
+                    'Cannot delete: active proforma draft exists. Delete the proforma first.';
+                  onToast(msg, 'error');
+                } else {
+                  onToast('Delete failed: ' + (typeof detail === 'string' ? detail : JSON.stringify(detail)), 'error');
+                }
+              } finally {
+                setPackingDeleting(prev => { const n = { ...prev }; delete n[docId]; return n; });
+              }
+            };
+
             return (
               <Card style={{ marginTop: 20 }} data-testid="packing-list-card">
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
@@ -4147,6 +4185,39 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                               }}
                               title="Parser diagnostic"
                             >{diagOpen ? '▾ Diagnostic' : '▸ Diagnostic'}</button>
+                          )}
+                          {doc.id && (
+                            <a
+                              data-testid={`packing-list-download-${doc.id}`}
+                              href={`/api/v1/packing/${encodeURIComponent(batchId)}/document/${encodeURIComponent(doc.id)}/download`}
+                              download
+                              title="Download original file"
+                              style={{ textDecoration: 'none' }}
+                            >
+                              <button style={{
+                                padding: '2px 8px', fontSize: 11, fontWeight: 600,
+                                background: 'transparent', border: '1px solid var(--badge-blue-border)',
+                                borderRadius: 4, cursor: 'pointer',
+                                color: 'var(--badge-blue-text)', fontFamily: 'inherit', lineHeight: 1,
+                              }}>⬇</button>
+                            </a>
+                          )}
+                          {doc.id && (
+                            <button
+                              data-testid={`packing-list-delete-${doc.id}`}
+                              onClick={() => handlePackingDelete(doc)}
+                              disabled={!!packingDeleting[doc.id]}
+                              title="Delete this packing file and all extracted rows"
+                              style={{
+                                padding: '2px 8px', fontSize: 11, fontWeight: 600,
+                                background: 'transparent',
+                                border: '1px solid var(--badge-red-border)',
+                                borderRadius: 4,
+                                cursor: packingDeleting[doc.id] ? 'not-allowed' : 'pointer',
+                                color: packingDeleting[doc.id] ? 'var(--text-3)' : 'var(--badge-red-text)',
+                                fontFamily: 'inherit', lineHeight: 1,
+                              }}
+                            >{packingDeleting[doc.id] ? '…' : '🗑'}</button>
                           )}
                           <span style={{
                             fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
