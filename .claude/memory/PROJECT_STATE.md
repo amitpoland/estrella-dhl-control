@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-09 (CMR packing-lines + A4 print + Download PDF — PR #540 opened SHA 26ed782, branch feat/cmr-packing-lines-and-download; GATE 2 now 3/3 — must merge before next PR).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-09 (Proforma toolbar campaign — print dialog fix + CMR button removal — SHA 471c519 + d325eb6 + 9046a5f deployed; governance violation GATE 4 finding; scorecard 2026-06-09-proforma-toolbar-gate.md).
 
-**Last-run-at:** 2026-06-09 (Draft #24 → PROF 123/2026 posted, wfirma_proforma_id=477781731, €79,000.23 confirmed; EJL/26-27/244 three-authority audit; PZ engine frozen; GATE 4 issues #529–#533 filed; PR #527 MERGED 5c7ee0b; PR #524 MERGED dbfc845 [Excel column mapper]; PR #528 MERGED d34d743 [Tier-0 supplier headers]; origin/main HEAD d34d743→786003d [this state update]). GATE 2: **3/3 open PRs** (#522, #523, #498) — AT LIMIT, no new PRs until one merges. Origin/main HEAD: **cf14b81** (feat(proforma): sales-price authority import + PL/EN commercial descriptions #525). GATE 2: **2/3 open PRs** (#527 parser fixes + any draft PRs). See FACTS below for full PR #525 + hotfix details. (feat(engine): Phase 2A — extract shared grammar dictionaries). GATE 2: **1/3 open PRs** (draft #498). **RBAC PHASE C AREA 1 COMPLETE (PR #511, DEPLOYED)**: 33 mutation routes upgraded from bare `require_api_key` to `require_admin`/`require_role(...)`. Allowlist 167→134. Structural gate 5/5 PASS. Auth guard tests 31/31 PASS. GATE 4: Issue #512 filed (viewer-403 negative-path tests for Area 1 routes). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
+**Last-run-at:** 2026-06-09 (Draft #24 → PROF 123/2026 posted, wfirma_proforma_id=477781731, €79,000.23 confirmed; EJL/26-27/244 three-authority audit; PZ engine frozen; GATE 4 issues #529–#533 filed; PR #527 MERGED 5c7ee0b; PR #524 MERGED dbfc845 [Excel column mapper]; PR #528 MERGED d34d743 [Tier-0 supplier headers]; origin/main HEAD cf14b81→9046a5f [proforma toolbar campaign]). GATE 2: **3/3 open PRs** (#522, #523, #498) — AT LIMIT, no new PRs until one merges. Origin/main HEAD: **9046a5f** (fix(tests): fix test_cmr_accessible_via_preview_modal assertion). GATE 2: **2/3 open PRs** (#527 parser fixes + any draft PRs). See FACTS below for full PR #525 + hotfix details. (feat(engine): Phase 2A — extract shared grammar dictionaries). GATE 2: **1/3 open PRs** (draft #498). **RBAC PHASE C AREA 1 COMPLETE (PR #511, DEPLOYED)**: 33 mutation routes upgraded from bare `require_api_key` to `require_admin`/`require_role(...)`. Allowlist 167→134. Structural gate 5/5 PASS. Auth guard tests 31/31 PASS. GATE 4: Issue #512 filed (viewer-403 negative-path tests for Area 1 routes). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
 
 ---
 
@@ -54,6 +54,30 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## Proforma Toolbar Campaign — Print Dialog Fix + Button Updates (2026-06-09, MERGED + DEPLOYED)
+
+**Date**: 2026-06-09
+**Campaign**: Proforma toolbar changes with print dialog fix and button updates
+**Commits**: 3 commits pushed to origin/main and deployed to production
+
+**SHA 471c519** (2026-06-09): ProformaPreviewModal wrapped in `ReactDOM.createPortal(…, document.body)` — fixes blank print dialog for Proforma/CMR/Packing List. Root cause: modal rendered inside container div, browser print dialog couldn't access content. Portal renders modal directly to document.body for print access.
+
+**SHA d325eb6** (2026-06-09): proforma-detail.jsx toolbar changes:
+- Anchor-click PDF download (direct link behavior)
+- Edit button hidden when `!canEdit` (respects draft state)
+- CMR button removed (architectural authority moved to Preview modal)
+- Approve button added (calls `POST /api/v1/proforma/draft/{id}/approve`)
+
+**SHA 9046a5f** (2026-06-09): test fix — `test_cmr_accessible_via_preview_modal` assertion updated for template literal pattern. 56/56 toolbar tests passing.
+
+**Deploy status**: All three commits pushed to origin/main. SHAs 471c519 + d325eb6 deployed to `C:\PZ` via robocopy.
+
+**Retroactive 7-agent gate** (2026-06-09): READY-TO-DEPLOY verdict, all agents CLEAR, LOW risk. Gate was run after deploy, not before — **governance violation** noted (GATE 4 finding requiring SCHEDULED/ISSUE/REJECTED disposition per production deployment rule).
+
+**Scorecard**: `.claude/memory/scorecards/2026-06-09-proforma-toolbar-gate.md` (7 agents, all EXEMPLARY verdicts)
+
+---
 
 ## PR #525 — Sales-Price Authority Import + Draft #24 Approved (2026-06-09, MERGED + DEPLOYED)
 
@@ -4636,6 +4660,20 @@ Group D — Tests (3 new files):
 
 # DECISIONS
 
+## CMR Button Removed from Proforma Toolbar (2026-06-09)
+
+**Date**: 2026-06-09
+**Context**: Proforma toolbar campaign (SHA d325eb6)
+**Decision**: CMR button permanently removed from proforma-detail.jsx toolbar per operator request.
+
+**Authority migration**: Architectural authority for CMR document access permanently moved to Preview modal doctype selector. CMR functionality remains fully available — users access CMR via Preview modal → doctype dropdown → select CMR.
+
+**Lesson M compliance**: CMR capability formally cancelled from toolbar surface per Lesson M (planned operator-visible capability must not be removed without formal cancellation record). Capability remains available in its new workflow surface (Preview modal).
+
+**Rationale**: Operator requested during proforma toolbar review — CMR access consolidated into Preview modal for unified document workflow. No functionality lost; workflow surface changed.
+
+---
+
 ## Three-Authority Architecture Lock + PZ Engine Freeze (2026-06-09)
 
 **Origin**: Operator directive following EJL/26-27/244 price authority audit (2026-06-09). Permanent architectural constraint — binds ALL future work touching proforma, PZ, invoice generation, or price authority fields.
@@ -5170,7 +5208,7 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Fix deploy_lead_coordinator Lesson D misapplication** — target: prompt-engineering fix for LOCAL-COMMIT-ONLY trigger condition by 2026-06-12 — gating: GATE 4 SCHEDULED disposition from scorecard 2026-06-09-cmr-fix-campaign
+1. **Resolve proforma toolbar governance violation (GATE 4 finding)** — target: SCHEDULED/ISSUE/REJECTED disposition for gate-after-deploy rule violation by 2026-06-12 — gating: mandatory per production deployment rule + scorecard governance violation noted 2026-06-09
 2. **Resolve Issue #529 price_source label fix** — target: correct price_source label after import-sales-prices to show actual authority — gating: PR queue slot opens (currently 2/3 GATE 2)
 3. **EJL/26-27/244 quantity reconciliation before PZ** — target: resolve pz_documents=0 state, enable PZ generation — gating: price_source fix (#529) completed first
 
