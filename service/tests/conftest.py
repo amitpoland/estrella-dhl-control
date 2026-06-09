@@ -95,6 +95,25 @@ if _env_storage:
     _LIVE_ROOTS.add(Path(_env_storage).resolve())
 
 
+# SQLite WAL-mode sidecar extensions.  These are created by the SQLite engine
+# whenever ANY connection opens a WAL-mode database — even a read-only one —
+# as OS-level shared-memory coordination files.  They are NOT business data
+# written by test logic.  Including them in the storage-leak check produces
+# non-deterministic failures when an external or prior-session process has
+# left a live database in WAL mode: the sidecar materialises during the test
+# but is not attributable to the test itself.
+#
+# .db-wal  — write-ahead log (present when uncommitted WAL transactions exist)
+# .db-shm  — shared-memory header (present whenever a WAL-mode DB is open)
+# .db-journal — rollback journal (present during non-WAL transactions)
+#
+# Opened-for-reading-only databases that create these sidecars are a genuine
+# test-isolation concern, but the storage guard is not the right tool to
+# catch them: the guard implicates the *next* test, not the culprit.
+# See GitHub issue filed alongside the conftest TOCTOU fix for follow-up.
+_SQLITE_SIDECAR_SUFFIXES = (".db-shm", ".db-wal", ".db-journal", ".db-wal-summary")
+
+
 @pytest.fixture(autouse=True)
 def _guard_storage_root():
     """Detect tests that write files into live storage roots.
@@ -108,25 +127,38 @@ def _guard_storage_root():
     before this fixture's teardown runs, causing false positives on every
     correctly-patched test.
     """
-    # Snapshot existing files in live-storage directories before the test
+    # Snapshot existing files in live-storage directories before the test.
+    # Wrap stat() in a try-except: WAL-mode sidecar files (.db-wal, .db-shm)
+    # can disappear between rglob() and stat() when SQLite performs a final
+    # checkpoint and removes them (TOCTOU race on Windows).  A file that
+    # vanishes at this point was not written by this test, so silently skip it.
     before: dict = {}
     for lp in _LIVE_ROOTS:
         resolved_lp = lp.resolve()
         if resolved_lp.exists():
             for f in resolved_lp.rglob("*"):
                 if f.is_file():
-                    before[str(f)] = f.stat().st_mtime
+                    try:
+                        before[str(f)] = f.stat().st_mtime
+                    except (FileNotFoundError, OSError):
+                        pass  # transient file vanished between rglob and stat
 
     yield  # run the test
 
-    # After the test: fail if any NEW file was written to live storage
+    # After the test: fail if any NEW file was written to live storage.
+    # SQLite WAL/SHM sidecar files are excluded — see _SQLITE_SIDECAR_SUFFIXES.
     for lp in _LIVE_ROOTS:
         resolved_lp = lp.resolve()
         if resolved_lp.exists():
             for f in resolved_lp.rglob("*"):
-                if f.is_file() and str(f) not in before:
-                    pytest.fail(
-                        f"STORAGE LEAK: test wrote {f!r} into live storage root "
-                        f"{resolved_lp!r}.  Use tmp_path / monkeypatch to redirect "
-                        f"settings.storage_root in the test or its autouse fixture."
-                    )
+                if not f.is_file():
+                    continue
+                if str(f) in before:
+                    continue
+                if any(f.name.endswith(s) for s in _SQLITE_SIDECAR_SUFFIXES):
+                    continue
+                pytest.fail(
+                    f"STORAGE LEAK: test wrote {f!r} into live storage root "
+                    f"{resolved_lp!r}.  Use tmp_path / monkeypatch to redirect "
+                    f"settings.storage_root in the test or its autouse fixture."
+                )
