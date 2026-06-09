@@ -127,6 +127,23 @@
   width: 4px; background: var(--ej-gold);
 }
 
+/* A4 Landscape shell (1123 × 794 px = 297 × 210 mm @96dpi) */
+.ej-a4-landscape {
+  width: 1123px;
+  min-height: 794px;          /* min-height, NOT fixed — allows natural multi-page flow */
+  background: var(--ej-paper);
+  color: var(--ej-ink);
+  font-family: var(--ej-sans);
+  font-size: 10px;
+  line-height: 1.45;
+  position: relative;
+  font-feature-settings: "ss01","cv11","tnum";
+  -webkit-font-smoothing: antialiased;
+}
+.ej-a4-landscape * { box-sizing: border-box; }
+.ej-a4-landscape .ej-pad       { padding: 28px 40px; }
+.ej-a4-landscape .ej-pad-tight { padding: 20px 32px; }
+
 /* Preview modal overlay */
 .ej-preview-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.72);

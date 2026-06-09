@@ -134,8 +134,9 @@ function ProformaPartyCard({ title, name, lines, footer, footerMuted, warn, warn
 // READ-ONLY. Never mutates draft state. Uses real docData/cmrData from ProformaDetailPage.
 // Requires: estrella-doc-tokens.css + estrella-doc-proforma.jsx + estrella-doc-cmr.jsx loaded in index.html.
 function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, packingData, onClose }) {
-  // Scale A4 (794px) to fit within 860px modal body → ~0.9 scale
-  const SCALE = 0.88;
+  // Portrait A4 (794px) → 0.88 fits 900px wrap.
+  // Landscape A4 (1123px) → 0.87 fits 1200px wrap.
+  const SCALE = activeType === 'packing' ? 0.87 : 0.88;
   const activeType = docType || 'proforma';
 
   // Variant selection per document type
@@ -170,10 +171,11 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
       data-testid="proforma-preview-modal"
     >
-      {/* A4 print CSS — hides modal chrome, resets scale, sets page size */}
+      {/* A4 print CSS — hides modal chrome, resets scale, sets page size.
+          Orientation is dynamic: landscape for Packing List, portrait for Proforma/CMR. */}
       <style>{`
         @media print {
-          @page { size: A4 portrait; margin: 0.8cm; }
+          @page { size: A4 ${activeType === 'packing' ? 'landscape' : 'portrait'}; margin: ${activeType === 'packing' ? '0.5cm' : '0.8cm'}; }
           body > *:not(.ej-preview-overlay) { display: none !important; }
           .ej-preview-overlay {
             position: static !important; background: none !important;
@@ -182,10 +184,10 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
           .ej-preview-bar { display: none !important; }
           .ej-preview-body { overflow: visible !important; height: auto !important; }
           .ej-preview-sheet { transform: none !important; transform-origin: top left !important; }
-          .ej-preview-wrap { box-shadow: none !important; }
+          .ej-preview-wrap { box-shadow: none !important; width: auto !important; }
         }
       `}</style>
-      <div className="ej-preview-wrap">
+      <div className="ej-preview-wrap" style={activeType === 'packing' ? {width: '1200px'} : {}}>
         {/* Control bar */}
         <div className="ej-preview-bar">
           <span style={{ fontWeight: 700, letterSpacing: '0.04em' }}>Print Preview</span>

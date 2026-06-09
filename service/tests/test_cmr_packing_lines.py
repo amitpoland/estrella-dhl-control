@@ -24,6 +24,7 @@ from pathlib import Path
 PROFORMA_DETAIL = Path(__file__).parent.parent / "app" / "static" / "v2" / "proforma-detail.jsx"
 CMR_DOC = Path(__file__).parent.parent / "app" / "static" / "v2" / "estrella-doc-cmr.jsx"
 PACKING_DOC = Path(__file__).parent.parent / "app" / "static" / "v2" / "estrella-doc-packing.jsx"
+TOKENS_CSS = Path(__file__).parent.parent / "app" / "static" / "v2" / "estrella-doc-tokens.css"
 INDEX_HTML = Path(__file__).parent.parent / "app" / "static" / "v2" / "index.html"
 
 
@@ -412,33 +413,72 @@ def test_packing_doc_exports_EJPackingList():
     assert "window.EJPackingList" in src, "EJPackingList not assigned to window"
 
 
-def test_packing_doc_uses_ej_a4_class():
-    """Packing List must use .ej-a4 CSS class for A4 sizing."""
+def test_packing_doc_uses_ej_a4_landscape_class():
+    """Packing List must use .ej-a4-landscape CSS class — landscape A4 (1123x794px)."""
     src = _read(PACKING_DOC)
-    assert "ej-a4" in src, ".ej-a4 class not used in packing list component"
+    assert "ej-a4-landscape" in src, ".ej-a4-landscape class not used in packing list component"
+
+
+def test_packing_doc_uses_ej_table():
+    """Packing List must use ej-table CSS class (shared table standard from tokens.css)."""
+    src = _read(PACKING_DOC)
+    assert "ej-table" in src, "ej-table class not used — packing list table must follow shared table standard"
+
+
+def test_tokens_css_defines_ej_a4_landscape():
+    """estrella-doc-tokens.css must define .ej-a4-landscape for landscape A4 shell."""
+    src = _read(TOKENS_CSS)
+    assert ".ej-a4-landscape" in src, ".ej-a4-landscape not defined in estrella-doc-tokens.css"
+    assert "1123px" in src, "1123px (landscape A4 width) not in tokens.css .ej-a4-landscape definition"
+
+
+def test_packing_doc_cmr_style_party_boxes():
+    """Packing List must use CMR Classic-style boxed party blocks with number badges."""
+    src = _read(PACKING_DOC)
+    # CMR Classic style: number badge in green circle (background: '#0B3D2E')
+    assert "0B3D2E" in src, "CMR Classic brand color (#0B3D2E) not used in packing list party blocks"
+
+
+def test_proforma_modal_landscape_orientation():
+    """ProformaPreviewModal must set @page size to landscape when packing type is active."""
+    src = _read(PROFORMA_DETAIL)
+    assert "landscape" in src, "'landscape' orientation not in ProformaPreviewModal print CSS"
+    assert "packing" in src and "landscape" in src, (
+        "ProformaPreviewModal must output A4 landscape @page rule for packing doc type"
+    )
+
+
+def test_proforma_modal_wider_wrap_for_landscape():
+    """ProformaPreviewModal must use wider wrap (1200px) when packing list is active."""
+    src = _read(PROFORMA_DETAIL)
+    assert "1200px" in src, "1200px wrap width not found in ProformaPreviewModal — needed for landscape packing list"
 
 
 def test_packing_doc_has_thirteen_column_keys():
-    """Packing List must define 13 columns: sr, ctg, client_po, design, kt, col,
+    """Packing List must reference all 13 data fields: sr, ctg, client_po, design, kt, col,
        quality, dia_wt, col_wt, qty, unit_price, total_value, size."""
     src = _read(PACKING_DOC)
-    expected_keys = ["sr", "ctg", "client_po", "design", "kt", "col",
-                     "quality", "dia_wt", "col_wt", "qty", "unit_price", "total_value", "size"]
-    for key in expected_keys:
-        assert f"'{key}'" in src or f'"{key}"' in src or f"key: '{key}'" in src or f"key: \"{key}\"" in src, (
-            f"Column key '{key}' not found in packing list column definitions"
+    # Fields are referenced as r.key in table cells (e.g. r.sr, r.ctg, r.client_po)
+    expected_fields = ["r.sr", "r.ctg", "r.client_po", "r.design", "r.kt", "r.col",
+                       "r.quality", "r.dia_wt", "r.col_wt", "r.qty", "r.unit_price",
+                       "r.total_value", "r.size"]
+    for field in expected_fields:
+        assert field in src, (
+            f"Data field '{field}' not found in packing list — "
+            f"13 columns (Sr/Category/Client PO/Design/Kt/Col/Quality/Dia Wt/Col Wt/Qty/Value/Total/Size) required"
         )
 
 
 def test_packing_doc_renders_currency_from_prop():
     """Packing List must NOT hardcode EUR — currency comes from packingData.currency."""
     src = _read(PACKING_DOC)
-    assert "d.currency" in src or "packingData.currency" in src or "cur" in src, (
+    assert "d.currency" in src or "packingData.currency" in src, (
         "Packing list must derive currency from data prop, not hardcode EUR"
     )
-    # Specifically, the currency constant must be set from the prop
-    assert "d.currency ||" in src or "packingData.currency ||" in src, (
-        "Currency must fall back to 'EUR' only as default, not be hardcoded throughout"
+    # The currency constant must fall back to 'EUR' as a default, not be hardcoded everywhere
+    # Allow flexible whitespace between d.currency and || (e.g. "d.currency   ||" with alignment spaces)
+    assert re.search(r"d\.currency\s*\|\|", src) or re.search(r"packingData\.currency\s*\|\|", src), (
+        "Currency must fall back to 'EUR' only as default (d.currency || 'EUR'), not be hardcoded throughout"
     )
 
 
