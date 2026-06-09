@@ -969,7 +969,7 @@ async def reprocess_packing_documents(
 
     # Collect candidate shipment_documents rows.
     candidates: List[Dict[str, Any]] = []
-    for dtype in ("purchase_packing_list", "sales_packing_list"):
+    for dtype in ("purchase_packing_list", "sales_packing_list", "packing"):
         rows = _ddb.get_documents_for_batch(batch_id, document_type=dtype) or []
         for r in rows:
             if only_doc_id and r.get("id") != only_doc_id:
@@ -1369,6 +1369,44 @@ async def reprocess_packing_documents(
                     )
                     result_entry["diagnostic_artifact"] = str(art) if art else None
                 sum_sales += result_entry["rows_extracted"]
+
+            # ── Packing (xlsx/xls Client): diagnostic-only refresh ───────
+            elif document_type == "packing":
+                # These documents carry parser_diagnostic_json but are NOT
+                # purchase or sales packing lines — they are client-facing
+                # xlsx/xls files uploaded alongside the purchase Poland xls.
+                # Refresh column_mapping_audit and all observability fields
+                # so the column-mapping UI shows current data for files that
+                # pre-date PR #524 (which added _map_headers_with_audit).
+                # Hard safety rules:
+                #   - NO packing_lines, sales records, or wFirma records modified.
+                #   - NO business outputs changed.
+                #   - Writes ONLY parser_diagnostic_json in packing_documents.
+                #   - Idempotent: re-running produces the same diagnostic.
+                _, _, _, packing_diag = extract_packing(file_path)
+
+                # Locate the packing_documents row by batch + source path.
+                # (packing_documents has no document_type column — match via
+                # source_file_path, set at intake time to the same on-disk path.)
+                pdb_docs = pdb.get_packing_documents_for_batch(batch_id)
+                pdb_doc  = next(
+                    (d for d in pdb_docs
+                     if d.get("source_file_path") == str(file_path)),
+                    None,
+                )
+                if pdb_doc:
+                    pdb.update_packing_document_diagnostic(pdb_doc["id"], packing_diag)
+                    result_entry["document_id"] = pdb_doc["id"]
+
+                audit_count = len(packing_diag.get("column_mapping_audit") or [])
+                result_entry["rows_extracted"]             = 0
+                result_entry["parser_status"]              = "diagnostic_refreshed"
+                result_entry["failure_reason"]             = packing_diag.get("failure_reason")
+                result_entry["column_mapping_audit_count"] = audit_count
+                log.info(
+                    "[%s] packing diagnostic refresh: file=%s audit_entries=%d",
+                    batch_id, file_name, audit_count,
+                )
 
             else:
                 result_entry["parser_status"]  = "skipped_unsupported_type"

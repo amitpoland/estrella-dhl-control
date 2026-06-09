@@ -64,6 +64,7 @@ def test_new_diagnostic_skeleton_has_all_keys():
         "candidate_header_rows", "chosen_header", "mapped_columns",
         "unmatched_columns", "alias_hits", "row_count",
         "failure_reason", "exception_class", "exception_message",
+        "column_mapping_audit",
     ):
         assert k in diag, f"missing schema key {k}"
 
@@ -126,6 +127,86 @@ def test_valid_packing_xlsx_yields_chosen_header(tmp_path):
     canonical_fields = {m["canonical_field"] for m in diag["mapped_columns"]}
     assert "quantity" in canonical_fields
     assert "design_no" in canonical_fields
+
+
+def test_valid_packing_xlsx_populates_column_mapping_audit(tmp_path):
+    """extract_packing on an xlsx with EJL-style headers must populate
+    column_mapping_audit with at least one entry per column, each carrying
+    the required schema fields.  Verifies the _map_headers_with_audit path
+    through _extract_packing_excel sets the audit list (not the fallback
+    in _collect_excel_diagnostic, which only fires on exception paths)."""
+    rows_in = [
+        ["Invoice #", "EJL/TEST/002"],
+        [],
+        ["PkSr", "Ctg", "DesignNo", "Kt/Color", "Quality",
+         "Dia Wt", "Col Wt", "Qty", "Value", "Total Value", "Size"],
+        [1, "PND", "PND-001", "14KT/W", "G-VS",
+         0.50, 0.10, 5, 100.0, 500.0, "7"],
+    ]
+    p = _real_xlsx(tmp_path, "audit_ejl.xlsx", rows_in)
+    _, _, _, diag = extract_packing(p)
+
+    audit = diag.get("column_mapping_audit")
+    assert isinstance(audit, list), "column_mapping_audit must be a list"
+    assert len(audit) > 0, "column_mapping_audit must be non-empty for recognisable headers"
+
+    # Every entry must carry the required schema fields.
+    _REQUIRED = {"col_index", "original_header", "normalised",
+                 "canonical_field", "method", "confidence", "reason"}
+    for entry in audit:
+        missing = _REQUIRED - set(entry.keys())
+        assert not missing, f"audit entry missing keys {missing}: {entry}"
+
+    # At least Qty and DesignNo should resolve via alias.
+    alias_fields = {
+        e["canonical_field"]
+        for e in audit
+        if e.get("method") == "alias" and e.get("canonical_field")
+    }
+    assert "quantity" in alias_fields, \
+        f"'quantity' not in alias_fields; got {alias_fields}"
+    assert "design_no" in alias_fields, \
+        f"'design_no' not in alias_fields; got {alias_fields}"
+
+    # audit count must match header column count (one entry per column).
+    hdr_row = rows_in[2]
+    assert len(audit) == len(hdr_row), (
+        f"audit entries ({len(audit)}) must equal header column count ({len(hdr_row)})"
+    )
+
+
+def test_valid_packing_xlsx_audit_independent_of_collect_diagnostic(tmp_path):
+    """column_mapping_audit is set by _extract_packing_excel (before
+    _collect_excel_diagnostic runs).  _collect_excel_diagnostic must not
+    overwrite an already-populated audit list (idempotency guard)."""
+    from app.services.invoice_packing_extractor import (
+        _extract_packing_excel, _collect_excel_diagnostic, _new_diagnostic,
+    )
+
+    rows_in = [
+        ["Invoice #", "EJL/TEST/003"],
+        [],
+        ["PkSr", "Ctg", "DesignNo", "Kt/Color", "Quality",
+         "Dia Wt", "Col Wt", "Qty", "Value", "Total Value", "Size"],
+        [1, "PND", "PND-002", "18KT/Y", "G-VVS",
+         0.30, 0.05, 2, 80.0, 160.0, "6"],
+    ]
+    p = _real_xlsx(tmp_path, "idempotent_ejl.xlsx", rows_in)
+
+    diag = _new_diagnostic(".xlsx")
+    _extract_packing_excel(p, engine="openpyxl", _audit_dict=diag)
+    audit_after_extract = list(diag.get("column_mapping_audit", []))
+    assert len(audit_after_extract) > 0, \
+        "_extract_packing_excel must populate column_mapping_audit"
+
+    # Now run _collect_excel_diagnostic — the guard must prevent overwrite.
+    _collect_excel_diagnostic(p, "openpyxl", diag)
+    audit_after_collect = diag.get("column_mapping_audit", [])
+
+    assert len(audit_after_collect) == len(audit_after_extract), (
+        "_collect_excel_diagnostic must not overwrite column_mapping_audit "
+        f"set by _extract_packing_excel: {len(audit_after_extract)} → {len(audit_after_collect)}"
+    )
 
 
 # ── Artifact writer ──────────────────────────────────────────────────────

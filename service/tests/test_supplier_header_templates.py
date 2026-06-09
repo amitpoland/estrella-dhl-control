@@ -511,3 +511,89 @@ def test_supplier_template_beats_fuzzy_on_reuse(tmp_db):
     assert tier0[0].canonical_field == "metal_color"
     # fuzzy/alias row for SomeFuzzyMatch must still be present
     assert any(m.method != "supplier_template" for m in mappings)
+
+
+# ── column_mapping_audit populated for xlsx (regression: 2026-06-09) ─────────
+
+def _make_ejl_xlsx(tmp_path: Path) -> Path:
+    """Create a minimal EJL-style xlsx packing list in tmp_path.
+
+    Row 0: invoice label preamble
+    Row 1: header row with qty + design columns (passes _find_header_row)
+    Rows 2-3: data rows
+    """
+    openpyxl = pytest.importorskip("openpyxl")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Invoice #", "EJL/26-27/999"])          # preamble
+    ws.append(["PkSr", "Ctg", "DesignNo", "Qty", "Value", "Gross Wt"])  # header
+    ws.append([1, "RNG", "D-001", 2, 150.0, 5.0])
+    ws.append([2, "PND", "D-002", 1, 200.0, 3.5])
+    out = tmp_path / "test_packing.xlsx"
+    wb.save(str(out))
+    return out
+
+
+def test_xlsx_extract_packing_populates_column_mapping_audit(tmp_path):
+    """extract_packing on an xlsx file must return a non-empty column_mapping_audit.
+
+    Regression: 2026-06-09 — xlsx diagnostic showed alias_hits=13 but
+    column_mapping_audit: [] because _collect_excel_diagnostic didn't populate it
+    when _extract_packing_excel returned early or threw before line 783.
+    """
+    from app.services.invoice_packing_extractor import extract_packing
+
+    xlsx_path = _make_ejl_xlsx(tmp_path)
+    _, _, _, diag = extract_packing(xlsx_path)
+
+    assert "column_mapping_audit" in diag, (
+        "column_mapping_audit key must always be present in xlsx diagnostic"
+    )
+    audit = diag["column_mapping_audit"]
+    assert isinstance(audit, list), "column_mapping_audit must be a list"
+    assert len(audit) > 0, (
+        "column_mapping_audit must be non-empty when header row is found (xlsx)"
+    )
+
+    # Each entry must carry the required fields
+    required_keys = {"col_index", "original_header", "normalised",
+                     "canonical_field", "method", "confidence", "reason"}
+    for entry in audit:
+        missing = required_keys - set(entry.keys())
+        assert not missing, (
+            f"column_mapping_audit entry missing keys {missing}: {entry}"
+        )
+
+    # At least one mapped column must be present (qty / design found in header)
+    mapped = [e for e in audit if e["canonical_field"] is not None]
+    assert len(mapped) > 0, (
+        "At least one column must resolve to a canonical field for the EJL test xlsx"
+    )
+
+    # method field must be a known value
+    known_methods = {"supplier_template", "alias", "fuzzy", "fuzzy_warning",
+                     "llm", "unresolved"}
+    for entry in audit:
+        assert entry["method"] in known_methods, (
+            f"Unknown method '{entry['method']}' in column_mapping_audit"
+        )
+
+
+def test_xlsx_column_mapping_audit_not_overwritten_when_already_set(tmp_path):
+    """If _extract_packing_excel already populated column_mapping_audit, the
+    observability pass (_collect_excel_diagnostic) must not overwrite it.
+    """
+    from app.services.invoice_packing_extractor import extract_packing
+
+    xlsx_path = _make_ejl_xlsx(tmp_path)
+    _, _, _, diag = extract_packing(xlsx_path)
+
+    audit = diag.get("column_mapping_audit", [])
+    assert len(audit) > 0, "Precondition: audit must be populated"
+
+    # Re-run and verify the content is stable (not clobbered by a second pass)
+    _, _, _, diag2 = extract_packing(xlsx_path)
+    audit2 = diag2.get("column_mapping_audit", [])
+    assert len(audit2) == len(audit), (
+        "column_mapping_audit length must be stable across repeated extract_packing calls"
+    )
