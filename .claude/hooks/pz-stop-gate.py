@@ -32,6 +32,18 @@ import sys
 import subprocess
 
 
+# Force UTF-8 on stdout/stderr so the em-dash RED message cannot
+# UnicodeEncodeError on a cp1252 Windows console. A crash here would
+# return non-zero with garbled output AND, because main() catches
+# Exception and returns 0, would silently fail-open — the gate would
+# effectively not fire. errors="replace" guarantees forward progress.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+
 def _repo_root():
     here = os.path.dirname(os.path.abspath(__file__))
     return os.path.normpath(os.path.join(here, "..", ".."))

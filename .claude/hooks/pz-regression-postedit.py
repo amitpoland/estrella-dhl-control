@@ -37,6 +37,18 @@ import subprocess
 import shlex
 
 
+# Force UTF-8 on stdout/stderr so non-ASCII tail output (box-drawing, ✅,
+# em-dash) cannot UnicodeEncodeError on a cp1252 Windows console. A crash
+# here would fall through Python's default exception handler and exit
+# non-zero with garbled output — and worse, leave the suite-result state
+# unrecorded. errors="replace" guarantees forward progress on any byte.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+
 def _read_stdin_json():
     try:
         raw = sys.stdin.buffer.read().decode("utf-8-sig", errors="replace")
