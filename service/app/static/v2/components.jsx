@@ -368,9 +368,9 @@ function PageHeader({ title, subtitle, actions }) {
   );
 }
 
-function Card({ children, style, onClick }) {
+function Card({ children, style, onClick, ...rest }) {
   return (
-    <div onClick={onClick} style={{
+    <div onClick={onClick} {...rest} style={{
       background: 'var(--card)', borderRadius: 8,
       border: '1px solid var(--border)',
       boxShadow: '0 1px 3px var(--shadow)',
@@ -379,7 +379,10 @@ function Card({ children, style, onClick }) {
   );
 }
 
-function Btn({ children, onClick, variant = 'default', small, disabled, style: extraStyle }) {
+// Forwards `...rest` (data-testid, title, aria-*) to the <button> element —
+// same contract as the Btn in v2/dashboard-shared.js. Without this, every
+// data-testid placed on a Btn usage silently vanishes from the rendered DOM.
+function Btn({ children, onClick, variant = 'default', small, disabled, style: extraStyle, ...rest }) {
   const variants = {
     default: { background: 'var(--text)', color: 'var(--card)', border: '1px solid var(--text)' },
     gold:    { background: 'var(--accent)', color: 'var(--accent-text)', border: '1px solid var(--accent)' },
@@ -390,7 +393,7 @@ function Btn({ children, onClick, variant = 'default', small, disabled, style: e
   };
   const v = variants[variant] || variants.default;
   return (
-    <button onClick={onClick} disabled={disabled} style={{
+    <button onClick={onClick} disabled={disabled} {...rest} style={{
       ...v, borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer',
       padding: small ? '4px 10px' : '7px 14px',
       fontSize: small ? 11 : 12, fontWeight: 600,
@@ -436,9 +439,9 @@ function FormField({ label, children, hint }) {
   );
 }
 
-function Input({ value, onChange, placeholder, type = 'text', style: s }) {
+function Input({ value, onChange, placeholder, type = 'text', style: s, ...rest }) {
   return (
-    <input value={value} onChange={onChange} placeholder={placeholder} type={type} style={{
+    <input value={value} onChange={onChange} placeholder={placeholder} type={type} {...rest} style={{
       width: '100%', padding: '8px 10px', borderRadius: 6,
       border: '1px solid var(--border)', fontSize: 12, color: 'var(--text)',
       background: 'var(--bg-subtle)', outline: 'none', boxSizing: 'border-box', ...s,
