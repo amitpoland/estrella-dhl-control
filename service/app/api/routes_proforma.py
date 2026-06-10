@@ -5816,6 +5816,372 @@ def post_bulk_price_recovery(
     })
 
 
+# ── PR B — customer address + service-charge authority ───────────────────────
+
+
+def _resolve_cm_for_draft(draft_id: int):
+    """Resolve Customer Master for a draft without currency requirements.
+
+    Returns ``(draft, cm | None, blocked_reason | None)``.
+    Uses buyer_override.wfirma_customer_id first (explicit selection),
+    then falls back to _resolve_customer name resolution.
+    """
+    d = pildb.get_draft_by_id(_proforma_db_path(), draft_id)
+    if d is None:
+        return None, None, f"draft id={draft_id} not found"
+
+    try:
+        buyer_override = json.loads(d.buyer_override_json or "{}") or {}
+    except Exception:
+        buyer_override = {}
+
+    override_cid = (buyer_override.get("wfirma_customer_id") or "").strip()
+    if override_cid:
+        cm = get_customer_master(_customer_master_db_path(), override_cid)
+        if cm is None:
+            return d, None, (
+                f"Customer Master record not found for contractor_id={override_cid!r} "
+                "stored in buyer_override — re-select the correct buyer"
+            )
+        return d, cm, None
+
+    resolution = _resolve_customer(d.client_name)
+    if not resolution.get("found") or not resolution.get("wfirma_customer_id"):
+        return d, None, (
+            f"customer {d.client_name!r} not found in Customer Master — "
+            "use the Customer Mapping tab to link this client first"
+        )
+
+    cm = get_customer_master(_customer_master_db_path(), resolution["wfirma_customer_id"])
+    if cm is None:
+        return d, None, (
+            f"Customer Master record missing for contractor_id="
+            f"{resolution['wfirma_customer_id']!r} (client {d.client_name!r})"
+        )
+    return d, cm, None
+
+
+@router.post("/draft/{draft_id}/apply-customer-address", dependencies=[_auth],
+             summary="Project Customer Master bill-to/ship-to onto the draft as buyer_override")
+def apply_customer_address(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Apply Customer Master address data as buyer_override (and optionally ship_to_override).
+
+    Reads the Customer Master linked to this draft and writes its
+    bill_to / ship_to fields into the draft overrides.  The Customer
+    Master record itself is NEVER modified.
+
+    Body::
+
+        {
+          "expected_updated_at": "2026-06-10T09:00:00+00:00",
+          "clear_ship_to": false    // optional; true = also clear ship_to_override
+        }
+
+    Response: full draft object wrapped in {"ok": true, "draft": {...}}.
+
+    Blocked when:
+    - No Customer Master record is linked or resolvable (404)
+    - Draft is in a non-editable state (409)
+    - Optimistic-lock conflict (409)
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+
+    d, cm, blocked = _resolve_cm_for_draft(draft_id)
+    if blocked:
+        raise HTTPException(status_code=404, detail=blocked)
+
+    # Build buyer_override from Customer Master
+    buyer_override: Dict[str, Any] = {
+        "name":               cm.bill_to_name or "",
+        "street":             cm.bill_to_street or "",
+        "city":               cm.bill_to_city or "",
+        "zip":                cm.bill_to_postal_code or "",
+        "country":            cm.country or "",
+        "nip":                cm.nip or "",
+        "vat_id":             cm.vat_eu_number or "",
+        "email":              cm.bill_to_email or "",
+        "phone":              cm.bill_to_phone or "",
+        "wfirma_customer_id": cm.bill_to_contractor_id,
+        "_source":            "customer_master",
+    }
+
+    # Ship-to override: written when Customer Master has an alternate address
+    ship_to_override: Optional[Dict[str, Any]] = None
+    if cm.ship_to_use_alternate:
+        ship_to_override = {
+            "name":    cm.ship_to_name    or cm.bill_to_name or "",
+            "street":  cm.ship_to_street  or "",
+            "city":    cm.ship_to_city    or "",
+            "zip":     cm.ship_to_zip     or "",
+            "country": cm.ship_to_country or cm.country or "",
+            "phone":   cm.ship_to_phone   or "",
+            "email":   cm.ship_to_email   or "",
+        }
+    elif body.get("clear_ship_to"):
+        # Caller requested explicit clear
+        ship_to_override = {}
+
+    return _draft_edit_dispatch(draft_id, lambda: pildb.apply_customer_address_to_draft(
+        _proforma_db_path(),
+        int(draft_id),
+        cm_name            = cm.bill_to_name,
+        cm_contractor_id   = cm.bill_to_contractor_id,
+        buyer_override     = buyer_override,
+        ship_to_override   = ship_to_override,
+        operator           = operator,
+        expected_updated_at= expected,
+    ))
+
+
+@router.get("/draft/{draft_id}/suggest-service-charges", dependencies=[_auth],
+            summary="Combined freight + insurance suggestion from Customer Master")
+def suggest_service_charges(draft_id: int) -> JSONResponse:
+    """Return a combined freight + insurance suggestion for a single API call.
+
+    Internally calls the same logic as /suggest-freight and /suggest-insurance
+    and bundles both results together.  Also inspects the draft's existing
+    service_charges to populate the ``already_applied`` flag per charge type.
+
+    Response shape::
+
+        {
+          "ok": true,
+          "draft_id": 42,
+          "draft_currency": "EUR",
+          "freight": {
+            "available": true,
+            "already_applied": false,
+            "amount": "120.00",
+            "currency": "EUR",
+            "label": "FedEx Courier",
+            "wfirma_service_id": "13002743",
+            "blocked_reason": null
+          },
+          "insurance": {
+            "available": false,
+            "already_applied": false,
+            "amount": null,
+            "currency": null,
+            "label": null,
+            "wfirma_service_id": null,
+            "blocked_reason": "insurance_enabled=false for this customer"
+          }
+        }
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+
+    d, draft_currency, cm, blocked_reason = _suggest_lookup(draft_id)
+    base = {"draft_id": draft_id, "draft_currency": draft_currency or ""}
+
+    if blocked_reason:
+        return JSONResponse({
+            **base, "ok": False,
+            "freight":   {"available": False, "already_applied": False, "blocked_reason": blocked_reason},
+            "insurance": {"available": False, "already_applied": False, "blocked_reason": blocked_reason},
+        })
+
+    # Which types are already on the draft?
+    import json as _j
+    try:
+        existing_charges = _j.loads(d.service_charges_json or "[]") or []
+    except Exception:
+        existing_charges = []
+    applied_types = {(c.get("charge_type") or "").lower() for c in existing_charges}
+
+    # Freight suggestion
+    freight_result = pick_freight(cm, draft_currency)
+    if freight_result.get("ok"):
+        from decimal import Decimal as _Dec
+        freight_entry = {
+            "available":       True,
+            "already_applied": "freight" in applied_types,
+            "amount":          str(freight_result["amount"]),
+            "currency":        draft_currency,
+            "label":           freight_result.get("label"),
+            "wfirma_service_id": freight_result["wfirma_service_id"],
+            "blocked_reason":  None,
+        }
+    else:
+        freight_entry = {
+            "available":       False,
+            "already_applied": "freight" in applied_types,
+            "amount":          None,
+            "currency":        None,
+            "label":           None,
+            "wfirma_service_id": None,
+            "blocked_reason":  freight_result.get("reason", "no freight data"),
+        }
+
+    # Insurance suggestion (needs sales total for formula mode)
+    try:
+        lines = _j.loads(d.editable_lines_json or "[]") or []
+    except Exception:
+        lines = []
+    from decimal import Decimal as _Dec
+    sales_total = sum(
+        _Dec(str(ln.get("qty", 0) or 0)) * _Dec(str(ln.get("unit_price", 0) or 0))
+        for ln in lines
+    )
+    ins_result = compute_insurance_suggestion(cm, draft_currency, sales_total)
+    if ins_result.get("ok"):
+        ins_entry = {
+            "available":       True,
+            "already_applied": "insurance" in applied_types,
+            "amount":          str(ins_result["amount"]),
+            "currency":        draft_currency,
+            "label":           ins_result.get("label"),
+            "wfirma_service_id": ins_result["wfirma_service_id"],
+            "formula_basis":   ins_result.get("formula_basis"),
+            "blocked_reason":  None,
+        }
+    else:
+        ins_entry = {
+            "available":       False,
+            "already_applied": "insurance" in applied_types,
+            "amount":          None,
+            "currency":        None,
+            "label":           None,
+            "wfirma_service_id": None,
+            "formula_basis":   None,
+            "blocked_reason":  ins_result.get("reason", "no insurance data"),
+        }
+
+    return JSONResponse({**base, "ok": True, "freight": freight_entry, "insurance": ins_entry})
+
+
+@router.post("/draft/{draft_id}/apply-service-charges", dependencies=[_auth],
+             summary="Apply Customer Master freight/insurance as service charges")
+def apply_service_charges(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Apply Customer Master freight and/or insurance as draft service charges.
+
+    Idempotent: a charge type that already exists on the draft is skipped
+    (returned in ``skipped``) rather than raising an error.
+
+    Body::
+
+        {
+          "expected_updated_at": "2026-06-10T09:00:00+00:00",
+          "apply": ["freight", "insurance"]   // one or both
+        }
+
+    Response::
+
+        {
+          "ok": true,
+          "draft_id": 42,
+          "applied":  [{"charge_type": "freight", "amount": "120.00", ...}],
+          "skipped":  [{"charge_type": "insurance", "reason": "insurance_enabled=false ..."}],
+          "draft":    { ... full draft object ... }
+        }
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+    apply_types = [str(t).lower() for t in (body.get("apply") or [])]
+    if not apply_types:
+        raise HTTPException(status_code=400, detail="apply list must be non-empty")
+    unknown = [t for t in apply_types if t not in {"freight", "insurance"}]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown charge type(s): {unknown}")
+
+    d, draft_currency, cm, blocked_reason = _suggest_lookup(draft_id)
+    if blocked_reason:
+        raise HTTPException(status_code=409, detail=blocked_reason)
+
+    import json as _j
+    try:
+        existing_charges = _j.loads(d.service_charges_json or "[]") or []
+    except Exception:
+        existing_charges = []
+    applied_types_now = {(c.get("charge_type") or "").lower() for c in existing_charges}
+
+    # Compute suggestions for requested types
+    from decimal import Decimal as _Dec
+    try:
+        lines = _j.loads(d.editable_lines_json or "[]") or []
+    except Exception:
+        lines = []
+    sales_total = sum(
+        _Dec(str(ln.get("qty", 0) or 0)) * _Dec(str(ln.get("unit_price", 0) or 0))
+        for ln in lines
+    )
+    suggestions: Dict[str, Any] = {}
+    if "freight" in apply_types:
+        suggestions["freight"] = pick_freight(cm, draft_currency)
+    if "insurance" in apply_types:
+        suggestions["insurance"] = compute_insurance_suggestion(cm, draft_currency, sales_total)
+
+    applied: list = []
+    skipped: list = []
+    current_updated_at = expected
+
+    for ctype in apply_types:
+        if ctype in applied_types_now:
+            skipped.append({"charge_type": ctype, "reason": f"{ctype} charge already exists on this draft"})
+            continue
+        suggestion = suggestions.get(ctype, {})
+        if not suggestion.get("ok"):
+            skipped.append({"charge_type": ctype, "reason": suggestion.get("reason", f"no {ctype} data")})
+            continue
+
+        charge = {
+            "charge_type":       ctype,
+            "amount":            float(suggestion["amount"]),
+            "currency":          draft_currency,
+            "label":             suggestion.get("label") or "",
+            "wfirma_service_id": suggestion.get("wfirma_service_id"),
+        }
+        if ctype == "insurance" and suggestion.get("formula_basis"):
+            charge["formula_basis"] = suggestion["formula_basis"]
+
+        try:
+            refreshed = pildb.add_draft_service_charge(
+                _proforma_db_path(),
+                int(draft_id),
+                charge,
+                operator,
+                current_updated_at,
+            )
+            # Chain updated_at so next add uses the refreshed timestamp
+            current_updated_at = refreshed.updated_at or current_updated_at
+            applied_types_now.add(ctype)
+            applied.append({**charge, "charge_id": next(
+                c["charge_id"] for c in (json.loads(refreshed.service_charges_json or "[]") or [])
+                if c.get("charge_type") == ctype
+            )})
+            d = refreshed  # keep in sync for final response
+        except (pildb.DraftNotFound, pildb.DraftConflict, pildb.DraftNotEditable) as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except ValueError as exc:
+            # Duplicate detected concurrently or other validation error
+            skipped.append({"charge_type": ctype, "reason": str(exc)})
+
+    return JSONResponse({
+        "ok":       True,
+        "draft_id": draft_id,
+        "applied":  applied,
+        "skipped":  skipped,
+        "draft":    _draft_to_full(d),
+    })
+
+
 # ── PR 2C.3b — customer-master suggestions ────────────────────────────────────
 
 def _suggest_lookup(draft_id: int):

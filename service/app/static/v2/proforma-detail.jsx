@@ -697,6 +697,17 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [approving,        setApproving]         = React.useState(false);
   const [approveError,     setApproveError]      = React.useState(null);
 
+  // PR B — Customer address + service-charge authority
+  const [buyerEditOpen,    setBuyerEditOpen]     = React.useState(false);
+  const [buyerEditFields,  setBuyerEditFields]   = React.useState({});
+  const [buyerEditSaving,  setBuyerEditSaving]   = React.useState(false);
+  const [buyerEditError,   setBuyerEditError]    = React.useState(null);
+  const [addrApplying,     setAddrApplying]      = React.useState(false);
+  const [addrApplyError,   setAddrApplyError]    = React.useState(null);
+  const [chargeSuggestion, setChargeSuggestion]  = React.useState(null);  // null | response obj
+  const [chargesLoading,   setChargesLoading]    = React.useState(false);
+  const [chargesApplying,  setChargesApplying]   = React.useState(null);  // 'freight'|'insurance'|null
+
   // WIRED: fetch full draft detail (GET /api/v1/proforma/draft/{id})
   const draftHook = window.PzState.useDraft(draft && draft.id);
   const liveDraft = (draftHook.data && draftHook.data.draft) ? draftHook.data.draft : (draft || {});
@@ -1244,6 +1255,86 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       });
   };
 
+  // PR B — Load from Customer Master
+  const handleApplyCustomerAddress = () => {
+    if (addrApplying) return;
+    setAddrApplying(true);
+    setAddrApplyError(null);
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    window.PzApi.applyCustomerAddress(id, updatedAt)
+      .then(r => {
+        if (r && r.ok) {
+          draftHook && draftHook.reload && draftHook.reload();
+        } else {
+          setAddrApplyError((r && r.error) || 'Could not apply Customer Master address.');
+        }
+      })
+      .catch(e => setAddrApplyError(e.message || 'Network error'))
+      .finally(() => setAddrApplying(false));
+  };
+
+  // PR B — Fetch service-charge suggestions
+  const handleFetchChargeSuggestions = () => {
+    if (chargesLoading) return;
+    setChargesLoading(true);
+    const id = liveDraft.id || (draft && draft.id);
+    window.PzApi.suggestServiceCharges(id)
+      .then(r => {
+        if (r && r.ok !== false) {
+          setChargeSuggestion(r);
+        } else {
+          setChargeSuggestion({ error: (r && r.error) || 'Could not load suggestions.' });
+        }
+      })
+      .catch(e => setChargeSuggestion({ error: e.message || 'Network error' }))
+      .finally(() => setChargesLoading(false));
+  };
+
+  // PR B — Apply individual charge type from suggestion
+  const handleApplyCharge = (type) => {
+    if (chargesApplying) return;
+    setChargesApplying(type);
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    window.PzApi.applyServiceCharges(id, [type], updatedAt)
+      .then(r => {
+        if (r && r.ok !== false) {
+          draftHook && draftHook.reload && draftHook.reload();
+          setChargeSuggestion(null);
+        } else {
+          setChargeSuggestion(prev => ({ ...(prev || {}), applyError: (r && r.error) || 'Apply failed.' }));
+        }
+      })
+      .catch(e => setChargeSuggestion(prev => ({ ...(prev || {}), applyError: e.message || 'Network error' })))
+      .finally(() => setChargesApplying(null));
+  };
+
+  // PR B — Save buyer edit from modal
+  const handleBuyerEditSave = () => {
+    if (buyerEditSaving) return;
+    setBuyerEditSaving(true);
+    setBuyerEditError(null);
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    const patch = { buyer_override: { ...buyerEditFields, _source: 'manual' } };
+    window.PzApi.patchDraft(id, patch, updatedAt)
+      .then(r => {
+        setBuyerEditSaving(false);
+        if (r && r.ok) {
+          setBuyerEditOpen(false);
+          setBuyerEditFields({});
+          draftHook && draftHook.reload && draftHook.reload();
+        } else {
+          setBuyerEditError((r && r.error) || 'Save failed.');
+        }
+      })
+      .catch(e => {
+        setBuyerEditSaving(false);
+        setBuyerEditError(e.message || 'Network error');
+      });
+  };
+
   return (
     <div data-testid="proforma-detail-root" style={{ flex: 1, overflowY: 'auto', background: 'var(--bg)', padding: '20px 24px 60px' }}>
 
@@ -1483,6 +1574,109 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         </div>
       </div>
 
+      {/* ── Address authority bar ──────────────────────────────────────────── */}
+      {(() => {
+        const addrSource = bo._source === 'customer_master' ? 'customer_master'
+          : (bo.name || bo.street) ? 'manual' : 'none';
+        const addrSourceLabel = addrSource === 'customer_master'
+          ? { text: 'Customer Master', color: 'var(--accent)' }
+          : addrSource === 'manual'
+          ? { text: 'Manual', color: 'var(--text-2)' }
+          : { text: 'Not set', color: 'var(--text-3, #aaa)' };
+        const lockedForEdit = !canEdit;
+        const hasOverride = !!(bo.name || bo.street);
+        return (
+          <div data-testid="address-authority-bar" style={{
+            background: 'var(--card)',
+            borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+            borderBottom: '1px solid var(--border)',
+            padding: '8px 24px',
+            display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+          }}>
+            <span style={{ fontSize: 12, color: 'var(--text-2)', marginRight: 4 }}>Address authority:</span>
+            <span data-testid="addr-source-badge" style={{
+              fontSize: 11, fontWeight: 700, color: addrSourceLabel.color,
+              background: 'var(--bg)', border: '1px solid var(--border)',
+              borderRadius: 4, padding: '1px 7px',
+            }}>{addrSourceLabel.text}</span>
+
+            <button
+              data-testid="btn-load-from-cm"
+              disabled={lockedForEdit || addrApplying}
+              title={lockedForEdit
+                ? `Cannot apply Customer Master: draft is in '${draftState}' state`
+                : 'Apply billing/shipping address from Customer Master to this draft'}
+              onClick={handleApplyCustomerAddress}
+              style={{
+                fontSize: 12, padding: '3px 10px', marginLeft: 4,
+                background: lockedForEdit ? 'var(--bg)' : 'var(--accent)',
+                color: lockedForEdit ? 'var(--text-2)' : '#fff',
+                border: '1px solid var(--border)', borderRadius: 4,
+                cursor: lockedForEdit ? 'not-allowed' : 'pointer',
+                opacity: lockedForEdit ? 0.5 : 1,
+              }}
+            >{addrApplying ? '⏳ Applying…' : '↓ Load from Customer Master'}</button>
+
+            <button
+              data-testid="btn-edit-bill-to"
+              disabled={lockedForEdit}
+              title={lockedForEdit
+                ? `Cannot edit: draft is in '${draftState}' state`
+                : 'Manually edit bill-to fields'}
+              onClick={() => {
+                setBuyerEditFields({
+                  name:    bo.name    || '',
+                  street:  bo.street  || '',
+                  city:    bo.city    || '',
+                  zip:     bo.zip     || '',
+                  country: bo.country || '',
+                  vat_id:  bo.vat_id  || '',
+                });
+                setBuyerEditError(null);
+                setBuyerEditOpen(true);
+              }}
+              style={{
+                fontSize: 12, padding: '3px 10px',
+                background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
+                border: '1px solid var(--border)', borderRadius: 4,
+                cursor: lockedForEdit ? 'not-allowed' : 'pointer',
+                opacity: lockedForEdit ? 0.5 : 1,
+              }}
+            >✎ Edit Bill-to</button>
+
+            {hasOverride && (
+              <button
+                data-testid="btn-clear-buyer-override"
+                disabled={lockedForEdit}
+                title={lockedForEdit
+                  ? `Cannot clear: draft is in '${draftState}' state`
+                  : 'Clear buyer address override — revert to draft client name only'}
+                onClick={() => {
+                  if (lockedForEdit) return;
+                  const id = liveDraft.id || (draft && draft.id);
+                  const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+                  window.PzApi.patchDraft(id, { buyer_override: {} }, updatedAt)
+                    .then(r => r && r.ok && draftHook && draftHook.reload && draftHook.reload());
+                }}
+                style={{
+                  fontSize: 12, padding: '3px 10px',
+                  background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
+                  border: '1px solid var(--border)', borderRadius: 4,
+                  cursor: lockedForEdit ? 'not-allowed' : 'pointer',
+                  opacity: lockedForEdit ? 0.5 : 1,
+                }}
+              >✕ Clear override</button>
+            )}
+
+            {addrApplyError && (
+              <span data-testid="addr-apply-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginLeft: 4 }}>
+                {addrApplyError}
+              </span>
+            )}
+          </div>
+        );
+      })()}
+
       {/* ── Tab strip ──────────────────────────────────────────────────────── */}
       <div style={{
         display: 'flex', gap: 0, padding: '0 24px',
@@ -1512,18 +1706,36 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         boxShadow: '0 4px 12px var(--shadow)',
       }}>
         {activeTab === 'overview' && (
-          <ProformaOverviewTab
-            detail={detail}
-            lines={lines}
-            fxRate={fxRate}
-            vatResolution={vatResolution}
-            blockingReasons={blockingReasons}
-            exportBlockers={exportBlockers}
-            editMode={editMode}
-            editFields={editFields}
-            onEditField={(k, v) => setEditFields(prev => ({ ...prev, [k]: v }))}
-            editError={editError}
-          />
+          <React.Fragment>
+            <ProformaOverviewTab
+              detail={detail}
+              lines={lines}
+              fxRate={fxRate}
+              vatResolution={vatResolution}
+              blockingReasons={blockingReasons}
+              exportBlockers={exportBlockers}
+              editMode={editMode}
+              editFields={editFields}
+              onEditField={(k, v) => setEditFields(prev => ({ ...prev, [k]: v }))}
+              editError={editError}
+            />
+            <ServiceChargesPanel
+              charges={liveDraft.service_charges || []}
+              canEdit={canEdit}
+              draftState={draftState}
+              suggestion={chargeSuggestion}
+              chargesLoading={chargesLoading}
+              chargesApplying={chargesApplying}
+              onFetchSuggestions={handleFetchChargeSuggestions}
+              onApplyCharge={handleApplyCharge}
+              onDismissSuggestion={() => setChargeSuggestion(null)}
+              onDeleteCharge={(chargeId) => {
+                const id = liveDraft.id || (draft && draft.id);
+                window.PzApi.deleteServiceCharge(id, chargeId)
+                  .then(r => r && r.ok && draftHook && draftHook.reload && draftHook.reload());
+              }}
+            />
+          </React.Fragment>
         )}
         {activeTab === 'lines' && <ProformaLinesTab lines={lines} />}
         {activeTab === 'customer_mapping' && (
@@ -1608,6 +1820,232 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           }}
         />
       )}
+      {buyerEditOpen && (
+        <ProformaBuyerEditModal
+          fields={buyerEditFields}
+          saving={buyerEditSaving}
+          error={buyerEditError}
+          onChange={(k, v) => setBuyerEditFields(prev => ({ ...prev, [k]: v }))}
+          onSave={handleBuyerEditSave}
+          onClose={() => { setBuyerEditOpen(false); setBuyerEditError(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── PR B — Service charges panel ────────────────────────────────────────────
+function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, chargesLoading, chargesApplying, onFetchSuggestions, onApplyCharge, onDismissSuggestion, onDeleteCharge }) {
+  const fmtAmt = (amt, cur) => `${Number(amt).toFixed(2)} ${cur || ''}`;
+  const existingTypes = (charges || []).map(c => (c.charge_type || '').toLowerCase());
+
+  return (
+    <div data-testid="service-charges-panel" style={{ marginTop: 24, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Service Charges</span>
+        {canEdit && (
+          <button
+            data-testid="btn-suggest-charges"
+            disabled={chargesLoading}
+            title="Load freight and insurance suggestions from Customer Master"
+            onClick={onFetchSuggestions}
+            style={{
+              fontSize: 12, padding: '2px 10px',
+              background: 'var(--bg)', border: '1px solid var(--border)',
+              borderRadius: 4, cursor: chargesLoading ? 'wait' : 'pointer',
+              color: 'var(--text-2)',
+            }}
+          >{chargesLoading ? '⏳ Loading…' : '↓ Suggest from Customer Master'}</button>
+        )}
+        {!canEdit && (
+          <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
+            (read-only — draft is in '{draftState}' state)
+          </span>
+        )}
+      </div>
+
+      {/* Existing charges */}
+      {charges.length === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>No service charges added.</div>
+      )}
+      {charges.map(c => (
+        <div key={c.charge_id} data-testid={`charge-row-${c.charge_type}`} style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '6px 10px', marginBottom: 4,
+          background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6,
+        }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', width: 80 }}>
+            {(c.charge_type || '').charAt(0).toUpperCase() + (c.charge_type || '').slice(1)}
+          </span>
+          <span style={{ fontSize: 13, color: 'var(--text)', flex: 1 }}>
+            {fmtAmt(c.amount, c.currency)}
+          </span>
+          {c.label && (
+            <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{c.label}</span>
+          )}
+          {canEdit && (
+            <button
+              data-testid={`btn-delete-charge-${c.charge_type}`}
+              title={`Remove ${c.charge_type} charge`}
+              onClick={() => onDeleteCharge && onDeleteCharge(c.charge_id)}
+              style={{
+                fontSize: 11, padding: '1px 7px',
+                background: 'none', border: '1px solid var(--border)',
+                borderRadius: 4, cursor: 'pointer', color: 'var(--text-2)',
+              }}
+            >✕</button>
+          )}
+        </div>
+      ))}
+
+      {/* Suggestion panel */}
+      {suggestion && !suggestion.error && (
+        <div data-testid="charge-suggestion-panel" style={{
+          marginTop: 8, padding: '10px 12px',
+          background: 'var(--bg)', border: '1px solid var(--border)',
+          borderRadius: 6,
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text-2)' }}>
+            Suggestions (Customer Master, {suggestion.draft_currency || '—'}):
+          </div>
+          {suggestion.applyError && (
+            <div data-testid="charge-apply-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginBottom: 6 }}>
+              {suggestion.applyError}
+            </div>
+          )}
+          {['freight', 'insurance'].map(type => {
+            const s = suggestion[type] || {};
+            const alreadyApplied = s.already_applied || existingTypes.includes(type);
+            const blocked = !s.available || s.blocked_reason;
+            return (
+              <div key={type} data-testid={`suggestion-row-${type}`} style={{
+                display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4,
+              }}>
+                <span style={{ width: 70, fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>
+                  {type.charAt(0).toUpperCase() + type.slice(1)}
+                </span>
+                {blocked ? (
+                  <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                    {s.blocked_reason || 'Not available'}
+                  </span>
+                ) : alreadyApplied ? (
+                  <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                    Already applied ({fmtAmt(s.amount, s.currency)})
+                  </span>
+                ) : (
+                  <React.Fragment>
+                    <span style={{ fontSize: 12, color: 'var(--text)' }}>
+                      {fmtAmt(s.amount, s.currency)}
+                      {s.label ? ` — ${s.label}` : ''}
+                    </span>
+                    {canEdit && (
+                      <button
+                        data-testid={`btn-apply-charge-${type}`}
+                        disabled={!!chargesApplying}
+                        title={`Add ${type} charge to this draft`}
+                        onClick={() => onApplyCharge(type)}
+                        style={{
+                          fontSize: 12, padding: '2px 10px',
+                          background: 'var(--accent)', color: '#fff',
+                          border: 'none', borderRadius: 4,
+                          cursor: chargesApplying ? 'wait' : 'pointer',
+                          opacity: chargesApplying ? 0.6 : 1,
+                        }}
+                      >{chargesApplying === type ? '⏳' : `Apply ${type.charAt(0).toUpperCase() + type.slice(1)}`}</button>
+                    )}
+                  </React.Fragment>
+                )}
+              </div>
+            );
+          })}
+          <button
+            data-testid="btn-close-suggestions"
+            onClick={() => onDismissSuggestion && onDismissSuggestion()}
+            style={{
+              fontSize: 11, padding: '1px 7px', marginTop: 4,
+              background: 'none', border: '1px solid var(--border)',
+              borderRadius: 4, cursor: 'pointer', color: 'var(--text-2)',
+            }}
+          >✕ Dismiss</button>
+        </div>
+      )}
+      {suggestion && suggestion.error && (
+        <div data-testid="charge-suggestion-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginTop: 6 }}>
+          {suggestion.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── PR B — Buyer edit modal ───────────────────────────────────────────────────
+function ProformaBuyerEditModal({ fields, saving, error, onChange, onSave, onClose }) {
+  const F = (label, key, placeholder) => (
+    <div style={{ marginBottom: 10 }}>
+      <label style={{ display: 'block', fontSize: 12, color: 'var(--text-2)', marginBottom: 3 }}>{label}</label>
+      <input
+        data-testid={`buyer-edit-${key}`}
+        value={fields[key] || ''}
+        onChange={e => onChange(key, e.target.value)}
+        placeholder={placeholder || ''}
+        style={{
+          width: '100%', padding: '6px 8px', fontSize: 13,
+          background: 'var(--bg)', border: '1px solid var(--border)',
+          borderRadius: 4, color: 'var(--text)', boxSizing: 'border-box',
+          fontFamily: 'inherit',
+        }}
+      />
+    </div>
+  );
+  return (
+    <div data-testid="buyer-edit-modal" style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200,
+    }}>
+      <div style={{
+        background: 'var(--card)', border: '1px solid var(--border)',
+        borderRadius: 10, padding: 24, width: 360, maxWidth: '90vw',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Edit Bill-to Address</div>
+        {F('Company name', 'name', 'e.g. UAB Tomas Gold')}
+        {F('Street', 'street', 'e.g. Gedimino pr. 1')}
+        {F('City', 'city', 'e.g. Vilnius')}
+        {F('Postal code', 'zip', 'e.g. LT-01103')}
+        {F('Country code', 'country', 'e.g. LT')}
+        {F('VAT EU number', 'vat_id', 'e.g. LT123456789')}
+        {error && (
+          <div data-testid="buyer-edit-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginBottom: 8 }}>
+            {error}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button
+            data-testid="btn-buyer-edit-cancel"
+            onClick={onClose}
+            disabled={saving}
+            style={{
+              padding: '6px 14px', fontSize: 13,
+              background: 'var(--bg)', border: '1px solid var(--border)',
+              borderRadius: 4, cursor: 'pointer', color: 'var(--text)',
+              fontFamily: 'inherit',
+            }}
+          >Cancel</button>
+          <button
+            data-testid="btn-buyer-edit-save"
+            onClick={onSave}
+            disabled={saving}
+            style={{
+              padding: '6px 14px', fontSize: 13,
+              background: 'var(--accent)', color: '#fff',
+              border: 'none', borderRadius: 4,
+              cursor: saving ? 'wait' : 'pointer',
+              opacity: saving ? 0.7 : 1,
+              fontFamily: 'inherit',
+            }}
+          >{saving ? '⏳ Saving…' : '✓ Save'}</button>
+        </div>
+      </div>
     </div>
   );
 }
