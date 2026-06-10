@@ -2710,6 +2710,53 @@ def cancel_draft(
     return refreshed
 
 
+def purge_cancelled_draft(
+    db_path:  Path,
+    draft_id: int,
+    operator: str,
+) -> None:
+    """Hard-delete a local-only cancelled draft and its event log.
+
+    Guards (all must pass):
+    - draft_state must be 'cancelled'
+    - wfirma_proforma_id must be absent / None
+    - wfirma_proforma_fullnumber must be absent / empty
+
+    Removes the proforma_drafts row and its proforma_draft_events rows.
+    Service charges and lines are stored as JSON columns on the draft row
+    and are removed with it.
+    """
+    if not (operator or "").strip():
+        raise ValueError("operator is required")
+    d = get_draft_by_id(db_path, draft_id)
+    if d is None:
+        raise DraftNotFound(f"draft id={draft_id} not found")
+    if d.draft_state != "cancelled":
+        raise DraftNotEditable(
+            f"draft id={draft_id} state={d.draft_state!r} — "
+            f"purge requires state='cancelled'"
+        )
+    if d.wfirma_proforma_id:
+        raise DraftNotEditable(
+            f"draft id={draft_id} has wFirma proforma id {d.wfirma_proforma_id!r} — "
+            f"cannot purge a draft linked to wFirma"
+        )
+    if d.wfirma_proforma_fullnumber:
+        raise DraftNotEditable(
+            f"draft id={draft_id} has proforma number "
+            f"{d.wfirma_proforma_fullnumber!r} — "
+            f"cannot purge a draft with an assigned number"
+        )
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "DELETE FROM proforma_draft_events WHERE draft_id = ?", (draft_id,)
+        )
+        conn.execute(
+            "DELETE FROM proforma_drafts WHERE id = ?", (draft_id,)
+        )
+        conn.commit()
+
+
 def reset_draft_from_sales_packing(
     db_path:             Path,
     draft_id:            int,

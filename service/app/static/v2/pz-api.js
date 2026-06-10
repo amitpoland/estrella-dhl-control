@@ -177,6 +177,11 @@
     deleteServiceCharge: (draftId, chargeId) =>
       _del(`${BASE}/proforma/draft/${draftId}/service-charges/${chargeId}`),
 
+    // DELETE /api/v1/proforma/draft/{draft_id}
+    // Hard-delete a local-only cancelled draft (no wFirma refs).
+    deleteDraft: (draftId) =>
+      _del(`${BASE}/proforma/draft/${draftId}`),
+
     // ── Proforma — lifecycle ─────────────────────────────────────────
 
     // POST /api/v1/proforma/draft/{draft_id}/approve

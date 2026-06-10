@@ -384,6 +384,75 @@ function CancelDraftModal({ draft, liveDraft, onClose, onSuccess }) {
   );
 }
 
+// ── Purge Draft Modal ─────────────────────────────────────────────────────────
+// WIRED: DELETE /api/v1/proforma/draft/{id} — uses PzApi.deleteDraft
+// Only for cancelled local-only drafts (no wFirma ID, no PROF number).
+function PurgeDraftModal({ draft, onClose, onSuccess }) {
+  const [loading,  setLoading]  = React.useState(false);
+  const [apiError, setApiError] = React.useState(null);
+
+  const handlePurge = () => {
+    if (loading) return;
+    setLoading(true);
+    setApiError(null);
+    window.PzApi.deleteDraft(draft.id)
+      .then(r => {
+        if (r && r.ok) {
+          onSuccess && onSuccess();
+        } else {
+          setApiError((r && r.error) || 'Delete failed — check backend logs.');
+          setLoading(false);
+        }
+      })
+      .catch(e => {
+        setApiError((e && e.message) ? e.message : 'Delete failed — check backend logs.');
+        setLoading(false);
+      });
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px',
+    }} onClick={onClose} data-testid="purge-draft-modal">
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--card)', borderRadius: 12, width: 480, maxWidth: '92vw',
+        boxShadow: '0 20px 60px var(--shadow-heavy)',
+      }}>
+        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>⛔ Delete Draft Permanently</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: '20px 24px' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>
+            This will <strong>permanently delete</strong> draft{' '}
+            <strong>#{draft.id}</strong> and its event log from the database.
+            This action cannot be undone. Only local-only cancelled drafts
+            (no wFirma ID, no PROF number) may be purged.
+          </div>
+          {apiError && (
+            <div style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }} data-testid="purge-draft-error">
+              ⚠ {apiError}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
+            <Btn variant="outline" onClick={onClose} disabled={loading}>Cancel</Btn>
+            <Btn
+              variant="danger"
+              disabled={loading}
+              onClick={handlePurge}
+              data-testid="purge-draft-submit"
+            >
+              {loading ? '⏳ Deleting…' : '⛔ Delete permanently'}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ── Send Proforma Email Modal ────────────────────────────────────────────────
 // WIRED: POST /api/v1/proforma/draft/{id}/send-email — uses PzApi.sendProformaEmail
 // M2 — Send proforma PDF to customer via email queue.
@@ -680,6 +749,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
   // M1a — Cancel Draft modal state
   const [showCancelModal,  setShowCancelModal]   = React.useState(false);
+  // Purge (hard-delete) modal — only for local-only cancelled drafts
+  const [showPurgeModal,   setShowPurgeModal]    = React.useState(false);
 
   // M7 — Prior Invoice History modal state
   const [showInvoiceHistory, setShowInvoiceHistory] = React.useState(false);
@@ -768,12 +839,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // FX rate from backend (no browser-side PLN conversion)
   const fxRate = liveDraft.exchange_rate ? parseFloat(liveDraft.exchange_rate) : null;
 
+  // payment_terms_json shape is { method?: string, days?: number } (routes_proforma.py).
+  // Known keys render human-readable; unknown extras keep k: v so nothing is hidden.
   const rawPt = liveDraft.payment_terms;
-  const paymentTermsDisplay = rawPt
-    ? (typeof rawPt === 'object'
-        ? (Object.entries(rawPt).map(([k, v]) => `${k}: ${v}`).join(' · ') || '—')
-        : String(rawPt))
-    : '—';
+  const paymentTermsDisplay = (() => {
+    if (!rawPt) return '—';
+    if (typeof rawPt !== 'object') return String(rawPt);
+    const parts = [];
+    if (rawPt.method) parts.push(String(rawPt.method));
+    if (rawPt.days)   parts.push(`${rawPt.days} days`);
+    Object.entries(rawPt).forEach(([k, v]) => {
+      if (k !== 'method' && k !== 'days' && v) parts.push(`${k}: ${v}`);
+    });
+    return parts.join(' · ') || '—';
+  })();
 
   // SELLER from company profile (GET /api/v1/settings/company-profile)
   const exporter = companyProfile
@@ -857,9 +936,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     if (liveDraft.due_date)           return liveDraft.due_date.slice(0, 10);
     const base = liveDraft.invoice_date || liveDraft.created_at;
     if (base && _ptDays > 0) {
-      const d = new Date(base);
-      d.setDate(d.getDate() + _ptDays);
-      return d.toISOString().slice(0, 10);
+      // Date-only UTC arithmetic — parsing a local timestamp and round-tripping
+      // through toISOString() can shift the calendar day for UTC+ timezones.
+      const d = new Date(String(base).slice(0, 10) + 'T00:00:00Z');
+      if (!isNaN(d.getTime())) {
+        d.setUTCDate(d.getUTCDate() + _ptDays);
+        return d.toISOString().slice(0, 10);
+      }
     }
     return '—';
   })();
@@ -871,9 +954,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     payment:  paymentTermsDisplay,
     payment_terms_days: _ptDays,
     rate:     { eur: fxRate, date: liveDraft.exchange_rate_date || '—', table: liveDraft.nbp_table || '—' },
+    // Address lines follow EU print convention: street / zip city / country.
+    // Structured fields preferred; comma-joined string is the legacy fallback.
     seller:   {
       name:    detail.exporter.name,
-      addr:    detail.exporter.address,
+      addr:    (companyProfile && companyProfile.street) || detail.exporter.address,
+      city:    (companyProfile && companyProfile.postal_city) || '',
       country: _expandCountry(detail.exporter.country),
       vat:     detail.exporter.vatEu,
       email:   (companyProfile && companyProfile.email) || '',
@@ -881,11 +967,21 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     },
     buyer:    {
       name:    detail.customer.name,
-      addr:    detail.customer.address,
-      city:    '',
+      addr:    bo.street || detail.customer.address,
+      city:    [bo.zip, bo.city].filter(Boolean).join(' '),
       country: _expandCountry(detail.customer.country),
       vat:     detail.customer.vatEu,
     },
+    // ship_to: only when ship_to_override is set — templates fall back to buyer
+    // when null, so "Ship to = buyer" stays the default print behaviour.
+    ship_to:  (sto.name || sto.street || sto.city || sto.zip || sto.country)
+      ? {
+          name:    shipTo.name,
+          addr:    sto.street || bo.street || '',
+          city:    [sto.zip || bo.zip, sto.city || bo.city].filter(Boolean).join(' '),
+          country: _expandCountry(shipTo.country),
+        }
+      : null,
     lines:    lines.map(l => ({
       seq:     l.seq,
       sku:     l.sku,
@@ -903,12 +999,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       ? lines.reduce((s, l) => s + l.netEur, 0) * fxRate : null,
     carrier:  liveDraft.batch_id
       ? { awb: liveDraft.batch_id, incoterm: liveDraft.incoterm || 'DAP' } : null,
+    // EUR first — the document currency leads; sort is stable for the rest.
     banks:    (companyProfile && companyProfile.bank_accounts || []).map(b => ({
       cur:   b.currency || b.cur || 'EUR',
       iban:  b.iban || '—',
       swift: b.bic || b.swift || '',
       bank:  b.bank_name || b.bank || '',
-    })),
+    })).sort((a, b) => (b.cur === 'EUR') - (a.cur === 'EUR')),
   };
   // ── cmrData for CMR preview (EJCMRClassic / EJCMRModern) ─────────────────
   // No CMR backend route exists — this is client-side preview only.
@@ -1129,6 +1226,16 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const canEdit       = ['draft', 'editing', 'post_failed'].includes(draftState);
   // M1a — Cancel: enabled when draft is in a cancellable state and not already cancelled
   const canCancel     = ['draft', 'editing', 'approved', 'post_failed'].includes(draftState);
+  // Purge: only cancelled local-only drafts (no wFirma ID, no PROF number)
+  const hasFullNumber  = !!(liveDraft.wfirma_proforma_fullnumber || (draft && draft.wfirma_proforma_fullnumber));
+  const canPurge       = draftState === 'cancelled' && !hasWfirmaId && !hasFullNumber;
+  const purgeDisabledReason = draftState !== 'cancelled'
+    ? `Cannot delete in '${draftState}' state — cancel first`
+    : hasWfirmaId
+      ? 'Cannot delete: draft is linked to a wFirma proforma'
+      : hasFullNumber
+        ? 'Cannot delete: draft has an assigned PROF number'
+        : '';
   // M7 — Prior Invoice History: enabled when wFirma contractor ID is available
   const contractorId  = (cr && cr.wfirma_customer_id) || null;
   // M2 — Send Email: enabled when posted to wFirma (has PDF) and not in terminal state
@@ -1384,6 +1491,16 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         >
           🗑 Cancel Draft
         </TbBtn>
+        {draftState === 'cancelled' && (
+          <TbBtn
+            onClick={() => canPurge && setShowPurgeModal(true)}
+            disabled={!canPurge}
+            title={canPurge ? 'Permanently delete this local-only cancelled draft' : purgeDisabledReason}
+            data-testid="tb-purge"
+          >
+            ⛔ Delete permanently
+          </TbBtn>
+        )}
         <TbBtn
           onClick={handleDuplicate}
           disabled={cloning}
@@ -1798,6 +1915,16 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           onSuccess={() => {
             setShowCancelModal(false);
             draftHook && draftHook.reload && draftHook.reload();
+          }}
+        />
+      )}
+      {showPurgeModal && (
+        <PurgeDraftModal
+          draft={draft}
+          onClose={() => setShowPurgeModal(false)}
+          onSuccess={() => {
+            setShowPurgeModal(false);
+            onBack && onBack({ purged: true });
           }}
         />
       )}
@@ -2636,4 +2763,4 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
   );
 }
 
-Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal, CancelDraftModal, PriorInvoiceHistoryModal, SendProformaModal });
+Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal, CancelDraftModal, PurgeDraftModal, PriorInvoiceHistoryModal, SendProformaModal });

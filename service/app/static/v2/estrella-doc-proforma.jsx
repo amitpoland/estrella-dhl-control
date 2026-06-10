@@ -8,8 +8,9 @@
 //   .due          string|null       payment due date
 //   .payment      string            payment terms
 //   .rate         { eur: number, date: string, table: string }
-//   .seller       { name, addr, vat, email, phone, web }
+//   .seller       { name, addr, city, vat, email, phone, web }
 //   .buyer        { name, addr, city, country, vat }
+//   .ship_to      { name, addr, city, country } | null   recipient when ship_to_override set
 //   .lines[]      { seq, sku, desc, purity, origin, qty, unitEur, netEur }
 //   .total_eur    number
 //   .total_pln    number|null
@@ -70,6 +71,13 @@ function EJDocAddress({ label, party }) {
 }
 
 // ── Bank block ───────────────────────────────────────────────────────────────
+// IBAN print convention: 4-character groups ("PL61 1090 1014 ...")
+function _formatIban(iban) {
+  const raw = String(iban || "").replace(/\s+/g, "");
+  if (!raw || raw === "—") return "—";
+  return raw.replace(/(.{4})/g, "$1 ").trim();
+}
+
 function EJDocBank({ banks }) {
   if (!banks || banks.length === 0) {
     return (
@@ -89,10 +97,10 @@ function EJDocBank({ banks }) {
         Bank details · Dane bankowe · Bankové údaje
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        {banks.map(b => (
-          <div key={b.cur} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10 }}>
+        {banks.map((b, i) => (
+          <div key={b.iban || `${b.cur}-${i}`} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10 }}>
             <span className="ej-bank-cur">{b.cur}</span>
-            <span className="ej-mono" style={{ fontWeight: 600 }}>{b.iban}</span>
+            <span className="ej-mono" style={{ fontWeight: 600 }}>{_formatIban(b.iban)}</span>
             {b.swift && <span style={{ color: "#64748B" }}>· SWIFT {b.swift}</span>}
             {b.bank  && <span style={{ color: "#64748B" }}>· {b.bank}</span>}
           </div>
@@ -104,15 +112,17 @@ function EJDocBank({ banks }) {
 
 // ── Compliance footer ─────────────────────────────────────────────────────────
 function EJDocCompliance({ paymentDays, paymentDueStr }) {
-  const daysLabel = paymentDays ? `${paymentDays} days` : '7 days';
+  const wrapStyle = { fontSize: 10, color: "#334155", lineHeight: 1.5,
+    display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 };
+  // Terms authority: payment_terms_days -> due date -> neutral (issue #6).
+  const hasDue = paymentDueStr && paymentDueStr !== "—";
+  const termsPhrase = paymentDays ? `within ${paymentDays} days of invoice date`
+    : hasDue ? `by ${paymentDueStr}` : "by the due date stated on this document";
   return (
-    <div style={{
-      display: "grid", gridTemplateColumns: "1fr 1fr 1fr",
-      gap: 12, fontSize: 10, color: "#334155", lineHeight: 1.5,
-    }}>
+    <div style={wrapStyle}>
       <div>
         <div className="ej-eyebrow" style={{ marginBottom: 4 }}>Payment terms</div>
-        Payment due within {daysLabel} of invoice date. Goods remain property of Estrella Jewels
+        Payment due {termsPhrase}. Goods remain property of Estrella Jewels
         until full payment is received.
       </div>
       <div>
@@ -195,9 +205,9 @@ function EJProformaClassic({ docData }) {
           border: "1px solid #E2E8F0", borderRadius: 4, marginBottom: 18,
         }}>
           {[
-            ["Issued",     d.date    || "—"],
-            ["Payment due",d.due     || "—"],
-            ["Method",     d.payment || "—"],
+            ["Issued",        d.date    || "—"],
+            ["Payment due",   d.due     || "—"],
+            ["Payment terms", d.payment || "—"],
             ["FX · NBP",   d.rate && d.rate.eur
               ? `1 EUR = ${Number(d.rate.eur).toFixed(4)} PLN · ${d.rate.date || ""}`
               : "—"],
@@ -209,11 +219,11 @@ function EJProformaClassic({ docData }) {
           ))}
         </div>
 
-        {/* Party row */}
+        {/* Party row — ship_to authority: ship_to_override when set, buyer otherwise */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
           <EJDocAddress label="Sprzedawca · Seller · Predávajúci" party={d.seller}/>
           <EJDocAddress label="Nabywca · Bill to · Odberateľ"     party={d.buyer}/>
-          <EJDocAddress label="Odbiorca · Ship to · Doručiť na"   party={d.buyer}/>
+          <EJDocAddress label="Odbiorca · Ship to · Doručiť na"   party={d.ship_to || d.buyer}/>
         </div>
 
         {/* Carrier row (if AWB known) */}
@@ -317,7 +327,7 @@ function EJProformaClassic({ docData }) {
         fontSize: 8.5, color: "#94A3B8",
         borderTop: "1px solid #E2E8F0", paddingTop: 10,
       }}>
-        <span>{d.seller && d.seller.addr ? d.seller.addr : ""}</span>
+        <span>{d.seller ? [d.seller.addr, d.seller.city].filter(Boolean).join(", ") : ""}</span>
         <span>{d.seller && d.seller.email ? d.seller.email : ""}</span>
         <span>{d.seller && d.seller.phone ? d.seller.phone : ""}</span>
       </div>
@@ -363,14 +373,15 @@ function EJProformaModern({ docData }) {
           <div style={{ height: 2, width: 64, background: "#C9A24B", marginTop: 14 }}/>
         </div>
 
-        {/* 2-col party */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 28 }}>
+        {/* Party columns — third column appears only when ship_to_override is set */}
+        <div style={{ display: "grid", gridTemplateColumns: d.ship_to ? "1fr 1fr 1fr" : "1fr 1fr", gap: 24, marginBottom: 28 }}>
           <div>
             <div className="ej-eyebrow" style={{ marginBottom: 6 }}>From · Sprzedawca</div>
             {d.seller ? (
               <>
                 <div style={{ fontWeight: 600, marginBottom: 2 }}>{d.seller.name || "—"}</div>
                 {d.seller.addr && <div style={{ color: "#475569", fontSize: 10 }}>{d.seller.addr}</div>}
+                {d.seller.city && <div style={{ color: "#475569", fontSize: 10 }}>{d.seller.city}</div>}
                 {d.seller.vat  && <div style={{ color: "#475569", fontSize: 10, marginTop: 4 }}>VAT EU · {d.seller.vat}</div>}
               </>
             ) : <div style={{ color: "#94A3B8", fontSize: 10 }}>—</div>}
@@ -381,11 +392,21 @@ function EJProformaModern({ docData }) {
               <>
                 <div style={{ fontWeight: 600, marginBottom: 2 }}>{d.buyer.name || "—"}</div>
                 {d.buyer.addr    && <div style={{ color: "#475569", fontSize: 10 }}>{d.buyer.addr}</div>}
+                {d.buyer.city    && <div style={{ color: "#475569", fontSize: 10 }}>{d.buyer.city}</div>}
                 {d.buyer.country && <div style={{ color: "#475569", fontSize: 10 }}>{d.buyer.country}</div>}
                 {d.buyer.vat     && <div style={{ color: "#475569", fontSize: 10, marginTop: 4 }}>VAT EU · {d.buyer.vat}</div>}
               </>
             ) : <div style={{ color: "#94A3B8", fontSize: 10 }}>—</div>}
           </div>
+          {d.ship_to && (
+            <div>
+              <div className="ej-eyebrow" style={{ marginBottom: 6 }}>Ship to · Odbiorca</div>
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>{d.ship_to.name || "—"}</div>
+              {d.ship_to.addr    && <div style={{ color: "#475569", fontSize: 10 }}>{d.ship_to.addr}</div>}
+              {d.ship_to.city    && <div style={{ color: "#475569", fontSize: 10 }}>{d.ship_to.city}</div>}
+              {d.ship_to.country && <div style={{ color: "#475569", fontSize: 10 }}>{d.ship_to.country}</div>}
+            </div>
+          )}
         </div>
 
         {/* Carrier */}
@@ -508,9 +529,9 @@ function EJProformaBold({ docData }) {
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {[
-            ["Issued",       d.date    || "—"],
-            ["Payment due",  d.due     || "—"],
-            ["Method",       d.payment || "—"],
+            ["Issued",        d.date    || "—"],
+            ["Payment due",   d.due     || "—"],
+            ["Payment terms", d.payment || "—"],
             ["FX · NBP",     d.rate && d.rate.eur ? `1 EUR = ${Number(d.rate.eur).toFixed(4)} PLN` : "—"],
           ].map(([k, v]) => (
             <div key={k}>
@@ -523,6 +544,7 @@ function EJProformaBold({ docData }) {
         <div style={{ marginTop: "auto", fontSize: 9, opacity: 0.75, lineHeight: 1.5 }}>
           <div style={{ color: "#C9A24B", fontWeight: 600, marginBottom: 4 }}>Estrella Jewels</div>
           {d.seller && d.seller.addr && <div>{d.seller.addr}</div>}
+          {d.seller && d.seller.city && <div>{d.seller.city}</div>}
           {d.seller && d.seller.email && <div>{d.seller.email}</div>}
           {d.seller && d.seller.phone && <div>{d.seller.phone}</div>}
         </div>
@@ -531,10 +553,10 @@ function EJProformaBold({ docData }) {
       {/* Right body */}
       <div style={{ flex: 1, padding: "32px 36px", overflow: "hidden", display: "flex", flexDirection: "column" }}>
 
-        {/* Parties */}
+        {/* Parties — ship_to authority: ship_to_override when set, buyer otherwise */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
           <EJDocAddress label="Bill to · Nabywca"  party={d.buyer}/>
-          <EJDocAddress label="Ship to · Odbiorca" party={d.buyer}/>
+          <EJDocAddress label="Ship to · Odbiorca" party={d.ship_to || d.buyer}/>
         </div>
 
         {/* Carrier */}
