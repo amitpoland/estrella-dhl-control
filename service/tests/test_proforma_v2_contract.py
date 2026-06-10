@@ -13,7 +13,7 @@ Coverage (per §5.6 acceptance criteria in docs/v2-architecture-plan.md):
          warehouse_blockers[], customer_resolution{}
        → ready=False when product_match=False
        → ready=False when customer not mapped
-       → export_blockers carry '[DEV-BYPASS]' marker when bypass active
+       → export_blockers carry '[DEV-BYPASS]' marker when bypass activeh
   3. GET  /api/v1/proforma/draft/{draft_id}
        → { ok, draft: { draft_id, draft_state, lines[], service_charges[],
              updated_at, currency, remarks, ... } }
@@ -109,6 +109,7 @@ def _seed_draft(db: Path, *, batch="V2_BATCH", client_name="ACME", currency="EUR
             "stock_ok":    True,
             "stock_status": "in_stock",
             "price_source": "packing_list",
+            "name_pl":      "Test Product PL",
         }],
     )
     return draft
@@ -382,6 +383,38 @@ class TestApproveDraft:
              patch.object(settings, "storage_root", tmp_path):
             r = client.post(f"/api/v1/proforma/draft/{draft.id}/approve")
         assert r.status_code in (401, 403)
+
+    def test_approve_blocked_blank_name_pl(self, client, db_path, tmp_path):
+        """Guard: approve 422s when any line has blank name_pl (fixes #554)."""
+        with patch.object(settings, "storage_root", tmp_path):
+            from app.services import proforma_invoice_link_db as _pil
+            draft, _ = _pil.auto_create_draft_from_sales_packing(
+                db_path, batch_id="V2C5B", client_name="ACME", currency="EUR",
+                lines=[{
+                    "line_id":      None,
+                    "product_code": "EJL/TEST/01",
+                    "design_no":    "D001",
+                    "qty":          2,
+                    "unit_price":   50.0,
+                    "currency":     "EUR",
+                    "line_value":   100.0,
+                    "product_match": True,
+                    "stock_ok":     True,
+                    "stock_status": "in_stock",
+                    "price_source": "packing_list",
+                    # name_pl intentionally omitted — blank guard must fire
+                }],
+            )
+        body = {
+            "expected_updated_at": draft.updated_at,
+            "confirm_token":       "YES_APPROVE_LOCAL_PROFORMA_DRAFT",
+        }
+        r = client.post(f"/api/v1/proforma/draft/{draft.id}/approve",
+                        json=body, headers=_auth())
+        assert r.status_code == 422, (
+            f"Expected 422 for blank name_pl, got {r.status_code}: {r.text}"
+        )
+        assert "name_pl" in r.text.lower() or "commercial description" in r.text.lower()
 
 
 # ── Contract 6: POST /api/v1/proforma/draft/{draft_id}/cancel ────────────
