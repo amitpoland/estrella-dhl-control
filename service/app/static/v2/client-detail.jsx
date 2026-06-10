@@ -555,7 +555,7 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
                 }}>Freight defaults</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
                   <_CdField label="Mode">
-                    {sel('freight_mode', ['per_shipment', 'fixed_eur', 'fixed_usd', 'included'])}
+                    {sel('freight_mode', ['no_data', 'fixed', 'variable', 'manual'])}
                   </_CdField>
                   <_CdField label="Fixed amount (EUR)">
                     {inp('freight_fixed_amount_eur', { type: 'number', placeholder: '0.00' })}
@@ -592,7 +592,7 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
                     </label>
                   </_CdField>
                   <_CdField label="Mode">
-                    {sel('insurance_mode', ['per_shipment', 'fixed_eur', 'fixed_usd', 'included'])}
+                    {sel('insurance_mode', ['no_data', 'fixed', 'formula', 'manual'])}
                   </_CdField>
                   <_CdField label="Rate (%)">
                     {inp('insurance_rate', { type: 'number', placeholder: '0.50' })}
