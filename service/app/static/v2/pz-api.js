@@ -516,5 +516,29 @@
     getClientInvoiceLedger: (contractorId, from, to) =>
       _get(`${BASE}/ledgers/clients/${encodeURIComponent(contractorId)}/invoice-ledger.json?from=${encodeURIComponent(from || '')}&to=${encodeURIComponent(to || '')}`),
 
+    // ── Proforma — PR B: Customer address + service-charge authority ──
+
+    // POST /api/v1/proforma/draft/{draft_id}/apply-customer-address
+    // Applies Customer Master billing/shipping address to buyer_override.
+    // Records audit event buyer_override_from_customer_master.
+    applyCustomerAddress: (draftId, updatedAt) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/apply-customer-address`, {
+        expected_updated_at: updatedAt || '',
+      }),
+
+    // GET /api/v1/proforma/draft/{draft_id}/suggest-service-charges
+    // Returns combined freight+insurance suggestions from Customer Master.
+    suggestServiceCharges: (draftId) =>
+      _get(`${BASE}/proforma/draft/${draftId}/suggest-service-charges`),
+
+    // POST /api/v1/proforma/draft/{draft_id}/apply-service-charges
+    // Idempotent: already-applied charge type → skipped with reason.
+    // apply: ['freight'] | ['insurance'] | ['freight','insurance']
+    applyServiceCharges: (draftId, applyList, updatedAt) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/apply-service-charges`, {
+        expected_updated_at: updatedAt || '',
+        apply: applyList || [],
+      }),
+
   });
 })();
