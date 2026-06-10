@@ -743,11 +743,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     lineId:   ln.line_id || '',
     sku:      ln.product_code || '—',
     desc:     ln.name_pl || ln.description_pl || ln.design_no || ln.product_code || '—',
+    desc_pl:  ln.description_pl || ln.name_pl || '',
+    desc_en:  ln.description_en || ln.name_en || '',
     qty:      parseFloat(ln.qty || 0),
     unitEur:  parseFloat(ln.unit_price || 0),
     netEur:   parseFloat(ln.unit_price || 0) * parseFloat(ln.qty || 0),
     hsCode:   ln.hs_code || '—',
-    origin:   ln.origin || '—',
+    origin:   ln.origin || (liveDraft.origin_country) || (companyProfile && companyProfile.country) || '—',
     purity:   ln.purity || '',
     currency: ln.currency || 'EUR',
   }));
@@ -816,35 +818,69 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     paymentTerms: paymentTermsDisplay,
     incoterm:     liveDraft.incoterm || '—',
   };
+  // ── Country code → full name (ISO 3166-1 alpha-2) for proforma display ──────
+  const PROFORMA_COUNTRY_NAMES = {
+    PL: 'Poland',          LT: 'Lithuania',          DE: 'Germany',          IN: 'India',
+    CZ: 'Czech Republic',  SK: 'Slovakia',            HU: 'Hungary',          RO: 'Romania',
+    UA: 'Ukraine',         FR: 'France',              IT: 'Italy',            ES: 'Spain',
+    NL: 'Netherlands',     BE: 'Belgium',             AT: 'Austria',          CH: 'Switzerland',
+    GB: 'United Kingdom',  DK: 'Denmark',             SE: 'Sweden',           FI: 'Finland',
+    NO: 'Norway',          EE: 'Estonia',             LV: 'Latvia',           BY: 'Belarus',
+    LU: 'Luxembourg',      PT: 'Portugal',            GR: 'Greece',           BG: 'Bulgaria',
+    HR: 'Croatia',         SI: 'Slovenia',            RS: 'Serbia',           TR: 'Turkey',
+    AE: 'United Arab Emirates', SG: 'Singapore',     HK: 'Hong Kong',        CN: 'China',
+    JP: 'Japan',           KR: 'South Korea',         AU: 'Australia',        US: 'United States',
+    CA: 'Canada',          BR: 'Brazil',              MX: 'Mexico',           ZA: 'South Africa',
+    SA: 'Saudi Arabia',    IL: 'Israel',
+  };
+  const _expandCountry = (code) => (code && (PROFORMA_COUNTRY_NAMES[code] || code)) || '';
+
   // ── docData for print preview (EJProformaClassic / EJProformaModern) ──────
   const _previewLabel = liveDraft.wfirma_proforma_fullnumber
     || (draft && draft.wfirma_proforma_fullnumber)
     || (draft && draft.id ? `Draft #${draft.id}` : 'Draft');
+  // Payment due: wfirma_payment_due (post-wFirma) -> due_date -> invoice_date + payment_terms_days
+  const _ptDays = Number(liveDraft.payment_terms_days) || 0;
+  const _dueFallback = (() => {
+    if (liveDraft.wfirma_payment_due) return liveDraft.wfirma_payment_due.slice(0, 10);
+    if (liveDraft.due_date)           return liveDraft.due_date.slice(0, 10);
+    const base = liveDraft.invoice_date || liveDraft.created_at;
+    if (base && _ptDays > 0) {
+      const d = new Date(base);
+      d.setDate(d.getDate() + _ptDays);
+      return d.toISOString().slice(0, 10);
+    }
+    return '—';
+  })();
   const previewDocData = {
     doc_no:   _previewLabel,
     date:     liveDraft.invoice_date || liveDraft.created_at
               ? (liveDraft.invoice_date || liveDraft.created_at || '').slice(0, 10) : '—',
-    due:      liveDraft.due_date ? liveDraft.due_date.slice(0, 10) : '—',
+    due:      _dueFallback,
     payment:  paymentTermsDisplay,
+    payment_terms_days: _ptDays,
     rate:     { eur: fxRate, date: liveDraft.exchange_rate_date || '—', table: liveDraft.nbp_table || '—' },
     seller:   {
-      name:  detail.exporter.name,
-      addr:  detail.exporter.address,
-      vat:   detail.exporter.vatEu,
-      email: (companyProfile && companyProfile.email) || '',
-      phone: (companyProfile && companyProfile.phone) || '',
+      name:    detail.exporter.name,
+      addr:    detail.exporter.address,
+      country: _expandCountry(detail.exporter.country),
+      vat:     detail.exporter.vatEu,
+      email:   (companyProfile && companyProfile.email) || '',
+      phone:   (companyProfile && companyProfile.phone) || '',
     },
     buyer:    {
       name:    detail.customer.name,
       addr:    detail.customer.address,
-      city:    detail.customer.country,
-      country: detail.customer.country,
+      city:    '',
+      country: _expandCountry(detail.customer.country),
       vat:     detail.customer.vatEu,
     },
     lines:    lines.map(l => ({
       seq:     l.seq,
       sku:     l.sku,
       desc:    l.desc,
+      desc_pl: l.desc_pl,
+      desc_en: l.desc_en,
       purity:  l.purity,
       origin:  l.origin,
       qty:     l.qty,
@@ -856,7 +892,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       ? lines.reduce((s, l) => s + l.netEur, 0) * fxRate : null,
     carrier:  liveDraft.batch_id
       ? { awb: liveDraft.batch_id, incoterm: liveDraft.incoterm || 'DAP' } : null,
-    banks:    [],
+    banks:    (companyProfile && companyProfile.bank_accounts || []).map(b => ({
+      cur:   b.currency || b.cur || 'EUR',
+      iban:  b.iban || '—',
+      swift: b.bic || b.swift || '',
+      bank:  b.bank_name || b.bank || '',
+    })),
   };
   // ── cmrData for CMR preview (EJCMRClassic / EJCMRModern) ─────────────────
   // No CMR backend route exists — this is client-side preview only.
