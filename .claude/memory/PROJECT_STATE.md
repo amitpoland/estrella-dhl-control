@@ -2,7 +2,7 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-10 (PR #545 open — proforma_detail URL-param hydration fix; SHA b21382a; 25 new tests; GATE 2: 3/3 AT LIMIT — #498, #522, #545 open; merge one before new PRs).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-10 (PR #545 MERGED + DEPLOYED — proforma_detail URL-param hydration fix; SHA 962e06f deployed to C:\PZ; GATE 6 PASS; GATE 2: 2/3 open PRs — #498, #522).
 
 **Last-run-at:** 2026-06-10 (PR #545 opened — `fix/proforma-detail-url-hydration` — direct URL hydration for proforma_detail; SHA b21382a; 25 new tests; test baseline +25). GATE 2: **3/3 open PRs** (#498, #522, #545) — AT HARD LIMIT. Merge one PR before opening another. Origin/main HEAD: **914414e8**. PR #545 awaiting 7-agent deploy gate before merge. GATE 6 (browser verification) deferred until PR merges and deploys. task_be43486b (URL hydration chip) COMPLETED by PR #545. (PR #542 campaign fully closed — SHA 914414e8 deployed; GATE 6 browser verification complete; scorecard all ACCEPTABLE/EXEMPLARY). GATE 2: **2/3 open PRs** (#498, #522) — one slot freed by PR #542 close. Origin/main HEAD: **914414e8** (fix(print): add Content-Disposition attachment for PDF downloads). GATE 2: **2/3 open PRs** (#527 parser fixes + any draft PRs). See FACTS below for full PR #525 + hotfix details. (feat(engine): Phase 2A — extract shared grammar dictionaries). GATE 2: **1/3 open PRs** (draft #498). **RBAC PHASE C AREA 1 COMPLETE (PR #511, DEPLOYED)**: 33 mutation routes upgraded from bare `require_api_key` to `require_admin`/`require_role(...)`. Allowlist 167→134. Structural gate 5/5 PASS. Auth guard tests 31/31 PASS. GATE 4: Issue #512 filed (viewer-403 negative-path tests for Area 1 routes). TEST BASELINE: 201/201 PZ regression + 404/404 carrier suite + 104/104 Sprint 38 + 49/49 Sprint 38b + 54/54 Sprint 39 + 70/70 Sprint 40 + 115/115 Sprint 41 + 41/41 Sprint 42 + 40/40 Sprint 43 + 51/51 Phase 1A + 25/25 CM resolver + 27/27 recipient resolver + 37/37 address authority + 49/49 client detail UI + 51/51 M6 proforma search DB + 51/51 M6 proforma search endpoint + 64/64 M6 proforma search UI + 39/39 reverification gating. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow (no active-shipment draft with wfirma_proforma_id exists). ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired (incl. proforma_search added PR #495). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **SALVAGE**: PR #370 pz-correction preserved in `docs/salvage/pr370-pz-correction.patch` + commit `8e3cbc6`. **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **REMAINING PROFORMA GAPS**: M2 Send Email (FUNCTIONALLY COMPLETE — SMTP pending natural workflow), M1 Hard Delete (MEDIUM), M3 CMR PDF (LOW), M4 Document Package (LOW). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). All 3 PRs merged + deployed. DB layer (#491) + API endpoint (#492) + V2 UI (#493). Navigation handoff fixed (PR #494). Browser smoke PASS. **MOCK BANNER RESOLVED**: PR #495 added `proforma_search` to WIRED_PAGES (17/17). No remaining M6 residuals. **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07, operator directive). Steps 1–6 COMPLETE and deployed. Step 7 (dashboard stale ship_to display) PARKED — LOW priority, informational only, real authority already fixed, will naturally retire with V1 → V2 migration.
 
@@ -54,6 +54,45 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## PR #545 — Proforma Detail URL-Param Hydration Fix (2026-06-10, MERGED + DEPLOYED)
+
+**Date**: 2026-06-10
+**PR #545** — `fix/proforma-detail-url-hydration` — direct URL / bookmark / browser-refresh navigation to `/v2/proforma_detail?draft=<id>` or `?batch_id=<id>`
+**Merge SHA**: `962e06f` (squash-merge to main)
+
+**Root cause fixed**: `ProformaDetailPage` required `proformaDraft` React state to already be set. Direct URLs left that state null → blank page.
+
+**Changes** (`service/app/static/v2/index.html`):
+1. `proformaHydrating` + `proformaHydrateError` state variables added (initial: `true` when page=proforma_detail)
+2. `handleProformaDrill` updated to write `?draft=<id>` into the URL via `URLSearchParams.set`
+3. Hydration `useEffect([page])` — reads `?draft=` or falls back to `?batch_id=`, fetches via `EstrellaShared.apiFetch`
+4. Three-state render: loading spinner → error + back button → `ProformaDetailPage`
+
+**Tests**: 25 new source-grep regression tests in `service/tests/test_proforma_detail_hydration.py` (4 classes: state declarations, hydration effect, three-state render, drill URL write). All 25 PASS.
+
+**Deploy** (2026-06-10):
+- Robocopy `C:\PZ-verify\service\app` → `C:\PZ\app` /E /XO — exit code 3 (success, 3 files newer)
+- Files synced: `index.html` (45,547 bytes) + `estrella-doc-proforma.jsx` + `proforma-detail.jsx`
+- Static file — no service restart required
+- `Select-String "proformaHydrating" C:\PZ\app\static\v2\index.html` → confirmed at line 364
+
+**GATE 6 browser verification** (PASS, 2026-06-10):
+- URL: `https://pz.estrellajewels.eu/v2/proforma_detail?draft=24` (direct URL, no prior drill)
+- `GET /api/v1/proforma/draft/24` → **200**
+- ProformaDetailPage rendered with full button/tab set (Back, Cancel, Clone, Approve, Convert, Preview, Overview/Lines/Customer Mapping/Reservation/History tabs)
+- No console errors
+- Full chain verified: URL param → hydration effect → API 200 → state set → page rendered
+
+**Stashed WIP** (must NOT reach production until reviewed):
+- `git stash: wip-proforma-detail-country-names` in `C:\PZ-verify`
+- Files: `estrella-doc-proforma.jsx`, `proforma-detail.jsx`
+- Content: `COUNTRY_NAMES` lookup table, `desc_pl`/`desc_en` fields in line mapping, `origin` fallback logic, payment due date calculation
+- Action: separate PR required; stash held at `C:\PZ-verify` until operator reviews
+
+**GATE 2**: 2/3 open PRs (#498, #522) — one slot available for new PR.
+
+---
 
 ## Proforma Toolbar Campaign — Print Dialog Fix + Button Updates (2026-06-09, MERGED + DEPLOYED)
 
