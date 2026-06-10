@@ -18,6 +18,7 @@ import json
 import sqlite3
 import xml.etree.ElementTree as ET
 from collections import Counter
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException
@@ -3689,6 +3690,78 @@ def _line_count(editable_lines_json: str) -> int:
         return 0
 
 
+def _resolve_effective_payment_terms(d: "pildb.ProformaDraft") -> Dict[str, Any]:
+    """Display-grade payment-terms resolution for a single draft.
+
+    Read-only projection. The wFirma POST path is UNCHANGED — it reads
+    Customer Master directly when building ``<paymentdays>`` (ADR-027,
+    pinned by tests I7/I9). This helper only decides what the dashboard
+    and the print preview may *display*, and it never invents a value.
+
+    Authority chain::
+
+      payment_terms_days
+        1. draft   — payment_terms_json["days"] when int > 0
+        2. customer_master — payment_terms_days via _resolve_customer
+        3. None    — unknown stays unknown
+
+      effective_payment_due
+        1. wfirma   — wfirma_payment_due verbatim (posted authority)
+        2. computed — base + days, base = wfirma_issue_date or created_at
+        3. None     — unknown stays unknown
+
+    Sources are labelled so the UI can say WHERE a value came from.
+    Customer Master lookup is wrapped: a broken CM db degrades to None,
+    never breaks the detail endpoint.
+    """
+    days: Optional[int] = None
+    days_source: Optional[str] = None
+
+    try:
+        pt = json.loads(d.payment_terms_json or "{}")
+        if isinstance(pt, dict) and pt.get("days") not in (None, ""):
+            iv = int(pt["days"])
+            if iv > 0:
+                days, days_source = iv, "draft"
+    except Exception:
+        pass
+
+    if days is None:
+        try:
+            res = _resolve_customer(d.client_name or "", d.batch_id)
+            cid = (res.get("wfirma_customer_id") or "").strip()
+            if res.get("found") and cid:
+                cm = get_customer_master(_customer_master_db_path(), cid)
+                if cm is not None and cm.payment_terms_days is not None:
+                    iv = int(cm.payment_terms_days)
+                    if iv > 0:
+                        days, days_source = iv, "customer_master"
+        except Exception:
+            pass
+
+    due: Optional[str] = None
+    due_source: Optional[str] = None
+    wf_due = (d.wfirma_payment_due or "").strip()
+    if wf_due:
+        due, due_source = wf_due, "wfirma"
+    elif days:
+        base_raw = (d.wfirma_issue_date or "").strip() or (d.created_at or "").strip()
+        if base_raw:
+            try:
+                base = datetime.fromisoformat(base_raw[:10]).date()
+                due = (base + timedelta(days=days)).isoformat()
+                due_source = "computed"
+            except Exception:
+                pass
+
+    return {
+        "payment_terms_days":    days,
+        "payment_terms_source":  days_source,
+        "effective_payment_due": due,
+        "payment_due_source":    due_source,
+    }
+
+
 def _draft_to_summary(d: "pildb.ProformaDraft") -> Dict[str, Any]:
     """Compact projection for the batch listing endpoint. Excludes the big
     JSON blobs so the listing stays cheap.
@@ -3782,6 +3855,13 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         "status_legacy":         d.status,
         # PR 2C.2 — read-only pricing health flag (no write, no mutation)
         "needs_pricing_refresh": needs_pricing_refresh,
+        # Payment-terms display authority — wFirma dates were stored on the
+        # dataclass but never serialized; the preview computed due dates from
+        # a field this projection never emitted. POST authority unchanged
+        # (ADR-027). Resolution order documented on the helper.
+        "wfirma_issue_date":     d.wfirma_issue_date,
+        "wfirma_payment_due":    d.wfirma_payment_due,
+        **_resolve_effective_payment_terms(d),
     }
 
 

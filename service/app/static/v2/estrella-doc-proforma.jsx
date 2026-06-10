@@ -104,7 +104,13 @@ function EJDocBank({ banks }) {
 
 // ── Compliance footer ─────────────────────────────────────────────────────────
 function EJDocCompliance({ paymentDays, paymentDueStr }) {
-  const daysLabel = paymentDays ? `${paymentDays} days` : '7 days';
+  // Never invent terms on a customer-facing document.
+  const hasDue = paymentDueStr && paymentDueStr !== '—';
+  const termsLine = paymentDays
+    ? `Payment due within ${paymentDays} days of invoice date.`
+    : hasDue
+    ? `Payment due by ${paymentDueStr}.`
+    : 'Payment due as agreed in the order terms.';
   return (
     <div style={{
       display: "grid", gridTemplateColumns: "1fr 1fr 1fr",
@@ -112,7 +118,7 @@ function EJDocCompliance({ paymentDays, paymentDueStr }) {
     }}>
       <div>
         <div className="ej-eyebrow" style={{ marginBottom: 4 }}>Payment terms</div>
-        Payment due within {daysLabel} of invoice date. Goods remain property of Estrella Jewels
+        {termsLine} Goods remain property of Estrella Jewels
         until full payment is received.
       </div>
       <div>

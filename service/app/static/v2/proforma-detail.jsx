@@ -185,6 +185,7 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
             overflow: visible !important; inset: auto !important;
           }
           .ej-preview-bar { display: none !important; }
+          .ej-preview-warn { display: none !important; }
           .ej-preview-body { overflow: visible !important; height: auto !important; }
           .ej-preview-sheet { transform: none !important; transform-origin: top left !important; }
           .ej-preview-wrap { box-shadow: none !important; width: auto !important; }
@@ -269,6 +270,24 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
             </button>
           </div>
         </div>
+
+        {/* Operator-facing warning: company profile has no bank account.
+            Modal chrome only — print-hidden, the printed document keeps its
+            neutral fallback line. Lesson M: explicit reason, not silence. */}
+        {activeType === 'proforma' && (!docData.banks || docData.banks.length === 0) && (
+          <div
+            className="ej-preview-warn"
+            data-testid="preview-missing-bank-warning"
+            style={{
+              padding: '8px 14px', background: '#3A2A0E',
+              borderBottom: '1px solid #5A4A1E',
+              color: '#E8C56A', fontSize: 12, fontWeight: 600,
+            }}
+          >
+            ⚠ No bank account details in company profile — the printed document will
+            show no IBAN. Add IBAN / SWIFT under Settings → Company profile.
+          </div>
+        )}
 
         {/* Document body */}
         <div className="ej-preview-body">
@@ -775,12 +794,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         : String(rawPt))
     : '—';
 
+  // Address-part join. Stored parts may carry stray leading/trailing commas
+  // (e.g. Customer Master street "Kuosų g. 20-1,") — joining verbatim renders
+  // "20-1,, Klaipėda". Normalise every part before joining.
+  const _joinAddr = (parts) => parts
+    .map(p => String(p == null ? '' : p).replace(/^[,\s]+|[,\s]+$/g, ''))
+    .filter(Boolean)
+    .join(', ');
+
   // SELLER from company profile (GET /api/v1/settings/company-profile)
   const exporter = companyProfile
     ? {
         name:    companyProfile.legal_name || '—',
         vatEu:   companyProfile.vat_eu || '—',
-        address: [companyProfile.street, companyProfile.postal_city].filter(Boolean).join(', ') || '—',
+        address: _joinAddr([companyProfile.street, companyProfile.postal_city]) || '—',
         country: companyProfile.country || '—',
       }
     : { name: '—', vatEu: '—', address: '—', country: '—' };
@@ -797,7 +824,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const customer = {
     name:       bo.name || liveDraft.client_name || (draft && draft.client_name) || '—',
     vatEu:      bo.vat_id || '—',
-    address:    [bo.street, bo.city, bo.zip].filter(Boolean).join(', ') || '—',
+    address:    _joinAddr([bo.street, bo.city, bo.zip]) || '—',
     country:    bo.country || '—',
     // wfirmaId: explicit selection in buyer_override > name-resolution in cr > posted proof
     wfirmaId:   bo.wfirma_customer_id || cr.wfirma_customer_id ||
@@ -810,8 +837,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const sto = liveDraft.ship_to_override || {};
   const shipTo = {
     name:    sto.name    || bo.name || liveDraft.client_name || '—',
-    address: [sto.street || bo.street, sto.city || bo.city, sto.zip || bo.zip]
-               .filter(Boolean).join(', ') || '—',
+    address: _joinAddr([sto.street || bo.street, sto.city || bo.city, sto.zip || bo.zip]) || '—',
     country: sto.country || bo.country || '—',
   };
 
@@ -850,12 +876,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const _previewLabel = liveDraft.wfirma_proforma_fullnumber
     || (draft && draft.wfirma_proforma_fullnumber)
     || (draft && draft.id ? `Draft #${draft.id}` : 'Draft');
-  // Payment due: wfirma_payment_due (post-wFirma) -> due_date -> invoice_date + payment_terms_days
-  const _ptDays = Number(liveDraft.payment_terms_days) || 0;
+  // Payment terms days: backend-resolved payment_terms_days (draft → Customer
+  // Master, serialized by _draft_to_full) → payment_terms.days dict fallback.
+  const _ptDays = Number(
+    liveDraft.payment_terms_days
+    || (rawPt && typeof rawPt === 'object' && rawPt.days)
+  ) || 0;
+  // Payment due: backend-resolved effective_payment_due (wFirma → computed)
+  // -> wfirma_payment_due -> due_date -> local compute from issue date + days.
   const _dueFallback = (() => {
-    if (liveDraft.wfirma_payment_due) return liveDraft.wfirma_payment_due.slice(0, 10);
-    if (liveDraft.due_date)           return liveDraft.due_date.slice(0, 10);
-    const base = liveDraft.invoice_date || liveDraft.created_at;
+    if (liveDraft.effective_payment_due) return liveDraft.effective_payment_due.slice(0, 10);
+    if (liveDraft.wfirma_payment_due)    return liveDraft.wfirma_payment_due.slice(0, 10);
+    if (liveDraft.due_date)              return liveDraft.due_date.slice(0, 10);
+    const base = liveDraft.wfirma_issue_date || liveDraft.invoice_date || liveDraft.created_at;
     if (base && _ptDays > 0) {
       const d = new Date(base);
       d.setDate(d.getDate() + _ptDays);
@@ -865,8 +898,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   })();
   const previewDocData = {
     doc_no:   _previewLabel,
-    date:     liveDraft.invoice_date || liveDraft.created_at
-              ? (liveDraft.invoice_date || liveDraft.created_at || '').slice(0, 10) : '—',
+    // Issue date: wFirma's stored issue date (posted authority) outranks
+    // local invoice_date / created_at.
+    date:     (liveDraft.wfirma_issue_date || liveDraft.invoice_date || liveDraft.created_at || '').slice(0, 10) || '—',
     due:      _dueFallback,
     payment:  paymentTermsDisplay,
     payment_terms_days: _ptDays,
@@ -903,12 +937,23 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       ? lines.reduce((s, l) => s + l.netEur, 0) * fxRate : null,
     carrier:  liveDraft.batch_id
       ? { awb: liveDraft.batch_id, incoterm: liveDraft.incoterm || 'DAP' } : null,
-    banks:    (companyProfile && companyProfile.bank_accounts || []).map(b => ({
-      cur:   b.currency || b.cur || 'EUR',
-      iban:  b.iban || '—',
-      swift: b.bic || b.swift || '',
-      bank:  b.bank_name || b.bank || '',
-    })),
+    // Company profile stores flat per-currency IBAN fields (iban_eur /
+    // iban_usd / iban_pln + swift + bank_name); no array field exists in
+    // the API. Map only currencies that actually have an IBAN.
+    banks:    (() => {
+      const p = companyProfile || {};
+      return [
+        { cur: 'EUR', iban: p.iban_eur },
+        { cur: 'USD', iban: p.iban_usd },
+        { cur: 'PLN', iban: p.iban_pln },
+      ].filter(b => b.iban && String(b.iban).trim())
+       .map(b => ({
+         cur:   b.cur,
+         iban:  String(b.iban).trim(),
+         swift: p.swift || '',
+         bank:  p.bank_name || '',
+       }));
+    })(),
   };
   // ── cmrData for CMR preview (EJCMRClassic / EJCMRModern) ─────────────────
   // No CMR backend route exists — this is client-side preview only.
@@ -2138,8 +2183,8 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
           : <KvItem k="Payment method" v={detail.paymentTerms} />
         }
 
-        <KvItem k="Issue date" v={detail.created_at ? detail.created_at.slice(0, 10) : null} mono />
-        <KvItem k="Payment due" v={detail.payment_due_date} mono />
+        <KvItem k="Issue date" v={(detail.wfirma_issue_date || detail.created_at || '').slice(0, 10) || null} mono />
+        <KvItem k="Payment due" v={detail.effective_payment_due || detail.wfirma_payment_due} mono />
         <KvItem k="Sale date" v={detail.sale_date} mono />
         <KvItem k="Paid" v={`0.00 ${currency}`} muted />
 
