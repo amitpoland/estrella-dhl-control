@@ -96,6 +96,21 @@ def _tail(text, n=25):
     return "\n".join(lines[-n:])
 
 
+def _record_state(token):
+    """Write 'pass' or 'fail' to .claude/.regression-state for the Stop
+    gate to read. Best-effort — if the write fails, the Stop gate will
+    interpret the missing/old file as 'pass' (allow), so we never wedge
+    the session on an I/O hiccup."""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        repo_claude = os.path.normpath(os.path.join(here, ".."))
+        path = os.path.join(repo_claude, ".regression-state")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(token)
+    except Exception:
+        pass
+
+
 def main():
     data = _read_stdin_json()
     if data is None:
@@ -129,6 +144,8 @@ def main():
     except Exception as e:
         sys.stderr.write(f"regression: failed to launch suite: {e}\n")
         return 2
+
+    _record_state("pass" if r.returncode == 0 else "fail")
 
     if r.returncode == 0:
         sys.stdout.write("regression: 160 green\n")
