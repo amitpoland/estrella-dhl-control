@@ -13,6 +13,14 @@ Rules locked:
   #8  Origin fallback chain: ln.origin || origin_country || companyProfile.country
   #9  PL/EN descriptions: desc_pl + desc_en mapped from editable_lines
   #10 Country codes expanded via COUNTRY_NAMES lookup (_expandCountry applied ≥2×)
+
+PR C1 (2026-06-10) — payment / due-date / footer / bank / address formatting:
+  C1-1 payment_terms {method, days} object rendered human-readable
+  C1-2 due-date fallback uses date-only UTC arithmetic (no local-tz day shift)
+  C1-3 footer uses paymentDueStr; no hardcoded '7 days' fallback remains
+  C1-4 bank: IBAN 4-char grouping, stable React keys, EUR account first
+  C1-5 address: ship_to_override printed on doc (templates fall back to buyer);
+       buyer/seller addresses structured street / zip city / country
 """
 import re
 from pathlib import Path
@@ -157,3 +165,109 @@ def test_origin_fallback_uses_origin_country():
     src = _src(PROFORMA_DETAIL)
     assert "origin_country" in src, \
         "origin_country not in origin fallback chain — line items may show '—' for origin"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PR C1 — payment / due-date / footer / bank / address formatting
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _ej_fn_body(src: str, fn_name: str) -> str:
+    """Extract a top-level function body from the doc-template source."""
+    start = src.index(f"function {fn_name}")
+    end = src.index("\nfunction ", start + 1) if "\nfunction " in src[start + 1:] else len(src)
+    return src[start:end]
+
+
+# ── C1-3: Footer — paymentDueStr used, hardcoded '7 days' gone ────────────────
+
+def test_compliance_footer_no_hardcoded_seven_days_at_all():
+    body = _ej_fn_body(_src(DOC_PROFORMA), "EJDocCompliance")
+    assert "7 days" not in body, \
+        "EJDocCompliance still contains a hardcoded '7 days' fallback — " \
+        "the draft (paymentDays / paymentDueStr) is the only terms authority"
+
+
+def test_compliance_footer_uses_payment_due_str():
+    body = _ej_fn_body(_src(DOC_PROFORMA), "EJDocCompliance")
+    # Once in the signature, at least once in the terms-phrase logic.
+    assert body.count("paymentDueStr") >= 2, \
+        "EJDocCompliance accepts paymentDueStr but never uses it — " \
+        "footer cannot state the due date when payment_terms_days is absent"
+
+
+# ── C1-5: Ship-to authority on the printed document ───────────────────────────
+
+def test_ship_to_in_preview_doc_data():
+    src = _src(PROFORMA_DETAIL)
+    assert "ship_to:" in src, \
+        "previewDocData has no ship_to party — ship_to_override never reaches the print doc"
+    assert "ship_to_override" in src, \
+        "ship_to_override not referenced — ship-to authority chain broken"
+
+
+def test_doc_templates_render_ship_to_with_buyer_fallback():
+    src = _src(DOC_PROFORMA)
+    count = src.count("d.ship_to || d.buyer")
+    assert count >= 2, \
+        f"'d.ship_to || d.buyer' found {count} time(s) — expected ≥2 " \
+        "(Classic + Bold Ship-to blocks must prefer ship_to_override)"
+    assert "d.ship_to" in src, "doc templates never reference d.ship_to"
+
+
+# ── C1-4: Bank block — IBAN grouping, stable keys, EUR first ──────────────────
+
+def test_bank_iban_grouping_helper():
+    src = _src(DOC_PROFORMA)
+    assert src.count("_formatIban") >= 2, \
+        "_formatIban helper missing or unused — IBAN prints ungrouped"
+
+
+def test_bank_key_not_currency():
+    src = _src(DOC_PROFORMA)
+    assert "key={b.cur}" not in src, \
+        "EJDocBank keys rows by currency — two accounts in the same currency collide"
+
+
+def test_banks_eur_account_first():
+    src = _src(PROFORMA_DETAIL)
+    assert "=== 'EUR')" in src and ".sort(" in src, \
+        "banks not ordered EUR-first — document currency should lead the bank block"
+
+
+# ── C1-2: Due-date fallback — timezone-safe date arithmetic ───────────────────
+
+def test_due_fallback_timezone_safe():
+    src = _src(PROFORMA_DETAIL)
+    assert "setUTCDate" in src, \
+        "due-date fallback does not use setUTCDate — local-tz parsing can shift the day"
+    assert "d.setDate(d.getDate()" not in src, \
+        "old local-time due-date arithmetic still present"
+
+
+# ── C1-1: payment_terms object rendered human-readable ────────────────────────
+
+def test_payment_terms_object_humanized():
+    src = _src(PROFORMA_DETAIL)
+    assert "rawPt.method" in src and "rawPt.days" in src, \
+        "payment_terms {method, days} keys not handled — " \
+        "object renders as raw 'k: v' pairs on the document"
+
+
+# ── C1-5: Structured address lines (street / zip city / country) ──────────────
+
+def test_buyer_address_structured():
+    src = _src(PROFORMA_DETAIL)
+    assert "[bo.zip, bo.city]" in src, \
+        "buyer city line not built from zip + city — address collapses to one line"
+
+
+def test_seller_address_structured():
+    src = _src(PROFORMA_DETAIL)
+    assert "companyProfile.postal_city" in src, \
+        "seller city line not taken from companyProfile.postal_city"
+
+
+def test_doc_meta_label_payment_terms_not_method():
+    src = _src(DOC_PROFORMA)
+    assert '"Method",' not in src, \
+        "meta strip still labels payment terms as 'Method' — mislabeled field"

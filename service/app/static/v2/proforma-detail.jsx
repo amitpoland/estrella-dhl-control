@@ -768,12 +768,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // FX rate from backend (no browser-side PLN conversion)
   const fxRate = liveDraft.exchange_rate ? parseFloat(liveDraft.exchange_rate) : null;
 
+  // payment_terms_json shape is { method?: string, days?: number } (routes_proforma.py).
+  // Known keys render human-readable; unknown extras keep k: v so nothing is hidden.
   const rawPt = liveDraft.payment_terms;
-  const paymentTermsDisplay = rawPt
-    ? (typeof rawPt === 'object'
-        ? (Object.entries(rawPt).map(([k, v]) => `${k}: ${v}`).join(' · ') || '—')
-        : String(rawPt))
-    : '—';
+  const paymentTermsDisplay = (() => {
+    if (!rawPt) return '—';
+    if (typeof rawPt !== 'object') return String(rawPt);
+    const parts = [];
+    if (rawPt.method) parts.push(String(rawPt.method));
+    if (rawPt.days)   parts.push(`${rawPt.days} days`);
+    Object.entries(rawPt).forEach(([k, v]) => {
+      if (k !== 'method' && k !== 'days' && v) parts.push(`${k}: ${v}`);
+    });
+    return parts.join(' · ') || '—';
+  })();
 
   // SELLER from company profile (GET /api/v1/settings/company-profile)
   const exporter = companyProfile
@@ -857,9 +865,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     if (liveDraft.due_date)           return liveDraft.due_date.slice(0, 10);
     const base = liveDraft.invoice_date || liveDraft.created_at;
     if (base && _ptDays > 0) {
-      const d = new Date(base);
-      d.setDate(d.getDate() + _ptDays);
-      return d.toISOString().slice(0, 10);
+      // Date-only UTC arithmetic — parsing a local timestamp and round-tripping
+      // through toISOString() can shift the calendar day for UTC+ timezones.
+      const d = new Date(String(base).slice(0, 10) + 'T00:00:00Z');
+      if (!isNaN(d.getTime())) {
+        d.setUTCDate(d.getUTCDate() + _ptDays);
+        return d.toISOString().slice(0, 10);
+      }
     }
     return '—';
   })();
@@ -871,9 +883,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     payment:  paymentTermsDisplay,
     payment_terms_days: _ptDays,
     rate:     { eur: fxRate, date: liveDraft.exchange_rate_date || '—', table: liveDraft.nbp_table || '—' },
+    // Address lines follow EU print convention: street / zip city / country.
+    // Structured fields preferred; comma-joined string is the legacy fallback.
     seller:   {
       name:    detail.exporter.name,
-      addr:    detail.exporter.address,
+      addr:    (companyProfile && companyProfile.street) || detail.exporter.address,
+      city:    (companyProfile && companyProfile.postal_city) || '',
       country: _expandCountry(detail.exporter.country),
       vat:     detail.exporter.vatEu,
       email:   (companyProfile && companyProfile.email) || '',
@@ -881,11 +896,21 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     },
     buyer:    {
       name:    detail.customer.name,
-      addr:    detail.customer.address,
-      city:    '',
+      addr:    bo.street || detail.customer.address,
+      city:    [bo.zip, bo.city].filter(Boolean).join(' '),
       country: _expandCountry(detail.customer.country),
       vat:     detail.customer.vatEu,
     },
+    // ship_to: only when ship_to_override is set — templates fall back to buyer
+    // when null, so "Ship to = buyer" stays the default print behaviour.
+    ship_to:  (sto.name || sto.street || sto.city || sto.zip || sto.country)
+      ? {
+          name:    shipTo.name,
+          addr:    sto.street || bo.street || '',
+          city:    [sto.zip || bo.zip, sto.city || bo.city].filter(Boolean).join(' '),
+          country: _expandCountry(shipTo.country),
+        }
+      : null,
     lines:    lines.map(l => ({
       seq:     l.seq,
       sku:     l.sku,
@@ -903,12 +928,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       ? lines.reduce((s, l) => s + l.netEur, 0) * fxRate : null,
     carrier:  liveDraft.batch_id
       ? { awb: liveDraft.batch_id, incoterm: liveDraft.incoterm || 'DAP' } : null,
+    // EUR first — the document currency leads; sort is stable for the rest.
     banks:    (companyProfile && companyProfile.bank_accounts || []).map(b => ({
       cur:   b.currency || b.cur || 'EUR',
       iban:  b.iban || '—',
       swift: b.bic || b.swift || '',
       bank:  b.bank_name || b.bank || '',
-    })),
+    })).sort((a, b) => (b.cur === 'EUR') - (a.cur === 'EUR')),
   };
   // ── cmrData for CMR preview (EJCMRClassic / EJCMRModern) ─────────────────
   // No CMR backend route exists — this is client-side preview only.
