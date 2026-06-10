@@ -37,6 +37,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/pz-regression-postedit.py\"",
+            "timeout": 120
+          }
+        ]
+      }
     ]
   }
 }
