@@ -9,7 +9,7 @@ Referenced by: `deploy_qa_reviewer.md`, `deploy_lead_coordinator.md`, `deploy.md
 
 | Suite | File / pattern | Required pass count | Failure action |
 |-------|---------------|---------------------|----------------|
-| PZ regression | `test_pz_regression.py` | **160** | Unconditional deploy block |
+| PZ regression | `tests/test_pz_*.py` | **221** | Unconditional deploy block |
 | Carrier suite | `tests/test_carrier_*.py` | **412** | Unconditional deploy block |
 
 Any test ERROR (not just FAILED) is also an unconditional block.
@@ -23,7 +23,7 @@ When a new golden batch is committed or a new test is added:
 
 1. Update the count in the table above.
 2. Add a row to the History table below with date and reason.
-3. `test_pz_regression.py` (or the relevant test file) AND this file must change in the same commit.
+3. The relevant test file AND this file must change in the same commit.
 4. No count changes are needed in any referencing file — they all read from here.
 
 ---
@@ -35,3 +35,4 @@ When a new golden batch is committed or a new test is added:
 | 2026-05-13 | 160 | 366 | Baseline established (V2.0 engine) |
 | 2026-05-22 | 160 | 381 | count update — carrier suite grew from new adapter/idempotency tests |
 | 2026-06-09 | 160 | 412 | count update — carrier suite grew from phase5/plt/doc-package/routes tests |
+| 2026-06-10 | 221 | 412 | file-reference fix: test_pz_regression.py never existed; actual PZ suite is tests/test_pz_*.py (221 passing, 1 pre-existing failure in test_pz_batch.py::test_save_json_csv_ui_round_trip) |
