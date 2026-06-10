@@ -384,6 +384,87 @@ function CancelDraftModal({ draft, liveDraft, onClose, onSuccess }) {
   );
 }
 
+// ── Cancel in wFirma Modal ────────────────────────────────────────────────────
+// WIRED: POST /api/v1/proforma/draft/{id}/cancel-wfirma
+// Cancels a wFirma-linked proforma in the accounting system, then marks the
+// local draft wfirma_cancelled. Local record is retained for traceability.
+function CancelWfirmaModal({ draft, liveDraft, onClose, onSuccess }) {
+  const [loading,  setLoading]  = React.useState(false);
+  const [apiError, setApiError] = React.useState(null);
+
+  const proformaLabel = liveDraft.wfirma_proforma_fullnumber
+    || (draft && draft.wfirma_proforma_fullnumber)
+    || `Draft #${draft && draft.id}`;
+  const wfirmaId = liveDraft.wfirma_proforma_id
+    || (draft && draft.wfirma_proforma_id)
+    || '';
+
+  const handleCancel = () => {
+    if (loading) return;
+    setLoading(true);
+    setApiError(null);
+    window.PzApi.cancelDraftInWfirma(draft.id)
+      .then(r => {
+        if (r && r.ok) {
+          onSuccess && onSuccess();
+        } else {
+          setApiError((r && r.detail) || (r && r.error) || 'Cancellation failed — check backend logs.');
+          setLoading(false);
+        }
+      })
+      .catch(e => {
+        setApiError((e && e.message) ? e.message : 'Cancellation failed — check backend logs.');
+        setLoading(false);
+      });
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px',
+    }} onClick={onClose} data-testid="cancel-wfirma-modal">
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--card)', borderRadius: 12, width: 520, maxWidth: '92vw',
+        boxShadow: '0 20px 60px var(--shadow-heavy)',
+      }}>
+        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>⚠ Cancel in wFirma</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: '20px 24px' }}>
+          <div style={{ marginBottom: 16, padding: '12px 16px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 13, color: 'var(--badge-red-text)', lineHeight: 1.6 }}>
+            <strong>This cancels the proforma in wFirma.</strong><br />
+            Proforma <strong>{proformaLabel}</strong> (wFirma ID: {wfirmaId}) will be voided
+            in the accounting system. This action cannot be undone in wFirma.
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>
+            The local draft record is retained for accounting traceability and will be
+            marked <code style={{ background: 'var(--bg-subtle)', padding: '1px 5px', borderRadius: 3 }}>Archived / cancelled</code>.
+            It will remain visible but will not be editable or purgeable.
+          </div>
+          {apiError && (
+            <div style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }} data-testid="cancel-wfirma-error">
+              ⚠ {apiError}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
+            <Btn variant="outline" onClick={onClose} disabled={loading}>Close</Btn>
+            <Btn
+              variant="danger"
+              disabled={loading}
+              onClick={handleCancel}
+              data-testid="cancel-wfirma-submit"
+            >
+              {loading ? '⏳ Cancelling in wFirma…' : '⚠ Cancel in wFirma'}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ── Send Proforma Email Modal ────────────────────────────────────────────────
 // WIRED: POST /api/v1/proforma/draft/{id}/send-email — uses PzApi.sendProformaEmail
 // M2 — Send proforma PDF to customer via email queue.
@@ -679,7 +760,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [previewDocType,   setPreviewDocType]    = React.useState('proforma');
 
   // M1a — Cancel Draft modal state
-  const [showCancelModal,  setShowCancelModal]   = React.useState(false);
+  const [showCancelModal,      setShowCancelModal]      = React.useState(false);
+  // Cancel-in-wFirma modal — only for posted wFirma-linked drafts
+  const [showCancelWfirmaModal, setShowCancelWfirmaModal] = React.useState(false);
 
   // M7 — Prior Invoice History modal state
   const [showInvoiceHistory, setShowInvoiceHistory] = React.useState(false);
@@ -1129,10 +1212,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const canEdit       = ['draft', 'editing', 'post_failed'].includes(draftState);
   // M1a — Cancel: enabled when draft is in a cancellable state and not already cancelled
   const canCancel     = ['draft', 'editing', 'approved', 'post_failed'].includes(draftState);
+  // Cancel in wFirma: only for posted drafts with a live wFirma ID
+  const hasWfirmaId   = !!(liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id));
+  const isWfirmaCancelled = draftState === 'wfirma_cancelled';
+  const canCancelInWfirma = draftState === 'posted' && hasWfirmaId;
+  const cancelWfirmaDisabledReason = isWfirmaCancelled
+    ? 'Already archived — cancelled in wFirma'
+    : !hasWfirmaId
+      ? 'No wFirma proforma ID — not posted to wFirma'
+      : draftState !== 'posted'
+        ? `Cannot cancel in '${draftState}' state — only posted drafts`
+        : '';
   // M7 — Prior Invoice History: enabled when wFirma contractor ID is available
   const contractorId  = (cr && cr.wfirma_customer_id) || null;
   // M2 — Send Email: enabled when posted to wFirma (has PDF) and not in terminal state
-  const hasWfirmaId   = !!(liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id));
   const sendableStates = ['posted', 'approved', 'ready'];
   const canSend       = hasWfirmaId && sendableStates.includes(draftState);
   // M2 — Customer email from Customer Master (bill_to_email)
@@ -1379,11 +1472,34 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           disabled={!canCancel}
           title={canCancel
             ? 'Cancel this draft — soft-cancel, no data deleted'
-            : (draftState === 'cancelled' ? 'Already cancelled' : 'Cannot cancel in current state')}
+            : (draftState === 'cancelled' ? 'Already cancelled'
+              : isWfirmaCancelled ? 'Archived — cancelled in wFirma'
+              : 'Cannot cancel in current state')}
           data-testid="tb-delete"
         >
           🗑 Cancel Draft
         </TbBtn>
+        {isWfirmaCancelled ? (
+          <TbBtn
+            disabled
+            title="This draft was cancelled in wFirma and is retained for accounting traceability"
+            data-testid="tb-wfirma-archived"
+          >
+            📦 Archived / cancelled
+          </TbBtn>
+        ) : (
+          <TbBtn
+            warn
+            onClick={() => canCancelInWfirma && setShowCancelWfirmaModal(true)}
+            disabled={!canCancelInWfirma}
+            title={canCancelInWfirma
+              ? 'Cancel this proforma in wFirma — voids the accounting document'
+              : cancelWfirmaDisabledReason}
+            data-testid="tb-cancel-wfirma"
+          >
+            ⚠ Cancel in wFirma
+          </TbBtn>
+        )}
         <TbBtn
           onClick={handleDuplicate}
           disabled={cloning}
@@ -1797,6 +1913,17 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           onClose={() => setShowCancelModal(false)}
           onSuccess={() => {
             setShowCancelModal(false);
+            draftHook && draftHook.reload && draftHook.reload();
+          }}
+        />
+      )}
+      {showCancelWfirmaModal && (
+        <CancelWfirmaModal
+          draft={draft}
+          liveDraft={liveDraft}
+          onClose={() => setShowCancelWfirmaModal(false)}
+          onSuccess={() => {
+            setShowCancelWfirmaModal(false);
             draftHook && draftHook.reload && draftHook.reload();
           }}
         />
@@ -2636,4 +2763,4 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
   );
 }
 
-Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal, CancelDraftModal, PriorInvoiceHistoryModal, SendProformaModal });
+Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal, CancelDraftModal, CancelWfirmaModal, PriorInvoiceHistoryModal, SendProformaModal });

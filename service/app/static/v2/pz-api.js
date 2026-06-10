@@ -202,6 +202,13 @@
         reason:              reason || '',
       }),
 
+    // POST /api/v1/proforma/draft/{draft_id}/cancel-wfirma
+    // Cancel a wFirma-linked proforma via wFirma API, then mark local draft
+    // wfirma_cancelled. Requires WFIRMA_DELETE_INVOICE_ALLOWED=true in settings.
+    // Local record is retained for accounting traceability — never deleted.
+    cancelDraftInWfirma: (draftId) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/cancel-wfirma`, { confirm: true }),
+
     // POST /api/v1/proforma/draft/{draft_id}/send-email
     // M2 — Send proforma PDF to customer via email queue.
     // confirm_token: "YES_SEND_PROFORMA_EMAIL" (required)

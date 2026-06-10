@@ -5142,6 +5142,100 @@ def cancel_proforma_draft(
     ))
 
 
+@router.post("/draft/{draft_id}/cancel-wfirma", dependencies=[_auth])
+def cancel_proforma_draft_in_wfirma(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Cancel a wFirma-linked proforma in wFirma, then mark the local draft
+    ``wfirma_cancelled``.
+
+    The local row is NEVER deleted — it is retained for accounting traceability.
+
+    Body::
+        {"confirm": true}
+
+    Flow (strict ordering):
+      1. Settings gate: ``WFIRMA_DELETE_INVOICE_ALLOWED`` must be true.
+      2. ``confirm: true`` required — explicit operator acknowledgement.
+      3. Draft must exist and have ``wfirma_proforma_id``.
+      4. Draft must not already be in a terminal cancelled state.
+      5. wFirma ``invoices/delete`` called FIRST — local state unchanged on failure.
+      6. On wFirma OK: mark local draft ``wfirma_cancelled`` + write audit event.
+      7. On wFirma failure: return 502 with exact wFirma error; local state unchanged.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict) or not body.get("confirm"):
+        raise HTTPException(
+            status_code=400,
+            detail='body must contain {"confirm": true} — explicit operator confirmation required',
+        )
+    operator = _require_operator(x_operator)
+
+    # ── 1. Settings gate ──────────────────────────────────────────────────────
+    if not settings.wfirma_delete_invoice_allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="WFIRMA_DELETE_INVOICE_ALLOWED=false — enable in settings to proceed",
+        )
+
+    # ── 2–4. Validate local draft ─────────────────────────────────────────────
+    db_path = _proforma_db_path()
+    d = pildb.get_draft_by_id(db_path, draft_id)
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    if not d.wfirma_proforma_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"draft {draft_id} has no wFirma proforma id — use local cancel instead",
+        )
+    if d.draft_state in ("wfirma_cancelled", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"draft {draft_id} is already in state {d.draft_state!r}",
+        )
+
+    # ── 5. wFirma API call FIRST — local state unchanged on any failure ───────
+    try:
+        wfirma_result = wfirma_client.delete_invoice(d.wfirma_proforma_id)
+    except (RuntimeError, ConnectionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"wFirma cancellation failed — local state unchanged: {exc}",
+        )
+
+    # ── 6. wFirma confirmed OK — update local state ───────────────────────────
+    try:
+        updated = pildb.cancel_wfirma_linked_draft(
+            db_path, draft_id, operator,
+            wfirma_invoice_id=d.wfirma_proforma_id,
+            wfirma_response=wfirma_result,
+        )
+    except (pildb.DraftNotFound, pildb.DraftNotEditable) as exc:
+        log.error(
+            "wFirma delete OK but local state update failed "
+            "draft_id=%s wfirma_id=%s err=%s", draft_id, d.wfirma_proforma_id, exc,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"wFirma cancellation succeeded (id={d.wfirma_proforma_id}) "
+                f"but local state update failed: {exc} — "
+                "proforma is cancelled in wFirma; local record may need manual audit"
+            ),
+        )
+
+    return JSONResponse({
+        "ok":               True,
+        "draft_id":         draft_id,
+        "new_state":        updated.draft_state,
+        "wfirma_invoice_id": d.wfirma_proforma_id,
+        "wfirma_fullnumber": d.wfirma_proforma_fullnumber or "",
+    })
+
+
 # ── M2: Send Proforma Email ─────────────────────────────────────────────────
 # POST /api/v1/proforma/draft/{draft_id}/send-email
 #

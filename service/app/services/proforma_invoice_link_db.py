@@ -384,7 +384,7 @@ KNOWN_LEGACY_STATUSES = DRAFT_STATUSES + ("draft",)
 DRAFT_LIFECYCLE_STATES = (
     "draft", "editing", "approved",
     "posting", "posted", "post_failed",
-    "cancelled", "superseded",
+    "cancelled", "superseded", "wfirma_cancelled",
 )
 
 
@@ -2710,6 +2710,69 @@ def cancel_draft(
     return refreshed
 
 
+def cancel_wfirma_linked_draft(
+    db_path:           Path,
+    draft_id:          int,
+    operator:          str,
+    *,
+    wfirma_invoice_id: str,
+    wfirma_response:   Dict[str, Any],
+) -> "ProformaDraft":
+    """Mark a wFirma-linked draft ``wfirma_cancelled`` after a successful
+    external wFirma cancellation.
+
+    IMPORTANT: the caller is responsible for calling the wFirma API first.
+    This function ONLY updates local state — it never touches wFirma.
+
+    Guards:
+    - draft must exist
+    - draft must have ``wfirma_proforma_id`` matching ``wfirma_invoice_id``
+    - draft must not already be in ``wfirma_cancelled`` or ``cancelled``
+
+    The local row is NOT deleted. It is retained for accounting traceability.
+    A ``wfirma_cancelled`` event is appended to ``proforma_draft_events``.
+
+    Raises :exc:`DraftNotFound` if the draft does not exist.
+    Raises :exc:`DraftNotEditable` if any guard fails.
+    """
+    if not (operator or "").strip():
+        raise ValueError("operator is required")
+    if not (wfirma_invoice_id or "").strip():
+        raise ValueError("wfirma_invoice_id is required")
+    d = get_draft_by_id(db_path, draft_id)
+    if d is None:
+        raise DraftNotFound(f"draft id={draft_id} not found")
+    if not d.wfirma_proforma_id:
+        raise DraftNotEditable(
+            f"draft id={draft_id} has no wFirma proforma id — "
+            "use local cancel for non-wFirma drafts"
+        )
+    if d.wfirma_proforma_id != str(wfirma_invoice_id):
+        raise DraftNotEditable(
+            f"draft id={draft_id} wfirma_proforma_id={d.wfirma_proforma_id!r} "
+            f"does not match request id={wfirma_invoice_id!r}"
+        )
+    if d.draft_state in ("wfirma_cancelled", "cancelled"):
+        raise DraftNotEditable(
+            f"draft id={draft_id} already in state {d.draft_state!r}"
+        )
+    refreshed = _commit_draft_update(
+        db_path, d.id,
+        new_state     = "wfirma_cancelled",
+        new_locked_at = _now_utc_iso(),
+    )
+    _record_draft_event(
+        db_path, draft_id=d.id, event="wfirma_cancelled",
+        detail_json=json.dumps({
+            "wfirma_invoice_id": str(wfirma_invoice_id),
+            "wfirma_response":   wfirma_response,
+            "from_state":        d.draft_state,
+        }, ensure_ascii=False, sort_keys=True),
+        operator=operator,
+    )
+    return refreshed
+
+
 def reset_draft_from_sales_packing(
     db_path:             Path,
     draft_id:            int,
@@ -3378,6 +3441,7 @@ __all__ = [
     "approve_draft",
     "reopen_draft",
     "cancel_draft",
+    "cancel_wfirma_linked_draft",
     "reset_draft_from_sales_packing",
     "add_draft_line",
     "remove_draft_line",
