@@ -195,7 +195,6 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
 
     PzApi.saveCustomerMaster(clientKey, changedFields).then(res => {
       if (res.ok) {
-        Toast.success('Client updated successfully');
         if (onSaved) onSaved();
         onClose();
       } else {
