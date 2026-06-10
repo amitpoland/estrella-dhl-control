@@ -385,6 +385,9 @@ function Card({ children, style, onClick, ...rest }) {
 function Btn({ children, onClick, variant = 'default', small, disabled, style: extraStyle, ...rest }) {
   const variants = {
     default: { background: 'var(--text)', color: 'var(--card)', border: '1px solid var(--text)' },
+    // `primary` = alias for gold/accent (C20A parity with the Btn in v2/dashboard-shared.js).
+    // Unknown variants fall back to `default` navy, which silently un-styled primary CTAs.
+    primary: { background: 'var(--accent)', color: 'var(--accent-text)', border: '1px solid var(--accent)' },
     gold:    { background: 'var(--accent)', color: 'var(--accent-text)', border: '1px solid var(--accent)' },
     outline: { background: 'transparent', color: 'var(--text)', border: '1px solid var(--border)' },
     ghost:   { background: 'transparent', color: 'var(--text-2)', border: '1px solid transparent' },

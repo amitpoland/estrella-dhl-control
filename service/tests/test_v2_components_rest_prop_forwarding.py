@@ -28,7 +28,8 @@ import re
 import pytest
 
 SERVICE_DIR = pathlib.Path(__file__).resolve().parent.parent
-COMPONENTS = SERVICE_DIR / "app" / "static" / "v2" / "components.jsx"
+V2_DIR = SERVICE_DIR / "app" / "static" / "v2"
+COMPONENTS = V2_DIR / "components.jsx"
 
 
 def _read() -> str:
@@ -119,3 +120,52 @@ class TestKnownCallerTestids:
         for tid in ("master-search", "error-state", "loading-state"):
             assert f'data-testid="{tid}"' in src, \
                 f"master-page.jsx must keep data-testid=\"{tid}\""
+
+
+# =============================================================================
+# 5. Btn variants map — `primary` declared, and every used literal resolves
+# =============================================================================
+
+def _btn_variant_keys() -> set:
+    """Keys declared in the `const variants = {...}` map inside Btn."""
+    block = _function_block(_read(), "Btn")
+    m = re.search(r"const variants = \{(.*?)\n\s*\};", block, flags=re.DOTALL)
+    assert m, "Btn must declare a `const variants = {...}` map"
+    return set(re.findall(r"^\s*(\w+):\s*\{", m.group(1), flags=re.MULTILINE))
+
+
+class TestBtnVariantCoverage:
+    """C20A parity: the Btn in v2/dashboard-shared.js gained a `primary`
+    variant (alias for gold/accent — the intended CTA style) because unknown
+    variants silently fall back to `default` (dark navy). The V2 shell
+    (v2/index.html) loads components.jsx ONLY — dashboard-shared.js is
+    intentionally excluded — so the same key must exist here or every
+    variant="primary" CTA (e.g. proforma-detail.jsx send-proforma submit)
+    renders unstyled."""
+
+    def test_primary_variant_declared(self):
+        assert "primary" in _btn_variant_keys(), \
+            "Btn variants map must declare `primary` (C20A parity with dashboard-shared.js)"
+
+    def test_primary_uses_accent_tokens(self):
+        block = _function_block(_read(), "Btn")
+        m = re.search(r"primary:\s*\{([^}]*)\}", block)
+        assert m, "primary variant must be declared inline in the variants map"
+        assert "var(--accent)" in m.group(1) and "var(--accent-text)" in m.group(1), \
+            "primary must render the gold/accent CTA style"
+
+    def test_every_used_variant_literal_is_declared(self):
+        """Workflow-class guard (Lesson I): an undeclared variant string in any
+        V2 page falls back to `default` with no error or console warning.
+        Every variant=\"x\" literal in v2/*.jsx must be a declared Btn key."""
+        keys = _btn_variant_keys()
+        undeclared = {}
+        for page in sorted(V2_DIR.glob("*.jsx")):
+            src = page.read_text(encoding="utf-8")
+            for m in re.finditer(r"variant=[\"'](\w+)[\"']", src):
+                if m.group(1) not in keys:
+                    undeclared.setdefault(m.group(1), set()).add(page.name)
+        assert not undeclared, (
+            "variant literals used in v2/*.jsx but not declared in the "
+            f"components.jsx Btn variants map (silent navy fallback): {undeclared}"
+        )
