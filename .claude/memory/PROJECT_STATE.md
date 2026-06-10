@@ -55,6 +55,42 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
+## PR #546 — Proforma Display Contract Lock (2026-06-10, MERGED + DEPLOYED)
+
+**Date**: 2026-06-10
+**PR #546** — `fix/proforma-display-contract-lock` — proforma-contract-lock campaign PR A of 3
+**Merge SHA**: `a6b84f0` (squash-merge to main)
+
+**7 display rules fixed**:
+- #3 Payment due: `wfirma_payment_due → due_date → invoice_date + payment_terms_days` (`_dueFallback` IIFE)
+- #5 Bank details: `companyProfile.bank_accounts.map(...)` (was hardcoded `[]`)
+- #6 Footer payment terms: `paymentDays` prop → `daysLabel` (was hardcoded "7 days")
+- #7 Footer contrast: `fontSize 10, color #334155` (was `9, #64748B`)
+- #8 Origin fallback: `ln.origin || liveDraft.origin_country || companyProfile.country || '—'`
+- #9 PL/EN descriptions: `desc_pl` + `desc_en` from `editable_lines`; all 3 print variants
+- #10 Country codes: `PROFORMA_COUNTRY_NAMES` (45 countries) + `_expandCountry()` on buyer + seller
+
+**Tests**: 16 source-grep regression tests in `service/tests/test_proforma_display_contract.py`. 16/16 PASS. PZ 160/160. Carrier 412/412.
+
+**Deploy** (2026-06-10):
+- Robocopy exit 3 (success) — `estrella-doc-proforma.jsx` (29,378 bytes) + `proforma-detail.jsx` (109,908 bytes)
+- `PROFORMA_COUNTRY_NAMES` confirmed at line 822 of production `proforma-detail.jsx`
+- `EJDocCompliance({ paymentDays, paymentDueStr })` confirmed at line 106 of production `estrella-doc-proforma.jsx`
+- Static files — no service restart required
+
+**GATE 6 browser verification** (PASS, 2026-06-10):
+- URL: `https://pz.estrellajewels.eu/v2/proforma_detail?draft=24` (PROF 123/2026, UAB Tomas Gold)
+- Preview modal opened via JS click
+- `Poland` rendered ✅ (was "PL")
+- `Lithuania` rendered ✅ (was "LT", UAB buyer country)
+- `paymentDays` text rendered ("days of invoice date") ✅
+- Polish descriptions (`złota`, `pierścionek`) visible ✅
+- No console errors ✅
+
+**GATE 2**: 2/3 open PRs (#498, #522) — one slot available.
+
+---
+
 ## PR #545 — Proforma Detail URL-Param Hydration Fix (2026-06-10, MERGED + DEPLOYED)
 
 **Date**: 2026-06-10
