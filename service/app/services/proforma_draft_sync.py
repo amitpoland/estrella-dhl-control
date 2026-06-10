@@ -37,6 +37,7 @@ from . import document_db as ddb
 from . import master_data_db as mdb
 from . import packing_db as _pdb
 from . import proforma_invoice_link_db as pildb
+from . import preamble_signals as _ps
 from ..core import timeline as tl
 
 log = logging.getLogger(__name__)
@@ -313,6 +314,163 @@ def _write_sync_metadata(
         )
 
 
+# ── Draft-birth skip-visibility helpers (PR 1) ────────────────────────────────
+#
+# When sync_draft_from_packing_upload() drops a sales_document because every
+# one of its lines has empty client_name, the existing code emits NO timeline
+# event. That silent-drop class forced operators into manual forensic work
+# (e.g. SHIPMENT_7123231135_2026-06_f255bbb5 missing drafts for EJL-26-27/258
+# and /260). These helpers emit ONE event per dropped sales_document with
+# read-only identity-signal observations (VAT, heading candidate) so the
+# audit shows exactly what evidence existed at the moment of failure.
+#
+# CRITICAL: These helpers are observation only. They do NOT change which
+# drafts get created. Pre-PR draft count == post-PR draft count for every
+# input.
+
+
+def _lookup_sales_doc_source_path(
+    batch_id: str,
+    sales_document_id: str,
+) -> Tuple[str, str]:
+    """Return (source_file_path, sales_doc_no) for a sales_document_id.
+
+    Reads from ``documents.db`` via ``ddb.get_sales_documents`` (NOT from
+    ``proforma_links.db`` — sales_documents is owned by the documents
+    registry). Both fields are best-effort; either may be '' if the row
+    is missing or the lookup fails. Never raises.
+    """
+    if not sales_document_id:
+        return "", ""
+    try:
+        for sd in (ddb.get_sales_documents(batch_id) or []):
+            if str(sd.get("id") or "") == str(sales_document_id):
+                return (
+                    str(sd.get("source_file_path") or ""),
+                    str(sd.get("sales_doc_no") or ""),
+                )
+        return "", ""
+    except Exception as exc:
+        log.debug(
+            "_lookup_sales_doc_source_path: id=%s failed (non-fatal): %s",
+            sales_document_id, exc,
+        )
+        return "", ""
+
+
+def _emit_draft_birth_skip_events(
+    resolved_lines: List[Dict[str, Any]],
+    by_client:      Dict[str, List[Dict[str, Any]]],
+    audit_path:     Optional[Path],
+    operator:       str,
+    batch_id:       str,
+) -> Tuple[int, int]:
+    """Emit ONE timeline event per sales_document whose lines were all dropped
+    due to empty client_name. Returns (pending_count, skipped_count).
+
+    pending_count  = docs that emitted EV_PROFORMA_DRAFT_CREATION_PENDING_RESOLUTION
+                     (at least one identity signal — VAT or heading candidate — found)
+    skipped_count  = docs that emitted EV_PROFORMA_DRAFT_CREATION_SKIPPED
+                     (no identity signals found)
+
+    Behaviour-invariant: this function does not mutate `by_client`,
+    `resolved_lines`, or any database. It only appends events to audit.json.
+    """
+    if audit_path is None:
+        return 0, 0
+
+    # Aggregate per sales_document_id: lines_count, value_sum, currency, has_client.
+    per_doc: Dict[str, Dict[str, Any]] = {}
+    for ln in resolved_lines:
+        sd_id = str(ln.get("sales_document_id") or "")
+        if not sd_id:
+            continue
+        info = per_doc.setdefault(sd_id, {
+            "lines_count":  0,
+            "value":        0.0,
+            "currency":     "",
+            "has_client":   False,
+        })
+        info["lines_count"] += 1
+        try:
+            info["value"] += float(ln.get("total_value") or 0)
+        except (TypeError, ValueError):
+            pass
+        if not info["currency"]:
+            info["currency"] = str(ln.get("currency") or "")
+        if str(ln.get("client_name") or "").strip():
+            info["has_client"] = True
+
+    # Only docs that contributed ZERO lines to by_client are dropped.
+    dropped = {sd: info for sd, info in per_doc.items() if not info["has_client"]}
+    if not dropped:
+        return 0, 0
+
+    pending = 0
+    skipped = 0
+    for sd_id, info in dropped.items():
+        source_file_path, sales_doc_no = _lookup_sales_doc_source_path(batch_id, sd_id)
+
+        signals: Dict[str, Optional[str]] = {"vat": None, "heading_candidate": None}
+        if source_file_path:
+            try:
+                signals = _ps.extract_all_signals(source_file_path)
+            except Exception as _sig_exc:
+                log.debug(
+                    "_emit_draft_birth_skip_events: signal extract failed "
+                    "(sales_doc=%s): %s", sd_id, _sig_exc,
+                )
+
+        has_signal = bool(signals.get("vat") or signals.get("heading_candidate"))
+        event_name = (
+            tl.EV_PROFORMA_DRAFT_CREATION_PENDING_RESOLUTION if has_signal
+            else tl.EV_PROFORMA_DRAFT_CREATION_SKIPPED
+        )
+        next_action = (
+            "vat_resolver_will_auto_bind_post_pr2" if signals.get("vat")
+            else "heading_candidate_requires_corroboration" if signals.get("heading_candidate")
+            else "operator_bind_client_name_manually"
+        )
+
+        try:
+            tl.log_event(
+                audit_path,
+                event_name,
+                trigger_source="proforma_draft_sync",
+                actor=operator or "system",
+                detail={
+                    "batch_id":         batch_id,
+                    "sales_doc_id":     sd_id,
+                    "sales_doc_no":     sales_doc_no,
+                    "source_file_path": source_file_path,
+                    "reason":           "client_name_unresolved",
+                    "lines_count":      info["lines_count"],
+                    "value":            round(info["value"], 2),
+                    "currency":         info["currency"],
+                    "resolver_signals_seen": signals,
+                    "resolver_passes_attempted": [
+                        "packing_row",
+                        "sales_doc",
+                        "shipment_doc_contractor",
+                        "filename",
+                        "preamble",
+                    ],
+                    "next_action":      next_action,
+                },
+            )
+            if has_signal:
+                pending += 1
+            else:
+                skipped += 1
+        except Exception as _emit_exc:
+            log.debug(
+                "_emit_draft_birth_skip_events: log_event failed (sales_doc=%s): %s",
+                sd_id, _emit_exc,
+            )
+
+    return pending, skipped
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def sync_draft_from_packing_upload(
@@ -371,15 +529,30 @@ def sync_draft_from_packing_upload(
             continue
         by_client.setdefault(cn, []).append(ln)
 
+    # ── 2.5 Skip-visibility emit (PR 1 — observation only, no behaviour change) ───
+    # For every sales_document_id whose lines were dropped above (empty
+    # client_name on EVERY line), emit ONE timeline event so the silent-drop
+    # class becomes auditable. Read-only preamble signals (VAT, heading
+    # candidate) are recorded to enable future deterministic resolution.
+    pending_count, skipped_count = _emit_draft_birth_skip_events(
+        resolved_lines=resolved_lines,
+        by_client=by_client,
+        audit_path=audit_path,
+        operator=operator,
+        batch_id=batch_id,
+    )
+
     result: Dict[str, Any] = {
-        "batch_id":          batch_id,
-        "clients_processed": 0,
-        "created":           0,
-        "synced":            0,
-        "blocked":           0,
-        "designs_resolved":   resolution_summary["designs_resolved"],
-        "designs_ambiguous":  resolution_summary["designs_ambiguous"],
-        "designs_unresolved": resolution_summary["designs_unresolved"],
+        "batch_id":              batch_id,
+        "clients_processed":     0,
+        "created":               0,
+        "synced":                0,
+        "blocked":               0,
+        "pending_resolution":    pending_count,
+        "skipped_no_signal":     skipped_count,
+        "designs_resolved":      resolution_summary["designs_resolved"],
+        "designs_ambiguous":     resolution_summary["designs_ambiguous"],
+        "designs_unresolved":    resolution_summary["designs_unresolved"],
     }
 
     # ── 3. Per-client sync ────────────────────────────────────────────────────
