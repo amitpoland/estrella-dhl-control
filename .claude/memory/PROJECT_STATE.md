@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-10 (PR #546 Proforma Display Contract Lock PR A merged + deployed; proforma-contract-lock campaign PR A completed).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-10 (PR #548 Proforma PR B Customer/Service Authority merged + deployed; proforma-contract-lock campaign PR B completed).
 
-**Last-run-at:** 2026-06-10 (PR #546 merged as a6b84f0 — proforma display contract lock 7 fixes; commit 44f3929 — chore state record; branch-deploy governance violation resolved by merge; proforma-contract-lock campaign PR A complete). Origin/main HEAD: **44f3929** (chore(state): record PR #546 deployed + GATE 6 PASS). GATE 2: **2/3 open PRs** (#522, #498-draft — #546 merged freed slot). TEST BASELINE: 160/160 PZ regression + 412/412 carrier suite. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
+**Last-run-at:** 2026-06-10 (PR #548 merged as 74bee9d — proforma PR B customer address/service charges authority; production deployed; 7-agent gate passed; GATE 6 verified). Origin/main HEAD: **74bee9d** (feat(proforma): PR B — Customer/service authority (#548)). GATE 2: **2/3 open PRs** (#522, #498 — PR #548 merged, #549 closed redundant). TEST BASELINE: 160/160 PZ regression + 412/412 carrier suite. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
 
 ---
 
@@ -4767,6 +4767,50 @@ Group D — Tests (3 new files):
 
 ---
 
+## PR #548 — Proforma PR B: Customer/Service Authority (2026-06-10, MERGED + DEPLOYED)
+
+**Date merged**: 2026-06-10 (PR merged as 74bee9d; deployed to C:\PZ production; PZService restarted and verified RUNNING)
+**PR #548** — `feat(proforma): PR B — Customer/service authority`
+**Merge SHA**: `74bee9d`
+**Scope**: Proforma PR B implementation — customer address authority + service charges. New API endpoints, client-detail.jsx enum corrections, test coverage.
+
+**New routes deployed**:
+- `POST /api/v1/proforma/draft/{id}/apply-customer-address` — apply customer master address data to draft
+- `GET /api/v1/proforma/draft/{id}/suggest-service-charges` — suggest freight/insurance charges based on shipment authority
+- `POST /api/v1/proforma/draft/{id}/apply-service-charges` — apply suggested service charges to draft
+
+**Frontend fixes deployed**:
+- `client-detail.jsx` enum values corrected: `freight_mode ∈ {no_data, fixed, variable, manual}`, `insurance_mode ∈ {no_data, fixed, formula, manual}`
+- Prior enum bug caused frontend validation failures
+
+**Test results**: 
+- PZ regression: 221/221 tests passed
+- Carrier suite: 412/412 tests passed  
+- PR B new tests: 16/16 tests passed
+- All test baselines met
+
+**7-agent deploy gate**: All 6 required agents returned CLEAR verdict. `deploy_lead_coordinator` issued READY-TO-DEPLOY.
+
+**Production verification**: C:\PZ deployment successful via robocopy. PZService restarted and health check confirmed RUNNING on port 47213.
+
+**Scope boundary (honored)**: No wFirma posting, no PZ valuation changes, no currency conversion changes — customer/service authority only as specified.
+
+**Campaign status**: proforma-contract-lock campaign PR B COMPLETED. PR C (remaining scope) ready for implementation.
+
+**PR #549 resolution**: PR #549 (`fix/client-detail-mode-enums`) closed as redundant — enum fix already included in PR #548.
+
+**GATE 2 status**: 2/3 open PRs remaining (#522, #498) after PR #548 merge and PR #549 close.
+
+**GATE 6 Browser Verification (2026-06-10, PASS)**:
+- PROF 123/2026 (`posted` state, draft_id=24): Address authority bar shows "Manual" badge ✓; Load/Edit/Clear buttons disabled with read-only notice ✓; freight 89.00 EUR (DHL Freight) + insurance 275.23 EUR (Future Generali), no duplicate lines ✓
+- Draft #31 (DiamondGroup GmbH, `draft` state): Authority badge "Not set", all 3 action buttons enabled ✓; ProformaBuyerEditModal opens with 6 fields (name/street/city/zip_code/country/vat_id) ✓; PATCH body confirmed: `patchDraft(id, {buyer_override:{...fields, _source:'manual'}}, updatedAt)` ✓
+- Suggest endpoint states verified: `available:true, already_applied:true` for freight+insurance on draft_id=24 ✓; `available:false, blocked_reason:"customer 'DiamondGroup GmbH' not found in wFirma mapping"` on draft_id=31 ✓
+- All 6 required verification items: PASS
+
+**Scorecard**: `.claude/memory/scorecards/2026-06-10-pr548-proforma-pr-b-customer-authority.md` (6 EXEMPLARY, 1 ACCEPTABLE)
+
+---
+
 # DECISIONS
 
 ## Description Engine — Single Authority, Multiple Renderers (2026-06-08)
@@ -5293,9 +5337,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Issue #529 price_source label fix** — target: merge Issue #529 fix to open GATE 2 slot for next high-priority work — gating: proforma authority GATE 4 disposition required (OQ-NEW-14)
-2. **Proforma contract-lock campaign PR B initiation** — target: Issues #1 #2 #4 (inline address edit + service charges) implementation — gating: GATE 2 slot (2/3 → 1 more available post-#529)
-3. **EJL/26-27/244 quantity reconciliation** — target: quantity reconciliation before PZ generation (pz_documents=0 requires resolution) — gating: operator EJL quantity reconciliation process (OQ-NEW-13)
+1. **Issue #529 price_source label fix** — target: merge Issue #529 fix to enable next high-priority work — gating: proforma authority GATE 4 disposition required (OQ-NEW-14)
+2. **EJL/26-27/244 quantity reconciliation** — target: quantity reconciliation before PZ generation (pz_documents=0 requires resolution) — gating: operator EJL quantity reconciliation process (OQ-NEW-13)
+3. **Proforma contract-lock campaign PR C initiation** — target: remaining proforma contract-lock scope after PR B completion — gating: GATE 2 slot available (2/3 open PRs)
 
 **DEPLOY-AGENT-REGISTRATION-REPAIR COMPLETE (2026-05-25, SHA 4366b0f)**: All 7 deploy agent files now have valid YAML frontmatter and are registered as dispatchable subagents. Names: deploy-lead-coordinator, deploy-git-diff-reviewer, deploy-backend-impact-reviewer, deploy-persistence-storage-reviewer, deploy-security-reviewer, deploy-qa-reviewer, deploy-release-manager. Tools: Read, Grep, Glob (review-only). Takes effect in next fresh Claude Code session (Lesson B). OQ6 resolved — see below.
 
