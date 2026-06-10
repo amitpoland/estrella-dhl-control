@@ -149,6 +149,11 @@ def _new_diagnostic(file_type: str) -> Dict[str, Any]:
         "mapped_columns":       [],
         "unmatched_columns":    [],
         "alias_hits":           0,
+        # Full per-column mapping audit: list of {col_index, original_header,
+        # normalised, canonical_field, method, confidence, reason}.
+        # Populated by _extract_packing_excel (primary) or _collect_excel_diagnostic
+        # (fallback observability pass). Always present — never None.
+        "column_mapping_audit": [],
         "row_count":            0,
         "failure_reason":       None,
         "exception_class":      None,
@@ -245,6 +250,15 @@ def _collect_excel_diagnostic(path: Path, engine: str, diag: Dict[str, Any]) -> 
             hdr_cells[i] for i in range(len(hdr_cells))
             if i not in col_map and hdr_cells[i].strip()
         ]
+        # Populate column_mapping_audit if _extract_packing_excel didn't set it
+        # (e.g. exception before line 783, early return, or exception-path call).
+        if not diag.get("column_mapping_audit"):
+            try:
+                import dataclasses as _dc
+                _, _audit = _map_headers_with_audit(hdr_cells)
+                diag["column_mapping_audit"] = [_dc.asdict(m) for m in _audit]
+            except Exception as _exc:
+                log.debug("column_mapping_audit fallback failed: %s", _exc)
     elif best_idx >= 0:
         # Best-effort: surface the best-scoring candidate even when the
         # stricter _find_header_row rejected it. Helps the operator see
@@ -259,6 +273,14 @@ def _collect_excel_diagnostic(path: Path, engine: str, diag: Dict[str, Any]) -> 
             best_raw[i] for i in range(len(best_raw))
             if i not in best_col_map and best_raw[i].strip()
         ]
+        # Populate column_mapping_audit from best-effort candidate row.
+        if not diag.get("column_mapping_audit"):
+            try:
+                import dataclasses as _dc
+                _, _audit = _map_headers_with_audit(best_raw)
+                diag["column_mapping_audit"] = [_dc.asdict(m) for m in _audit]
+            except Exception as _exc:
+                log.debug("column_mapping_audit best-effort fallback failed: %s", _exc)
 
 
 def _collect_pdf_diagnostic(path: Path, diag: Dict[str, Any]) -> None:
