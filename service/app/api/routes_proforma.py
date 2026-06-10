@@ -5142,6 +5142,30 @@ def cancel_proforma_draft(
     ))
 
 
+@router.delete("/draft/{draft_id}", dependencies=[_auth])
+def purge_proforma_draft(
+    draft_id:   int,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Hard-delete a local-only cancelled draft (no wFirma references).
+
+    Guards: draft_state must be 'cancelled', wfirma_proforma_id absent,
+    wfirma_proforma_fullnumber absent.  Removes the draft row and its
+    event log; service charges and lines live in JSON columns and are
+    removed with the row.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    operator = _require_operator(x_operator)
+    try:
+        pildb.purge_cancelled_draft(_proforma_db_path(), int(draft_id), operator)
+    except pildb.DraftNotFound:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    except pildb.DraftNotEditable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return JSONResponse({"ok": True, "purged_draft_id": draft_id})
+
+
 # ── M2: Send Proforma Email ─────────────────────────────────────────────────
 # POST /api/v1/proforma/draft/{draft_id}/send-email
 #

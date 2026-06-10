@@ -384,6 +384,75 @@ function CancelDraftModal({ draft, liveDraft, onClose, onSuccess }) {
   );
 }
 
+// ── Purge Draft Modal ─────────────────────────────────────────────────────────
+// WIRED: DELETE /api/v1/proforma/draft/{id} — uses PzApi.deleteDraft
+// Only for cancelled local-only drafts (no wFirma ID, no PROF number).
+function PurgeDraftModal({ draft, onClose, onSuccess }) {
+  const [loading,  setLoading]  = React.useState(false);
+  const [apiError, setApiError] = React.useState(null);
+
+  const handlePurge = () => {
+    if (loading) return;
+    setLoading(true);
+    setApiError(null);
+    window.PzApi.deleteDraft(draft.id)
+      .then(r => {
+        if (r && r.ok) {
+          onSuccess && onSuccess();
+        } else {
+          setApiError((r && r.error) || 'Delete failed — check backend logs.');
+          setLoading(false);
+        }
+      })
+      .catch(e => {
+        setApiError((e && e.message) ? e.message : 'Delete failed — check backend logs.');
+        setLoading(false);
+      });
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px',
+    }} onClick={onClose} data-testid="purge-draft-modal">
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--card)', borderRadius: 12, width: 480, maxWidth: '92vw',
+        boxShadow: '0 20px 60px var(--shadow-heavy)',
+      }}>
+        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>⛔ Delete Draft Permanently</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: '20px 24px' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>
+            This will <strong>permanently delete</strong> draft{' '}
+            <strong>#{draft.id}</strong> and its event log from the database.
+            This action cannot be undone. Only local-only cancelled drafts
+            (no wFirma ID, no PROF number) may be purged.
+          </div>
+          {apiError && (
+            <div style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }} data-testid="purge-draft-error">
+              ⚠ {apiError}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
+            <Btn variant="outline" onClick={onClose} disabled={loading}>Cancel</Btn>
+            <Btn
+              variant="danger"
+              disabled={loading}
+              onClick={handlePurge}
+              data-testid="purge-draft-submit"
+            >
+              {loading ? '⏳ Deleting…' : '⛔ Delete permanently'}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ── Send Proforma Email Modal ────────────────────────────────────────────────
 // WIRED: POST /api/v1/proforma/draft/{id}/send-email — uses PzApi.sendProformaEmail
 // M2 — Send proforma PDF to customer via email queue.
@@ -680,6 +749,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
   // M1a — Cancel Draft modal state
   const [showCancelModal,  setShowCancelModal]   = React.useState(false);
+  // Purge (hard-delete) modal — only for local-only cancelled drafts
+  const [showPurgeModal,   setShowPurgeModal]    = React.useState(false);
 
   // M7 — Prior Invoice History modal state
   const [showInvoiceHistory, setShowInvoiceHistory] = React.useState(false);
@@ -1155,6 +1226,16 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const canEdit       = ['draft', 'editing', 'post_failed'].includes(draftState);
   // M1a — Cancel: enabled when draft is in a cancellable state and not already cancelled
   const canCancel     = ['draft', 'editing', 'approved', 'post_failed'].includes(draftState);
+  // Purge: only cancelled local-only drafts (no wFirma ID, no PROF number)
+  const hasFullNumber  = !!(liveDraft.wfirma_proforma_fullnumber || (draft && draft.wfirma_proforma_fullnumber));
+  const canPurge       = draftState === 'cancelled' && !hasWfirmaId && !hasFullNumber;
+  const purgeDisabledReason = draftState !== 'cancelled'
+    ? `Cannot delete in '${draftState}' state — cancel first`
+    : hasWfirmaId
+      ? 'Cannot delete: draft is linked to a wFirma proforma'
+      : hasFullNumber
+        ? 'Cannot delete: draft has an assigned PROF number'
+        : '';
   // M7 — Prior Invoice History: enabled when wFirma contractor ID is available
   const contractorId  = (cr && cr.wfirma_customer_id) || null;
   // M2 — Send Email: enabled when posted to wFirma (has PDF) and not in terminal state
@@ -1410,6 +1491,16 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         >
           🗑 Cancel Draft
         </TbBtn>
+        {draftState === 'cancelled' && (
+          <TbBtn
+            onClick={() => canPurge && setShowPurgeModal(true)}
+            disabled={!canPurge}
+            title={canPurge ? 'Permanently delete this local-only cancelled draft' : purgeDisabledReason}
+            data-testid="tb-purge"
+          >
+            ⛔ Delete permanently
+          </TbBtn>
+        )}
         <TbBtn
           onClick={handleDuplicate}
           disabled={cloning}
@@ -1824,6 +1915,16 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           onSuccess={() => {
             setShowCancelModal(false);
             draftHook && draftHook.reload && draftHook.reload();
+          }}
+        />
+      )}
+      {showPurgeModal && (
+        <PurgeDraftModal
+          draft={draft}
+          onClose={() => setShowPurgeModal(false)}
+          onSuccess={() => {
+            setShowPurgeModal(false);
+            onBack && onBack({ purged: true });
           }}
         />
       )}
@@ -2662,4 +2763,4 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
   );
 }
 
-Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal, CancelDraftModal, PriorInvoiceHistoryModal, SendProformaModal });
+Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal, CancelDraftModal, PurgeDraftModal, PriorInvoiceHistoryModal, SendProformaModal });
