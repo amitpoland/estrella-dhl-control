@@ -14,16 +14,31 @@ set -euo pipefail
 
 GOLDEN="golden_constants.py"
 TEST="test_pz_regression.py"
-PYTHON="python3"
+
+# Detect a working Python interpreter BY EXECUTION (not `command -v`).
+# On Windows, `python3` may exist on PATH as a Microsoft Store alias
+# shim that exits non-zero at runtime — so a PATH check is insufficient.
+if python3 -c "" >/dev/null 2>&1; then
+    PYTHON="python3"
+elif python -c "" >/dev/null 2>&1; then
+    PYTHON="python"
+else
+    echo "  ✗  No working Python interpreter found (tried python3, python)." >&2
+    echo "     Install Python 3 or fix PATH before committing." >&2
+    exit 1
+fi
 
 # Only activate when golden_constants.py is part of this commit
 if git diff --cached --name-only | grep -q "^${GOLDEN}$"; then
     echo ""
     echo "  ── pre-commit: ${GOLDEN} is staged ──────────────────────────"
     echo "  Running regression suite before allowing commit..."
+    echo "  (interpreter: ${PYTHON}, PYTHONUTF8=1)"
     echo ""
 
-    if $PYTHON "$TEST"; then
+    # PYTHONUTF8=1 forces UTF-8 stdio so non-ASCII test output cannot
+    # crash on a cp1252 (Windows) console — that would be a false block.
+    if PYTHONUTF8=1 $PYTHON "$TEST"; then
         echo ""
         echo "  ✅ Tests passed — commit allowed."
         echo "  ────────────────────────────────────────────────────────"

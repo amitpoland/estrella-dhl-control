@@ -33,10 +33,17 @@ help:
 	@echo ""
 
 # ── Fast gate (no PDFs) ───────────────────────────────────────────────────────
+# Interpreter selected BY EXECUTION (not `command -v`) — on Windows `python3`
+# may resolve to a Store-alias shim that fails at runtime. PYTHONUTF8=1 forces
+# UTF-8 stdio so non-ASCII test prints can't crash on a cp1252 console.
 verify:
 	@echo ""
 	@echo "  ── Fast regression (unit + format) ──"
-	@$(PYTHON) $(TEST)
+	@if python3 -c "" >/dev/null 2>&1; then PY=python3; \
+	 elif python -c "" >/dev/null 2>&1; then PY=python; \
+	 else echo "  ✗  No working Python interpreter found." >&2; exit 1; fi; \
+	 echo "  (interpreter: $$PY, PYTHONUTF8=1)"; \
+	 PYTHONUTF8=1 $$PY $(TEST)
 
 # ── Full golden pipeline (requires real PDFs from shipment 039–044) ───────────
 verify-full:
