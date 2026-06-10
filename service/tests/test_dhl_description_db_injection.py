@@ -323,7 +323,9 @@ def test_reconcile_blocks_on_fob_drift(fresh):
     assert any(w.startswith("fob_total_drift") for w in rep["warnings"])
 
 
-def test_reconcile_blocks_on_qty_drift(fresh):
+def test_reconcile_qty_drift_is_soft_when_fob_clean(fresh):
+    # Qty drift with exact FOB is advisory-only — parser divergence noise.
+    # ok_hard must be True (generation proceeds); ok strict is False.
     from app.api import routes_dhl_clearance as rdc
     awb, batch_aud, batch_db = _seed_4218922912_world(fresh)
     audit = rdc._inject_rows_from_db_invoice_lines(
@@ -331,8 +333,10 @@ def test_reconcile_blocks_on_qty_drift(fresh):
     )
     audit["rows"][0]["quantity"] += 5.0
     rep = rdc._reconcile_rows_with_audit_totals(audit)
-    assert rep["ok"] is False
-    assert any(w.startswith("qty_total_drift") for w in rep["warnings"])
+    assert rep["ok"] is False, "strict ok still False when qty drifts"
+    assert rep["ok_hard"] is True, "ok_hard is True when only qty drifts with clean FOB"
+    assert any(w.startswith("qty_total_drift") for w in rep["soft_warnings"])
+    assert rep["hard_warnings"] == []
 
 
 # ── 7. Empty source → no rows → guard fires at the route level ────────

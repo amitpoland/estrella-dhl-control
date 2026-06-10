@@ -1571,29 +1571,43 @@ def _reconcile_rows_with_audit_totals(audit: dict) -> dict:
     fob_drift = round(row_fob_sum - audit_fob, 2) if audit_fob else 0.0
     qty_drift = (row_qty_tot - audit_qty) if audit_qty else 0
 
-    warnings: list[str] = []
-    # Tolerances: ±$1 FOB, ±0 units, exact invoice set.
+    hard_warnings: list[str] = []
+    soft_warnings: list[str] = []
+
+    # Hard failures — block generation: financial integrity or missing coverage.
     if audit_fob and abs(fob_drift) > 1.00:
-        warnings.append(
+        hard_warnings.append(
             f"fob_total_drift: row sum USD {row_fob_sum:,.2f} differs from "
             f"audit total USD {audit_fob:,.2f} by USD {fob_drift:+,.2f}"
         )
-    if audit_qty and qty_drift != 0:
-        warnings.append(
-            f"qty_total_drift: row qty {row_qty_tot} differs from "
-            f"audit total {audit_qty} by {qty_drift:+d}"
-        )
     if missing_in_rows:
-        warnings.append(
+        hard_warnings.append(
             "invoices_missing_in_rows: "
             + ", ".join(missing_in_rows)
             + " present in invoice_names but not in projected rows"
         )
 
+    # Soft advisory — qty drift when FOB is exact.
+    # invoice_intake_parser and pz_import_processor parse the same PDFs via
+    # different code paths and can produce ±2–3 unit counting differences
+    # (e.g. PRS unit-vs-pair convention).  FOB is the financial authority for
+    # the customs document; exact FOB with minor qty noise is not a document
+    # integrity risk.  Callers that need the strict check should inspect
+    # ok_strict or soft_warnings directly.
+    if audit_qty and qty_drift != 0:
+        soft_warnings.append(
+            f"qty_total_drift: row qty {row_qty_tot} differs from "
+            f"audit total {audit_qty} by {qty_drift:+d}"
+        )
+
+    warnings = hard_warnings + soft_warnings
     return {
-        "ok":       not warnings,
-        "warnings": warnings,
-        "details":  {
+        "ok":            not warnings,       # strict: all checks pass (backward-compat)
+        "ok_hard":       not hard_warnings,  # generation gate: FOB + missing only
+        "hard_warnings": hard_warnings,
+        "soft_warnings": soft_warnings,
+        "warnings":      warnings,
+        "details":       {
             "row_count":           len(rows),
             "row_invoice_numbers": sorted(row_inv_set),
             "row_fob_sum":         round(row_fob_sum, 2),
@@ -3070,12 +3084,15 @@ async def generate_description(
             },
         )
 
-    # PR-206: Reconcile projected rows against aggregate audit totals.
-    # Hard block when the row set is materially inconsistent — missing
-    # invoices, FOB drift > $1, or qty mismatch — so an obviously-wrong
-    # PDF is never produced.
+    # PR-206 / PR-547: Reconcile projected rows against aggregate audit totals.
+    # Hard block on FOB drift > $1 or missing invoices (financial integrity).
+    # Qty drift is advisory-only when FOB is exact — parser divergence between
+    # invoice_intake_parser and pz_import_processor produces ±2-3 unit noise.
     _recon = _reconcile_rows_with_audit_totals(audit)
-    if not _recon["ok"]:
+    if _recon.get("soft_warnings"):
+        log.info("[%s] generate_description: qty advisory (non-blocking): %s",
+                 batch_id, _recon["soft_warnings"])
+    if not _recon["ok_hard"]:
         raise HTTPException(
             status_code=422,
             detail={
@@ -3085,7 +3102,7 @@ async def generate_description(
                             "audit.json. Generating a customs document with "
                             "this mismatch would be unsafe.",
                 "code":     "rows_audit_reconciliation_failed",
-                "warnings": _recon["warnings"],
+                "warnings": _recon["hard_warnings"],
                 "details":  _recon["details"],
                 "hint":     "Re-process the batch (Reparse all) or attach a "
                             "fresh PZ calculation XLSX, then retry.",
@@ -3393,7 +3410,10 @@ async def generate_customs_package(
         )
 
     _recon = _reconcile_rows_with_audit_totals(audit)
-    if not _recon["ok"]:
+    if _recon.get("soft_warnings"):
+        log.info("[%s] generate_customs_package: qty advisory (non-blocking): %s",
+                 batch_id, _recon["soft_warnings"])
+    if not _recon["ok_hard"]:
         raise HTTPException(
             status_code=422,
             detail={
@@ -3401,7 +3421,7 @@ async def generate_customs_package(
                 "error":    "Projected rows do not reconcile with aggregate "
                             "invoice_totals declared in audit.json.",
                 "code":     "rows_audit_reconciliation_failed",
-                "warnings": _recon["warnings"],
+                "warnings": _recon["hard_warnings"],
                 "details":  _recon["details"],
                 "hint":     "Re-process the batch or attach a fresh PZ XLSX.",
             },
