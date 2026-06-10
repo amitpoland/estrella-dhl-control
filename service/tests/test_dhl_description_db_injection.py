@@ -339,6 +339,49 @@ def test_reconcile_qty_drift_is_soft_when_fob_clean(fresh):
     assert rep["hard_warnings"] == []
 
 
+def test_reconcile_hard_blocks_on_no_rows():
+    # Empty row set must be a hard block regardless of audit totals.
+    from app.api import routes_dhl_clearance as rdc
+    audit = {
+        "rows": [],
+        "invoice_totals": {"total_fob_usd": 100.0, "total_units": 5},
+        "invoice_names": ["EJL-26-27-001"],
+    }
+    rep = rdc._reconcile_rows_with_audit_totals(audit)
+    assert rep["ok_hard"] is False
+    assert any("no_rows" in w for w in rep["hard_warnings"])
+
+
+def test_reconcile_hard_blocks_on_negative_line_total():
+    from app.api import routes_dhl_clearance as rdc
+    audit = {
+        "rows": [
+            {"invoice_number": "EJL/26-27/001", "line_total": -50.0, "quantity": 2},
+            {"invoice_number": "EJL/26-27/001", "line_total": 150.0, "quantity": 3},
+        ],
+        "invoice_totals": {"total_fob_usd": 100.0, "total_units": 5},
+        "invoice_names": ["EJL-26-27-001"],
+    }
+    rep = rdc._reconcile_rows_with_audit_totals(audit)
+    assert rep["ok_hard"] is False
+    assert any("negative_line_total" in w for w in rep["hard_warnings"])
+
+
+def test_reconcile_hard_blocks_on_zero_quantity():
+    from app.api import routes_dhl_clearance as rdc
+    audit = {
+        "rows": [
+            {"invoice_number": "EJL/26-27/001", "line_total": 100.0, "quantity": 0},
+            {"invoice_number": "EJL/26-27/001", "line_total": 50.0, "quantity": 3},
+        ],
+        "invoice_totals": {"total_fob_usd": 150.0, "total_units": 3},
+        "invoice_names": ["EJL-26-27-001"],
+    }
+    rep = rdc._reconcile_rows_with_audit_totals(audit)
+    assert rep["ok_hard"] is False
+    assert any("zero_or_negative_qty" in w for w in rep["hard_warnings"])
+
+
 # ── 7. Empty source → no rows → guard fires at the route level ────────
 
 def test_inject_no_op_when_no_db_rows_and_no_awb(fresh):
