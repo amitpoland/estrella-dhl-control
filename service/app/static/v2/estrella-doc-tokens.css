@@ -127,6 +127,23 @@
   width: 4px; background: var(--ej-gold);
 }
 
+/* A4 Landscape shell (1123 × 794 px = 297 × 210 mm @96dpi) */
+.ej-a4-landscape {
+  width: 1123px;
+  min-height: 794px;          /* min-height, NOT fixed — allows natural multi-page flow */
+  background: var(--ej-paper);
+  color: var(--ej-ink);
+  font-family: var(--ej-sans);
+  font-size: 10px;
+  line-height: 1.45;
+  position: relative;
+  font-feature-settings: "ss01","cv11","tnum";
+  -webkit-font-smoothing: antialiased;
+}
+.ej-a4-landscape * { box-sizing: border-box; }
+.ej-a4-landscape .ej-pad       { padding: 28px 40px; }
+.ej-a4-landscape .ej-pad-tight { padding: 20px 32px; }
+
 /* Preview modal overlay */
 .ej-preview-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.72);
@@ -151,4 +168,65 @@
 .ej-preview-sheet {
   box-shadow: 0 8px 32px rgba(0,0,0,0.2);
   transform-origin: top center;
+}
+
+/* ── Print media — multi-page support ──────────────────────────────────────────
+   Applied when window.print() fires from the portal-mounted preview overlay.
+   The overlay is a direct body child (ReactDOM.createPortal), so the rule
+   `body > *:not(.ej-preview-overlay) { display: none }` in proforma-detail.jsx
+   already hides the SPA shell. These rules fix the document layout itself.
+   Page sizes and orientation are set inline in the ProformaPreviewModal style tag
+   so they can be dynamic (portrait for Proforma/CMR, landscape for Packing List). */
+@media print {
+  /* ── Page counter — printed page number at bottom-right of every page ── */
+  /* Uses CSS Paged Media (supported in Chrome / Edge / modern Webkit). */
+  @page {
+    @bottom-right {
+      content: "Page " counter(page) " of " counter(pages);
+      font-size: 8pt;
+      color: #94A3B8;
+      font-family: var(--ej-sans, system-ui, sans-serif);
+    }
+  }
+
+  /* ── Portrait A4 (Proforma / CMR) ── */
+  /* Remove fixed height so content flows naturally to page 2+ */
+  .ej-a4 {
+    height: auto !important;
+    overflow: visible !important;
+  }
+  /* Landscape A4 (Packing List): already uses min-height, ensure no clip */
+  .ej-a4-landscape {
+    height: auto !important;
+    overflow: visible !important;
+    /* Remove fixed width constraint so printer margin maths applies */
+    max-width: 100% !important;
+  }
+  /* Unpin absolute seller-footer: flows after content on the last page
+     instead of floating at the bottom of page 1 only.
+     The .ej-proforma-footer class is added in estrella-doc-proforma.jsx. */
+  .ej-proforma-footer {
+    position: static !important;
+    left: auto !important; right: auto !important; bottom: auto !important;
+    margin-top: 24px;
+  }
+
+  /* ── Both orientations ── */
+  /* Repeat <thead> column labels on every printed page (CSS built-in) */
+  .ej-table thead {
+    display: table-header-group;
+  }
+  /* Keep tfoot (totals row) at the very end of the table on the last page */
+  .ej-table tfoot {
+    display: table-footer-group;
+  }
+  /* Prevent individual data rows from splitting across a page break */
+  .ej-table tbody tr {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  /* Hide decorative watermark dot pattern — reduces ink and avoids artefacts */
+  .ej-pattern {
+    display: none !important;
+  }
 }

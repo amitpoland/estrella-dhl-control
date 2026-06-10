@@ -6,18 +6,26 @@
 //   .cmr_no      string                 CMR reference number
 //   .doc_ref     string                 linked proforma number
 //   .seller      { name, addr, city, vat, email, phone }
-//   .shipto      { name, addr, city, country }
+//   .shipto      { name, addr, city, zip, country }
 //   .buyer       { vat }               buyer VAT (CMR field 2 consignee)
 //   .carrier     { name, awb, service, incoterm, origin, destination,
 //                  pickup, eta, weight_kg, dim_cm, pieces, insurance, path } | null
-//   .lines[]     { sku, desc, purity, qty, origin }
+//   .goods_summary  string  — one-line metal+stone description: "14 Karat White Gold & Pink Gold · Diamond"
+//   .lines[]     { item_type, qty, net_weight, origin }
+//                where: item_type = "Pendant" | "Ring" | "Earrings" | ...  (human-readable)
+//                       qty       = total pieces for this item type
+//                       net_weight = total kg or null when not in packing list
+//                       origin    = country of manufacture (e.g. "India")
+//                Source authority: SALES packing list lines, aggregated by item_type ONLY.
+//                Metal and stone types appear in goods_summary header — NOT per line.
+//                HS/CN codes are NOT included in CMR output — kept in DB only.
+//                Maximum ~3–6 rows. CMR is a transport document, not a commercial detail sheet.
 //
 // Depends on: estrella-doc-tokens.css (loaded in index.html)
 // Exports:    window.EJCMRClassic, window.EJCMRModern
 //
 // NOTE: No backend route generates a CMR PDF in this system.
-// These components provide print-preview only — the CMR Print button in the
-// toolbar is disabled with reason "No CMR backend route".
+// Use the Download PDF button in the preview toolbar (window.print with A4 CSS).
 
 // ── CMR box (numbered field, like the legal form) ────────────────────────────
 function EJCMRBox({ n, label, children, border }) {
@@ -99,8 +107,10 @@ function EJCMRNoCarrier() {
 function EJCMRClassic({ cmrData }) {
   const d = cmrData || {};
   const carrier = d.carrier || null;
-  const lines = (d.lines || []).filter(l => l.purity !== "Service");
+  const lines = d.lines || [];
   const totalKg = carrier ? Number(carrier.weight_kg || 0) : 0;
+  const _totQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
+  const _totNw  = lines.reduce((s, l) => s + (l.net_weight || 0), 0);
 
   return (
     <div className="ej-a4">
@@ -156,7 +166,10 @@ function EJCMRClassic({ cmrData }) {
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", borderTop: "1px solid #CBD5E1" }}>
             <EJCMRBox n="3" label="Place of delivery">
-              {d.shipto ? `${d.shipto.city || "—"}, ${d.shipto.country || ""}` : "—"}
+              {d.shipto
+                ? [d.shipto.city || "—", d.shipto.zip || null, d.shipto.country || null]
+                    .filter(Boolean).join(", ")
+                : "—"}
             </EJCMRBox>
             <EJCMRBox n="4" label="Place / date of taking over" border="left">
               {carrier ? `${carrier.origin || "—"} · ${carrier.pickup || "—"}` : "—"}
@@ -166,13 +179,24 @@ function EJCMRClassic({ cmrData }) {
             </EJCMRBox>
           </div>
 
+          {/* Goods description block — metal + stone summary, country of origin */}
+          {d.goods_summary && (
+            <div style={{
+              borderTop: "1px solid #CBD5E1", padding: "8px 10px",
+              background: "#F8FAFC", fontSize: 9.5,
+            }}>
+              <span style={{ color: "#475569", fontWeight: 600 }}>Goods: </span>
+              <span>Fine Gold Jewellery · {d.goods_summary}</span>
+              <span style={{ marginLeft: 10, color: "#64748B" }}>Country of Origin: India</span>
+            </div>
+          )}
+
           {/* Goods header row */}
           <div style={{
-            display: "grid", gridTemplateColumns: "60px 1fr 110px 80px 80px",
+            display: "grid", gridTemplateColumns: "40px 1fr 110px 80px 60px",
             borderTop: "1.5px solid #0B3D2E", background: "#F8FAFC",
           }}>
-            {[["6", "Marks"], ["7", "Description of goods · Nature"], ["8", "Method of pkg"],
-              ["9", "Gross kg"], ["10", "Volume m³"]].map(([n, lbl], i) => (
+            {[["6", "No."], ["7", "Item Category"], ["8", "Packaging"], ["9", "Net Weight"], ["10", "Qty"]].map(([n, lbl], i) => (
               <div key={n} style={{
                 padding: "6px 8px",
                 borderRight: i < 4 ? "1px solid #CBD5E1" : "none",
@@ -184,44 +208,41 @@ function EJCMRClassic({ cmrData }) {
             ))}
           </div>
 
-          {/* Lines */}
+          {/* Lines — item_type totals only (transport summary) */}
           {lines.length === 0 ? (
             <div style={{ padding: "12px 10px", fontSize: 10, color: "#94A3B8", borderTop: "1px solid #E2E8F0" }}>
               No goods lines
             </div>
           ) : lines.map((l, i) => (
-            <div key={l.sku || i} style={{
-              display: "grid", gridTemplateColumns: "60px 1fr 110px 80px 80px",
+            <div key={`${l.item_type || ""}${i}`} style={{
+              display: "grid", gridTemplateColumns: "40px 1fr 110px 80px 60px",
               borderTop: "1px solid #E2E8F0", fontSize: 10,
             }}>
-              <div style={{ padding: "8px 8px", borderRight: "1px solid #E2E8F0" }}>EJ-{i + 1}</div>
-              <div style={{ padding: "8px 8px", borderRight: "1px solid #E2E8F0" }}>
-                <div style={{ fontWeight: 600 }}>{l.desc || l.sku || "—"}</div>
-                {l.purity && <div style={{ color: "#64748B", fontSize: 9 }}>{l.purity} · Origin {l.origin || "—"} · SKU {l.sku}</div>}
+              <div style={{ padding: "8px 8px", borderRight: "1px solid #E2E8F0" }}>{i + 1}</div>
+              <div style={{ padding: "8px 8px", borderRight: "1px solid #E2E8F0", fontWeight: 600 }}>
+                {l.item_type || "—"}
               </div>
-              <div style={{ padding: "8px 8px", borderRight: "1px solid #E2E8F0" }}>Sealed jewellery box</div>
+              <div style={{ padding: "8px 8px", borderRight: "1px solid #E2E8F0", fontSize: 9, color: "#475569" }}>Polybag + Jewellery box</div>
               <div style={{ padding: "8px 8px", borderRight: "1px solid #E2E8F0", textAlign: "right" }} className="ej-num">
-                {totalKg > 0 ? totalKg.toFixed(3) : "—"}
+                {l.net_weight != null ? `${Number(l.net_weight).toFixed(3)} kg` : "—"}
               </div>
-              <div style={{ padding: "8px 8px", textAlign: "right" }} className="ej-num">—</div>
+              <div style={{ padding: "8px 8px", textAlign: "right" }} className="ej-num">{Number(l.qty) || 0}</div>
             </div>
           ))}
 
           {/* Totals row */}
           <div style={{
-            display: "grid", gridTemplateColumns: "60px 1fr 110px 80px 80px",
+            display: "grid", gridTemplateColumns: "40px 1fr 110px 80px 60px",
             borderTop: "1.5px solid #0B3D2E", background: "#FBF8F1",
             fontSize: 10, fontWeight: 600,
           }}>
-            <div style={{ padding: "8px", borderRight: "1px solid #CBD5E1" }}>Total</div>
-            <div style={{ padding: "8px", borderRight: "1px solid #CBD5E1" }}>
-              {lines.length} item line(s)
-            </div>
-            <div style={{ padding: "8px", borderRight: "1px solid #CBD5E1" }}>1 carton</div>
+            <div style={{ padding: "8px", borderRight: "1px solid #CBD5E1" }}>—</div>
+            <div style={{ padding: "8px", borderRight: "1px solid #CBD5E1" }}>{lines.length} item type(s)</div>
+            <div style={{ padding: "8px", borderRight: "1px solid #CBD5E1" }}>1 outer carton</div>
             <div style={{ padding: "8px", textAlign: "right", borderRight: "1px solid #CBD5E1" }} className="ej-num">
-              {totalKg > 0 ? totalKg.toFixed(3) : "—"}
+              {_totNw > 0 ? `${_totNw.toFixed(3)} kg` : (totalKg > 0 ? `${totalKg.toFixed(3)} kg` : "—")}
             </div>
-            <div style={{ padding: "8px", textAlign: "right" }} className="ej-num">—</div>
+            <div style={{ padding: "8px", textAlign: "right" }} className="ej-num">{_totQty || "—"}</div>
           </div>
         </div>
 
@@ -280,7 +301,8 @@ function EJCMRClassic({ cmrData }) {
 function EJCMRModern({ cmrData }) {
   const d = cmrData || {};
   const carrier = d.carrier || null;
-  const lines = (d.lines || []).filter(l => l.purity !== "Service");
+  const lines = d.lines || [];
+  const _totQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
 
   return (
     <div className="ej-a4">
@@ -381,16 +403,30 @@ function EJCMRModern({ cmrData }) {
           </div>
         )}
 
+        {/* Goods description header */}
+        {d.goods_summary && (
+          <div style={{
+            padding: "10px 14px", background: "#F8FAFC",
+            border: "1px solid #E2E8F0", borderRadius: 6, marginBottom: 16, fontSize: 10,
+          }}>
+            <span style={{ fontWeight: 600, color: "#0B3D2E" }}>Goods: </span>
+            <span>Fine Gold Jewellery · {d.goods_summary}</span>
+            <span style={{ marginLeft: 10, color: "#64748B" }}>· Country of Origin: India</span>
+          </div>
+        )}
+
         {/* Contents */}
-        <div className="ej-eyebrow" style={{ marginBottom: 8 }}>Contents · {lines.length} line item(s)</div>
+        <div className="ej-eyebrow" style={{ marginBottom: 8 }}>
+          Item summary · {lines.length} type(s) · {_totQty} pcs total
+        </div>
         <table className="ej-table" style={{ marginBottom: 22 }}>
           <thead>
             <tr style={{ borderTop: "2px solid #0B3D2E" }}>
-              <th>Item · Description</th>
-              <th style={{ width: 90 }}>SKU</th>
+              <th>Item Category</th>
+              <th style={{ width: 160 }}>Packaging</th>
               <th style={{ width: 60 }}>Origin</th>
-              <th style={{ width: 110 }}>Purity / Detail</th>
-              <th className="ej-r" style={{ width: 50 }}>Qty</th>
+              <th className="ej-r" style={{ width: 90 }}>Net Weight</th>
+              <th className="ej-r" style={{ width: 55 }}>Qty</th>
             </tr>
           </thead>
           <tbody>
@@ -400,18 +436,31 @@ function EJCMRModern({ cmrData }) {
               </tr>
             )}
             {lines.map((l, i) => (
-              <tr key={l.sku || i}>
-                <td>
-                  <div style={{ fontWeight: 600 }}>{l.desc || l.sku || "—"}</div>
+              <tr key={`${l.item_type || ""}${i}`}>
+                <td><span style={{ fontWeight: 600 }}>{l.item_type || "—"}</span></td>
+                <td style={{ fontSize: 9.5, color: "#475569" }}>Polybag + Jewellery box</td>
+                <td>{l.origin || "India"}</td>
+                <td className="ej-r ej-num">
+                  {l.net_weight != null ? `${Number(l.net_weight).toFixed(3)} kg` : "—"}
                 </td>
-                <td className="ej-mono" style={{ fontSize: 9.5 }}>{l.sku || "—"}</td>
-                <td>{l.origin || "—"}</td>
-                <td>
-                  {l.purity && <span className="ej-pill ej-pill-gold">{l.purity}</span>}
-                </td>
-                <td className="ej-r ej-num">{l.qty}</td>
+                <td className="ej-r ej-num">{Number(l.qty) || 0}</td>
               </tr>
             ))}
+            {lines.length > 0 && (
+              <tr style={{ fontWeight: 600, background: "#F8FAFC" }}>
+                <td>Total</td>
+                <td></td>
+                <td></td>
+                <td className="ej-r ej-num">
+                  {_totQty > 0 ? (
+                    lines.reduce((s, l) => s + (l.net_weight || 0), 0) > 0
+                      ? `${lines.reduce((s, l) => s + (l.net_weight || 0), 0).toFixed(3)} kg`
+                      : "—"
+                  ) : "—"}
+                </td>
+                <td className="ej-r ej-num">{_totQty}</td>
+              </tr>
+            )}
           </tbody>
         </table>
 

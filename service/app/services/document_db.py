@@ -1683,15 +1683,54 @@ def replace_sales_packing_lines(
     return {"deleted": int(deleted), "inserted": int(inserted)}
 
 
-def get_sales_packing_lines(batch_id: str) -> List[Dict[str, Any]]:
-    """Return all sales packing lines for a batch."""
+def get_sales_packing_lines(
+    batch_id: str,
+    *,
+    physical_only: bool = False,
+) -> List[Dict[str, Any]]:
+    """Return sales packing lines for a batch.
+
+    Parameters
+    ----------
+    batch_id : str
+    physical_only : bool (default False)
+        When True, returns only ``price_source='packing_xlsx_value'`` rows
+        (the purchase/cost authority rows — one per physical item, from the
+        packing list extraction).
+
+        Background: the sales-price import (``import-sales-prices`` endpoint)
+        inserts a second authority row per line with
+        ``price_source='excel_symbol'`` alongside the original
+        ``price_source='packing_xlsx_value'`` row.  Both rows represent the
+        SAME physical item at different valuations (cost USD vs. sales EUR).
+
+        Leave ``physical_only=False`` (the default) when the caller needs all
+        price-authority rows for pricing decisions — proforma draft sync,
+        proforma reset, price-source audit, reporting.
+
+        Pass ``physical_only=True`` when only physical item identity matters:
+        ``sales_linkage`` and warehouse scan-count contexts, where returning
+        all 292 rows for a 146-line batch would report 292/292 not-scanned
+        and double the missing count.
+    """
     if _db_path is None:
         return []
-    with _connect() as con:
-        rows = con.execute(
-            "SELECT * FROM sales_packing_lines WHERE batch_id=? ORDER BY created_at",
-            (batch_id,),
-        ).fetchall()
+
+    if physical_only:
+        with _connect() as con:
+            rows = con.execute(
+                "SELECT * FROM sales_packing_lines "
+                "WHERE batch_id=? AND price_source='packing_xlsx_value' "
+                "ORDER BY created_at",
+                (batch_id,),
+            ).fetchall()
+    else:
+        with _connect() as con:
+            rows = con.execute(
+                "SELECT * FROM sales_packing_lines WHERE batch_id=? ORDER BY created_at",
+                (batch_id,),
+            ).fetchall()
+
     return [dict(r) for r in rows]
 
 

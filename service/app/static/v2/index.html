@@ -54,6 +54,7 @@ window.EstrellaShared = {
 <link rel="stylesheet" href="estrella-doc-tokens.css"/>
 <script type="text/babel" data-presets="env,react" src="estrella-doc-proforma.jsx"></script>
 <script type="text/babel" data-presets="env,react" src="estrella-doc-cmr.jsx"></script>
+<script type="text/babel" data-presets="env,react" src="estrella-doc-packing.jsx"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   html, body, #root { height: 100%; }
@@ -360,6 +361,8 @@ function App() {
   const [viewerDoc, setViewerDoc] = React.useState(null);
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [proformaDraft, setProformaDraft] = React.useState(null);
+  const [proformaHydrating, setProformaHydrating] = React.useState(_initialLocation.page === 'proforma_detail');
+  const [proformaHydrateError, setProformaHydrateError] = React.useState(null);
   // Track current search string for URL construction
   const [currentSearch, setCurrentSearch] = React.useState(_initialLocation.search);
 
@@ -368,7 +371,11 @@ function App() {
 
   const handleProformaDrill = (draft) => {
     setProformaDraft(draft);
-    const url = pageToUrl('proforma_detail', currentSearch);
+    const sp = new URLSearchParams(currentSearch || '');
+    if (draft && draft.id) sp.set('draft', String(draft.id));
+    const newSearch = sp.toString() ? '?' + sp.toString() : '';
+    setCurrentSearch(newSearch);
+    const url = pageToUrl('proforma_detail', newSearch);
     history.pushState({ page: 'proforma_detail' }, '', url);
     setPage('proforma_detail');
     setActiveNav('proforma');
@@ -403,6 +410,57 @@ function App() {
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
+
+  // ── proforma_detail URL-param hydration (bookmark / refresh / direct link) ─
+  // Fires when the page is proforma_detail but no draft is in state.
+  // Reads ?draft=<id> or falls back to ?batch_id= (first draft in batch).
+  React.useEffect(() => {
+    if (page !== 'proforma_detail' || proformaDraft) return;
+    const sp      = new URLSearchParams(window.location.search);
+    const rawId   = sp.get('draft');
+    const batchId = sp.get('batch_id');
+    if (!rawId && !batchId) {
+      setProformaHydrating(false);
+      setProformaHydrateError('No draft or batch_id in URL — cannot load draft.');
+      return;
+    }
+    if (rawId) {
+      const id = parseInt(rawId, 10);
+      if (!id || id <= 0) {
+        setProformaHydrating(false);
+        setProformaHydrateError('Invalid draft ID in URL.');
+        return;
+      }
+      setProformaHydrating(true);
+      setProformaHydrateError(null);
+      window.EstrellaShared.apiFetch('/api/v1/proforma/draft/' + id)
+        .then(r => {
+          if (!r || !r.draft) throw new Error('Draft not found.');
+          setProformaDraft(r.draft);
+          setProformaHydrating(false);
+        })
+        .catch(err => { setProformaHydrateError((err && err.message) || 'Failed to load draft.'); setProformaHydrating(false); });
+      return;
+    }
+    setProformaHydrating(true);
+    setProformaHydrateError(null);
+    window.EstrellaShared.apiFetch('/api/v1/proforma/drafts/' + encodeURIComponent(batchId))
+      .then(r => {
+        if (!r || !r.drafts || !r.drafts.length) throw new Error('No proforma drafts found for this batch.');
+        return window.EstrellaShared.apiFetch('/api/v1/proforma/draft/' + r.drafts[0].id);
+      })
+      .then(r => {
+        if (!r || !r.draft) throw new Error('Draft not found.');
+        setProformaDraft(r.draft);
+        setProformaHydrating(false);
+      })
+      .catch(err => { setProformaHydrateError((err && err.message) || 'Failed to load draft.'); setProformaHydrating(false); });
+  // `proformaDraft` is intentionally excluded from the dependency array.
+  // The guard at the top of the effect (`|| proformaDraft`) already prevents a
+  // double-fetch when the draft is already loaded. Including it in deps would
+  // cause the effect to re-fire on every field update inside the draft object,
+  // creating an infinite re-fetch loop.
+  }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Cmd-K / Ctrl-K: global search ─────────────────────────────────────────
   React.useEffect(() => {
@@ -650,15 +708,24 @@ function App() {
           )}
 
           {/* Pro Forma — Screen B (detail) */}
-          {!viewerDoc && page === 'proforma_detail' && proformaDraft && (
-            <ProformaDetailPage 
-              draft={proformaDraft} 
-              onBack={handleProformaBack}
-              onConvert={(draft) => {
-                alert(`Convert to Invoice: ${draft.number} → Invoice created (stub)`);
-                handleProformaBack();
-              }}
-            />
+          {!viewerDoc && page === 'proforma_detail' && (
+            proformaHydrating
+              ? <div data-testid="proforma-detail-loading" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 200, color: 'var(--text-2)', fontSize: 14 }}>Loading draft…</div>
+              : proformaHydrateError
+                ? <div data-testid="proforma-detail-error" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 200, gap: 12 }}>
+                    <div style={{ color: 'var(--badge-red-text)', fontSize: 14 }}>{proformaHydrateError}</div>
+                    <Btn variant="outline" small onClick={handleProformaBack}>← Back to Proforma list</Btn>
+                  </div>
+                : proformaDraft
+                  ? <ProformaDetailPage
+                      draft={proformaDraft}
+                      onBack={handleProformaBack}
+                      onConvert={(draft) => {
+                        alert(`Convert to Invoice: ${draft.number} → Invoice created (stub)`);
+                        handleProformaBack();
+                      }}
+                    />
+                  : null
           )}
 
           {/* Action Center */}

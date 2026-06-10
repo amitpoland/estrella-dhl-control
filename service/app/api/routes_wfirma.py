@@ -141,17 +141,32 @@ def _compute_effective_pz_status(audit: dict) -> tuple:
 
     Normalizes a stale ``audit.status`` back to ``'partial'`` when the
     shipment is in fact PZ-complete but the persisted status string
-    lags behind operator decisions. The check below is conservative:
+    lags behind operator decisions.
 
+    Two normalization paths:
+
+    Path A — MRN present (original path):
       ✓ ``failed_checks`` is empty
       ✓ ``customs_declaration.mrn`` is populated
       ✓ ``verification.cn_match`` is True
         OR ``cn_decision.approved`` is True
-        (operator already accepted SAD CN — see /cn-decision/accept-sad)
+
+    Path B — PZ output exists (new path, for shipments where the ZC429 PDF
+      parser could not extract the MRN but the engine ran successfully):
+      ✓ ``failed_checks`` is empty
+      ✓ ``pz_output.pdf`` is set (audit records the output filenames)
+      ✓ ``pz_output.generated_at`` is set (engine completed)
+      ✓ ``verification.cn_match`` is True OR ``cn_decision.approved`` is True
+
+      This handles the case where the MRN is present on paper / known to the
+      operator but the SAD PDF parser produced a "MRN not found" warning
+      (e.g. MRN encoded in a barcode or font the PDF extractor cannot read).
+      The engine still ran and produced valid output; the missing-MRN flag
+      should not block wFirma PZ creation in that case.
 
     Hard blocks remain (returns the stored status unchanged) when:
       • ``failed_checks`` non-empty (real engine failures)
-      • MRN missing
+      • MRN missing AND no pz_output evidence
       • CN still unresolved
 
     The function NEVER mutates the audit; it only computes a value
@@ -165,21 +180,31 @@ def _compute_effective_pz_status(audit: dict) -> tuple:
     if failed:
         return stored, False
 
-    cd  = audit.get("customs_declaration") or {}
-    mrn = (cd.get("mrn") or "").strip()
-    if not mrn:
-        return stored, False
-
+    # CN check is shared by both paths — resolve it once here.
     ver    = audit.get("verification") or {}
     cn_dec = audit.get("cn_decision")  or {}
     cn_ok  = bool(ver.get("cn_match")) or bool(cn_dec.get("approved"))
     if not cn_ok:
         return stored, False
 
-    # Operator-effective complete state. We use "partial" rather than
-    # "success" because the engine did not assert success — this is a
-    # post-override normalisation.
-    return "partial", True
+    # ── Path A: MRN present ────────────────────────────────────────────────────
+    cd  = audit.get("customs_declaration") or {}
+    mrn = (cd.get("mrn") or "").strip()
+    if mrn:
+        return "partial", True
+
+    # ── Path B: PZ output exists (MRN not parsed but engine ran successfully) ──
+    # ``pz_output`` is written by process_batch() and carries the generated
+    # filenames + timestamp.  Its presence is authoritative evidence that the
+    # engine completed a valid PZ calculation even when the SAD PDF parser
+    # failed to extract the MRN text (e.g. raster scan, barcode-only MRN).
+    pz_output = audit.get("pz_output") or {}
+    pz_pdf_set  = bool((pz_output.get("pdf") or "").strip())
+    pz_ts_set   = bool((pz_output.get("generated_at") or "").strip())
+    if pz_pdf_set and pz_ts_set:
+        return "partial", True
+
+    return stored, False
 
 
 # ── PZ preview structured blockers ────────────────────────────────────────────

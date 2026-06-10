@@ -138,7 +138,12 @@ def get_sales_linkage(
         return empty
 
     # ── 1. Load sales rows ────────────────────────────────────────────────────
-    sales_rows = ddb.get_sales_packing_lines(batch_id)
+    # physical_only=True: get only the purchase-authority rows (packing_xlsx_value).
+    # The sales-price import adds a second row per item (excel_symbol) with a
+    # different price source; both represent the same physical item.  For scan
+    # linkage we count physical goods, not price authorities — returning all 292
+    # rows for a 146-line batch would double the "not-scanned" count.
+    sales_rows = ddb.get_sales_packing_lines(batch_id, physical_only=True)
     if not sales_rows:
         return empty
 

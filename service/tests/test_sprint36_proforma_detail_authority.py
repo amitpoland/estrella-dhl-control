@@ -21,6 +21,14 @@ References:
   service/app/static/v2/proforma-detail.jsx
   service/app/static/v2/mock-badge.jsx
   service/app/static/pz-api.js
+  service/app/static/v2/pz-api.js
+
+Updated 2026-06-10 (post PR #548, merge 74bee9d): edit / delete (cancel) /
+send / PDF download are now WIRED. The former "authority-honest disabled"
+expectations (backend-pending reasons) are superseded — tests now pin the
+wired state: button present + gated enablement + real transport + backend
+route. Per Lesson M the capabilities were verified wired (not removed)
+before these assertions changed.
 """
 from __future__ import annotations
 
@@ -31,6 +39,7 @@ _V2            = Path(__file__).parent.parent / "app" / "static" / "v2"
 _DETAIL        = _V2 / "proforma-detail.jsx"
 _MOCK_BADGE    = _V2 / "mock-badge.jsx"
 _PZ_API        = Path(__file__).parent.parent / "app" / "static" / "pz-api.js"
+_V2_PZ_API     = _V2 / "pz-api.js"
 _ROUTES_PROFORMA = Path(__file__).parent.parent / "app" / "api" / "routes_proforma.py"
 
 
@@ -192,10 +201,16 @@ def test_pdf_download_testid_present():
     )
 
 
-def test_pdf_download_uses_window_open():
+def test_pdf_download_uses_anchor_click():
+    # Post-#548 contract: anchor-click instead of window.open — never
+    # blocked by popup blockers. window.open is now forbidden in code.
     code = _code_only(_src())
-    assert "window.open" in code, (
-        "PDF download must use window.open to open the PDF URL"
+    assert "window.open" not in code, (
+        "PDF download must not use window.open (popup-blocker unsafe); "
+        "anchor-click is the post-PR-#548 contract"
+    )
+    assert "document.createElement('a')" in code and "a.click()" in code, (
+        "PDF download must open the document.pdf URL via anchor-click"
     )
 
 
@@ -464,27 +479,70 @@ def test_convert_button_gates_on_can_convert():
     )
 
 
-def test_edit_button_disabled_with_reason():
+def test_edit_button_wired_to_patch_draft():
+    # Post-#548: edit is WIRED — tb-edit enters edit mode (gated on canEdit),
+    # save goes through PzApi.patchDraft → PATCH /api/v1/proforma/draft/{id}.
     src = _src()
-    assert "tb-edit" in src, "tb-edit toolbar button must be present"
-    # Verify it is disabled (not just missing) — should have disabled attribute
-    assert "Inline editing not yet available" in src, (
-        "Edit toolbar button must be disabled with 'Inline editing not yet available' reason"
+    assert 'data-testid="tb-edit"' in src, "tb-edit toolbar button must be present"
+    assert "Inline editing not yet available" not in src, (
+        "Stale backend-pending reason must be gone — edit is wired (PR #548)"
+    )
+    assert "handleEnterEdit" in src, "tb-edit must enter edit mode via handleEnterEdit"
+    assert 'data-testid="tb-edit-save"' in src and 'data-testid="tb-edit-cancel"' in src, (
+        "Edit mode must expose tb-edit-save / tb-edit-cancel controls"
+    )
+    assert "patchDraft" in src, "Edit save must call PzApi.patchDraft"
+    assert "canEdit" in _code_only(src), "tb-edit must be gated on canEdit draft states"
+    api = _V2_PZ_API.read_text(encoding="utf-8")
+    assert "patchDraft" in api, "v2/pz-api.js must expose patchDraft transport"
+    routes = _ROUTES_PROFORMA.read_text(encoding="utf-8")
+    assert '@router.patch("/draft/{draft_id}"' in routes, (
+        "PATCH /api/v1/proforma/draft/{draft_id} must exist in routes_proforma.py"
     )
 
 
-def test_delete_button_disabled_with_reason():
+def test_delete_button_wired_to_cancel_draft():
+    # Post-#548: tb-delete is WIRED as soft-cancel — CancelDraftModal →
+    # PzApi.cancelDraft → POST /api/v1/proforma/draft/{id}/cancel.
     src = _src()
-    assert "No delete-draft endpoint" in src, (
-        "Delete toolbar button must be disabled with reason citing missing endpoint"
+    assert 'data-testid="tb-delete"' in src, "tb-delete toolbar button must be present"
+    assert "No delete-draft endpoint" not in src, (
+        "Stale backend-pending reason must be gone — cancel-draft is wired (PR #548)"
+    )
+    assert "CancelDraftModal" in src, "tb-delete must open CancelDraftModal"
+    assert "cancelDraft" in src, "CancelDraftModal must call PzApi.cancelDraft"
+    assert "canCancel" in _code_only(src), "tb-delete must be gated on canCancel draft states"
+    api = _V2_PZ_API.read_text(encoding="utf-8")
+    assert "cancelDraft" in api, "v2/pz-api.js must expose cancelDraft transport"
+    routes = _ROUTES_PROFORMA.read_text(encoding="utf-8")
+    assert "/draft/{draft_id}/cancel" in routes, (
+        "POST /api/v1/proforma/draft/{draft_id}/cancel must exist in routes_proforma.py"
     )
 
 
-def test_send_button_disabled_with_reason():
+def test_send_button_wired_to_send_email():
+    # Post-#548: tb-send is WIRED — SendProformaModal → PzApi.sendProformaEmail
+    # → POST /api/v1/proforma/draft/{id}/send-email, gated on canSend with an
+    # authority-honest sendDisabledReason when unavailable.
     src = _src()
-    assert "tb-send" in src, "tb-send toolbar button must be present"
-    assert "Email send not yet wired" in src, (
-        "Send toolbar button must be disabled with 'Email send not yet wired' reason"
+    assert 'data-testid="tb-send"' in src, "tb-send toolbar button must be present"
+    assert "Email send not yet wired" not in src, (
+        "Stale backend-pending reason must be gone — email send is wired (PR #548)"
+    )
+    assert "SendProformaModal" in src, "tb-send must open SendProformaModal"
+    assert "sendProformaEmail" in src, "SendProformaModal must call PzApi.sendProformaEmail"
+    assert "YES_SEND_PROFORMA_EMAIL" in src, (
+        "Send must pass confirm_token 'YES_SEND_PROFORMA_EMAIL'"
+    )
+    assert "canSend" in _code_only(src), "tb-send must be gated on canSend"
+    assert "sendDisabledReason" in src, (
+        "Send button must retain an authority-honest disabled reason when unavailable"
+    )
+    api = _V2_PZ_API.read_text(encoding="utf-8")
+    assert "sendProformaEmail" in api, "v2/pz-api.js must expose sendProformaEmail transport"
+    routes = _ROUTES_PROFORMA.read_text(encoding="utf-8")
+    assert "/draft/{draft_id}/send-email" in routes, (
+        "POST /api/v1/proforma/draft/{draft_id}/send-email must exist in routes_proforma.py"
     )
 
 

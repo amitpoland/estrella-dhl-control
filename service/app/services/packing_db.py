@@ -147,9 +147,15 @@ def init_packing_db(db_path: Path) -> None:
         # metal_color: standalone color code (W/Y/RG/R) from Col or Kt/Color split.
         # quality_string: raw quality/grade string from Quality column including
         #   compound values like "G-VS LAB,E-VVS LAB" and the "Qualtity" typo variant.
-        _add_column_if_missing(con, "packing_lines", "unit_price_eur", "REAL NOT NULL DEFAULT 0.0")
-        _add_column_if_missing(con, "packing_lines", "metal_color",    "TEXT NOT NULL DEFAULT ''")
-        _add_column_if_missing(con, "packing_lines", "quality_string", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(con, "packing_lines", "unit_price_eur",  "REAL NOT NULL DEFAULT 0.0")
+        _add_column_if_missing(con, "packing_lines", "metal_color",     "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(con, "packing_lines", "quality_string",  "TEXT NOT NULL DEFAULT ''")
+        # Display fields — extracted by invoice_packing_extractor but previously
+        # not stored (silently dropped at upload time). Added 2026-06-09.
+        # Re-upload or force_reextract=True populates existing rows.
+        _add_column_if_missing(con, "packing_lines", "size",            "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(con, "packing_lines", "diamond_weight",  "REAL NOT NULL DEFAULT 0.0")
+        _add_column_if_missing(con, "packing_lines", "color_weight",    "REAL NOT NULL DEFAULT 0.0")
 
         # P1 parser observability: per-document parser_diagnostic_json column
         # carries the structured diagnostic dict captured by extract_packing.
@@ -355,6 +361,44 @@ def update_packing_document_diagnostic(document_id: str, diagnostic: Dict[str, A
     return (cur.rowcount or 0) > 0
 
 
+def delete_packing_document_and_lines(doc_id: str) -> Dict[str, Any]:
+    """Atomically delete one packing document and all its extracted lines.
+
+    Deletes packing_lines WHERE packing_document_id = doc_id, then deletes
+    the packing_documents row itself.  Both deletes occur inside a single
+    transaction so the DB is never left in a half-deleted state.
+
+    Returns:
+        {'doc_id': str, 'deleted_lines': int, 'source_file_path': str}
+
+    Raises:
+        RuntimeError  — packing_db not initialised
+        KeyError      — doc_id does not exist in packing_documents
+    """
+    if _db_path is None:
+        raise RuntimeError("packing_db not initialised — call init_packing_db() first")
+    with _lock:
+        with _connect() as con:
+            row = con.execute(
+                "SELECT source_file_path FROM packing_documents WHERE id=?",
+                (doc_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"packing document {doc_id!r} not found")
+            source_file_path: str = row["source_file_path"] or ""
+            cur = con.execute(
+                "DELETE FROM packing_lines WHERE packing_document_id=?",
+                (doc_id,),
+            )
+            deleted_lines: int = cur.rowcount or 0
+            con.execute("DELETE FROM packing_documents WHERE id=?", (doc_id,))
+    return {
+        "doc_id":           doc_id,
+        "deleted_lines":    deleted_lines,
+        "source_file_path": source_file_path,
+    }
+
+
 # ── Supplier header templates (Tier 0) ───────────────────────────────────────
 
 def get_supplier_templates(
@@ -537,6 +581,7 @@ def upsert_packing_lines(
                                extracted_confidence=?, requires_manual_review=?,
                                scan_code=?,
                                unit_price_eur=?, metal_color=?, quality_string=?,
+                               size=?, diamond_weight=?, color_weight=?,
                                updated_at=?
                            WHERE id=?""",
                         (
@@ -561,6 +606,9 @@ def upsert_packing_lines(
                             float(line.get("unit_price_eur", 0) or 0),
                             str(line.get("metal_color", "") or ""),
                             str(line.get("quality_string", "") or ""),
+                            str(line.get("size", "") or ""),
+                            float(line.get("diamond_weight", 0) or 0),
+                            float(line.get("color_weight", 0) or 0),
                             now,
                             existing["id"],
                         ),
@@ -578,8 +626,9 @@ def upsert_packing_lines(
                             extracted_confidence, requires_manual_review,
                             pack_sr, unit_price, total_value, scan_code,
                             unit_price_eur, metal_color, quality_string,
+                            size, diamond_weight, color_weight,
                             created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         line_id, line.get("packing_document_id", ""),
                         batch_id,
@@ -607,6 +656,9 @@ def upsert_packing_lines(
                         float(line.get("unit_price_eur", 0) or 0),
                         str(line.get("metal_color", "") or ""),
                         str(line.get("quality_string", "") or ""),
+                        str(line.get("size", "") or ""),
+                        float(line.get("diamond_weight", 0) or 0),
+                        float(line.get("color_weight", 0) or 0),
                         now, now,
                     ),
                 )

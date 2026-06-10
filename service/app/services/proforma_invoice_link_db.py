@@ -2489,6 +2489,68 @@ def remove_draft_service_charge(
     return refreshed
 
 
+def apply_customer_address_to_draft(
+    db_path:              Path,
+    draft_id:             int,
+    cm_name:              str,
+    cm_contractor_id:     str,
+    buyer_override:       Dict[str, Any],
+    ship_to_override:     Optional[Dict[str, Any]],
+    operator:             str,
+    expected_updated_at:  str,
+) -> ProformaDraft:
+    """Apply a Customer Master address projection as buyer_override + ship_to_override.
+
+    Records a specific ``buyer_override_from_customer_master`` audit event
+    (not the generic ``draft_edited``) so the trace is unambiguous.
+
+    ``ship_to_override`` is None when the Customer Master has no alternate
+    ship-to address (ship_to_use_alternate=False) — in that case only
+    buyer_override is written, and any existing ship_to_override is left
+    untouched (caller clears it explicitly if wanted).
+    """
+    if not (operator or "").strip():
+        raise ValueError("operator is required")
+    if not isinstance(buyer_override, dict):
+        raise ValueError("buyer_override must be a dict")
+
+    d = _load_for_edit(db_path, draft_id, expected_updated_at)
+
+    # Capture previous overrides for audit trail
+    try:
+        prev_buyer = json.loads(d.buyer_override_json or "{}") or {}
+    except Exception:
+        prev_buyer = {}
+    try:
+        prev_ship = json.loads(d.ship_to_override_json or "{}") or {}
+    except Exception:
+        prev_ship = {}
+
+    refreshed = _commit_draft_update(
+        db_path, d.id,
+        new_state            = _next_state_after_edit(d.draft_state),
+        new_buyer_override   = buyer_override,
+        new_ship_to_override = ship_to_override,   # None = leave existing ship_to unchanged
+    )
+    _record_draft_event(
+        db_path, draft_id=d.id,
+        event="buyer_override_from_customer_master",
+        detail_json=json.dumps({
+            "source_contractor_id": cm_contractor_id,
+            "source_name":          cm_name,
+            "prev_buyer_override":  prev_buyer,
+            "new_buyer_override":   buyer_override,
+            "ship_to_applied":      ship_to_override is not None,
+            "prev_ship_to":         prev_ship if ship_to_override is not None else None,
+            "new_ship_to":          ship_to_override,
+            "from_state":           d.draft_state,
+            "to_state":             refreshed.draft_state,
+        }, ensure_ascii=False, sort_keys=True),
+        operator=operator,
+    )
+    return refreshed
+
+
 # ── Phase 4 — lifecycle controls + line add/remove ─────────────────────────
 
 # Confirm tokens — the operator must include these literally in the
@@ -3332,4 +3394,5 @@ __all__ = [
     "list_draft_events",
     "_record_draft_event",
     "apply_sales_price_patch",
+    "apply_customer_address_to_draft",
 ]

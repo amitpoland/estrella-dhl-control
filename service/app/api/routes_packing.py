@@ -20,6 +20,7 @@ GET  /api/v1/packing/{batch_id}/lines
 from __future__ import annotations
 
 import json
+import os
 import re
 import socket
 import sqlite3
@@ -27,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, UploadFile
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from ..auth.dependencies import get_current_user
@@ -463,6 +464,13 @@ async def upload_packing_list(
             #   list (may be compound, e.g. "G-VS LAB,E-VVS LAB"). Captures both
             #   the standard "Quality" column and the "Qualtity" typo variant.
             "quality_string":       str(row.get("quality_string", "") or ""),
+            # Display fields — canonical names from invoice_packing_extractor
+            # field alias map (dia_wt→diamond_weight, col_wt→color_weight, size→size).
+            # Previously extracted but not stored; added 2026-06-09.
+            # Re-upload or force_reextract=True will populate these for existing batches.
+            "size":             str(row.get("size", "") or ""),
+            "diamond_weight":   float(row.get("diamond_weight", 0) or 0),
+            "color_weight":     float(row.get("color_weight", 0) or 0),
         })
 
     inserted = pdb.upsert_packing_lines(line_records, force_reextract=force_reextract)
@@ -2882,4 +2890,120 @@ def dev_seed_inventory_state(body: _SeedBatchBody) -> Dict[str, Any]:
         "transitioned":   transitioned,
         "skipped":        skipped,
         "errors":         errors,
+    }
+
+
+# ── GET /api/v1/packing/{batch_id}/document/{document_id}/download ────────────
+
+@router.get("/{batch_id}/document/{document_id}/download", dependencies=[_auth])
+async def download_packing_document(
+    batch_id: str,
+    document_id: str,
+) -> FileResponse:
+    """Download the original source file for a packing document."""
+    doc = pdb.get_packing_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Packing document not found")
+    if doc.get("batch_id") != batch_id:
+        raise HTTPException(status_code=404, detail="Document does not belong to this batch")
+    source_path = doc.get("source_file_path") or ""
+    if not source_path or not Path(source_path).exists():
+        raise HTTPException(status_code=404, detail="Source file not found on disk")
+    filename = Path(source_path).name
+    return FileResponse(
+        path=source_path,
+        filename=filename,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
+
+
+# ── DELETE /api/v1/packing/{batch_id}/document/{document_id} ─────────────────
+
+@router.delete("/{batch_id}/document/{document_id}", dependencies=[_auth])
+async def delete_packing_document(
+    batch_id: str,
+    document_id: str,
+    operator: str = Header(default="operator", alias="X-Operator"),
+) -> Dict[str, Any]:
+    """Delete a packing document: disk file + packing_lines + packing_documents row.
+
+    SALES guard: if any non-cancelled proforma draft exists for this batch,
+    returns 409 — operator must cancel/delete the proforma first.
+    """
+    doc = pdb.get_packing_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Packing document not found")
+    if doc.get("batch_id") != batch_id:
+        raise HTTPException(status_code=404, detail="Document does not belong to this batch")
+
+    # Determine document side from storage path
+    source_path = doc.get("source_file_path") or ""
+    is_sales = "/source/sales/" in source_path.replace("\\", "/")
+
+    # Proforma guard: block SALES file delete if any active draft exists
+    if is_sales:
+        try:
+            from ..services import proforma_invoice_link_db as _pildb
+            _pf_db_path = settings.storage_root / "proforma_links.db"
+            drafts = _pildb.list_drafts_for_batch(_pf_db_path, batch_id) or []
+            active_drafts = [
+                d for d in drafts
+                if (
+                    (d.draft_state if hasattr(d, "draft_state") else (d.get("draft_state") or ""))
+                    not in ("cancelled", "superseded")
+                )
+            ]
+            if active_drafts:
+                draft_labels = [
+                    (d.wfirma_proforma_fullnumber or f"draft #{d.id}")
+                    if hasattr(d, "wfirma_proforma_fullnumber")
+                    else (d.get("wfirma_proforma_fullnumber") or f"draft #{d.get('id', '?')}")
+                    for d in active_drafts
+                ]
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "PACKING_SALES_DELETE_BLOCKED_BY_PROFORMA",
+                        "message": (
+                            f"Cannot delete SALES packing file: "
+                            f"{len(active_drafts)} active proforma draft(s) exist for this batch. "
+                            "Delete or cancel the proforma first, then delete the packing file."
+                        ),
+                        "active_drafts": draft_labels,
+                    },
+                )
+        except HTTPException:
+            raise
+        except Exception as _pf_exc:
+            log.warning("[%s] proforma guard check failed (non-fatal): %s", batch_id, _pf_exc)
+
+    # Delete disk file (non-fatal if file is already gone)
+    disk_deleted = False
+    if source_path and Path(source_path).exists():
+        try:
+            os.unlink(source_path)
+            disk_deleted = True
+        except OSError as exc:
+            log.warning(
+                "[%s] delete_packing_document: disk unlink failed for %r: %s",
+                batch_id, source_path, exc,
+            )
+
+    # Delete DB rows (atomic — lines first, then document)
+    try:
+        result = pdb.delete_packing_document_and_lines(document_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Packing document not found")
+
+    log.info(
+        "[%s] packing document %s deleted by %s — %d lines removed, disk_deleted=%s",
+        batch_id, document_id, operator, result["deleted_lines"], disk_deleted,
+    )
+
+    return {
+        "ok":            True,
+        "doc_id":        document_id,
+        "batch_id":      batch_id,
+        "deleted_lines": result["deleted_lines"],
+        "disk_deleted":  disk_deleted,
     }

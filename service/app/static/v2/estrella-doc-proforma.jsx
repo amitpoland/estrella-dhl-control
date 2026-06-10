@@ -103,15 +103,16 @@ function EJDocBank({ banks }) {
 }
 
 // ── Compliance footer ─────────────────────────────────────────────────────────
-function EJDocCompliance() {
+function EJDocCompliance({ paymentDays, paymentDueStr }) {
+  const daysLabel = paymentDays ? `${paymentDays} days` : '7 days';
   return (
     <div style={{
       display: "grid", gridTemplateColumns: "1fr 1fr 1fr",
-      gap: 12, fontSize: 9, color: "#64748B", lineHeight: 1.5,
+      gap: 12, fontSize: 10, color: "#334155", lineHeight: 1.5,
     }}>
       <div>
         <div className="ej-eyebrow" style={{ marginBottom: 4 }}>Payment terms</div>
-        Payment due within 7 days of invoice date. Goods remain property of Estrella Jewels
+        Payment due within {daysLabel} of invoice date. Goods remain property of Estrella Jewels
         until full payment is received.
       </div>
       <div>
@@ -244,7 +245,10 @@ function EJProformaClassic({ docData }) {
               <tr key={l.sku || i}>
                 <td style={{ color: "#94A3B8" }}>{i + 1}</td>
                 <td>
-                  <div style={{ fontWeight: 600 }}>{l.desc || l.sku || "—"}</div>
+                  <div style={{ fontWeight: 600 }}>{l.desc_en || l.desc || l.sku || "—"}</div>
+                  {l.desc_pl && l.desc_pl !== (l.desc_en || l.desc) && (
+                    <div style={{ fontSize: 9, color: "#64748B", marginTop: 1 }}>{l.desc_pl}</div>
+                  )}
                   {l.purity && l.purity !== "Service" && (
                     <div style={{ marginTop: 3 }}>
                       <span className="ej-pill ej-pill-gold">{l.purity}</span>
@@ -292,7 +296,7 @@ function EJProformaClassic({ docData }) {
         </div>
 
         {/* Compliance */}
-        <EJDocCompliance/>
+        <EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/>
 
         {/* Signature row */}
         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 28, fontSize: 9, color: "#64748B" }}>
@@ -305,8 +309,9 @@ function EJProformaClassic({ docData }) {
         </div>
       </div>
 
-      {/* Footer */}
-      <div style={{
+      {/* Footer — ej-proforma-footer class lets @media print unpin this
+          from position:absolute so it flows after content on page 2+ */}
+      <div className="ej-proforma-footer" style={{
         position: "absolute", bottom: 22, left: 48, right: 48,
         display: "flex", justifyContent: "space-between",
         fontSize: 8.5, color: "#94A3B8",
@@ -407,7 +412,10 @@ function EJProformaModern({ docData }) {
             {lines.map((l, i) => (
               <tr key={l.sku || i}>
                 <td>
-                  <div style={{ fontWeight: 600 }}>{l.desc || l.sku || "—"}</div>
+                  <div style={{ fontWeight: 600 }}>{l.desc_en || l.desc || l.sku || "—"}</div>
+                  {l.desc_pl && l.desc_pl !== (l.desc_en || l.desc) && (
+                    <div style={{ fontSize: 9, color: "#64748B", marginTop: 1 }}>{l.desc_pl}</div>
+                  )}
                   {l.purity && l.purity !== "Service" && (
                     <div style={{ color: "#94A3B8", fontSize: 9 }}>{l.purity}</div>
                   )}
@@ -458,7 +466,7 @@ function EJProformaModern({ docData }) {
         </div>
 
         {/* Compliance */}
-        <EJDocCompliance/>
+        <EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/>
       </div>
 
       <div style={{
@@ -553,7 +561,10 @@ function EJProformaBold({ docData }) {
             {lines.map((l, i) => (
               <tr key={l.sku || i}>
                 <td>
-                  <div style={{ fontWeight: 600, fontSize: 10 }}>{l.desc || l.sku || "—"}</div>
+                  <div style={{ fontWeight: 600, fontSize: 10 }}>{l.desc_en || l.desc || l.sku || "—"}</div>
+                  {l.desc_pl && l.desc_pl !== (l.desc_en || l.desc) && (
+                    <div style={{ fontSize: 9, color: "#64748B", marginTop: 1 }}>{l.desc_pl}</div>
+                  )}
                   {l.purity && l.purity !== "Service" && (
                     <div style={{ color: "#94A3B8", fontSize: 9 }}>{l.purity}</div>
                   )}
@@ -588,7 +599,7 @@ function EJProformaBold({ docData }) {
         </div>
 
         <EJDocBank banks={d.banks || []}/>
-        <div style={{ marginTop: 16 }}><EJDocCompliance/></div>
+        <div style={{ marginTop: 16 }}><EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/></div>
       </div>
     </div>
   );

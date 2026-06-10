@@ -189,6 +189,11 @@ def _customer_to_dict(c: CustomerMaster) -> Dict[str, Any]:
         "bill_to_street":                c.bill_to_street,
         "bill_to_city":                  c.bill_to_city,
         "bill_to_postal_code":           c.bill_to_postal_code,
+        # Backward-compat alias: the V1 Customer Master form reads `bill_to_country`
+        # from the response.  The dataclass field is `country` (billing country).
+        # Return both so that legacy UIs that read `bill_to_country` continue to work
+        # without a frontend change.
+        "bill_to_country":               c.country,
         "regon":                         c.regon,
         "short_code":                    c.short_code,
         "client_type":                   c.client_type,
@@ -245,8 +250,10 @@ _OPTIONAL_STR_FIELDS = frozenset({
     "bill_to_street", "bill_to_city", "bill_to_postal_code",
     "bill_to_email", "bill_to_phone", "bill_to_mobile",
     "bank_account",
-    # UI alias — frontend form sends bill_to_nip; blank→None before alias pass
+    # UI aliases — frontend form sends bill_to_nip and bill_to_country;
+    # blank→None before alias pass (bill_to_nip → nip, bill_to_country → country)
     "bill_to_nip",
+    "bill_to_country",
     # Ship-to alternate-address fields — must be '' → None coerced so that
     # clearing a previously-set alternate address persists as NULL rather
     # than empty string (operator complaint 2026-05-19: ship-to clears
@@ -378,6 +385,15 @@ def _parse_body(
         alias_val = body.pop("bill_to_nip")
         if "nip" not in body:
             body["nip"] = alias_val
+
+    # Alias: UI form sends bill_to_country; CustomerMaster dataclass field is
+    # `country` (the billing country — there is no separate bill_to_country field;
+    # see resolve_billing_address() comment).  Map to `country` if country was
+    # not explicitly provided.
+    if "bill_to_country" in body:
+        alias_val = body.pop("bill_to_country")
+        if "country" not in body:
+            body["country"] = alias_val
 
     # Strip server-managed audit fields
     for key in ("id", "created_at", "updated_at"):

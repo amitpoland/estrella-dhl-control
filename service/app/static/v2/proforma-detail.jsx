@@ -1,6 +1,6 @@
 // proforma-detail.jsx — Sprint 36 Phase 2: UI parity with atlas-proforma-preview.html
 // Authority sources (no fake/hardcoded data):
-//   GET /api/v1/proforma/draft/{id}                → editable_lines, exchange_rate, customer_resolution
+//   GET /api/v1/proforma/draft/{id}                → editable_lines (incl. name_pl), buyer_override, exchange_rate
 //   GET /api/v1/settings/company-profile             → exporter identity (SELLER card)
 //   GET /api/v1/proforma/draft/{id}/disclose-post    → VAT context, post payload
 //   POST /api/v1/proforma/draft/{id}/post            → post to wFirma (toolbar + modal)
@@ -133,13 +133,17 @@ function ProformaPartyCard({ title, name, lines, footer, footerMuted, warn, warn
 // ── Print-preview modal ────────────────────────────────────────────────────────
 // READ-ONLY. Never mutates draft state. Uses real docData/cmrData from ProformaDetailPage.
 // Requires: estrella-doc-tokens.css + estrella-doc-proforma.jsx + estrella-doc-cmr.jsx loaded in index.html.
-function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, onClose }) {
-  // Scale A4 (794px) to fit within 860px modal body → ~0.9 scale
-  const SCALE = 0.88;
+function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, packingData, onClose }) {
+  // Portrait A4 (794px) → 0.88 fits 900px wrap.
+  // Landscape A4 (1123px) → 0.87 fits 1200px wrap.
+  // activeType MUST be declared before SCALE — SCALE depends on it.
   const activeType = docType || 'proforma';
+  const SCALE = activeType === 'packing' ? 0.87 : 0.88;
 
   // Variant selection per document type
-  const variantOptions = activeType === 'cmr' ? ['classic', 'modern'] : ['classic', 'modern', 'bold'];
+  const variantOptions = activeType === 'cmr'     ? ['classic', 'modern']
+                       : activeType === 'packing'  ? ['classic']
+                       : ['classic', 'modern', 'bold'];
 
   // Component resolution
   let DocVariant = null;
@@ -147,6 +151,8 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
     DocVariant = variant === 'modern'
       ? (window.EJCMRModern  || null)
       : (window.EJCMRClassic || null);
+  } else if (activeType === 'packing') {
+    DocVariant = window.EJPackingList || null;
   } else {
     DocVariant = variant === 'modern' ? (window.EJProformaModern || null)
                : variant === 'bold'   ? (window.EJProformaBold   || null)
@@ -160,13 +166,31 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  return (
+  // Portal: render directly on <body> so print CSS `body > *:not(.ej-preview-overlay)`
+  // correctly hides the SPA container without hiding the overlay inside it.
+  return ReactDOM.createPortal(
     <div
       className="ej-preview-overlay"
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
       data-testid="proforma-preview-modal"
     >
-      <div className="ej-preview-wrap">
+      {/* A4 print CSS — hides modal chrome, resets scale, sets page size.
+          Orientation is dynamic: landscape for Packing List, portrait for Proforma/CMR. */}
+      <style>{`
+        @media print {
+          @page { size: A4 ${activeType === 'packing' ? 'landscape' : 'portrait'}; margin: ${activeType === 'packing' ? '0.5cm' : '0.8cm'}; }
+          body > *:not(.ej-preview-overlay) { display: none !important; }
+          .ej-preview-overlay {
+            position: static !important; background: none !important;
+            overflow: visible !important; inset: auto !important;
+          }
+          .ej-preview-bar { display: none !important; }
+          .ej-preview-body { overflow: visible !important; height: auto !important; }
+          .ej-preview-sheet { transform: none !important; transform-origin: top left !important; }
+          .ej-preview-wrap { box-shadow: none !important; width: auto !important; }
+        }
+      `}</style>
+      <div className="ej-preview-wrap" style={activeType === 'packing' ? {width: '1200px'} : {}}>
         {/* Control bar */}
         <div className="ej-preview-bar">
           <span style={{ fontWeight: 700, letterSpacing: '0.04em' }}>Print Preview</span>
@@ -175,12 +199,12 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
           </span>
           <div style={{ display: 'flex', gap: 6, marginLeft: 'auto', alignItems: 'center' }}>
             {/* Document type selector */}
-            {[['proforma', 'Proforma'], ['cmr', 'CMR']].map(([dt, label]) => (
+            {[['proforma', 'Proforma'], ['cmr', 'CMR'], ['packing', 'Packing List']].map(([dt, label]) => (
               <button
                 key={dt}
                 onClick={() => {
                   onDocTypeChange(dt);
-                  if (dt === 'cmr' && variant === 'bold') onVariantChange('classic');
+                  if ((dt === 'cmr' || dt === 'packing') && variant === 'bold') onVariantChange('classic');
                 }}
                 data-testid={`preview-doctype-${dt}`}
                 style={{
@@ -214,6 +238,25 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
             ))}
             <div style={{ width: 1, height: 20, background: '#2A3A52', margin: '0 4px' }}/>
             <button
+              data-testid="preview-download"
+              onClick={() => {
+                // Temporarily remove scale so print renders at true A4 size
+                const sheet = document.querySelector('.ej-preview-sheet');
+                const prevT = sheet ? sheet.style.transform : null;
+                const prevO = sheet ? sheet.style.transformOrigin : null;
+                if (sheet) { sheet.style.transform = 'none'; sheet.style.transformOrigin = 'top left'; }
+                window.print();
+                if (sheet) { sheet.style.transform = prevT; sheet.style.transformOrigin = prevO; }
+              }}
+              style={{
+                padding: '4px 12px', borderRadius: 5, border: '1px solid #2A5A3A',
+                background: '#0B3D2E20', color: '#4CAF82',
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              }}
+            >
+              ↓ Download PDF
+            </button>
+            <button
               onClick={onClose}
               data-testid="preview-close"
               style={{
@@ -236,18 +279,24 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
             >
               {activeType === 'cmr'
                 ? <DocVariant cmrData={cmrData}/>
+                : activeType === 'packing'
+                ? <DocVariant packingData={packingData}/>
                 : <DocVariant docData={docData}/>
               }
             </div>
           ) : (
             <div style={{ padding: 40, color: '#64748B', fontSize: 13 }}>
-              Print preview requires {activeType === 'cmr' ? 'estrella-doc-cmr.jsx' : 'estrella-doc-proforma.jsx'} to be loaded.
+              Print preview requires {
+                activeType === 'cmr'     ? 'estrella-doc-cmr.jsx'
+                : activeType === 'packing' ? 'estrella-doc-packing.jsx'
+                : 'estrella-doc-proforma.jsx'
+              } to be loaded.
             </div>
           )}
         </div>
       </div>
-    </div>
-  );
+    </div>,
+  document.body);
 }
 
 // ── Cancel Draft Modal ────────────────────────────────────────────────────────
@@ -644,6 +693,21 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [editSaving,       setEditSaving]        = React.useState(false);
   const [editError,        setEditError]         = React.useState(null);
 
+  // Approval state
+  const [approving,        setApproving]         = React.useState(false);
+  const [approveError,     setApproveError]      = React.useState(null);
+
+  // PR B — Customer address + service-charge authority
+  const [buyerEditOpen,    setBuyerEditOpen]     = React.useState(false);
+  const [buyerEditFields,  setBuyerEditFields]   = React.useState({});
+  const [buyerEditSaving,  setBuyerEditSaving]   = React.useState(false);
+  const [buyerEditError,   setBuyerEditError]    = React.useState(null);
+  const [addrApplying,     setAddrApplying]      = React.useState(false);
+  const [addrApplyError,   setAddrApplyError]    = React.useState(null);
+  const [chargeSuggestion, setChargeSuggestion]  = React.useState(null);  // null | response obj
+  const [chargesLoading,   setChargesLoading]    = React.useState(false);
+  const [chargesApplying,  setChargesApplying]   = React.useState(null);  // 'freight'|'insurance'|null
+
   // WIRED: fetch full draft detail (GET /api/v1/proforma/draft/{id})
   const draftHook = window.PzState.useDraft(draft && draft.id);
   const liveDraft = (draftHook.data && draftHook.data.draft) ? draftHook.data.draft : (draft || {});
@@ -671,18 +735,32 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       .catch(() => setCompanyProfile(null));
   }, []);
 
+  // WIRED: packing lines authority for CMR goods table
+  // Source: GET /api/v1/packing/{batchId}/lines — aggregated by item_type+metal+stone
+  // New CMR line shape: { item_type, metal, stone, qty, net_weight, origin }
+  // HS/CN codes NOT included — kept in DB only; shown outside Europe only (operator decision 2026-06-09)
+  const [batchPackingLines, setBatchPackingLines] = React.useState([]);
+  React.useEffect(() => {
+    if (!batchId) { setBatchPackingLines([]); return; }
+    window.EstrellaShared.apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/lines`)
+      .then(r => setBatchPackingLines((r && r.lines) || []))
+      .catch(() => setBatchPackingLines([]));
+  }, [batchId]);
+
   // ── Authority-wired data construction ──────────────────────────────────────
   // Product lines from backend editable_lines
   const lines = (liveDraft.editable_lines || []).map((ln, i) => ({
     seq:      i + 1,
     lineId:   ln.line_id || '',
     sku:      ln.product_code || '—',
-    desc:     ln.design_no || ln.product_code || '—',
+    desc:     ln.name_pl || ln.description_pl || ln.design_no || ln.product_code || '—',
+    desc_pl:  ln.description_pl || ln.name_pl || '',
+    desc_en:  ln.description_en || ln.name_en || '',
     qty:      parseFloat(ln.qty || 0),
     unitEur:  parseFloat(ln.unit_price || 0),
     netEur:   parseFloat(ln.unit_price || 0) * parseFloat(ln.qty || 0),
     hsCode:   ln.hs_code || '—',
-    origin:   ln.origin || '—',
+    origin:   ln.origin || (liveDraft.origin_country) || (companyProfile && companyProfile.country) || '—',
     purity:   ln.purity || '',
     currency: ln.currency || 'EUR',
   }));
@@ -707,15 +785,34 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       }
     : { name: '—', vatEu: '—', address: '—', country: '—' };
 
-  // BUYER from draft customer_resolution
+  // BUYER — authority split:
+  //   name / VAT / address / country → buyer_override (operator-confirmed buyer data)
+  //   wfirmaId / wfirmaName          → customer_resolution (wFirma resolution metadata)
+  // customer_resolution is present in the response but only carries wFirma resolution
+  // metadata (wfirma_customer_id, resolved_wfirma_customer_name, match_strategy).
+  // It does NOT carry vat_eu, address, or country — buyer_override is the only authority
+  // for those fields.
+  const bo = liveDraft.buyer_override || {};
   const cr = liveDraft.customer_resolution || {};
   const customer = {
-    name:       liveDraft.client_name || (draft && draft.client_name) || '—',
-    vatEu:      cr.vat_eu || '—',
-    address:    cr.address || '—',
-    country:    cr.country || '—',
-    wfirmaId:   cr.wfirma_customer_id || null,
-    wfirmaName: cr.resolved_wfirma_customer_name || null,
+    name:       bo.name || liveDraft.client_name || (draft && draft.client_name) || '—',
+    vatEu:      bo.vat_id || '—',
+    address:    [bo.street, bo.city, bo.zip].filter(Boolean).join(', ') || '—',
+    country:    bo.country || '—',
+    // wfirmaId: explicit selection in buyer_override > name-resolution in cr > posted proof
+    wfirmaId:   bo.wfirma_customer_id || cr.wfirma_customer_id ||
+                (liveDraft.wfirma_proforma_id ? String(liveDraft.wfirma_proforma_id) : null),
+    wfirmaName: cr.resolved_wfirma_customer_name || bo.name || null,
+  };
+
+  // SHIP-TO — authority: ship_to_override first, buyer_override fallback.
+  // When ship_to_override is not set, ship-to equals the buyer.
+  const sto = liveDraft.ship_to_override || {};
+  const shipTo = {
+    name:    sto.name    || bo.name || liveDraft.client_name || '—',
+    address: [sto.street || bo.street, sto.city || bo.city, sto.zip || bo.zip]
+               .filter(Boolean).join(', ') || '—',
+    country: sto.country || bo.country || '—',
   };
 
   const detail = {
@@ -732,35 +829,69 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     paymentTerms: paymentTermsDisplay,
     incoterm:     liveDraft.incoterm || '—',
   };
+  // ── Country code → full name (ISO 3166-1 alpha-2) for proforma display ──────
+  const PROFORMA_COUNTRY_NAMES = {
+    PL: 'Poland',          LT: 'Lithuania',          DE: 'Germany',          IN: 'India',
+    CZ: 'Czech Republic',  SK: 'Slovakia',            HU: 'Hungary',          RO: 'Romania',
+    UA: 'Ukraine',         FR: 'France',              IT: 'Italy',            ES: 'Spain',
+    NL: 'Netherlands',     BE: 'Belgium',             AT: 'Austria',          CH: 'Switzerland',
+    GB: 'United Kingdom',  DK: 'Denmark',             SE: 'Sweden',           FI: 'Finland',
+    NO: 'Norway',          EE: 'Estonia',             LV: 'Latvia',           BY: 'Belarus',
+    LU: 'Luxembourg',      PT: 'Portugal',            GR: 'Greece',           BG: 'Bulgaria',
+    HR: 'Croatia',         SI: 'Slovenia',            RS: 'Serbia',           TR: 'Turkey',
+    AE: 'United Arab Emirates', SG: 'Singapore',     HK: 'Hong Kong',        CN: 'China',
+    JP: 'Japan',           KR: 'South Korea',         AU: 'Australia',        US: 'United States',
+    CA: 'Canada',          BR: 'Brazil',              MX: 'Mexico',           ZA: 'South Africa',
+    SA: 'Saudi Arabia',    IL: 'Israel',
+  };
+  const _expandCountry = (code) => (code && (PROFORMA_COUNTRY_NAMES[code] || code)) || '';
+
   // ── docData for print preview (EJProformaClassic / EJProformaModern) ──────
   const _previewLabel = liveDraft.wfirma_proforma_fullnumber
     || (draft && draft.wfirma_proforma_fullnumber)
     || (draft && draft.id ? `Draft #${draft.id}` : 'Draft');
+  // Payment due: wfirma_payment_due (post-wFirma) -> due_date -> invoice_date + payment_terms_days
+  const _ptDays = Number(liveDraft.payment_terms_days) || 0;
+  const _dueFallback = (() => {
+    if (liveDraft.wfirma_payment_due) return liveDraft.wfirma_payment_due.slice(0, 10);
+    if (liveDraft.due_date)           return liveDraft.due_date.slice(0, 10);
+    const base = liveDraft.invoice_date || liveDraft.created_at;
+    if (base && _ptDays > 0) {
+      const d = new Date(base);
+      d.setDate(d.getDate() + _ptDays);
+      return d.toISOString().slice(0, 10);
+    }
+    return '—';
+  })();
   const previewDocData = {
     doc_no:   _previewLabel,
     date:     liveDraft.invoice_date || liveDraft.created_at
               ? (liveDraft.invoice_date || liveDraft.created_at || '').slice(0, 10) : '—',
-    due:      liveDraft.due_date ? liveDraft.due_date.slice(0, 10) : '—',
+    due:      _dueFallback,
     payment:  paymentTermsDisplay,
+    payment_terms_days: _ptDays,
     rate:     { eur: fxRate, date: liveDraft.exchange_rate_date || '—', table: liveDraft.nbp_table || '—' },
     seller:   {
-      name:  detail.exporter.name,
-      addr:  detail.exporter.address,
-      vat:   detail.exporter.vatEu,
-      email: (companyProfile && companyProfile.email) || '',
-      phone: (companyProfile && companyProfile.phone) || '',
+      name:    detail.exporter.name,
+      addr:    detail.exporter.address,
+      country: _expandCountry(detail.exporter.country),
+      vat:     detail.exporter.vatEu,
+      email:   (companyProfile && companyProfile.email) || '',
+      phone:   (companyProfile && companyProfile.phone) || '',
     },
     buyer:    {
       name:    detail.customer.name,
       addr:    detail.customer.address,
-      city:    detail.customer.country,
-      country: detail.customer.country,
+      city:    '',
+      country: _expandCountry(detail.customer.country),
       vat:     detail.customer.vatEu,
     },
     lines:    lines.map(l => ({
       seq:     l.seq,
       sku:     l.sku,
       desc:    l.desc,
+      desc_pl: l.desc_pl,
+      desc_en: l.desc_en,
       purity:  l.purity,
       origin:  l.origin,
       qty:     l.qty,
@@ -772,27 +903,127 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       ? lines.reduce((s, l) => s + l.netEur, 0) * fxRate : null,
     carrier:  liveDraft.batch_id
       ? { awb: liveDraft.batch_id, incoterm: liveDraft.incoterm || 'DAP' } : null,
-    banks:    [],
+    banks:    (companyProfile && companyProfile.bank_accounts || []).map(b => ({
+      cur:   b.currency || b.cur || 'EUR',
+      iban:  b.iban || '—',
+      swift: b.bic || b.swift || '',
+      bank:  b.bank_name || b.bank || '',
+    })),
   };
   // ── cmrData for CMR preview (EJCMRClassic / EJCMRModern) ─────────────────
-  // Uses real data from liveDraft; carrier detail limited to batch_id + incoterm.
   // No CMR backend route exists — this is client-side preview only.
+
+  // Country code → full name for CMR origin display (ISO 3166-1 alpha-2 subset)
+  const _CMR_COUNTRY_NAMES = {
+    PL: 'Poland',       LT: 'Lithuania',  DE: 'Germany',      IN: 'India',
+    CZ: 'Czech Republic', SK: 'Slovakia', HU: 'Hungary',      RO: 'Romania',
+    UA: 'Ukraine',      FR: 'France',     IT: 'Italy',        ES: 'Spain',
+    NL: 'Netherlands',  BE: 'Belgium',    AT: 'Austria',      CH: 'Switzerland',
+    GB: 'United Kingdom', DK: 'Denmark',  SE: 'Sweden',       FI: 'Finland',
+    NO: 'Norway',       EE: 'Estonia',    LV: 'Latvia',       BY: 'Belarus',
+  };
+  const _cmrCountryName = (code) => (code && (_CMR_COUNTRY_NAMES[code] || code)) || '';
+
+  // ── CMR packing-line parsers (human-readable labels, no HS/CN codes) ─────────
+  // Metal code → human label: "14KT/W" → "14 Karat White Gold"
+  const _CMR_KARAT = { '18KT': '18 Karat', '14KT': '14 Karat', '22KT': '22 Karat', '9KT': '9 Karat' };
+  const _CMR_COLOR = {
+    W: 'White Gold',  Y: 'Yellow Gold', P: 'Pink Gold',   RG: 'Rose Gold',
+    WY: 'White & Yellow Gold', WP: 'White & Pink Gold',  YP: 'Yellow & Pink Gold',
+    TRI: 'Tri-Color Gold',
+  };
+  const _parseMetal = (metal) => {
+    if (!metal) return '';
+    const parts = (metal || '').toUpperCase().split('/');
+    const karat = _CMR_KARAT[parts[0]] || parts[0] || '';
+    const color = _CMR_COLOR[parts[1]] || parts[1] || '';
+    return [karat, color].filter(Boolean).join(' ');
+  };
+  // Stone type → human label
+  const _CMR_STONE = {
+    DIA: 'Diamond',     CLS: 'Coloured Stone', CS: 'Coloured Stone',
+    RUBY: 'Ruby',       EMERALD: 'Emerald',    SAPPHIRE: 'Sapphire',
+    PEARL: 'Pearl',     CORAL: 'Coral',
+  };
+  const _parseStone = (s) => {
+    if (!s) return '';
+    return _CMR_STONE[(s || '').toUpperCase()] || s;
+  };
+  // Item type → human label
+  const _CMR_ITEM = {
+    PND: 'Pendant', PENDANT: 'Pendant', RNG: 'Ring', RING: 'Ring',
+    EAR: 'Earrings', EARRINGS: 'Earrings', BRL: 'Bracelet', BRACELET: 'Bracelet',
+    NKL: 'Necklace', NECKLACE: 'Necklace', BRO: 'Brooch', SET: 'Set',
+    CHAIN: 'Chain',  BANGLE: 'Bangle',
+  };
+  const _cmrItemLabel = (t) => _CMR_ITEM[(t || '').toUpperCase()] || t || '';
+
+  // CMR transport summary — aggregated by item_type ONLY (not metal/stone per line)
+  // CMR is a logistics document; carrier needs item totals, not 146 design rows.
+  // Metal and stone types surface as a single goods_summary description, not per-line columns.
+  // Returns { lines: [{item_type, qty, net_weight, origin}], goods_summary, total_qty }
+  const _cmrAggPackingLines = (() => {
+    if (!batchPackingLines || !batchPackingLines.length) {
+      return { lines: [], goods_summary: '', total_qty: 0 };
+    }
+    const groups = {};
+    const metals  = new Set();
+    const stones  = new Set();
+    let totalQty  = 0;
+    for (const l of batchPackingLines) {
+      const key = (l.item_type || 'other').toUpperCase();
+      if (!groups[key]) {
+        groups[key] = { item_type: _cmrItemLabel(l.item_type), qty: 0, net_weight: null, origin: 'India' };
+      }
+      groups[key].qty += Number(l.quantity) || 0;
+      totalQty        += Number(l.quantity) || 0;
+      const nw = Number(l.net_weight) || 0;
+      if (nw > 0) groups[key].net_weight = (groups[key].net_weight || 0) + nw;
+      const m = _parseMetal(l.metal);       if (m) metals.add(m);
+      const s = _parseStone(l.stone_type);  if (s) stones.add(s);
+    }
+    const metalsStr    = Array.from(metals).join(' & ');
+    const stonesStr    = Array.from(stones).join(' & ');
+    const goods_summary = [metalsStr, stonesStr].filter(Boolean).join(' · ');
+    return {
+      lines:       Object.values(groups).sort((a, b) => (a.item_type > b.item_type ? 1 : -1)),
+      goods_summary,    // e.g. "14 Karat Pink Gold & 14 Karat White Gold · Diamond"
+      total_qty:   totalQty,
+    };
+  })();
+  // ────────────────────────────────────────────────────────────────────────────
+
+  // Insurance: show canonical wording when a non-zero insurance charge exists on the draft
+  const _CMR_INSURANCE_TEXT =
+    'Yes — Insurance covers the Door to Door delivery of this package by Future Generali India Insurance Company Limited';
+  const _cmrHasInsurance = (liveDraft.service_charges || []).some(
+    c => (c.charge_type || '').toLowerCase() === 'insurance' && (Number(c.amount) || 0) > 0
+  );
+
+  // Total pieces: packing list authority when available, otherwise proforma editable lines
+  const _cmrTotalPcs = _cmrAggPackingLines.total_qty > 0
+    ? _cmrAggPackingLines.total_qty
+    : lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
+
   const cmrPreviewData = {
     cmr_no:   batchId ? `CMR-EJ-${batchId}` : '—',
     doc_ref:  _previewLabel,
     seller:   {
       name:  exporter.name,
       addr:  exporter.address,
-      city:  exporter.country,
+      // FIX #2: sender city (not country code)
+      city:  (companyProfile && companyProfile.postal_city) || '—',
       vat:   exporter.vatEu,
       email: (companyProfile && companyProfile.email) || '',
       phone: (companyProfile && companyProfile.phone) || '',
     },
     shipto:   {
-      name:    customer.name,
-      addr:    customer.address,
-      city:    customer.country,
-      country: customer.country,
+      name:    shipTo.name,
+      addr:    shipTo.address,
+      // FIX #1: actual delivery city (not country code)
+      city:    (sto.city || bo.city) || '—',
+      zip:     (sto.zip  || bo.zip)  || '',   // FIX #1: postal code for Box 3 display
+      country: shipTo.country,
     },
     buyer:    { vat: customer.vatEu },
     carrier:  liveDraft.batch_id ? {
@@ -800,17 +1031,89 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       awb:         liveDraft.batch_id,
       service:     'EXPRESS WORLDWIDE',
       incoterm:    liveDraft.incoterm || 'DAP',
-      origin:      exporter.country  || '—',
-      destination: customer.country  || '—',
+      // FIX #2: origin = sender city + country name (e.g. "Warszawa, Poland")
+      origin:      [
+        (companyProfile && companyProfile.postal_city) || null,
+        _cmrCountryName(exporter.country) || null,
+      ].filter(Boolean).join(', ') || '—',
+      destination: (sto.city || bo.city) || shipTo.country || customer.country || '—',
+      // FIX #3: total pieces from SALES packing list (proforma lines sum)
+      pieces:      _cmrTotalPcs > 0 ? _cmrTotalPcs : null,
+      // FIX #4+5: weight_kg / dim_cm from AWB — not yet available in draft data
+      weight_kg:   null,
+      dim_cm:      null,
+      // FIX #6: insurance wording when an insurance service charge exists on the proforma
+      insurance:   _cmrHasInsurance ? _CMR_INSURANCE_TEXT : null,
     } : null,
-    lines: lines.map(l => ({
-      sku:    l.sku,
-      desc:   l.desc,
-      purity: l.purity,
-      qty:    l.qty,
-      origin: l.origin,
-    })),
+    goods_summary: _cmrAggPackingLines.goods_summary || '',
+    // CMR lines: aggregated by item_type ONLY — transport summary, not commercial detail
+    // Each entry: { item_type, qty, net_weight, origin } — 3-6 rows max
+    // Fallback to proforma lines when packing data not yet loaded
+    lines: _cmrAggPackingLines.lines.length > 0
+      ? _cmrAggPackingLines.lines
+      : lines.map(l => ({ item_type: l.desc, qty: l.qty, net_weight: null, origin: l.origin || 'India' })),
   };
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // Packing List PDF data — full design-level detail (146 lines for AWB 9938632830)
+  // Price authority: liveDraft.editable_lines[i].unit_price (proforma sales price, EUR)
+  //   Matched by INDEX — both editable_lines and sortedPackingLines are in pack_sr order.
+  //   editable_lines are created from packing lines at packing-sync time, preserving that order.
+  //   Do NOT match by product_code (= invoice no, same for all lines in one invoice)
+  //   or by design_no alone (design_no can repeat across different bags/colours).
+  //   Index match is O(1) and robust for single-invoice batches.
+  //
+  //   Fallback chain: editable_lines[i].unit_price → unit_price_eur → unit_price (supplier rate)
+  // Currency: from draft (can vary per client — not hardcoded to EUR)
+  const packingListData = (() => {
+    const currency      = liveDraft.currency || 'EUR';
+    const _editableLines = liveDraft.editable_lines || [];
+    const sortedLines   = [...batchPackingLines].sort(
+      (a, b) => (Number(a.pack_sr) || 0) - (Number(b.pack_sr) || 0)
+    );
+    const rows = sortedLines.map((l, i) => {
+      const qty       = Number(l.quantity)   || 0;
+      const _dl       = _editableLines[i];
+      // Sales price authority: editable_lines[i] (index-matched, pack_sr order)
+      const unitPrice = (_dl && Number(_dl.unit_price) > 0)
+        ? Number(_dl.unit_price)
+        : (Number(l.unit_price_eur) || Number(l.unit_price) || 0);
+      return {
+        sr:          l.pack_sr  || (i + 1),
+        ctg:         _cmrItemLabel(l.item_type),          // Pendant / Ring / Earrings
+        client_po:   l.invoice_no      || '',
+        design:      l.design_no       || l.product_code || '—',
+        kt:          (l.metal || '').split('/')[0] || '', // "14KT"
+        col:         (l.metal || '').split('/')[1] || '', // "W", "P", "Y"
+        quality:     l.quality_string  || '',
+        // diamond_weight / color_weight stored since 2026-06-09 schema migration.
+        // Existing rows show null (—) until packing is re-uploaded or force_reextract=True.
+        dia_wt:      Number(l.diamond_weight) > 0 ? Number(l.diamond_weight) : null,
+        col_wt:      Number(l.color_weight)   > 0 ? Number(l.color_weight)   : null,
+        net_wt:      Number(l.net_weight) > 0 ? Number(l.net_weight) : null,
+        qty,
+        unit_price:  unitPrice,
+        total_value: unitPrice * qty,
+        // size: stored from packing XLSX "Size" column since 2026-06-09.
+        // scan_code is a barcode key (EJL/…|sr…|…), NOT the ring/piece size.
+        size:        l.size || '',
+      };
+    });
+    const grand_total = rows.reduce((s, r) => s + r.total_value, 0);
+    const total_qty   = rows.reduce((s, r) => s + r.qty,         0);
+    return {
+      doc_ref:     _previewLabel,
+      invoice_ref: liveDraft.wfirma_invoice_id ? String(liveDraft.wfirma_invoice_id) : null,
+      issued_date: liveDraft.created_at ? (liveDraft.created_at || '').split('T')[0] : '',
+      seller:      cmrPreviewData.seller,
+      shipto:      cmrPreviewData.shipto,
+      buyer:       cmrPreviewData.buyer,
+      currency,
+      rows,
+      grand_total,
+      total_qty,
+    };
+  })();
   // ──────────────────────────────────────────────────────────────────────────
 
   const draftState    = liveDraft.draft_state || liveDraft.status || (draft && draft.status) || '';
@@ -819,6 +1122,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const isBlocked     = draftState === 'post_failed' || draftState === 'convert_blocked';
   const alreadyPosted = draftState === 'posted' || draftState === 'invoiced';
   const canPrint      = !!(liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id));
+  const canApprove    = ['draft', 'editing', 'post_failed'].includes(draftState);
+  const alreadyApproved = draftState === 'approved';
 
   // M5 — Edit mode: enabled when draft is in an editable state
   const canEdit       = ['draft', 'editing', 'post_failed'].includes(draftState);
@@ -850,7 +1155,29 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     const bid = liveDraft.batch_id || (draft && draft.batch_id) || '';
     const cn  = liveDraft.client_name || (draft && draft.client_name) || '';
     if (!bid || !cn) return;
-    window.open(`/api/v1/proforma/${encodeURIComponent(bid)}/${encodeURIComponent(cn)}/document.pdf`, '_blank');
+    // Use anchor-click instead of window.open — never blocked by popup blockers.
+    const url = `/api/v1/proforma/${encodeURIComponent(bid)}/${encodeURIComponent(cn)}/document.pdf`;
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  };
+
+  const handleApprove = () => {
+    if (approving) return;
+    setApproving(true);
+    setApproveError(null);
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    window.PzApi.approveDraft(id, updatedAt)
+      .then(r => {
+        if (r && r.ok) {
+          draftHook && draftHook.reload && draftHook.reload();
+        } else {
+          setApproveError((r && r.error) || 'Approval failed — check backend logs.');
+        }
+      })
+      .catch(e => setApproveError(e.message || 'Network error'))
+      .finally(() => setApproving(false));
   };
 
   const handleDuplicate = () => {
@@ -928,6 +1255,86 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       });
   };
 
+  // PR B — Load from Customer Master
+  const handleApplyCustomerAddress = () => {
+    if (addrApplying) return;
+    setAddrApplying(true);
+    setAddrApplyError(null);
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    window.PzApi.applyCustomerAddress(id, updatedAt)
+      .then(r => {
+        if (r && r.ok) {
+          draftHook && draftHook.reload && draftHook.reload();
+        } else {
+          setAddrApplyError((r && r.error) || 'Could not apply Customer Master address.');
+        }
+      })
+      .catch(e => setAddrApplyError(e.message || 'Network error'))
+      .finally(() => setAddrApplying(false));
+  };
+
+  // PR B — Fetch service-charge suggestions
+  const handleFetchChargeSuggestions = () => {
+    if (chargesLoading) return;
+    setChargesLoading(true);
+    const id = liveDraft.id || (draft && draft.id);
+    window.PzApi.suggestServiceCharges(id)
+      .then(r => {
+        if (r && r.ok !== false) {
+          setChargeSuggestion(r);
+        } else {
+          setChargeSuggestion({ error: (r && r.error) || 'Could not load suggestions.' });
+        }
+      })
+      .catch(e => setChargeSuggestion({ error: e.message || 'Network error' }))
+      .finally(() => setChargesLoading(false));
+  };
+
+  // PR B — Apply individual charge type from suggestion
+  const handleApplyCharge = (type) => {
+    if (chargesApplying) return;
+    setChargesApplying(type);
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    window.PzApi.applyServiceCharges(id, [type], updatedAt)
+      .then(r => {
+        if (r && r.ok !== false) {
+          draftHook && draftHook.reload && draftHook.reload();
+          setChargeSuggestion(null);
+        } else {
+          setChargeSuggestion(prev => ({ ...(prev || {}), applyError: (r && r.error) || 'Apply failed.' }));
+        }
+      })
+      .catch(e => setChargeSuggestion(prev => ({ ...(prev || {}), applyError: e.message || 'Network error' })))
+      .finally(() => setChargesApplying(null));
+  };
+
+  // PR B — Save buyer edit from modal
+  const handleBuyerEditSave = () => {
+    if (buyerEditSaving) return;
+    setBuyerEditSaving(true);
+    setBuyerEditError(null);
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    const patch = { buyer_override: { ...buyerEditFields, _source: 'manual' } };
+    window.PzApi.patchDraft(id, patch, updatedAt)
+      .then(r => {
+        setBuyerEditSaving(false);
+        if (r && r.ok) {
+          setBuyerEditOpen(false);
+          setBuyerEditFields({});
+          draftHook && draftHook.reload && draftHook.reload();
+        } else {
+          setBuyerEditError((r && r.error) || 'Save failed.');
+        }
+      })
+      .catch(e => {
+        setBuyerEditSaving(false);
+        setBuyerEditError(e.message || 'Network error');
+      });
+  };
+
   return (
     <div data-testid="proforma-detail-root" style={{ flex: 1, overflowY: 'auto', background: 'var(--bg)', padding: '20px 24px 60px' }}>
 
@@ -958,18 +1365,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               ✕ Cancel Edit
             </TbBtn>
           </React.Fragment>
-        ) : (
+        ) : canEdit ? (
           <TbBtn
             onClick={handleEnterEdit}
-            disabled={!canEdit}
-            title={canEdit
-              ? 'Edit draft header fields (remarks, currency, payment terms, exchange rate)'
-              : (draftState === 'cancelled' ? 'Draft is cancelled — cannot edit' : 'Draft cannot be edited in current state')}
+            title="Edit draft header fields (remarks, currency, payment terms, exchange rate)"
             data-testid="tb-edit"
           >
             ✎ Edit
           </TbBtn>
-        )}
+        ) : null}
         <TbBtn
           onClick={() => canCancel && setShowCancelModal(true)}
           disabled={!canCancel}
@@ -988,6 +1392,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         >
           {cloning ? '⏳' : '⎘'} {cloning ? 'Cloning…' : 'Duplicate'}
         </TbBtn>
+        <TbBtn
+          onClick={handleApprove}
+          disabled={!canApprove || approving}
+          title={canApprove
+            ? 'Mark this draft as approved — locks lines before posting to wFirma'
+            : (alreadyApproved ? 'Already approved' : 'Cannot approve in current state')}
+          data-testid="tb-approve"
+        >
+          {approving ? '⏳ Approving…' : '✓ Approve'}
+        </TbBtn>
+        {approveError && (
+          <span style={{ color: '#F44', fontSize: 11, maxWidth: 180 }}>{approveError}</span>
+        )}
 
         <TbSep />
 
@@ -1025,13 +1442,6 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           ◫ Preview
         </TbBtn>
         <TbBtn
-          disabled
-          title="CMR print — no backend PDF generation route. Use Preview to view CMR layout."
-          data-testid="tb-cmr"
-        >
-          ≡ CMR
-        </TbBtn>
-        <TbBtn
           onClick={handleDownloadPdf}
           disabled={!canPrint}
           title={canPrint
@@ -1057,6 +1467,22 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           data-testid="tb-generate"
         >
           ⚙ Generate ▾
+        </TbBtn>
+        {/* M8 — DHL Express AWB generation (BACKEND-PENDING per Lesson M).
+            Carrier gate is pending (CARRIER_API_STATUS=pending in production).
+            Button is visible and disabled with an explicit reason per Lesson M §3-4.
+            Enable by setting CARRIER_API_STATUS=shadow|live and wiring the
+            AWB generation modal to POST /api/v1/carrier/{batch_id}/shipment. */}
+        <TbBtn
+          disabled
+          title={
+            'Generate DHL Express AWB — Carrier gate not yet active. ' +
+            'CARRIER_API_STATUS must be "shadow" or "live" to enable AWB generation. ' +
+            'Contact admin to activate the carrier integration.'
+          }
+          data-testid="tb-awb-generate"
+        >
+          ⚡ AWB Generate
         </TbBtn>
 
         <TbSep />
@@ -1121,7 +1547,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             data-testid="party-seller"
           />
 
-          {/* BUYER — authority: draft customer_resolution */}
+          {/* BUYER — authority: draft buyer_override (name/vat_id/address) */}
           <ProformaPartyCard
             title="BUYER"
             name={customer.name}
@@ -1129,21 +1555,127 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             footer={`VAT EU: ${customer.vatEu}`}
             warn={!customer.wfirmaId}
             warnMsg={!customer.wfirmaId ? 'Not mapped to wFirma customer' : null}
-            mappedMsg={customer.wfirmaId ? `✓ Mapped: ${customer.wfirmaName}` : null}
+            mappedMsg={customer.wfirmaId
+              ? (customer.wfirmaName ? `✓ Mapped: ${customer.wfirmaName}` : '✓ Mapped to wFirma')
+              : null}
             data-testid="party-buyer"
           />
 
-          {/* RECIPIENT — same as buyer */}
+          {/* RECIPIENT — ship_to_override if set, otherwise same as buyer */}
           <ProformaPartyCard
             title="RECIPIENT"
-            name={customer.name}
-            lines={[customer.address, customer.country]}
-            footer="Same as Buyer"
+            name={shipTo.name}
+            lines={[shipTo.address, shipTo.country]}
+            footer={liveDraft.ship_to_override && liveDraft.ship_to_override.name
+              ? 'Ship-to override' : 'Same as Buyer'}
             footerMuted
             data-testid="party-recipient"
           />
         </div>
       </div>
+
+      {/* ── Address authority bar ──────────────────────────────────────────── */}
+      {(() => {
+        const addrSource = bo._source === 'customer_master' ? 'customer_master'
+          : (bo.name || bo.street) ? 'manual' : 'none';
+        const addrSourceLabel = addrSource === 'customer_master'
+          ? { text: 'Customer Master', color: 'var(--accent)' }
+          : addrSource === 'manual'
+          ? { text: 'Manual', color: 'var(--text-2)' }
+          : { text: 'Not set', color: 'var(--text-3, #aaa)' };
+        const lockedForEdit = !canEdit;
+        const hasOverride = !!(bo.name || bo.street);
+        return (
+          <div data-testid="address-authority-bar" style={{
+            background: 'var(--card)',
+            borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+            borderBottom: '1px solid var(--border)',
+            padding: '8px 24px',
+            display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+          }}>
+            <span style={{ fontSize: 12, color: 'var(--text-2)', marginRight: 4 }}>Address authority:</span>
+            <span data-testid="addr-source-badge" style={{
+              fontSize: 11, fontWeight: 700, color: addrSourceLabel.color,
+              background: 'var(--bg)', border: '1px solid var(--border)',
+              borderRadius: 4, padding: '1px 7px',
+            }}>{addrSourceLabel.text}</span>
+
+            <button
+              data-testid="btn-load-from-cm"
+              disabled={lockedForEdit || addrApplying}
+              title={lockedForEdit
+                ? `Cannot apply Customer Master: draft is in '${draftState}' state`
+                : 'Apply billing/shipping address from Customer Master to this draft'}
+              onClick={handleApplyCustomerAddress}
+              style={{
+                fontSize: 12, padding: '3px 10px', marginLeft: 4,
+                background: lockedForEdit ? 'var(--bg)' : 'var(--accent)',
+                color: lockedForEdit ? 'var(--text-2)' : '#fff',
+                border: '1px solid var(--border)', borderRadius: 4,
+                cursor: lockedForEdit ? 'not-allowed' : 'pointer',
+                opacity: lockedForEdit ? 0.5 : 1,
+              }}
+            >{addrApplying ? '⏳ Applying…' : '↓ Load from Customer Master'}</button>
+
+            <button
+              data-testid="btn-edit-bill-to"
+              disabled={lockedForEdit}
+              title={lockedForEdit
+                ? `Cannot edit: draft is in '${draftState}' state`
+                : 'Manually edit bill-to fields'}
+              onClick={() => {
+                setBuyerEditFields({
+                  name:    bo.name    || '',
+                  street:  bo.street  || '',
+                  city:    bo.city    || '',
+                  zip:     bo.zip     || '',
+                  country: bo.country || '',
+                  vat_id:  bo.vat_id  || '',
+                });
+                setBuyerEditError(null);
+                setBuyerEditOpen(true);
+              }}
+              style={{
+                fontSize: 12, padding: '3px 10px',
+                background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
+                border: '1px solid var(--border)', borderRadius: 4,
+                cursor: lockedForEdit ? 'not-allowed' : 'pointer',
+                opacity: lockedForEdit ? 0.5 : 1,
+              }}
+            >✎ Edit Bill-to</button>
+
+            {hasOverride && (
+              <button
+                data-testid="btn-clear-buyer-override"
+                disabled={lockedForEdit}
+                title={lockedForEdit
+                  ? `Cannot clear: draft is in '${draftState}' state`
+                  : 'Clear buyer address override — revert to draft client name only'}
+                onClick={() => {
+                  if (lockedForEdit) return;
+                  const id = liveDraft.id || (draft && draft.id);
+                  const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+                  window.PzApi.patchDraft(id, { buyer_override: {} }, updatedAt)
+                    .then(r => r && r.ok && draftHook && draftHook.reload && draftHook.reload());
+                }}
+                style={{
+                  fontSize: 12, padding: '3px 10px',
+                  background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
+                  border: '1px solid var(--border)', borderRadius: 4,
+                  cursor: lockedForEdit ? 'not-allowed' : 'pointer',
+                  opacity: lockedForEdit ? 0.5 : 1,
+                }}
+              >✕ Clear override</button>
+            )}
+
+            {addrApplyError && (
+              <span data-testid="addr-apply-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginLeft: 4 }}>
+                {addrApplyError}
+              </span>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ── Tab strip ──────────────────────────────────────────────────────── */}
       <div style={{
@@ -1174,18 +1706,36 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         boxShadow: '0 4px 12px var(--shadow)',
       }}>
         {activeTab === 'overview' && (
-          <ProformaOverviewTab
-            detail={detail}
-            lines={lines}
-            fxRate={fxRate}
-            vatResolution={vatResolution}
-            blockingReasons={blockingReasons}
-            exportBlockers={exportBlockers}
-            editMode={editMode}
-            editFields={editFields}
-            onEditField={(k, v) => setEditFields(prev => ({ ...prev, [k]: v }))}
-            editError={editError}
-          />
+          <React.Fragment>
+            <ProformaOverviewTab
+              detail={detail}
+              lines={lines}
+              fxRate={fxRate}
+              vatResolution={vatResolution}
+              blockingReasons={blockingReasons}
+              exportBlockers={exportBlockers}
+              editMode={editMode}
+              editFields={editFields}
+              onEditField={(k, v) => setEditFields(prev => ({ ...prev, [k]: v }))}
+              editError={editError}
+            />
+            <ServiceChargesPanel
+              charges={liveDraft.service_charges || []}
+              canEdit={canEdit}
+              draftState={draftState}
+              suggestion={chargeSuggestion}
+              chargesLoading={chargesLoading}
+              chargesApplying={chargesApplying}
+              onFetchSuggestions={handleFetchChargeSuggestions}
+              onApplyCharge={handleApplyCharge}
+              onDismissSuggestion={() => setChargeSuggestion(null)}
+              onDeleteCharge={(chargeId) => {
+                const id = liveDraft.id || (draft && draft.id);
+                window.PzApi.deleteServiceCharge(id, chargeId)
+                  .then(r => r && r.ok && draftHook && draftHook.reload && draftHook.reload());
+              }}
+            />
+          </React.Fragment>
         )}
         {activeTab === 'lines' && <ProformaLinesTab lines={lines} />}
         {activeTab === 'customer_mapping' && (
@@ -1232,6 +1782,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         <ProformaPreviewModal
           docData={previewDocData}
           cmrData={cmrPreviewData}
+          packingData={packingListData}
           variant={previewVariant}
           onVariantChange={setPreviewVariant}
           docType={previewDocType}
@@ -1269,6 +1820,232 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           }}
         />
       )}
+      {buyerEditOpen && (
+        <ProformaBuyerEditModal
+          fields={buyerEditFields}
+          saving={buyerEditSaving}
+          error={buyerEditError}
+          onChange={(k, v) => setBuyerEditFields(prev => ({ ...prev, [k]: v }))}
+          onSave={handleBuyerEditSave}
+          onClose={() => { setBuyerEditOpen(false); setBuyerEditError(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── PR B — Service charges panel ────────────────────────────────────────────
+function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, chargesLoading, chargesApplying, onFetchSuggestions, onApplyCharge, onDismissSuggestion, onDeleteCharge }) {
+  const fmtAmt = (amt, cur) => `${Number(amt).toFixed(2)} ${cur || ''}`;
+  const existingTypes = (charges || []).map(c => (c.charge_type || '').toLowerCase());
+
+  return (
+    <div data-testid="service-charges-panel" style={{ marginTop: 24, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Service Charges</span>
+        {canEdit && (
+          <button
+            data-testid="btn-suggest-charges"
+            disabled={chargesLoading}
+            title="Load freight and insurance suggestions from Customer Master"
+            onClick={onFetchSuggestions}
+            style={{
+              fontSize: 12, padding: '2px 10px',
+              background: 'var(--bg)', border: '1px solid var(--border)',
+              borderRadius: 4, cursor: chargesLoading ? 'wait' : 'pointer',
+              color: 'var(--text-2)',
+            }}
+          >{chargesLoading ? '⏳ Loading…' : '↓ Suggest from Customer Master'}</button>
+        )}
+        {!canEdit && (
+          <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
+            (read-only — draft is in '{draftState}' state)
+          </span>
+        )}
+      </div>
+
+      {/* Existing charges */}
+      {charges.length === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>No service charges added.</div>
+      )}
+      {charges.map(c => (
+        <div key={c.charge_id} data-testid={`charge-row-${c.charge_type}`} style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '6px 10px', marginBottom: 4,
+          background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6,
+        }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', width: 80 }}>
+            {(c.charge_type || '').charAt(0).toUpperCase() + (c.charge_type || '').slice(1)}
+          </span>
+          <span style={{ fontSize: 13, color: 'var(--text)', flex: 1 }}>
+            {fmtAmt(c.amount, c.currency)}
+          </span>
+          {c.label && (
+            <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{c.label}</span>
+          )}
+          {canEdit && (
+            <button
+              data-testid={`btn-delete-charge-${c.charge_type}`}
+              title={`Remove ${c.charge_type} charge`}
+              onClick={() => onDeleteCharge && onDeleteCharge(c.charge_id)}
+              style={{
+                fontSize: 11, padding: '1px 7px',
+                background: 'none', border: '1px solid var(--border)',
+                borderRadius: 4, cursor: 'pointer', color: 'var(--text-2)',
+              }}
+            >✕</button>
+          )}
+        </div>
+      ))}
+
+      {/* Suggestion panel */}
+      {suggestion && !suggestion.error && (
+        <div data-testid="charge-suggestion-panel" style={{
+          marginTop: 8, padding: '10px 12px',
+          background: 'var(--bg)', border: '1px solid var(--border)',
+          borderRadius: 6,
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text-2)' }}>
+            Suggestions (Customer Master, {suggestion.draft_currency || '—'}):
+          </div>
+          {suggestion.applyError && (
+            <div data-testid="charge-apply-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginBottom: 6 }}>
+              {suggestion.applyError}
+            </div>
+          )}
+          {['freight', 'insurance'].map(type => {
+            const s = suggestion[type] || {};
+            const alreadyApplied = s.already_applied || existingTypes.includes(type);
+            const blocked = !s.available || s.blocked_reason;
+            return (
+              <div key={type} data-testid={`suggestion-row-${type}`} style={{
+                display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4,
+              }}>
+                <span style={{ width: 70, fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>
+                  {type.charAt(0).toUpperCase() + type.slice(1)}
+                </span>
+                {blocked ? (
+                  <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                    {s.blocked_reason || 'Not available'}
+                  </span>
+                ) : alreadyApplied ? (
+                  <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                    Already applied ({fmtAmt(s.amount, s.currency)})
+                  </span>
+                ) : (
+                  <React.Fragment>
+                    <span style={{ fontSize: 12, color: 'var(--text)' }}>
+                      {fmtAmt(s.amount, s.currency)}
+                      {s.label ? ` — ${s.label}` : ''}
+                    </span>
+                    {canEdit && (
+                      <button
+                        data-testid={`btn-apply-charge-${type}`}
+                        disabled={!!chargesApplying}
+                        title={`Add ${type} charge to this draft`}
+                        onClick={() => onApplyCharge(type)}
+                        style={{
+                          fontSize: 12, padding: '2px 10px',
+                          background: 'var(--accent)', color: '#fff',
+                          border: 'none', borderRadius: 4,
+                          cursor: chargesApplying ? 'wait' : 'pointer',
+                          opacity: chargesApplying ? 0.6 : 1,
+                        }}
+                      >{chargesApplying === type ? '⏳' : `Apply ${type.charAt(0).toUpperCase() + type.slice(1)}`}</button>
+                    )}
+                  </React.Fragment>
+                )}
+              </div>
+            );
+          })}
+          <button
+            data-testid="btn-close-suggestions"
+            onClick={() => onDismissSuggestion && onDismissSuggestion()}
+            style={{
+              fontSize: 11, padding: '1px 7px', marginTop: 4,
+              background: 'none', border: '1px solid var(--border)',
+              borderRadius: 4, cursor: 'pointer', color: 'var(--text-2)',
+            }}
+          >✕ Dismiss</button>
+        </div>
+      )}
+      {suggestion && suggestion.error && (
+        <div data-testid="charge-suggestion-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginTop: 6 }}>
+          {suggestion.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── PR B — Buyer edit modal ───────────────────────────────────────────────────
+function ProformaBuyerEditModal({ fields, saving, error, onChange, onSave, onClose }) {
+  const F = (label, key, placeholder) => (
+    <div style={{ marginBottom: 10 }}>
+      <label style={{ display: 'block', fontSize: 12, color: 'var(--text-2)', marginBottom: 3 }}>{label}</label>
+      <input
+        data-testid={`buyer-edit-${key}`}
+        value={fields[key] || ''}
+        onChange={e => onChange(key, e.target.value)}
+        placeholder={placeholder || ''}
+        style={{
+          width: '100%', padding: '6px 8px', fontSize: 13,
+          background: 'var(--bg)', border: '1px solid var(--border)',
+          borderRadius: 4, color: 'var(--text)', boxSizing: 'border-box',
+          fontFamily: 'inherit',
+        }}
+      />
+    </div>
+  );
+  return (
+    <div data-testid="buyer-edit-modal" style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200,
+    }}>
+      <div style={{
+        background: 'var(--card)', border: '1px solid var(--border)',
+        borderRadius: 10, padding: 24, width: 360, maxWidth: '90vw',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Edit Bill-to Address</div>
+        {F('Company name', 'name', 'e.g. UAB Tomas Gold')}
+        {F('Street', 'street', 'e.g. Gedimino pr. 1')}
+        {F('City', 'city', 'e.g. Vilnius')}
+        {F('Postal code', 'zip', 'e.g. LT-01103')}
+        {F('Country code', 'country', 'e.g. LT')}
+        {F('VAT EU number', 'vat_id', 'e.g. LT123456789')}
+        {error && (
+          <div data-testid="buyer-edit-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginBottom: 8 }}>
+            {error}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button
+            data-testid="btn-buyer-edit-cancel"
+            onClick={onClose}
+            disabled={saving}
+            style={{
+              padding: '6px 14px', fontSize: 13,
+              background: 'var(--bg)', border: '1px solid var(--border)',
+              borderRadius: 4, cursor: 'pointer', color: 'var(--text)',
+              fontFamily: 'inherit',
+            }}
+          >Cancel</button>
+          <button
+            data-testid="btn-buyer-edit-save"
+            onClick={onSave}
+            disabled={saving}
+            style={{
+              padding: '6px 14px', fontSize: 13,
+              background: 'var(--accent)', color: '#fff',
+              border: 'none', borderRadius: 4,
+              cursor: saving ? 'wait' : 'pointer',
+              opacity: saving ? 0.7 : 1,
+              fontFamily: 'inherit',
+            }}
+          >{saving ? '⏳ Saving…' : '✓ Save'}</button>
+        </div>
+      </div>
     </div>
   );
 }

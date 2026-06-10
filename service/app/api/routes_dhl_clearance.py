@@ -47,6 +47,24 @@ from ..config.email_routing import (
     is_dsk_source,
 )
 
+# ── Shared grammar import (Phase 2C) ────────────────────────────────────────
+# Import shared grammar authority so the packing renderer's local PL
+# dictionaries are verified at import time against the single source of
+# truth.  The renderer keeps its composite dict-of-dicts structure (EN + PL
+# together) and key format ("14KT GOLD" vs "14KT"), but import-time parity
+# assertions catch any PL-side grammar drift.
+#
+# Path fix (Lesson J): use settings.engine_dir instead of parents[3].
+#   dev:  parents[3] = C:\PZ-verify (repo root) ✓ but settings.engine_dir is also correct
+#   prod: parents[3] = C:\ (system root) ✗ — settings.engine_dir = C:\PZ\engine ✓
+_grammar_engine_dir = str(settings.engine_dir)
+if _grammar_engine_dir not in sys.path:
+    sys.path.insert(0, _grammar_engine_dir)
+from description_grammar import (  # noqa: E402
+    ITEM_TYPE_PL,
+    METAL_PREPOSITIONAL,
+)
+
 log      = get_logger(__name__)
 router   = APIRouter(prefix="/api/v1/dhl", tags=["dhl-clearance"])
 _auth    = Depends(require_api_key)
@@ -722,6 +740,44 @@ _GLOBAL_METAL_TABLE: Dict[str, Dict[str, str]] = {
 _KARAT_FINENESS: Dict[int, int] = {
     9: 375, 10: 417, 14: 585, 18: 750, 21: 875, 22: 916, 24: 999,
 }
+
+
+# ── Import-time grammar parity assertions (Phase 2C) ────────────────────────
+# Verify that the packing renderer's local PL values match the shared grammar
+# authority.  The renderer uses composite dict-of-dicts with a different key
+# format (e.g. "14KT GOLD" vs "14KT"), so we compare VALUES, not keys.
+#
+# TYPE TABLE: every PL value in _GLOBAL_TYPE_TABLE must exist in ITEM_TYPE_PL.
+# Note: CHAIN maps to "Łańcuszek" which IS in ITEM_TYPE_PL. The shared grammar
+# has more keys (BROOCH, SET, ANKLET, STUD, HOOP) not present here — that's
+# fine, the renderer only handles the subset it sees from packing lines.
+_SHARED_TYPE_PL_VALUES = set(ITEM_TYPE_PL.values())
+_RENDERER_TYPE_PL_VALUES = {v["pl"] for v in _GLOBAL_TYPE_TABLE.values()}
+_TYPE_PL_DRIFT = _RENDERER_TYPE_PL_VALUES - _SHARED_TYPE_PL_VALUES
+if _TYPE_PL_DRIFT:
+    raise ImportError(
+        f"routes_dhl_clearance: _GLOBAL_TYPE_TABLE PL values drifted from "
+        f"shared grammar ITEM_TYPE_PL: {_TYPE_PL_DRIFT!r}. "
+        f"Update description_grammar.py or fix the local table."
+    )
+
+# METAL TABLE: every PL value in _GLOBAL_METAL_TABLE must exist in
+# METAL_PREPOSITIONAL.  Key format differs ("14KT GOLD" here vs "14KT" in
+# shared), so compare value sets.
+# Note: "9 GOLD" is a normalisation alias that maps to the same PL as "9KT GOLD".
+_SHARED_METAL_PL_VALUES = set(METAL_PREPOSITIONAL.values())
+_RENDERER_METAL_PL_VALUES = {v["pl"] for v in _GLOBAL_METAL_TABLE.values()}
+_METAL_PL_DRIFT = _RENDERER_METAL_PL_VALUES - _SHARED_METAL_PL_VALUES
+if _METAL_PL_DRIFT:
+    raise ImportError(
+        f"routes_dhl_clearance: _GLOBAL_METAL_TABLE PL values drifted from "
+        f"shared grammar METAL_PREPOSITIONAL: {_METAL_PL_DRIFT!r}. "
+        f"Update description_grammar.py or fix the local table."
+    )
+
+# Clean up module namespace
+del _SHARED_TYPE_PL_VALUES, _RENDERER_TYPE_PL_VALUES, _TYPE_PL_DRIFT
+del _SHARED_METAL_PL_VALUES, _RENDERER_METAL_PL_VALUES, _METAL_PL_DRIFT
 
 
 def _normalise_type_key(item_type: str) -> str:
@@ -1424,8 +1480,11 @@ def _reconcile_rows_with_audit_totals(audit: dict) -> dict:
     Pure / deterministic / side-effect free.  Returns a dict::
 
         {
-          "ok":            bool,
-          "warnings":      list[str],
+          "ok":            bool,   # strict: all checks pass (backward-compat)
+          "ok_hard":       bool,   # generation gate: hard failures only
+          "hard_warnings": list[str],
+          "soft_warnings": list[str],
+          "warnings":      list[str],  # = hard + soft
           "details": {
             "row_count":              int,
             "row_invoice_numbers":    list[str],
@@ -1441,9 +1500,17 @@ def _reconcile_rows_with_audit_totals(audit: dict) -> dict:
           }
         }
 
-    The caller decides whether ``ok=False`` is a hard block (route returns
-    HTTP 422) or just a flag.  All checks are tolerant of empty totals
-    (drift defaults to 0 when the audit totals are absent / zero).
+    Hard blocks (ok_hard=False):
+      - no rows projected
+      - missing invoice authority (invoices present in audit but absent from rows)
+      - FOB drift above $1 tolerance
+      - negative line_total in any row
+      - zero or negative quantity in any row with an explicit quantity field
+
+    Advisory only (ok=False, ok_hard=True):
+      - quantity drift when FOB is within tolerance
+        (parser divergence between invoice_intake_parser and pz_import_processor
+        produces ±2–3 unit noise; FOB is the financial authority)
     """
     import re as _re
 
@@ -1455,22 +1522,35 @@ def _reconcile_rows_with_audit_totals(audit: dict) -> dict:
     invoice_totals = audit.get("invoice_totals") or {}
     audit_names    = audit.get("invoice_names") or []
 
-    # Row-side aggregates
+    # Row-side aggregates + per-row validity scan
     row_inv_set: set = set()
     row_fob_sum = 0.0
     row_qty_tot = 0
-    for r in rows:
+    neg_value_indices: list[int] = []
+    invalid_qty_indices: list[int] = []
+    for i, r in enumerate(rows):
         inv = str(r.get("invoice_number") or r.get("invoice_no") or "").strip()
         if inv:
             row_inv_set.add(inv)
-        row_fob_sum += _safe_float(r.get("line_total")
-                                    or r.get("amount")
-                                    or r.get("total"))
-        try:
-            row_qty_tot += int(round(_safe_float(r.get("quantity")
-                                                  or r.get("qty"))))
-        except Exception:
-            pass
+        lt = _safe_float(r.get("line_total") or r.get("amount") or r.get("total"))
+        row_fob_sum += lt
+        if lt < 0:
+            neg_value_indices.append(i)
+        # Explicit key check: `quantity or qty` treats 0 as missing (falsy).
+        if "quantity" in r:
+            raw_qty = r["quantity"]
+        elif "qty" in r:
+            raw_qty = r["qty"]
+        else:
+            raw_qty = None
+        if raw_qty is not None:
+            try:
+                qty_val = int(round(float(raw_qty)))
+                row_qty_tot += qty_val
+                if qty_val <= 0:
+                    invalid_qty_indices.append(i)
+            except Exception:
+                pass
 
     # Audit-side aggregates
     audit_fob = _safe_float(invoice_totals.get("total_fob_usd"))
@@ -1515,29 +1595,63 @@ def _reconcile_rows_with_audit_totals(audit: dict) -> dict:
     fob_drift = round(row_fob_sum - audit_fob, 2) if audit_fob else 0.0
     qty_drift = (row_qty_tot - audit_qty) if audit_qty else 0
 
-    warnings: list[str] = []
-    # Tolerances: ±$1 FOB, ±0 units, exact invoice set.
+    hard_warnings: list[str] = []
+    soft_warnings: list[str] = []
+
+    # Hard failure — no rows: self-sufficient guard (callers also check, but
+    # the function must not silently pass an empty row set).
+    if not rows:
+        hard_warnings.append(
+            "no_rows: no projected per-line rows available; "
+            "generating from aggregate totals would lose per-line detail"
+        )
+
+    # Hard failure — negative line values or zero/negative quantities.
+    if neg_value_indices:
+        hard_warnings.append(
+            f"negative_line_total: rows at index {neg_value_indices} "
+            "have negative FOB value — credit notes or data corruption"
+        )
+    if invalid_qty_indices:
+        hard_warnings.append(
+            f"zero_or_negative_qty: rows at index {invalid_qty_indices} "
+            "have zero or negative quantity — invalid for a customs line"
+        )
+
+    # Hard failures — financial integrity or missing invoice coverage.
     if audit_fob and abs(fob_drift) > 1.00:
-        warnings.append(
+        hard_warnings.append(
             f"fob_total_drift: row sum USD {row_fob_sum:,.2f} differs from "
             f"audit total USD {audit_fob:,.2f} by USD {fob_drift:+,.2f}"
         )
-    if audit_qty and qty_drift != 0:
-        warnings.append(
-            f"qty_total_drift: row qty {row_qty_tot} differs from "
-            f"audit total {audit_qty} by {qty_drift:+d}"
-        )
     if missing_in_rows:
-        warnings.append(
+        hard_warnings.append(
             "invoices_missing_in_rows: "
             + ", ".join(missing_in_rows)
             + " present in invoice_names but not in projected rows"
         )
 
+    # Soft advisory — qty drift when FOB is exact.
+    # invoice_intake_parser and pz_import_processor parse the same PDFs via
+    # different code paths and can produce ±2–3 unit counting differences
+    # (e.g. PRS unit-vs-pair convention).  FOB is the financial authority for
+    # the customs document; exact FOB with minor qty noise is not a document
+    # integrity risk.  Callers that need the strict check should inspect
+    # ok_strict or soft_warnings directly.
+    if audit_qty and qty_drift != 0:
+        soft_warnings.append(
+            f"qty_total_drift: row qty {row_qty_tot} differs from "
+            f"audit total {audit_qty} by {qty_drift:+d}"
+        )
+
+    warnings = hard_warnings + soft_warnings
     return {
-        "ok":       not warnings,
-        "warnings": warnings,
-        "details":  {
+        "ok":            not warnings,       # strict: all checks pass (backward-compat)
+        "ok_hard":       not hard_warnings,  # generation gate: FOB + missing only
+        "hard_warnings": hard_warnings,
+        "soft_warnings": soft_warnings,
+        "warnings":      warnings,
+        "details":       {
             "row_count":           len(rows),
             "row_invoice_numbers": sorted(row_inv_set),
             "row_fob_sum":         round(row_fob_sum, 2),
@@ -3014,12 +3128,15 @@ async def generate_description(
             },
         )
 
-    # PR-206: Reconcile projected rows against aggregate audit totals.
-    # Hard block when the row set is materially inconsistent — missing
-    # invoices, FOB drift > $1, or qty mismatch — so an obviously-wrong
-    # PDF is never produced.
+    # PR-206 / PR-547: Reconcile projected rows against aggregate audit totals.
+    # Hard block on FOB drift > $1 or missing invoices (financial integrity).
+    # Qty drift is advisory-only when FOB is exact — parser divergence between
+    # invoice_intake_parser and pz_import_processor produces ±2-3 unit noise.
     _recon = _reconcile_rows_with_audit_totals(audit)
-    if not _recon["ok"]:
+    if _recon.get("soft_warnings"):
+        log.info("[%s] generate_description: qty advisory (non-blocking): %s",
+                 batch_id, _recon["soft_warnings"])
+    if not _recon["ok_hard"]:
         raise HTTPException(
             status_code=422,
             detail={
@@ -3029,7 +3146,7 @@ async def generate_description(
                             "audit.json. Generating a customs document with "
                             "this mismatch would be unsafe.",
                 "code":     "rows_audit_reconciliation_failed",
-                "warnings": _recon["warnings"],
+                "warnings": _recon["hard_warnings"],
                 "details":  _recon["details"],
                 "hint":     "Re-process the batch (Reparse all) or attach a "
                             "fresh PZ calculation XLSX, then retry.",
@@ -3337,7 +3454,10 @@ async def generate_customs_package(
         )
 
     _recon = _reconcile_rows_with_audit_totals(audit)
-    if not _recon["ok"]:
+    if _recon.get("soft_warnings"):
+        log.info("[%s] generate_customs_package: qty advisory (non-blocking): %s",
+                 batch_id, _recon["soft_warnings"])
+    if not _recon["ok_hard"]:
         raise HTTPException(
             status_code=422,
             detail={
@@ -3345,7 +3465,7 @@ async def generate_customs_package(
                 "error":    "Projected rows do not reconcile with aggregate "
                             "invoice_totals declared in audit.json.",
                 "code":     "rows_audit_reconciliation_failed",
-                "warnings": _recon["warnings"],
+                "warnings": _recon["hard_warnings"],
                 "details":  _recon["details"],
                 "hint":     "Re-process the batch or attach a fresh PZ XLSX.",
             },
