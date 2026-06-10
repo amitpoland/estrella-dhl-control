@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-10 (PR #548 Proforma PR B Customer/Service Authority merged + deployed; proforma-contract-lock campaign PR B completed).
 
-**Last-run-at:** 2026-06-10 (PR #548 merged as 74bee9d — proforma PR B customer address/service charges authority; production deployed; 7-agent gate passed; GATE 6 verified). Origin/main HEAD: **74bee9d** (feat(proforma): PR B — Customer/service authority (#548)). GATE 2: **2/3 open PRs** (#522, #498 — PR #548 merged, #549 closed redundant). TEST BASELINE: 160/160 PZ regression + 412/412 carrier suite. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
+**Last-run-at:** 2026-06-10 (PR #548 merged as 74bee9d — proforma PR B customer address/service charges authority; production deployed; 7-agent gate passed; GATE 6 verified). Origin/main HEAD: **74bee9d** (feat(proforma): PR B — Customer/service authority (#548)). GATE 2: **3/3 open PRs** (#551, #522, #498 — PR #548 merged, #549 closed redundant, PR #551 opened). TEST BASELINE: 160/160 PZ regression + 412/412 carrier suite. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
 
 ---
 
@@ -4799,7 +4799,7 @@ Group D — Tests (3 new files):
 
 **PR #549 resolution**: PR #549 (`fix/client-detail-mode-enums`) closed as redundant — enum fix already included in PR #548.
 
-**GATE 2 status**: 2/3 open PRs remaining (#522, #498) after PR #548 merge and PR #549 close.
+**GATE 2 status**: 3/3 open PRs (#551, #522, #498) after PR #551 opened (was 2/3 after PR #548 merge and PR #549 close).
 
 **GATE 6 Browser Verification (2026-06-10, PASS)**:
 - PROF 123/2026 (`posted` state, draft_id=24): Address authority bar shows "Manual" badge ✓; Load/Edit/Clear buttons disabled with read-only notice ✓; freight 89.00 EUR (DHL Freight) + insurance 275.23 EUR (Future Generali), no duplicate lines ✓
@@ -4808,6 +4808,28 @@ Group D — Tests (3 new files):
 - All 6 required verification items: PASS
 
 **Scorecard**: `.claude/memory/scorecards/2026-06-10-pr548-proforma-pr-b-customer-authority.md` (6 EXEMPLARY, 1 ACCEPTABLE)
+
+## PR #551 — V2 REST Props Forwarding Fix (2026-06-10, OPENED)
+
+**Date**: 2026-06-10 (PR opened: https://github.com/amitpoland/estrella-dhl-control/pull/551)
+**PR #551** — `fix(v2) — shared V2 primitives Btn, Card, Input in service/app/static/v2/components.jsx now forward ...rest props`
+**Branch**: `fix/v2-btn-testid-forwarding`
+**Commit**: `3b66ddf`
+**Scope**: Frontend-only fix for shared V2 primitives in `service/app/static/v2/components.jsx`. Btn, Card, Input components now forward `...rest` props (data-testid, title, aria-*) to their root DOM elements, mirroring the existing v2/dashboard-shared.js Btn contract.
+
+**Root cause per Lesson I**: Workflow class = "shared V2 primitives swallowing rest props." Production-confirmed missing selectors (client-detail.jsx cd-save / cd-confirm-save absent from DOM 2026-06-10). Also restores master-page.jsx Lesson M disabled-reason title tooltips that were silently dropped.
+
+**GATE 1 evidence**:
+- reviewer-challenge: APPROVE-WITH-NOTES (MEDIUM disposed inline — zero non-DOM caller props, runtime harness clean)
+- frontend-flow-reviewer: APPROVE
+- GATE 6 browser verification: real-browser harness (React 18 + Babel standalone, same script-tag form as v2/index.html) 9/9 DOM checks PASS, 3-layer cache protocol satisfied
+- Targeted tests: 58 passed; V2 wiring suites: 215 passed with 1 setup ERROR (test_v2_prod_unauth_redirects_to_login) proven pre-existing via stash-baseline rerun
+
+**Tests**: New pinning suite `service/tests/test_v2_components_rest_prop_forwarding.py` (11 tests)
+
+**RULE 6 scorecard visibility**: `.claude/memory/scorecards/2026-06-10-pr551-v2-rest-prop-forwarding.md` produced by agent-performance-observer on 2026-06-10 and verified on disk by orchestrator (Lesson C). Verdicts: frontend-flow-reviewer EXEMPLARY, reviewer-challenge ACCEPTABLE, no NEEDS-TUNING/UNRELIABLE (no GATE 4 disposition required).
+
+**GATE 2 status after open**: 3/3 open PRs (#551, #522, #498) — at limit; next implementation PR requires clearing one first.
 
 ---
 
@@ -5339,7 +5361,7 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 1. **Issue #529 price_source label fix** — target: merge Issue #529 fix to enable next high-priority work — gating: proforma authority GATE 4 disposition required (OQ-NEW-14)
 2. **EJL/26-27/244 quantity reconciliation** — target: quantity reconciliation before PZ generation (pz_documents=0 requires resolution) — gating: operator EJL quantity reconciliation process (OQ-NEW-13)
-3. **Proforma contract-lock campaign PR C initiation** — target: remaining proforma contract-lock scope after PR B completion — gating: GATE 2 slot available (2/3 open PRs)
+3. **Proforma contract-lock campaign PR C initiation** — target: remaining proforma contract-lock scope after PR B completion — gating: GATE 2 slot available (3/3 open PRs, requires clearing one first)
 
 **DEPLOY-AGENT-REGISTRATION-REPAIR COMPLETE (2026-05-25, SHA 4366b0f)**: All 7 deploy agent files now have valid YAML frontmatter and are registered as dispatchable subagents. Names: deploy-lead-coordinator, deploy-git-diff-reviewer, deploy-backend-impact-reviewer, deploy-persistence-storage-reviewer, deploy-security-reviewer, deploy-qa-reviewer, deploy-release-manager. Tools: Read, Grep, Glob (review-only). Takes effect in next fresh Claude Code session (Lesson B). OQ6 resolved — see below.
 
