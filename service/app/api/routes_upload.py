@@ -560,8 +560,9 @@ async def upload_sad(
     sad:      UploadFile,
 ) -> JSONResponse:
     """
-    Attach a SAD/ZC429 PDF to an existing draft shipment.
-    Transitions status from 'draft' → 'ready'.
+    Attach or replace a SAD/ZC429 PDF for a shipment.
+    Transitions status from 'draft'/'in_preparation' → 'ready'.
+    Re-upload is also allowed for 'ready' and 'blocked' batches (file restore / SAD replacement).
     """
     if "/" in batch_id or ".." in batch_id:
         raise HTTPException(status_code=400, detail="Invalid batch_id.")
@@ -571,10 +572,11 @@ async def upload_sad(
     audit      = _read_audit(output_dir)
 
     current_status = audit.get("status", "")
-    if current_status not in ("draft", "in_preparation"):
+    _TERMINAL = {"completed", "exported", "closed", "pz_generated", "wfirma_exported"}
+    if current_status in _TERMINAL:
         raise HTTPException(
             status_code=409,
-            detail=f"SAD can only be added to a draft shipment. Current status: {current_status}",
+            detail=f"SAD cannot be changed on a closed shipment. Current status: {current_status}",
         )
 
     # Save SAD file
@@ -583,10 +585,11 @@ async def upload_sad(
     sad_name = _safe_name(sad.filename or "sad.pdf")
     sad_path = sad_dir / sad_name
     await _save(sad, sad_path)
-    log.info("[%s] SAD uploaded: %s", batch_id, sad_name)
+    log.info("[%s] SAD uploaded: %s (was status=%s)", batch_id, sad_name, current_status)
 
-    # Update audit.json
-    audit["status"]           = "ready"
+    # Update audit.json — only advance status for draft batches; keep existing status otherwise
+    if current_status in ("draft", "in_preparation"):
+        audit["status"] = "ready"
     audit["inputs"]["zc429"]  = sad_name
     audit["source"]           = "dashboard_upload"
     write_json_atomic(output_dir / "audit.json", audit)
@@ -608,11 +611,14 @@ async def upload_sad(
     except Exception as _e:
         log.warning("[%s] document_db SAD register failed (non-fatal): %s", batch_id, _e)
 
+    new_status = audit.get("status", current_status)
     return JSONResponse({
-        "status":   "ready",
+        "status":   new_status,
         "batch_id": batch_id,
         "sad":      sad_name,
-        "message":  "SAD uploaded. Shipment is ready for processing.",
+        "message":  "SAD uploaded. Shipment is ready for processing."
+                    if new_status == "ready"
+                    else f"SAD replaced. Shipment status: {new_status}.",
     })
 
 
