@@ -4833,7 +4833,7 @@ Group D — Tests (3 new files):
 
 ---
 
-## Branch `fix/proforma-warehouse-gate-pz-mapping` — 4 Code Fixes Committed (2026-06-11)
+## Branch `fix/proforma-warehouse-gate-pz-mapping` — 4 Code Fixes + Full Verification (2026-06-11/12)
 
 **Date**: 2026-06-11 (committed SHA `00078b5` to branch `fix/proforma-warehouse-gate-pz-mapping`)
 **Status**: COMMITTED — PR BLOCKED by GATE 2 (4 open PRs: #558, #556, #522, #498). Cannot open until one of #556/#522/#498 closes.
@@ -4849,6 +4849,18 @@ Group D — Tests (3 new files):
 4. **Fix 4**: Structurally already done — `sales_matcher_summary` in API response exposes `designs_ambiguous` and `designs_unresolved` as named gaps.
 
 **New tests**: 7 total — `test_proforma_purchase_transit_bypass.py` (5 new: 3 Fix 1 + 2 Fix 3) + `test_sales_packing_matcher.py` (2 new: Fix 2 metal disambiguation + triple-also-ambiguous fallback).
+
+**Verification run (2026-06-12)**:
+- Targeted 25/25 PASS ✓
+- PZ baseline `test_pz_*.py`: 221 PASS (1 pre-existing failure `test_save_json_csv_ui_round_trip` — documented in baseline) ✓
+- Carrier baseline `test_carrier_*.py`: 412 PASS ✓
+- Branch diff: 6 files only (routes_packing.py, routes_proforma.py, sales_packing_matcher.py, 2 test files, PROJECT_STATE.md) — no forbidden files ✓
+- No PR #553 conflict (that commit 5e7f95b predates this branch base e44c937) ✓
+- 2 pre-existing failures excluded: `test_accounting_hub_v2_contract::test_no_backend_files_changed` (atlas-v2 scope guard, expects diff=empty, passes after merge) and `test_agency_flow_fix::test_dhl_email_guard_skipped_for_agency_path` (hardcoded Mac path `/Users/amitgupta/...`, pre-existing on origin/main) ✓
+
+**Branch pushed**: `origin/fix/proforma-warehouse-gate-pz-mapping` — PR-ready when GATE 2 slot opens.
+
+**PR status**: BLOCKED — GATE 2 at 4/4 (3 implementation #556/#522/#498 + 1 chore #558). PR cannot open until one of #556/#522/#498 closes.
 
 ---
 
