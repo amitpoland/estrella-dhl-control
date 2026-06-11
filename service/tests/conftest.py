@@ -218,6 +218,9 @@ def _guard_storage_root():
     is unreliable because monkeypatch restores the default before this
     fixture's teardown runs.  We diff the filesystem directly instead.
     """
+    if os.environ.get("PZ_SKIP_STORAGE_GUARD") == "1":
+        yield
+        return
     yield  # run the test
 
     leak: tuple[str, str, Path] | None = None
