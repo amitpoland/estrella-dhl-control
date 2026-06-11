@@ -12,6 +12,8 @@ import pytest
 
 from app.services import finance_dual_write as fdw
 
+pytestmark = pytest.mark.smoke
+
 
 def test_default_flag_is_false_in_settings():
     """If the env vars are unset, the Settings defaults must be False."""

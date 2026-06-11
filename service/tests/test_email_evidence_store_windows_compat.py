@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.smoke
+
 _SVC = Path(__file__).parent.parent
 if str(_SVC) not in sys.path:
     sys.path.insert(0, str(_SVC))

@@ -6,6 +6,8 @@ import pytest
 
 from app.core.config import Settings
 
+pytestmark = pytest.mark.smoke
+
 
 def test_carrier_api_status_default_is_pending():
     assert Settings().carrier_api_status == "pending"
