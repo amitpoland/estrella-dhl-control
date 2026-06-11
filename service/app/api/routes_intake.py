@@ -1878,13 +1878,28 @@ async def sales_packing_reingest(
                     None,
                 )
                 if orphan is not None:
-                    ddb.update_sales_document_client_name(supplied_doc_id, client)
+                    # Defense-in-depth: existing_docs is already batch-scoped
+                    # but verify explicitly before any write.
+                    if orphan.get("batch_id") != batch_id:
+                        per_file["warnings"].append(
+                            f"sales_document_id {supplied_doc_id!r} "
+                            "does not belong to this batch")
+                        results.append(per_file); continue
+                    _updated = ddb.update_sales_document_client_name(
+                        supplied_doc_id, client,
+                    )
                     candidates = [orphan]
-                    per_file["client_name_repaired"] = True
+                    per_file["client_name_repaired"] = _updated
                     per_file["repaired_from_doc_id"] = supplied_doc_id
+                    if not _updated:
+                        per_file["warnings"].append(
+                            "orphan client_name DB update returned False "
+                            "— lines will still be inserted but "
+                            "sales_documents.client_name may remain empty")
                     log.info(
-                        "[%s] reingest orphan-repair: doc_id=%s client=%s",
-                        batch_id, supplied_doc_id, client,
+                        "[%s] reingest orphan-repair: doc_id=%s client=%s "
+                        "db_updated=%s",
+                        batch_id, supplied_doc_id, client, _updated,
                     )
                 else:
                     per_file["warnings"].append(
