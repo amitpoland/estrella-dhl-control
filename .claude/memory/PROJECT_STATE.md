@@ -4833,6 +4833,43 @@ Group D — Tests (3 new files):
 
 ---
 
+## Branch `fix/proforma-warehouse-gate-pz-mapping` — 4 Code Fixes Committed (2026-06-11)
+
+**Date**: 2026-06-11 (committed SHA `00078b5` to branch `fix/proforma-warehouse-gate-pz-mapping`)
+**Status**: COMMITTED — PR BLOCKED by GATE 2 (4 open PRs: #558, #556, #522, #498). Cannot open until one of #556/#522/#498 closes.
+
+**4 fixes included:**
+
+1. **Fix 1 (routes_proforma.py — warehouse gate bypass)**: PURCHASE_TRANSIT no longer blocks proforma issuance when PZ is created in wFirma (`wfirma_pz_doc_id` present in audit) OR DHL confirms delivery (`is_dhl_delivered`). New eligible label `purchase_transit_pz_or_delivered` added to `_ELIGIBLE_LABELS`. Operator rule: "goods in warehouse if DHL delivered OR PZ created in wFirma."
+
+2. **Fix 2 (sales_packing_matcher.py — metal/color disambiguation)**: Same `design_no` with different metal/color variants (e.g. J4007R08118-0.6 in 18KT Y vs PT950) now resolved via secondary `(design_no, metal, metal_color)` triple lookup against packing_lines. Primary design_no ambiguous → secondary triple → if still ambiguous → leave empty.
+
+3. **Fix 3 (routes_packing.py — description pre-population)**: At sales packing upload time, write rich Polish/English descriptions (metal/karat/color/quality) to `product_descriptions` via `upsert_product_description`. source='manual' entries never overwritten. Pre-populates descriptions so `ensure_products_for_batch` finds them on first use.
+
+4. **Fix 4**: Structurally already done — `sales_matcher_summary` in API response exposes `designs_ambiguous` and `designs_unresolved` as named gaps.
+
+**New tests**: 7 total — `test_proforma_purchase_transit_bypass.py` (5 new: 3 Fix 1 + 2 Fix 3) + `test_sales_packing_matcher.py` (2 new: Fix 2 metal disambiguation + triple-also-ambiguous fallback).
+
+---
+
+## Batch Data Fixes — SHIPMENT_7123231135_2026-06_f255bbb5 (2026-06-11, APPLIED)
+
+**Draft 30 (Verhoeven Joaillier)**: J4007R08118-0.6 metal disambiguation applied.
+- `c399a63b` (price=439 EUR, 18KT Y from Excel Sr=2) → `EJL/26-27/257-4`
+- `1038a9ea` (price=431 EUR, PT950 from Excel Sr=5) → `EJL/26-27/257-2`
+- Draft 30 reset-from-sales-packing: SUCCESS
+- Draft 30 enrich-from-product-descriptions: enriched=6
+
+**Draft 32 (UAB Monodija Ir Ko)**: JNP00033 (TPN nose pin) registered as `EJL/26-27/258-6`.
+- Two UAB Monodija rows (`0821333a`, `88c36808`) set to `EJL/26-27/258-6`
+- Purchase packing_lines (rowids 699/700) also updated: both 14KT/P and 14KT/Y variants → `EJL/26-27/258-6`
+- `product_descriptions` entry created for `EJL/26-27/258-6` (item_type=TPN, name_pl=kolczyk do nosa z 14-karatowego różowego i żółtego złota, desc_en=14kt gold nose pin, source=auto)
+- Note: 4 JNP00033 rows in `sales_packing_lines` — 2 from doc_id `a6cc5229` (orphaned, empty client_name, parent sales_document not in DB) → left unchanged; only 2 with client_name='UAB Monodija Ir Ko' updated
+- Draft 32 reset-from-sales-packing: SUCCESS
+- Draft 32 enrich-from-product-descriptions: enriched=25
+
+---
+
 # DECISIONS
 
 ## Description Engine — Single Authority, Multiple Renderers (2026-06-08)
