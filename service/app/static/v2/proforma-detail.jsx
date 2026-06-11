@@ -1854,7 +1854,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             />
           </React.Fragment>
         )}
-        {activeTab === 'lines' && <ProformaLinesTab lines={lines} />}
+        {activeTab === 'lines' && (
+          <ProformaLinesTab
+            lines={lines}
+            canEdit={canEdit}
+            draftId={liveDraft.id || (draft && draft.id)}
+            draftUpdatedAt={liveDraft.updated_at || (draft && draft.updated_at) || ''}
+            onRefresh={() => draftHook && draftHook.reload && draftHook.reload()}
+          />
+        )}
         {activeTab === 'customer_mapping' && (
           <ProformaCustomerMappingTab customer={customer} />
         )}
@@ -2318,11 +2326,148 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
 }
 
 // ── Lines tab ─────────────────────────────────────────────────────────────────
-function ProformaLinesTab({ lines }) {
+// Inline editing (wFirma.pl style): qty + unit_price editable per row, save on blur.
+// Add Line form at bottom; Delete button per row. Read-only when canEdit=false.
+function ProformaLinesTab({ lines, canEdit, draftId, draftUpdatedAt, onRefresh }) {
+  const EMPTY_ADD = { product_code: '', qty: 1, unit_price: '' };
+
+  // Per-row pending edits (lineId → {qty, unitEur})
+  const [rowEdits,    setRowEdits]    = React.useState({});
+  // lineIds currently being saved / deleted
+  const [savingRows,  setSavingRows]  = React.useState({});
+  const [deletingRow, setDeletingRow] = React.useState(null);
+  // Row-level error messages
+  const [rowErrors,   setRowErrors]   = React.useState({});
+  // Add-line form state
+  const [addForm,     setAddForm]     = React.useState(null);   // null = hidden
+  const [addSaving,   setAddSaving]   = React.useState(false);
+  const [addError,    setAddError]    = React.useState(null);
+
+  // Shared input style
+  const inputSx = {
+    border: '1px solid var(--border)',
+    borderRadius: 4,
+    padding: '3px 6px',
+    fontSize: 12,
+    fontFamily: 'monospace',
+    background: 'var(--bg)',
+    color: 'var(--text)',
+    width: '100%',
+    boxSizing: 'border-box',
+  };
+
+  // Save a single line's pending edit on blur
+  const saveRow = (lineId) => {
+    const edit = rowEdits[lineId];
+    if (!edit) return;
+    const line = lines.find(l => l.lineId === lineId);
+    if (!line) return;
+    const qty       = parseFloat(edit.qty);
+    const unitPrice = parseFloat(edit.unitEur);
+    if (isNaN(qty) || isNaN(unitPrice)) {
+      setRowErrors(prev => ({ ...prev, [lineId]: 'Invalid number' }));
+      return;
+    }
+    // Only send changed fields
+    const patch = {};
+    if (qty !== line.qty)         patch.qty        = qty;
+    if (unitPrice !== line.unitEur) patch.unit_price = unitPrice;
+    if (Object.keys(patch).length === 0) return;
+
+    setSavingRows(prev => ({ ...prev, [lineId]: true }));
+    setRowErrors(prev => { const n = {...prev}; delete n[lineId]; return n; });
+    window.PzApi.patchDraftLine(draftId, lineId, patch, draftUpdatedAt)
+      .then(r => {
+        setSavingRows(prev => { const n = {...prev}; delete n[lineId]; return n; });
+        if (r && r.ok !== false) {
+          setRowEdits(prev => { const n = {...prev}; delete n[lineId]; return n; });
+          onRefresh && onRefresh();
+        } else {
+          setRowErrors(prev => ({ ...prev, [lineId]: (r && r.error) || 'Save failed' }));
+        }
+      })
+      .catch(e => {
+        setSavingRows(prev => { const n = {...prev}; delete n[lineId]; return n; });
+        setRowErrors(prev => ({ ...prev, [lineId]: e.message || 'Save failed' }));
+      });
+  };
+
+  const deleteRow = (lineId) => {
+    if (deletingRow) return;
+    setDeletingRow(lineId);
+    setRowErrors(prev => { const n = {...prev}; delete n[lineId]; return n; });
+    window.PzApi.deleteDraftLine(draftId, lineId, draftUpdatedAt)
+      .then(r => {
+        setDeletingRow(null);
+        if (r && r.ok !== false) {
+          onRefresh && onRefresh();
+        } else {
+          setRowErrors(prev => ({ ...prev, [lineId]: (r && r.error) || 'Delete failed' }));
+        }
+      })
+      .catch(e => {
+        setDeletingRow(null);
+        setRowErrors(prev => ({ ...prev, [lineId]: e.message || 'Delete failed' }));
+      });
+  };
+
+  const submitAddLine = () => {
+    if (addSaving || !addForm) return;
+    const code  = (addForm.product_code || '').trim();
+    const qty   = parseFloat(addForm.qty);
+    const price = parseFloat(addForm.unit_price);
+    if (!code) { setAddError('Product code is required'); return; }
+    if (isNaN(qty) || qty <= 0) { setAddError('Enter a valid quantity'); return; }
+    if (isNaN(price) || price < 0) { setAddError('Enter a valid unit price'); return; }
+    setAddSaving(true);
+    setAddError(null);
+    window.PzApi.addDraftLine(draftId, {
+      expected_updated_at: draftUpdatedAt,
+      line: { product_code: code, qty, unit_price: price, currency: 'EUR' },
+    }).then(r => {
+      setAddSaving(false);
+      if (r && r.ok !== false) {
+        setAddForm(null);
+        onRefresh && onRefresh();
+      } else {
+        setAddError((r && r.error) || 'Add failed');
+      }
+    }).catch(e => {
+      setAddSaving(false);
+      setAddError(e.message || 'Add failed');
+    });
+  };
+
+  // Compute running total including pending edits
+  const runningTotal = lines.reduce((s, l) => {
+    const edit = rowEdits[l.lineId];
+    const qty      = edit ? parseFloat(edit.qty)    : l.qty;
+    const unit     = edit ? parseFloat(edit.unitEur) : l.unitEur;
+    return s + ((isNaN(qty) || isNaN(unit)) ? l.netEur : qty * unit);
+  }, 0);
+
+  const colCount = canEdit ? 9 : 8;
+
   return (
     <div>
-      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>
-        Line items ({lines.length})
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+          Line items ({lines.length})
+        </div>
+        {canEdit && !addForm && (
+          <button
+            data-testid="lines-add-row-btn"
+            onClick={() => setAddForm({ ...EMPTY_ADD })}
+            style={{
+              border: '1px solid var(--accent)', borderRadius: 6,
+              padding: '5px 14px', fontSize: 12, fontWeight: 600,
+              background: 'transparent', color: 'var(--accent)',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5,
+            }}
+          >
+            + Add line
+          </button>
+        )}
       </div>
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -2331,37 +2476,184 @@ function ProformaLinesTab({ lines }) {
               {['#', 'SKU', 'DESCRIPTION', 'HS CODE', 'ORIGIN', 'QTY', 'UNIT EUR', 'NET EUR'].map((h, i) => (
                 <th key={h} style={{ padding: '9px 12px', textAlign: i >= 5 ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em' }}>{h}</th>
               ))}
+              {canEdit && <th style={{ padding: '9px 8px', width: 36 }} />}
             </tr>
           </thead>
           <tbody>
             {lines.length === 0 && (
               <tr>
-                <td colSpan="8" style={{ padding: '28px 14px', textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>
+                <td colSpan={colCount} style={{ padding: '28px 14px', textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>
                   No line items — draft not yet built from packing upload.
                 </td>
               </tr>
             )}
-            {lines.map((line, i) => (
-              <tr key={line.lineId || line.seq} style={{ borderBottom: i < lines.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
-                <td style={{ padding: '11px 12px', fontSize: 11, color: 'var(--text-3)' }}>{line.seq}</td>
-                <td style={{ padding: '11px 12px', fontFamily: 'monospace', fontSize: 11, fontWeight: 600, color: 'var(--text-2)' }}>{line.sku}</td>
-                <td style={{ padding: '11px 12px' }}>
-                  <div style={{ fontSize: 12, fontWeight: 600 }}>{line.desc}</div>
-                  {line.purity && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{line.purity}</div>}
+            {lines.map((line, i) => {
+              const edit     = rowEdits[line.lineId] || {};
+              const saving   = !!savingRows[line.lineId];
+              const deleting = deletingRow === line.lineId;
+              const err      = rowErrors[line.lineId];
+              const dispQty   = edit.qty     !== undefined ? edit.qty     : line.qty;
+              const dispPrice = edit.unitEur !== undefined ? edit.unitEur : line.unitEur;
+              const previewNet = (() => {
+                const q = parseFloat(dispQty); const p = parseFloat(dispPrice);
+                return (!isNaN(q) && !isNaN(p)) ? (q * p).toFixed(2) : line.netEur.toFixed(2);
+              })();
+              return (
+                <React.Fragment key={line.lineId || line.seq}>
+                  <tr style={{
+                    borderBottom: (i < lines.length - 1 || canEdit) ? '1px solid var(--border-subtle)' : 'none',
+                    background: saving || deleting ? 'var(--row-hover)' : 'transparent',
+                    opacity: deleting ? 0.5 : 1,
+                  }}>
+                    <td style={{ padding: '9px 12px', fontSize: 11, color: 'var(--text-3)' }}>{line.seq}</td>
+                    <td style={{ padding: '9px 12px', fontFamily: 'monospace', fontSize: 11, fontWeight: 600, color: 'var(--text-2)' }}>{line.sku}</td>
+                    <td style={{ padding: '9px 12px' }}>
+                      <div style={{ fontSize: 12, fontWeight: 600 }}>{line.desc}</div>
+                      {line.purity && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{line.purity}</div>}
+                    </td>
+                    <td style={{ padding: '9px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)' }}>{line.hsCode}</td>
+                    <td style={{ padding: '9px 12px', fontSize: 11, color: 'var(--text-2)' }}>{line.origin}</td>
+                    <td style={{ padding: '9px 8px', textAlign: 'right', width: 70 }}>
+                      {canEdit ? (
+                        <input
+                          data-testid={`line-qty-${line.lineId}`}
+                          type="number" min="0.001" step="1"
+                          value={dispQty}
+                          onChange={e => setRowEdits(prev => ({ ...prev, [line.lineId]: { ...(prev[line.lineId] || {}), qty: e.target.value } }))}
+                          onBlur={() => saveRow(line.lineId)}
+                          disabled={saving || deleting}
+                          style={{ ...inputSx, width: 60, textAlign: 'right' }}
+                        />
+                      ) : (
+                        <span style={{ fontSize: 12, fontWeight: 600 }}>{line.qty}</span>
+                      )}
+                    </td>
+                    <td style={{ padding: '9px 8px', textAlign: 'right', width: 100 }}>
+                      {canEdit ? (
+                        <input
+                          data-testid={`line-price-${line.lineId}`}
+                          type="number" min="0" step="0.01"
+                          value={dispPrice}
+                          onChange={e => setRowEdits(prev => ({ ...prev, [line.lineId]: { ...(prev[line.lineId] || {}), unitEur: e.target.value } }))}
+                          onBlur={() => saveRow(line.lineId)}
+                          disabled={saving || deleting}
+                          style={{ ...inputSx, width: 80, textAlign: 'right' }}
+                        />
+                      ) : (
+                        <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{line.unitEur.toFixed(2)}</span>
+                      )}
+                    </td>
+                    <td style={{ padding: '9px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 13, fontWeight: 700 }}>
+                      {saving ? <span style={{ fontSize: 11, color: 'var(--text-3)' }}>saving…</span> : previewNet}
+                    </td>
+                    {canEdit && (
+                      <td style={{ padding: '9px 6px', textAlign: 'center' }}>
+                        <button
+                          data-testid={`line-delete-${line.lineId}`}
+                          onClick={() => deleteRow(line.lineId)}
+                          disabled={deleting || saving || !!deletingRow}
+                          title="Remove this line"
+                          style={{
+                            border: 'none', background: 'transparent',
+                            color: 'var(--badge-red-text)', cursor: 'pointer',
+                            fontSize: 14, padding: '2px 4px', borderRadius: 4,
+                            opacity: (deleting || saving || !!deletingRow) ? 0.4 : 0.7,
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                  {err && (
+                    <tr>
+                      <td colSpan={colCount} style={{ padding: '4px 12px 6px', fontSize: 11, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)' }}>
+                        {err}
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+
+            {/* Add Line inline form */}
+            {canEdit && addForm && (
+              <tr style={{ borderTop: '1px dashed var(--border)', background: 'var(--bg-subtle)' }}>
+                <td style={{ padding: '10px 8px', fontSize: 11, color: 'var(--text-3)' }}>+</td>
+                <td style={{ padding: '10px 8px' }} colSpan="2">
+                  <input
+                    data-testid="add-line-product-code"
+                    type="text"
+                    placeholder="Product code"
+                    value={addForm.product_code}
+                    onChange={e => setAddForm(prev => ({ ...prev, product_code: e.target.value }))}
+                    style={{ ...inputSx, width: 180 }}
+                  />
                 </td>
-                <td style={{ padding: '11px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)' }}>{line.hsCode}</td>
-                <td style={{ padding: '11px 12px', fontSize: 11, color: 'var(--text-2)' }}>{line.origin}</td>
-                <td style={{ padding: '11px 12px', textAlign: 'right', fontSize: 12, fontWeight: 600 }}>{line.qty}</td>
-                <td style={{ padding: '11px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12 }}>{line.unitEur.toFixed(2)}</td>
-                <td style={{ padding: '11px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 13, fontWeight: 700 }}>{line.netEur.toFixed(2)}</td>
+                <td style={{ padding: '10px 8px' }} colSpan="2">
+                  <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Currency: EUR</span>
+                </td>
+                <td style={{ padding: '10px 8px', width: 70 }}>
+                  <input
+                    data-testid="add-line-qty"
+                    type="number" min="0.001" step="1"
+                    placeholder="Qty"
+                    value={addForm.qty}
+                    onChange={e => setAddForm(prev => ({ ...prev, qty: e.target.value }))}
+                    style={{ ...inputSx, width: 60, textAlign: 'right' }}
+                  />
+                </td>
+                <td style={{ padding: '10px 8px', width: 100 }}>
+                  <input
+                    data-testid="add-line-unit-price"
+                    type="number" min="0" step="0.01"
+                    placeholder="Unit EUR"
+                    value={addForm.unit_price}
+                    onChange={e => setAddForm(prev => ({ ...prev, unit_price: e.target.value }))}
+                    style={{ ...inputSx, width: 80, textAlign: 'right' }}
+                  />
+                </td>
+                <td style={{ padding: '10px 8px' }} />
+                <td style={{ padding: '10px 8px' }}>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button
+                      data-testid="add-line-confirm"
+                      onClick={submitAddLine}
+                      disabled={addSaving}
+                      style={{
+                        border: 'none', background: 'var(--accent)', color: '#fff',
+                        borderRadius: 4, padding: '4px 10px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                      }}
+                    >
+                      {addSaving ? '…' : 'Add'}
+                    </button>
+                    <button
+                      data-testid="add-line-cancel"
+                      onClick={() => { setAddForm(null); setAddError(null); }}
+                      style={{
+                        border: '1px solid var(--border)', background: 'transparent',
+                        borderRadius: 4, padding: '4px 8px', fontSize: 12, cursor: 'pointer', color: 'var(--text-2)',
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </td>
               </tr>
-            ))}
+            )}
+            {canEdit && addForm && addError && (
+              <tr>
+                <td colSpan={colCount} style={{ padding: '4px 12px 6px', fontSize: 11, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)' }}>
+                  {addError}
+                </td>
+              </tr>
+            )}
           </tbody>
           <tfoot>
             <tr style={{ borderTop: '2px solid var(--border)', background: 'var(--bg-subtle)' }}>
-              <td colSpan="7" style={{ padding: '11px 12px', textAlign: 'right', fontSize: 12, fontWeight: 700 }}>Total</td>
+              <td colSpan={colCount - 1} style={{ padding: '11px 12px', textAlign: 'right', fontSize: 12, fontWeight: 700 }}>Total</td>
               <td style={{ padding: '11px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--accent)' }} data-testid="proforma-lines-total">
-                {lines.length > 0 ? lines.reduce((s, l) => s + l.netEur, 0).toFixed(2) : '—'}
+                {lines.length > 0 ? runningTotal.toFixed(2) : '—'}
               </td>
             </tr>
           </tfoot>
