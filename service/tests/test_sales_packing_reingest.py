@@ -462,3 +462,91 @@ def test_missing_files_rejected(client):
     r = client.post(URL, headers=_auth(),
                      data={"batch_id": BATCH, "metadata": "{}"})
     assert r.status_code == 400
+
+
+# ── Orphan-repair: sales_document_id bypass for empty-client rows ─────────────
+# Covers the case where initial intake stored a sales_documents row with
+# client_name='' because the operator omitted it from the upload metadata.
+# The reingest endpoint now accepts sales_document_id in the metadata block
+# as a bypass key, backfills client_name, and creates the proforma draft.
+
+def test_orphan_repair_backfills_client_name(client, storage, tmp_path):
+    """Reingest with sales_document_id fixes empty-client row and inserts lines."""
+    # Seed a sales_documents row with empty client_name (orphaned)
+    orphan_id = ddb.store_sales_document(
+        batch_id=BATCH, document_id=str(uuid.uuid4()),
+        data={"client_name": "", "client_ref": "",
+              "sales_doc_no": "SO-ORPHAN"},
+    )
+    assert _row_count(storage, orphan_id) == 0
+
+    p = _make_xlsx(tmp_path, name="orphan.xlsx",
+                    rows=[{"design": "JE-999", "qty": 2, "value": 150.0}])
+    r = _post(client, files=[p], sales_blocks=[{
+        "packing_index":   0,
+        "client_name":     "UAB Monodija",
+        "client_ref":      "REF-258",
+        "sales_document_id": orphan_id,
+    }])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    f0 = body["files"][0]
+    assert f0["inserted_count"] == 1
+    assert f0.get("client_name_repaired") is True
+    assert f0.get("repaired_from_doc_id") == orphan_id
+    assert _row_count(storage, orphan_id) == 1
+
+    # Verify client_name was backfilled in sales_documents
+    with sqlite3.connect(str(storage / "documents.db")) as con:
+        row = con.execute(
+            "SELECT client_name FROM sales_documents WHERE id=?",
+            (orphan_id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "UAB Monodija"
+
+
+def test_orphan_repair_unknown_doc_id_warns(client, storage, tmp_path):
+    """Reingest with unknown sales_document_id returns a warning, not 500."""
+    p = _make_xlsx(tmp_path, name="unknown.xlsx",
+                    rows=[{"design": "JE-001", "qty": 1, "value": 100.0}])
+    r = _post(client, files=[p], sales_blocks=[{
+        "packing_index":     0,
+        "client_name":       "Ghost Client",
+        "sales_document_id": "aaaabbbb-0000-0000-0000-000000000000",
+    }])
+    assert r.status_code == 200, r.text
+    f0 = r.json()["files"][0]
+    assert any("not found in batch" in w for w in f0["warnings"])
+    assert f0["inserted_count"] == 0
+
+
+def test_orphan_repair_no_sales_document_id_still_warns(client, storage, tmp_path):
+    """Without sales_document_id, the original 'no sales_document found' warning fires."""
+    p = _make_xlsx(tmp_path, name="nowarn.xlsx",
+                    rows=[{"design": "JE-002", "qty": 1, "value": 50.0}])
+    r = _post(client, files=[p], sales_blocks=[{
+        "packing_index": 0,
+        "client_name":   "Nonexistent Client",
+    }])
+    assert r.status_code == 200, r.text
+    f0 = r.json()["files"][0]
+    assert any("no sales_document found" in w for w in f0["warnings"])
+    assert f0["inserted_count"] == 0
+
+
+def test_orphan_repair_normal_path_unaffected(client, storage, tmp_path):
+    """Normal reingest (client_name present in DB) still works when orphan path is in place."""
+    sd = _seed_sales_doc("Normal Client")
+    _seed_initial_rows(sd, "Normal Client", n=1)
+    p = _make_xlsx(tmp_path, name="normal.xlsx",
+                    rows=[{"design": "JE-777", "qty": 3, "value": 75.0}])
+    r = _post(client, files=[p], sales_blocks=[{
+        "packing_index": 0,
+        "client_name":   "Normal Client",
+    }])
+    assert r.status_code == 200, r.text
+    f0 = r.json()["files"][0]
+    assert f0["inserted_count"] == 1
+    assert f0.get("client_name_repaired") is None
+    assert _row_count(storage, sd) == 1

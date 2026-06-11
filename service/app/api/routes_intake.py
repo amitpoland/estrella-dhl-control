@@ -1866,9 +1866,34 @@ async def sales_packing_reingest(
         # Resolve sales_document_id by client_name. Refuse if multiple match.
         candidates = by_client.get(client.upper(), [])
         if not candidates:
-            per_file["warnings"].append(
-                f"no sales_document found for client {client!r} in batch")
-            results.append(per_file); continue
+            # ── Orphan-repair: operator may supply sales_document_id to fix
+            # a row whose client_name was never set at initial upload time
+            # (e.g. metadata block omitted client_name during intake).
+            # When provided, update client_name on the existing document and
+            # proceed — this is the reconciliation path for empty-client rows.
+            supplied_doc_id = (block.get("sales_document_id") or "").strip()
+            if supplied_doc_id:
+                orphan = next(
+                    (d for d in existing_docs if d.get("id") == supplied_doc_id),
+                    None,
+                )
+                if orphan is not None:
+                    ddb.update_sales_document_client_name(supplied_doc_id, client)
+                    candidates = [orphan]
+                    per_file["client_name_repaired"] = True
+                    per_file["repaired_from_doc_id"] = supplied_doc_id
+                    log.info(
+                        "[%s] reingest orphan-repair: doc_id=%s client=%s",
+                        batch_id, supplied_doc_id, client,
+                    )
+                else:
+                    per_file["warnings"].append(
+                        f"sales_document_id {supplied_doc_id!r} not found in batch")
+                    results.append(per_file); continue
+            else:
+                per_file["warnings"].append(
+                    f"no sales_document found for client {client!r} in batch")
+                results.append(per_file); continue
         if len(candidates) > 1:
             per_file["warnings"].append(
                 f"multiple sales_documents for client {client!r} — "
