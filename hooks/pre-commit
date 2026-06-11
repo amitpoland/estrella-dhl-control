@@ -62,3 +62,34 @@ if git diff --cached --name-only | grep -q "^${GOLDEN}$"; then
         exit 1
     fi
 fi
+
+# ── Smoke gate: app-source-scoped, blocking ─────────────────────────────────
+# Runs `pytest -m smoke` (alpha set) whenever any service/app/*.py is staged.
+# Skips on docs/tooling/test-only commits to keep them fast. Reuses the same
+# $PYTHON interpreter + PYTHONUTF8=1 detected above.
+STAGED="$(git diff --cached --name-only)"
+APP_PY="$(printf '%s\n' "$STAGED" | grep -E '^service/.*\.py$' | grep -vE '^service/tests/' || true)"
+
+if [ -z "$APP_PY" ]; then
+    echo "  smoke: skipped (no app source staged)"
+    exit 0
+fi
+
+echo ""
+echo "  ── pre-commit: app source staged — running smoke set ────────"
+echo "  (interpreter: ${PYTHON}, PYTHONUTF8=1, -m smoke)"
+echo ""
+
+if ( cd service && PYTHONUTF8=1 $PYTHON -m pytest tests/ -m smoke -q -p no:cacheprovider ); then
+    echo ""
+    echo "  smoke: passed"
+    echo "  ────────────────────────────────────────────────────────"
+    echo ""
+    exit 0
+else
+    echo ""
+    echo "  ✗  SMOKE FAILED — commit blocked"
+    echo "  ────────────────────────────────────────────────────────"
+    echo ""
+    exit 1
+fi
