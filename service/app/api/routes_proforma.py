@@ -800,6 +800,26 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
 
     _is_dhl_transit = (batch_lifecycle == "DHL_TRANSIT")
 
+    # PZ-created / DHL-delivered bypass for PURCHASE_TRANSIT pieces.
+    # When the wFirma PZ exists (goods accepted into accounting) OR DHL
+    # tracking confirms physical delivery, pieces still in PURCHASE_TRANSIT
+    # are treated as warehouse-eligible for proforma issuance.
+    # Physical scan-in (warehouse_receive trigger) is optional audit — not a gate.
+    # Rule confirmed by operator 2026-06-11.
+    _pz_created    = False
+    _dhl_delivered = False
+    try:
+        _audit_file = settings.storage_root / "outputs" / batch_id / "audit.json"
+        if _audit_file.exists():
+            _audit_data = json.loads(_audit_file.read_text())
+            _pz_created = bool(
+                (_audit_data.get("wfirma_export") or {}).get("wfirma_pz_doc_id", "").strip()
+            )
+            from ..services.dhl_delivery_bridge import is_dhl_delivered as _bridge_delivered
+            _dhl_delivered = _bridge_delivered(_audit_data)
+    except Exception:
+        pass  # never let the bypass check break preview
+
     def _stock_status(pc: str) -> str:
         scs = sc_per_product.get(pc, [])
         if not scs:
@@ -817,6 +837,9 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
         if any(sc in in_sample_out for sc in scs):
             return "sample_out"
         if any(sc in in_purchase for sc in scs):
+            # Bypass: PZ created in wFirma OR DHL confirms delivery.
+            if _pz_created or _dhl_delivered:
+                return "purchase_transit_pz_or_delivered"
             return "purchase_transit"
         if any(sc in in_sales_transit for sc in scs):
             return "sales_transit"
@@ -836,6 +859,10 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
         # dhl_transit: goods not yet at warehouse but actively in transit;
         # preview-eligible so operators can prepare commercial documents early.
         "dhl_transit",
+        # purchase_transit_pz_or_delivered: wFirma PZ created (goods accepted
+        # into accounting) OR DHL tracking confirms delivery — physical scan-in
+        # is optional audit, not a gate (operator rule 2026-06-11).
+        "purchase_transit_pz_or_delivered",
     }
 
     def _stock_ok(pc: str) -> bool:

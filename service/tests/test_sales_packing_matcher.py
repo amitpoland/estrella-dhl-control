@@ -445,3 +445,91 @@ def test_reprocess_response_includes_matcher_buckets(client, monkeypatch):
     assert s["designs_unresolved"] == ["D-GHOST"]
     assert s["rows_resolved"] == 1
     assert s["rows_skipped"]  == 2
+
+
+# ── 15. metal/color disambiguation (Fix 2) ────────────────────────────────
+
+def _seed_packing_with_metal(tmp: Path, batch_id: str,
+                              rows: List[Dict[str, Any]]) -> None:
+    """Seed packing_lines with full metal/metal_color fields."""
+    from app.services import packing_db as pdb
+    pdb.init_packing_db(tmp / "packing.db")
+    doc_id = pdb.upsert_packing_document(
+        batch_id=batch_id, document_id=f"pd2-{batch_id}",
+        source_file_path="/tmp/p2.xlsx", invoice_no="INV2",
+        parser_name="t", parser_version="1",
+        source_file_hash=f"h2-{batch_id}",
+    )
+    lines = []
+    for i, row in enumerate(rows):
+        lines.append({
+            "packing_document_id": doc_id, "batch_id": batch_id,
+            "invoice_no": "INV2", "invoice_line_position": i,
+            "product_code":  row.get("product_code", ""),
+            "design_no":     row.get("design_no", ""),
+            "metal":         row.get("metal", ""),
+            "metal_color":   row.get("metal_color", ""),
+            "quality_string": row.get("quality_string", ""),
+            "batch_no": "", "bag_id": "", "tray_id": "",
+            "item_type": "", "uom": "PCS",
+            "quantity": 1.0, "gross_weight": 0, "net_weight": 0,
+            "karat": "", "stone_type": "", "remarks": "",
+            "extracted_confidence": 1.0, "requires_manual_review": False,
+            "pack_sr": i, "unit_price": 0.0, "total_value": 0.0,
+        })
+    pdb.upsert_packing_lines(lines)
+
+
+def test_metal_color_disambiguates_same_design_two_variants(fresh):
+    """
+    Same design_no appears twice with different metal/metal_color →
+    different product_codes.  Sales rows with metal+color must resolve
+    to the correct product_code via secondary (design, metal, color) key.
+    """
+    tmp = fresh
+    bid = "B-METAL"
+    _seed_packing_with_metal(tmp, bid, [
+        {"design_no": "J4007R", "metal": "18KT", "metal_color": "Y", "product_code": "257-2"},
+        {"design_no": "J4007R", "metal": "PT950", "metal_color": "",  "product_code": "257-4"},
+    ])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    sales = [
+        {"product_code": "", "design_no": "J4007R",
+         "metal": "18KT", "metal_color": "Y", "quantity": 1},
+        {"product_code": "", "design_no": "J4007R",
+         "metal": "PT950", "metal_color": "", "quantity": 1},
+    ]
+    matched, summary = match_sales_lines_to_packing(bid, sales)
+    assert matched[0]["product_code"] == "257-2", (
+        "18KT Y variant should resolve to 257-2"
+    )
+    assert matched[0]["resolution_source"] == "batch_packing_lines_metal"
+    assert matched[1]["product_code"] == "257-4", (
+        "PT950 variant should resolve to 257-4"
+    )
+    assert matched[1]["resolution_source"] == "batch_packing_lines_metal"
+    assert summary["rows_resolved"] == 2
+    assert summary["rows_skipped"] == 0
+
+
+def test_metal_disambiguation_still_skips_when_triple_also_ambiguous(fresh):
+    """
+    If even the (design, metal, color) triple is not unique in packing_lines
+    (same metal+color, two product_codes), leave product_code empty.
+    """
+    tmp = fresh
+    bid = "B-METAL-AMB"
+    _seed_packing_with_metal(tmp, bid, [
+        {"design_no": "D-TWIN", "metal": "14KT", "metal_color": "W", "product_code": "PC-X"},
+        {"design_no": "D-TWIN", "metal": "14KT", "metal_color": "W", "product_code": "PC-Y"},
+    ])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    sales = [{"product_code": "", "design_no": "D-TWIN",
+              "metal": "14KT", "metal_color": "W", "quantity": 1}]
+    matched, summary = match_sales_lines_to_packing(bid, sales)
+    assert matched[0].get("product_code", "") == "", (
+        "Ambiguous triple should leave product_code empty"
+    )
+    assert summary["rows_skipped"] == 1
