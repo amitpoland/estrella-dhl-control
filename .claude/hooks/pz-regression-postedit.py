@@ -142,11 +142,22 @@ def main():
     env = dict(os.environ)
     env["PYTHONUTF8"] = "1"
 
+    # Anchor cwd to the project root so the bare-basename suite ("test_pz_regression.py")
+    # resolves regardless of where the edited file lives. Without this, a Post-edit on
+    # service/tests/foo.py inherits the editor's cwd and looks for
+    # service/tests/test_pz_regression.py — wrong path, exit 2.
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "").strip()
+    if not project_dir:
+        # Fall back to the hook's own anchor (.claude/hooks/.. = repo root)
+        here = os.path.dirname(os.path.abspath(__file__))
+        project_dir = os.path.normpath(os.path.join(here, "..", ".."))
+
     argv = [python] + _suite_argv()
     try:
         r = subprocess.run(
             argv,
             capture_output=True,
+            cwd=project_dir,
             env=env,
             timeout=110,  # leave headroom under settings.json timeout: 120
         )
