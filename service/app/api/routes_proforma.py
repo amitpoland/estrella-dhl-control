@@ -1102,6 +1102,40 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     product_total = sum((ln.get("line_value") or 0) for ln in lines)
     final_total   = product_total + service_charge_total
 
+    # ── Draft-level pre-approve checks ───────────────────────────────────────
+    # If a draft exists for this batch/client, surface blank name_pl and zero
+    # unit_price as blocking_reasons NOW so the operator sees them in the UI
+    # before clicking Approve — not as a 422 surprise after clicking the button.
+    # Same logic as _preflight_approve(); surfaced here for proactive visibility.
+    try:
+        _pf_db = settings.storage_root / "proforma_links.db"
+        if _pf_db.exists():
+            _existing_draft = pildb.get_draft(_pf_db, batch_id, client_name)
+            if _existing_draft is not None and _existing_draft.editable_lines_json:
+                import json as _pf_json
+                _edit_lines = _pf_json.loads(_existing_draft.editable_lines_json or "[]")
+                if isinstance(_edit_lines, list):
+                    _blank_name_pl = sum(
+                        1 for ln in _edit_lines
+                        if not (ln.get("name_pl") or "").strip()
+                    )
+                    if _blank_name_pl:
+                        blocking_reasons.append(
+                            f"{_blank_name_pl} line(s) have blank commercial description (name_pl) "
+                            "— import sales prices before approving"
+                        )
+                    _zero_unit_price = sum(
+                        1 for ln in _edit_lines
+                        if not (ln.get("unit_price") or 0)
+                    )
+                    if _zero_unit_price:
+                        blocking_reasons.append(
+                            f"{_zero_unit_price} line(s) have zero/missing unit_price "
+                            "— import sales prices before approving"
+                        )
+    except Exception:
+        pass  # non-fatal — preview still works without editable-lines pre-approve check
+
     # can_preview: True when sales rows exist and lines can be shown.
     # Does NOT require wFirma PZ — that's an export gate, not a preview gate.
     # (The early-exit path above sets can_preview=False when no sales rows exist.)
