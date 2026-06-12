@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import packing_db as _pdb
 
@@ -85,6 +85,62 @@ def _design_to_product_codes_for_batch(
     return {d: sorted(ps) for d, ps in out.items()}
 
 
+def _design_metal_to_product_code_for_batch(
+    batch_id: str,
+) -> Dict[Tuple[str, str, str], str]:
+    """Return ``{(design_no, metal, metal_color): product_code}`` for *batch_id*.
+
+    Used as a secondary disambiguation key when the same design_no appears
+    multiple times in the batch (e.g. same ring model in yellow and white
+    gold → two different product_codes).  The extract_packing generic parser
+    maps Excel column "Kt" → field "metal" and "Col" → field "metal_color",
+    which aligns with the packing_lines columns of the same names.
+
+    Only populates entries where the (design_no, metal, metal_color) triple
+    is unique within the batch — ambiguous triples are omitted so the caller
+    falls back to the unresolved path rather than guessing.
+    """
+    if not (batch_id or "").strip():
+        return {}
+    db_path = getattr(_pdb, "_db_path", None)
+    if db_path is None:
+        return {}
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT design_no, metal, metal_color, product_code "
+                "FROM packing_lines "
+                "WHERE batch_id=? "
+                "AND product_code IS NOT NULL AND product_code<>''",
+                (str(batch_id),),
+            ).fetchall()
+    except Exception as exc:
+        log.warning(
+            "[%s] sales matcher: metal-disambiguation lookup failed "
+            "(non-fatal): %s", batch_id, exc,
+        )
+        return {}
+
+    # Build (design_no, metal, metal_color) → set of product_codes.
+    by_triple: Dict[Tuple[str, str, str], set] = {}
+    for r in rows:
+        d  = (r["design_no"]    or "").strip().upper()
+        m  = (r["metal"]        or "").strip().upper()
+        mc = (r["metal_color"]  or "").strip().upper()
+        p  = (r["product_code"] or "").strip()
+        if not d or not p:
+            continue
+        by_triple.setdefault((d, m, mc), set()).add(p)
+
+    # Only keep triples that resolve to exactly one product_code.
+    return {
+        k: next(iter(v))
+        for k, v in by_triple.items()
+        if len(v) == 1
+    }
+
+
 # ── Public matcher ──────────────────────────────────────────────────────────
 
 def match_sales_lines_to_packing(
@@ -111,7 +167,11 @@ def match_sales_lines_to_packing(
           "rows_skipped": int,   # ambiguous + unresolved + missing design_no
         }
     """
-    lookup = _design_to_product_codes_for_batch(batch_id)
+    lookup        = _design_to_product_codes_for_batch(batch_id)
+    # Secondary: (design_no, metal, metal_color) → product_code — used only
+    # when the primary design_no lookup is ambiguous (same design in multiple
+    # metal/color variants within one batch).
+    metal_lookup  = _design_metal_to_product_code_for_batch(batch_id)
 
     matched: List[Dict[str, Any]] = []
     designs_resolved:   Dict[str, str]       = {}
@@ -140,14 +200,35 @@ def match_sales_lines_to_packing(
             designs_resolved[dn] = cands[0]
             rows_resolved += 1
         elif len(cands) > 1:
-            designs_ambiguous[dn] = list(cands)
-            matched.append(r)
-            rows_skipped += 1
-            log.warning(
-                "[%s] sales matcher: design %r ambiguous in batch "
-                "packing_lines -> %s — leaving product_code empty",
-                batch_id, dn, cands,
-            )
+            # Secondary disambiguation: try (design_no, metal, metal_color).
+            # The generic extractor maps Excel "Kt" → field "metal" and
+            # "Col" → field "metal_color", aligning with packing_lines columns.
+            metal  = (r.get("metal")        or "").strip().upper()
+            mcol   = (r.get("metal_color")  or "").strip().upper()
+            triple = (dn.upper(), metal, mcol)
+            resolved_pc: Optional[str] = metal_lookup.get(triple)
+            if resolved_pc:
+                clone = dict(r)
+                clone["product_code"]      = resolved_pc
+                clone["resolution_source"] = "batch_packing_lines_metal"
+                matched.append(clone)
+                designs_resolved[dn] = resolved_pc
+                rows_resolved += 1
+                log.info(
+                    "[%s] sales matcher: design %r disambiguated via "
+                    "metal=%r color=%r -> %s",
+                    batch_id, dn, metal, mcol, resolved_pc,
+                )
+            else:
+                designs_ambiguous[dn] = list(cands)
+                matched.append(r)
+                rows_skipped += 1
+                log.warning(
+                    "[%s] sales matcher: design %r ambiguous in batch "
+                    "packing_lines -> %s (metal=%r color=%r) — "
+                    "leaving product_code empty",
+                    batch_id, dn, cands, metal, mcol,
+                )
         else:
             designs_unresolved.add(dn)
             matched.append(r)
