@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-12 (CN↔HSN mixed-metal false-block campaign, PR #568 open, scorecard .claude/memory/scorecards/2026-06-12-cn-hsn-false-block-fix.md).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-13 (proforma readiness single-authority campaign PR #573 gate completed, 7-agent verdict READY-TO-DEPLOY, scorecard .claude/memory/scorecards/2026-06-13-pr573-merge-gate-proforma-readiness.md).
 
-**Last-run-at:** 2026-06-10 (PR #548 merged as 74bee9d — proforma PR B customer address/service charges authority; production deployed; 7-agent gate passed; GATE 6 verified). Origin/main HEAD: **74bee9d** (feat(proforma): PR B — Customer/service authority (#548)). GATE 2: **3/3 open PRs** (#551, #522, #498 — PR #548 merged, #549 closed redundant, PR #551 opened). TEST BASELINE: 160/160 PZ regression + 412/412 carrier suite. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
+**Last-run-at:** 2026-06-13 (proforma readiness single-authority campaign PR #573 7-agent gate completed READY-TO-DEPLOY). Origin/main HEAD: **ff1f4b5** (fix(security): non-ASCII X-API-Key returns 401 not 500 (#563)). GATE 2: **2/3 open PRs** (#522 needs-rebase/#521-overlap, #498 draft/Lesson-E) + PR #573 ready-to-merge. TEST BASELINE: 160/160 PZ regression + 412/412 carrier suite. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
 
 ---
 
@@ -110,6 +110,14 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 **GATE 6 browser verification**: all 10 operator steps completed on seeded fixture storage (%TEMP%\pz-readiness-storage, port 47997); production Drafts #32/#33 verification deferred to post-deploy because pz-deploy-guard blocks reading production DBs.
 **Scorecard**: .claude/memory/scorecards/2026-06-12-proforma-readiness-single-authority.md — 3 agents scored, all EXEMPLARY, no NEEDS-TUNING/UNRELIABLE verdicts (RULE 6 citation requirement).
 **Safety gates honoured verbatim**: no historical posted documents edited; no Draft #33 reset; no VAT-mode change; duplicate guard / posting lock / approval gate / WFIRMA_CREATE_PROFORMA_ALLOWED intact (retry test: 400 at flag gate before any wFirma call, no duplicate).
+
+**PR #573 opened (2026-06-13)**: https://github.com/amitpoland/estrella-dhl-control/pull/573 — branch rebased onto ecd6e85 (post #570 squash 7e4fe6c + #568 squash ecd6e85), HEAD c62e992, 4 commits (10e6763 impl, 573a398 tests, 71ea0f6 envelope unwrap, c62e992 memory).
+**7-agent pre-deploy gate completed (2026-06-13)**: DECISION GO (READY-TO-DEPLOY). Verdicts: git-diff BLOCKER (mechanical DB_SCHEMA classification, overridden), backend-impact CLEAR/LOW, persistence CLEAR/LOW (additive idempotent table, migration not required, rollback-safe), security CLEAR/LOW, QA CLEAR/LOW (PZ 221 MET, carrier 412 MET, no ERRORs), release-manager CLEAR/MEDIUM, lead-coordinator GO/MEDIUM. Gate record posted as PR comment: https://github.com/amitpoland/estrella-dhl-control/pull/573#issuecomment-4695891246.
+**Conflict resolution**: persistence-storage-reviewer (schema domain specialist) analysis + PR-body documentation satisfied the migration-plan requirement; git-diff's mechanical blocker overridden by lead coordinator with explicit reasoning.
+**deploy-lead-coordinator**: NO fabrication this run (vs 4 documented prior occurrences pr560/pr563/pr568). Orchestrator post-verified output; corrected 2 transcription degradations (top-level-only pycache purge → release-manager's recursive purge; /health → /api/v1/health).
+**Scorecard produced and verified**: `.claude/memory/scorecards/2026-06-13-pr573-merge-gate-proforma-readiness.md` (10,215 bytes; 5 EXEMPLARY, 2 ACCEPTABLE — release-manager and lead-coordinator; no NEEDS-TUNING/UNRELIABLE, so no GATE 4 disposition needed). RULE 5 self-eval fired same day → `.claude/memory/scorecards/self-eval-2026-06-13.md` (in progress at time of this update).
+**Combined deploy plan**: (3-PR backlog, production at ff1f4b5): post-merge from fresh `git worktree add C:\PZ-release origin/main`; engine-file sync pz_import_processor.py + audit_scoring.py → C:\PZ\engine /COPY:DAT (Lesson J, #568, operator-required verbatim); standard app sync robocopy service/app → C:\PZ\app /E /XO with exclusions (never /MIR); recursive __pycache__ purge; PZService restart; post-deploy checks incl. /api/v1/health local+public, readiness endpoint 9-key shape, engine disk-grep, Drafts #32/#33 expected BLOCKED.
+**Rollback**: revert the single squash-merge commit on main (squash convention); design_ambiguity_resolution table is additive, old code never reads it.
 
 ## PR #546 — Proforma Display Contract Lock PR A (2026-06-10, MERGED + DEPLOYED)
 
@@ -5590,6 +5598,20 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Context**: These issues were filed as part of proforma authority fix campaign and remain open.
 - **Impact if left unanswered**: GATE 4 governance rule violated (salvage findings without explicit disposition).
 
+## OQ-NEW-17 -- PR #573 merge and deploy actions (2026-06-13, NEW)
+
+- **Question**: When to merge PR #573 and execute the combined deploy plan for 3-PR backlog?
+- **Answerer**: Operator — merge decision and deploy execution
+- **Context**: 7-agent gate completed with DECISION GO (READY-TO-DEPLOY). Combined deploy plan documented with engine-file sync requirements (Lesson J). Production at ff1f4b5, 3-PR backlog includes #573, #568, and others.
+- **Impact if left unanswered**: Proforma readiness single-authority campaign remains incomplete; production browser verification of Drafts #32/#33 cannot proceed.
+
+## OQ-NEW-18 -- Production data repairs before Draft #33 (2026-06-13, NEW)
+
+- **Question**: When to resolve design_no J4007R08118-0.6 (EJL/26-27/257-2 vs 257-4), register 2 missing products in wFirma, and add Horak SK EU VAT to Customer Master + wFirma contractor card 195596259?
+- **Answerer**: Operator — data repair execution (operator-only, before any #33 post)
+- **Context**: Production data repairs required before Draft #33 posting. These are operator-only tasks that must complete before proforma workflow can proceed fully. Related: OQ-NEW-16 covers post-deploy browser verification of Drafts #32/#33.
+- **Impact if left unanswered**: Draft #33 workflow may encounter data inconsistencies during operator usage.
+
 ## OQ7 -- PR-C: DHL auto-send flag flip timing (2026-05-26)
 
 - **Question**: When to flip DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=true in C:\PZ\.env to enable live auto-sends?
@@ -6125,12 +6147,13 @@ GitHub Issue filed: **#510** — "test(rbac): Phase B follow-up tests — meta-t
 - **Unblock order (operator decision 2026-06-09)**: (1) #498 first if reviewed/security complete → (2) open xlsx diagnostic refresh PR → (3) leave #522/#523 untouched unless already ready
 - **Next action**: After #498 merges or closes, run `git push origin main` then open PR with title above
 
-## OQ-NEW-15 -- PR open for fix/proforma-readiness-single-authority blocked on GATE 2 (2026-06-12)
+## OQ-NEW-15 -- PR open for fix/proforma-readiness-single-authority blocked on GATE 2 (2026-06-12, RESOLVED 2026-06-13)
 
 - **Question**: When to open PR for fix/proforma-readiness-single-authority campaign completion?
 - **Answerer**: Operator — GATE 2 queue management
 - **Context**: PR open blocked on GATE 2 (4 PRs open: #570, #568, #522, #498 draft). PR body prepared at C:\PZ-wt-readiness\.git-pr-body.md.
 - **Impact if left unanswered**: Campaign code remains unmerged despite completion and testing.
+- **RESOLVED 2026-06-13**: PR #573 opened after operator merged #570+#568 and cleared the GATE 2 slot. 7-agent gate completed with READY-TO-DEPLOY verdict.
 
 ## OQ-NEW-16 -- Production Drafts #32/#33 browser verification post-deploy (2026-06-12)
 
