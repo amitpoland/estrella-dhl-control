@@ -262,10 +262,15 @@ def _resolve_hardening_status(
                 break
         return capped, level, "NOT_VERIFIED"
 
-    # 3. PARTIAL — SAD-aggregated quantity OR CN parent-aggregation.
+    # 3. PARTIAL — SAD-aggregated quantity OR CN parent/heading-aggregation.
+    # verified_heading_aggregated is a WEAKER agreement than
+    # verified_parent_aggregated (heading-level only, e.g. mixed silver+gold
+    # under one aggregated SAD CN) — it must cap at least as hard, never
+    # score above the stricter label.
     if (
         qty_status == "partial_aggregated_sad"
         or cn_status == "verified_parent_aggregated"
+        or cn_status == "verified_heading_aggregated"
     ):
         capped = min(score, 85)
         level = "HIGH RISK"
