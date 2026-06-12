@@ -6,10 +6,13 @@ and that the coordinator is never invoked when authentication fails.
 
 Uses isolated FastAPI test apps with dependency_overrides that force 401.
 No real DB, no real coordinator.
+
+Note: Authentication occurs before AWB address authority logic (Campaign 02.5),
+so these tests are unaffected by the feature flag changes.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -59,17 +62,20 @@ def auth_app():
 
 def test_post_shipment_no_key_returns_401(auth_app):
     client = TestClient(auth_app, raise_server_exceptions=False)
-    resp = client.post(
-        "/api/v1/carrier/BATCH-001/shipment",
-        json={
-            "shipper_account": "ACC",
-            "recipient_address": {},
-            "declared_value": 100.0,
-            "currency": "EUR",
-            "weight_kg": 1.5,
-            "dimensions": {},
-        },
-    )
+    # Mock settings to prevent any potential import issues during auth failure
+    with patch('app.core.config.settings') as mock_settings:
+        mock_settings.awb_address_authority_enabled = False
+        resp = client.post(
+            "/api/v1/carrier/BATCH-001/shipment",
+            json={
+                "shipper_account": "ACC",
+                "recipient_address": {},
+                "declared_value": 100.0,
+                "currency": "EUR",
+                "weight_kg": 1.5,
+                "dimensions": {},
+            },
+        )
     assert resp.status_code == 401
 
 

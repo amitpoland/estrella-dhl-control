@@ -336,6 +336,10 @@ class Settings(BaseSettings):
     # Carrier file storage root. None = defaults to storage_root / "carrier" at runtime.
     carrier_storage_root: Optional[Path] = Field(default=None)
 
+    # AWB address authority repair (Campaign 02.5) — gate the Customer Master authority
+    # derivation behind this flag. Default False = raw recipient_address behavior unchanged.
+    awb_address_authority_enabled: bool = Field(default=False)
+
     # ── Cliq bot batch collection ─────────────────────────────────────────────
     # Expire an incomplete (missing files) session after N minutes of inactivity
     batch_session_timeout_minutes: int = 30
