@@ -93,8 +93,8 @@ class TestHistoricalBatchDetection:
 class TestAuthorityDerivation:
     """Test the core authority derivation functions."""
 
-    @patch('app.services.awb_address_authority.resolve_delivery_address')
-    @patch('app.services.awb_address_authority._resolve_customer_from_batch')
+    @patch('app.services.customer_master.resolve_delivery_address')
+    @patch('app.services.carrier.doc_package._resolve_customer_from_batch')
     def test_successful_ship_to_authority(self, mock_resolve_customer, mock_resolve_addr,
                                         mock_customer_with_ship_to, mock_storage_root):
         """Test successful authority derivation with ship-to address."""
@@ -118,7 +118,7 @@ class TestAuthorityDerivation:
         mock_resolve_customer.assert_called_once_with("AWB_1234567890", client_name=None, storage_root=mock_storage_root)
         mock_resolve_addr.assert_called_once_with(mock_customer_with_ship_to)
 
-    @patch('app.services.awb_address_authority._resolve_customer_from_batch')
+    @patch('app.services.carrier.doc_package._resolve_customer_from_batch')
     def test_customer_not_found_error(self, mock_resolve_customer, mock_storage_root):
         """Test CustomerNotFoundError when batch cannot resolve to customer."""
         mock_resolve_customer.return_value = None
@@ -128,8 +128,8 @@ class TestAuthorityDerivation:
 
         assert "No customer resolvable from batch_id='INVALID_BATCH'" in str(exc_info.value)
 
-    @patch('app.services.awb_address_authority.resolve_delivery_address')
-    @patch('app.services.awb_address_authority._resolve_customer_from_batch')
+    @patch('app.services.customer_master.resolve_delivery_address')
+    @patch('app.services.carrier.doc_package._resolve_customer_from_batch')
     def test_address_missing_error(self, mock_resolve_customer, mock_resolve_addr,
                                  mock_incomplete_customer, mock_storage_root):
         """Test AddressMissingError when customer has incomplete address."""
@@ -259,34 +259,25 @@ class TestIdempotencyKeyPreservation:
 class TestAuthorityParity:
     """Test that authority derivation matches doc_package behavior."""
 
-    @patch('app.services.awb_address_authority.resolve_delivery_address')
-    @patch('app.services.awb_address_authority._resolve_customer_from_batch')
-    def test_authority_parity_with_doc_package(self, mock_resolve_customer, mock_resolve_addr,
+    @patch('app.services.carrier.doc_package._resolve_customer_from_batch')
+    def test_authority_parity_with_doc_package(self, mock_resolve_customer,
                                              mock_customer_with_ship_to, mock_storage_root):
-        """Test that AWB authority matches doc_package authority for same customer."""
+        """Test that AWB authority uses the same customer resolution and address derivation as doc_package."""
         mock_resolve_customer.return_value = mock_customer_with_ship_to
 
-        expected_address = {
-            "name": "Estrella Jewels Sp. z o.o.",
-            "person": "Jan Kowalski",
-            "street": "ul. Złota 123",
-            "city": "Warszawa",
-            "postal_code": "00-001",
-            "country": "Poland",
-            "phone": "+48 123 456 789",
-            "email": "contact@estrellajewels.eu",
-            "source": "ship_to",
-        }
-        mock_resolve_addr.return_value = expected_address
-
-        # Get AWB authority result
+        # Get AWB authority result (this will use the real resolve_delivery_address function)
         awb_result = derive_awb_address_authority("TEST_BATCH", mock_storage_root)
 
-        # Simulate doc_package call with same customer
+        # Now call resolve_delivery_address directly with the same customer to verify parity
         from app.services.customer_master import resolve_delivery_address
         doc_result = resolve_delivery_address(mock_customer_with_ship_to)
 
-        # Both should call resolve_delivery_address with same customer
-        # and get the same result structure
-        assert awb_result == expected_address
-        mock_resolve_addr.assert_called_with(mock_customer_with_ship_to)
+        # Both should produce identical results since they use the same underlying logic
+        assert awb_result == doc_result
+
+        # Verify that the customer resolution was called with expected parameters
+        mock_resolve_customer.assert_called_once_with("TEST_BATCH", client_name=None, storage_root=mock_storage_root)
+
+        # Verify the result has the expected structure
+        assert "name" in awb_result
+        assert "source" in awb_result
