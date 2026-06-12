@@ -23,7 +23,14 @@ def require_api_key(
             )
         return  # dev only — auth disabled
 
-    if key is not None and hmac.compare_digest(key, settings.api_key):
+    # Encode to bytes before constant-time compare: hmac.compare_digest raises
+    # TypeError on str operands containing non-ASCII characters. A malformed /
+    # non-ASCII X-API-Key must be an auth FAILURE (fall through to 401), never an
+    # unhandled 500. (.encode is constant-time-safe; settings.api_key is non-empty
+    # here per the guard above.)
+    if key is not None and hmac.compare_digest(
+        key.encode("utf-8"), settings.api_key.encode("utf-8")
+    ):
         return
 
     if pz_session:
@@ -73,7 +80,11 @@ def require_api_key_privileged(
         return  # dev only — auth disabled
 
     # Trusted automation: a valid X-API-Key is admin-equivalent.
-    if key is not None and hmac.compare_digest(key, settings.api_key):
+    # Encode to bytes before compare_digest — non-ASCII str operands raise
+    # TypeError; a malformed key must fail auth (401), never 500.
+    if key is not None and hmac.compare_digest(
+        key.encode("utf-8"), settings.api_key.encode("utf-8")
+    ):
         return
 
     # Session caller: must be authenticated AND hold a write-capable role.
