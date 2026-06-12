@@ -23,11 +23,21 @@ Public API
 - ``populate_from_packing(batch_id, *, packing_db_path=None,
   reservation_db_path=None) -> Dict[str, Any]``
     Returns a summary: ``{batch_id, scanned, inserted, updated, skipped,
-    ambiguous_design_codes}``.
+    ambiguous_design_codes, resolved_design_codes}``.
 
 - ``get_product_codes_for_design(design_no, *, db_path=None) -> List[str]``
     Returns every distinct product_code currently mapped to the design.
     Empty list when the bridge has no entry.
+
+- ``record_ambiguity_resolution(batch_id, design_no, product_code,
+  operator, *, db_path=None) -> Dict[str, Any]``
+    Persist the operator's explicit choice of which product_code an
+    ambiguous design_no bills to in this batch. UNIQUE(batch_id, design_no)
+    — re-recording replaces the prior choice (audited by the caller).
+
+- ``get_ambiguity_resolutions(batch_id, *, db_path=None) -> Dict[str, str]``
+    All operator resolutions recorded for the batch
+    (design_no → chosen product_code).
 """
 from __future__ import annotations
 
@@ -59,6 +69,104 @@ def _resolve_reservation_db_path(override: Optional[Path]) -> Optional[Path]:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ── Operator ambiguity resolution (single readiness authority campaign) ─────
+#
+# When a design_no maps to >1 product_code within one batch, the operator
+# must explicitly choose which product_code the proforma bills. The choice
+# is batch-scoped (the same design may legitimately map differently in a
+# different batch). The readiness authority treats an unresolved ambiguity
+# as a hard blocker for approve/post/convert.
+
+_RESOLUTION_DDL = """
+CREATE TABLE IF NOT EXISTS design_ambiguity_resolution (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id TEXT NOT NULL,
+    design_no TEXT NOT NULL,
+    product_code TEXT NOT NULL,
+    resolved_by TEXT NOT NULL DEFAULT '',
+    resolved_at TEXT NOT NULL,
+    UNIQUE(batch_id, design_no)
+);
+"""
+
+
+def _ensure_resolution_table(con: sqlite3.Connection) -> None:
+    con.execute(_RESOLUTION_DDL)
+
+
+def record_ambiguity_resolution(
+    batch_id:     str,
+    design_no:    str,
+    product_code: str,
+    operator:     str,
+    *,
+    db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Persist the operator's explicit (batch, design) → product_code choice.
+
+    Caller is responsible for validating that *product_code* is one of the
+    batch's mapped candidates BEFORE recording (the route does this against
+    populate_from_packing output) and for writing the audit event.
+    Re-recording for the same (batch, design) replaces the prior choice.
+    """
+    batch_id     = (batch_id or "").strip()
+    design_no    = (design_no or "").strip()
+    product_code = (product_code or "").strip()
+    operator     = (operator or "").strip()
+    if not batch_id or not design_no or not product_code:
+        raise ValueError("batch_id, design_no and product_code are required")
+    rdb_path = _resolve_reservation_db_path(db_path)
+    if rdb_path is None:
+        raise ValueError("reservation_db path could not be resolved")
+    now = _now_iso()
+    with sqlite3.connect(str(rdb_path)) as con:
+        _ensure_resolution_table(con)
+        con.execute(
+            """INSERT INTO design_ambiguity_resolution
+                   (batch_id, design_no, product_code, resolved_by, resolved_at)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(batch_id, design_no) DO UPDATE SET
+                   product_code=excluded.product_code,
+                   resolved_by=excluded.resolved_by,
+                   resolved_at=excluded.resolved_at""",
+            (batch_id, design_no, product_code, operator, now),
+        )
+        con.commit()
+    return {
+        "batch_id":     batch_id,
+        "design_no":    design_no,
+        "product_code": product_code,
+        "resolved_by":  operator,
+        "resolved_at":  now,
+    }
+
+
+def get_ambiguity_resolutions(
+    batch_id: str,
+    *,
+    db_path: Optional[Path] = None,
+) -> Dict[str, str]:
+    """Return all operator resolutions for *batch_id*
+    (design_no → chosen product_code). Empty dict when none recorded."""
+    rdb_path = _resolve_reservation_db_path(db_path)
+    if rdb_path is None or not Path(rdb_path).exists():
+        return {}
+    try:
+        with sqlite3.connect(str(rdb_path)) as con:
+            con.row_factory = sqlite3.Row
+            _ensure_resolution_table(con)
+            rows = con.execute(
+                "SELECT design_no, product_code FROM design_ambiguity_resolution "
+                "WHERE batch_id=?",
+                ((batch_id or "").strip(),),
+            ).fetchall()
+        return {r["design_no"]: r["product_code"] for r in rows}
+    except Exception as exc:
+        log.warning("[design_product_bridge] resolution lookup failed for %s: %s",
+                    batch_id, exc)
+        return {}
 
 
 def populate_from_packing(
@@ -102,6 +210,7 @@ def populate_from_packing(
         "updated":               0,
         "skipped":               0,
         "ambiguous_design_codes": {},
+        "resolved_design_codes":  {},
         "errors":                [],
     }
 
@@ -175,10 +284,28 @@ def populate_from_packing(
         except Exception as exc:
             out["errors"].append(f"upsert failed for {design}->{prod}: {exc}")
 
-    # Surface ambiguity (design with >1 product_code in same batch)
+    # Surface ambiguity (design with >1 product_code in same batch).
+    # An explicit operator resolution clears the ambiguity — but ONLY when
+    # the chosen product_code is still among the batch's current candidates
+    # (a stale resolution after a packing re-upload stays ambiguous and is
+    # reported as an error so the operator re-confirms).
+    resolutions = get_ambiguity_resolutions(batch_id, db_path=rdb_path)
     for design, prods in pairs_seen.items():
-        if len(prods) > 1:
-            out["ambiguous_design_codes"][design] = sorted(prods)
+        if len(prods) <= 1:
+            continue
+        chosen = resolutions.get(design, "")
+        if chosen and chosen in prods:
+            out["resolved_design_codes"][design] = {
+                "product_code": chosen,
+                "candidates":   sorted(prods),
+            }
+            continue
+        if chosen and chosen not in prods:
+            out["errors"].append(
+                f"stale ambiguity resolution for {design!r}: chose "
+                f"{chosen!r} but batch now maps {sorted(prods)} — re-resolve"
+            )
+        out["ambiguous_design_codes"][design] = sorted(prods)
 
     log.info(
         "[design_product_bridge] batch=%s scanned=%d inserted=%d updated=%d "
