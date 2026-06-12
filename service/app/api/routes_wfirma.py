@@ -1316,24 +1316,44 @@ def _find_pz_owner_batch(
 
 
 def _patch_audit_wfirma(output_dir: Path, mode: str, row_count: int) -> None:
-    """Write wfirma_export block into audit.json."""
+    """Write clipboard/json generation flags into audit.json wfirma_export.
+
+    MERGE-PRESERVE (Fix A): spread ``**existing`` so the PZ-creation authority
+    fields (``wfirma_pz_doc_id``, ``wfirma_pz_fullnumber``, ``pz_source``,
+    ``pz_created_at``) are NEVER dropped by a generation write. Before
+    2026-06-12 this rebuilt ``wfirma_export`` from scratch and silently wiped
+    the PZ link whenever clipboard/JSON was generated for an already-created
+    PZ (incident: SHIPMENT_9938632830 lost doc_id 188300707). Generation flags
+    are additive, never destructive.
+    """
     audit_path = output_dir / "audit.json"
     if not audit_path.exists():
         return
     try:
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
         existing = audit.get("wfirma_export") or {}
-        audit["wfirma_export"] = {
+        merged = {
+            **existing,
             "clipboard_generated": existing.get("clipboard_generated") or (mode == "clipboard"),
             "json_generated":      existing.get("json_generated")      or (mode == "json"),
             "last_generated_at":   time.strftime("%Y-%m-%dT%H:%M:%S"),
             "row_count":           row_count,
             "mode":                mode,
         }
-        if mode == "clipboard":
-            audit["wfirma_export"]["clipboard_generated"] = True
-        elif mode == "json":
-            audit["wfirma_export"]["json_generated"] = True
+        # Fail-closed guard (Fix B): a generation write must NEVER drop an
+        # existing PZ link. If the merged block would lose a non-empty
+        # wfirma_pz_doc_id, abort and leave the audit untouched rather than
+        # persist a corrupted projection. With **existing this cannot happen;
+        # the guard catches any future field-drop regression at this writer.
+        prev_link = (existing.get("wfirma_pz_doc_id") or "").strip()
+        if prev_link and not (merged.get("wfirma_pz_doc_id") or "").strip():
+            log.error(
+                "[wfirma_export] ABORT generation patch — would drop "
+                "wfirma_pz_doc_id=%s (mode=%s). Audit left unchanged.",
+                prev_link, mode,
+            )
+            return
+        audit["wfirma_export"] = merged
         write_json_atomic(audit_path, audit)
     except Exception as e:
         log.warning("wfirma_export audit patch failed: %s", e)
