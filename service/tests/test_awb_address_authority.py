@@ -2,9 +2,14 @@
 
 Tests the new Customer Master authority derivation for shipment creation,
 including feature flag behavior, error handling, and fallback mechanisms.
+
+Also includes tests for the AWB resolution audit script (Condition 1 implementation).
 """
 from __future__ import annotations
 
+import json
+import os
+import time
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -17,6 +22,9 @@ from app.services.awb_address_authority import (
     AddressMissingError,
     _is_historical_batch,
 )
+
+# Import audit script functions for testing
+from service.scripts.awb_resolution_audit import get_recent_batch_ids, run_audit
 
 
 # ── Feature Flag Integration Tests ──────────────────────────────────────────────
@@ -281,3 +289,243 @@ class TestAuthorityParity:
         # Verify the result has the expected structure
         assert "name" in awb_result
         assert "source" in awb_result
+
+
+# ── AWB Resolution Audit Script Tests (Condition 1) ─────────────────────────────
+
+class TestGetRecentBatchIds:
+    """Test the batch discovery function."""
+
+    def test_empty_storage_returns_empty_list(self, tmp_path):
+        """Test that empty storage returns empty list."""
+        storage_root = tmp_path / "storage"
+        storage_root.mkdir()
+        outputs_dir = storage_root / "outputs"
+        outputs_dir.mkdir()
+
+        result = get_recent_batch_ids(storage_root, days=30)
+        assert result == []
+
+    def test_missing_outputs_directory_returns_empty_list(self, tmp_path):
+        """Test that missing outputs directory returns empty list."""
+        storage_root = tmp_path / "storage"
+        storage_root.mkdir()
+
+        result = get_recent_batch_ids(storage_root, days=30)
+        assert result == []
+
+    def test_finds_recent_shipment_batches(self, tmp_path):
+        """Test that recent SHIPMENT_ batches are found."""
+        storage_root = tmp_path / "storage"
+        outputs_dir = storage_root / "outputs"
+        outputs_dir.mkdir(parents=True)
+
+        # Create recent batch
+        recent_batch = outputs_dir / "SHIPMENT_1234567890_2026-06_abcd1234"
+        recent_batch.mkdir()
+        audit_file = recent_batch / "audit.json"
+        audit_file.write_text('{"batch_id": "SHIPMENT_1234567890_2026-06_abcd1234"}')
+
+        # Create old batch (modify timestamp to be older than 30 days)
+        old_batch = outputs_dir / "SHIPMENT_9876543210_2026-01_efgh5678"
+        old_batch.mkdir()
+        old_audit_file = old_batch / "audit.json"
+        old_audit_file.write_text('{"batch_id": "SHIPMENT_9876543210_2026-01_efgh5678"}')
+
+        # Set the old batch timestamp to be older than 30 days
+        old_time = time.time() - (35 * 24 * 3600)  # 35 days ago
+        os.utime(old_audit_file, (old_time, old_time))
+
+        result = get_recent_batch_ids(storage_root, days=30)
+
+        assert len(result) == 1
+        assert "SHIPMENT_1234567890_2026-06_abcd1234" in result
+        assert "SHIPMENT_9876543210_2026-01_efgh5678" not in result
+
+    def test_finds_recent_awb_batches(self, tmp_path):
+        """Test that recent AWB_ batches are found."""
+        storage_root = tmp_path / "storage"
+        outputs_dir = storage_root / "outputs"
+        outputs_dir.mkdir(parents=True)
+
+        # Create recent AWB batch
+        recent_batch = outputs_dir / "AWB_1234567890"
+        recent_batch.mkdir()
+        audit_file = recent_batch / "audit.json"
+        audit_file.write_text('{"awb": "1234567890"}')
+
+        result = get_recent_batch_ids(storage_root, days=30)
+
+        assert len(result) == 1
+        assert "AWB_1234567890" in result
+
+    def test_ignores_test_and_quarantine_directories(self, tmp_path):
+        """Test that test and quarantine directories are ignored."""
+        storage_root = tmp_path / "storage"
+        outputs_dir = storage_root / "outputs"
+        outputs_dir.mkdir(parents=True)
+
+        # Create various directory types
+        (outputs_dir / "SHIPMENT_1234567890_2026-06_abcd1234").mkdir()
+        (outputs_dir / "SHIPMENT_1234567890_2026-06_abcd1234" / "audit.json").write_text("{}")
+
+        (outputs_dir / "B_TEST_BATCH").mkdir()
+        (outputs_dir / "B_TEST_BATCH" / "audit.json").write_text("{}")
+
+        (outputs_dir / "TEST_SOMETHING").mkdir()
+        (outputs_dir / "TEST_SOMETHING" / "audit.json").write_text("{}")
+
+        (outputs_dir / "quarantine_old_batch").mkdir()
+        (outputs_dir / "quarantine_old_batch" / "audit.json").write_text("{}")
+
+        (outputs_dir / "some_random_dir").mkdir()
+        (outputs_dir / "some_random_dir" / "audit.json").write_text("{}")
+
+        result = get_recent_batch_ids(storage_root, days=30)
+
+        # Should only find the SHIPMENT_ batch, ignoring test/quarantine/anomalous directories
+        assert len(result) == 1
+        assert "SHIPMENT_1234567890_2026-06_abcd1234" in result
+
+    def test_uses_directory_mtime_when_audit_missing(self, tmp_path):
+        """Test that directory mtime is used when audit.json is missing."""
+        storage_root = tmp_path / "storage"
+        outputs_dir = storage_root / "outputs"
+        outputs_dir.mkdir(parents=True)
+
+        # Create batch without audit.json
+        recent_batch = outputs_dir / "SHIPMENT_1234567890_2026-06_abcd1234"
+        recent_batch.mkdir()
+        # No audit.json file
+
+        result = get_recent_batch_ids(storage_root, days=30)
+
+        assert len(result) == 1
+        assert "SHIPMENT_1234567890_2026-06_abcd1234" in result
+
+    def test_respects_days_parameter(self, tmp_path):
+        """Test that the days parameter correctly filters results."""
+        storage_root = tmp_path / "storage"
+        outputs_dir = storage_root / "outputs"
+        outputs_dir.mkdir(parents=True)
+
+        # Create recent batch (within 7 days)
+        recent_batch = outputs_dir / "SHIPMENT_1234567890_2026-06_recent"
+        recent_batch.mkdir()
+        recent_audit = recent_batch / "audit.json"
+        recent_audit.write_text("{}")
+
+        # Create medium-old batch (within 30 days but older than 7 days)
+        medium_batch = outputs_dir / "SHIPMENT_9876543210_2026-06_medium"
+        medium_batch.mkdir()
+        medium_audit = medium_batch / "audit.json"
+        medium_audit.write_text("{}")
+
+        # Set medium batch to be 15 days old
+        medium_time = time.time() - (15 * 24 * 3600)
+        os.utime(medium_audit, (medium_time, medium_time))
+
+        # Test with days=30 (should find both)
+        result_30 = get_recent_batch_ids(storage_root, days=30)
+        assert len(result_30) == 2
+
+        # Test with days=7 (should find only recent)
+        result_7 = get_recent_batch_ids(storage_root, days=7)
+        assert len(result_7) == 1
+        assert "SHIPMENT_1234567890_2026-06_recent" in result_7
+
+    def test_returns_sorted_results(self, tmp_path):
+        """Test that results are returned sorted."""
+        storage_root = tmp_path / "storage"
+        outputs_dir = storage_root / "outputs"
+        outputs_dir.mkdir(parents=True)
+
+        # Create batches in non-alphabetical order
+        for batch_id in ["SHIPMENT_333_2026-06_c", "SHIPMENT_111_2026-06_a", "SHIPMENT_222_2026-06_b"]:
+            batch_dir = outputs_dir / batch_id
+            batch_dir.mkdir()
+            (batch_dir / "audit.json").write_text("{}")
+
+        result = get_recent_batch_ids(storage_root, days=30)
+
+        assert result == sorted(result)
+        assert len(result) == 3
+
+
+class TestRunAudit:
+    """Test the run_audit function."""
+
+    @patch('service.scripts.awb_resolution_audit.test_batch_resolution')
+    def test_no_batches_returns_error_code(self, mock_test_batch, tmp_path):
+        """Test that no batches found returns error code 2."""
+        storage_root = tmp_path / "storage"
+        outputs_dir = storage_root / "outputs"
+        outputs_dir.mkdir(parents=True)
+
+        result = run_audit(storage_root, days=30)
+
+        assert result == 2
+        mock_test_batch.assert_not_called()
+
+    @patch('service.scripts.awb_resolution_audit.test_batch_resolution')
+    def test_success_rate_above_threshold_returns_success(self, mock_test_batch, tmp_path):
+        """Test that success rate >= 95% returns success code 0."""
+        storage_root = tmp_path / "storage"
+        outputs_dir = storage_root / "outputs"
+        outputs_dir.mkdir(parents=True)
+
+        # Create test batches
+        for i in range(20):
+            batch_dir = outputs_dir / f"SHIPMENT_{i:010d}_2026-06_test{i}"
+            batch_dir.mkdir()
+            (batch_dir / "audit.json").write_text("{}")
+
+        # Mock 19 successes out of 20 (95% success rate)
+        def mock_resolution(batch_id, storage_root):
+            if "19" in batch_id:  # Make the last one fail
+                return False, "Test failure"
+            return True, "Success"
+
+        mock_test_batch.side_effect = mock_resolution
+
+        result = run_audit(storage_root, days=30)
+
+        assert result == 0
+        assert mock_test_batch.call_count == 20
+
+    @patch('service.scripts.awb_resolution_audit.test_batch_resolution')
+    def test_success_rate_below_threshold_returns_failure(self, mock_test_batch, tmp_path):
+        """Test that success rate < 95% returns failure code 1."""
+        storage_root = tmp_path / "storage"
+        outputs_dir = storage_root / "outputs"
+        outputs_dir.mkdir(parents=True)
+
+        # Create test batches
+        for i in range(10):
+            batch_dir = outputs_dir / f"SHIPMENT_{i:010d}_2026-06_test{i}"
+            batch_dir.mkdir()
+            (batch_dir / "audit.json").write_text("{}")
+
+        # Mock 8 successes out of 10 (80% success rate - below threshold)
+        def mock_resolution(batch_id, storage_root):
+            if "8" in batch_id or "9" in batch_id:  # Make 2 fail
+                return False, "Test failure"
+            return True, "Success"
+
+        mock_test_batch.side_effect = mock_resolution
+
+        result = run_audit(storage_root, days=30)
+
+        assert result == 1
+        assert mock_test_batch.call_count == 10
+
+    @patch('service.scripts.awb_resolution_audit.get_recent_batch_ids')
+    def test_exception_during_audit_returns_error_code(self, mock_get_batches, tmp_path):
+        """Test that exceptions during audit return error code 2."""
+        storage_root = tmp_path / "storage"
+
+        mock_get_batches.side_effect = RuntimeError("Test error")
+
+        result = run_audit(storage_root, days=30)
+
+        assert result == 2

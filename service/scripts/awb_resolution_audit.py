@@ -36,32 +36,64 @@ def setup_logging():
 def get_recent_batch_ids(storage_root: Path, days: int = 30) -> List[str]:
     """Get batch IDs from recent production activity.
 
-    This implementation looks for batch directories or files in the storage
-    area that appear to be from the last N days. In a real deployment audit,
-    this would query production logs or databases.
+    Scans the storage_root/outputs directory for batch directories that have
+    been modified within the last N days. Uses the audit.json file mtime as
+    the timestamp source when available, falls back to directory mtime.
 
-    Returns a sample of batch IDs for testing purposes.
+    Args:
+        storage_root: Path to the storage root directory
+        days: Number of days to look back for recent activity
+
+    Returns:
+        List of batch IDs from recent production activity
     """
-    # TODO: Replace with actual production batch discovery logic
-    # This would typically scan:
-    # - audit files under storage_root
-    # - timeline entries
-    # - carrier shipment database
-    # - or other production activity logs
-
     logging.info(f"Scanning for batches in {storage_root} from last {days} days")
 
-    # For testing: return sample batch IDs in expected formats
-    sample_batches = [
-        "AWB_1234567890",
-        "AWB_9876543210",
-        "SHIPMENT_1234567890_2026-06_abcd1234",
-        "SHIPMENT_9876543210_2026-05_efgh5678",
-        "AWB_5555555555"
-    ]
+    outputs_dir = storage_root / "outputs"
+    if not outputs_dir.exists():
+        logging.warning(f"Outputs directory does not exist: {outputs_dir}")
+        return []
 
-    logging.info(f"Found {len(sample_batches)} recent batch IDs for audit")
-    return sample_batches
+    cutoff_time = datetime.now().timestamp() - (days * 24 * 3600)
+    recent_batches = []
+
+    try:
+        for entry in outputs_dir.iterdir():
+            if not entry.is_dir():
+                continue
+
+            # Skip test/quarantine directories - only process real batch directories
+            batch_id = entry.name
+            if not (batch_id.startswith("SHIPMENT_") or batch_id.startswith("AWB_")):
+                continue
+
+            # Check audit.json timestamp first, fall back to directory mtime
+            audit_path = entry / "audit.json"
+            if audit_path.exists():
+                try:
+                    mtime = audit_path.stat().st_mtime
+                except OSError:
+                    # Fall back to directory mtime if audit.json is inaccessible
+                    mtime = entry.stat().st_mtime
+            else:
+                # Use directory mtime if audit.json doesn't exist
+                try:
+                    mtime = entry.stat().st_mtime
+                except OSError:
+                    # Skip if we can't get any timestamp
+                    continue
+
+            # Check if this batch is within the time window
+            if mtime >= cutoff_time:
+                recent_batches.append(batch_id)
+                logging.debug(f"Found recent batch: {batch_id} (mtime: {datetime.fromtimestamp(mtime)})")
+
+    except OSError as exc:
+        logging.error(f"Failed to scan outputs directory {outputs_dir}: {exc}")
+        return []
+
+    logging.info(f"Found {len(recent_batches)} recent batch IDs for audit")
+    return sorted(recent_batches)
 
 
 def test_batch_resolution(batch_id: str, storage_root: Path) -> Tuple[bool, str]:
@@ -92,18 +124,19 @@ def test_batch_resolution(batch_id: str, storage_root: Path) -> Tuple[bool, str]
         return False, f"Resolution failed: {type(exc).__name__}: {str(exc)}"
 
 
-def run_audit(storage_root: Path) -> int:
+def run_audit(storage_root: Path, days: int = 30) -> int:
     """Run the full customer resolution audit.
 
     Args:
         storage_root: Path to the storage directory
+        days: Number of days to look back for batches (default: 30)
 
     Returns:
         Exit code (0=success, 1=below threshold, 2=error)
     """
     try:
         # Get recent batch IDs
-        batch_ids = get_recent_batch_ids(storage_root)
+        batch_ids = get_recent_batch_ids(storage_root, days)
 
         if len(batch_ids) == 0:
             logging.error("No recent batches found for audit")
@@ -197,7 +230,7 @@ def main():
 
     logging.info(f"Starting AWB resolution audit with storage path: {args.storage_path}")
 
-    exit_code = run_audit(args.storage_path)
+    exit_code = run_audit(args.storage_path, args.days)
     sys.exit(exit_code)
 
 
