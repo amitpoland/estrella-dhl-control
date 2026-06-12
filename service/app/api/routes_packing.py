@@ -1294,6 +1294,50 @@ async def reprocess_packing_documents(
                         "this group",
                         batch_id, sales_doc_id, file_name,
                     )
+                    # PR 1 (visibility) — emit a draft-birth skip event so the
+                    # all-fail resolver branch becomes auditable. Observation
+                    # only: does not influence the reprocess outcome.
+                    try:
+                        from ..services import preamble_signals as _ps
+                        _signals = (
+                            _ps.extract_all_signals(file_path)
+                            if (file_path and file_path.exists())
+                            else {"vat": None, "heading_candidate": None}
+                        )
+                        _has_signal = bool(_signals.get("vat") or _signals.get("heading_candidate"))
+                        if _signals.get("vat"):
+                            _next_action = "vat_resolver_will_auto_bind_post_pr2"
+                        elif _signals.get("heading_candidate"):
+                            _next_action = "heading_candidate_requires_corroboration"
+                        else:
+                            _next_action = "operator_bind_client_name_manually"
+                        tl.log_event(
+                            audit_path,
+                            (tl.EV_PROFORMA_DRAFT_CREATION_PENDING_RESOLUTION
+                             if _has_signal
+                             else tl.EV_PROFORMA_DRAFT_CREATION_SKIPPED),
+                            trigger_source="packing_reprocess",
+                            actor="system",
+                            detail={
+                                "batch_id":                 batch_id,
+                                "sales_doc_id":             sales_doc_id,
+                                "source_file_path":         str(file_path) if file_path else "",
+                                "file_name":                file_name,
+                                "reason":                   "client_name_unresolved_all_passes",
+                                "resolver_signals_seen":    _signals,
+                                "resolver_passes_attempted": ["pass1_sales_doc_scope",
+                                                              "pass2_shipment_doc_linkage",
+                                                              "pass3_wfirma_reverse_lookup",
+                                                              "pass4_filename_hint",
+                                                              "pass5_preamble_label_scan"],
+                                "next_action":              _next_action,
+                            },
+                        )
+                    except Exception as _exc:
+                        log.warning(
+                            "[%s] sales reprocess: skip-event emission "
+                            "failed (non-fatal): %s", batch_id, _exc,
+                        )
 
                 # Reshape parser rows → sales_packing_lines schema.
                 line_records = []

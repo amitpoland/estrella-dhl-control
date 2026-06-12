@@ -110,6 +110,18 @@ EV_PROFORMA_DRAFT_AUTO_CREATED       = "proforma_draft_auto_created"        # dr
 EV_PROFORMA_DRAFT_SYNCED             = "proforma_draft_synced"              # editable draft lines reset from sales packing
 EV_PROFORMA_SYNC_BLOCKED_FINALIZED   = "proforma_sync_blocked_finalized"    # draft in finalized state, sync skipped
 
+# ── Proforma draft-birth visibility events (observation-only, no behavioural change) ──
+# Emitted when a sales_document contributes zero lines to draft creation because
+# client_name could not be resolved. Two events distinguish operational state:
+#   PENDING_RESOLUTION: file contains ≥1 identity signal (VAT, heading candidate).
+#                      A future resolver upgrade can auto-resolve this case.
+#                      Operator action: WAIT for resolver upgrade, or bind manually.
+#   SKIPPED:            no identity signals found at all. Operator must bind manually.
+# These events make the silent-drop class visible; they do NOT change which drafts
+# get created. See proforma_draft_sync.py + routes_packing.py emit sites.
+EV_PROFORMA_DRAFT_CREATION_PENDING_RESOLUTION = "proforma_draft_creation_pending_resolution"
+EV_PROFORMA_DRAFT_CREATION_SKIPPED            = "proforma_draft_creation_skipped"
+
 # ── Proforma email events ────────────────────────────────────────────────────
 EV_PROFORMA_EMAIL_QUEUED             = "proforma_email_queued"              # proforma PDF emailed to customer via queue_email
 
