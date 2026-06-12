@@ -4880,6 +4880,15 @@ Group D — Tests (3 new files):
 - Draft 32 reset-from-sales-packing: SUCCESS
 - Draft 32 enrich-from-product-descriptions: enriched=25
 
+**wFirma Post-Failure Hardening Campaign (2026-06-12)**:
+- 2026-06-12: wFirma proforma post-failure hardening campaign completed on branch `fix/wfirma-post-error-visibility`, commit `e4b8dc1` pushed to origin (base origin/main @ ff1f4b5). 5 files, 786 insertions.
+- Root cause of draft #33 (Jozef Horak-HORNAK klenoty, SK) post failure — three coupled defects: (a) ADR-027 D3 applies WDT 0% as intent for EU customers without EU VAT number; Horak's wFirma contractor 195596259 has empty NIP, wFirma hard-rejects WDT without EU VAT; (b) wfirma_client error parser dropped nested `<errors><error><field>/<message>` nodes → operator saw empty error; (c) no request/response audit persisted for failed posts. Plus (d) frontend false-success: PostToWFirmaModal and ConvertToInvoiceModal closed as success on `{ok:false}` results because PzApi `_callM` never rejects.
+- Fix in e4b8dc1: `_extract_field_errors` + `WFirmaCreateError` (request_xml/response_xml/field_errors) in wfirma_client.py; WDT preflight gate (pre-commit, fail-open, 400 blocked with operator fix-hint, draft stays approved) + `wfirma_post_exchange` audit event (error[:500], field_errors[:10], request/response XML[:8000]) in routes_proforma.py; result-inspection in both modals in proforma-detail.jsx; apiFetch error-body slice 200→600 chars in dashboard-shared.js.
+- Tests: 15 new in service/tests/test_wfirma_post_failure_hardening.py (all pass); 42 targeted pass (15 new + 27 ADR-027); sweep 350 pass / 6 failures proven pre-existing on origin/main (1× test_wfirma_client_contract missing .env creds in fresh worktree; 5× test_proforma_drafts_lifecycle_phase4 name_pl approval-gate fixtures from PR #541).
+- GATE 6 browser verification completed against worktree app on port 47997 (V2 shell /v2/index.html): modal components compiled and registered; live PzApi.postDraftToWfirma probe returned {ok:false, error:'HTTP 400 ... blocked ... WFIRMA_CREATE_PROFORMA_ALLOWED=false'} proving the transport shape and the settings gate; console clean; server stopped.
+- Scorecard written and orchestrator-verified on disk (Lesson C): `.claude/memory/scorecards/2026-06-12-wfirma-post-failure-hardening.md` (5,336 bytes). Verdicts: backend-safety-reviewer, reviewer-challenge, test-coverage-reviewer, frontend-flow-reviewer all EXEMPLARY; no NEEDS-TUNING; no UNRELIABLE; self-eval skipped (within 7-day window, last 2026-06-06).
+- PR NOT opened: GATE 2 blocked — 4 open PRs at decision time (#570 MERGEABLE, #568 MERGEABLE, #522 needs-rebase, #498 draft) vs hard limit 3. Branch is pushed and PR-ready; PR-open escalated to operator.
+
 ---
 
 # DECISIONS
@@ -5454,6 +5463,11 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - ~~**Reconcile `4c797e4` with origin/main**~~ — **DONE 2026-05-13T16:00Z** via PR #77 (SHA `1ee83e52`). `4c797e4` confirmed as ancestor of origin/main (swept in via PR #76 branch). JSONL updated: `PENDING_RETROACTIVE` → reconciliation-close record appended. `local-commit-deploys.jsonl` + `lesson-d-local-commit-only-deploys.md` both updated. Lead coordinator backstop added.
 - ~~**All known issues resolved on main**~~ — **DONE 2026-05-19** (Campaign V6). #223/#224 CLOSED. Pydantic: 0 warnings. ZC429 tab-mount tests: FIXED (31/31 pass). P2 flag correction: `P2_LIVE_ENABLED=true` + `shadow_mode=true`. 160/160 golden, 340+ tests PASS. No outstanding code issues on local main.
 
+## wFirma Post-Failure Hardening Decisions (2026-06-12)
+
+- 2026-06-12: GATE 2 block-and-report — do not open the wFirma hardening PR until an open-PR slot frees; other open PRs belong to other campaigns and were not closed autonomously.
+- 2026-06-12: WDT preflight is fail-open by design (preflight infrastructure errors do not block posting; wFirma remains the hard validator).
+
 ---
 
 # ASSUMPTIONS
@@ -5515,6 +5529,18 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 - **Question**: What disposition for GATE 4 issues #529–#533 (proforma authority fixes)?
 - **Answerer**: Operator — GATE 4 disposition required (SCHEDULED / ISSUE / REJECTED)
+
+## OQ-NEW-15 -- Draft #33 retry data decision (2026-06-12, NEW)
+
+- **Question**: Draft #33 retry needs operator data decision: add Horak's SK EU VAT number to customer master + wFirma contractor card 195596259, or choose a different vat_mode. The new 400 message tells the operator exactly this.
+- **Answerer**: Operator — customer master data decision
+- **Impact if left unanswered**: Draft #33 remains blocked; proforma posting to wFirma continues to fail with WDT rejection for SK customer without EU VAT number.
+
+## OQ-NEW-16 -- GATE 4 disposition for wFirma hardening findings (2026-06-12, NEW)
+
+- **Question**: GATE 4 disposition pending operator: test-coverage-reviewer HIGH (concurrent-post race regression test — duplicate guard/posting lock pre-existing, unchanged) → ISSUE or SCHEDULED; reviewer-challenge note on DB growth from 8KB XML blobs per failed post → note/ISSUE.
+- **Answerer**: Operator — GATE 4 disposition required (SCHEDULED / ISSUE / REJECTED)
+- **Impact if left unanswered**: Salvage findings from wFirma hardening campaign remain undisposed per GATE 4 requirements.
 - **Context**: These issues were filed as part of proforma authority fix campaign and remain open.
 - **Impact if left unanswered**: GATE 4 governance rule violated (salvage findings without explicit disposition).
 
