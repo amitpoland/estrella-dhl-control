@@ -611,7 +611,7 @@ def serve_v2_static(path: str, request: Request) -> Response:
         import hmac as _hmac  # noqa: PLC0415
         raw_key = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
         api_key_ok = (bool(raw_key) and bool(settings.api_key)
-                      and _hmac.compare_digest(raw_key, settings.api_key))
+                      and _hmac.compare_digest(raw_key.encode("utf-8"), settings.api_key.encode("utf-8")))
         if not api_key_ok:
             user = check_session_or_redirect(request)
             if not user:
@@ -655,7 +655,7 @@ def serve_static(path: str, request: Request) -> Response:
         import hmac as _hmac  # noqa: PLC0415
         raw_key = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
         api_key_ok = (bool(raw_key) and bool(settings.api_key)
-                      and _hmac.compare_digest(raw_key, settings.api_key))
+                      and _hmac.compare_digest(raw_key.encode("utf-8"), settings.api_key.encode("utf-8")))
         if not api_key_ok:
             user = check_session_or_redirect(request)
             if not user:

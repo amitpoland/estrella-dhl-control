@@ -149,3 +149,35 @@ def test_compare_digest_encodes_to_bytes(fn):
         f"{fn.__name__} reverted to raw-str compare_digest — non-ASCII keys "
         f"will 500 again."
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Workflow-class guard (Lesson I): NO compare_digest against settings.api_key
+# anywhere under app/ may pass a raw str. This catches the SAME bug at any
+# future call site — not just the guards fixed here. The original incident was
+# a class bug: the same raw-str pattern existed in 9 files across 8 modules.
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_no_raw_str_compare_digest_against_api_key_anywhere_in_app():
+    import re
+
+    app_dir = Path(__file__).resolve().parent.parent / "app"
+    # Vulnerable: compare_digest(<bare ident>, settings.api_key) in either arg
+    # order. The fixed form uses `<ident>.encode("utf-8")`, which is not a bare
+    # identifier and therefore does not match.
+    vuln = re.compile(
+        r"compare_digest\(\s*[A-Za-z_]\w*\s*,\s*settings\.api_key\s*\)"
+        r"|compare_digest\(\s*settings\.api_key\s*,\s*[A-Za-z_]\w*\s*\)"
+    )
+    offenders = []
+    for py in app_dir.rglob("*.py"):
+        text = py.read_text(encoding="utf-8", errors="replace")
+        flat = re.sub(r"\s+", " ", text)  # collapse multiline calls to one line
+        if vuln.search(flat):
+            offenders.append(str(py.relative_to(app_dir)))
+    assert not offenders, (
+        "Raw-str hmac.compare_digest against settings.api_key found (non-ASCII "
+        "X-API-Key -> TypeError -> HTTP 500). Encode both operands to bytes: "
+        "compare_digest(key.encode('utf-8'), settings.api_key.encode('utf-8')). "
+        f"Offending files: {offenders}"
+    )
