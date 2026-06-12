@@ -112,7 +112,7 @@ def require_role_or_apikey(*roles: str) -> Callable:
 
         # Flag ON → role enforcement live.
         # (a) Direct X-API-Key — break-glass master_admin.
-        if settings.api_key and key and hmac.compare_digest(key, settings.api_key):
+        if settings.api_key and key and hmac.compare_digest(key.encode("utf-8"), settings.api_key.encode("utf-8")):
             if MASTER_ADMIN in allowed or not allowed:
                 return None
             # Even admin key must be permitted for this surface — when an

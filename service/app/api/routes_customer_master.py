@@ -81,7 +81,7 @@ def _hard_delete_guard(request: Request) -> None:
                     "to true (admin) to permit permanent removal."),
         )
     key = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
-    if settings.api_key and key and _hmac.compare_digest(key, settings.api_key):
+    if settings.api_key and key and _hmac.compare_digest(key.encode("utf-8"), settings.api_key.encode("utf-8")):
         return
     cookie = request.cookies.get("pz_session")
     if cookie:

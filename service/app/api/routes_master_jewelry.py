@@ -78,7 +78,7 @@ def _hard_delete_guard(request: Request) -> None:
         )
     # (a) admin X-API-Key bypass always wins.
     key = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
-    if settings.api_key and key and _hmac.compare_digest(key, settings.api_key):
+    if settings.api_key and key and _hmac.compare_digest(key.encode("utf-8"), settings.api_key.encode("utf-8")):
         return
     # (b) session user must hold master_admin specifically.
     cookie = request.cookies.get("pz_session")
