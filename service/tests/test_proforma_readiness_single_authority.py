@@ -553,3 +553,30 @@ def test_draft33_post_failed_blocked_retry_safe_no_duplicate(client):
     row = _draft_row(storage, draft_id)
     assert row["status"] == "post_failed", row          # no silent reset
     assert not (row["wfirma_proforma_id"] or ""), row   # no duplicate created
+
+
+# ── Frontend contract: PzApi envelope unwrap (browser-verified 2026-06-12) ──
+# PzApi._get wraps every response as {ok, data}; the readiness object
+# (ready / blockers / ambiguous_designs) lives under .data. Storing the
+# wrapper directly made ready/blockers undefined: the panel showed
+# "0 blocking reasons" and ready===false checks never fired, so buttons
+# were NOT gated. Found in browser verification — pin the unwrap.
+
+_V2_DIR = Path(__file__).parent.parent / "app" / "static" / "v2"
+
+
+def test_detail_page_unwraps_readiness_envelope():
+    src = (_V2_DIR / "proforma-detail.jsx").read_text(encoding="utf-8")
+    # the buggy direct-store of the {ok,data} wrapper must not come back
+    assert "setReadinessApprove(r || null)" not in src
+    assert "setReadinessPost(r || null)" not in src
+    # both intents unwrap .data and treat a failed call as null
+    assert src.count("(r && r.ok && r.data) ? r.data : null") >= 2
+
+
+def test_pz_api_readiness_returns_wrapped_envelope():
+    src = (_V2_DIR / "pz-api.js").read_text(encoding="utf-8")
+    assert "getDraftReadiness" in src
+    # _get is the {ok,data}-wrapping caller — the unwrap above depends on it
+    assert "getDraftReadiness: (draftId, intent) =>" in src
+    assert "/readiness?intent=" in src

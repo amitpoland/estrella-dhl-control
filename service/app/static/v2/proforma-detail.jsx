@@ -810,11 +810,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const reloadReadiness = () => {
     const id = (draft && draft.id) || null;
     if (!id) return;
+    // PzApi wraps every response as { ok, data } — the readiness object
+    // (ready / blockers / ambiguous_designs) lives under .data. A failed
+    // fetch stores null: button falls back to state-gating only, and the
+    // backend enforces the identical gate, so nothing can slip through.
     window.PzApi.getDraftReadiness(id, 'approve')
-      .then(r => setReadinessApprove(r || null))
+      .then(r => setReadinessApprove((r && r.ok && r.data) ? r.data : null))
       .catch(() => setReadinessApprove(null));
     window.PzApi.getDraftReadiness(id, 'post')
-      .then(r => setReadinessPost(r || null))
+      .then(r => setReadinessPost((r && r.ok && r.data) ? r.data : null))
       .catch(() => setReadinessPost(null));
   };
   React.useEffect(reloadReadiness, [draft && draft.id, liveDraft.updated_at]);
