@@ -99,6 +99,17 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - Merge #556 to unblock GATE 2 (over #522: 43 behind; #498: draft + conflicting).
 - Merge #560 with dispositions: stale-pointer risk on PURCHASE_TRANSIT bypass accepted per operator rule 2026-06-11 ("PZ created OR DHL delivered = warehouse-eligible; physical scan-in optional audit"); lifecycle-layer fix deferred to Issue #561.
 - Operator-suspected PRs #498/#522 were NOT the cause of the wFirma symptom; root cause was a platform-wide auth compare_digest non-ASCII TypeError. Fixed via focused hotfix #563, not by merging either stale PR. #522/#498 remain independent and still require owner rebase/rework.
+## Campaign "proforma readiness single-authority" COMPLETE (2026-06-12)
+
+**Branch**: fix/proforma-readiness-single-authority (worktree C:\PZ-wt-readiness), **pushed to origin 2026-06-12**.
+**Commits**: 
+- 06f3842: single backend readiness authority `_derive_draft_readiness` consulted by approve 422 / post 400 / convert; new endpoints `GET /api/v1/proforma/draft/{id}/readiness?intent=` and `POST /draft/{id}/resolve-ambiguity`; batch-scoped `design_ambiguity_resolution` table
+- 7d7437a: 10 campaign regression tests + fixture repairs
+- 22cf401: browser-verification catch: PzApi {ok,data} envelope stored unwrapped in proforma-detail.jsx reloadReadiness → panel showed 0 blockers and buttons ungated while backend gate held; fixed + 2 source-grep pinning tests
+**Tests**: campaign suite 12 passed; adjacent suites 75 passed + 2 pre-existing storage-leak teardown errors (TestCustomerMasterEndpoints) confirmed present on main @ ff1f4b5.
+**GATE 6 browser verification**: all 10 operator steps completed on seeded fixture storage (%TEMP%\pz-readiness-storage, port 47997); production Drafts #32/#33 verification deferred to post-deploy because pz-deploy-guard blocks reading production DBs.
+**Scorecard**: .claude/memory/scorecards/2026-06-12-proforma-readiness-single-authority.md — 3 agents scored, all EXEMPLARY, no NEEDS-TUNING/UNRELIABLE verdicts (RULE 6 citation requirement).
+**Safety gates honoured verbatim**: no historical posted documents edited; no Draft #33 reset; no VAT-mode change; duplicate guard / posting lock / approval gate / WFIRMA_CREATE_PROFORMA_ALLOWED intact (retry test: 400 at flag gate before any wFirma call, no duplicate).
 
 ## PR #546 — Proforma Display Contract Lock PR A (2026-06-10, MERGED + DEPLOYED)
 
@@ -6113,5 +6124,20 @@ GitHub Issue filed: **#510** — "test(rbac): Phase B follow-up tests — meta-t
 - **GATE 2 block**: 3/3 open PRs (#498, #522, #523) at time of commit — PR not opened
 - **Unblock order (operator decision 2026-06-09)**: (1) #498 first if reviewed/security complete → (2) open xlsx diagnostic refresh PR → (3) leave #522/#523 untouched unless already ready
 - **Next action**: After #498 merges or closes, run `git push origin main` then open PR with title above
+
+## OQ-NEW-15 -- PR open for fix/proforma-readiness-single-authority blocked on GATE 2 (2026-06-12)
+
+- **Question**: When to open PR for fix/proforma-readiness-single-authority campaign completion?
+- **Answerer**: Operator — GATE 2 queue management
+- **Context**: PR open blocked on GATE 2 (4 PRs open: #570, #568, #522, #498 draft). PR body prepared at C:\PZ-wt-readiness\.git-pr-body.md.
+- **Impact if left unanswered**: Campaign code remains unmerged despite completion and testing.
+
+## OQ-NEW-16 -- Production Drafts #32/#33 browser verification post-deploy (2026-06-12)
+
+- **Question**: When to verify real production Drafts #32 and #33 in browser after deployment?
+- **Answerer**: Operator — post-deploy verification sweep
+- **Context**: Browser verification deferred because pz-deploy-guard blocks reading production DBs. Operator repairs needed on production data (resolve J4007R08118-0.6 ambiguity, register 2 missing wFirma products, add Horak SK EU VAT to Customer Master + wFirma contractor 195596259).
+- **Impact if left unanswered**: Production readiness authority verification incomplete.
+- **Trigger**: "Operator completed #568 merge/deploy, #570 merge/deploy, and SHIPMENT_9938632830 reconcile. Verify everything now." → read-only verification sweep.
 
 ---
