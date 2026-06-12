@@ -3181,6 +3181,24 @@ def proforma_to_invoice_preview(
             ],
         })
 
+    # SINGLE READINESS AUTHORITY: conversion preview is blocked while the
+    # underlying draft carries unresolved blocking reasons (intent="convert"
+    # — same gate as approve/post, plus export prerequisites).
+    _cvp_draft = pildb.get_draft(_proforma_db_path(), batch_id, cn)
+    if _cvp_draft is not None:
+        _cvp_ready = _derive_draft_readiness(_cvp_draft, intent="convert")
+        if not _cvp_ready["ready"]:
+            return JSONResponse({
+                "ok":               False,
+                "status":           "blocked",
+                "batch_id":         batch_id,
+                "client_name":      cn,
+                "wfirma_proforma_id": pid,
+                "blocking_reasons": _cvp_ready["blocking_reasons"],
+                "blockers":         _cvp_ready["blockers"],
+                "readiness_intent": "convert",
+            })
+
     try:
         plan_data = _build_conversion_plan(pid, operator="")
     except Exception as exc:
@@ -3327,6 +3345,28 @@ def proforma_to_invoice(
                 "refusing duplicate conversion"
             ],
         })
+
+    # 2c. SINGLE READINESS AUTHORITY: an issued draft that has since gained
+    # blockers (re-uploaded packing, customer-master change, unmapped
+    # products) must not convert. Same gate as approve/post, intent="convert"
+    # — blocks BEFORE the live wFirma fetch and BEFORE the link insert.
+    _cv_draft = pildb.get_draft(_proforma_db_path(), batch_id, cn)
+    if _cv_draft is not None:
+        _cv_ready = _derive_draft_readiness(_cv_draft, intent="convert")
+        if not _cv_ready["ready"]:
+            _record_readiness_block(
+                _proforma_db_path(), int(_cv_draft.id), _cv_ready, operator,
+            )
+            return JSONResponse({
+                "ok":               False,
+                "status":           "blocked",
+                "batch_id":         batch_id,
+                "client_name":      cn,
+                "wfirma_proforma_id": pid,
+                "blocking_reasons": _cv_ready["blocking_reasons"],
+                "blockers":         _cv_ready["blockers"],
+                "readiness_intent": "convert",
+            })
 
     # 3+4. Fetch + parse + plan
     try:
@@ -5013,6 +5053,373 @@ def _preflight_approve(db_path, draft_id: int):
     return None
 
 
+# ── SINGLE READINESS AUTHORITY (split-authority fix, 2026-06-12) ────────────
+# Root cause of "Approved + Blocking Reasons" (drafts #32/#33): four readiness
+# definitions existed — _build_preview (display only), _preflight_approve
+# (approve route), inline checks in _build_proforma_request_from_draft (post
+# route), and frontend draftState gating. _derive_draft_readiness composes
+# them into ONE authority consulted by approve, post, and convert. The
+# frontend reads it via GET /draft/{id}/readiness — it reflects truth, it
+# does not produce it (Lesson F rule 5).
+
+_READINESS_INTENTS = ("approve", "post", "convert")
+
+
+def _repair_hint_for_blocker(reason: str) -> str:
+    """Map a blocking reason to the exact operator repair action (Lesson M:
+    blocked state must display the repair path, never just 'blocked')."""
+    r = (reason or "").lower()
+    if "maps to multiple product_codes" in r:
+        return ("Select the exact product_code for this design_no via "
+                "POST /api/v1/proforma/draft/{draft_id}/resolve-ambiguity "
+                "(or the 'Resolve product' action on the draft page).")
+    if "wfirma_product" in r or "wfirma_products" in r:
+        return ("Register the listed products in wFirma and add the "
+                "wfirma_product_id mapping to wfirma_products, then re-check "
+                "readiness.")
+    if "vat_mode" in r:
+        return "Correct customer_master.vat_mode (unknown integer mapping)."
+    if "eu vat" in r or "vat_eu" in r or "vies" in r or "vat decision" in r \
+            or "vat context" in r:
+        return ("Add the buyer's EU VAT number to Customer Master (verify "
+                "via VIES). Do NOT change vat_mode to bypass missing VAT "
+                "data.")
+    if "customer" in r or "kontrahent" in r or "contractor" in r:
+        return ("Fix the customer mapping in wfirma_customers / Customer "
+                "Master for this client, then re-check readiness.")
+    if "unit_price" in r or "sales price" in r or "name_pl" in r \
+            or "packing" in r or "authority" in r:
+        return ("Import/refresh sales prices from the sales packing list so "
+                "every line has name_pl + unit_price and totals match the "
+                "sales-packing authority.")
+    if "stock" in r or "reservation" in r or "warehouse" in r:
+        return "Resolve warehouse stock/reservation state for the affected lines."
+    if "pz" in r or "export" in r or "customs" in r:
+        return "Complete the wFirma PZ / export prerequisites for this batch first."
+    return "Resolve this blocker, then re-run readiness."
+
+
+def _derive_draft_readiness(
+    draft: "pildb.ProformaDraft", *, intent: str,
+) -> Dict[str, Any]:
+    """THE single backend readiness gate for proforma draft lifecycle writes.
+
+    Consulted by: approve (intent="approve"), post to wFirma (intent="post"),
+    convert to invoice (intent="convert"), and the read-only
+    ``GET /draft/{id}/readiness`` endpoint that drives frontend button state.
+
+    Composition (every check fail-CLOSED — a derivation error is a blocker,
+    never a silent pass):
+      1. ``_build_preview`` blocking_reasons — design_no ambiguity, warehouse
+         readiness, customer resolution, price conflicts. Export blockers
+         (wFirma PZ prerequisite) additionally apply to post/convert.
+      2. ``_preflight_approve`` — blank name_pl, zero unit_price,
+         sales-packing authority mismatch.
+      3. Missing wfirma_products mappings — exact product codes listed;
+         blocks UNCONDITIONALLY (does NOT honour advisory_gates_enabled:
+         silently skipping unresolved lines from the wFirma request is the
+         defect this gate removes).
+      4. WDT EU-VAT requirement — resolved VAT context "wdt" with a blank
+         buyer vat_eu_number blocks BEFORE any wFirma call. Applies to the
+         operator vat_mode override too: an override chooses the context,
+         it never waives the legally required buyer VAT number.
+
+    Returns ``{ready, intent, draft_id, draft_status, blockers:[{reason,
+    repair_action}], blocking_reasons:[str], warnings:[str]}``.
+
+    NEVER mutates draft state. (Known write-on-read: ``_build_preview``
+    populates the design_product_mapping bridge — same governed side-effect
+    the preview endpoint has carried since 2026-05-19.)
+    """
+    intent = (intent or "").strip().lower()
+    if intent not in _READINESS_INTENTS:
+        raise ValueError(
+            f"unknown readiness intent {intent!r} — expected one of "
+            f"{_READINESS_INTENTS}"
+        )
+
+    blockers: List[Dict[str, str]] = []
+    warnings: List[str] = []
+    _seen: set = set()
+
+    def _add(reason: str, repair_action: str = "") -> None:
+        key = (reason or "").strip()
+        if not key or key in _seen:
+            return
+        _seen.add(key)
+        blockers.append({
+            "reason":        reason,
+            "repair_action": repair_action or _repair_hint_for_blocker(reason),
+        })
+
+    # ── 1. Comprehensive preview authority (ambiguity / warehouse / customer)
+    preview: Dict[str, Any] = {}
+    try:
+        preview = _build_preview(draft.batch_id or "", draft.client_name or "")
+    except HTTPException as exc:
+        _add(f"readiness preview failed: {exc.detail}",
+             "Fix the batch_id/client_name identifiers on the draft.")
+    except Exception as exc:
+        _add(f"readiness preview failed: {type(exc).__name__}: {exc}",
+             "Inspect batch data — preview derivation must succeed before "
+             "approve/post/convert (fail-closed).")
+    for reason in (preview.get("blocking_reasons") or []):
+        _add(str(reason))
+    if intent in ("post", "convert"):
+        for reason in (preview.get("export_blockers") or []):
+            _add(str(reason),
+                 "Complete the wFirma PZ / export prerequisites for this "
+                 "batch first.")
+
+    # ── 2. Draft-local approval preflight ─────────────────────────────────
+    try:
+        _pf_err = _preflight_approve(_proforma_db_path(), int(draft.id))
+    except Exception as exc:
+        _pf_err = (f"approval preflight failed: "
+                   f"{type(exc).__name__}: {exc}")
+    if _pf_err:
+        _add(_pf_err)
+
+    # ── 3. Missing wfirma_products mappings (unconditional block) ─────────
+    try:
+        _r_lines = json.loads(draft.editable_lines_json or "[]") or []
+    except Exception:
+        _r_lines = []
+        _add("editable_lines_json is not valid JSON — draft lines unreadable",
+             "Reset the draft from the sales packing list.")
+    _missing_codes: List[str] = []
+    for _ln in _r_lines:
+        _pc = (str(_ln.get("product_code") or "")).strip()
+        try:
+            _prod = (wfdb.get_product(_pc)
+                     if (_pc and wfdb._db_path is not None) else None)
+        except Exception:
+            _prod = None
+        if not ((_prod or {}).get("wfirma_product_id") or ""):
+            _missing_codes.append(_pc or "<blank product_code>")
+    if _missing_codes:
+        _uniq = sorted(set(_missing_codes))
+        _add(
+            f"{len(_uniq)} product(s) not matched in wfirma_products "
+            f"(missing wfirma_product_id): {', '.join(_uniq[:10])}"
+            + ("…" if len(_uniq) > 10 else ""),
+            "Register the listed products in wFirma and add the "
+            "wfirma_product_id mapping to wfirma_products, then re-check "
+            "readiness.",
+        )
+
+    # ── 4. WDT EU-VAT requirement (requirement 6) ─────────────────────────
+    try:
+        _r_res = _resolve_customer(draft.client_name or "",
+                                   batch_id=draft.batch_id)
+        _r_contractor = (_r_res.get("wfirma_customer_id") or "").strip()
+        _r_cm = (get_customer_master(_customer_master_db_path(), _r_contractor)
+                 if _r_contractor else None)
+        if _r_cm is not None:
+            try:
+                _r_vat = wfirma_client.resolve_vat_context_from_master(_r_cm)
+            except ValueError as _r_ve:
+                _r_vat = None
+                _add(f"vat_mode resolution failed for "
+                     f"{draft.client_name!r}: {_r_ve}")
+            if _r_vat is not None:
+                if _r_vat.get("blocked"):
+                    _add("VAT context blocked: "
+                         + str(_r_vat.get("blocked_reason") or "unknown"),
+                         "Set the customer's country (and VAT data) in "
+                         "Customer Master.")
+                elif (_r_vat.get("context") or "") == "wdt":
+                    _r_vat_eu = (getattr(_r_cm, "vat_eu_number", None)
+                                 or "").strip()
+                    if not _r_vat_eu:
+                        _add(
+                            "WDT (intra-EU 0%) requires the buyer's EU VAT "
+                            "number — customer master vat_eu_number is blank",
+                            "Add the buyer's EU VAT number to Customer "
+                            "Master (verify via VIES). Do NOT change "
+                            "vat_mode to bypass missing VAT data.",
+                        )
+                    elif getattr(_r_cm, "vat_eu_valid", None) is not True:
+                        warnings.append(
+                            "vies_unverified: buyer vat_eu_number present "
+                            "but VIES validity not confirmed (advisory — "
+                            "does not block; D3 ADR-027)"
+                        )
+        elif _r_contractor:
+            warnings.append(
+                "no customer_master record for contractor "
+                f"{_r_contractor!r} — VAT resolved via legacy fallback at "
+                "post time"
+            )
+    except Exception as exc:
+        # Customer-resolution failures are already preview blockers; a
+        # readiness-internal VAT derivation crash still fails closed.
+        _add(f"VAT readiness check failed: {type(exc).__name__}: {exc}",
+             "Inspect customer master data for this client.")
+
+    # Structured ambiguity data so the frontend can render an exact
+    # product_code selector (requirement 4) instead of parsing reason text.
+    ambiguous_designs: Dict[str, Any] = {}
+    resolved_designs:  Dict[str, Any] = {}
+    try:
+        from ..services.design_product_bridge import populate_from_packing
+        _bs = populate_from_packing(draft.batch_id or "")
+        ambiguous_designs = dict(_bs.get("ambiguous_design_codes") or {})
+        resolved_designs  = dict(_bs.get("resolved_design_codes") or {})
+    except Exception as exc:
+        warnings.append(f"design bridge summary unavailable: "
+                        f"{type(exc).__name__}: {exc}")
+
+    return {
+        "ready":             not blockers,
+        "intent":            intent,
+        "draft_id":          int(draft.id),
+        "draft_status":      draft.status,
+        "blockers":          blockers,
+        "blocking_reasons":  [b["reason"] for b in blockers],
+        "warnings":          warnings,
+        "ambiguous_designs": ambiguous_designs,
+        "resolved_designs":  resolved_designs,
+    }
+
+
+def _record_readiness_block(
+    db_path, draft_id: int, readiness: Dict[str, Any], operator: str,
+) -> None:
+    """Append-only audit trail: a lifecycle write was refused by the
+    readiness gate. Best-effort — never blocks the refusal response."""
+    try:
+        pildb._record_draft_event(
+            db_path,
+            draft_id    = int(draft_id),
+            event       = "readiness_blocked",
+            detail_json = json.dumps({
+                "intent":           readiness.get("intent"),
+                "blocking_reasons": readiness.get("blocking_reasons") or [],
+            }, ensure_ascii=False),
+            operator    = operator or "",
+        )
+    except Exception as exc:
+        log.warning("[draft %s] readiness_blocked audit event failed "
+                    "(non-fatal): %s", draft_id, exc)
+
+
+@router.get("/draft/{draft_id}/readiness", dependencies=[_auth])
+def get_draft_readiness(draft_id: int, intent: str = "approve") -> JSONResponse:
+    """Read-only readiness for a draft, per intent (approve|post|convert).
+
+    This is the SAME authority the approve/post/convert routes enforce —
+    the frontend uses it to disable buttons with the exact reason +
+    repair action (Lesson M). No state change. (Known write-on-read:
+    design_product_mapping bridge population, as on /preview.)
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    _i = (intent or "").strip().lower()
+    if _i not in _READINESS_INTENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"intent must be one of {list(_READINESS_INTENTS)}",
+        )
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404,
+                            detail=f"draft {draft_id} not found")
+    return JSONResponse({"ok": True, **_derive_draft_readiness(d, intent=_i)})
+
+
+@router.post("/draft/{draft_id}/resolve-ambiguity", dependencies=[_auth])
+def resolve_draft_design_ambiguity(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Operator selects the exact product_code for an ambiguous design_no
+    (requirement 4 of the readiness campaign).
+
+    Body::
+        {"design_no": "J4007R08118-0.6", "product_code": "EJL/26-27/257-2"}
+
+    The selection is persisted batch-scoped in design_ambiguity_resolution
+    (reservation_queue.db) and audited as a draft event. The chosen code
+    must be a CURRENT candidate for the design in this batch — stale or
+    invented codes are rejected. Resolution clears the ambiguity blocker in
+    the readiness authority; it never edits draft lines, prices, or any
+    posted document.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator     = _require_operator(x_operator)
+    design_no    = str(body.get("design_no") or "").strip()
+    product_code = str(body.get("product_code") or "").strip()
+    if not design_no or not product_code:
+        raise HTTPException(
+            status_code=400,
+            detail="design_no and product_code are both required",
+        )
+
+    db = _proforma_db_path()
+    draft = pildb.get_draft_by_id(db, int(draft_id))
+    if draft is None:
+        raise HTTPException(status_code=404,
+                            detail=f"draft {draft_id} not found")
+    if draft.status in ("posted", "cancelled", "superseded"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"draft {draft_id} is {draft.status!r} — ambiguity "
+                   "resolution is only meaningful before posting",
+        )
+
+    from ..services.design_product_bridge import (
+        populate_from_packing, record_ambiguity_resolution,
+    )
+    summary = populate_from_packing(draft.batch_id or "")
+    _amb      = (summary.get("ambiguous_design_codes") or {}).get(design_no)
+    _resolved = (summary.get("resolved_design_codes") or {}).get(design_no)
+    candidates = list(_amb or (_resolved or {}).get("candidates") or [])
+    if not candidates:
+        raise HTTPException(
+            status_code=400,
+            detail=f"design_no {design_no!r} is not ambiguous in batch "
+                   f"{draft.batch_id!r} — nothing to resolve",
+        )
+    if product_code not in candidates:
+        raise HTTPException(
+            status_code=400,
+            detail=f"product_code {product_code!r} is not a candidate for "
+                   f"design_no {design_no!r} in this batch — candidates: "
+                   f"{candidates}",
+        )
+
+    rec = record_ambiguity_resolution(
+        draft.batch_id or "", design_no, product_code, operator,
+    )
+    try:
+        pildb._record_draft_event(
+            db,
+            draft_id    = int(draft_id),
+            event       = "ambiguity_resolved",
+            detail_json = json.dumps({
+                "design_no":    design_no,
+                "product_code": product_code,
+                "candidates":   candidates,
+                "batch_id":     draft.batch_id,
+            }, ensure_ascii=False),
+            operator    = operator,
+        )
+    except Exception as exc:
+        log.warning("[draft %s] ambiguity_resolved audit event failed "
+                    "(non-fatal): %s", draft_id, exc)
+
+    return JSONResponse({
+        "ok":         True,
+        "resolution": rec,
+        "readiness":  _derive_draft_readiness(draft, intent="approve"),
+    })
+
+
 # ── Phase 4 — lifecycle controls + line add/remove ─────────────────────────
 
 @router.post("/draft/{draft_id}/approve", dependencies=[_auth])
@@ -5038,9 +5445,22 @@ def approve_proforma_draft(
     operator = _require_operator(x_operator)
     expected = str(body.get("expected_updated_at") or "")
     token    = str(body.get("confirm_token") or "")
-    preflight_err = _preflight_approve(_proforma_db_path(), int(draft_id))
-    if preflight_err:
-        raise HTTPException(status_code=422, detail=preflight_err)
+    # SINGLE READINESS AUTHORITY: approve consults the same gate as post and
+    # convert (includes _preflight_approve plus ambiguity / wfirma_products /
+    # WDT-EU-VAT checks). A draft with unresolved blocking reasons can no
+    # longer become Approved. Missing draft falls through so approve_draft
+    # surfaces the canonical 404.
+    _ap_db    = _proforma_db_path()
+    _ap_draft = pildb.get_draft_by_id(_ap_db, int(draft_id))
+    if _ap_draft is not None:
+        _ap_ready = _derive_draft_readiness(_ap_draft, intent="approve")
+        if not _ap_ready["ready"]:
+            _record_readiness_block(_ap_db, int(draft_id), _ap_ready, operator)
+            raise HTTPException(
+                status_code=422,
+                detail="Approval blocked by readiness gate: "
+                       + " | ".join(_ap_ready["blocking_reasons"]),
+            )
     return _draft_edit_dispatch(draft_id, lambda: pildb.approve_draft(
         _proforma_db_path(),
         int(draft_id),
@@ -6516,6 +6936,26 @@ def _post_validation_error(draft_id: int, msg: str) -> JSONResponse:
     )
 
 
+def _post_validation_errors(
+    draft_id: int, readiness: Dict[str, Any],
+) -> JSONResponse:
+    """Multi-blocker variant of ``_post_validation_error`` for the single
+    readiness authority: same ``{ok:false, status:"blocked"}`` shape, all
+    blocking reasons listed, plus structured blockers with repair actions
+    (Lesson M). No wFirma call, no state change."""
+    return JSONResponse(
+        status_code=400,
+        content={
+            "ok":               False,
+            "status":           "blocked",
+            "draft_id":         int(draft_id),
+            "blocking_reasons": readiness.get("blocking_reasons") or [],
+            "blockers":         readiness.get("blockers") or [],
+            "readiness_intent": readiness.get("intent"),
+        },
+    )
+
+
 def _build_proforma_request_from_draft(
     draft: "pildb.ProformaDraft",
 ) -> "wfirma_client.ProformaRequest":
@@ -6877,6 +7317,16 @@ def post_proforma_draft_to_wfirma(
             detail=f"draft {draft_id} already has wfirma_proforma_id="
                    f"{pre.wfirma_proforma_id!r}",
         )
+
+    # ── SINGLE READINESS AUTHORITY (split-authority fix) ───────────────────
+    # Forced revalidation: an already-approved draft that has since gained
+    # blockers (new packing upload, customer-master change, product mapping
+    # removed) is re-checked here and blocked BEFORE start_post and BEFORE
+    # any wFirma call. Approve-time readiness is never trusted at post time.
+    _post_ready = _derive_draft_readiness(pre, intent="post")
+    if not _post_ready["ready"]:
+        _record_readiness_block(db, int(draft_id), _post_ready, operator)
+        return _post_validation_errors(draft_id, _post_ready)
 
     # ── Zero-price guard ───────────────────────────────────────────────────
     # PR 2C.2: every line must carry a positive unit_price before posting.
