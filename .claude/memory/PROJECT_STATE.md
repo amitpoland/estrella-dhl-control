@@ -2,7 +2,7 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-13 (proforma readiness single-authority campaign PR #573 gate completed, 7-agent verdict READY-TO-DEPLOY, scorecard .claude/memory/scorecards/2026-06-13-pr573-merge-gate-proforma-readiness.md).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-13 (PR #573 merged as 62810c2, combined 3-PR deploy to C:\PZ verified on disk, production browser verification of Drafts #32/#33 PASSED — both blocked with named repair actions; OQ-NEW-16/17 resolved).
 
 **Last-run-at:** 2026-06-13 (proforma readiness single-authority campaign PR #573 7-agent gate completed READY-TO-DEPLOY). Origin/main HEAD: **ff1f4b5** (fix(security): non-ASCII X-API-Key returns 401 not 500 (#563)). GATE 2: **2/3 open PRs** (#522 needs-rebase/#521-overlap, #498 draft/Lesson-E) + PR #573 ready-to-merge. TEST BASELINE: 160/160 PZ regression + 412/412 carrier suite. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
 
@@ -118,6 +118,12 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 **Scorecard produced and verified**: `.claude/memory/scorecards/2026-06-13-pr573-merge-gate-proforma-readiness.md` (10,215 bytes; 5 EXEMPLARY, 2 ACCEPTABLE — release-manager and lead-coordinator; no NEEDS-TUNING/UNRELIABLE, so no GATE 4 disposition needed). RULE 5 self-eval fired same day → `.claude/memory/scorecards/self-eval-2026-06-13.md` (in progress at time of this update).
 **Combined deploy plan**: (3-PR backlog, production at ff1f4b5): post-merge from fresh `git worktree add C:\PZ-release origin/main`; engine-file sync pz_import_processor.py + audit_scoring.py → C:\PZ\engine /COPY:DAT (Lesson J, #568, operator-required verbatim); standard app sync robocopy service/app → C:\PZ\app /E /XO with exclusions (never /MIR); recursive __pycache__ purge; PZService restart; post-deploy checks incl. /api/v1/health local+public, readiness endpoint 9-key shape, engine disk-grep, Drafts #32/#33 expected BLOCKED.
 **Rollback**: revert the single squash-merge commit on main (squash convention); design_ambiguity_resolution table is additive, old code never reads it.
+
+**PR #573 MERGED (2026-06-13)**: squash `62810c2` on main (on top of #568 squash `ecd6e85`). Operator executed the combined 3-PR deploy (#570 + #568 + #573) to C:\PZ and restarted PZService; operator confirmed "deploy is confirmed on disk and the service is running."
+**Deploy verified on disk (2026-06-13)**: SHA256 hash MATCH vs C:\PZ-release @ 62810c2 for all deployed surfaces — `C:\PZ\app\api\routes_proforma.py`, `services\design_product_bridge.py`, `static\v2\proforma-detail.jsx`, `static\v2\pz-api.js` (#573); `app\api\routes_wfirma.py` (#570); `app\services\export_service.py` + engine files `C:\PZ\engine\pz_import_processor.py`, `audit_scoring.py` (#568, Lesson J disk-grep + hash). `pz_stderr.log` tail clean. Health-endpoint 401-without-key is PRE-EXISTING per-route auth (`dependencies=[_auth]` since baseline 85b63bb, 2026-05-01) — not a deploy regression; readiness endpoint returns 200 with full 9-key contract via authenticated session.
+**Production browser verification PASSED (2026-06-13, operator's authenticated session, read-only, no posting)**: Draft #32 (legacy status "Approved" — the exact invalid state the fix eliminates): readiness ready:false, 4 blockers (design ambiguity J4007R08118-0.6 → ['EJL/26-27/257-2','EJL/26-27/257-4']; 2 products unmatched in wfirma_products; EJL/26-27/258-6 missing wfirma_product_id; Horak EU VAT blank for WDT); V2 SPA banner "⛔ Not ready — 4 blocking reasons · Approve / Post / Convert stay gated until resolved"; Post to wFirma disabled with blocker title + Fix instruction; Convert disabled; Cancel Draft remains available as repair path. Draft #33 (status "failed"): 2 blockers (design ambiguity + EU VAT); banner shows 2 blocking reasons; Approve/Post/Convert all disabled; resolve-ambiguity dropdown rendered; wFirma proforma ID "—" (failed post created no document). Retry-safety/no-duplicates: drafts list shows exactly 7 drafts (#27–#31 Posted PROF 126–130/2026 once each). Console: zero errors on both detail pages. Network sweep: 17/17 API calls HTTP 200, no 4xx/5xx.
+**Minor findings (non-blocking, recorded for follow-up)**: (1) standalone `/dashboard/proforma-detail-v2.html` Post button stays enabled while blocked — surface not in #573 scope; backend single authority still rejects (post → 400); candidate for a small frontend-gating follow-up. (2) V2 SPA deep-link `?page=proforma_detail&draft=N` shows MOCK banner + empty body (hydration doesn't fire on direct URL entry); in-app navigation works — pre-existing SPA routing gap. (3) Draft #33 History tab shows only "Draft created" — failed post attempt absent from activity timeline (pre-existing observability gap, not a #573 regression).
+**Production SHA**: `62810c2` (was ff1f4b5). Campaign fully closed end-to-end: implement → test → PR → 7-agent gate GO → merge → deploy → production verification PASS. Remaining work is operator-only data repair (OQ-NEW-18) before any #33 post.
 
 ## PR #546 — Proforma Display Contract Lock PR A (2026-06-10, MERGED + DEPLOYED)
 
@@ -5598,12 +5604,13 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Context**: These issues were filed as part of proforma authority fix campaign and remain open.
 - **Impact if left unanswered**: GATE 4 governance rule violated (salvage findings without explicit disposition).
 
-## OQ-NEW-17 -- PR #573 merge and deploy actions (2026-06-13, NEW)
+## OQ-NEW-17 -- PR #573 merge and deploy actions (2026-06-13, RESOLVED 2026-06-13)
 
 - **Question**: When to merge PR #573 and execute the combined deploy plan for 3-PR backlog?
 - **Answerer**: Operator — merge decision and deploy execution
 - **Context**: 7-agent gate completed with DECISION GO (READY-TO-DEPLOY). Combined deploy plan documented with engine-file sync requirements (Lesson J). Production at ff1f4b5, 3-PR backlog includes #573, #568, and others.
 - **Impact if left unanswered**: Proforma readiness single-authority campaign remains incomplete; production browser verification of Drafts #32/#33 cannot proceed.
+- **RESOLVED 2026-06-13**: Operator merged #573 (squash 62810c2) and executed the combined deploy; deploy hash-verified on disk, PZService running, production verification passed. Production SHA now 62810c2.
 
 ## OQ-NEW-18 -- Production data repairs before Draft #33 (2026-06-13, NEW)
 
@@ -6155,12 +6162,13 @@ GitHub Issue filed: **#510** — "test(rbac): Phase B follow-up tests — meta-t
 - **Impact if left unanswered**: Campaign code remains unmerged despite completion and testing.
 - **RESOLVED 2026-06-13**: PR #573 opened after operator merged #570+#568 and cleared the GATE 2 slot. 7-agent gate completed with READY-TO-DEPLOY verdict.
 
-## OQ-NEW-16 -- Production Drafts #32/#33 browser verification post-deploy (2026-06-12)
+## OQ-NEW-16 -- Production Drafts #32/#33 browser verification post-deploy (2026-06-12, RESOLVED 2026-06-13)
 
 - **Question**: When to verify real production Drafts #32 and #33 in browser after deployment?
 - **Answerer**: Operator — post-deploy verification sweep
 - **Context**: Browser verification deferred because pz-deploy-guard blocks reading production DBs. Operator repairs needed on production data (resolve J4007R08118-0.6 ambiguity, register 2 missing wFirma products, add Horak SK EU VAT to Customer Master + wFirma contractor 195596259).
 - **Impact if left unanswered**: Production readiness authority verification incomplete.
 - **Trigger**: "Operator completed #568 merge/deploy, #570 merge/deploy, and SHIPMENT_9938632830 reconcile. Verify everything now." → read-only verification sweep.
+- **RESOLVED 2026-06-13**: Verification executed via operator's authenticated browser session (read-only, no posting, no credential handling — C:\PZ\.env read was permission-denied and honored). Both drafts correctly BLOCKED with named repair actions: #32 (Approved) 4 blockers, #33 (failed) 2 blockers; Approve/Post/Convert disabled in V2 SPA; 7 drafts, no duplicates; console clean; 17/17 API calls 200. Full facts in the PR #573 campaign FACTS block. Operator data repairs remain open as OQ-NEW-18.
 
 ---
