@@ -2,7 +2,7 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-12 (PR #563 non-ASCII X-API-Key auth hotfix merged ff1f4b5 + deployed; production now ff1f4b5 for 9 security files; scorecard .claude/memory/scorecards/2026-06-12-pr563-apikey-nonascii-hotfix.md).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-12 (CN↔HSN mixed-metal false-block campaign, PR #568 open, scorecard .claude/memory/scorecards/2026-06-12-cn-hsn-false-block-fix.md).
 
 **Last-run-at:** 2026-06-10 (PR #548 merged as 74bee9d — proforma PR B customer address/service charges authority; production deployed; 7-agent gate passed; GATE 6 verified). Origin/main HEAD: **74bee9d** (feat(proforma): PR B — Customer/service authority (#548)). GATE 2: **3/3 open PRs** (#551, #522, #498 — PR #548 merged, #549 closed redundant, PR #551 opened). TEST BASELINE: 160/160 PZ regression + 412/412 carrier suite. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
 
@@ -54,6 +54,17 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## CN↔HSN mixed-metal false-block — root cause + fix + live unblock (2026-06-12, PR #568 OPEN)
+
+- **Incident**: Operator reported wFirma PZ creation hard-locked for SHIPMENT_7123231135_2026-06_f255bbb5 despite local PZ generated. Root cause chain: engine pz_import_processor.verify_sad_invoice_match strict parent-prefix CN check → cn_match=False ('failed_parent_mismatch', medium) for SAD CN 71131900 aggregating gold 711319xx + silver 71131141 (heading-level agreement that cn_hsn_classifier policy scores NON-blocking accept_with_note) → export_service falsy-scan promoted False into failed_checks → status 'blocked' → WFIRMA_PZ_NOT_GENERATED locked preview/create/adopt. Second root cause: export_service ver_scalar stripped invoice_hsn_codes (list) from persisted audit → classification panel got empty evidence → 'invalid_input / Cannot compare' → decision buttons (rendered only at chapter_match) hidden → operator recovery dead-end. 7 batches hit the class historically (5 nursed to partial manually, 1 deliberately escalated = SHIPMENT_3483447564, 1 dead-ended).
+- **Live unblock (production data, operator-approved)**: HSN evidence recovered from 7 source invoice PDFs (71131913/71131919/71131141/71131911/71131921/71131923), backfilled to audit.invoice_hsn_codes; accept_sad recorded via production writer _record_cn_decision with EXPLICIT operator approval (AskUserQuestion 2026-06-12); status blocked→partial, failed_checks cleared, cn_status=operator_accepted_sad_cn. Live pz_preview verified: 200, blockers empty, supplier ESTRELLA JEWELS LLP→38142296, warehouse 347088, MRN 26PL44302D00E0EDR7, 18 planned lines, 18 product codes awaiting standard ⚙ Resolve Products adoption flow (operator-explicit write gate, intentionally not automated). Note: _record_cn_decision returned empty correction_id with no warning (registry row id anomaly — minor, decision/timeline/audit all written).
+- **Fix (PR #568, branch fix/cn-hsn-mixed-metal-false-block, commits a9c7a32 + 2f3f094 + memory)**: (1) engine hierarchy policy in pinned parity with cn_hsn_classifier — exact/HS6/heading verify (new label verified_heading_aggregated; verified_parent_aggregated preserved for strict children), chapter-only False/medium soft block, different-chapter worst-wins False/high, unparseable → None verify-gap; (2) export_service persists top-level invoice_hsn_codes; (3) audit_scoring caps verified_heading_aggregated at PARTIAL ≤85 like parent label. Behavior changes: worst-wins (mixed same+foreign chapter: medium→high), garbage-HSN (high-block→verify-gap None). Recovery for hard blocks remains via dashboard.html:706 action proposals (level-independent).
+- **Lesson J deploy note**: PR #568 touches TWO root engine files (pz_import_processor.py, audit_scoring.py → C:\PZ\engine via explicit robocopy) + 1 app file (export_service.py standard sync) + pycache purge.
+- **Tests**: new service/tests/test_cn_hierarchy_validation.py 27/27; PZ baseline tests/test_pz_*.py 221+1 documented pre-existing; carrier 412/412; engine golden 160/160; hardening 15/15; pre-commit smoke 63. Pre-existing failures test_cn_hsn_classifier.py 13/35 + test_wfirma_pz_guard_normalization.py 1 stash-verified on ff1f4b5 → Issue #567 (GATE 4 ISSUE).
+- **GATE 1 record**: backend-safety PASS; integration-boundary PASS + Lesson A PASS; reviewer-challenge NEEDS-CHANGES (HIGH-1 resolved-with-evidence dashboard.html:706, HIGH-2 resolved by ib verification); test-coverage NEEDS-CHANGES (all 8 requested tests added).
+- **Scorecard**: .claude/memory/scorecards/2026-06-12-cn-hsn-false-block-fix.md (4 agents, 4 EXEMPLARY; integration-boundary 35/35; test-coverage-reviewer severity-inflation 4th occurrence → REPEATED-WEAK → Issue #569 GATE 4 disposition).
+- **GATE 2 queue after PR #568 open**: 3 implementation PRs open (#568, #522, #498) — queue at limit again.
 
 ## PR #563 — non-ASCII X-API-Key auth hotfix (2026-06-12, MERGED + DEPLOYED)
 
@@ -4918,6 +4929,11 @@ Group D — Tests (3 new files):
 
 # DECISIONS
 
+## CN Comparison Authority + Mixed-Metal Policy (2026-06-12)
+
+- **Operator explicitly approved accept_sad CN decision for SHIPMENT_7123231135** (mixed-metal heading-level aggregation under SAD CN 71131900 accepted as authoritative; classifier verdict accept_with_note).
+- **CN comparison authority = cn_hsn_classifier hierarchy policy; engine pinned to parity (PR #568).** Mixed-metal heading-level aggregation must never auto-block PZ.
+
 ## Description Engine — Single Authority, Multiple Renderers (2026-06-08)
 
 **Origin**: Operator architectural directive during AWB 9938632830 Polish description review. Operator reviewed generated customs descriptions against commercial invoice and DHL AWB, identified language improvements, then elevated the scope: description generation is not a customs feature — it is a product authority feature.
@@ -5500,6 +5516,8 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ---
 
 # OPEN QUESTIONS
+
+## OQ: tests/test_cn_hsn_classifier.py 13/35 failing on main (Issue #567) — accept-sad flow live-verified working; test-context drift suspected (storage_root fixture interaction).
 
 ## OQ-NEW-13 -- PURCHASE_TRANSIT bypass deployed but not yet exercised at runtime (2026-06-12)
 
