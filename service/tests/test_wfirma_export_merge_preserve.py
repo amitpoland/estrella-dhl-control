@@ -114,3 +114,35 @@ def test_patch_audit_wfirma_spreads_existing_and_has_failclosed_guard():
         "_patch_audit_wfirma must keep the fail-closed guard (Fix B) that "
         "aborts rather than persist a link-dropping write."
     )
+
+
+# ── Workflow-class guard (Lesson I): EVERY dict-literal wfirma_export writer
+# must merge **existing. This catches the same replace-not-merge bug at ANY
+# future writer, not just the one fixed here. Variable assignments
+# (clear-mapping `= wfirma_export`, reconcile `= after`) are safe by
+# construction (they derive from a copy of existing) and are not dict literals.
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_all_dict_literal_wfirma_export_writers_merge_existing():
+    import re
+    app_dir = Path(__file__).resolve().parent.parent / "app"
+    # Match: audit["wfirma_export"] = {   (dict-literal assignment)
+    opener = re.compile(r"""\[["']wfirma_export["']\]\s*=\s*\{""")
+    offenders = []
+    for py in app_dir.rglob("*.py"):
+        text = py.read_text(encoding="utf-8", errors="replace")
+        for m in opener.finditer(text):
+            # capture the literal body up to the next 600 chars (covers the dict)
+            window = text[m.end(): m.end() + 600]
+            # the dict must spread **existing before its first standalone close
+            close = window.find("}")
+            body = window[: close if close != -1 else len(window)]
+            if "**existing" not in body:
+                line = text[: m.start()].count("\n") + 1
+                offenders.append(f"{py.relative_to(app_dir)}:{line}")
+    assert not offenders, (
+        "Dict-literal wfirma_export writer(s) do NOT spread **existing — they "
+        "REPLACE the block and will drop wfirma_pz_doc_id / fullnumber / "
+        "pz_source on write (PZ link disappearance). Merge with {**existing, ...}. "
+        f"Offenders: {offenders}"
+    )
