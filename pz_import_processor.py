@@ -2388,11 +2388,20 @@ def verify_sad_invoice_match(invoices: list, zc429: dict) -> dict:
     else:
         _exporter_label = "Parsed with variance"
 
-    # ── 6. CN parent/child code validation ───────────────────────────────────
-    # SAD may declare a 6-digit parent CN while invoice items carry 8-digit children.
-    # Risk classification drives the dashboard decision model:
-    #   same chapter (first 2 digits match) → "medium" risk → operator-overridable
-    #   different chapter                   → "high"   risk → hard block
+    # ── 6. CN ↔ HSN hierarchy validation ─────────────────────────────────────
+    # SAD declares ONE aggregated CN; invoice items carry per-line HSN codes.
+    # CN (EU) and HSN (India) share only the first 6 digits (global HS); the
+    # last 2 diverge by jurisdiction, and one heading aggregates metal
+    # variants (711311 silver vs 711319 gold both live under heading 7113).
+    # Policy parity with service/app/services/cn_hsn_classifier.py — keep the
+    # two in lock-step (service/tests/test_cn_hierarchy_validation.py pins it):
+    #   exact / HS6 / heading agreement → verified, non-blocking (mixed
+    #     silver+gold under one aggregated SAD CN is the normal jewelry case)
+    #   chapter-only agreement          → "medium" risk → operator decision
+    #   different chapter (worst line)  → "high" risk   → hard block
+    # cn_match=False is a CONFIRMED mismatch only (three-state semantics);
+    # codes that cannot be parsed to digits are a verify-gap (None), never a
+    # block.
     sad_cn = (zc429.get("cn_code") or "").strip().replace(" ", "")
     inv_hsn_codes = [
         str(item.get("hsn", "") or "").strip().replace(" ", "")
@@ -2401,36 +2410,60 @@ def verify_sad_invoice_match(invoices: list, zc429: dict) -> dict:
         if item.get("hsn")
     ]
 
-    if not sad_cn:
+    _sad_digits = "".join(ch for ch in sad_cn if ch.isdigit())
+    _hsn_digits = [
+        "".join(ch for ch in h if ch.isdigit()) for h in inv_hsn_codes
+    ]
+    _hsn_digits = [h for h in _hsn_digits if len(h) >= 2]
+
+    if not sad_cn or len(_sad_digits) < 2:
         cn_match = None
         cn_status = "sad_cn_not_parsed"
         cn_risk_level = None
-    elif not inv_hsn_codes:
+    elif not _hsn_digits:
         cn_match = None
         cn_status = "invoice_hsn_not_parsed"
         cn_risk_level = None
     else:
-        # Build a 6-char parent prefix: strip trailing zeros but keep ≥ 4 chars.
-        _sad_parent = sad_cn.rstrip("0")
-        if len(_sad_parent) < 4:
-            _sad_parent = sad_cn[:4]  # minimum 4-char prefix
+        def _agreement(a: str, b: str) -> int:
+            # 4=exact, 3=HS6, 2=heading(first 4), 1=chapter(first 2), 0=different
+            if a == b:
+                return 4
+            if len(a) >= 6 and len(b) >= 6 and a[:6] == b[:6]:
+                return 3
+            if a[:4] == b[:4]:
+                return 2
+            if a[:2] == b[:2]:
+                return 1
+            return 0
 
-        _all_child = all(hsn.startswith(_sad_parent) for hsn in inv_hsn_codes)
-        if _all_child:
+        # Worst per-line agreement drives the outcome (one foreign-chapter
+        # line is a structural risk even when every other line agrees).
+        _worst = min(_agreement(_sad_digits, h) for h in _hsn_digits)
+
+        if _worst >= 2:
             cn_match = True
-            cn_status = "verified_parent_aggregated"
-            cn_risk_level = "low"
-        else:
-            _sad_chapter = sad_cn[:2]
-            _inv_chapters = {hsn[:2] for hsn in inv_hsn_codes if len(hsn) >= 2}
-            if _sad_chapter in _inv_chapters:
-                # Same chapter — taxonomy mismatch but same goods family
-                cn_risk_level = "medium"
+            # Legacy label preserved when every HSN is a strict child of the
+            # SAD parent prefix; heading/HS6 aggregation named explicitly.
+            _sad_parent = sad_cn.rstrip("0")
+            if len(_sad_parent) < 4:
+                _sad_parent = sad_cn[:4]  # minimum 4-char prefix
+            if all(hsn.startswith(_sad_parent) for hsn in inv_hsn_codes):
+                cn_status = "verified_parent_aggregated"
             else:
-                # Completely different chapter — structural fraud/error risk
-                cn_risk_level = "high"
+                cn_status = "verified_heading_aggregated"
+            cn_risk_level = "low"
+        elif _worst == 1:
+            # Same chapter, different heading — same goods family; operator
+            # decides via the cn-decision endpoints (soft block).
             cn_match = False
             cn_status = "failed_parent_mismatch"
+            cn_risk_level = "medium"
+        else:
+            # Different chapter — structural fraud/error risk (hard block).
+            cn_match = False
+            cn_status = "failed_parent_mismatch"
+            cn_risk_level = "high"
 
     return {
         # Invoice number reconciliation
