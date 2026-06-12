@@ -2445,10 +2445,12 @@ def verify_sad_invoice_match(invoices: list, zc429: dict) -> dict:
             cn_match = True
             # Legacy label preserved when every HSN is a strict child of the
             # SAD parent prefix; heading/HS6 aggregation named explicitly.
-            _sad_parent = sad_cn.rstrip("0")
+            # Label check runs on the SAME normalized digits as the blocking
+            # decision — dotted/lettered code formats must not diverge the two.
+            _sad_parent = _sad_digits.rstrip("0")
             if len(_sad_parent) < 4:
-                _sad_parent = sad_cn[:4]  # minimum 4-char prefix
-            if all(hsn.startswith(_sad_parent) for hsn in inv_hsn_codes):
+                _sad_parent = _sad_digits[:4]  # minimum 4-char prefix
+            if all(h.startswith(_sad_parent) for h in _hsn_digits):
                 cn_status = "verified_parent_aggregated"
             else:
                 cn_status = "verified_heading_aggregated"

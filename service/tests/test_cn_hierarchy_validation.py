@@ -288,6 +288,30 @@ def test_engine_edge_multiple_invoices_aggregate():
     assert v["invoice_hsn_codes"] == ["71131913", "71131141"]
 
 
+def test_engine_edge_dotted_code_formats_label_consistent():
+    """Dotted code formats ('7113.19.00') must normalize identically for the
+    blocking decision AND the label — raw/normalized divergence was a
+    merge-gate finding (label must not downgrade on formatting noise)."""
+    v = _verify("7113.19.00", ["7113.19.13", "7113.19.19"])
+    assert v["cn_match"] is True
+    assert v["cn_status"] == "verified_parent_aggregated"
+    assert v["cn_risk_level"] == "low"
+
+
+def test_engine_edge_letter_noise_never_crashes_or_upgrades():
+    """Letter noise inside a code ('71A13913' → digits '7113913') degrades to
+    a weaker agreement level at worst — never a crash, never an exception,
+    outcome stays within the three-state contract."""
+    v = _verify("71131900", ["71A13913"])
+    assert v["cn_match"] in (True, False, None)
+    assert v["cn_status"] in (
+        "verified_parent_aggregated", "verified_heading_aggregated",
+        "failed_parent_mismatch", "invoice_hsn_not_parsed",
+    )
+    # Same heading after normalization → must remain non-blocking
+    assert v["cn_match"] is True
+
+
 def test_invalid_input_asymmetry_engine_none_classifier_review():
     """Documented asymmetry: unparseable codes are reported differently
     (engine: cn_match=None verify-gap; classifier: invalid_input review)
