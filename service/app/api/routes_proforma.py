@@ -6933,6 +6933,47 @@ def post_proforma_draft_to_wfirma(
                 f"{rcv.error or 'unavailable'}",
             )
 
+    # ── WDT preflight: contractor must carry an EU VAT number (NIP) ───────
+    # wFirma hard-rejects invoices/add with a WDT (0% intra-EU) vat code when
+    # the contractor record has no NIP — the post is technically doomed, not
+    # merely legally risky. Draft #33 incident 2026-06-12: the D3 ADR-027
+    # advisory warned at draft level but the post was sent anyway and failed
+    # with an opaque ERROR. D3 stays warn-not-block for present-but-unverified
+    # numbers; this gate blocks ONLY the doomed case (WDT + empty NIP on the
+    # live wFirma contractor). Fail-open on fetch failure — the post itself
+    # then fails with a now-readable field-level error. No state change here:
+    # the draft stays 'approved'.
+    _resolved_ctx_pre = (_vat_freeze[0] if _vat_freeze else "") or ""
+    if _resolved_ctx_pre == "wdt":
+        _wdt_c = wfirma_client.fetch_contractor_by_id(req.wfirma_contractor_id)
+        if _wdt_c.ok and not (_wdt_c.nip or "").strip():
+            _cm_eu = ""
+            try:
+                _cm_gate = get_customer_master(
+                    _customer_master_db_path(), req.wfirma_contractor_id
+                )
+                _cm_eu = ((_cm_gate.vat_eu_number or "").strip()
+                          if _cm_gate else "")
+            except Exception:
+                pass
+            _cm_hint = (
+                f"customer_master has vat_eu_number={_cm_eu!r} but the wFirma "
+                "contractor card is missing the NIP — update the contractor "
+                "in wFirma"
+                if _cm_eu else
+                "set the customer's EU VAT number in Customer Master "
+                "(vat_eu_number) and on the wFirma contractor card"
+            )
+            return _post_validation_error(
+                draft_id,
+                f"WDT (0% intra-EU) posting blocked: wFirma contractor "
+                f"{req.wfirma_contractor_id} ({_wdt_c.name!r}) has no EU VAT "
+                "number (NIP) — wFirma rejects invoices/add for WDT without "
+                f"it. Fix: {_cm_hint}, then re-approve and post; or set a "
+                "vat_mode override on the customer master if WDT does not "
+                "apply.",
+            )
+
     # ── Commit point: approved → posting ───────────────────────────────────
     try:
         posting = pildb.start_post(
@@ -7011,6 +7052,7 @@ def post_proforma_draft_to_wfirma(
         # Network / runtime / verify-after-create failure (TRANSIENT).
         # Move to post_failed; operator can re-open + edit + approve to retry.
         error_str = f"{type(exc).__name__}: {exc}"
+        log.error("[draft %s] wFirma post failed: %s", draft_id, error_str)
         try:
             pildb.mark_post_failed(
                 db, int(draft_id),
@@ -7020,6 +7062,30 @@ def post_proforma_draft_to_wfirma(
         except Exception as inner:
             log.error("[draft %s] mark_post_failed itself failed: %s",
                       draft_id, inner)
+
+        # Diagnostic audit: persist the sanitized wFirma request/response
+        # exchange as a draft event so failed posts leave evidence (draft #33
+        # incident 2026-06-12: no log line, no XML, operator and engineers
+        # were blind). WFirmaCreateError carries the XML bodies; auth
+        # credentials travel in HTTP headers only and are never in the body.
+        # Best-effort — never masks the original error.
+        try:
+            _req_xml  = getattr(exc, "request_xml",  "") or ""
+            _resp_xml = getattr(exc, "response_xml", "") or ""
+            if _req_xml or _resp_xml:
+                pildb._record_draft_event(
+                    db, draft_id=int(draft_id), event="wfirma_post_exchange",
+                    detail_json=json.dumps({
+                        "error":        error_str[:500],
+                        "field_errors": list(getattr(exc, "field_errors", []) or [])[:10],
+                        "request_xml":  _req_xml[:8000],
+                        "response_xml": _resp_xml[:8000],
+                    }, ensure_ascii=False),
+                    operator=operator,
+                )
+        except Exception as _ax_exc:
+            log.warning("[draft %s] wfirma_post_exchange event write failed "
+                        "(non-fatal): %s", draft_id, _ax_exc)
 
         # B9 recovery: create a wfirma_post_retry proposal if the type is
         # enabled. The bare error STILL returns unchanged; the proposal is

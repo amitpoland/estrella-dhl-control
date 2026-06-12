@@ -384,6 +384,45 @@ def _parse_status(xml_text: str) -> tuple[str, str]:
         return "PARSE_ERROR", str(exc)
 
 
+def _extract_field_errors(xml_text: str, limit: int = 10) -> List[str]:
+    """Extract nested field-level validation errors from a wFirma response.
+
+    wFirma ERROR responses carry the actual rejection reasons in nested
+    ``<errors><error><field>/<message>`` blocks on the rejected entity node
+    (``<contractor>``, ``<invoice>``, ``<invoicecontent>`` …) — NOT in
+    ``<status><description>``, which is usually empty. ``_parse_status``
+    alone therefore yields the useless ``"status=ERROR: "`` with nothing
+    after the colon (draft #33 incident, 2026-06-12).
+
+    Returns entries shaped ``"<entity>.<field>: <message>"`` (entity omitted
+    when not derivable). Empty list on parse failure or when no field
+    errors are present.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    parent_of = {child: parent for parent in root.iter() for child in parent}
+    out: List[str] = []
+    for err in root.iter("error"):
+        field   = (err.findtext("field")   or "").strip()
+        message = (err.findtext("message") or "").strip()
+        if not (field or message):
+            continue
+        entity = ""
+        wrapper = parent_of.get(err)              # usually <errors>
+        if wrapper is not None:
+            owner = parent_of.get(wrapper)        # entity node, e.g. <contractor>
+            if owner is not None and owner.tag != "api":
+                entity = owner.tag
+        label = f"{entity}.{field}" if (entity and field) else (field or entity)
+        out.append(f"{label}: {message}" if (label and message)
+                   else (label or message))
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _find_text(element: ET.Element, *path: str) -> str:
     """Safely extract text from nested XML elements."""
     node = element
@@ -1593,6 +1632,31 @@ def _extract_fullnumber(invoice_node: Optional[ET.Element]) -> str:
     return ""
 
 
+class WFirmaCreateError(RuntimeError):
+    """``invoices/add`` rejected by wFirma.
+
+    Subclasses RuntimeError so every existing ``except RuntimeError`` /
+    ``except Exception`` handler keeps working. Carries the request and
+    response XML so the caller can persist a diagnostic audit trail for
+    failed posts (draft #33 incident, 2026-06-12: the failure left no
+    request/response evidence anywhere). The XML bodies contain no
+    credentials — wFirma auth travels in HTTP headers only.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_xml:  str = "",
+        response_xml: str = "",
+        field_errors: Optional[List[str]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.request_xml  = request_xml
+        self.response_xml = response_xml
+        self.field_errors = list(field_errors or [])
+
+
 def create_proforma_draft(req: ProformaRequest) -> ProformaResult:
     """
     Create a proforma invoice in wFirma (type=proforma).
@@ -1615,12 +1679,25 @@ def create_proforma_draft(req: ProformaRequest) -> ProformaResult:
     body = _build_proforma_xml(req)
     http_status, response_text = _http_request("POST", "invoices", "add", body)
     if http_status >= 400:
-        raise RuntimeError(
-            f"invoices/add HTTP {http_status}: {response_text[:200]}"
+        raise WFirmaCreateError(
+            f"invoices/add HTTP {http_status}: {response_text[:200]}",
+            request_xml=body, response_xml=response_text,
         )
     code, desc = _parse_status(response_text)
     if code != "OK":
-        raise RuntimeError(f"invoices/add wFirma status={code}: {desc}")
+        # <status><description> is usually empty on ERROR; the actual
+        # rejection reasons live in nested <errors><error> blocks on the
+        # entity nodes. Surface them so the operator sees WHY, not just
+        # "status=ERROR:" (draft #33 incident, 2026-06-12).
+        field_errors = _extract_field_errors(response_text)
+        detail = (desc or "").strip()
+        if field_errors:
+            detail = (f"{detail} | " if detail else "") + "; ".join(field_errors)
+        raise WFirmaCreateError(
+            f"invoices/add wFirma status={code}: {detail}",
+            request_xml=body, response_xml=response_text,
+            field_errors=field_errors,
+        )
 
     root = ET.fromstring(response_text)
     node = root.find(".//invoice")

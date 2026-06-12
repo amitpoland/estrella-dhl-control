@@ -46,7 +46,9 @@
     }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+      // 600-char cap: error bodies may carry multi-sentence operator
+      // guidance; 200 chars cut it mid-sentence.
+      throw new Error(`HTTP ${res.status}: ${text.slice(0, 600)}`);
     }
     if (res.status === 204 || res.status === 205) return null;
     const ct = res.headers.get('content-type') || '';

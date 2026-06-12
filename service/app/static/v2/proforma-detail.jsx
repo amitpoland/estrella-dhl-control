@@ -2548,7 +2548,25 @@ function PostToWFirmaModal({ draft, liveDraft, onClose, onSuccess }) {
       confirm_token:       'YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA',
       expected_updated_at: liveDraft.updated_at || '',
     })
-      .then(() => { onSuccess && onSuccess(); })
+      .then(r => {
+        // PzApi never rejects — failures resolve as {ok:false, error} (HTTP
+        // 400 blocked / 409 duplicate / 5xx) or as a 200 body with
+        // {ok:false, status:'failed', error} when wFirma rejected the
+        // document. Both must stay visible in the modal, not close it.
+        if (!r || r.ok === false) {
+          setApiError((r && r.error) || 'Post failed — check backend logs.');
+          setLoading(false);
+          return;
+        }
+        const d = r.data || {};
+        if (d && d.ok === false) {
+          const reasons = Array.isArray(d.blocking_reasons) ? d.blocking_reasons.join(' · ') : '';
+          setApiError(d.error || reasons || 'wFirma rejected the post — open the draft to see the failure notes.');
+          setLoading(false);
+          return;
+        }
+        onSuccess && onSuccess();
+      })
       .catch(e => {
         setApiError((e && e.message) ? e.message : 'Post failed — check backend logs.');
         setLoading(false);
@@ -2644,7 +2662,23 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
     window.PzApi.draftToInvoice(draft.id, {
       confirm: 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA',
     })
-      .then(() => { onSuccess && onSuccess(); })
+      .then(r => {
+        // PzApi never rejects — failures resolve as {ok:false, error} or as
+        // a 200 body with {ok:false, error}. Keep them visible in the modal.
+        if (!r || r.ok === false) {
+          setApiError((r && r.error) || 'Conversion failed — check backend logs.');
+          setLoading(false);
+          return;
+        }
+        const d = r.data || {};
+        if (d && d.ok === false) {
+          const reasons = Array.isArray(d.blocking_reasons) ? d.blocking_reasons.join(' · ') : '';
+          setApiError(d.error || reasons || 'Conversion failed — open the draft to see the failure notes.');
+          setLoading(false);
+          return;
+        }
+        onSuccess && onSuccess();
+      })
       .catch(e => {
         setApiError((e && e.message) ? e.message : 'Conversion failed — check backend logs.');
         setLoading(false);
