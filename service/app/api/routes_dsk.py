@@ -288,11 +288,17 @@ async def download_dsk(filename: str) -> FileResponse:
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail=f"DSK file not found: {filename}")
 
+    # Lesson G: DSK PDFs are regenerable (versioned regeneration) — never browser-cache.
     return FileResponse(
         path                = str(file_path),
         media_type          = "application/pdf",
         filename            = filename,
-        headers             = {"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers             = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
     )
 
 

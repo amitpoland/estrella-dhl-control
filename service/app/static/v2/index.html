@@ -659,7 +659,7 @@ function App() {
           {!viewerDoc && page === 'carriers' && (
             <>
               <PageHeader title="Carriers" subtitle="Multi-carrier login · API integration · webhooks · sessions · audit log. Backend wireframe — no live credentials."
-                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn><Btn variant="gold" small disabled style={{ opacity: 0.7, cursor: 'not-allowed' }}>+ Connect Carrier</Btn></div>}
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn><Btn variant="gold" small disabled title="Disabled: multi-carrier onboarding workflow not implemented (GAP-C10). Next: OAuth callback + key entry system (Sprint 12)." style={{ opacity: 0.7, cursor: 'not-allowed' }}>+ Connect Carrier</Btn></div>}
               />
               <SubTabStrip active={page} onNav={handleNav} />
               <CarriersPage />
@@ -670,7 +670,7 @@ function App() {
           {!viewerDoc && page === 'api_status' && (
             <>
               <PageHeader title="API Status" subtitle="Consolidated health for every backend integration · carriers · accounting · customs · internal services · webhooks. Replaces scattered API-status surfaces."
-                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn><Btn variant="outline" small disabled style={{ opacity: 0.7, cursor: 'not-allowed' }}>↻ Re-probe All</Btn></div>}
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn><Btn variant="outline" small disabled title="Disabled: synthetic re-probe POST endpoints not yet implemented (Sprint 22). Next: POST /api/v1/admin/probe-all." style={{ opacity: 0.7, cursor: 'not-allowed' }}>↻ Re-probe All</Btn></div>}
               />
               <SubTabStrip active={page} onNav={handleNav} />
               <ApiStatusPage />
@@ -681,7 +681,7 @@ function App() {
           {!viewerDoc && page === 'documents' && (
             <>
               <PageHeader title="Documents" subtitle="Unified workspace for every document the system creates · Proforma · Invoice · PZ · Order · Customs · Shipping · Email. Full create / edit / delete / view / download."
-                actions={<Btn variant="outline" small disabled style={{ opacity: 0.7, cursor: 'not-allowed' }}>⬇ Export CSV</Btn>}
+                actions={<Btn variant="outline" small disabled title="Disabled: cross-document CSV export endpoint missing (Sprint 04). Next: GET /api/v1/documents/export." style={{ opacity: 0.7, cursor: 'not-allowed' }}>⬇ Export CSV</Btn>}
               />
               <DocumentsHubPage />
             </>

@@ -55,8 +55,14 @@ def download_master_xlsx():
             export_master_xlsx(path)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
+    # Lesson G: regenerable artifact — must never be served from browser cache.
     return FileResponse(
         path=str(path),
         filename="SHIPMENT_TRACKING_MASTER.xlsx",
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
     )
