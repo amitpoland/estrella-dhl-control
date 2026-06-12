@@ -336,6 +336,9 @@ class Settings(BaseSettings):
     # Carrier file storage root. None = defaults to storage_root / "carrier" at runtime.
     carrier_storage_root: Optional[Path] = Field(default=None)
 
+    # Outbound tracking registration — records outbound shipment events to tracking_db
+    outbound_tracking_registration_enabled: bool = Field(default=False)
+
     # ── Cliq bot batch collection ─────────────────────────────────────────────
     # Expire an incomplete (missing files) session after N minutes of inactivity
     batch_session_timeout_minutes: int = 30

@@ -44,6 +44,7 @@ from .persistence.shipment_db import get_shipment_by_batch_id as _db_get_by_batc
 from .persistence.shipment_db import init_db as _init_shipment_db
 from .persistence.shipment_db import insert_shipment as _db_insert
 from .persistence.shipment_db import update_state as _db_update
+from ...core.config import settings
 
 
 # ── AWB stability predicate (read-only — added in W-5 / P0) ───────────────────
@@ -233,6 +234,29 @@ class CarrierCoordinator:
             state=ShipmentState.COMPLETE,
             dimensions_json=dimensions_json,
         )
+
+        # Register outbound tracking event if enabled (flag-gated, non-transactional)
+        if (settings.outbound_tracking_registration_enabled
+                and complete.tracking_ref
+                and not complete.simulated):
+            try:
+                from ...services import tracking_db
+                from datetime import datetime, timezone
+                event_time = datetime.now(timezone.utc).isoformat()
+                tracking_db.record_event(
+                    batch_id=request.batch_id,
+                    awb=complete.tracking_ref,
+                    carrier=self._adapter.carrier_id if hasattr(self._adapter, 'carrier_id') else 'DHL',
+                    stage="outbound_created",
+                    status=complete.state.value,
+                    event_time=event_time,
+                    source="carrier_coordinator",
+                    source_ref=complete.tracking_ref,
+                    direction="outbound",
+                )
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning("outbound tracking registration failed", exc_info=True)
 
         # Update the DB row with the enriched fields now that we have them.
         from .persistence.shipment_db import update_shipment_fields as _db_update_fields
