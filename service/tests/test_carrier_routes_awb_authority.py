@@ -208,7 +208,7 @@ class TestFeatureFlagOn:
         )
 
         assert response.status_code == 422
-        error = response.json()
+        error = response.json()["detail"]
         assert error["error"] == "Customer resolution failed"
         assert error["code"] == "CUSTOMER_NOT_FOUND"
         assert error["batch_id"] == "INVALID_BATCH"
@@ -236,7 +236,7 @@ class TestFeatureFlagOn:
         )
 
         assert response.status_code == 422
-        error = response.json()
+        error = response.json()["detail"]
         assert error["error"] == "Address validation failed"
         assert error["code"] == "ADDRESS_INCOMPLETE"
         assert error["batch_id"] == "INCOMPLETE_BATCH"
