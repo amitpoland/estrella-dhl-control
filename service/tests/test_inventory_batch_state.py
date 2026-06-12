@@ -8,6 +8,8 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.smoke
+
 _SVC = Path(__file__).resolve().parent.parent
 if str(_SVC) not in sys.path:
     sys.path.insert(0, str(_SVC))

@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.smoke
+
 from app.services import dhl_zc429_intake as zc
 from app.services import intake_lineage   as il
 from app.services import zc429_email_dispatcher as disp

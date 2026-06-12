@@ -139,59 +139,111 @@ _BACKGROUND_SERVICE_DIRS = frozenset({
 })
 
 
+# Session-scoped baseline manifests.  Each distinct resolved root in
+# _LIVE_ROOTS is walked exactly ONCE per pytest session (instead of twice
+# per test).  The per-test guard does a single walk and diffs vs the
+# running baseline, then updates it.  This trades a 4x-walk-per-test
+# (was: ~1.6s/test on a 973-file/25.8MB tree) for a 1x-walk-per-test
+# (~0.4s/test/root) while preserving NEW-file detection and adding
+# IN-PLACE MODIFICATION detection (strictly stronger than the prior
+# set-diff-on-paths-only check).
+_DISTINCT_ROOTS: list[Path] = []
+_BASELINE_MANIFEST: dict[Path, dict[str, tuple[int, int]]] = {}
+
+
+def _build_root_manifest(resolved_lp: Path) -> dict[str, tuple[int, int]]:
+    """Walk one resolved root and return {str(path): (st_mtime_ns, st_size)}.
+
+    Skips SQLite WAL/SHM sidecars and background-service subdirectories
+    (same exemptions as the old guard).  Wrap stat() in try/except because
+    WAL-mode sidecars can vanish between rglob() and stat() on Windows.
+    """
+    manifest: dict[str, tuple[int, int]] = {}
+    if not resolved_lp.exists():
+        return manifest
+    for f in resolved_lp.rglob("*"):
+        if not f.is_file():
+            continue
+        if any(f.name.endswith(s) for s in _SQLITE_SIDECAR_SUFFIXES):
+            continue
+        try:
+            rel = f.relative_to(resolved_lp)
+            if rel.parts and rel.parts[0] in _BACKGROUND_SERVICE_DIRS:
+                continue
+        except ValueError:
+            pass
+        try:
+            st = f.stat()
+            manifest[str(f)] = (st.st_mtime_ns, st.st_size)
+        except (FileNotFoundError, OSError):
+            pass  # transient file vanished between rglob and stat
+    return manifest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _storage_guard_session_baseline():
+    """Build one baseline manifest per DISTINCT resolved live root.
+
+    Roots that resolve to the same path (e.g. STORAGE_ROOT pointed at the
+    same tree as the hardcoded default) are walked exactly once.
+    """
+    seen: set[Path] = set()
+    for lp in _LIVE_ROOTS:
+        try:
+            resolved_lp = lp.resolve()
+        except OSError:
+            continue
+        if resolved_lp in seen:
+            continue
+        seen.add(resolved_lp)
+        _DISTINCT_ROOTS.append(resolved_lp)
+        _BASELINE_MANIFEST[resolved_lp] = _build_root_manifest(resolved_lp)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _guard_storage_root():
-    """Detect tests that write files into live storage roots.
+    """Detect tests that write OR modify files in live storage roots.
 
-    Snapshots live storage before the test runs, then checks for any new files
-    after the test completes. Fails only if a file was actually written to a
-    live directory.
+    Single walk per test (post-yield), diffed against a session-scoped
+    baseline that is updated in place after every test.  Flags the first
+    NEW or MODIFIED file and names the offending test via pytest.fail.
 
-    This approach is compatible with monkeypatch: checking settings.storage_root
-    in teardown is unreliable because monkeypatch restores the live-path default
-    before this fixture's teardown runs, causing false positives on every
-    correctly-patched test.
+    Detection contract:
+      - NEW file in a live root  -> fail (matches old guard).
+      - MODIFIED file (mtime_ns or size differs)  -> fail (NEW: stricter
+        than old guard, which captured mtime but never compared it).
+
+    Monkeypatch compatibility: checking settings.storage_root in teardown
+    is unreliable because monkeypatch restores the default before this
+    fixture's teardown runs.  We diff the filesystem directly instead.
     """
-    # Snapshot existing files in live-storage directories before the test.
-    # Wrap stat() in a try-except: WAL-mode sidecar files (.db-wal, .db-shm)
-    # can disappear between rglob() and stat() when SQLite performs a final
-    # checkpoint and removes them (TOCTOU race on Windows).  A file that
-    # vanishes at this point was not written by this test, so silently skip it.
-    before: dict = {}
-    for lp in _LIVE_ROOTS:
-        resolved_lp = lp.resolve()
-        if resolved_lp.exists():
-            for f in resolved_lp.rglob("*"):
-                if f.is_file():
-                    try:
-                        before[str(f)] = f.stat().st_mtime
-                    except (FileNotFoundError, OSError):
-                        pass  # transient file vanished between rglob and stat
-
+    if os.environ.get("PZ_SKIP_STORAGE_GUARD") == "1":
+        yield
+        return
     yield  # run the test
 
-    # After the test: fail if any NEW file was written to live storage.
-    # SQLite WAL/SHM sidecar files and background-service directories are
-    # excluded — see _SQLITE_SIDECAR_SUFFIXES and _BACKGROUND_SERVICE_DIRS.
-    for lp in _LIVE_ROOTS:
-        resolved_lp = lp.resolve()
-        if resolved_lp.exists():
-            for f in resolved_lp.rglob("*"):
-                if not f.is_file():
-                    continue
-                if str(f) in before:
-                    continue
-                if any(f.name.endswith(s) for s in _SQLITE_SIDECAR_SUFFIXES):
-                    continue
-                # Skip files under background-service subdirectories.
-                try:
-                    rel = f.relative_to(resolved_lp)
-                    if rel.parts and rel.parts[0] in _BACKGROUND_SERVICE_DIRS:
-                        continue
-                except ValueError:
-                    pass
-                pytest.fail(
-                    f"STORAGE LEAK: test wrote {f!r} into live storage root "
-                    f"{resolved_lp!r}.  Use tmp_path / monkeypatch to redirect "
-                    f"settings.storage_root in the test or its autouse fixture."
-                )
+    leak: tuple[str, str, Path] | None = None
+    for resolved_lp in _DISTINCT_ROOTS:
+        baseline = _BASELINE_MANIFEST.get(resolved_lp, {})
+        current = _build_root_manifest(resolved_lp)
+        if leak is None:
+            for path_key, sig in current.items():
+                prior = baseline.get(path_key)
+                if prior is None:
+                    leak = ("new", path_key, resolved_lp)
+                    break
+                if prior != sig:
+                    leak = ("modified", path_key, resolved_lp)
+                    break
+        # Update baseline so subsequent tests don't re-flag this leak.
+        _BASELINE_MANIFEST[resolved_lp] = current
+
+    if leak is not None:
+        kind, path_key, resolved_lp = leak
+        pytest.fail(
+            f"STORAGE LEAK ({kind}): test wrote {path_key!r} into live "
+            f"storage root {str(resolved_lp)!r}.  Use tmp_path / monkeypatch "
+            f"to redirect settings.storage_root in the test or its autouse "
+            f"fixture."
+        )

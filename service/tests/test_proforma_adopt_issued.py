@@ -43,6 +43,8 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.smoke
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _BATCH_ID = "TEST_BATCH_ADOPT_001"

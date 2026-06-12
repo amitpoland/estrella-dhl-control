@@ -13,6 +13,8 @@ service/.venv/
 .claude/worktrees/
 .claude/agents/prompt-engineer.md
 .claude/memory/PROJECT_STATE.LOCAL_BACKUP.md
+.claude/.regression-state
+.claude/.allow-red-stop
 .env
 # OS
 .DS_Store
