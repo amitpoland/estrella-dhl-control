@@ -255,6 +255,23 @@ async def lifespan(app: FastAPI):
     else:
         log.info("STARTUP_AI_AUDIT: all AI execution flags are OFF (safe defaults).")
 
+    # ── Authority drift detection startup (R1 — Campaign 02.5 Phase 4) ─────
+    # Generate startup authority manifest if flag is ON. Advisory only, never blocks startup.
+    if settings.authority_drift_detection:
+        try:
+            from .services.authority_startup import generate_startup_authority_manifest
+            authority_manifest_result = generate_startup_authority_manifest(_root)
+            module_count = len(authority_manifest_result.get("modules", {}))
+            error_count = len([m for m in authority_manifest_result.get("modules", {}).values() if "error" in m])
+            log.info(
+                "STARTUP_AUTHORITY_MANIFEST: generated manifest with %d modules (%d errors) written to %s",
+                module_count, error_count, _root / "authority_manifest.json"
+            )
+        except Exception as _auth_manifest_exc:  # never block startup
+            log.warning("STARTUP_AUTHORITY_MANIFEST: generation failed (non-fatal): %s", _auth_manifest_exc)
+    else:
+        log.info("STARTUP_AUTHORITY_AUDIT: authority_drift_detection=False, no manifest generated")
+
     log.info("Starting Estrella PZ Service  [env=%s]", settings.environment)
     log.info("Engine dir: %s", settings.engine_dir)
 

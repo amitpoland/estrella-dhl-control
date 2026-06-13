@@ -349,6 +349,10 @@ class Settings(BaseSettings):
     # derivation behind this flag. Default False = raw recipient_address behavior unchanged.
     awb_address_authority_enabled: bool = Field(default=False)
 
+    # Authority drift detection (Campaign 02.5 Phase 4) — enable runtime authority module monitoring
+    # Default False = no startup manifest write, endpoint returns 503. True = active monitoring.
+    authority_drift_detection: bool = Field(default=False)
+
     # ── Cliq bot batch collection ─────────────────────────────────────────────
     # Expire an incomplete (missing files) session after N minutes of inactivity
     batch_session_timeout_minutes: int = 30
