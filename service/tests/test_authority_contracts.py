@@ -19,6 +19,7 @@ import inspect
 import os
 import sqlite3
 import subprocess
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -170,6 +171,11 @@ class TestAuthorityContracts:
 
         for input_val, expected in master_data_cases:
             actual = name_normalization.master_data_norm(input_val)
+            # master_data_norm is the ONLY authority fn that emits NFD-decomposed
+            # output (uses unicodedata.normalize("NFD", ...)); the golden literals
+            # above are stored composed (NFC) for diff-readability. Pin the real
+            # NFD form explicitly so a regression to NFC/NFKC output is caught.
+            expected = unicodedata.normalize("NFD", expected)
             assert actual == expected, (
                 f"master_data_norm({input_val!r}) = {actual!r}, expected {expected!r}"
             )
