@@ -219,7 +219,7 @@ def get_dhl_readiness(batch_id: str) -> Dict[str, Any]:
     Pure read-only: never writes, never triggers side effects.
     """
     timeline: List[Dict[str, Any]] = _load_timeline(batch_id)
-    tracking: List[Dict[str, Any]] = tdb.get_events_for_batch(batch_id)
+    tracking: List[Dict[str, Any]] = tdb.get_events_for_batch(batch_id, direction="inbound")
     audit:    Dict[str, Any]       = _load_audit_dict(batch_id)
 
     # ── Extract AWB / carrier from tracking_db first, fall back to timeline ────

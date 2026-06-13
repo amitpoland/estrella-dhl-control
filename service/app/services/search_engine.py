@@ -646,9 +646,9 @@ def search_shipments(
                 "SELECT batch_id, awb, carrier, normalized_stage, stage, "
                 "status, event_time, description, location, "
                 "requires_manual_review "
-                "FROM shipment_tracking_events WHERE "
+                "FROM shipment_tracking_events WHERE ("
                 + " OR ".join(f"({c})" for c in clauses)
-                + " ORDER BY event_time DESC LIMIT ?"
+                + ") AND direction='inbound' ORDER BY event_time DESC LIMIT ?"
             )
             params.append(limit * 5)   # over-fetch — dedup reduces to limit
 

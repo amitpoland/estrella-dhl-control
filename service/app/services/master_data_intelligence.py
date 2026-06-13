@@ -1229,7 +1229,7 @@ def _score_graph(
             tcon.execute("PRAGMA query_only = ON")
             tracked_batches = set()
             t_rows = tcon.execute(
-                "SELECT DISTINCT batch_id FROM shipment_tracking_events WHERE batch_id != ''"
+                "SELECT DISTINCT batch_id FROM shipment_tracking_events WHERE batch_id != '' AND direction='inbound'"
             ).fetchall()
             tcon.close()
             tracked_batches = {r["batch_id"] for r in t_rows}

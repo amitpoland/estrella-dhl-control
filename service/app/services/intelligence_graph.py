@@ -228,7 +228,7 @@ def _resolve_awb_from_tracking(
         row = con.execute(
             """
             SELECT awb FROM shipment_tracking_events
-            WHERE batch_id = ? AND awb != ''
+            WHERE batch_id = ? AND awb != '' AND direction='inbound'
             ORDER BY event_time DESC LIMIT 1
             """,
             (batch_id,),
@@ -265,7 +265,7 @@ def _resolve_tracking_summary(
                 MAX(event_time)                           AS latest_event_time,
                 SUM(requires_manual_review)               AS manual_review_sum
             FROM shipment_tracking_events
-            WHERE batch_id = ?
+            WHERE batch_id = ? AND direction='inbound'
             """,
             (batch_id,),
         ).fetchone()
@@ -276,7 +276,7 @@ def _resolve_tracking_summary(
             stage_row = con.execute(
                 """
                 SELECT normalized_stage, stage FROM shipment_tracking_events
-                WHERE batch_id = ?
+                WHERE batch_id = ? AND direction='inbound'
                 ORDER BY event_time DESC LIMIT 1
                 """,
                 (batch_id,),
