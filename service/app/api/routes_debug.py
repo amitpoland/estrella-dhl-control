@@ -21,6 +21,12 @@ from ..core.logging import get_logger
 from ..core.security import require_api_key, require_api_key_privileged
 from ..services import cliq_service
 from ..services.batch_manager import manager as batch_manager
+# storage_health is a stdlib-only utility with no path back to this module, so
+# eager module-level import is safe and avoids a lazy-first-import race: FastAPI
+# runs the sync storage/* endpoints in a threadpool, and a lazy import here meant
+# two concurrent first-touches saw the half-initialised module in sys.modules and
+# raised "partially initialized module ... (circular import)". (BUG 2)
+from ..utils.storage_health import scan_locks, storage_health_snapshot
 
 router = APIRouter(prefix="/api/v1/debug", tags=["debug"])
 _auth  = Depends(require_api_key)
@@ -351,8 +357,11 @@ async def health_full() -> Dict[str, Any]:
         overall_ok = False
 
     # ── Step 13: Backup freshness ─────────────────────────────────────────────
+    # NB: do NOT re-import `settings` here. A local `from ..core.config import
+    # settings` would make `settings` a function-local for the whole body and
+    # raise UnboundLocalError at Step 2 (line ~140), which references the
+    # module-level `settings` before this point. (BUG 1)
     try:
-        from ..core.config import settings
         backup_root = Path(settings.backup_root)
 
         if not backup_root.exists():
@@ -457,7 +466,6 @@ def storage_health() -> Dict[str, Any]:
 
     This endpoint is read-only and makes no writes.
     """
-    from ..utils.storage_health import storage_health_snapshot
     return storage_health_snapshot(settings.storage_root)
 
 
@@ -474,7 +482,6 @@ def storage_locks() -> Dict[str, Any]:
     OTHER OS processes (e.g. a crashed uvicorn worker). Threads in the same
     process always appear releasable.
     """
-    from ..utils.storage_health import scan_locks
     outputs_dir = settings.storage_root / "outputs"
     return scan_locks(outputs_dir)
 
