@@ -77,6 +77,8 @@ import re
 import sqlite3
 from typing import Any, Dict, List, Optional
 
+from . import name_normalization
+
 from ..core.config import settings
 from . import wfirma_db as wfdb
 
@@ -85,12 +87,7 @@ log = logging.getLogger(__name__)
 
 # ── Name normalization (mirrors the Proforma resolver behaviour) ──────────
 def _normalize_name(raw: str) -> str:
-    """Strip outer whitespace and collapse internal whitespace to single
-    space. Case is preserved in the returned form; comparison is done
-    case-insensitively elsewhere."""
-    if not raw:
-        return ""
-    return re.sub(r"\s+", " ", raw.strip())
+    return name_normalization.wfirma_auto_resolve_normalize_name(raw)
 
 
 # ── VAT normalization (identity-first resolution) ─────────────────────────

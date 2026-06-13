@@ -27,6 +27,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from . import name_normalization
+
 
 _VALID_CONFIRMED_STATUSES = ("confirmed",)
 _VALID_MASTER_TYPE        = "customer_master"
@@ -58,15 +60,7 @@ def _normalise_matched_master_id(raw: Any) -> str:
 
 
 def _normalize_name(s: Optional[str]) -> str:
-    """Case-insensitive whitespace-collapsed comparison key.
-
-    Mirrors the lighter normalisation used by the existing name resolver
-    in routes_proforma.py (``_normalize_client_name``) so the "names
-    differ?" advisory test is consistent with the rest of the system.
-    """
-    if not s:
-        return ""
-    return " ".join(s.strip().split()).lower()
+    return name_normalization.customer_resolution_normalize_name(s)
 
 
 def derive_customer_resolution_via_packing(

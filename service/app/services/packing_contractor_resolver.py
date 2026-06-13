@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.config import settings
+from . import name_normalization
 
 
 # ── Default DB paths (overridable in tests) ──────────────────────────────────
@@ -110,33 +111,7 @@ def _strip_accents(s: str) -> str:
 
 
 def normalise_name(name: Optional[str]) -> str:
-    """Operator-stable normalised key.
-
-    1. lowercase
-    2. strip accents
-    3. drop punctuation (keep alphanumerics + spaces)
-    4. drop legal-form suffixes ("Sp. z o.o.", "LLP", "GmbH", ...)
-    5. collapse whitespace
-
-    Empty / None → "".  Pure function, no I/O.
-    """
-    if not name:
-        return ""
-    s = _strip_accents(str(name)).lower().strip()
-    # Drop trailing non-word punctuation BEFORE suffix detection so that
-    # "beta, GMBH!" reaches the suffix regex as "beta, gmbh".
-    s = re.sub(r"[^\w\s,.\-]+$", "", s).strip()
-    # Drop trailing legal suffix once or twice (handles "Co., Ltd." → "" path).
-    for _ in range(2):
-        before = s
-        s = _LEGAL_SUFFIXES_RE.sub("", s).strip(" ,.;:-")
-        if s == before:
-            break
-    # Drop punctuation except spaces.
-    s = re.sub(r"[^a-z0-9 ]+", " ", s)
-    # Collapse whitespace.
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    return name_normalization.packing_contractor_normalise_name(name)
 
 
 def normalise_tax_id(tax_id: Optional[str]) -> str:

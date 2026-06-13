@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from . import name_normalization
+
 
 # ── Domain ────────────────────────────────────────────────────────────────────
 
@@ -427,19 +429,7 @@ def hard_delete_supplier(db_path: Path, supplier_id: int) -> bool:
 # ── Name-normalised lookup ─────────────────────────────────────────────────────
 
 def _normalize_name(name: str) -> str:
-    """Lower-case, strip punctuation, collapse whitespace.
-
-    Used for fuzzy supplier name matching between audit-resolved names
-    (e.g. "Estrella Jewels LLP") and master-data canonical names
-    (e.g. "ESTRELLA JEWELS LLP.").  Removes trailing periods and other
-    punctuation so both normalise to "estrella jewels llp".
-    """
-    if not name:
-        return ""
-    s = name.lower().strip()
-    s = _PUNCT_RE.sub(" ", s)
-    s = _MULTI_SPACE_RE.sub(" ", s).strip()
-    return s
+    return name_normalization.suppliers_db_normalize_name(name)
 
 
 def find_by_name_normalized(db_path: Path, name: str) -> Optional[Supplier]:
