@@ -1,4 +1,39 @@
-# Live Task Queue
+# Task Queue
+
+> **Current execution state lives in [`PROJECT_STATE.md`](../PROJECT_STATE.md)** (root).
+> Execution rules: [`docs/EXECUTION_PROTOCOL.md`](../docs/EXECUTION_PROTOCOL.md).
+> Permanent rules: [`tasks/lessons.md`](lessons.md).
+>
+> Copy the template below for every new task. One task = one PR-sized slice.
+> Do not start coding until Authority Owner and Acceptance Criteria are filled and frozen.
+
+---
+
+## ACTIVE WORKFLOW TEMPLATE — copy per task
+
+```markdown
+### TASK: <one-line imperative>
+
+- **Authority Owner:**        <the ONE system that owns the truth being changed — name it BEFORE coding>
+- **Scope:**                  <the single PR-sized slice; what is explicitly OUT of scope>
+- **Acceptance Criteria:**    <observable, binary; FROZEN before implementation>
+  - [ ] <criterion 1>
+  - [ ] <criterion 2>
+- **Files to Inspect:**       <read these first to ground the change>
+- **Files Allowed to Edit:**  <the allow-list; anything outside is scope creep>
+- **Tests:**                  <exact command(s) + expected baseline counts>
+- **Browser/API Verification:** <UI: load+console+network · backend/admin: curl+audit log · or "N/A — no surface">
+- **Rollback:**               <exact command / SHA to revert this slice>
+- **State Update Required:**  <which PROJECT_STATE.md section this slice moves, and to what>
+```
+
+**Closure rule:** a task is DONE only when every field above is satisfied AND the
+[closure gate](../docs/EXECUTION_PROTOCOL.md#closure-gate-checklist) passes. The
+builder does not grade itself (EXECUTION_PROTOCOL §4). Evidence beats narrative.
+
+---
+
+# Live Task Queue (historical log — current state is in PROJECT_STATE.md)
 
 > Master Data campaign closed B11 audit on 2026-05-16.
 > Operational Integrity + Automation campaign closed P0-P5 on 2026-05-16 (PR #108 merged).

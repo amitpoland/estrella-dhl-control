@@ -226,3 +226,47 @@ Append-only. Each entry: date, batch, lesson, evidence.
 - **Evidence:** Bulk re-sync (PR #156, 2026-05-17) filled 105 columns across 21 client rows but left 10 real rows with one or more empty fields after the apply. Second-pass spot-probes against the wFirma `contractors/get` endpoint (e.g. BJB LTD 64174775, Queenhart 66503189, MDS 58541318) confirmed wFirma itself has no `email` / `translation_language` / `zip` for those contractors. The candidate detector flagged them as "missing", but the source of truth simply has nothing to give. Re-running the apply would be a no-op (COALESCE-NULLIF skips empty incoming values).
 - **Rule:** Distinguish "locally empty + remotely present" (actionable: apply will fill) from "locally empty + remotely empty" (operator-only: hand-entry required). After every bulk re-sync, surface the second bucket explicitly in the result report so the operator knows which rows need manual entry. Never re-run a sync on rows already at the wFirma ceiling — it churns timestamps without enriching data.
 - **Where it binds:** every future bulk-fill batch against a read-only enrichment source (wFirma, DHL contact lookup, future identity providers). The pattern is: dry-run flags candidates, deep-fetch resolves which are wFirma-ceiling, apply runs only the remainder, report cleanly separates the three states.
+
+---
+
+## 2026-06-14 — Permanent execution rules (lean workflow)
+
+These are not campaign-specific lessons; they are standing rules that govern how every
+future task is executed. They formalize the workflow defined in
+[`docs/EXECUTION_PROTOCOL.md`](../docs/EXECUTION_PROTOCOL.md) and the state surface in
+[`PROJECT_STATE.md`](../PROJECT_STATE.md).
+
+### L-EXEC-1 — Repo memory beats chat memory
+- **Rule:** Chat history is lossy across sessions; the repo is not. Durable state goes in
+  `PROJECT_STATE.md` (current execution) and `.claude/memory/PROJECT_STATE.md` (history),
+  not in a conversation that the next session cannot read. Start every session by reading
+  the state files, never by re-deriving state from chat.
+
+### L-EXEC-2 — If it is not in PROJECT_STATE.md, it did not happen
+- **Rule:** A decision, a deploy, a blocker, or a closure that is not recorded in
+  `PROJECT_STATE.md` does not exist for the purposes of future work. The update is part of
+  the task, not an afterthought — a slice is not closed until its state entry lands in the
+  same PR.
+
+### L-EXEC-3 — Do not restart solved problems
+- **Rule:** Before opening a problem, search `PROJECT_STATE.md`, `.claude/memory/PROJECT_STATE.md`,
+  and `tasks/lessons.md` for prior resolution. A problem marked solved is reopened only with
+  new evidence that the prior fix regressed — and that reopening is itself recorded, not silent.
+
+### L-EXEC-4 — If a bug returns, search for duplicate authority
+- **Rule:** A returning bug is an authority-model defect, not a patch target. Find every place
+  that writes or derives the affected truth; consolidate to one authority owner; add a guard
+  and a regression test. Never add a second patch in a second location. (Generalizes Lesson I.)
+
+### L-EXEC-5 — Evidence beats narrative
+- **Rule:** "It works" is not evidence. Tests with counts, console/network captures, curl +
+  audit-log output, and LF-normalized hashes are evidence. A claim without attached evidence is
+  a VERIFY-GAP, and VERIFY-GAP blocks closure. The builder does not grade itself
+  (EXECUTION_PROTOCOL §4).
+
+### L-EXEC-6 — Financial / customs / inventory / accounting writes require explicit approval
+- **Rule:** Any change that writes to — or alters a value read by — financial, customs,
+  inventory, accounting, DHL, or wFirma systems requires explicit operator approval declared in
+  the PR BEFORE the change. This includes anything feeding `process_batch()` landed-cost math
+  (FX, duty, VAT rates are read-only in master data; MDC-071 FX override remains permanently
+  FORBIDDEN). When in doubt, stop and ask — do not infer approval. (Reinforces L-008.)
