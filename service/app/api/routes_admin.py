@@ -3,14 +3,17 @@ routes_admin.py — Admin-only API endpoints.
 
 GET  /api/v1/admin/email-queue          — list pending + recent emails
 POST /api/v1/admin/email-queue/{id}/sent — mark an email as sent (for MCP relay)
+GET  /api/v1/admin/authority-drift      — check authority module drift (R2)
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 
 from ..auth.dependencies import require_admin
+from ..core.config import settings
 from ..services.email_service import (
     get_all_emails,
     get_pending_emails,
@@ -153,3 +156,74 @@ def trigger_product_master_backfill(
         len(result.get("errors", []) or []),
     )
     return result
+
+
+# ── Authority Drift Detection (R2 — Campaign 02.5 Phase 4) ──────────────────
+
+
+@router.get("/authority-drift")
+def get_authority_drift(user: dict = Depends(require_admin)) -> JSONResponse:
+    """R2: Authority drift detection endpoint.
+
+    Compare live authority module hashes vs pinned manifest.
+    Flag-gated: returns 503 when authority_drift_detection=False.
+
+    Auth: admin-guarded (same pattern as other admin endpoints).
+    Headers: Cache-Control: no-store per Lesson G.
+    """
+    # R3: Config flag check - explicit disabled reason per Lesson M
+    if not settings.authority_drift_detection:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "Authority drift detection disabled",
+                "reason": "authority_drift_detection=False in configuration",
+                "action": "Set AUTHORITY_DRIFT_DETECTION=true to enable monitoring"
+            },
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
+
+    # Import authority drift service
+    try:
+        from ..services.authority_drift_service import check_authority_drift
+
+        drift_report = check_authority_drift()
+
+        # Phase 4 alerting: emit structured alert if drift detected
+        if drift_report.get("drift_detected", False):
+            try:
+                from ..services.authority_drift_service import emit_drift_alert
+                emit_drift_alert(drift_report, user.get("email", "admin"))
+            except Exception as alert_exc:
+                # Don't fail the request if alerting fails
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Authority drift alert emission failed: %s", alert_exc
+                )
+
+        return JSONResponse(
+            content=drift_report,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Authority drift check failed",
+                "detail": str(e)
+            },
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
