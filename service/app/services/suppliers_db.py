@@ -28,8 +28,6 @@ from . import name_normalization
 
 _ISO_ALPHA2_RE  = re.compile(r"^[A-Z]{2}$")
 _EMAIL_RE       = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-_PUNCT_RE       = re.compile(r"[^\w\s]")   # for name normalization
-_MULTI_SPACE_RE = re.compile(r"\s+")
 
 
 @dataclass
