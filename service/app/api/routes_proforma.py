@@ -45,6 +45,7 @@ from ..services.customer_master import (
     pick_proforma_series_id, pick_invoice_series_id,
 )
 from ..services.master_data_db import get_company_profile
+from ..services import name_normalization
 from .sales_packing_parser import (
     parse_ejl_sales_packing,
     validate_grand_total,
@@ -261,13 +262,7 @@ def _derive_batch_lifecycle(batch_id: str) -> str:
 import re as _re
 
 def _normalize_client_name(raw: str) -> str:
-    """Trim outer whitespace + collapse internal whitespace runs to a single
-    space. Case is preserved here so the displayed name in diagnostics
-    matches what the operator entered. The resolver's match step is
-    case-insensitive separately."""
-    if not raw:
-        return ""
-    return _re.sub(r"\s+", " ", raw.strip())
+    return name_normalization.proforma_normalize_client_name(raw)
 
 
 def _resolve_customer_via_master(
