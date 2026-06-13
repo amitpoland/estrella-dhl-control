@@ -24,9 +24,9 @@ AUTHORITY_REGISTRY = {
         "role": "Name normalization authority",
         "path": "app/services/name_normalization.py"
     },
-    "dhl_followup_status_projector.py": {
-        "role": "DHL followup status projection authority",
-        "path": "app/services/dhl_followup_status_projector.py"
+    "dhl_followup_authority.py": {
+        "role": "DHL follow-up authority (4-state advisory)",
+        "path": "app/services/dhl_followup_authority.py"
     },
     "awb_address_authority.py": {
         "role": "AWB address resolution authority",
@@ -57,7 +57,6 @@ def check_authority_drift() -> Dict[str, Any]:
     from ..core.config import settings
 
     service_root = Path(__file__).parent.parent.parent  # Go up to service root
-    storage_root = settings.storage_root
     pinned_manifest_path = service_root / "app" / "authority_manifest_pinned.json"
 
     # Load pinned manifest
