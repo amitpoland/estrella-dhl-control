@@ -55,7 +55,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
-## PR #582 — Debug-health endpoint 500s hotfix (2026-06-13, OPEN) — STABILIZATION-SAFE, NO AUTHORITY-WINDOW RESET
+## PR #582 — Debug-health endpoint 500s hotfix (2026-06-13, MERGED) — STABILIZATION-SAFE, NO AUTHORITY-WINDOW RESET
 
 - **Classification (operator-confirmed 2026-06-13)**: **Stabilization-safe debug-health hotfix. Does NOT reset the Campaign 02.76 authority stabilization window.** Rationale: no authority code touched, no workflow code touched, no drift code touched, backend debug endpoint only, tests match baseline. Surfaced during Campaign 02.76 Deploy #2 verification (2026-06-13) and confirmed OUTSIDE the deploy diff `65f9ea7..f36bef4`.
 - **Two pre-existing 500s on read-only debug diagnostics** (both files were byte-identical to production `C:\PZ` before the fix):
@@ -64,8 +64,9 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **Scope**: only `service/app/api/routes_debug.py` + new `service/tests/test_debug_health_endpoints.py`. **Zero authority-layer files** (name_normalization.py, dhl_followup_authority.py, awb_address_authority.py, tracking_db.py, authority_drift_service.py, authority_startup.py, authority_manifest_pinned.json all UNTOUCHED).
 - **Verification (backend-only, GATE 6 N/A — endpoint verification substitutes)**: TestClient `health-full` / `storage/health` / `storage/locks` all 200 (health-full + storage/health reproduced at 500 pre-fix). New regression test 5/5. Existing `test_hr5_privileged_auth` + `test_storage_health` 40 passed/1 skipped. Battery vs baseline unchanged: PZ `test_pz_*` 221 passed + 1 known fail (`test_save_json_csv_ui_round_trip`, unrelated CSV round-trip); carrier `test_carrier_*` 420 passed.
 - **GATE 2**: opened as 3rd implementation PR (with #522, #498-draft; #575 docs) — within 3-impl limit. **Deploy operator-gated** (full 7-agent `/deploy`); not deployed autonomously.
-- **Branch**: `fix/debug-health-endpoints` @ commit `31749c8` off `main` HEAD `f36bef4`. PR: https://github.com/amitpoland/estrella-dhl-control/pull/582.
-- **Campaign 03**: NOT started (operator directive 2026-06-13: do not start Campaign 03).
+- **Branch / merge**: `fix/debug-health-endpoints` off `main` HEAD `f36bef4`; **squash-merged to `main` via PR #582 on 2026-06-13** (operator command). **MERGED to main only — NOT deployed. Production remains `f36bef4`; operators still see the two probe 500s until a separate operator-gated `/deploy`.** Deployment of #582 is an independent operator decision (bundle into next stabilization-checkpoint deploy or hold to 2026-06-20). PR: https://github.com/amitpoland/estrella-dhl-control/pull/582.
+- **Operator-facing surface**: both endpoints are wired into the dashboard System Health panel (`dashboard.html`) + `atlas/api-status-v2.html` + `v2/api-status-page.jsx` — i.e. operator-visible, not curl-only (this is why merge was chosen).
+- **Campaign 03**: NOT started — remains BLOCKED (operator directive 2026-06-13: do not start Campaign 03).
 
 ## CN↔HSN mixed-metal false-block — root cause + fix + live unblock (2026-06-12, PR #568 OPEN)
 
