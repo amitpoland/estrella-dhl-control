@@ -259,8 +259,6 @@ def _derive_batch_lifecycle(batch_id: str) -> str:
 # ── Customer resolver (single source of truth — used by preview, payload   ──
 #    builder, and adopt-issued contractor verifier) ─────────────────────────
 
-import re as _re
-
 def _normalize_client_name(raw: str) -> str:
     return name_normalization.proforma_normalize_client_name(raw)
 

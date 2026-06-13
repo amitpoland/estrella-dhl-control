@@ -58,56 +58,6 @@ _SUP_DEFAULT_PATH = settings.storage_root / "suppliers.sqlite"
 
 # ── Normalisation ────────────────────────────────────────────────────────────
 
-# Order matters — longer suffixes first so "Sp. z o.o." beats "z o.o."
-# Patterns are matched as case-insensitive whole-word-or-end-of-string.
-_LEGAL_SUFFIXES = (
-    r"spółka z ograniczoną odpowiedzialnością",
-    r"sp\.?\s*z\s*o\.?\s*o\.?",
-    r"pvt\.?\s*ltd\.?",
-    r"private\s+limited",
-    r"s\.r\.o\.?",
-    r"co\.?\s*,?\s*ltd\.?",
-    r"co\.?\s*ltd\.?",
-    r"limited",
-    r"llp\.?",
-    r"ltd\.?",
-    r"gmbh",
-    r"a\.?g\.?",
-    r"s\.?a\.?s\.?",
-    r"s\.?a\.?",
-    r"b\.?v\.?",
-    r"oy",
-    r"ab",
-    r"inc\.?",
-    r"llc",
-    r"eood",
-    r"corp\.?",
-)
-_LEGAL_SUFFIXES_RE = re.compile(
-    r"\b(?:" + "|".join(_LEGAL_SUFFIXES) + r")\b\s*\.?\s*$",
-    re.IGNORECASE,
-)
-
-
-# Manual ASCII fallback table for letters that NFKD does not decompose.
-# Polish ł/Ł, Nordic ø/Ø/æ/Æ/å/Å, German ß, Icelandic þ/Þ/ð/Ð.
-_ASCII_FALLBACK = str.maketrans({
-    "ł": "l", "Ł": "L",
-    "ø": "o", "Ø": "O",
-    "æ": "ae", "Æ": "AE",
-    "å": "a", "Å": "A",
-    "ß": "ss",
-    "þ": "th", "Þ": "Th",
-    "ð": "d",  "Ð": "D",
-})
-
-
-def _strip_accents(s: str) -> str:
-    """Strip combining accents AND apply manual ASCII fallback for letters
-    NFKD does not decompose (Polish ł, Nordic ø/æ/å, German ß, etc.)."""
-    nfkd = unicodedata.normalize("NFKD", s)
-    base = "".join(c for c in nfkd if not unicodedata.combining(c))
-    return base.translate(_ASCII_FALLBACK)
 
 
 def normalise_name(name: Optional[str]) -> str:
