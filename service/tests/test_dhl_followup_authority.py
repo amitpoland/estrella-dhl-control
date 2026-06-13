@@ -175,38 +175,55 @@ def test_projector_flag_off_no_authority_keys():
             assert "authority_evidence" not in row
 
 
-def test_projector_flag_on_authority_keys_present():
+def test_projector_flag_on_authority_keys_present(tmp_path):
     """Flag ON: per-row keys present; authority_summary in status."""
-    # We'll test the authority injection indirectly by testing that our
-    # authority module integrates correctly with the projector structure
-    from app.services.dhl_followup_status_projector import project_shipment_rows
+    from unittest.mock import patch, Mock
+    import app.services.dhl_followup_status_projector as proj
 
-    # Create a minimal test to verify the authority integration pattern
-    # This tests that our authority module can process projector-style rows
-    mock_row = {
+    # Create a synthetic audit file for testing
+    audit_data = {
         "awb": "123456789",
         "batch_id": "TEST123",
-        "mode_state": "manual",
-        "status": "Waiting",
-        "next_due_at": None,
-        "waiting_for": None,
-        "dsk_received_at": None,
-        "sad_followup_reason": None
+        "clearance_status": "ACTIVE",
+        "tracking_no": "123456789"
     }
 
-    # Test that our authority module produces the expected output structure
-    from app.services.dhl_followup_authority import derive_followup_authority, summarize_followup_authority
+    audit_file = tmp_path / "audit_123456789.json"
+    audit_file.write_text(json.dumps(audit_data))
 
-    authority_result = derive_followup_authority(mock_row)
-    assert "followup_authority" in authority_result
-    assert "authority_reason" in authority_result
-    assert "authority_evidence" in authority_result
-    assert authority_result["followup_authority"] in ["waiting", "eligible", "blocked", "completed"]
+    def _fake_paths():
+        return [audit_file]
 
-    # Test that summary works with a list of such results
-    summary = summarize_followup_authority([mock_row])
-    assert isinstance(summary, dict)
-    assert all(key in summary for key in ["waiting", "eligible", "blocked", "completed"])
+    def _fake_read(path):
+        return json.loads(path.read_text())
+
+    def _fake_active(audit):
+        return True, "active"
+
+    def _fake_flag_on():
+        return True
+
+    with patch("app.services.dhl_followup_status_projector._audit_paths", _fake_paths), \
+         patch("app.services.dhl_followup_status_projector._read_audit", _fake_read), \
+         patch("app.services.dhl_followup_status_projector._is_active", _fake_active), \
+         patch("app.services.dhl_followup_status_projector._flag_on", _fake_flag_on), \
+         patch("app.core.config.settings.dhl_followup_authority_advisory", True):
+
+        # Test project_automation_status includes authority_summary when flag ON
+        status = proj.project_automation_status()
+        assert "authority_summary" in status
+        assert isinstance(status["authority_summary"], dict)
+        assert all(key in status["authority_summary"] for key in ["waiting", "eligible", "blocked", "completed"])
+        assert all(isinstance(status["authority_summary"][key], int) for key in ["waiting", "eligible", "blocked", "completed"])
+
+        # Test project_shipment_rows includes authority keys when flag ON
+        rows = proj.project_shipment_rows()
+        assert len(rows) > 0  # Should have at least our synthetic audit
+        for row in rows:
+            assert "followup_authority" in row
+            assert "authority_reason" in row
+            assert "authority_evidence" in row
+            assert row["followup_authority"] in ["waiting", "eligible", "blocked", "completed"]
 
 
 def test_lesson_e_isolation_source_grep():

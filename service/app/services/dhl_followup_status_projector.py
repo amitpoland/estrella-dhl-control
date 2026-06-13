@@ -442,7 +442,7 @@ def project_automation_status(*, now: Optional[datetime] = None) -> Dict[str, An
             "due_in_human":  _humanise_age(dt, now),  # negative-age -> 'in Xh Ym'
         }
 
-    return {
+    result = {
         "flag_on":           flag_on,
         "status_label":      "ACTIVE" if flag_on else "DISABLED",
         "active_shipments":  active_count,
