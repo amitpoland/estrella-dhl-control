@@ -29,6 +29,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from . import name_normalization
 from . import wfirma_client as wfc
 from . import wfirma_db as wfdb
 
@@ -58,20 +59,7 @@ _TRAILING_PUNCT = re.compile(r"[\.,;:!\?]+$")
 
 
 def normalise_client_name(name: str) -> str:
-    """
-    Lossless-by-character (case-fold, NFKC, strip, collapse whitespace,
-    drop trailing punctuation) so two near-duplicate spellings of the
-    same contractor reconcile to the same key.
-
-    Pure function — no side effects, no I/O. Called by classify_pair on
-    BOTH the remote name and the local client_name before comparison.
-    """
-    if not name:
-        return ""
-    s = unicodedata.normalize("NFKC", str(name)).strip()
-    s = _WHITESPACE.sub(" ", s)
-    s = _TRAILING_PUNCT.sub("", s)
-    return s.casefold()
+    return name_normalization.wfirma_sync_normalise_client_name(name)
 
 
 # ── Classification ──────────────────────────────────────────────────────────
