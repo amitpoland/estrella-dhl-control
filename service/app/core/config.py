@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     # ── Storage ───────────────────────────────────────────────────────────────
     storage_root: Path = Path(__file__).parent.parent / "storage"
+    backup_root: str = "C:\\PZ-backups"
     output_retention_days: int = 30
     max_upload_bytes: int = 20 * 1024 * 1024    # 20 MB per file
 
