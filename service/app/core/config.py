@@ -311,6 +311,11 @@ class Settings(BaseSettings):
     # emails (inner guard in _process_dhl_followup / dhl_followup_guard.py).
     dhl_followup_enabled: bool = Field(default=False)
 
+    # DHL follow-up authority projection — advisory 4-state follow-up authority.
+    # Default False. Set DHL_FOLLOWUP_AUTHORITY_ADVISORY=true to enable
+    # additive authority keys in projector output (flag-gated, zero impact when OFF).
+    dhl_followup_authority_advisory: bool = Field(default=False)
+
     # ── Carrier subsystem (DHL Express outbound shipping) ────────────────────
     # Status gate — controls carrier API adapter selection.
     # "pending" (default): all carrier routes return 503; no API calls possible.
