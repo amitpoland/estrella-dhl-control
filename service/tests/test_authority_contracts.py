@@ -15,6 +15,7 @@ Registry: 4 authority modules per the approved design
 from __future__ import annotations
 
 import ast
+import inspect
 import os
 import sqlite3
 import subprocess
@@ -39,47 +40,53 @@ class TestAuthorityContracts:
         Literal (input, expected) pairs covering Unicode edge cases.
         Expected outputs are LITERAL STRINGS - readable in diffs,
         failure localizes to exact character, any regeneration is visible.
+        Covers all 7 real public functions with diacritic/NFKC/Turkish/legal-suffix probes.
         """
-        # Golden table for packing_contractor_normalise_name
-        packing_cases = [
-            # Basic ASCII
-            ("Muller", "muller"),
-            ("AEROSKOBING", "aeroskobing"),
-            ("Strasse", "strasse"),
-            ("thorsson", "thorsson"),
-            # NFKC digit folding
-            ("Item 2026", "item 2026"),
-            # Multi-space normalization
-            ("Multiple   Spaces", "multiple spaces"),
-            # Trailing punctuation
-            ("Company Name,", "company name"),
-            # Legal suffix removal
-            ("Kowalski Sp. z o.o.", "kowalski"),
-            # Empty/whitespace
-            ("", ""),
-            ("   ", ""),
+        # Golden table for customer_resolution_normalize_name
+        customer_cases = [
+            ('Łódź Spółka', 'łódź spółka'),
+            ('Søren Kierkegård', 'søren kierkegård'),
+            ('Þórsson', 'þórsson'),
+            ('Große Straße GmbH', 'große straße gmbh'),
+            ('Ðorđe', 'ðorđe'),
+            ("Œuvre d'Art", "œuvre d'art"),
+            ('Ærøskøbing', 'ærøskøbing'),
+            ('Ｉｔｅｍ ２０２６', 'ｉｔｅｍ ２０２６'),  # fullwidth digits
+            ('İstanbul', 'i̇stanbul'),  # Turkish İ
+            ('ıçecek', 'ıçecek'),  # Turkish ı
+            ('Kowalski Sp. z o.o.', 'kowalski sp. z o.o.'),
+            ('Estrella Jewels LLP.', 'estrella jewels llp.'),
+            ('Co., Ltd.', 'co., ltd.'),
+            ('Multiple   Spaces', 'multiple spaces'),
+            ('Trailing.,;:!', 'trailing.,;:!'),
+            ('', ''),
+            (None, ''),
         ]
 
-        for input_val, expected in packing_cases:
-            actual = name_normalization.packing_contractor_normalise_name(input_val)
+        for input_val, expected in customer_cases:
+            actual = name_normalization.customer_resolution_normalize_name(input_val)
             assert actual == expected, (
-                f"packing_contractor_normalise_name({input_val!r}) = {actual!r}, expected {expected!r}"
+                f"customer_resolution_normalize_name({input_val!r}) = {actual!r}, expected {expected!r}"
             )
 
-        # Golden table for proforma_normalize_client_name (case-preserving)
+        # Golden table for proforma_normalize_client_name
         proforma_cases = [
-            # Case preservation + whitespace normalization
-            ("Muller", "Muller"),
-            ("AEROSKOBING", "AEROSKOBING"),
-            ("Strasse", "Strasse"),
-            ("thorsson", "thorsson"),
-            ("Item 2026", "Item 2026"),
-            ("Multiple   Spaces", "Multiple Spaces"),
-            ("Company Name,", "Company Name,"),
-            ("Kowalski Sp. z o.o.", "Kowalski Sp. z o.o."),
-            # Empty cases
-            ("", ""),
-            ("   ", ""),
+            ('Łódź Spółka', 'Łódź Spółka'),
+            ('Søren Kierkegård', 'Søren Kierkegård'),
+            ('Þórsson', 'Þórsson'),
+            ('Große Straße GmbH', 'Große Straße GmbH'),
+            ('Ðorđe', 'Ðorđe'),
+            ("Œuvre d'Art", "Œuvre d'Art"),
+            ('Ærøskøbing', 'Ærøskøbing'),
+            ('Ｉｔｅｍ ２０２６', 'Ｉｔｅｍ ２０２６'),
+            ('İstanbul', 'İstanbul'),
+            ('ıçecek', 'ıçecek'),
+            ('Kowalski Sp. z o.o.', 'Kowalski Sp. z o.o.'),
+            ('Estrella Jewels LLP.', 'Estrella Jewels LLP.'),
+            ('Co., Ltd.', 'Co., Ltd.'),
+            ('Multiple   Spaces', 'Multiple Spaces'),
+            ('Trailing.,;:!', 'Trailing.,;:!'),
+            ('', ''),
         ]
 
         for input_val, expected in proforma_cases:
@@ -88,26 +95,136 @@ class TestAuthorityContracts:
                 f"proforma_normalize_client_name({input_val!r}) = {actual!r}, expected {expected!r}"
             )
 
-        # Golden table for customer_resolution_normalize_name
-        customer_cases = [
-            # Lowercase + whitespace normalization
-            ("Muller", "muller"),
-            ("AEROSKOBING", "aeroskobing"),
-            ("Strasse", "strasse"),
-            ("thorsson", "thorsson"),
-            ("Item 2026", "item 2026"),
-            ("Multiple   Spaces", "multiple spaces"),
-            ("Company Name,", "company name,"),  # Preserves trailing punct
-            ("Kowalski Sp. z o.o.", "kowalski sp. z o.o."),  # Preserves legal suffixes
-            # Empty
-            ("", ""),
-            ("   ", ""),
+        # Golden table for suppliers_db_normalize_name
+        suppliers_cases = [
+            ('Łódź Spółka', 'łódź spółka'),
+            ('Søren Kierkegård', 'søren kierkegård'),
+            ('Þórsson', 'þórsson'),
+            ('Große Straße GmbH', 'große straße gmbh'),
+            ('Ðorđe', 'ðorđe'),
+            ("Œuvre d'Art", 'œuvre d art'),
+            ('Ærøskøbing', 'ærøskøbing'),
+            ('Ｉｔｅｍ ２０２６', 'ｉｔｅｍ ２０２６'),
+            ('İstanbul', 'i stanbul'),
+            ('ıçecek', 'ıçecek'),
+            ('Kowalski Sp. z o.o.', 'kowalski sp z o o'),
+            ('Estrella Jewels LLP.', 'estrella jewels llp'),
+            ('Co., Ltd.', 'co ltd'),
+            ('Multiple   Spaces', 'multiple spaces'),
+            ('Trailing.,;:!', 'trailing'),
+            ('', ''),
         ]
 
-        for input_val, expected in customer_cases:
-            actual = name_normalization.customer_resolution_normalize_name(input_val)
+        for input_val, expected in suppliers_cases:
+            actual = name_normalization.suppliers_db_normalize_name(input_val)
             assert actual == expected, (
-                f"customer_resolution_normalize_name({input_val!r}) = {actual!r}, expected {expected!r}"
+                f"suppliers_db_normalize_name({input_val!r}) = {actual!r}, expected {expected!r}"
+            )
+
+        # Golden table for wfirma_auto_resolve_normalize_name
+        wfirma_auto_cases = [
+            ('Łódź Spółka', 'Łódź Spółka'),
+            ('Søren Kierkegård', 'Søren Kierkegård'),
+            ('Þórsson', 'Þórsson'),
+            ('Große Straße GmbH', 'Große Straße GmbH'),
+            ('Ðorđe', 'Ðorđe'),
+            ("Œuvre d'Art", "Œuvre d'Art"),
+            ('Ærøskøbing', 'Ærøskøbing'),
+            ('Ｉｔｅｍ ２０２６', 'Ｉｔｅｍ ２０２６'),
+            ('İstanbul', 'İstanbul'),
+            ('ıçecek', 'ıçecek'),
+            ('Kowalski Sp. z o.o.', 'Kowalski Sp. z o.o.'),
+            ('Estrella Jewels LLP.', 'Estrella Jewels LLP.'),
+            ('Co., Ltd.', 'Co., Ltd.'),
+            ('Multiple   Spaces', 'Multiple Spaces'),
+            ('Trailing.,;:!', 'Trailing.,;:!'),
+            ('', ''),
+        ]
+
+        for input_val, expected in wfirma_auto_cases:
+            actual = name_normalization.wfirma_auto_resolve_normalize_name(input_val)
+            assert actual == expected, (
+                f"wfirma_auto_resolve_normalize_name({input_val!r}) = {actual!r}, expected {expected!r}"
+            )
+
+        # Golden table for master_data_norm (NFD decomposed results)
+        master_data_cases = [
+            ('Łódź Spółka', 'łódź spółka'),
+            ('Søren Kierkegård', 'søren kierkegård'),
+            ('Þórsson', 'þórsson'),
+            ('Große Straße GmbH', 'große straße'),
+            ('Ðorđe', 'ðorđe'),
+            ("Œuvre d'Art", "œuvre d'art"),
+            ('Ærøskøbing', 'ærøskøbing'),
+            ('Ｉｔｅｍ ２０２６', 'ｉｔｅｍ ２０２６'),
+            ('İstanbul', 'i̇stanbul'),
+            ('ıçecek', 'ıçecek'),
+            ('Kowalski Sp. z o.o.', 'kowalski'),
+            ('Estrella Jewels LLP.', 'estrella jewels llp.'),
+            ('Co., Ltd.', 'co., ltd.'),
+            ('Multiple   Spaces', 'multiple spaces'),
+            ('Trailing.,;:!', 'trailing.,;:!'),
+            ('', ''),
+            (None, ''),
+        ]
+
+        for input_val, expected in master_data_cases:
+            actual = name_normalization.master_data_norm(input_val)
+            assert actual == expected, (
+                f"master_data_norm({input_val!r}) = {actual!r}, expected {expected!r}"
+            )
+
+        # Golden table for packing_contractor_normalise_name
+        packing_cases = [
+            ('Łódź Spółka', 'lodz spolka'),  # ASCII fallback
+            ('Søren Kierkegård', 'soren kierkegard'),
+            ('Þórsson', 'thorsson'),
+            ('Große Straße GmbH', 'grosse strasse'),  # gmbh suffix removed
+            ('Ðorđe', 'dor e'),  # ð -> d, đ -> unclear fallback
+            ("Œuvre d'Art", 'uvre d art'),
+            ('Ærøskøbing', 'aeroskobing'),
+            ('Ｉｔｅｍ ２０２６', 'item 2026'),  # NFKD fullwidth folding
+            ('İstanbul', 'istanbul'),
+            ('ıçecek', 'cecek'),
+            ('Kowalski Sp. z o.o.', 'kowalski'),
+            ('Estrella Jewels LLP.', 'estrella jewels'),
+            ('Co., Ltd.', ''),  # entire thing removed as legal suffix
+            ('Multiple   Spaces', 'multiple spaces'),
+            ('Trailing.,;:!', 'trailing'),
+            ('', ''),
+            (None, ''),
+        ]
+
+        for input_val, expected in packing_cases:
+            actual = name_normalization.packing_contractor_normalise_name(input_val)
+            assert actual == expected, (
+                f"packing_contractor_normalise_name({input_val!r}) = {actual!r}, expected {expected!r}"
+            )
+
+        # Golden table for wfirma_sync_normalise_client_name
+        wfirma_sync_cases = [
+            ('Łódź Spółka', 'łódź spółka'),
+            ('Søren Kierkegård', 'søren kierkegård'),
+            ('Þórsson', 'þórsson'),
+            ('Große Straße GmbH', 'grosse strasse gmbh'),  # NFKC casefold ß -> ss
+            ('Ðorđe', 'ðorđe'),
+            ("Œuvre d'Art", "œuvre d'art"),
+            ('Ærøskøbing', 'ærøskøbing'),
+            ('Ｉｔｅｍ ２０２６', 'item 2026'),  # NFKC fullwidth normalization
+            ('İstanbul', 'i̇stanbul'),
+            ('ıçecek', 'ıçecek'),
+            ('Kowalski Sp. z o.o.', 'kowalski sp. z o.o'),  # trailing punct removed
+            ('Estrella Jewels LLP.', 'estrella jewels llp'),
+            ('Co., Ltd.', 'co., ltd'),
+            ('Multiple   Spaces', 'multiple spaces'),
+            ('Trailing.,;:!', 'trailing'),
+            ('', ''),
+        ]
+
+        for input_val, expected in wfirma_sync_cases:
+            actual = name_normalization.wfirma_sync_normalise_client_name(input_val)
+            assert actual == expected, (
+                f"wfirma_sync_normalise_client_name({input_val!r}) = {actual!r}, expected {expected!r}"
             )
 
     def test_c2_duplicate_implementation_detection(self):
@@ -144,30 +261,23 @@ class TestAuthorityContracts:
         )
 
         # C2(b): No legacy normalization function definitions outside allowed delegates
+        # Four full names across service/app/**/*.py with 7-file allowed-list
         legacy_names = [
             "_normalize_name",
             "_normalize_client_name",
             "normalise_name",
-            "normalise_client_name",
-            "_norm"
+            "normalise_client_name"
         ]
 
-        # Allowed one-line delegates (expanding list to include all discovered delegates)
+        # Allowed one-line delegates (exactly the 7 delegate host files from pinned facts)
         allowed_delegates = [
-            "packing_contractor_resolver.py",  # normalise_name delegate
-            "customer_resolution_authority.py",  # _normalize_name delegate
-            "proforma_draft_builder.py",  # _normalize_client_name delegate
-            "wfirma_auto_resolve.py",  # normalise_client_name delegate
-            "customer_master_db.py",  # _norm delegate
-            "suppliers_db.py",  # normalise_name delegate
-            "wfirma_sync_v2.py",  # _norm delegate
-            "routes_proforma.py",  # _normalize_client_name and _norm delegates
-            "agency_sad_decision.py",  # _norm delegate
-            "master_data_intelligence.py",  # _norm delegate
-            "sales_linkage.py",  # _norm delegate
-            "wfirma_customer_auto_resolve.py",  # _normalize_name delegate
-            "wfirma_customer_sync.py",  # normalise_client_name delegate
-            "wfirma_reservation.py"  # _norm delegate
+            "packing_contractor_resolver.py",
+            "customer_resolution_authority.py",
+            "routes_proforma.py",
+            "suppliers_db.py",
+            "wfirma_customer_auto_resolve.py",
+            "master_data_intelligence.py",
+            "wfirma_customer_sync.py"
         ]
 
         violations = []
@@ -190,6 +300,23 @@ class TestAuthorityContracts:
             f"Found legacy normalization function definitions: {violations}. "
             f"All normalization should delegate to name_normalization.py or be in allowed delegate files: {allowed_delegates}"
         )
+
+        # C2(c): _norm checked ONLY in master_data_intelligence.py (must be delegate)
+        # Design narrowing: 4 out-of-scope _norm helpers elsewhere (agency_sad_decision.py:79 MRN normalizer,
+        # routes_proforma.py:60 strip/upper key, sales_linkage.py:75 and wfirma_reservation.py:70 whitespace-collapse/upper keys)
+        master_data_file = service_root / "master_data_intelligence.py"
+        if master_data_file.exists():
+            try:
+                content = master_data_file.read_text(encoding="utf-8")
+                if "def _norm(" in content:
+                    # Ensure it delegates to name_normalization.master_data_norm
+                    assert "name_normalization.master_data_norm" in content, (
+                        "master_data_intelligence.py _norm must delegate to name_normalization.master_data_norm"
+                    )
+                else:
+                    pytest.fail("master_data_intelligence.py must contain _norm delegate function")
+            except Exception as e:
+                pytest.fail(f"Could not read master_data_intelligence.py: {e}")
 
     def test_c3_unreachable_code_ast_check(self):
         """C3: AST unreachable-code-after-return check on registered projectors.
@@ -265,7 +392,7 @@ class TestAuthorityContracts:
         # Registry of 4 authority modules per approved design
         authority_registry = {
             "name_normalization.py": "Name normalization authority",
-            "dhl_followup_authority.py": "DHL followup status projection authority",
+            "dhl_followup_authority.py": "DHL follow-up authority (4-state advisory)",
             "awb_address_authority.py": "AWB address resolution authority",
             "tracking_db.py": "Tracking deduplication authority (dedup region only)"
         }
@@ -315,19 +442,17 @@ class TestAuthorityContracts:
 
         Assert the dedup SQL contains all 7 column predicates:
         batch_id, awb, stage, event_time, source_ref, email_message_id, direction
+        Scoped to the SOURCE OF record_event function only (file-precise).
         """
-        tracking_file = Path(__file__).parent.parent / "app" / "services" / "tracking_db.py"
+        import inspect
 
-        if not tracking_file.exists():
-            pytest.fail(f"Authority module not found: {tracking_file}")
+        # Get the record_event function source directly
+        try:
+            record_event_source = inspect.getsource(tracking_db.record_event)
+        except Exception as e:
+            pytest.fail(f"Could not extract record_event function source: {e}")
 
-        content = tracking_file.read_text(encoding="utf-8")
-
-        # Find the dedup function (should contain the WHERE clause)
-        if "def " not in content:
-            pytest.fail("No function definitions found in tracking_db.py")
-
-        # Look for the dedup SQL WHERE clause - should be around lines 116-123 per design
+        # Required dedup columns per design
         required_columns = [
             "batch_id",
             "awb",
@@ -340,14 +465,14 @@ class TestAuthorityContracts:
 
         missing_columns = []
 
-        # Search for SQL WHERE clause patterns
+        # Search for SQL WHERE clause patterns within the function source only
         for col in required_columns:
             # Look for SQL patterns like "col=?" or "col = ?" or "col IS ?"
-            if not (f"{col}=?" in content or f"{col} = ?" in content or f"{col} IS ?" in content):
+            if not (f"{col}=?" in record_event_source or f"{col} = ?" in record_event_source or f"{col} IS ?" in record_event_source):
                 missing_columns.append(col)
 
         assert not missing_columns, (
-            f"Missing required dedup columns in tracking_db.py SQL: {missing_columns}. "
+            f"Missing required dedup columns in tracking_db.record_event function: {missing_columns}. "
             f"All 7 columns must be present in dedup WHERE clause: {required_columns}"
         )
 

@@ -8,11 +8,11 @@
       "sha256": "815111e47afe59b7ab58ea164d9c7da92acda6a9a962aebf393c0339c666a1d6",
       "size_bytes": 7864
     },
-    "dhl_followup_status_projector.py": {
-      "path": "app/services/dhl_followup_status_projector.py",
-      "role": "DHL followup status projection authority",
-      "sha256": "a1812aad07a6eb101e50b1f2cbf479e5b1bc3bb036764ec906b70ae32a51c13f",
-      "size_bytes": 22422
+    "dhl_followup_authority.py": {
+      "path": "app/services/dhl_followup_authority.py",
+      "role": "DHL follow-up authority (4-state advisory)",
+      "sha256": "adb94aecd9d4ffd0f82cdacbc706c636bd612c0b0a0fba0298234b2291e60075",
+      "size_bytes": 5997
     },
     "awb_address_authority.py": {
       "path": "app/services/awb_address_authority.py",

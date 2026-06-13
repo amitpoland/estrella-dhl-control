@@ -22,9 +22,9 @@ AUTHORITY_REGISTRY = {
         "role": "Name normalization authority",
         "path": "app/services/name_normalization.py"
     },
-    "dhl_followup_status_projector.py": {
-        "role": "DHL followup status projection authority",
-        "path": "app/services/dhl_followup_status_projector.py"
+    "dhl_followup_authority.py": {
+        "role": "DHL follow-up authority (4-state advisory)",
+        "path": "app/services/dhl_followup_authority.py"
     },
     "awb_address_authority.py": {
         "role": "AWB address resolution authority",

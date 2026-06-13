@@ -37,33 +37,35 @@ AUTHORITY_REGISTRY = {
         "role": "Name normalization authority",
         "path": "app/services/name_normalization.py",
         "public_functions": [
-            "packing_contractor_normalise_name",
-            "proforma_normalize_client_name",
             "customer_resolution_normalize_name",
-            "suppliers_db_normalise_name",
-            "wfirma_auto_resolve_normalise_name",
-            "master_data_normalise_name",
-            "wfirma_sync_normalise_name"
+            "proforma_normalize_client_name",
+            "suppliers_db_normalize_name",
+            "wfirma_auto_resolve_normalize_name",
+            "master_data_norm",
+            "packing_contractor_normalise_name",
+            "wfirma_sync_normalise_client_name"
         ],
         "forbidden_imports": ["smtplib", "email_service", "queue_email", "requests", "routes_"],
         "consumers": [
             "packing_contractor_resolver.py",
             "customer_resolution_authority.py",
-            "routes_proforma.py",  # Uses delegates
-            "customer_master_db.py",
-            "suppliers_db.py"
+            "routes_proforma.py",
+            "suppliers_db.py",
+            "wfirma_customer_auto_resolve.py",
+            "master_data_intelligence.py",
+            "wfirma_customer_sync.py"
         ]
     },
-    "dhl_followup_status_projector.py": {
-        "role": "DHL followup status projection authority",
-        "path": "app/services/dhl_followup_status_projector.py",
+    "dhl_followup_authority.py": {
+        "role": "DHL follow-up authority (4-state advisory)",
+        "path": "app/services/dhl_followup_authority.py",
         "public_functions": [
-            "project_automation_status",
-            "project_shipment_rows"
+            "derive_followup_authority",
+            "summarize_followup_authority"
         ],
         "forbidden_imports": ["smtplib", "email_service", "queue_email", "requests"],
         "consumers": [
-            "routes_dhl_followup_status.py"  # The main consumer of DHL projections
+            "dhl_followup_status_projector.py"
         ]
     },
     "awb_address_authority.py": {
@@ -86,7 +88,7 @@ AUTHORITY_REGISTRY = {
         ],
         "forbidden_imports": ["smtplib", "email_service", "queue_email", "requests"],
         "consumers": [
-            "routes_carrier_webhook.py"  # Webhook consumer of tracking events
+            "coordinator.py"
         ],
         "dedup_columns": [
             "batch_id", "awb", "stage", "event_time",
@@ -227,28 +229,21 @@ class AuthorityAuditor:
             except Exception:
                 pass
 
-        # Check for legacy normalization function definitions
+        # Check for legacy normalization function definitions (4 full names globally)
         legacy_functions = [
             "_normalize_name", "_normalize_client_name",
-            "normalise_name", "normalise_client_name", "_norm"
+            "normalise_name", "normalise_client_name"
         ]
 
-        # Known allowed delegates (one-line functions that call authority)
+        # Known allowed delegates (7 delegate host files from pinned facts)
         allowed_delegates = {
             "packing_contractor_resolver.py",
             "customer_resolution_authority.py",
-            "proforma_draft_builder.py",
-            "wfirma_auto_resolve.py",
-            "customer_master_db.py",
-            "suppliers_db.py",
-            "wfirma_sync_v2.py",
             "routes_proforma.py",
-            "agency_sad_decision.py",
-            "master_data_intelligence.py",
-            "sales_linkage.py",
+            "suppliers_db.py",
             "wfirma_customer_auto_resolve.py",
-            "wfirma_customer_sync.py",
-            "wfirma_reservation.py"
+            "master_data_intelligence.py",
+            "wfirma_customer_sync.py"
         }
 
         for py_file in (self.service_root / "app").rglob("*.py"):
@@ -265,6 +260,21 @@ class AuthorityAuditor:
                         )
             except Exception:
                 pass
+
+        # Dedicated check: master_data_intelligence.py _norm must delegate
+        master_data_file = (self.service_root / "app" / "services" / "master_data_intelligence.py")
+        if master_data_file.exists():
+            try:
+                content = master_data_file.read_text(encoding="utf-8")
+                if "def _norm(" in content:
+                    if "name_normalization.master_data_norm" not in content:
+                        violations.append(
+                            f"master_data_intelligence.py: _norm must delegate to name_normalization.master_data_norm"
+                        )
+                else:
+                    violations.append("master_data_intelligence.py: missing required _norm delegate function")
+            except Exception:
+                violations.append("master_data_intelligence.py: could not validate _norm delegate")
 
         return violations
 
@@ -286,8 +296,15 @@ class AuthorityAuditor:
                 possible_paths = [
                     self.service_root / "app" / "api" / consumer_file,
                     self.service_root / "app" / "services" / consumer_file,
+                    self.service_root / "app" / "services" / "carrier" / consumer_file,  # Nested carrier path
                     self.service_root / "app" / consumer_file
                 ]
+
+                # Fallback: rglob search for coordinator.py and other files
+                if not any(p.exists() for p in possible_paths):
+                    for candidate in (self.service_root / "app").rglob(consumer_file):
+                        possible_paths.append(candidate)
+                        break
 
                 for path in possible_paths:
                     if path.exists():
@@ -304,13 +321,16 @@ class AuthorityAuditor:
                     content = consumer_path.read_text(encoding="utf-8")
                     authority_module = module_name.replace('.py', '')
 
-                    # Check for import of authority module (including conditional imports)
+                    # Check for import of authority module (including conditional imports and relative variants)
                     import_patterns = [
                         f"from ..services import {authority_module}",
                         f"from app.services import {authority_module}",
                         f"import {authority_module}",
                         f"from ..services.{authority_module} import",  # Conditional import
-                        f"from app.services.{authority_module} import"
+                        f"from app.services.{authority_module} import",
+                        f"from .{authority_module} import",  # Single-dot relative
+                        f"from ...services import {authority_module}",  # Triple-dot relative
+                        f"from ...services.{authority_module} import"  # Triple-dot conditional
                     ]
 
                     has_import = any(pattern in content for pattern in import_patterns)
@@ -327,7 +347,7 @@ class AuthorityAuditor:
         return violations
 
     def _audit_dedup_contracts(self) -> List[str]:
-        """Check tracking deduplication SQL contracts."""
+        """Check tracking deduplication SQL contracts - scoped to record_event function source."""
         print("  Checking dedup contracts...")
         violations = []
 
@@ -338,19 +358,35 @@ class AuthorityAuditor:
 
             if tracking_path.exists():
                 try:
-                    content = tracking_path.read_text(encoding="utf-8")
+                    # Import the module to extract record_event function source
+                    import sys
+                    import ast
+                    import inspect
+
+                    # Add service root to Python path temporarily
+                    service_app_path = str(self.service_root / "app")
+                    if service_app_path not in sys.path:
+                        sys.path.insert(0, service_app_path)
+
+                    try:
+                        from services import tracking_db
+                        record_event_source = inspect.getsource(tracking_db.record_event)
+                    finally:
+                        # Clean up path
+                        if service_app_path in sys.path:
+                            sys.path.remove(service_app_path)
 
                     required_columns = config.get("dedup_columns", [])
                     missing_columns = []
 
                     for col in required_columns:
-                        # Look for SQL WHERE clause patterns (including without spaces)
-                        if not (f"{col}=?" in content or f"{col} = ?" in content or f"{col} IS ?" in content):
+                        # Look for SQL WHERE clause patterns within function source only
+                        if not (f"{col}=?" in record_event_source or f"{col} = ?" in record_event_source or f"{col} IS ?" in record_event_source):
                             missing_columns.append(col)
 
                     if missing_columns:
                         violations.append(
-                            f"tracking_db.py: missing dedup columns in SQL: {missing_columns}"
+                            f"tracking_db.record_event: missing dedup columns in SQL: {missing_columns}"
                         )
 
                 except Exception as e:
