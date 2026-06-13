@@ -55,6 +55,18 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
+## Campaign 02.76 Deploy #2 — authority audit + runtime drift layer — SUCCESS + STABILIZATION OPEN (2026-06-13)
+
+- **Status**: DEPLOY #2 COMPLETE. Production `C:\PZ` = origin/main `f36bef4084f085e7118fdbd0b2f7312d9e2f1f60` (PR #581 — "Campaign 02.76 — Deploy #2: authority audit + runtime drift layer", drift-only rebased onto `65f9ea7`). Supersedes the older header metadata in this file (which still cites the pre-train ff1f4b5 / PR #573 state).
+- **3-layer Completion Gate ALL PASS** (independently re-verified by orchestrator, not builder-reported):
+  - Layer 1 GitHub: `git rev-parse origin/main` = `f36bef4`; `git log` confirms it is PR #581; `git merge-base --is-ancestor` exit 0.
+  - Layer 2 backend: drift artifacts PRESENT in `C:\PZ\app` (mtime 15:41) — `authority_manifest_pinned.json`, `services/authority_drift_service.py`, `services/authority_startup.py`; all 4 Deploy #1 authority modules present; `authority_drift_detection` deployed `default=False`; drift endpoint `/api/v1/admin/authority/drift` → 404 (gated while OFF); B7 `/api/v1/admin/backup/list` → 401 (rejects unauthenticated); local `/api/v1/health` → 401 (app up, auth-protected); startup log `STARTUP_AUTHORITY_AUDIT: authority_drift_detection=False, no manifest generated` (R1 clean, no false-positive, no startup crash); PZService Running.
+  - Layer 3 browser: 9/9 surfaces PASS (Dashboard, System Health, Shipment List, Shipment Detail, DHL, Proforma, Documents, Customer Master, Inbox) — authenticated Amit Saniya ADMIN, no AUTH BLOCKED, no blank/React-crash/drift/authority-mismatch warnings; only console entry = benign Babel >500KB deopt note.
+- **Rollback**: Deploy #2 → `65f9ea7` (authority-only); full → `62810c2`. Method: re-sync C:\PZ\app + recursive PYCACHE purge + restart PZService. Neutralize drift without revert: `authority_drift_detection` OFF (default).
+- **Out-of-scope follow-up (NOT a Deploy #2 regression)**: pre-existing `routes_debug.py:134` `health_full` `UnboundLocalError` (`settings` referenced before assignment) + `storage_health.py` circular import — two debug-endpoint 500s, both OUTSIDE the `65f9ea7..f36bef4` diff. Candidate for a separate task.
+- **STABILIZATION WINDOW OPEN (2026-06-13)**: success criteria = ≥7 calendar days OR ≥100 production shipments AND 0 unexplained drift incidents AND 0 authority violations AND 0 rollbacks. Drift detection stays flag-OFF during the window (inert/observational by design). **Campaign 03 remains BLOCKED** until stabilization passes → then Campaign 03 Readiness Matrix → architect GO.
+- **Traceability**: `service/docs/campaign-02-75/authority-train.md` §0 + `authority-sha-matrix.md` "Deploy #2 … SUCCESS" updated on branch `deploy2/closure-records` (PR HELD per GATE 2 — see DECISIONS). Hash method rule: [[project_authority_hash_eol_normalization]].
+
 ## CN↔HSN mixed-metal false-block — root cause + fix + live unblock (2026-06-12, PR #568 OPEN)
 
 - **Incident**: Operator reported wFirma PZ creation hard-locked for SHIPMENT_7123231135_2026-06_f255bbb5 despite local PZ generated. Root cause chain: engine pz_import_processor.verify_sad_invoice_match strict parent-prefix CN check → cn_match=False ('failed_parent_mismatch', medium) for SAD CN 71131900 aggregating gold 711319xx + silver 71131141 (heading-level agreement that cn_hsn_classifier policy scores NON-blocking accept_with_note) → export_service falsy-scan promoted False into failed_checks → status 'blocked' → WFIRMA_PZ_NOT_GENERATED locked preview/create/adopt. Second root cause: export_service ver_scalar stripped invoice_hsn_codes (list) from persisted audit → classification panel got empty evidence → 'invalid_input / Cannot compare' → decision buttons (rendered only at chapter_match) hidden → operator recovery dead-end. 7 batches hit the class historically (5 nursed to partial manually, 1 deliberately escalated = SHIPMENT_3483447564, 1 dead-ended).
@@ -4953,6 +4965,10 @@ Group D — Tests (3 new files):
 ---
 
 # DECISIONS
+
+## Deploy #2 closure-records PR HELD per GATE 2 (2026-06-13)
+
+Closure-record edits (authority-train.md §0, authority-sha-matrix.md Deploy #2 section, this PROJECT_STATE.md) are committed on branch `deploy2/closure-records` but the **PR is intentionally NOT opened**. GATE 2 is at capacity for docs: open PRs = #522 (impl), #498 (impl, draft), #575 (docs-only) — the single +1 docs allowance is already occupied by #575. Opening a 2nd docs PR would breach GATE 2 (max 3 impl + 1 docs). Disposition: HOLD branch; open the PR when the docs slot frees (e.g. after #575 merges). Memory/doc commits never go direct-to-main (permission policy). Reconsider when GATE 2 has a free docs slot.
 
 ## CN Comparison Authority + Mixed-Metal Policy (2026-06-12)
 

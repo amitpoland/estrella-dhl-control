@@ -2,7 +2,36 @@
 
 **Train = B5 → B6 → Tracking → AWB.** B7 (backup) is NOT part of the authority train but rides Deploy #1 (already merged, un-deployed). This document is the train authority; update it as each stage merges.
 
-**Last verified:** 2026-06-13 · origin/main `65f9ea7` (post-train) · production `62810c2` · **TRAIN FULLY MERGED (#577→#578→#579→#580)**.
+**Last verified:** 2026-06-13 · origin/main `f36bef4` · **production `f36bef4` (DEPLOY #2 SUCCESS 2026-06-13)** · rollback anchors `65f9ea7` (pre-#2) / `62810c2` (pre-train) · **TRAIN FULLY MERGED + DEPLOYED (#577→#578→#579→#580) + AUDIT/DRIFT DEPLOYED (#581)**.
+
+---
+
+## 0. Deploy #2 — SUCCESS (2026-06-13)
+
+| Field | Value |
+|---|---|
+| Target deployed | `f36bef4` (PR #581 — Campaign 02.76 audit + runtime drift layer, drift-only rebased onto `65f9ea7`) |
+| Rollback anchor | `65f9ea7` (re-sync C:\PZ\app + PYCACHE purge + restart → back to authority-only) |
+| Sync scope | `service/app → C:\PZ\app` only; `service/scripts/authority_audit.py` NOT synced (Lesson J) |
+| Drift artifacts live | `authority_manifest_pinned.json`, `services/authority_drift_service.py`, `services/authority_startup.py` PRESENT in C:\PZ\app (mtime 15:41) |
+| Drift flag | `authority_drift_detection` default **False** (deployed) — drift endpoint `/api/v1/admin/authority/drift` → 404 (gated) |
+| Startup | `STARTUP_AUTHORITY_AUDIT: authority_drift_detection=False, no manifest generated` — R1 hook clean, no false-positive, no crash |
+| Hash verification | all 4 modules LF-normalized == manifest pins (CRLF on disk by design — `project_authority_hash_eol_normalization`) |
+| B7 admin guard | intact — `/api/v1/admin/backup/list` → 401 unauthenticated |
+| Service | `PZService` Running; local health 401 (auth-protected, app up) |
+| 3-layer Completion Gate | Layer 1 GitHub ✅ (origin/main f36bef4 = #581) · Layer 2 backend ✅ · Layer 3 browser 9/9 ✅ |
+| Campaign 03 | **still BLOCKED** — gate now = production stabilization window (≥7 days OR ≥100 shipments, 0 drift/violations/rollbacks) → architect approval |
+
+Out-of-scope note: the only stderr traceback at verification was the pre-existing `routes_debug.py:134` `health_full` `UnboundLocalError` — NOT in the Deploy #2 diff, request-time not startup, tracked as a separate follow-up (not a regression).
+
+## 0a. Deploy #1 — SUCCESS (2026-06-13)
+
+| Field | Value |
+|---|---|
+| Target deployed | `65f9ea7` (AWB post-squash = post-train origin/main; carries all 4 authority modules + B7) |
+| Rollback anchor | `62810c2` |
+| Authority flags | ALL OFF — zero behaviour change |
+| Hash verification | PASS raw-CRLF (transfer) **and** LF-normalized (authority) for all 4 modules |
 
 ---
 
