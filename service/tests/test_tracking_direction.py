@@ -294,7 +294,7 @@ class TestCoordinatorRegistration:
         """When flag is ON and tracking_ref exists, event is written."""
         from app.services.carrier.coordinator import CarrierCoordinator, CoordinatorConfig
         from app.services.carrier.factory import CarrierConfig
-        from app.services.carrier.models.shipment import ShipmentRequest, ShipmentMode
+        from app.services.carrier.models.shipment import ShipmentRequest, ShipmentMode, ShipmentResult, ShipmentState
         from app.services import tracking_db as tdb
 
         with patch("app.services.carrier.coordinator.settings") as mock_settings:
@@ -311,13 +311,26 @@ class TestCoordinatorRegistration:
             request = ShipmentRequest(
                 batch_id="COORD_TEST_ON",
                 shipper_account="TEST",
+                recipient_address={"name": "Test", "country": "PL"},
                 weight_kg=1.0,
                 declared_value=100.0,
                 currency="USD",
                 dimensions={"length": 10, "width": 10, "height": 10}
             )
 
-            result = coordinator.create_shipment(request)
+            # Mock the adapter to return non-simulated result so tracking event is written
+            from app.services.carrier.models.shipment import compute_idempotency_key
+            key = compute_idempotency_key(request)
+            mock_result = ShipmentResult(
+                idempotency_key=key,
+                mode=ShipmentMode.SHADOW,
+                state=ShipmentState.SUBMITTED,
+                tracking_ref=f"SIM-{key[:8].upper()}",
+                simulated=False  # Non-simulated so event gets written
+            )
+
+            with patch.object(coordinator._adapter, 'create_shipment', return_value=mock_result):
+                result = coordinator.create_shipment(request)
 
             # Should have outbound tracking event
             events = tdb.get_events_for_batch("COORD_TEST_ON", direction="outbound")
@@ -348,6 +361,7 @@ class TestCoordinatorRegistration:
             request = ShipmentRequest(
                 batch_id="COORD_SIMULATED",
                 shipper_account="TEST",
+                recipient_address={"name": "Test", "country": "PL"},
                 weight_kg=1.0,
                 declared_value=100.0,
                 currency="USD",
@@ -364,7 +378,7 @@ class TestCoordinatorRegistration:
         """Exception in tracking registration is logged and swallowed."""
         from app.services.carrier.coordinator import CarrierCoordinator, CoordinatorConfig
         from app.services.carrier.factory import CarrierConfig
-        from app.services.carrier.models.shipment import ShipmentRequest, ShipmentMode
+        from app.services.carrier.models.shipment import ShipmentRequest, ShipmentMode, ShipmentResult, ShipmentState
         from app.services.carrier.models.shipment import ShipmentState
 
         with patch("app.services.carrier.coordinator.settings") as mock_settings:
@@ -383,14 +397,27 @@ class TestCoordinatorRegistration:
                 request = ShipmentRequest(
                     batch_id="COORD_EXCEPTION",
                     shipper_account="TEST",
+                    recipient_address={"name": "Test", "country": "PL"},
                     weight_kg=1.0,
                     declared_value=100.0,
                     currency="USD",
                     dimensions={"length": 10, "width": 10, "height": 10}
                 )
 
-                with caplog.at_level(logging.WARNING):
-                    result = coordinator.create_shipment(request)
+                # Mock the adapter to return non-simulated result so tracking registration is attempted
+                from app.services.carrier.models.shipment import compute_idempotency_key
+                key = compute_idempotency_key(request)
+                mock_result = ShipmentResult(
+                    idempotency_key=key,
+                    mode=ShipmentMode.SHADOW,
+                    state=ShipmentState.SUBMITTED,
+                    tracking_ref=f"SIM-{key[:8].upper()}",
+                    simulated=False  # Non-simulated so tracking registration is attempted
+                )
+
+                with patch.object(coordinator._adapter, 'create_shipment', return_value=mock_result):
+                    with caplog.at_level(logging.WARNING):
+                        result = coordinator.create_shipment(request)
 
                 # Shipment creation succeeds despite tracking failure
                 assert result.state == ShipmentState.COMPLETE
@@ -402,7 +429,7 @@ class TestCoordinatorRegistration:
         """Re-executing coordinator for same shipment produces identical tracking event (dedup)."""
         from app.services.carrier.coordinator import CarrierCoordinator, CoordinatorConfig
         from app.services.carrier.factory import CarrierConfig
-        from app.services.carrier.models.shipment import ShipmentRequest, ShipmentMode
+        from app.services.carrier.models.shipment import ShipmentRequest, ShipmentMode, ShipmentResult, ShipmentState
         from app.services import tracking_db as tdb
 
         with patch("app.services.carrier.coordinator.settings") as mock_settings:
@@ -419,19 +446,32 @@ class TestCoordinatorRegistration:
             request = ShipmentRequest(
                 batch_id="COORD_REPLAY",
                 shipper_account="TEST",
+                recipient_address={"name": "Test", "country": "PL"},
                 weight_kg=1.0,
                 declared_value=100.0,
                 currency="USD",
                 dimensions={"length": 10, "width": 10, "height": 10}
             )
 
-            # First execution
-            result1 = coordinator.create_shipment(request)
-            events_after_first = tdb.get_events_for_batch("COORD_REPLAY", direction="outbound")
+            # Mock the adapter to return non-simulated result so tracking events are written
+            from app.services.carrier.models.shipment import compute_idempotency_key
+            key = compute_idempotency_key(request)
+            mock_result = ShipmentResult(
+                idempotency_key=key,
+                mode=ShipmentMode.SHADOW,
+                state=ShipmentState.SUBMITTED,
+                tracking_ref=f"SIM-{key[:8].upper()}",
+                simulated=False  # Non-simulated so tracking events are written
+            )
 
-            # Second execution (cache hit, but tracking registration still fires)
-            result2 = coordinator.create_shipment(request)
-            events_after_second = tdb.get_events_for_batch("COORD_REPLAY", direction="outbound")
+            with patch.object(coordinator._adapter, 'create_shipment', return_value=mock_result):
+                # First execution
+                result1 = coordinator.create_shipment(request)
+                events_after_first = tdb.get_events_for_batch("COORD_REPLAY", direction="outbound")
+
+                # Second execution (cache hit, but tracking registration still fires)
+                result2 = coordinator.create_shipment(request)
+                events_after_second = tdb.get_events_for_batch("COORD_REPLAY", direction="outbound")
 
             # Should have same tracking event count (dedup prevents duplicates)
             assert len(events_after_first) == 1
