@@ -95,7 +95,7 @@ async def debug_pending() -> Dict[str, Any]:
 @router.get("/health-full", dependencies=[_auth])
 async def health_full() -> Dict[str, Any]:
     """
-    Guardian Agent snapshot — all 12 diagnostic dimensions in one call.
+    Guardian Agent snapshot — all 13 diagnostic dimensions in one call.
 
     Steps:
       1  fastapi_running        → /api/v1/health responds
@@ -110,6 +110,7 @@ async def health_full() -> Dict[str, Any]:
      10  pz_posting             → last post_to_channel result
      11  output_files           → outputs/ directory exists, recent batches listed
      12  audit_reports          → Arial Unicode font available for Polish glyphs
+     13  backup_freshness       → newest backup manifest age (ok < 26h)
     """
     from .routes_bot import LAST_BOT_EVENTS, LAST_PZ_POSTS, LAST_ERRORS, LAST_STAGE_EVENTS
 
@@ -348,6 +349,52 @@ async def health_full() -> Dict[str, Any]:
             "Install: brew install --cask font-dejavu OR copy Arial Unicode.ttf to /Library/Fonts/"
         )
         overall_ok = False
+
+    # ── Step 13: Backup freshness ─────────────────────────────────────────────
+    try:
+        from ..core.config import settings
+        backup_root = Path(settings.backup_root)
+
+        if not backup_root.exists():
+            results["13_backup_freshness"] = _warn("Backup root directory does not exist")
+        else:
+            # Find newest manifest
+            newest_manifest = None
+            newest_time = None
+
+            for item in backup_root.iterdir():
+                if item.is_dir():
+                    manifest_path = item / "manifest.json"
+                    if manifest_path.exists():
+                        try:
+                            import json
+                            with open(manifest_path, 'r', encoding='utf-8') as f:
+                                manifest = json.load(f)
+
+                            finished_at = manifest.get("finished_at")
+                            if finished_at:
+                                from datetime import datetime
+                                manifest_time = datetime.fromisoformat(finished_at.replace('Z', '+00:00'))
+                                if newest_time is None or manifest_time > newest_time:
+                                    newest_time = manifest_time
+                                    newest_manifest = manifest
+                        except Exception:
+                            continue
+
+            if newest_manifest is None:
+                results["13_backup_freshness"] = _fail("No valid backup manifests found")
+                overall_ok = False
+            else:
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc)
+                age_hours = (now - newest_time).total_seconds() / 3600
+
+                if age_hours < 26:
+                    results["13_backup_freshness"] = _ok(f"Latest backup: {age_hours:.1f}h ago")
+                else:
+                    results["13_backup_freshness"] = _warn(f"Latest backup is {age_hours:.1f}h old")
+    except Exception as e:
+        results["13_backup_freshness"] = {"status": "unknown", "detail": f"Check failed: {e}"}
 
     # ── Summary ───────────────────────────────────────────────────────────────
     fail_count = sum(1 for v in results.values() if isinstance(v, dict) and v.get("status") == "fail")

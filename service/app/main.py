@@ -16,6 +16,7 @@ from .api.routes_debug import router as debug_router
 from .api.routes_upload import router as upload_router
 from .api.routes_auth import router as auth_router
 from .api.routes_admin import router as admin_router
+from .api.routes_admin_backup import router as admin_backup_router
 from .api.routes_tracking import router as tracking_router
 from .api.routes_learning import router as learning_router
 from .api.routes_proposals import router as proposals_router
@@ -399,6 +400,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(admin_backup_router)
 app.include_router(router)
 app.include_router(dashboard_router)
 # Alias mount: also expose the dashboard router under /api/v1/dashboard/*.

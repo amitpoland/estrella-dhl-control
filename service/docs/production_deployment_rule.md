@@ -114,6 +114,16 @@ python -m pytest tests/test_carrier_*.py -q            # must be 412/412
 
 **Stop if any test fails.**
 
+### Step 4.5 — Pre-deploy backup
+
+```powershell
+# Create backup before any production changes
+cd "C:\PZ\service"
+python scripts\run_backup.py --backup-root "C:\PZ-backups"
+```
+
+**Abort deploy on backup failure.** Maximum timeout: 10 minutes. If backup fails or times out, investigate storage health before proceeding. A failed backup means restore capability is compromised.
+
 ### Step 5 — Safe sync to production
 
 ```powershell
