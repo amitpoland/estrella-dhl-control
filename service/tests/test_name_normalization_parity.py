@@ -75,12 +75,12 @@ def _frozen_packing_contractor_normalise_name(name: Optional[str]) -> str:
     """Frozen original from packing_contractor_resolver.py:112"""
     # ASCII fallback table and constants from packing_contractor_resolver.py
     _ASCII_FALLBACK = str.maketrans({
-        "ł": "l",  "Ł": "L",
-        "ø": "o",  "Ø": "O",
+        "ł": "l", "Ł": "L",
+        "ø": "o", "Ø": "O",
         "æ": "ae", "Æ": "AE",
-        "å": "a",  "Å": "A",
+        "å": "a", "Å": "A",
         "ß": "ss",
-        "œ": "oe", "Œ": "OE",
+        "þ": "th", "Þ": "Th",
         "ð": "d",  "Ð": "D",
     })
 
@@ -242,6 +242,12 @@ TEST_CORPUS = [
     "ß",  # German sharp s
     "İ",  # Turkish capital i with dot
     "ı",  # Turkish dotless i
+
+    # ASCII fallback table edge cases - testing þ/Þ and œ/Œ handling
+    "Þórður Þjónusta hf",  # Icelandic thorn - should become "th"
+    "þingvellir",  # Icelandic thorn lowercase
+    "Cœur de Lion SARL",  # French ligature - not in baseline table
+    "ŒUVRE Trading GmbH",  # French ligature uppercase - not in baseline table
 
     # Complex combinations
     "Łódź Trading Sp. z o.o. — Premium Goods!",

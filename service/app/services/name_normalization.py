@@ -34,12 +34,12 @@ _MULTI_SPACE_RE = re.compile(r"\s+")
 
 # ASCII fallback table for letters that NFKD doesn't decompose
 _ASCII_FALLBACK = str.maketrans({
-    "ł": "l",  "Ł": "L",
-    "ø": "o",  "Ø": "O",
+    "ł": "l", "Ł": "L",
+    "ø": "o", "Ø": "O",
     "æ": "ae", "Æ": "AE",
-    "å": "a",  "Å": "A",
+    "å": "a", "Å": "A",
     "ß": "ss",
-    "œ": "oe", "Œ": "OE",
+    "þ": "th", "Þ": "Th",
     "ð": "d",  "Ð": "D",
 })
 
