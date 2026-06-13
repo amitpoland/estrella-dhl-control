@@ -44,7 +44,7 @@ Deploy #1 smoke MUST `Select-String`/hash-verify each deployed module against th
 | Post-squash merge SHA | **`f36bef4084f085e7118fdbd0b2f7312d9e2f1f60`** ← origin/main HEAD = production |
 | Deployed to `C:\PZ\app` | 2026-06-13 15:41 — `authority_manifest_pinned.json`, `services/authority_drift_service.py`, `services/authority_startup.py` all PRESENT |
 | Drift flag | `authority_drift_detection: bool = Field(default=False)` (deployed) — OFF |
-| Drift endpoint (flag OFF) | `/api/v1/admin/authority/drift` → 404 (gated) |
+| Drift endpoint | `GET /api/v1/admin/authority-drift` (hyphen, no suffix) — auth-first then flag-gated: unauthenticated → **401**; authenticated admin + flag OFF → **503** (`{"error":"Authority drift detection disabled",...}`); admin + flag ON → 200 drift report. Verified live 2026-06-13. (Route is registered, never silently absent; a 404 means a mistyped path, not a gated route.) |
 | Startup | `STARTUP_AUTHORITY_AUDIT: authority_drift_detection=False, no manifest generated` — R1 hook clean, no false-positive, no startup crash |
 | Hash authority | all 4 modules LF-normalized hash == pins (manifest authority); CRLF on disk by design — see `project_authority_hash_eol_normalization` |
 | 3-layer Completion Gate | Layer 1 GitHub ✅ · Layer 2 backend ✅ · Layer 3 browser 9/9 ✅ |
