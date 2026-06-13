@@ -23,18 +23,24 @@ router = APIRouter(
 
 
 @router.get("/events/{batch_id}")
-def get_batch_events(batch_id: str):
-    events = tdb.get_events_for_batch(batch_id)
-    return {"batch_id": batch_id, "count": len(events), "events": events}
+def get_batch_events(
+    batch_id: str,
+    direction: str = Query(default="inbound", description="Filter by direction: inbound, outbound, or all")
+):
+    direction_filter = None if direction == "all" else direction
+    events = tdb.get_events_for_batch(batch_id, direction=direction_filter)
+    return {"batch_id": batch_id, "direction": direction, "count": len(events), "events": events}
 
 
 @router.get("/events")
 def get_all_events(
     limit: int = Query(default=500, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
+    direction: str = Query(default="inbound", description="Filter by direction: inbound, outbound, or all")
 ):
-    events = tdb.get_all_events(limit=limit, offset=offset)
-    return {"count": len(events), "limit": limit, "offset": offset, "events": events}
+    direction_filter = None if direction == "all" else direction
+    events = tdb.get_all_events(limit=limit, offset=offset, direction=direction_filter)
+    return {"count": len(events), "limit": limit, "offset": offset, "direction": direction, "events": events}
 
 
 @router.post("/events/export")
