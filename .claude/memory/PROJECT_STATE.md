@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-13 (PR #573 merged as 62810c2, combined 3-PR deploy to C:\PZ verified on disk, production browser verification of Drafts #32/#33 PASSED — both blocked with named repair actions; OQ-NEW-16/17 resolved).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-14 (PRs #585/#587/#588/#589 merged to main; origin/main HEAD 8692b48; GATE 2 now 2/3 open PRs; OQ-NEW-21 resolved via #532→#588 merge).
 
-**Last-run-at:** 2026-06-13 (proforma readiness single-authority campaign PR #573 7-agent gate completed READY-TO-DEPLOY). Origin/main HEAD: **ff1f4b5** (fix(security): non-ASCII X-API-Key returns 401 not 500 (#563)). GATE 2: **2/3 open PRs** (#522 needs-rebase/#521-overlap, #498 draft/Lesson-E) + PR #573 ready-to-merge. TEST BASELINE: 160/160 PZ regression + 412/412 carrier suite. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
+**Last-run-at:** 2026-06-14 (Campaign 04 completion + Proforma V2 Sprint 03.1 merges). Origin/main HEAD: **8692b48** (fix(proforma): block zero-price lines from reaching final invoice (#532) (#588)). GATE 2: **2/3 open PRs** (#522 needs-rebase/#521-overlap, #498 draft/Lesson-E). TEST BASELINE: 160/160 PZ regression + 412/412 carrier suite. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
 
 ---
 
@@ -67,6 +67,17 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **Branch / merge**: `fix/debug-health-endpoints` off `main` HEAD `f36bef4`; **squash-merged to `main` via PR #582 on 2026-06-13** (operator command). **MERGED to main only — NOT deployed. Production remains `f36bef4`; operators still see the two probe 500s until a separate operator-gated `/deploy`.** Deployment of #582 is an independent operator decision (bundle into next stabilization-checkpoint deploy or hold to 2026-06-20). PR: https://github.com/amitpoland/estrella-dhl-control/pull/582.
 - **Operator-facing surface**: both endpoints are wired into the dashboard System Health panel (`dashboard.html`) + `atlas/api-status-v2.html` + `v2/api-status-page.jsx` — i.e. operator-visible, not curl-only (this is why merge was chosen).
 - **Campaign 03**: NOT started — remains BLOCKED (operator directive 2026-06-13: do not start Campaign 03).
+
+## Campaign 04 PR1 (#529) — Price Source Authority Hardening (2026-06-14, MERGED)
+
+- **PR #585 MERGED**: merged as **fca3489** — fix(proforma): stamp sales_packing_list provenance + margin-mask readiness guard (#529) (#585). Branch `fix/proforma-529-price-source-authority` merged to main 2026-06-14.
+- **Implementation**: Two edits to `service/app/api/routes_proforma.py`: (1) `import_draft_sales_prices` stamps `price_source="sales_packing_list"` at the write site; (2) `_preflight_approve` margin-mask guard blocks approval of any PRICED line still carrying a cost-basis price_source (`packing_xlsx_value`/`packing_promote`), with defensive `_is_priced` unit_price coercion.
+- **Testing**: New real-builder regression test `service/tests/test_proforma_529_price_source_authority.py` (6 tests, all pass). Verification: targeted #529 + single-authority readiness suites 18/18 pass; make verify 160/160; full `test_proforma_*.py` glob deltas PROVEN pre-existing on clean `origin/main` via stash-out comparison (`extract_packing` arity, phase7 HTML testids, order-dependent STORAGE-LEAK cascade — none from #529).
+- **GATE 1 review verdicts**: finance-accounting-logic SHIP; reviewer-challenge Ship-with-mitigations (HIGH historical-draft re-validation adjudicated by-design); backend-safety-reviewer BLOCK→RESOLVED inline (ValueError 500 risk fixed via `_is_priced`).
+- **Scorecard**: `.claude/memory/scorecards/2026-06-14-pr585-529-price-source-authority.md` (all 3 reviewers EXEMPLARY; no NEEDS-TUNING/UNRELIABLE; self-eval skipped — only 2nd campaign since 2026-06-13 self-eval).
+- **GATE 4 disposition**: deferred design_no / product-description authority work filed as ISSUE #586 (Campaign 05 — Product Description Authority Hardening), scoped-but-not-started, sequence after Campaign 04 PR3 (#533).
+- **GATE 2 state after merge**: 2 impl PRs remain open (#522 needs-rebase, #498 draft/ultracode) — slot freed for new work.
+- **#584 independent fix deployed**: `43b3c3e` (now on main) independently fixes the customer-master storage-leak leg discovered during #529 testing — proves #529 test deltas were pre-existing platform skew, not #529 regression.
 
 ## PR #568 merge+deploy gate COMPLETE — merge pending operator (2026-06-12 PM)
 
@@ -5009,6 +5020,31 @@ Group D — Tests (3 new files):
 
 **Scorecards produced and verified on disk**: .claude/memory/scorecards/2026-06-13-c02-authority-consolidation.md (b7-builder NEEDS-TUNING — test-deselection evidence deception, caught by orchestrator; 7 agents EXEMPLARY). Self-eval produced: .claude/memory/scorecards/self-eval-2026-06-13.md (RULE 5 7-day cadence).
 
+## PR #587 — Proforma V2 Sprint 03.1 A+B (2026-06-14, MERGED)
+
+- **Date merged**: 2026-06-14 (PR merged as e955d1e)
+- **PR #587** — feat(proforma-v2): Sprint 03.1 A+B — status header + unified blocker panel
+- **Implementation**: Proforma V2 frontend advancement — unified status header and blocker panel components, authority-clean domain separation per Lesson F
+- **Deploy status**: NOT DEPLOYED — merge creates deploy candidate `main 8692b48 → C:\PZ` but 7-agent deploy gate has not been run
+
+## PR #588 — Campaign 04 PR2 (#532) zero-price invoice protection (2026-06-14, MERGED)
+
+- **Date merged**: 2026-06-14 (PR merged as 8692b48)
+- **PR #588** — fix(proforma): block zero-price lines from reaching final invoice (#532) — Campaign 04 PR2 zero-price line filter
+- **Implementation**: Real builders parse_proforma_xml + build_final_invoice_plan A/B/C filter + ZeroBillableInvoice block; frozen-valuation invariant preserved (excluding a zero-price line removes no revenue)
+- **Deploy status**: NOT DEPLOYED — merge creates deploy candidate `main 8692b48 → C:\PZ` but 7-agent deploy gate has not been run
+
+## PR #589 — Track B / PR575 ledger validation suite (2026-06-14, MERGED)
+
+- **Date merged**: 2026-06-14 (PR merged as 2ff9ae8)
+- **PR #589** — test(governance): add PR575 ledger validation fixtures and benchmarks — Track B test-only contribution
+- **Implementation**: ZERO runtime files — all files are under service/tests/** (test suite + fixtures + benchmarks), which is OUTSIDE the service/app→C:\PZ\app robocopy
+- **Deploy blast radius**: ZERO — test-only merge contributes no runtime files to any deploy
+
+**Scorecard RULE 6 enforcement**: Two additional scorecards verified on disk:
+- `.claude/memory/scorecards/2026-06-14-pr582-deploy-gate.md` (verified)
+- `.claude/memory/scorecards/2026-06-14-pr585-529-price-source-authority.md` (verified)
+
 ---
 
 # DECISIONS
@@ -5024,6 +5060,11 @@ Group D — Tests (3 new files):
 ## B7 Backup Service Scheduling (2026-06-13)
 
 - **B7 scheduling implemented WITHOUT APScheduler** (architect condition 1) — CLI + OS Task Scheduler proposed; final mechanism is an operator decision (see OPEN QUESTIONS).
+
+## Campaign 04 — Proforma Price Source Authority (2026-06-14)
+
+- **Campaign 04 approved with modification**: design_no schema work deferred to Campaign 05 (operator). Implementation order fixed one-PR-at-a-time: PR1 #529 (done/open) → PR2 #532 (invoice integrity gate) → PR3 #533 (name_locked description freeze) → PR4 #530+#531 (service validation layer).
+- **#529 is a LABEL/provenance defect only**: frozen valuation math, VAT values, and landed-cost FX (MDC-071) remain untouched and FORBIDDEN to change.
 
 ## CN Comparison Authority + Mixed-Metal Policy (2026-06-12)
 
@@ -5554,9 +5595,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **GATE 2 overage resolution + merge/deploy sequencing** — target: clear queue to under 3 implementation PRs (currently 4) — gating: operator decisions on queue priority (#522, #498, #573, #574)
-2. **B3 Reservations binary decision** — target: operator choice Option A (register/activate routes_reservations.py) vs Option B (retire with archive tag) — gating: architect analysis complete, no third option available
-3. **File prepared GATE 4 issues** — target: 3 prepared issue bodies filed (2 AWB pipeline gaps, 1 reservation workflow gap) — gating: operator approval to file
+1. **Deploy candidate evaluation** — target: run 7-agent deploy gate for `main 8692b48 → C:\PZ` (carrying #587 Proforma V2 + #588 zero-price protection) — gating: deploy candidate exists but gate has not been run
+2. **PR #522 rebase decision** — target: operator decision to rebase `feat/engine-phase2b-product-short-description-renderers` or close as stale — gating: 43 commits behind main, conflicts likely
+3. **PR #498 draft completion** — target: operator decision to advance security draft from draft status or close — gating: GATE 4 H-R5/H-W3/H-W2 findings require disposition
 
 **DEPLOY-AGENT-REGISTRATION-REPAIR COMPLETE (2026-05-25, SHA 4366b0f)**: All 7 deploy agent files now have valid YAML frontmatter and are registered as dispatchable subagents. Names: deploy-lead-coordinator, deploy-git-diff-reviewer, deploy-backend-impact-reviewer, deploy-persistence-storage-reviewer, deploy-security-reviewer, deploy-qa-reviewer, deploy-release-manager. Tools: Read, Grep, Glob (review-only). Takes effect in next fresh Claude Code session (Lesson B). OQ6 resolved — see below.
 
@@ -5639,6 +5680,13 @@ Operator approval pending for platform-remediation backlog GATE 4 dispositions (
 **Question**: approve Windows Task Scheduler entry invoking scripts/run_backup.py (APScheduler rejected by architect)
 **Answerer**: operator decision
 **Impact if left unanswered**: B7 backup service remains manual-invoke only
+
+## ~~OQ-NEW-21: Campaign 04 PR2 (#532) blocked on GATE 2 slot (2026-06-14)~~ RESOLVED 2026-06-14
+
+~~**Question**: Campaign 04 PR2 (#532) cannot open until a slot clears — clearing #522 (needs-rebase) or #498 (draft) frees the slot.~~
+~~**Answerer**: operator (merge decision on #522/#498 or rebase completion)~~
+**RESOLVED**: #532 merged as #588 on 2026-06-14 (8692b48). GATE 2 slot freed by #585 merge (fca3489).
+**Impact if left unanswered**: Campaign 04 PR2 (#532 invoice integrity gate) cannot proceed, blocking Campaign 04 completion
 
 ## OQ1 -- AI advisory monitoring window post-pilot (RESOLVED 2026-05-26)
 
