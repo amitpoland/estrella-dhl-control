@@ -1,0 +1,193 @@
+{
+  "category": "self_eval / canonical resolved",
+  "purpose": "The correctly resolved file: each of the 7 governance items exactly once, OQ-NEW placeholders 14/15 renumbered to 19/20 after baseline max 18, FACTS strictly descending.",
+  "expected_outcome": "PASS Layer-1 (present + unique), PASS Layer-2 (19/20 once, gap-free after 18), PASS Layer-3 (strict descending). Layer-4 byte-identity FAILS by design — synthetic, not the 6261-line blob.",
+  "assertions_targeted": [
+    "test_layer1_all_governance_anchors_present -> PASS",
+    "test_layer1_anchors_are_unique -> PASS",
+    "test_layer1_each_anchor_exactly_once -> PASS",
+    "test_layer2_oq_new_19_and_20_present_once -> PASS",
+    "test_layer3_newest_fact_is_first -> PASS",
+    "test_layer3_leading_prefix_is_descending_and_holds_named_anchors -> PASS",
+    "test_layer4_* -> FAIL (synthetic; expected)"
+  ],
+  "governance_items": {
+    "present": {
+      "#571 GATE-4 issue (FACTS bullet)": [
+        26
+      ],
+      "#568 merge+deploy gate record": [
+        12
+      ],
+      "#570 verified read-only": [
+        24
+      ],
+      "B7 backup-service decision": [
+        30
+      ],
+      "platform-remediation OQ": [
+        43
+      ],
+      "OQ-NEW-19 (B3 reservations)": [
+        46
+      ],
+      "OQ-NEW-20 (B7 mechanism)": [
+        49
+      ]
+    },
+    "absent": [],
+    "duplicated": {}
+  },
+  "oq_new": {
+    "headings": [
+      {
+        "id": 19,
+        "line": 46
+      },
+      {
+        "id": 20,
+        "line": 49
+      }
+    ],
+    "renumbering": {
+      "state": "resolved",
+      "existing_max_sequential": 18,
+      "reassigned": {
+        "OQ-NEW-14 -> OQ-NEW-19": 19,
+        "OQ-NEW-15 -> OQ-NEW-20": 20
+      },
+      "renumber_helper_output": {
+        "B3 reservations": 19,
+        "B7 mechanism": 20
+      }
+    }
+  },
+  "facts_date_ordering": {
+    "dates_in_document_order": [
+      "2026-06-13",
+      "2026-06-12",
+      "2026-06-12",
+      "2026-06-11",
+      "2026-06-10",
+      "2026-06-09"
+    ],
+    "descending_violations": [],
+    "is_strict_descending": true
+  },
+  "edge_case_params": {},
+  "suite_limitation": "Layer 4 (byte-identity vs the real 6261-line origin/main blob) cannot pass for any synthetic fixture; this fixture targets Layer 1-3 logic only.",
+  "generator": "service/tests/fixtures/generate_fixtures.py",
+  "notes": "Resolved counterpart of deduplication/ledger_head_premerge_with_duplicates.txt. Line-by-line change vs premerge recorded in the change_metadata field.",
+  "change_metadata": {
+    "before_file": "deduplication/ledger_head_premerge_with_duplicates.txt",
+    "after_file": "self_eval/ledger_main_resolved_canonical.txt",
+    "before_line_count": 69,
+    "after_line_count": 50,
+    "summary": "Deduplicate the 7 governance items to one occurrence each and renumber OQ-NEW placeholders 14->19, 15->20.",
+    "operations": [
+      {
+        "op": "delete",
+        "before_lines": [
+          11,
+          12,
+          13
+        ],
+        "after_lines": [],
+        "removed": [
+          "",
+          "## PR #568 merge+deploy gate COMPLETE — merge pending operator (2026-06-12 PM)",
+          "- GATE record governance item (#568)."
+        ],
+        "added": []
+      },
+      {
+        "op": "delete",
+        "before_lines": [
+          31,
+          32,
+          33,
+          34
+        ],
+        "after_lines": [],
+        "removed": [
+          "## PR #570 verified read-only (2026-06-09 PM) — merge-gate evidence",
+          "- Root-cause governance item (#570).",
+          "- **Issue #571 filed (GATE 4 ISSUE)**: retroactive gate disposition pending.",
+          ""
+        ],
+        "added": []
+      },
+      {
+        "op": "delete",
+        "before_lines": [
+          36,
+          37,
+          38
+        ],
+        "after_lines": [],
+        "removed": [
+          "",
+          "## B7 Backup Service Scheduling (2026-06-13)",
+          "- Duplicate B7 governance item (merge artefact)."
+        ],
+        "added": []
+      },
+      {
+        "op": "replace",
+        "before_lines": [
+          56,
+          57
+        ],
+        "after_lines": [
+          46,
+          47
+        ],
+        "removed": [
+          "## OQ-NEW-14: B3 reservations write-path gate (2026-06-13)",
+          "- Open question OQ-NEW-14 body."
+        ],
+        "added": [
+          "## OQ-NEW-19: B3 reservations write-path gate (2026-06-13)",
+          "- Open question OQ-NEW-19 body."
+        ]
+      },
+      {
+        "op": "replace",
+        "before_lines": [
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69
+        ],
+        "after_lines": [
+          49,
+          50
+        ],
+        "removed": [
+          "## OQ-NEW-15: B7 backup mechanism selection (2026-06-13)",
+          "- Open question OQ-NEW-15 body.",
+          "",
+          "## OQ-NEW-14: B3 reservations write-path gate (2026-06-13)",
+          "- Open question OQ-NEW-14 body.",
+          "",
+          "## OQ-NEW-15: B7 backup mechanism selection (2026-06-13)",
+          "- Open question OQ-NEW-15 body.",
+          "",
+          "## OQ: Platform-remediation backlog GATE 4 dispositions pending operator approval (2026-06-12)",
+          "- Duplicate platform-remediation OQ (merge artefact)."
+        ],
+        "added": [
+          "## OQ-NEW-20: B7 backup mechanism selection (2026-06-13)",
+          "- Open question OQ-NEW-20 body."
+        ]
+      }
+    ]
+  }
+}

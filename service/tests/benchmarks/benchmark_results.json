@@ -1,0 +1,354 @@
+{
+  "environment": {
+    "python": "3.9.1",
+    "platform": "Windows-10-10.0.19041-SP0",
+    "machine": "AMD64",
+    "cpu_count": 6,
+    "memory_profiler": "tracemalloc (Python-heap allocations, not RSS)",
+    "timer": "time.perf_counter",
+    "note": "Single-process, single-thread. No psutil. Results reflect per-call Python allocation + CPU time on an otherwise idle run."
+  },
+  "category_1_2_scalability": [
+    {
+      "size_label": "1x baseline (~6296 lines)",
+      "stats": {
+        "target_lines": 6296,
+        "actual_lines": 6293,
+        "facts_entries": 2087,
+        "oq_new_headings": 2,
+        "governance_items": 7
+      },
+      "dedup_detect": {
+        "iterations": 30,
+        "median_ms": 42.3404,
+        "p95_ms": 44.048,
+        "min_ms": 41.167,
+        "max_ms": 44.3534,
+        "mem_peak_mb_max": 0.4051,
+        "mem_peak_mb_mean": 0.4007,
+        "per_governance_item_ms": 6.04863,
+        "lines_per_sec": 148628.73
+      },
+      "renumber_input_scan": {
+        "iterations": 30,
+        "median_ms": 7.9359,
+        "p95_ms": 8.6491,
+        "min_ms": 7.6875,
+        "max_ms": 9.2874,
+        "mem_peak_mb_max": 0.403,
+        "mem_peak_mb_mean": 0.3999,
+        "oq_headings_found": 2,
+        "headings_per_sec": 252.02
+      },
+      "facts_ordering_validate": {
+        "iterations": 30,
+        "median_ms": 23.1693,
+        "p95_ms": 23.9846,
+        "min_ms": 21.9707,
+        "max_ms": 24.1662,
+        "mem_peak_mb_max": 0.7186,
+        "mem_peak_mb_mean": 0.5975,
+        "entries_per_sec": 90076.09
+      },
+      "end_to_end_merge": {
+        "iterations": 30,
+        "median_ms": 72.859,
+        "p95_ms": 76.0039,
+        "min_ms": 70.9573,
+        "max_ms": 87.5442,
+        "mem_peak_mb_max": 0.5939,
+        "mem_peak_mb_mean": 0.5934,
+        "total_s_median": 0.07286
+      }
+    },
+    {
+      "size_label": "10x (~63000 lines)",
+      "stats": {
+        "target_lines": 63000,
+        "actual_lines": 62999,
+        "facts_entries": 20989,
+        "oq_new_headings": 2,
+        "governance_items": 7
+      },
+      "dedup_detect": {
+        "iterations": 8,
+        "median_ms": 424.8774,
+        "p95_ms": 429.909,
+        "min_ms": 420.8089,
+        "max_ms": 430.9752,
+        "mem_peak_mb_max": 4.0336,
+        "mem_peak_mb_mean": 4.0335,
+        "per_governance_item_ms": 60.69677,
+        "lines_per_sec": 148275.71
+      },
+      "renumber_input_scan": {
+        "iterations": 8,
+        "median_ms": 86.9537,
+        "p95_ms": 91.1351,
+        "min_ms": 82.5769,
+        "max_ms": 92.2374,
+        "mem_peak_mb_max": 4.0326,
+        "mem_peak_mb_mean": 4.0326,
+        "oq_headings_found": 2,
+        "headings_per_sec": 23.0
+      },
+      "facts_ordering_validate": {
+        "iterations": 8,
+        "median_ms": 244.9242,
+        "p95_ms": 254.1836,
+        "min_ms": 239.3844,
+        "max_ms": 256.6996,
+        "mem_peak_mb_max": 7.0958,
+        "mem_peak_mb_mean": 7.0958,
+        "entries_per_sec": 85695.9
+      },
+      "end_to_end_merge": {
+        "iterations": 8,
+        "median_ms": 750.1086,
+        "p95_ms": 757.1129,
+        "min_ms": 747.8645,
+        "max_ms": 757.527,
+        "mem_peak_mb_max": 7.0963,
+        "mem_peak_mb_mean": 7.0959,
+        "total_s_median": 0.75011
+      }
+    },
+    {
+      "size_label": "100x (~630000 lines)",
+      "stats": {
+        "target_lines": 630000,
+        "actual_lines": 629999,
+        "facts_entries": 209989,
+        "oq_new_headings": 2,
+        "governance_items": 7
+      },
+      "dedup_detect": {
+        "iterations": 3,
+        "median_ms": 4263.3977,
+        "p95_ms": 4277.1121,
+        "min_ms": 4237.8649,
+        "max_ms": 4278.6359,
+        "mem_peak_mb_max": 40.175,
+        "mem_peak_mb_mean": 40.1749,
+        "per_governance_item_ms": 609.05681,
+        "lines_per_sec": 147769.23
+      },
+      "renumber_input_scan": {
+        "iterations": 3,
+        "median_ms": 838.7063,
+        "p95_ms": 844.9856,
+        "min_ms": 836.1147,
+        "max_ms": 845.6833,
+        "mem_peak_mb_max": 40.1739,
+        "mem_peak_mb_mean": 40.1739,
+        "oq_headings_found": 2,
+        "headings_per_sec": 2.38
+      },
+      "facts_ordering_validate": {
+        "iterations": 3,
+        "median_ms": 2469.1354,
+        "p95_ms": 2485.3582,
+        "min_ms": 2465.7393,
+        "max_ms": 2487.1607,
+        "mem_peak_mb_max": 72.0314,
+        "mem_peak_mb_mean": 72.0314,
+        "entries_per_sec": 85045.56
+      },
+      "end_to_end_merge": {
+        "iterations": 3,
+        "median_ms": 7563.2316,
+        "p95_ms": 7585.8174,
+        "min_ms": 7541.2826,
+        "max_ms": 7588.3269,
+        "mem_peak_mb_max": 72.0315,
+        "mem_peak_mb_mean": 72.0315,
+        "total_s_median": 7.56323
+      }
+    }
+  ],
+  "category_3_collision": {
+    "k=3": {
+      "distinct_placeholders": {
+        "iterations": 2000,
+        "median_ms": 0.0018,
+        "p95_ms": 0.0019,
+        "min_ms": 0.0017,
+        "max_ms": 0.04,
+        "mem_peak_mb_max": 0.0004,
+        "mem_peak_mb_mean": 0.0001,
+        "assignments_per_sec": 1666666.67
+      },
+      "colliding_placeholders": {
+        "iterations": 2000,
+        "median_ms": 0.0018,
+        "p95_ms": 0.0019,
+        "min_ms": 0.0014,
+        "max_ms": 0.0042,
+        "mem_peak_mb_max": 0.0004,
+        "mem_peak_mb_mean": 0.0001,
+        "assignments_per_sec": 1666666.67
+      },
+      "collision_overhead_pct": 0.0,
+      "correctness": "k distinct gap-free ids 19..21"
+    },
+    "k=10": {
+      "distinct_placeholders": {
+        "iterations": 2000,
+        "median_ms": 0.0025,
+        "p95_ms": 0.0026,
+        "min_ms": 0.0021,
+        "max_ms": 0.0119,
+        "mem_peak_mb_max": 0.0005,
+        "mem_peak_mb_mean": 0.0004,
+        "assignments_per_sec": 4000000.0
+      },
+      "colliding_placeholders": {
+        "iterations": 2000,
+        "median_ms": 0.0025,
+        "p95_ms": 0.0028,
+        "min_ms": 0.0021,
+        "max_ms": 0.1895,
+        "mem_peak_mb_max": 0.0004,
+        "mem_peak_mb_mean": 0.0004,
+        "assignments_per_sec": 4000000.0
+      },
+      "collision_overhead_pct": 0.0,
+      "correctness": "k distinct gap-free ids 19..28"
+    },
+    "k=100": {
+      "distinct_placeholders": {
+        "iterations": 2000,
+        "median_ms": 0.01,
+        "p95_ms": 0.011,
+        "min_ms": 0.0097,
+        "max_ms": 0.7772,
+        "mem_peak_mb_max": 0.0066,
+        "mem_peak_mb_mean": 0.0066,
+        "assignments_per_sec": 10000000.0
+      },
+      "colliding_placeholders": {
+        "iterations": 2000,
+        "median_ms": 0.01,
+        "p95_ms": 0.011,
+        "min_ms": 0.0095,
+        "max_ms": 0.8109,
+        "mem_peak_mb_max": 0.0066,
+        "mem_peak_mb_mean": 0.0066,
+        "assignments_per_sec": 10000000.0
+      },
+      "collision_overhead_pct": 0.0,
+      "correctness": "k distinct gap-free ids 19..118"
+    },
+    "k=1000": {
+      "distinct_placeholders": {
+        "iterations": 2000,
+        "median_ms": 0.3046,
+        "p95_ms": 0.3257,
+        "min_ms": 0.2947,
+        "max_ms": 1.1385,
+        "mem_peak_mb_max": 0.0648,
+        "mem_peak_mb_mean": 0.0647,
+        "assignments_per_sec": 3282994.09
+      },
+      "colliding_placeholders": {
+        "iterations": 2000,
+        "median_ms": 0.3041,
+        "p95_ms": 0.3227,
+        "min_ms": 0.294,
+        "max_ms": 1.1274,
+        "mem_peak_mb_max": 0.0647,
+        "mem_peak_mb_mean": 0.0647,
+        "assignments_per_sec": 3288391.98
+      },
+      "collision_overhead_pct": -0.16,
+      "correctness": "k distinct gap-free ids 19..1018"
+    }
+  },
+  "category_4_error_handling": {
+    "ledger_invalid_missing_governance": {
+      "validation_kind": "presence",
+      "detected": true,
+      "evidence": {
+        "missing": [
+          "B7 backup-service decision",
+          "OQ-NEW-20 (B7 mechanism)"
+        ]
+      },
+      "time_to_detect_median_ms": 0.3033,
+      "time_to_detect_p95_ms": 0.3301,
+      "mem_peak_mb": 0.0064,
+      "detections_per_sec": 3297.07
+    },
+    "ledger_invalid_mid_sequence_insertion": {
+      "validation_kind": "uniqueness",
+      "detected": true,
+      "evidence": {
+        "duplicated": {
+          "#568 merge+deploy gate record": [
+            12,
+            21
+          ]
+        }
+      },
+      "time_to_detect_median_ms": 0.363,
+      "time_to_detect_p95_ms": 0.3832,
+      "mem_peak_mb": 0.0068,
+      "detections_per_sec": 2754.82
+    },
+    "ledger_invalid_facts_date_order": {
+      "validation_kind": "ordering",
+      "detected": true,
+      "evidence": {
+        "violation_count": 3,
+        "first": [
+          1,
+          "2026-06-10",
+          "2026-06-11"
+        ]
+      },
+      "time_to_detect_median_ms": 0.0788,
+      "time_to_detect_p95_ms": 0.0871,
+      "mem_peak_mb": 0.0062,
+      "detections_per_sec": 12690.36
+    },
+    "_happy_path_all_validators": {
+      "median_ms": 0.7761,
+      "p95_ms": 0.8315,
+      "note": "all three validators on the clean file detect nothing; this is the happy-path validation cost."
+    }
+  },
+  "category_5_ordering_speed": {
+    "already_descending": {
+      "entries": 5000,
+      "median_ms": 3.1555,
+      "p95_ms": 3.8423,
+      "mem_peak_mb": 0.0005,
+      "entries_per_sec": 1584534.94,
+      "violations_found": 0
+    },
+    "requires_sorting_shuffled": {
+      "entries": 5000,
+      "median_ms": 4.4403,
+      "p95_ms": 5.2604,
+      "mem_peak_mb": 0.2355,
+      "entries_per_sec": 1126050.04,
+      "violations_found": 2500
+    },
+    "identical_dates_secondary_key": {
+      "entries": 5000,
+      "median_ms": 3.0497,
+      "p95_ms": 3.32,
+      "mem_peak_mb": 0.0002,
+      "entries_per_sec": 1639505.53,
+      "violations_found": 0
+    },
+    "sparse_distribution": {
+      "entries": 5000,
+      "median_ms": 3.0759,
+      "p95_ms": 3.3957,
+      "mem_peak_mb": 0.0002,
+      "entries_per_sec": 1625540.49,
+      "violations_found": 0
+    }
+  }
+}

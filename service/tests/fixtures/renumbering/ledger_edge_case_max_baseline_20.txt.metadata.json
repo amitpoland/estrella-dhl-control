@@ -1,0 +1,101 @@
+{
+  "category": "renumbering / edge case",
+  "purpose": "Baseline already reaches 20. New placeholders must continue to 21 and 22 — proves the function tracks the real max, not a hard-coded 18.",
+  "expected_outcome": "renumber_governance_ids(20, ...) -> [21, 22]; assigned ids are gap-free, order-preserving, and distinct.",
+  "assertions_targeted": [
+    "renumber_governance_ids(existing_max, to_assign) == {'B3 reservations': 21, 'B7 mechanism': 22}",
+    "len(set(new_ids)) == len(new_ids)  # distinct",
+    "new_ids == list(range(existing_max+1, existing_max+1+len(to_assign)))"
+  ],
+  "governance_items": {
+    "present": {
+      "#571 GATE-4 issue (FACTS bullet)": [
+        26
+      ],
+      "#568 merge+deploy gate record": [
+        12
+      ],
+      "#570 verified read-only": [
+        24
+      ],
+      "B7 backup-service decision": [
+        30
+      ],
+      "platform-remediation OQ": [
+        43
+      ],
+      "OQ-NEW-19 (B3 reservations)": [
+        49
+      ],
+      "OQ-NEW-20 (B7 mechanism)": [
+        52
+      ]
+    },
+    "absent": [],
+    "duplicated": {}
+  },
+  "oq_new": {
+    "headings": [
+      {
+        "id": 18,
+        "line": 46
+      },
+      {
+        "id": 19,
+        "line": 49
+      },
+      {
+        "id": 20,
+        "line": 52
+      },
+      {
+        "id": 21,
+        "line": 55
+      },
+      {
+        "id": 22,
+        "line": 58
+      }
+    ],
+    "renumbering": {
+      "existing_max_sequential": 20,
+      "to_assign_old_placeholders": [
+        14,
+        15
+      ],
+      "assigned": {
+        "B3 reservations": 21,
+        "B7 mechanism": 22
+      },
+      "new_ids": [
+        21,
+        22
+      ]
+    }
+  },
+  "facts_date_ordering": {
+    "dates_in_document_order": [
+      "2026-06-13",
+      "2026-06-12",
+      "2026-06-12",
+      "2026-06-11",
+      "2026-06-10",
+      "2026-06-09"
+    ],
+    "descending_violations": [],
+    "is_strict_descending": true
+  },
+  "edge_case_params": {
+    "existing_max": 20,
+    "baseline_oq_ids": [
+      18,
+      19,
+      20
+    ],
+    "num_to_assign": 2,
+    "colliding_placeholders": false
+  },
+  "suite_limitation": "Layer 4 (byte-identity vs the real 6261-line origin/main blob) cannot pass for any synthetic fixture; this fixture targets Layer 1-3 logic only.",
+  "generator": "service/tests/fixtures/generate_fixtures.py",
+  "notes": "Renumber tests are pure-logic (do not consume SUT); this ledger illustrates the scenario and pins the helper output in metadata."
+}

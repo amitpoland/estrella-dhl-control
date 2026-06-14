@@ -1,0 +1,43 @@
+{
+  "category": "facts_integrity / clean ordering",
+  "purpose": "Minimal FACTS region in strict descending order #582 (06-13) > #568 (06-12) > CN (06-11) > HSN (06-10). The positive baseline for Layer-3.",
+  "expected_outcome": "PASS Layer-3: zero descending violations.",
+  "assertions_targeted": [
+    "validate_facts_date_ordering(dates) == [] -> PASS",
+    "test_layer3_newest_fact_is_first -> PASS"
+  ],
+  "governance_items": {
+    "present": {
+      "#568 merge+deploy gate record": [
+        6
+      ]
+    },
+    "absent": [
+      "#571 GATE-4 issue (FACTS bullet)",
+      "#570 verified read-only",
+      "B7 backup-service decision",
+      "platform-remediation OQ",
+      "OQ-NEW-19 (B3 reservations)",
+      "OQ-NEW-20 (B7 mechanism)"
+    ],
+    "duplicated": {}
+  },
+  "oq_new": {
+    "headings": [],
+    "renumbering": {}
+  },
+  "facts_date_ordering": {
+    "dates_in_document_order": [
+      "2026-06-13",
+      "2026-06-12",
+      "2026-06-11",
+      "2026-06-10"
+    ],
+    "descending_violations": [],
+    "is_strict_descending": true
+  },
+  "edge_case_params": {},
+  "suite_limitation": "Layer 4 (byte-identity vs the real 6261-line origin/main blob) cannot pass for any synthetic fixture; this fixture targets Layer 1-3 logic only.",
+  "generator": "service/tests/fixtures/generate_fixtures.py",
+  "notes": "No DECISIONS/OQ sections — pure FACTS excerpt by design."
+}

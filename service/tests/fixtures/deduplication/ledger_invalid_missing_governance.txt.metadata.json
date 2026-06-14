@@ -1,0 +1,66 @@
+{
+  "category": "deduplication / negative — missing governance",
+  "purpose": "Over-aggressive merge resolution that DROPPED two governance items (B7 decision and OQ-NEW-20). Presence check must catch the loss.",
+  "expected_outcome": "FAIL Layer-1 presence: 'B7 backup-service decision' and 'OQ-NEW-20 (B7 mechanism)' absent.",
+  "assertions_targeted": [
+    "test_layer1_all_governance_anchors_present -> FAIL",
+    "test_layer2_oq_new_19_and_20_present_once -> FAIL (OQ-NEW-20 absent)"
+  ],
+  "governance_items": {
+    "present": {
+      "#571 GATE-4 issue (FACTS bullet)": [
+        26
+      ],
+      "#568 merge+deploy gate record": [
+        12
+      ],
+      "#570 verified read-only": [
+        24
+      ],
+      "platform-remediation OQ": [
+        40
+      ],
+      "OQ-NEW-19 (B3 reservations)": [
+        43
+      ]
+    },
+    "absent": [
+      "B7 backup-service decision",
+      "OQ-NEW-20 (B7 mechanism)"
+    ],
+    "duplicated": {}
+  },
+  "oq_new": {
+    "headings": [
+      {
+        "id": 19,
+        "line": 43
+      }
+    ],
+    "renumbering": {
+      "state": "resolved-but-lossy",
+      "present": [
+        19
+      ],
+      "dropped": [
+        20
+      ]
+    }
+  },
+  "facts_date_ordering": {
+    "dates_in_document_order": [
+      "2026-06-13",
+      "2026-06-12",
+      "2026-06-12",
+      "2026-06-11",
+      "2026-06-10",
+      "2026-06-09"
+    ],
+    "descending_violations": [],
+    "is_strict_descending": true
+  },
+  "edge_case_params": {},
+  "suite_limitation": "Layer 4 (byte-identity vs the real 6261-line origin/main blob) cannot pass for any synthetic fixture; this fixture targets Layer 1-3 logic only.",
+  "generator": "service/tests/fixtures/generate_fixtures.py",
+  "notes": "Negative fixture — proves presence assertions bite."
+}
