@@ -3192,8 +3192,24 @@ def proforma_to_invoice_preview(
                 "readiness_intent": "convert",
             })
 
+    from ..services import proforma_to_invoice as p2i_module
     try:
         plan_data = _build_conversion_plan(pid, operator="")
+    except p2i_module.ZeroBillableInvoice as exc:
+        # #532: preview surfaces the same zero-billable block as execute, so
+        # the operator sees the blocker before clicking Convert.
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "wfirma_proforma_id": pid,
+            "blocking_reasons": [str(exc)],
+            "repair_action":    (
+                "Price the proforma lines from the sales packing list "
+                "(import-sales-prices) before converting to an invoice."
+            ),
+        })
     except Exception as exc:
         return JSONResponse({
             "ok":               False,
@@ -3223,6 +3239,12 @@ def proforma_to_invoice_preview(
             "ship_to_preserved_from_proforma": bool(plan.contractor_receiver_id),
             "series_id":                plan.series_id,
             "line_count":               len(plan.contents),
+            # #532 disclosure: lines dropped from the invoice because they were
+            # priced at zero (packing_promote / non-revenue). A non-empty list
+            # means the invoice intentionally shrank vs the proforma — never a
+            # silent omission.
+            "excluded_line_count":      len(plan.excluded_lines),
+            "excluded_line_names":      [l.name for l in plan.excluded_lines],
             "expected_total":           str(plan.expected_total),
             "back_reference":           plan.description,
             "final_date":               plan.date,
@@ -3408,6 +3430,21 @@ def proforma_to_invoice(
             invoice_date         = _warsaw_today(),
             operator_description = (body.operator_description or "").strip(),
         )
+    except p2i.ZeroBillableInvoice as exc:
+        # #532: every line priced at zero (packing_promote / non-revenue).
+        # Block the invoice — never POST a zero-value document to wFirma.
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "wfirma_proforma_id": pid,
+            "blocking_reasons": [str(exc)],
+            "repair_action":    (
+                "Price the proforma lines from the sales packing list "
+                "(import-sales-prices) before converting to an invoice."
+            ),
+        })
     except Exception as exc:
         return JSONResponse({
             "ok":               False,
@@ -3763,6 +3800,10 @@ def proforma_to_invoice(
         "currency":                 plan.currency,
         "expected_total":           str(plan.expected_total),
         "contractor_receiver_id":   plan.contractor_receiver_id or "",
+        # #532 disclosure: zero-price (packing_promote / non-revenue) lines that
+        # were excluded from this invoice. Empty in the normal case.
+        "excluded_line_count":      len(plan.excluded_lines),
+        "excluded_line_names":      [l.name for l in plan.excluded_lines],
         "operator":                 operator,
     })
 

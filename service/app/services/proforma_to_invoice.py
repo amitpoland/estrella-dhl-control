@@ -50,7 +50,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import List, Optional, Tuple
 
 
@@ -113,6 +113,12 @@ class FinalInvoicePlan:
     source_proforma_id:      str
     source_proforma_number:  str
     expected_total:          Decimal
+    # #532 zero-price invoice protection: lines dropped from `contents` because
+    # they were not billable (price <= 0). Surfaced for operator disclosure and
+    # audit so an invoice that silently shrank can never look like a clean copy.
+    # Defaulted so existing FinalInvoicePlan(**snap-style) construction sites and
+    # the all-priced test snapshots remain valid without change.
+    excluded_lines:          List[LineItem] = field(default_factory=list)
 
 
 class ProformaParseError(ValueError):
@@ -121,6 +127,22 @@ class ProformaParseError(ValueError):
 
 class NotAProforma(ValueError):
     """Raised when the input <invoice> element is not <type>proforma</type>."""
+
+
+class ZeroBillableInvoice(ValueError):
+    """Raised when a proforma → invoice projection contains zero billable lines.
+
+    #532 (Campaign 04 PR2): a billable line is one with a strictly positive
+    price. Lines priced at 0 (which, by construction at
+    ``routes_packing.py`` line 2327, are exactly the ``packing_promote``
+    cost-less promotions — ``price_source = "packing_xlsx_value" if unit_price
+    > 0 else "packing_promote"``) carry no revenue and must not reach
+    ``invoices/add``. If EVERY line is non-billable, there is no invoice to
+    issue — we block rather than emit a zero-value document. The draft-level
+    #529 gate already rejects zero-price lines at approve/post; this is the
+    convert-boundary defense-in-depth for a wFirma proforma that drifted to a
+    zero line after approval.
+    """
 
 
 # ── XML parsing ──────────────────────────────────────────────────────────────
@@ -263,6 +285,51 @@ def parse_proforma_xml(invoice_xml: str) -> ProformaSnapshot:
     )
 
 
+# ── #532 billable-line partition ─────────────────────────────────────────────
+
+def _line_price_value(line: LineItem) -> Decimal:
+    """Parse a LineItem.price into a Decimal. Never raises.
+
+    An unparseable / blank price is treated as 0 (non-billable) rather than
+    propagating an error — the safe direction is to EXCLUDE a line we cannot
+    confirm carries revenue, not to let it through. The #529 draft gate is the
+    place that surfaces malformed prices to the operator; here we only decide
+    billability defensively.
+    """
+    try:
+        return Decimal((line.price or "").strip() or "0")
+    except (InvalidOperation, ValueError, ArithmeticError):
+        return Decimal("0")
+
+
+def is_billable_line(line: LineItem) -> bool:
+    """A line is billable iff its price is strictly positive.
+
+    Zero-price lines are, by construction (``routes_packing.py`` line 2327),
+    exactly the ``packing_promote`` cost-less promotions — so excluding
+    ``price <= 0`` is the faithful invoice-boundary proxy for #532 rules A
+    (exclude ``price_source == "packing_promote"``) and B (exclude
+    ``unit_price <= 0``). ``price_source`` does not survive the wFirma proforma
+    XML round-trip (``LineItem`` carries only ``price``), so price IS the
+    authority at this boundary.
+    """
+    return _line_price_value(line) > 0
+
+
+def partition_billable(
+    contents: List[LineItem],
+) -> Tuple[List[LineItem], List[LineItem]]:
+    """Split lines into (billable, excluded), preserving original order.
+
+    Pure, order-preserving, no mutation of inputs.
+    """
+    billable: List[LineItem] = []
+    excluded: List[LineItem] = []
+    for line in contents:
+        (billable if is_billable_line(line) else excluded).append(line)
+    return billable, excluded
+
+
 # ── Plan builder ──────────────────────────────────────────────────────────────
 
 BACK_REFERENCE_TEMPLATE = "Final invoice issued based on proforma {pnum} (id={pid})."
@@ -295,6 +362,22 @@ def build_final_invoice_plan(
     # ADR-027 D6 step 3: empty final_series_id is valid — <series> will be
     # omitted and wFirma will use its own contractor default.  Do NOT raise.
 
+    # #532: exclude non-billable (price <= 0) lines before projecting. By
+    # construction (routes_packing.py:2327) these are exactly the
+    # packing_promote cost-less promotions, so this single price-based filter
+    # satisfies both rule A (exclude packing_promote) and rule B (exclude
+    # unit_price <= 0). If NOTHING remains billable, there is no invoice to
+    # issue — block instead of emitting a zero-value document (rule C).
+    billable, excluded = partition_billable(snap.contents)
+    if not billable:
+        raise ZeroBillableInvoice(
+            f"proforma {snap.proforma_number} (id={snap.proforma_id}) has no "
+            f"billable lines: all {len(snap.contents)} line(s) are priced at "
+            f"zero (packing_promote / non-revenue). Refusing to generate a "
+            f"zero-value invoice. Price the lines from the sales packing list "
+            f"before converting."
+        )
+
     issue_date = invoice_date or date.today()
 
     back_ref = BACK_REFERENCE_TEMPLATE.format(
@@ -320,10 +403,11 @@ def build_final_invoice_plan(
         company_account_id      = snap.company_account_id,
         translation_language_id = snap.translation_language_id,
         contractor_receiver_id  = snap.contractor_receiver_id,
-        contents                = list(snap.contents),
+        contents                = billable,
         source_proforma_id      = snap.proforma_id,
         source_proforma_number  = snap.proforma_number,
         expected_total          = snap.total,
+        excluded_lines          = excluded,
     )
 
 
@@ -443,10 +527,13 @@ __all__ = [
     "FinalInvoicePlan",
     "ProformaParseError",
     "NotAProforma",
+    "ZeroBillableInvoice",
     "BACK_REFERENCE_TEMPLATE",
     "parse_proforma_xml",
     "build_final_invoice_plan",
     "build_final_invoice_xml",
+    "is_billable_line",
+    "partition_billable",
     "lines_match",
     "build_pz_request_from_proforma_snapshot",
 ]
