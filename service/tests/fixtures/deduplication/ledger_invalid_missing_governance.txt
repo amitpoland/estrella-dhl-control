@@ -1,0 +1,44 @@
+# PROJECT_STATE.md
+
+Source of truth for the current project execution state. (SYNTHETIC FIXTURE — not the real ledger.)
+
+---
+
+# FACTS
+
+## PR #582 — Debug-health endpoint 500s hotfix (2026-06-13, MERGED)
+- Newest curated FACTS entry; stabilization-safe, no authority reset.
+
+## PR #568 merge+deploy gate COMPLETE — merge pending operator (2026-06-12 PM)
+- GATE record governance item (#568).
+
+## PR #563 — non-ASCII X-API-Key auth hotfix (2026-06-12, MERGED + DEPLOYED)
+- Auth hardening entry (#563).
+
+## CN↔HSN mixed-metal false-block — root cause + fix + live unblock (2026-06-11)
+- Customs hierarchy entry (CN).
+
+## HSN hierarchy policy note (2026-06-10)
+- HSN entry — older than CN.
+
+## PR #570 verified read-only (2026-06-09 PM) — merge-gate evidence
+- Root-cause governance item (#570).
+- **Issue #571 filed (GATE 4 ISSUE)**: retroactive gate disposition pending.
+
+# DECISIONS
+
+## D1 Frozen valuation math (2026-06-01)
+- PZ engine valuation is frozen; do not change.
+
+# ASSUMPTIONS
+
+## A1 wFirma credentials present in production env (2026-06-01)
+- Assumed available unless a 401/500 says otherwise.
+
+# OPEN QUESTIONS
+
+## OQ: Platform-remediation backlog GATE 4 dispositions pending operator approval (2026-06-12)
+- Platform-remediation governance OQ.
+
+## OQ-NEW-19: B3 reservations write-path gate (2026-06-13)
+- Open question OQ-NEW-19 body.

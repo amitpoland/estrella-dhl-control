@@ -1,0 +1,13 @@
+# FACTS
+
+## PR #582 — Debug-health endpoint 500s hotfix (2026-06-13, MERGED)
+- Newest curated FACTS entry; stabilization-safe, no authority reset.
+
+## PR #568 merge+deploy gate COMPLETE — merge pending operator (2026-06-12 PM)
+- GATE record governance item (#568).
+
+## CN↔HSN mixed-metal false-block — root cause + fix + live unblock (2026-06-11)
+- Customs hierarchy entry (CN).
+
+## HSN hierarchy policy note (2026-06-10)
+- HSN entry — older than CN.
