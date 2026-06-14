@@ -5029,6 +5029,40 @@ def _preflight_approve(db_path, draft_id: int):
             f"Import sales prices first. First affected: {first_five}"
         )
 
+    # #529 — margin-mask guard. A priced line that still carries a cost-basis
+    # price_source means the cost figure was never replaced with the sales
+    # figure (import-sales-prices was not run, or ran before this stamp landed).
+    # Invoicing at the cost price masks Estrella's margin. Only the two cost
+    # labels are rejected; sales_packing_list, bulk_recovery, and manual sales
+    # lines are accepted. The frozen valuation math is untouched — this asserts
+    # provenance, it does not compute or alter any financial value.
+    _COST_BASIS_LABELS = {"packing_xlsx_value", "packing_promote"}
+
+    def _is_priced(ln) -> bool:
+        # Defensive coercion: a malformed/non-numeric unit_price must not raise
+        # (would 500 the readiness gate). Treat unparseable as "not priced" so
+        # the zero_price guard above owns that case, mirroring its `or 0` safety.
+        try:
+            return float(ln.get("unit_price") or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    stale_cost = [
+        ln.get("product_code", f"line_{i}")
+        for i, ln in enumerate(lines)
+        if _is_priced(ln)
+        and (ln.get("price_source") or "") in _COST_BASIS_LABELS
+    ]
+    if stale_cost:
+        first_five = stale_cost[:5]
+        return (
+            f"Approval blocked: {len(stale_cost)} priced line(s) still carry a "
+            f"cost-basis price_source (packing_xlsx_value/packing_promote) — the "
+            f"sales margin would be masked at invoice. Re-import sales prices so "
+            f"every priced line is labelled sales_packing_list. "
+            f"First affected: {first_five}"
+        )
+
     authority = draft.sales_price_authority_total_eur
     if authority is not None:
         line_total = sum(
@@ -5562,6 +5596,12 @@ def import_draft_sales_prices(
         ln["currency"]     = "EUR"
         ln["name_pl"]      = row.desc_pl
         ln["remarks"]      = row.desc_en
+        # #529 — stamp sales-price provenance. Before this, a line repriced from
+        # the sales packing list still carried its cost-basis price_source
+        # (packing_xlsx_value / packing_promote) from routes_packing.py:2327,
+        # which masks the sales margin at invoice. The sales packing list is the
+        # authority for the sales price, so label it as such.
+        ln["price_source"] = "sales_packing_list"
         matched += 1
 
     authority_total = float(grand_total) if grand_total is not None else sum(
