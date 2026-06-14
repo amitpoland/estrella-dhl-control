@@ -107,10 +107,56 @@ def create_shipment(
     _auth: None = Depends(require_api_key),
     coordinator: CarrierCoordinator = Depends(_get_coordinator),
 ) -> JSONResponse:
+    from ..core.config import settings
+
+    # Resolve recipient address via Customer Master authority (Condition 2: feature flag)
+    if settings.awb_address_authority_enabled:
+        try:
+            from ..services.awb_address_authority import (
+                derive_awb_address_authority_with_fallback,
+                CustomerNotFoundError,
+                AddressMissingError
+            )
+
+            # Use authority derivation with graceful degradation (Condition 3)
+            recipient_address = derive_awb_address_authority_with_fallback(
+                batch_id,
+                settings.storage_root,
+                raw_fallback=body.recipient_address
+            )
+
+            # Remove 'source' metadata before passing to carrier API
+            carrier_address = {k: v for k, v in recipient_address.items() if k != 'source'}
+
+            # Log address source for audit trail
+            import logging
+            source = recipient_address.get('source', 'unknown')
+            logging.info(f"AWB {batch_id}: address authority source={source}")
+
+        except CustomerNotFoundError as exc:
+            # Condition 5: sanitized 422 error response
+            raise HTTPException(status_code=422, detail={
+                "error": "Customer resolution failed",
+                "code": "CUSTOMER_NOT_FOUND",
+                "batch_id": batch_id,
+                "guidance": "Please ensure the batch has valid customer data in Customer Master or use historical batch override for batches older than 90 days"
+            })
+        except AddressMissingError as exc:
+            # Condition 5: sanitized 422 error response
+            raise HTTPException(status_code=422, detail={
+                "error": "Address validation failed",
+                "code": "ADDRESS_INCOMPLETE",
+                "batch_id": batch_id,
+                "guidance": "Please complete the customer address in Customer Master (ship-to or bill-to fields required: name, street, city, country)"
+            })
+    else:
+        # Flag OFF = today's behavior unchanged (Condition 2)
+        carrier_address = body.recipient_address
+
     request = ShipmentRequest(
         batch_id=batch_id,
         shipper_account=body.shipper_account,
-        recipient_address=body.recipient_address,
+        recipient_address=carrier_address,
         declared_value=body.declared_value,
         currency=body.currency,
         weight_kg=body.weight_kg,

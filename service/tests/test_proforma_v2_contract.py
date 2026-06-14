@@ -362,10 +362,100 @@ class TestPatchDraft:
 class TestApproveDraft:
 
     def test_approve_transitions_state(self, client, db_path, tmp_path):
+        """Approve succeeds only on a readiness-clean draft.
+
+        Updated for the single-readiness-authority gate (split-authority
+        fix): approve now consults _derive_draft_readiness, so this fixture
+        must seed the full context the gate checks — sales rows for the
+        client, a matched wfirma customer, a matched wfirma product, and
+        name_pl on every line (auto_create_draft_from_sales_packing drops
+        name_pl, so it is injected via editable_lines_json directly).
+        """
+        import json as _json
+        import sqlite3 as _sqlite3
+        import uuid as _uuid
+        from app.services import document_db as ddb
+        from app.services import inventory_state_engine as ise
+        from app.services import packing_db as pdb
+        from app.services import wfirma_db as wfdb
+
         with patch.object(settings, "storage_root", tmp_path):
             draft = _seed_draft(db_path, batch="V2C5")
+
+            # Purchase packing line so design D001 maps to a product_code
+            # (the readiness gate's design→product bridge).
+            packing_row = {
+                "batch_id":              "V2C5",
+                "invoice_no":            "INV/TEST",
+                "invoice_line_position": 1,
+                "product_code":          "EJL/TEST/01",
+                "design_no":             "D001",
+                "bag_id": "", "tray_id": "", "item_type": "RNG",
+                "uom": "PCS", "quantity": 2.0, "gross_weight": 0.0,
+                "net_weight": 0.0, "metal": "", "karat": "",
+                "stone_type": "", "remarks": "",
+                "extracted_confidence": 1.0,
+                "requires_manual_review": False, "pack_sr": 1.0,
+                "unit_price": 50.0, "total_value": 100.0,
+            }
+            pdb.upsert_packing_lines([packing_row])
+
+            # Stock readiness: walk the piece through the engine's legal
+            # path so its scan_code lands in WAREHOUSE_STOCK.
+            scan = pdb._compute_scan_code(packing_row)
+            for to_state in (ise.PURCHASE_TRANSIT, ise.WAREHOUSE_STOCK):
+                ise.transition(
+                    scan_code=scan, to_state=to_state,
+                    product_code="EJL/TEST/01", design_no="D001",
+                    batch_id="V2C5", operator="contract-test",
+                )
+
+            # Sales rows for client ACME (sales-packing authority).
+            sd = ddb.store_sales_document(
+                batch_id="V2C5",
+                document_id=str(_uuid.uuid4()),
+                data={"client_name": "ACME", "client_ref": "REF-V2C5",
+                      "sales_doc_no": "SO-V2C5"},
+            )
+            ddb.store_sales_packing_lines(sd, "V2C5", [{
+                "client_name":  "ACME",
+                "client_ref":   "REF-V2C5",
+                "product_code": "EJL/TEST/01",
+                "design_no":    "D001",
+                "bag_id": "", "quantity": 2.0, "remarks": "",
+                "unit_price": 50.0, "total_value": 100.0,
+                "currency": "EUR", "price_source": "packing_list",
+            }])
+
+            # wFirma customer + product mappings.
+            wfdb.upsert_customer(
+                client_name="ACME", wfirma_customer_id="7",
+                country="BG", vat_id="", match_status="matched",
+            )
+            wfdb.upsert_product(
+                product_code="EJL/TEST/01",
+                wfirma_product_id="99", sync_status="matched",
+            )
+
+            # auto_create drops name_pl — inject it into the stored lines.
+            with _sqlite3.connect(str(db_path)) as conn:
+                raw = conn.execute(
+                    "SELECT editable_lines_json FROM proforma_drafts WHERE id=?",
+                    (draft.id,),
+                ).fetchone()[0]
+                lines = _json.loads(raw or "[]")
+                for ln in lines:
+                    ln["name_pl"] = "Test Product PL"
+                conn.execute(
+                    "UPDATE proforma_drafts SET editable_lines_json=? WHERE id=?",
+                    (_json.dumps(lines), draft.id),
+                )
+                conn.commit()
+
+        # Re-read for the post-update optimistic-lock timestamp.
+        fresh = pildb.get_draft_by_id(db_path, draft.id)
         body = {
-            "expected_updated_at": draft.updated_at,
+            "expected_updated_at": fresh.updated_at,
             "confirm_token":       "YES_APPROVE_LOCAL_PROFORMA_DRAFT",
         }
         r = client.post(f"/api/v1/proforma/draft/{draft.id}/approve",

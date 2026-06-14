@@ -21,6 +21,12 @@ from ..core.logging import get_logger
 from ..core.security import require_api_key, require_api_key_privileged
 from ..services import cliq_service
 from ..services.batch_manager import manager as batch_manager
+# storage_health is a stdlib-only utility with no path back to this module, so
+# eager module-level import is safe and avoids a lazy-first-import race: FastAPI
+# runs the sync storage/* endpoints in a threadpool, and a lazy import here meant
+# two concurrent first-touches saw the half-initialised module in sys.modules and
+# raised "partially initialized module ... (circular import)". (BUG 2)
+from ..utils.storage_health import scan_locks, storage_health_snapshot
 
 router = APIRouter(prefix="/api/v1/debug", tags=["debug"])
 _auth  = Depends(require_api_key)
@@ -95,7 +101,7 @@ async def debug_pending() -> Dict[str, Any]:
 @router.get("/health-full", dependencies=[_auth])
 async def health_full() -> Dict[str, Any]:
     """
-    Guardian Agent snapshot — all 12 diagnostic dimensions in one call.
+    Guardian Agent snapshot — all 13 diagnostic dimensions in one call.
 
     Steps:
       1  fastapi_running        → /api/v1/health responds
@@ -110,6 +116,7 @@ async def health_full() -> Dict[str, Any]:
      10  pz_posting             → last post_to_channel result
      11  output_files           → outputs/ directory exists, recent batches listed
      12  audit_reports          → Arial Unicode font available for Polish glyphs
+     13  backup_freshness       → newest backup manifest age (ok < 26h)
     """
     from .routes_bot import LAST_BOT_EVENTS, LAST_PZ_POSTS, LAST_ERRORS, LAST_STAGE_EVENTS
 
@@ -349,6 +356,55 @@ async def health_full() -> Dict[str, Any]:
         )
         overall_ok = False
 
+    # ── Step 13: Backup freshness ─────────────────────────────────────────────
+    # NB: do NOT re-import `settings` here. A local `from ..core.config import
+    # settings` would make `settings` a function-local for the whole body and
+    # raise UnboundLocalError at Step 2 (line ~140), which references the
+    # module-level `settings` before this point. (BUG 1)
+    try:
+        backup_root = Path(settings.backup_root)
+
+        if not backup_root.exists():
+            results["13_backup_freshness"] = _warn("Backup root directory does not exist")
+        else:
+            # Find newest manifest
+            newest_manifest = None
+            newest_time = None
+
+            for item in backup_root.iterdir():
+                if item.is_dir():
+                    manifest_path = item / "manifest.json"
+                    if manifest_path.exists():
+                        try:
+                            import json
+                            with open(manifest_path, 'r', encoding='utf-8') as f:
+                                manifest = json.load(f)
+
+                            finished_at = manifest.get("finished_at")
+                            if finished_at:
+                                from datetime import datetime
+                                manifest_time = datetime.fromisoformat(finished_at.replace('Z', '+00:00'))
+                                if newest_time is None or manifest_time > newest_time:
+                                    newest_time = manifest_time
+                                    newest_manifest = manifest
+                        except Exception:
+                            continue
+
+            if newest_manifest is None:
+                results["13_backup_freshness"] = _fail("No valid backup manifests found")
+                overall_ok = False
+            else:
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc)
+                age_hours = (now - newest_time).total_seconds() / 3600
+
+                if age_hours < 26:
+                    results["13_backup_freshness"] = _ok(f"Latest backup: {age_hours:.1f}h ago")
+                else:
+                    results["13_backup_freshness"] = _warn(f"Latest backup is {age_hours:.1f}h old")
+    except Exception as e:
+        results["13_backup_freshness"] = {"status": "unknown", "detail": f"Check failed: {e}"}
+
     # ── Summary ───────────────────────────────────────────────────────────────
     fail_count = sum(1 for v in results.values() if isinstance(v, dict) and v.get("status") == "fail")
     warn_count = sum(1 for v in results.values() if isinstance(v, dict) and v.get("status") == "warn")
@@ -410,7 +466,6 @@ def storage_health() -> Dict[str, Any]:
 
     This endpoint is read-only and makes no writes.
     """
-    from ..utils.storage_health import storage_health_snapshot
     return storage_health_snapshot(settings.storage_root)
 
 
@@ -427,7 +482,6 @@ def storage_locks() -> Dict[str, Any]:
     OTHER OS processes (e.g. a crashed uvicorn worker). Threads in the same
     process always appear releasable.
     """
-    from ..utils.storage_health import scan_locks
     outputs_dir = settings.storage_root / "outputs"
     return scan_locks(outputs_dir)
 

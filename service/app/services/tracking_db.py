@@ -1,7 +1,7 @@
 """
 tracking_db.py — SQLite store for shipment tracking events.
 
-One row per event. Dedup key: (batch_id, awb, stage, event_time, source_ref, email_message_id).
+One row per event. Dedup key: (batch_id, awb, stage, event_time, source_ref, email_message_id, direction).
 Thread-safe: connection per call, WAL mode, threading.Lock.
 """
 from __future__ import annotations
@@ -65,6 +65,7 @@ def init_tracking_db(db_path: Path) -> None:
         _add_column_if_missing(con, "shipment_tracking_events", "normalized_stage", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(con, "shipment_tracking_events", "confidence", "REAL NOT NULL DEFAULT 0.0")
         _add_column_if_missing(con, "shipment_tracking_events", "requires_manual_review", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(con, "shipment_tracking_events", "direction", "TEXT NOT NULL DEFAULT 'inbound'")
 
 
 def _add_column_if_missing(con: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -103,6 +104,7 @@ def record_event(
     normalized_stage: str = "",
     confidence: float = 0.0,
     requires_manual_review: bool = False,
+    direction: str = "inbound",
 ) -> bool:
     """Insert event; skip silently if dedup key already exists. Returns True if inserted."""
     if _db_path is None:
@@ -115,12 +117,17 @@ def record_event(
                 """
                 SELECT id FROM shipment_tracking_events
                 WHERE batch_id=? AND awb=? AND stage=? AND event_time=?
-                  AND source_ref=? AND email_message_id=?
+                  AND source_ref=? AND email_message_id=? AND direction=?
                 LIMIT 1
                 """,
-                (batch_id, awb, stage, event_time, source_ref, email_message_id),
+                (batch_id, awb, stage, event_time, source_ref, email_message_id, direction),
             ).fetchone()
             if existing:
+                # Log the dedup skip (verdict condition 1)
+                import logging
+                logging.getLogger(__name__).info(
+                    f"Skipped duplicate tracking event: batch_id={batch_id}, stage={stage}, direction={direction}"
+                )
                 return False
             con.execute(
                 """
@@ -128,14 +135,14 @@ def record_event(
                     (id, batch_id, awb, carrier, stage, status, event_time, captured_at,
                      source, source_ref, email_message_id, raw_subject, raw_sender,
                      location, description, normalized_stage, confidence,
-                     requires_manual_review, created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     requires_manual_review, created_at, direction)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     event_id, batch_id, awb, carrier, stage, status, event_time, now,
                     source, source_ref, email_message_id, raw_subject, raw_sender,
                     location, description, normalized_stage, confidence,
-                    1 if requires_manual_review else 0, now,
+                    1 if requires_manual_review else 0, now, direction,
                 ),
             )
     return True
@@ -162,6 +169,7 @@ def record_events_batch(events: List[Dict[str, Any]]) -> int:
             normalized_stage=ev.get("normalized_stage", ""),
             confidence=ev.get("confidence", 0.0),
             requires_manual_review=bool(ev.get("requires_manual_review", False)),
+            direction=ev.get("direction", "inbound"),
         )
         if ok:
             inserted += 1
@@ -170,45 +178,76 @@ def record_events_batch(events: List[Dict[str, Any]]) -> int:
 
 # ── Read ───────────────────────────────────────────────────────────────────────
 
-def get_events_for_batch(batch_id: str) -> List[Dict[str, Any]]:
+def get_events_for_batch(batch_id: str, direction: Optional[str] = None) -> List[Dict[str, Any]]:
     if _db_path is None:
         return []
     with _connect() as con:
-        rows = con.execute(
-            "SELECT * FROM shipment_tracking_events WHERE batch_id=? ORDER BY event_time ASC",
-            (batch_id,),
-        ).fetchall()
+        if direction is None:
+            # None = all rows (today's behavior)
+            rows = con.execute(
+                "SELECT * FROM shipment_tracking_events WHERE batch_id=? ORDER BY event_time ASC",
+                (batch_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM shipment_tracking_events WHERE batch_id=? AND direction=? ORDER BY event_time ASC",
+                (batch_id, direction),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_events_for_awb(awb: str) -> List[Dict[str, Any]]:
+def get_events_for_awb(awb: str, direction: Optional[str] = None) -> List[Dict[str, Any]]:
     if _db_path is None:
         return []
     with _connect() as con:
-        rows = con.execute(
-            "SELECT * FROM shipment_tracking_events WHERE awb=? ORDER BY event_time ASC",
-            (awb,),
-        ).fetchall()
+        if direction is None:
+            rows = con.execute(
+                "SELECT * FROM shipment_tracking_events WHERE awb=? ORDER BY event_time ASC",
+                (awb,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM shipment_tracking_events WHERE awb=? AND direction=? ORDER BY event_time ASC",
+                (awb, direction),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_all_events(limit: int = 5000, offset: int = 0) -> List[Dict[str, Any]]:
+def get_all_events(limit: int = 5000, offset: int = 0, direction: Optional[str] = None) -> List[Dict[str, Any]]:
     if _db_path is None:
         return []
     with _connect() as con:
-        rows = con.execute(
-            "SELECT * FROM shipment_tracking_events ORDER BY event_time DESC LIMIT ? OFFSET ?",
-            (limit, offset),
-        ).fetchall()
+        if direction is None:
+            rows = con.execute(
+                "SELECT * FROM shipment_tracking_events ORDER BY event_time DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM shipment_tracking_events WHERE direction=? ORDER BY event_time DESC LIMIT ? OFFSET ?",
+                (direction, limit, offset),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_latest_stage_for_batch(batch_id: str) -> Optional[str]:
+def get_latest_stage_for_batch(batch_id: str, direction: Optional[str] = None) -> Optional[str]:
+    """
+    Get latest stage for batch_id.
+
+    Warning: customs-stage consumers must pass direction='inbound' to avoid contamination
+    from outbound events when the outbound_tracking_registration_enabled flag is active.
+    """
     if _db_path is None:
         return None
     with _connect() as con:
-        row = con.execute(
-            "SELECT stage FROM shipment_tracking_events WHERE batch_id=? ORDER BY event_time DESC LIMIT 1",
-            (batch_id,),
-        ).fetchone()
+        if direction is None:
+            row = con.execute(
+                "SELECT stage FROM shipment_tracking_events WHERE batch_id=? ORDER BY event_time DESC LIMIT 1",
+                (batch_id,),
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT stage FROM shipment_tracking_events WHERE batch_id=? AND direction=? ORDER BY event_time DESC LIMIT 1",
+                (batch_id, direction),
+            ).fetchone()
     return row["stage"] if row else None

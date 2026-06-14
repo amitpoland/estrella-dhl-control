@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 
 from ..core.config import settings
 from ..core.logging import get_logger
+from . import name_normalization
 from .customer_master_db import list_customers, init_db as cm_init
 from .master_data_db import list_designs, list_product_local, init_db as md_init
 from .suppliers_db import list_suppliers, init_db as supp_init
@@ -133,16 +134,7 @@ class MasterDataIntelligenceReport:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _norm(s: Optional[str]) -> str:
-    """Normalize string for dedup: lowercase, NFD, strip legal suffixes."""
-    if not s:
-        return ""
-    t = unicodedata.normalize("NFD", s.lower().strip())
-    # strip common legal entity suffixes for name-based dedup
-    for suffix in (" sp z o.o.", " sp. z o.o.", " s.a.", " gmbh", " ltd", " llp",
-                   " b.v.", " s.r.o.", " s.r.l.", " inc.", " inc", " corp."):
-        if t.endswith(suffix):
-            t = t[: -len(suffix)].strip()
-    return re.sub(r"\s+", " ", t)
+    return name_normalization.master_data_norm(s)
 
 
 def _pct(n: int, total: int) -> float:
@@ -1237,7 +1229,7 @@ def _score_graph(
             tcon.execute("PRAGMA query_only = ON")
             tracked_batches = set()
             t_rows = tcon.execute(
-                "SELECT DISTINCT batch_id FROM shipment_tracking_events WHERE batch_id != ''"
+                "SELECT DISTINCT batch_id FROM shipment_tracking_events WHERE batch_id != '' AND direction='inbound'"
             ).fetchall()
             tcon.close()
             tracked_batches = {r["batch_id"] for r in t_rows}

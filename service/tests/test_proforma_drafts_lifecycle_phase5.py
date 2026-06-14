@@ -68,10 +68,31 @@ def _seed_approved(db: Path, *, currency="EUR"):
 def _stub_route_lookups(monkeypatch, *, missing_product=None,
                         missing_customer=False, ambiguous=False):
     """Patch the master-data lookups the route makes inside
-    _build_proforma_request_from_draft so tests don't hit live DBs."""
+    _build_proforma_request_from_draft so tests don't hit live DBs.
+
+    Also stubs the single-readiness-authority gate (split-authority fix):
+    these tests pin POST lifecycle mechanics (locks, orphan recovery,
+    duplicate guard, wFirma error handling), not readiness derivation —
+    that has dedicated no-stub coverage in
+    test_proforma_readiness_single_authority.py. The stub mirrors the
+    real _derive_draft_readiness return shape exactly (Lesson A)."""
     from app.api import routes_proforma as rp
 
-    def _fake_resolve(name: str):
+    def _stub_readiness(draft, *, intent):
+        return {
+            "ready":             True,
+            "intent":            intent,
+            "draft_id":          int(draft.id),
+            "draft_status":      draft.status,
+            "blockers":          [],
+            "blocking_reasons":  [],
+            "warnings":          [],
+            "ambiguous_designs": {},
+            "resolved_designs":  {},
+        }
+    monkeypatch.setattr(rp, "_derive_draft_readiness", _stub_readiness)
+
+    def _fake_resolve(name: str, batch_id=None):
         if ambiguous:
             return {"ambiguous": True, "candidates": ["A", "B"],
                     "customer": None, "wfirma_customer_id": "",
@@ -510,9 +531,12 @@ def test_endpoint_blocked_missing_customer_mapping(client, tmp_path, monkeypatch
 def test_endpoint_blocked_receiver_preflight_fails(client, tmp_path, monkeypatch):
     db = tmp_path / "proforma_links.db"
     d = _seed_approved(db)
-    # Override the customer to use separate_contractor with a receiver
+    # Base stubs (incl. readiness gate — this test pins receiver-preflight
+    # mechanics, not readiness derivation), then override the customer to
+    # use separate_contractor with a receiver.
+    _stub_route_lookups(monkeypatch)
     from app.api import routes_proforma as rp
-    def _fake_resolve(name: str):
+    def _fake_resolve(name: str, batch_id=None):
         return {
             "ambiguous": False, "candidates": [],
             "customer": {

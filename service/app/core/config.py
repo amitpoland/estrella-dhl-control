@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     # ── Storage ───────────────────────────────────────────────────────────────
     storage_root: Path = Path(__file__).parent.parent / "storage"
+    backup_root: str = "C:\\PZ-backups"
     output_retention_days: int = 30
     max_upload_bytes: int = 20 * 1024 * 1024    # 20 MB per file
 
@@ -310,6 +311,11 @@ class Settings(BaseSettings):
     # emails (inner guard in _process_dhl_followup / dhl_followup_guard.py).
     dhl_followup_enabled: bool = Field(default=False)
 
+    # DHL follow-up authority projection — advisory 4-state follow-up authority.
+    # Default False. Set DHL_FOLLOWUP_AUTHORITY_ADVISORY=true to enable
+    # additive authority keys in projector output (flag-gated, zero impact when OFF).
+    dhl_followup_authority_advisory: bool = Field(default=False)
+
     # ── Carrier subsystem (DHL Express outbound shipping) ────────────────────
     # Status gate — controls carrier API adapter selection.
     # "pending" (default): all carrier routes return 503; no API calls possible.
@@ -335,6 +341,17 @@ class Settings(BaseSettings):
 
     # Carrier file storage root. None = defaults to storage_root / "carrier" at runtime.
     carrier_storage_root: Optional[Path] = Field(default=None)
+
+    # Outbound tracking registration — records outbound shipment events to tracking_db
+    outbound_tracking_registration_enabled: bool = Field(default=False)
+
+    # AWB address authority repair (Campaign 02.5) — gate the Customer Master authority
+    # derivation behind this flag. Default False = raw recipient_address behavior unchanged.
+    awb_address_authority_enabled: bool = Field(default=False)
+
+    # Authority drift detection (Campaign 02.5 Phase 4) — enable runtime authority module monitoring
+    # Default False = no startup manifest write, endpoint returns 503. True = active monitoring.
+    authority_drift_detection: bool = Field(default=False)
 
     # ── Cliq bot batch collection ─────────────────────────────────────────────
     # Expire an incomplete (missing files) session after N minutes of inactivity

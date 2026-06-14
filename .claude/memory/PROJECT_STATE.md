@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-12 (PR #568 gated READY-TO-DEPLOY, merge pending operator, production ff1f4b5); sequencing decision 568→570→recovery→close recorded; #570 deploy gate pending.
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-13 (PR #573 merged as 62810c2, combined 3-PR deploy to C:\PZ verified on disk, production browser verification of Drafts #32/#33 PASSED — both blocked with named repair actions; OQ-NEW-16/17 resolved).
 
-**Last-run-at:** 2026-06-10 (PR #548 merged as 74bee9d — proforma PR B customer address/service charges authority; production deployed; 7-agent gate passed; GATE 6 verified). Origin/main HEAD: **74bee9d** (feat(proforma): PR B — Customer/service authority (#548)). GATE 2: **3/3 open PRs** (#551, #522, #498 — PR #548 merged, #549 closed redundant, PR #551 opened). TEST BASELINE: 160/160 PZ regression + 412/412 carrier suite. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
+**Last-run-at:** 2026-06-13 (proforma readiness single-authority campaign PR #573 7-agent gate completed READY-TO-DEPLOY). Origin/main HEAD: **ff1f4b5** (fix(security): non-ASCII X-API-Key returns 401 not 500 (#563)). GATE 2: **2/3 open PRs** (#522 needs-rebase/#521-overlap, #498 draft/Lesson-E) + PR #573 ready-to-merge. TEST BASELINE: 160/160 PZ regression + 412/412 carrier suite. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
 
 ---
 
@@ -54,6 +54,19 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## PR #582 — Debug-health endpoint 500s hotfix (2026-06-13, MERGED) — STABILIZATION-SAFE, NO AUTHORITY-WINDOW RESET
+
+- **Classification (operator-confirmed 2026-06-13)**: **Stabilization-safe debug-health hotfix. Does NOT reset the Campaign 02.76 authority stabilization window.** Rationale: no authority code touched, no workflow code touched, no drift code touched, backend debug endpoint only, tests match baseline. Surfaced during Campaign 02.76 Deploy #2 verification (2026-06-13) and confirmed OUTSIDE the deploy diff `65f9ea7..f36bef4`.
+- **Two pre-existing 500s on read-only debug diagnostics** (both files were byte-identical to production `C:\PZ` before the fix):
+  - **BUG 1 — `GET /api/v1/debug/health-full` → 500**: `UnboundLocalError: local variable 'settings' referenced before assignment`. `settings` is imported module-level (`routes_debug.py:19`) but a redundant function-local `from ..core.config import settings` inside `health_full()` Step 13 made `settings` a function-local for the whole body → Step 2 reference (~line 140) fired before binding. Fix: removed the shadowing local re-import.
+  - **BUG 2 — `GET /api/v1/debug/storage/health` → 500**: `partially initialized module 'app.utils.storage_health' (circular import)`. Not a static cycle — `storage_health.py` is stdlib-only, no path back to `app`. Real cause: lazy-first-import race (FastAPI runs sync `storage/*` endpoints in a threadpool; two concurrent first-touches saw the half-initialised module). Fix: hoisted the import to module level (single-threaded startup), safe because the dep is acyclic. `routes_bot` lazy import (genuinely circular) left untouched.
+- **Scope**: only `service/app/api/routes_debug.py` + new `service/tests/test_debug_health_endpoints.py`. **Zero authority-layer files** (name_normalization.py, dhl_followup_authority.py, awb_address_authority.py, tracking_db.py, authority_drift_service.py, authority_startup.py, authority_manifest_pinned.json all UNTOUCHED).
+- **Verification (backend-only, GATE 6 N/A — endpoint verification substitutes)**: TestClient `health-full` / `storage/health` / `storage/locks` all 200 (health-full + storage/health reproduced at 500 pre-fix). New regression test 5/5. Existing `test_hr5_privileged_auth` + `test_storage_health` 40 passed/1 skipped. Battery vs baseline unchanged: PZ `test_pz_*` 221 passed + 1 known fail (`test_save_json_csv_ui_round_trip`, unrelated CSV round-trip); carrier `test_carrier_*` 420 passed.
+- **GATE 2**: opened as 3rd implementation PR (with #522, #498-draft; #575 docs) — within 3-impl limit. **Deploy operator-gated** (full 7-agent `/deploy`); not deployed autonomously.
+- **Branch / merge**: `fix/debug-health-endpoints` off `main` HEAD `f36bef4`; **squash-merged to `main` via PR #582 on 2026-06-13** (operator command). **MERGED to main only — NOT deployed. Production remains `f36bef4`; operators still see the two probe 500s until a separate operator-gated `/deploy`.** Deployment of #582 is an independent operator decision (bundle into next stabilization-checkpoint deploy or hold to 2026-06-20). PR: https://github.com/amitpoland/estrella-dhl-control/pull/582.
+- **Operator-facing surface**: both endpoints are wired into the dashboard System Health panel (`dashboard.html`) + `atlas/api-status-v2.html` + `v2/api-status-page.jsx` — i.e. operator-visible, not curl-only (this is why merge was chosen).
+- **Campaign 03**: NOT started — remains BLOCKED (operator directive 2026-06-13: do not start Campaign 03).
 
 ## PR #568 merge+deploy gate COMPLETE — merge pending operator (2026-06-12 PM)
 
@@ -115,6 +128,31 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - Merge #556 to unblock GATE 2 (over #522: 43 behind; #498: draft + conflicting).
 - Merge #560 with dispositions: stale-pointer risk on PURCHASE_TRANSIT bypass accepted per operator rule 2026-06-11 ("PZ created OR DHL delivered = warehouse-eligible; physical scan-in optional audit"); lifecycle-layer fix deferred to Issue #561.
 - Operator-suspected PRs #498/#522 were NOT the cause of the wFirma symptom; root cause was a platform-wide auth compare_digest non-ASCII TypeError. Fixed via focused hotfix #563, not by merging either stale PR. #522/#498 remain independent and still require owner rebase/rework.
+## Campaign "proforma readiness single-authority" COMPLETE (2026-06-12)
+
+**Branch**: fix/proforma-readiness-single-authority (worktree C:\PZ-wt-readiness), **pushed to origin 2026-06-12**.
+**Commits**: 
+- 06f3842: single backend readiness authority `_derive_draft_readiness` consulted by approve 422 / post 400 / convert; new endpoints `GET /api/v1/proforma/draft/{id}/readiness?intent=` and `POST /draft/{id}/resolve-ambiguity`; batch-scoped `design_ambiguity_resolution` table
+- 7d7437a: 10 campaign regression tests + fixture repairs
+- 22cf401: browser-verification catch: PzApi {ok,data} envelope stored unwrapped in proforma-detail.jsx reloadReadiness → panel showed 0 blockers and buttons ungated while backend gate held; fixed + 2 source-grep pinning tests
+**Tests**: campaign suite 12 passed; adjacent suites 75 passed + 2 pre-existing storage-leak teardown errors (TestCustomerMasterEndpoints) confirmed present on main @ ff1f4b5.
+**GATE 6 browser verification**: all 10 operator steps completed on seeded fixture storage (%TEMP%\pz-readiness-storage, port 47997); production Drafts #32/#33 verification deferred to post-deploy because pz-deploy-guard blocks reading production DBs.
+**Scorecard**: .claude/memory/scorecards/2026-06-12-proforma-readiness-single-authority.md — 3 agents scored, all EXEMPLARY, no NEEDS-TUNING/UNRELIABLE verdicts (RULE 6 citation requirement).
+**Safety gates honoured verbatim**: no historical posted documents edited; no Draft #33 reset; no VAT-mode change; duplicate guard / posting lock / approval gate / WFIRMA_CREATE_PROFORMA_ALLOWED intact (retry test: 400 at flag gate before any wFirma call, no duplicate).
+
+**PR #573 opened (2026-06-13)**: https://github.com/amitpoland/estrella-dhl-control/pull/573 — branch rebased onto ecd6e85 (post #570 squash 7e4fe6c + #568 squash ecd6e85), HEAD c62e992, 4 commits (10e6763 impl, 573a398 tests, 71ea0f6 envelope unwrap, c62e992 memory).
+**7-agent pre-deploy gate completed (2026-06-13)**: DECISION GO (READY-TO-DEPLOY). Verdicts: git-diff BLOCKER (mechanical DB_SCHEMA classification, overridden), backend-impact CLEAR/LOW, persistence CLEAR/LOW (additive idempotent table, migration not required, rollback-safe), security CLEAR/LOW, QA CLEAR/LOW (PZ 221 MET, carrier 412 MET, no ERRORs), release-manager CLEAR/MEDIUM, lead-coordinator GO/MEDIUM. Gate record posted as PR comment: https://github.com/amitpoland/estrella-dhl-control/pull/573#issuecomment-4695891246.
+**Conflict resolution**: persistence-storage-reviewer (schema domain specialist) analysis + PR-body documentation satisfied the migration-plan requirement; git-diff's mechanical blocker overridden by lead coordinator with explicit reasoning.
+**deploy-lead-coordinator**: NO fabrication this run (vs 4 documented prior occurrences pr560/pr563/pr568). Orchestrator post-verified output; corrected 2 transcription degradations (top-level-only pycache purge → release-manager's recursive purge; /health → /api/v1/health).
+**Scorecard produced and verified**: `.claude/memory/scorecards/2026-06-13-pr573-merge-gate-proforma-readiness.md` (10,215 bytes; 5 EXEMPLARY, 2 ACCEPTABLE — release-manager and lead-coordinator; no NEEDS-TUNING/UNRELIABLE, so no GATE 4 disposition needed). RULE 5 self-eval fired same day → `.claude/memory/scorecards/self-eval-2026-06-13.md` (in progress at time of this update).
+**Combined deploy plan**: (3-PR backlog, production at ff1f4b5): post-merge from fresh `git worktree add C:\PZ-release origin/main`; engine-file sync pz_import_processor.py + audit_scoring.py → C:\PZ\engine /COPY:DAT (Lesson J, #568, operator-required verbatim); standard app sync robocopy service/app → C:\PZ\app /E /XO with exclusions (never /MIR); recursive __pycache__ purge; PZService restart; post-deploy checks incl. /api/v1/health local+public, readiness endpoint 9-key shape, engine disk-grep, Drafts #32/#33 expected BLOCKED.
+**Rollback**: revert the single squash-merge commit on main (squash convention); design_ambiguity_resolution table is additive, old code never reads it.
+
+**PR #573 MERGED (2026-06-13)**: squash `62810c2` on main (on top of #568 squash `ecd6e85`). Operator executed the combined 3-PR deploy (#570 + #568 + #573) to C:\PZ and restarted PZService; operator confirmed "deploy is confirmed on disk and the service is running."
+**Deploy verified on disk (2026-06-13)**: SHA256 hash MATCH vs C:\PZ-release @ 62810c2 for all deployed surfaces — `C:\PZ\app\api\routes_proforma.py`, `services\design_product_bridge.py`, `static\v2\proforma-detail.jsx`, `static\v2\pz-api.js` (#573); `app\api\routes_wfirma.py` (#570); `app\services\export_service.py` + engine files `C:\PZ\engine\pz_import_processor.py`, `audit_scoring.py` (#568, Lesson J disk-grep + hash). `pz_stderr.log` tail clean. Health-endpoint 401-without-key is PRE-EXISTING per-route auth (`dependencies=[_auth]` since baseline 85b63bb, 2026-05-01) — not a deploy regression; readiness endpoint returns 200 with full 9-key contract via authenticated session.
+**Production browser verification PASSED (2026-06-13, operator's authenticated session, read-only, no posting)**: Draft #32 (legacy status "Approved" — the exact invalid state the fix eliminates): readiness ready:false, 4 blockers (design ambiguity J4007R08118-0.6 → ['EJL/26-27/257-2','EJL/26-27/257-4']; 2 products unmatched in wfirma_products; EJL/26-27/258-6 missing wfirma_product_id; Horak EU VAT blank for WDT); V2 SPA banner "⛔ Not ready — 4 blocking reasons · Approve / Post / Convert stay gated until resolved"; Post to wFirma disabled with blocker title + Fix instruction; Convert disabled; Cancel Draft remains available as repair path. Draft #33 (status "failed"): 2 blockers (design ambiguity + EU VAT); banner shows 2 blocking reasons; Approve/Post/Convert all disabled; resolve-ambiguity dropdown rendered; wFirma proforma ID "—" (failed post created no document). Retry-safety/no-duplicates: drafts list shows exactly 7 drafts (#27–#31 Posted PROF 126–130/2026 once each). Console: zero errors on both detail pages. Network sweep: 17/17 API calls HTTP 200, no 4xx/5xx.
+**Minor findings (non-blocking) — GATE 4 disposition: SCHEDULED (2026-06-13)**: (1) standalone `/dashboard/proforma-detail-v2.html` Post button stays enabled while blocked — surface not in #573 scope; backend single authority still rejects (post → 400); SCHEDULED as session task #14 (frontend-gate via readiness endpoint, Lesson M five-state model). (2) V2 SPA deep-link `?page=proforma_detail&draft=N` shows MOCK banner + empty body (hydration doesn't fire on direct URL entry); in-app navigation works — pre-existing SPA routing gap; SCHEDULED as session task #15. (3) Draft #33 History tab shows only "Draft created" — failed post attempt absent from activity timeline (pre-existing observability gap, not a #573 regression); SCHEDULED as session task #16 (emit activity event on post failure; Lesson I bucket: audit/evidence layer). Disposition note: GitHub-issue filing was denied by the session permission layer (external write under operator identity); SCHEDULED chosen per GATE 4; operator may convert any of these to ISSUE.
+**Production SHA**: `62810c2` (was ff1f4b5). Campaign fully closed end-to-end: implement → test → PR → 7-agent gate GO → merge → deploy → production verification PASS. Remaining work is operator-only data repair (OQ-NEW-18) before any #33 post.
 
 ## PR #546 — Proforma Display Contract Lock PR A (2026-06-10, MERGED + DEPLOYED)
 
@@ -5575,8 +5613,6 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 # OPEN QUESTIONS
 
-## OQ: PR #568 operator merge+sync+restart pending — two handoffs confirmed 'Done' but disproven by GitHub API; agent verification battery queued for after real execution.
-
 ## OQ: tests/test_cn_hsn_classifier.py 13/35 failing on main (Issue #567) — accept-sad flow live-verified working; test-context drift suspected (storage_root fixture interaction).
 
 ## OQ-NEW-13 -- PURCHASE_TRANSIT bypass deployed but not yet exercised at runtime (2026-06-12)
@@ -5592,29 +5628,17 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 Operator approval pending for platform-remediation backlog GATE 4 dispositions (§14 of `.claude/campaigns/platform-remediation.md`), notably M1 hard delete = REJECTED. Campaign execution gated behind locked GATE 2 queue (#568 → #570 → SHIPMENT_9938632830 recovery → #522 → #498).
 
-## OQ-NEW-14: B3 Reservations binary decision (2026-06-13)
+## OQ-NEW-19: B3 Reservations binary decision (2026-06-13)
 
 **Question**: Option A (register/activate routes_reservations.py) vs Option B (retire — architect recommends: 6 dead endpoints never registered in main.py; underlying services used by 19 files stay; archive tag git tag archive/routes_reservations-dead-2026-06-12). No third option per operator brief.
 **Answerer**: operator decision
 **Impact if left unanswered**: blocks Campaign 02 B3 implementation
 
-## OQ-NEW-15: B7 scheduled execution mechanism (2026-06-13)
+## OQ-NEW-20: B7 scheduled execution mechanism (2026-06-13)
 
 **Question**: approve Windows Task Scheduler entry invoking scripts/run_backup.py (APScheduler rejected by architect)
 **Answerer**: operator decision
 **Impact if left unanswered**: B7 backup service remains manual-invoke only
-
-## OQ-NEW-16: Approval to file 3 prepared GATE 4 issues (2026-06-13)
-
-**Question**: approval to file the 3 prepared GATE 4 issues (2 AWB pipeline gaps, 1 reservation workflow gap)
-**Answerer**: operator approval
-**Impact if left unanswered**: gap findings remain undocumented in issue tracker
-
-## OQ-NEW-17: GATE 2 overage resolution + merge/deploy sequencing (2026-06-13)
-
-**Question**: 4 implementation PRs open (#522, #498 draft, #573, #574); compliance PR (8ae052e) still HELD waiting for a slot — queue priority and sequencing decision
-**Answerer**: operator priority decision
-**Impact if left unanswered**: blocks all PR progress
 
 ## OQ1 -- AI advisory monitoring window post-pilot (RESOLVED 2026-05-26)
 
@@ -5666,6 +5690,21 @@ Operator approval pending for platform-remediation backlog GATE 4 dispositions (
 - **Answerer**: Operator — GATE 4 disposition required (SCHEDULED / ISSUE / REJECTED)
 - **Context**: These issues were filed as part of proforma authority fix campaign and remain open.
 - **Impact if left unanswered**: GATE 4 governance rule violated (salvage findings without explicit disposition).
+
+## OQ-NEW-17 -- PR #573 merge and deploy actions (2026-06-13, RESOLVED 2026-06-13)
+
+- **Question**: When to merge PR #573 and execute the combined deploy plan for 3-PR backlog?
+- **Answerer**: Operator — merge decision and deploy execution
+- **Context**: 7-agent gate completed with DECISION GO (READY-TO-DEPLOY). Combined deploy plan documented with engine-file sync requirements (Lesson J). Production at ff1f4b5, 3-PR backlog includes #573, #568, and others.
+- **Impact if left unanswered**: Proforma readiness single-authority campaign remains incomplete; production browser verification of Drafts #32/#33 cannot proceed.
+- **RESOLVED 2026-06-13**: Operator merged #573 (squash 62810c2) and executed the combined deploy; deploy hash-verified on disk, PZService running, production verification passed. Production SHA now 62810c2.
+
+## OQ-NEW-18 -- Production data repairs before Draft #33 (2026-06-13, NEW)
+
+- **Question**: When to resolve design_no J4007R08118-0.6 (EJL/26-27/257-2 vs 257-4), register 2 missing products in wFirma, and add Horak SK EU VAT to Customer Master + wFirma contractor card 195596259?
+- **Answerer**: Operator — data repair execution (operator-only, before any #33 post)
+- **Context**: Production data repairs required before Draft #33 posting. These are operator-only tasks that must complete before proforma workflow can proceed fully. Related: OQ-NEW-16 covers post-deploy browser verification of Drafts #32/#33.
+- **Impact if left unanswered**: Draft #33 workflow may encounter data inconsistencies during operator usage.
 
 ## OQ7 -- PR-C: DHL auto-send flag flip timing (2026-05-26)
 
@@ -6201,5 +6240,22 @@ GitHub Issue filed: **#510** — "test(rbac): Phase B follow-up tests — meta-t
 - **GATE 2 block**: 3/3 open PRs (#498, #522, #523) at time of commit — PR not opened
 - **Unblock order (operator decision 2026-06-09)**: (1) #498 first if reviewed/security complete → (2) open xlsx diagnostic refresh PR → (3) leave #522/#523 untouched unless already ready
 - **Next action**: After #498 merges or closes, run `git push origin main` then open PR with title above
+
+## OQ-NEW-15 -- PR open for fix/proforma-readiness-single-authority blocked on GATE 2 (2026-06-12, RESOLVED 2026-06-13)
+
+- **Question**: When to open PR for fix/proforma-readiness-single-authority campaign completion?
+- **Answerer**: Operator — GATE 2 queue management
+- **Context**: PR open blocked on GATE 2 (4 PRs open: #570, #568, #522, #498 draft). PR body prepared at C:\PZ-wt-readiness\.git-pr-body.md.
+- **Impact if left unanswered**: Campaign code remains unmerged despite completion and testing.
+- **RESOLVED 2026-06-13**: PR #573 opened after operator merged #570+#568 and cleared the GATE 2 slot. 7-agent gate completed with READY-TO-DEPLOY verdict.
+
+## OQ-NEW-16 -- Production Drafts #32/#33 browser verification post-deploy (2026-06-12, RESOLVED 2026-06-13)
+
+- **Question**: When to verify real production Drafts #32 and #33 in browser after deployment?
+- **Answerer**: Operator — post-deploy verification sweep
+- **Context**: Browser verification deferred because pz-deploy-guard blocks reading production DBs. Operator repairs needed on production data (resolve J4007R08118-0.6 ambiguity, register 2 missing wFirma products, add Horak SK EU VAT to Customer Master + wFirma contractor 195596259).
+- **Impact if left unanswered**: Production readiness authority verification incomplete.
+- **Trigger**: "Operator completed #568 merge/deploy, #570 merge/deploy, and SHIPMENT_9938632830 reconcile. Verify everything now." → read-only verification sweep.
+- **RESOLVED 2026-06-13**: Verification executed via operator's authenticated browser session (read-only, no posting, no credential handling — C:\PZ\.env read was permission-denied and honored). Both drafts correctly BLOCKED with named repair actions: #32 (Approved) 4 blockers, #33 (failed) 2 blockers; Approve/Post/Convert disabled in V2 SPA; 7 drafts, no duplicates; console clean; 17/17 API calls 200. Full facts in the PR #573 campaign FACTS block. Operator data repairs remain open as OQ-NEW-18.
 
 ---

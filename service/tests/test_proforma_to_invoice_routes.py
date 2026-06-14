@@ -128,6 +128,35 @@ def _prime_vat():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _readiness_clean(monkeypatch):
+    """Stub the single-readiness-authority gate (split-authority fix).
+
+    These tests pin conversion mechanics (link recording, receiver
+    preservation, preflight, wFirma rejection handling), not readiness
+    derivation — that has dedicated no-stub coverage in
+    test_proforma_readiness_single_authority.py (including convert-intent
+    blocking). Shape mirrors the real _derive_draft_readiness return
+    exactly (Lesson A). Tests asserting other blocked statuses (ghost
+    client, existing link) still hit their specific checks, which run
+    independently of this gate."""
+    from app.api import routes_proforma as rp
+
+    def _stub(draft, *, intent):
+        return {
+            "ready":             True,
+            "intent":            intent,
+            "draft_id":          int(draft.id),
+            "draft_status":      draft.status,
+            "blockers":          [],
+            "blocking_reasons":  [],
+            "warnings":          [],
+            "ambiguous_designs": {},
+            "resolved_designs":  {},
+        }
+    monkeypatch.setattr(rp, "_derive_draft_readiness", _stub)
+
+
 @pytest.fixture()
 def storage(tmp_path):
     pdb.init_packing_db(tmp_path / "packing.db")

@@ -798,6 +798,31 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const previewHook = window.PzState.useProformaPreview(batchId, clientName);
   const preview    = previewHook.data || null;
 
+  // WIRED: SINGLE READINESS AUTHORITY (GET /api/v1/proforma/draft/{id}/readiness)
+  // The same backend gate that enforces approve/post/convert — the frontend
+  // only reflects it (Lesson F rule 5: the UI never decides workflow legality).
+  // intent=approve gates Approve; intent=post gates Post AND Convert (the
+  // backend convert gate shares the post blocker set).
+  const [readinessApprove, setReadinessApprove] = React.useState(null);
+  const [readinessPost,    setReadinessPost]    = React.useState(null);
+  const [resolvingDesign,  setResolvingDesign]  = React.useState(null);   // design_no in flight
+  const [resolveError,     setResolveError]     = React.useState(null);
+  const reloadReadiness = () => {
+    const id = (draft && draft.id) || null;
+    if (!id) return;
+    // PzApi wraps every response as { ok, data } — the readiness object
+    // (ready / blockers / ambiguous_designs) lives under .data. A failed
+    // fetch stores null: button falls back to state-gating only, and the
+    // backend enforces the identical gate, so nothing can slip through.
+    window.PzApi.getDraftReadiness(id, 'approve')
+      .then(r => setReadinessApprove((r && r.ok && r.data) ? r.data : null))
+      .catch(() => setReadinessApprove(null));
+    window.PzApi.getDraftReadiness(id, 'post')
+      .then(r => setReadinessPost((r && r.ok && r.data) ? r.data : null))
+      .catch(() => setReadinessPost(null));
+  };
+  React.useEffect(reloadReadiness, [draft && draft.id, liveDraft.updated_at]);
+
   // WIRED: fetch company profile for SELLER (GET /api/v1/settings/company-profile)
   const [companyProfile, setCompanyProfile] = React.useState(null);
   React.useEffect(() => {
@@ -1214,13 +1239,37 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // ──────────────────────────────────────────────────────────────────────────
 
   const draftState    = liveDraft.draft_state || liveDraft.status || (draft && draft.status) || '';
-  const canPost       = ['draft', 'pending_local', 'approved', 'post_failed'].includes(draftState);
-  const canConvert    = draftState === 'posted' || draftState === 'ready';
+  // SINGLE READINESS AUTHORITY — backend-derived blockers. State gating says
+  // whether the lifecycle ALLOWS the action; readiness says whether the data
+  // is SAFE for it. Both must pass. While readiness is still loading (null)
+  // the button stays state-gated only — the backend enforces the same gate,
+  // so an early click cannot bypass it.
+  const approveBlockers = (readinessApprove && readinessApprove.blockers) || [];
+  const postBlockers    = (readinessPost    && readinessPost.blockers)    || [];
+  const approveBlocked  = !!(readinessApprove && readinessApprove.ready === false);
+  const postBlocked     = !!(readinessPost    && readinessPost.ready    === false);
+  const stateAllowsPost    = ['draft', 'pending_local', 'approved', 'post_failed'].includes(draftState);
+  const stateAllowsConvert = draftState === 'posted' || draftState === 'ready';
+  const stateAllowsApprove = ['draft', 'editing', 'post_failed'].includes(draftState);
+  const canPost       = stateAllowsPost && !postBlocked;
+  const canConvert    = stateAllowsConvert && !postBlocked;
   const isBlocked     = draftState === 'post_failed' || draftState === 'convert_blocked';
   const alreadyPosted = draftState === 'posted' || draftState === 'invoiced';
   const canPrint      = !!(liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id));
-  const canApprove    = ['draft', 'editing', 'post_failed'].includes(draftState);
+  const canApprove    = stateAllowsApprove && !approveBlocked;
   const alreadyApproved = draftState === 'approved';
+  const _firstBlockerText = (bl) => bl.length
+    ? `${bl[0].reason} — Fix: ${bl[0].repair_action}` + (bl.length > 1 ? ` (+${bl.length - 1} more — see Readiness panel)` : '')
+    : '';
+  const approveDisabledReason = !stateAllowsApprove
+    ? (alreadyApproved ? 'Already approved' : `Cannot approve in '${draftState}' state`)
+    : (approveBlocked ? `Blocked: ${_firstBlockerText(approveBlockers)}` : '');
+  const postDisabledReason = !stateAllowsPost
+    ? (alreadyPosted ? 'Already posted to wFirma' : `Cannot post in '${draftState}' state`)
+    : (postBlocked ? `Blocked: ${_firstBlockerText(postBlockers)}` : '');
+  const convertDisabledReason = !stateAllowsConvert
+    ? (isBlocked ? 'Conversion blocked — see Reservation tab' : 'Post to wFirma first, then convert')
+    : (postBlocked ? `Blocked: ${_firstBlockerText(postBlockers)}` : '');
 
   // M5 — Edit mode: enabled when draft is in an editable state
   const canEdit       = ['draft', 'editing', 'post_failed'].includes(draftState);
@@ -1514,7 +1563,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           disabled={!canApprove || approving}
           title={canApprove
             ? 'Mark this draft as approved — locks lines before posting to wFirma'
-            : (alreadyApproved ? 'Already approved' : 'Cannot approve in current state')}
+            : approveDisabledReason}
           data-testid="tb-approve"
         >
           {approving ? '⏳ Approving…' : '✓ Approve'}
@@ -1531,7 +1580,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           disabled={!canPost}
           title={canPost
             ? 'Post this draft to wFirma as a proforma invoice'
-            : (alreadyPosted ? 'Already posted to wFirma' : 'Cannot post in current state')}
+            : postDisabledReason}
           data-testid="tb-post"
         >
           ↑ Post to wFirma
@@ -1542,7 +1591,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           disabled={!canConvert}
           title={canConvert
             ? 'Convert this posted proforma to a wFirma invoice'
-            : (isBlocked ? 'Conversion blocked — see Reservation tab' : 'Post to wFirma first, then convert')}
+            : convertDisabledReason}
           data-testid="tb-convert"
         >
           ⚠ Convert to Invoice
@@ -1645,6 +1694,88 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           ← Back
         </TbBtn>
       </div>
+
+      {/* ── READINESS PANEL — single backend authority (split-authority fix) ──
+          Renders the SAME gate the backend enforces on approve/post/convert:
+          every blocker with its exact repair action (Lesson M), plus the
+          design-ambiguity selector (operator picks the exact product_code per
+          design_no — persisted batch-scoped and audited; requirement 4). */}
+      {readinessPost && !readinessPost.ready && (
+        <div data-testid="readiness-panel" style={{
+          background: 'var(--card)',
+          borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+          borderTop: '1px solid var(--border)',
+          padding: '12px 24px',
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 6 }}>
+            ⛔ Not ready — {(readinessPost.blockers || []).length} blocking reason{(readinessPost.blockers || []).length === 1 ? '' : 's'} · Approve / Post / Convert stay gated until resolved
+          </div>
+          {(readinessPost.blockers || []).map((b, i) => (
+            <div key={i} style={{ fontSize: 12, marginBottom: 4 }} data-testid={`readiness-blocker-${i}`}>
+              <span style={{ color: 'var(--badge-red-text)' }}>• {b.reason}</span>
+              <div style={{ color: 'var(--text-dim, var(--text))', opacity: 0.75, paddingLeft: 14 }}>
+                Fix: {b.repair_action}
+              </div>
+            </div>
+          ))}
+          {Object.keys(readinessPost.ambiguous_designs || {}).length > 0 && (
+            <div style={{ marginTop: 8 }} data-testid="readiness-ambiguity-resolver">
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>
+                Resolve design ambiguity — select the exact product_code to bill:
+              </div>
+              {Object.entries(readinessPost.ambiguous_designs).map(([design, codes]) => (
+                <div key={design} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--text)' }}>{design}</span>
+                  <select
+                    data-testid={`ambiguity-select-${design}`}
+                    disabled={!!resolvingDesign}
+                    defaultValue=""
+                    style={{
+                      background: 'var(--bg)', color: 'var(--text)',
+                      border: '1px solid var(--border)', borderRadius: 4,
+                      fontSize: 12, padding: '2px 6px',
+                    }}
+                    onChange={e => {
+                      const pc = e.target.value;
+                      if (!pc) return;
+                      const id = liveDraft.id || (draft && draft.id);
+                      setResolvingDesign(design);
+                      setResolveError(null);
+                      window.PzApi.resolveDraftAmbiguity(id, design, pc)
+                        .then(r => {
+                          if (!(r && r.ok)) {
+                            setResolveError((r && (r.error || r.detail)) || 'Resolution failed — check backend logs.');
+                          }
+                          reloadReadiness();
+                        })
+                        .catch(err => setResolveError((err && err.message) || 'Network error'))
+                        .finally(() => setResolvingDesign(null));
+                    }}
+                  >
+                    <option value="">— select product_code —</option>
+                    {(codes || []).map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  {resolvingDesign === design && (
+                    <span style={{ fontSize: 11, color: 'var(--text)' }}>⏳ saving…</span>
+                  )}
+                </div>
+              ))}
+              {resolveError && (
+                <div style={{ color: 'var(--badge-red-text)', fontSize: 11 }} data-testid="readiness-resolve-error">
+                  {resolveError}
+                </div>
+              )}
+            </div>
+          )}
+          {(readinessPost.warnings || []).length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              {readinessPost.warnings.map((w, i) => (
+                <div key={i} style={{ fontSize: 11, color: 'var(--badge-amber-text, var(--text))' }}>⚠ {w}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Party cards (SELLER / BUYER / RECIPIENT) ────────────────────── */}
       <div style={{

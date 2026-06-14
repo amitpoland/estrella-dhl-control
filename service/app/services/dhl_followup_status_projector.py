@@ -442,7 +442,7 @@ def project_automation_status(*, now: Optional[datetime] = None) -> Dict[str, An
             "due_in_human":  _humanise_age(dt, now),  # negative-age -> 'in Xh Ym'
         }
 
-    return {
+    result = {
         "flag_on":           flag_on,
         "status_label":      "ACTIVE" if flag_on else "DISABLED",
         "active_shipments":  active_count,
@@ -478,6 +478,19 @@ def project_automation_status(*, now: Optional[datetime] = None) -> Dict[str, An
         ),
         "generated_at":      now.isoformat(),
     }
+
+    # B6 Authority injection (flag-gated additive key)
+    try:
+        from ..core.config import settings
+        if getattr(settings, "dhl_followup_authority_advisory", False):
+            from .dhl_followup_authority import summarize_followup_authority
+            # Generate rows for summary (reusing existing logic)
+            authority_rows = project_shipment_rows(now=now)
+            result["authority_summary"] = summarize_followup_authority(authority_rows)
+    except Exception as exc:
+        log.warning("status_projector: authority_summary failed: %s", exc)
+
+    return result
 
 
 def project_shipment_rows(*, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
@@ -522,7 +535,7 @@ def project_shipment_rows(*, now: Optional[datetime] = None) -> List[Dict[str, A
         last_evt_type = last_evt.get("event") if last_evt else None
 
         sad = _sad_phase(audit, now)
-        rows.append({
+        row_dict = {
             "awb":             _awb_of(audit),
             "batch_id":        str(audit.get("batch_id") or ""),
             "mode":            mf["mode_label"],  # back-compat alias
@@ -542,7 +555,21 @@ def project_shipment_rows(*, now: Optional[datetime] = None) -> List[Dict[str, A
             "sad_followup_reason": sad.get("reason"),
             "waiting_for":         sad.get("waiting_for"),
             "dsk_received_at":     sad.get("dsk_received_at"),
-        })
+        }
+
+        # B6 Authority injection (flag-gated additive keys)
+        try:
+            from ..core.config import settings
+            if getattr(settings, "dhl_followup_authority_advisory", False):
+                from .dhl_followup_authority import derive_followup_authority
+                authority_result = derive_followup_authority(row_dict)
+                row_dict["followup_authority"] = authority_result["followup_authority"]
+                row_dict["authority_reason"] = authority_result["authority_reason"]
+                row_dict["authority_evidence"] = authority_result["authority_evidence"]
+        except Exception as exc:
+            log.warning("status_projector: row authority derivation failed: %s", exc)
+
+        rows.append(row_dict)
 
     # Sort: ELIGIBLE first, then MONITORING by next_due asc, then others.
     status_order = {

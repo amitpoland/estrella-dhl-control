@@ -254,6 +254,23 @@
     getDraftEvents: (draftId) =>
       _get(`${BASE}/proforma/draft/${draftId}/events`),
 
+    // GET /api/v1/proforma/draft/{draft_id}/readiness?intent=approve|post|convert
+    // SINGLE READINESS AUTHORITY — same gate the backend enforces on
+    // approve/post/convert. Frontend reads it to disable buttons with
+    // the exact blocker reason + repair action; it never derives
+    // readiness locally (Lesson F rule 5).
+    getDraftReadiness: (draftId, intent) =>
+      _get(`${BASE}/proforma/draft/${draftId}/readiness?intent=${encodeURIComponent(intent || 'approve')}`),
+
+    // POST /api/v1/proforma/draft/{draft_id}/resolve-ambiguity
+    // Operator selects the exact product_code for an ambiguous design_no.
+    // Backend validates the code against current batch candidates.
+    resolveDraftAmbiguity: (draftId, designNo, productCode) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/resolve-ambiguity`, {
+        design_no:    designNo    || '',
+        product_code: productCode || '',
+      }),
+
     // ── Customer Master ──────────────────────────────────────────────
 
     // GET /api/v1/customer-master[?q=...]

@@ -5,6 +5,10 @@ Exercises the complete coordinator path from request to persisted result.
 Verifies correctness of every layer: result contract, DB state, shadow log
 content, redaction, and the absence of any live data in persistence.
 All DB paths use tmp_path. No HTTP. No production storage.
+
+Note: These tests bypass HTTP routes and call coordinator directly, so they
+are unaffected by AWB address authority changes (Campaign 02.5 Workstream 3).
+The recipient_address flows directly to the coordinator as-is.
 """
 import json
 

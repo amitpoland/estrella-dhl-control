@@ -16,6 +16,7 @@ from .api.routes_debug import router as debug_router
 from .api.routes_upload import router as upload_router
 from .api.routes_auth import router as auth_router
 from .api.routes_admin import router as admin_router
+from .api.routes_admin_backup import router as admin_backup_router
 from .api.routes_tracking import router as tracking_router
 from .api.routes_learning import router as learning_router
 from .api.routes_proposals import router as proposals_router
@@ -254,6 +255,23 @@ async def lifespan(app: FastAPI):
     else:
         log.info("STARTUP_AI_AUDIT: all AI execution flags are OFF (safe defaults).")
 
+    # ── Authority drift detection startup (R1 — Campaign 02.5 Phase 4) ─────
+    # Generate startup authority manifest if flag is ON. Advisory only, never blocks startup.
+    if settings.authority_drift_detection:
+        try:
+            from .services.authority_startup import generate_startup_authority_manifest
+            authority_manifest_result = generate_startup_authority_manifest(_root)
+            module_count = len(authority_manifest_result.get("modules", {}))
+            error_count = len([m for m in authority_manifest_result.get("modules", {}).values() if "error" in m])
+            log.info(
+                "STARTUP_AUTHORITY_MANIFEST: generated manifest with %d modules (%d errors) written to %s",
+                module_count, error_count, _root / "authority_manifest.json"
+            )
+        except Exception as _auth_manifest_exc:  # never block startup
+            log.warning("STARTUP_AUTHORITY_MANIFEST: generation failed (non-fatal): %s", _auth_manifest_exc)
+    else:
+        log.info("STARTUP_AUTHORITY_AUDIT: authority_drift_detection=False, no manifest generated")
+
     log.info("Starting Estrella PZ Service  [env=%s]", settings.environment)
     log.info("Engine dir: %s", settings.engine_dir)
 
@@ -399,6 +417,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(admin_backup_router)
 app.include_router(router)
 app.include_router(dashboard_router)
 # Alias mount: also expose the dashboard router under /api/v1/dashboard/*.

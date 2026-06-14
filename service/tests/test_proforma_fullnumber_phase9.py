@@ -65,7 +65,27 @@ def _seed_approved(db: Path, *, currency="EUR"):
 
 def _stub_route_lookups(monkeypatch):
     from app.api import routes_proforma as rp
-    monkeypatch.setattr(rp, "_resolve_customer", lambda name: {
+
+    # Single-readiness-authority gate stub (split-authority fix): these
+    # tests pin fullnumber persistence mechanics, not readiness — that has
+    # dedicated no-stub coverage in
+    # test_proforma_readiness_single_authority.py. Shape mirrors the real
+    # _derive_draft_readiness return exactly (Lesson A).
+    def _stub_readiness(draft, *, intent):
+        return {
+            "ready":             True,
+            "intent":            intent,
+            "draft_id":          int(draft.id),
+            "draft_status":      draft.status,
+            "blockers":          [],
+            "blocking_reasons":  [],
+            "warnings":          [],
+            "ambiguous_designs": {},
+            "resolved_designs":  {},
+        }
+    monkeypatch.setattr(rp, "_derive_draft_readiness", _stub_readiness)
+
+    monkeypatch.setattr(rp, "_resolve_customer", lambda name, batch_id=None: {
         "ambiguous": False, "candidates": [],
         "customer": {
             "name": name, "country": "PL", "vat_id": "PL1234567890",

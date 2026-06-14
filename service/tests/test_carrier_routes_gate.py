@@ -6,11 +6,14 @@ GET /shadow/log returns metadata-only entries, GET /status returns current confi
 
 Uses isolated FastAPI test apps with dependency_overrides.
 No real carrier API calls. No production storage.
+
+Updated for Campaign 02.5 Workstream 3 — includes AWB address authority flag OFF
+to maintain backward compatibility testing.
 """
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -77,34 +80,40 @@ def test_app():
 def test_post_shipment_pending_returns_503(test_app):
     test_app.dependency_overrides[_get_carrier_config] = _pending_config
     client = TestClient(test_app, raise_server_exceptions=False)
-    resp = client.post(
-        "/api/v1/carrier/BATCH-001/shipment",
-        json={
-            "shipper_account": "ACC",
-            "recipient_address": {},
-            "declared_value": 100.0,
-            "currency": "USD",
-            "weight_kg": 1.0,
-            "dimensions": {},
-        },
-    )
+    # Mock settings with AWB authority flag OFF for gate test isolation
+    with patch('app.core.config.settings') as mock_settings:
+        mock_settings.awb_address_authority_enabled = False
+        resp = client.post(
+            "/api/v1/carrier/BATCH-001/shipment",
+            json={
+                "shipper_account": "ACC",
+                "recipient_address": {},
+                "declared_value": 100.0,
+                "currency": "USD",
+                "weight_kg": 1.0,
+                "dimensions": {},
+            },
+        )
     assert resp.status_code == 503
 
 
 def test_post_shipment_pending_body_mentions_pending(test_app):
     test_app.dependency_overrides[_get_carrier_config] = _pending_config
     client = TestClient(test_app, raise_server_exceptions=False)
-    resp = client.post(
-        "/api/v1/carrier/BATCH-001/shipment",
-        json={
-            "shipper_account": "ACC",
-            "recipient_address": {},
-            "declared_value": 100.0,
-            "currency": "USD",
-            "weight_kg": 1.0,
-            "dimensions": {},
-        },
-    )
+    # Mock settings with AWB authority flag OFF for gate test isolation
+    with patch('app.core.config.settings') as mock_settings:
+        mock_settings.awb_address_authority_enabled = False
+        resp = client.post(
+            "/api/v1/carrier/BATCH-001/shipment",
+            json={
+                "shipper_account": "ACC",
+                "recipient_address": {},
+                "declared_value": 100.0,
+                "currency": "USD",
+                "weight_kg": 1.0,
+                "dimensions": {},
+            },
+        )
     assert "pending" in resp.text.lower()
 
 
@@ -131,17 +140,20 @@ def _shadow_result() -> ShipmentResult:
 
 
 def _post_shipment(client: TestClient, batch_id: str = "BATCH-001"):
-    return client.post(
-        f"/api/v1/carrier/{batch_id}/shipment",
-        json={
-            "shipper_account": "ACC",
-            "recipient_address": {"city": "Berlin"},
-            "declared_value": 200.0,
-            "currency": "EUR",
-            "weight_kg": 2.0,
-            "dimensions": {"length": 10, "width": 10, "height": 10},
-        },
-    )
+    # Mock settings with AWB authority flag OFF for shadow mode testing
+    with patch('app.core.config.settings') as mock_settings:
+        mock_settings.awb_address_authority_enabled = False
+        return client.post(
+            f"/api/v1/carrier/{batch_id}/shipment",
+            json={
+                "shipper_account": "ACC",
+                "recipient_address": {"city": "Berlin"},
+                "declared_value": 200.0,
+                "currency": "EUR",
+                "weight_kg": 2.0,
+                "dimensions": {"length": 10, "width": 10, "height": 10},
+            },
+        )
 
 
 def test_post_shipment_shadow_returns_200(test_app):

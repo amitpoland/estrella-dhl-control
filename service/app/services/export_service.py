@@ -879,6 +879,12 @@ def _write_audit(
         "verification":     ver_scalar,
         "failed_checks":    failed_checks,
         "amendment_flags":  amendment_flags,
+        # CN ↔ HSN comparison evidence. ver_scalar strips list/dict values,
+        # which destroyed the HSN codes the engine compared — the
+        # classification panel, the cn-decision endpoints and
+        # cn_hsn_classifier all read this top-level key as their evidence
+        # fallback. Without it a cn_match block is undiagnosable in the UI.
+        "invoice_hsn_codes": list(v.get("invoice_hsn_codes") or []),
         "corrections_log":  corrections,
         "correction_report": result.get("correction_report"),   # structured v2 report
         "files": {

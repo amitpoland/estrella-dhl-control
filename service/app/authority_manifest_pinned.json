@@ -1,0 +1,30 @@
+{
+  "format_version": "1.0",
+  "generated_by": "authority_audit.py",
+  "modules": {
+    "name_normalization.py": {
+      "path": "app/services/name_normalization.py",
+      "role": "Name normalization authority",
+      "sha256": "815111e47afe59b7ab58ea164d9c7da92acda6a9a962aebf393c0339c666a1d6",
+      "size_bytes": 7864
+    },
+    "dhl_followup_authority.py": {
+      "path": "app/services/dhl_followup_authority.py",
+      "role": "DHL follow-up authority (4-state advisory)",
+      "sha256": "adb94aecd9d4ffd0f82cdacbc706c636bd612c0b0a0fba0298234b2291e60075",
+      "size_bytes": 5997
+    },
+    "awb_address_authority.py": {
+      "path": "app/services/awb_address_authority.py",
+      "role": "AWB address resolution authority",
+      "sha256": "0e7a60e39f4802071070c22c7e2e370afb7f499454e9cbab11f8bf96e6097b33",
+      "size_bytes": 6504
+    },
+    "tracking_db.py": {
+      "path": "app/services/tracking_db.py",
+      "role": "Tracking deduplication authority",
+      "sha256": "429fd3d8f590796c6b8c09012c4319a5951d74e04687616b307d146fd81eb3df",
+      "size_bytes": 10826
+    }
+  }
+}
