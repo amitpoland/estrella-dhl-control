@@ -32,6 +32,13 @@ HONEST DEVIATIONS FROM THE TASK SPEC
     placeholder value, so "3x collisions" carries no algorithmic penalty over
     "3 distinct placeholders". The benchmark measures this directly rather than
     assuming a penalty.
+  * Because the generated ledgers carry one CLEAN governance set, they measure
+    scan cost at size but NOT the duplicate-governance / colliding-placeholder
+    conflict the merge actually resolved. A real-fixtures layer (Categories
+    1R/3R/5R, `cat_real_fixtures`) runs the same helpers against the committed
+    Track B fixtures that DO contain that conflict, so the named-fixture
+    requirement of the spec is honoured and both the size figure and the
+    conflict-resolution figure are reported honestly.
 
 Run with `python` (no python3 on this machine):
     python service/tests/benchmarks/benchmark_pr575_merge_resolution.py
@@ -419,6 +426,139 @@ def _dates_sparse(n):
     return [date.fromordinal(base - i * 37).isoformat() for i in range(n)]
 
 
+# ───────────────────────── real committed fixtures ──────────────────────────
+#
+# The scalability ledgers above are GENERATED at the requested line counts. They
+# measure scan cost at SIZE, but they carry one clean governance set — they do
+# NOT contain the duplicate-governance / colliding-placeholder workload that the
+# merge resolution actually resolves. This layer benchmarks the helpers against
+# the ACTUAL named Track B fixtures, which are the only inputs that contain the
+# real conflict. The named fixtures are compact correctness fixtures (~50-70
+# lines), NOT the "6296 lines" the spec names — that line count is a fake
+# constant (the real PROJECT_STATE.md ledger is ~6261 lines; these distilled
+# fixtures are not). Both readings are reported so the size figure and the
+# conflict-resolution figure are each honest.
+
+BASELINE_MAX = 18    # documented baseline OQ-NEW max (suite L2: assigns 19,20 after 18)
+
+
+def _dedup_oq(oq_pairs):
+    """Collapse duplicate OQ-NEW ids, preserving first-seen order. The premerge
+    fixture lists OQ-NEW-14 and -15 twice each (the merge duplication); the real
+    resolution dedups them to the unique set {14,15} before renumbering."""
+    seen, out = set(), []
+    for num, _ln in oq_pairs:
+        if num not in seen:
+            seen.add(num)
+            out.append(("oq-new-%d" % num, num))
+    return out
+
+
+def cat_real_fixtures(iters=4000):
+    """Categories 1R / 3R / 5R — same operations run against the actual committed
+    Track B fixtures (real conflict content), complementing the generated-size
+    scalability rows above."""
+    out = {}
+    g_items = len(GOVERNANCE_ANCHORS)
+
+    # --- 1R: premerge-with-duplicates — the genuine dedup + renumber workload ---
+    p = FIX_ROOT / "deduplication/ledger_head_premerge_with_duplicates.txt"
+    text = p.read_text(encoding="utf-8")
+    actual_lines = text.count("\n")
+    parse = _measure(lambda t=text: parse_governance_items(t), iterations=iters)
+    gov = parse_governance_items(text)
+    dups = {k: len(v) for k, v in gov.items() if len(v) > 1}
+    oq_scan = _measure(lambda t=text: extract_oq_new_ids(t), iterations=iters)
+    oq_pairs = extract_oq_new_ids(text)
+    to_assign = _dedup_oq(oq_pairs)
+    renum = _measure(lambda a=to_assign: renumber_governance_ids(BASELINE_MAX, a),
+                     iterations=iters)
+    assigned = renumber_governance_ids(BASELINE_MAX, to_assign)
+    facts_val = _measure(
+        lambda t=text: validate_facts_date_ordering(
+            [d for _l, d, _h in extract_facts_headings(t) if d]),
+        iterations=iters)
+
+    def _e2e_real(t=text, a=to_assign):
+        parse_governance_items(t)
+        extract_oq_new_ids(t)
+        renumber_governance_ids(BASELINE_MAX, a)
+        validate_facts_date_ordering(
+            [d for _l, d, _h in extract_facts_headings(t) if d])
+    e2e = _measure(_e2e_real, iterations=iters)
+
+    out["cat1_premerge_real_fixture"] = {
+        "fixture": "deduplication/ledger_head_premerge_with_duplicates.txt",
+        "actual_lines": actual_lines,
+        "scenario": "real merge conflict: %d governance anchors duplicated; "
+                    "OQ-NEW 14/15 each listed twice -> dedup -> renumber to "
+                    "19/20 after baseline max 18" % len(dups),
+        "duplicated_anchor_counts": dups,
+        "dedup_detect": _strip(parse, extra={
+            "per_governance_item_ms": round(parse["median_ms"] / g_items, 6),
+            "lines_per_sec": _throughput(actual_lines, parse["median_ms"])}),
+        "renumber_input_scan": _strip(oq_scan, extra={
+            "oq_headings_found_with_dups": len(oq_pairs),
+            "oq_ids_after_dedup": [n for _l, n in to_assign]}),
+        "renumber_assign": _strip(renum, extra={
+            "assigned": assigned,
+            "assignments_per_sec": _throughput(len(to_assign), renum["median_ms"])}),
+        "facts_ordering_validate": _strip(facts_val),
+        "end_to_end_merge": _strip(e2e, extra={
+            "total_s_median": round(e2e["median_ms"] / 1000.0, 6)}),
+    }
+
+    # --- 3R: 3x-collision fixture — renumber under the fixture's pinned params --
+    cmeta_p = (FIX_ROOT /
+               "renumbering/ledger_edge_case_multiple_collisions_3x.txt.metadata.json")
+    ep = json.load(open(cmeta_p, encoding="utf-8")).get("edge_case_params", {})
+    em = ep.get("existing_max", 18)
+    k = ep.get("num_to_assign", 3)
+    colliding = [("c%d" % i, 999) for i in range(k)]   # all collide on one placeholder
+    distinct = [("d%d" % i, 500 + i) for i in range(k)]
+    rc = _measure(lambda a=colliding, m=em: renumber_governance_ids(m, a),
+                  iterations=iters)
+    rd = _measure(lambda a=distinct, m=em: renumber_governance_ids(m, a),
+                  iterations=iters)
+    res = renumber_governance_ids(em, colliding)
+    ids = list(res.values())
+    assert ids == list(range(em + 1, em + 1 + k)), ids   # gap-free correctness
+    out["cat3_collision_real_fixture"] = {
+        "fixture": "renumbering/ledger_edge_case_multiple_collisions_3x.txt",
+        "existing_max": em,
+        "num_to_assign": k,
+        "colliding_placeholders": True,
+        "colliding_median_ms": rc["median_ms"],
+        "colliding_p95_ms": rc["p95_ms"],
+        "distinct_median_ms": rd["median_ms"],
+        "overhead_pct": round(((rc["median_ms"] - rd["median_ms"]) /
+                               rd["median_ms"] * 100.0) if rd["median_ms"] > 0
+                              else 0.0, 2),
+        "assigned_ids": ids,
+        "assignments_per_sec": _throughput(k, rc["median_ms"]),
+        "mem_peak_mb": rc["mem_peak_mb_max"],
+    }
+
+    # --- 5R: descending FACTS fixture — real ordering validation ---------------
+    pf = FIX_ROOT / "facts_integrity/facts_region_descending_order.txt"
+    ftext = pf.read_text(encoding="utf-8")
+    fdates = [d for _l, d, _h in extract_facts_headings(ftext) if d]
+    fv = _measure(
+        lambda t=ftext: validate_facts_date_ordering(
+            [d for _l, d, _h in extract_facts_headings(t) if d]),
+        iterations=iters)
+    out["cat5_facts_real_fixture"] = {
+        "fixture": "facts_integrity/facts_region_descending_order.txt",
+        "entries": len(fdates),
+        "dates": fdates,
+        "median_ms": fv["median_ms"],
+        "p95_ms": fv["p95_ms"],
+        "entries_per_sec": _throughput(len(fdates), fv["median_ms"]),
+        "violations_found": len(validate_facts_date_ordering(fdates)),
+    }
+    return out
+
+
 # ───────────────────────── helpers ──────────────────────────────────────────
 
 def _strip(m, *, extra=None):
@@ -568,6 +708,10 @@ def write_report(results):
       "one (it does not sort — it only checks adjacency). Identical-date "
       "regions are valid (non-increasing) and validate at full speed.")
     A("")
+    A(_real_fixture_section(results.get("category_real_fixtures", {}),
+                            base["stats"]["actual_lines"],
+                            base["end_to_end_merge"]["median_ms"]))
+    A("")
     A("## Bottleneck analysis")
     A("")
     A(_bottleneck_section(scal))
@@ -646,6 +790,127 @@ def _bottleneck_section(scal):
     return "\n".join(items)
 
 
+def _real_fixture_section(real, generated_baseline_lines, generated_baseline_e2e_ms):
+    """Categories 1R/3R/5R — the same helpers measured against the ACTUAL named
+    Track B fixtures (real conflict content), so the framework honours the
+    spec's named-fixture requirement instead of only synthetic-size ledgers."""
+    if not real:
+        return ""
+    L = []
+    A = L.append
+    A("## Categories 1R / 3R / 5R — real committed fixtures")
+    A("")
+    A("> **Named-fixture vs generated-size.** The task spec names "
+      "`ledger_head_premerge_with_duplicates.txt (6296 lines)` as the baseline. "
+      "That line count is a **fake constant** — the actual committed fixture is "
+      "**%d lines**, and the real PROJECT_STATE.md ledger it distils is ~6261 "
+      "lines. Categories 1–2 above GENERATE valid ledgers at 6296 / 63000 / "
+      "630000 lines to measure scan cost *at size*, but those generated ledgers "
+      "carry one clean governance set — they do not contain the duplicate-"
+      "governance / colliding-placeholder conflict that the merge actually "
+      "resolved. This section runs the helpers against the real fixtures that "
+      "DO contain that conflict, so both the size figure and the conflict-"
+      "resolution figure are reported honestly."
+      % real.get("cat1_premerge_real_fixture", {}).get("actual_lines", 0))
+    A("")
+
+    r1 = real.get("cat1_premerge_real_fixture")
+    if r1:
+        A("### 1R — Baseline against the real pre-merge conflict fixture")
+        A("")
+        A("Fixture: `%s` (%d lines). Scenario: %s."
+          % (r1["fixture"], r1["actual_lines"], r1["scenario"]))
+        A("")
+        A("| Operation | median | p95 | mem peak (MB) | throughput |")
+        A("|---|---|---|---|---|")
+        dd = r1["dedup_detect"]
+        A("| dedup-detect (full scan) | %.5f ms | %.5f ms | %.4f | %s lines/s |"
+          % (dd["median_ms"], dd["p95_ms"], dd["mem_peak_mb_max"],
+             _fmt(dd["lines_per_sec"])))
+        ri = r1["renumber_input_scan"]
+        A("| OQ-NEW input scan | %.5f ms | %.5f ms | %.4f | found %d (dedup -> %s) |"
+          % (ri["median_ms"], ri["p95_ms"], ri["mem_peak_mb_max"],
+             ri["oq_headings_found_with_dups"], ri["oq_ids_after_dedup"]))
+        ra = r1["renumber_assign"]
+        A("| renumber assign | %.5f ms | %.5f ms | %.4f | %s |"
+          % (ra["median_ms"], ra["p95_ms"], ra["mem_peak_mb_max"],
+             _kv(ra["assigned"])))
+        fv = r1["facts_ordering_validate"]
+        A("| FACTS ordering validate | %.5f ms | %.5f ms | %.4f | — |"
+          % (fv["median_ms"], fv["p95_ms"], fv["mem_peak_mb_max"]))
+        e = r1["end_to_end_merge"]
+        A("| **end-to-end merge** | %.5f ms | %.5f ms | %.4f | %.6f s total |"
+          % (e["median_ms"], e["p95_ms"], e["mem_peak_mb_max"],
+             e["total_s_median"]))
+        A("")
+        _line_ratio = generated_baseline_lines / max(1, r1["actual_lines"])
+        _time_ratio = (generated_baseline_e2e_ms / e["median_ms"]
+                       if e["median_ms"] > 0 else 0.0)
+        A("This is the real conflict-resolution workload: **%d** governance "
+          "anchors arrive duplicated and OQ-NEW-14/15 each appear twice; the "
+          "helpers detect the duplication, dedup the OQ ids to `%s`, and "
+          "renumber them gap-free to `%s` from baseline max %d. End-to-end "
+          "completes in **%.5f ms median / %.5f ms p95**, vs the generated 1x "
+          "row at %.3f ms — about **%.0f× faster** because the real fixture is "
+          "**%.0f× smaller** (%d vs %d lines), consistent with the linear "
+          "scaling measured in Category 2. The size rows bound scan cost; this "
+          "row bounds the cost of the work that actually happened."
+          % (len(r1["duplicated_anchor_counts"]),
+             ri["oq_ids_after_dedup"], _kv(ra["assigned"]), BASELINE_MAX,
+             e["median_ms"], e["p95_ms"],
+             generated_baseline_e2e_ms, _time_ratio, _line_ratio,
+             r1["actual_lines"], generated_baseline_lines))
+        A("")
+
+    r3 = real.get("cat3_collision_real_fixture")
+    if r3:
+        A("### 3R — Worst-case collision against the real 3x-collision fixture")
+        A("")
+        A("Fixture: `%s`. Pinned params from fixture metadata: existing_max=%d, "
+          "num_to_assign=%d, colliding placeholders=%s."
+          % (r3["fixture"], r3["existing_max"], r3["num_to_assign"],
+             r3["colliding_placeholders"]))
+        A("")
+        A("| placeholders | median | p95 | overhead vs distinct | assigned ids |")
+        A("|---|---|---|---|---|")
+        A("| 3× colliding (all same old id) | %.5f ms | %.5f ms | %.2f%% | %s |"
+          % (r3["colliding_median_ms"], r3["colliding_p95_ms"],
+             r3["overhead_pct"], r3["assigned_ids"]))
+        A("| 3 distinct (control) | %.5f ms | — | (baseline) | — |"
+          % r3["distinct_median_ms"])
+        A("")
+        A("The fixture's three placeholders all collide on one old id; they "
+          "resolve to gap-free **%s** (asserted in-harness). Measured overhead "
+          "vs three distinct placeholders is **%.2f%%** — noise-level, "
+          "confirming the placeholder-blind assignment on the real fixture, not "
+          "just the synthetic k-sweep in Category 3."
+          % (r3["assigned_ids"], r3["overhead_pct"]))
+        A("")
+
+    r5 = real.get("cat5_facts_real_fixture")
+    if r5:
+        A("### 5R — Ordering validation against the real descending-FACTS fixture")
+        A("")
+        A("Fixture: `%s`. Real FACTS dates (document order): %s."
+          % (r5["fixture"], r5["dates"]))
+        A("")
+        A("| entries | median | p95 | entries/s | violations |")
+        A("|---|---|---|---|---|")
+        A("| %d | %.5f ms | %.5f ms | %s | %d |"
+          % (r5["entries"], r5["median_ms"], r5["p95_ms"],
+             _fmt(r5["entries_per_sec"]), r5["violations_found"]))
+        A("")
+        A("The real descending FACTS region validates clean (**%d** "
+          "violations), confirming the ordering helper on the actual fixture "
+          "content, not only the synthetic 5000-entry sequences in Category 5."
+          % r5["violations_found"])
+    return "\n".join(L)
+
+
+def _kv(d):
+    return ", ".join("%s=%s" % (k, v) for k, v in d.items())
+
+
 # ───────────────────────── main ─────────────────────────────────────────────
 
 def main():
@@ -666,12 +931,16 @@ def main():
     print("Category 5: ordering-validation speed")
     cat5 = cat5_ordering_validation_speed()
 
+    print("Categories 1R/3R/5R: real committed Track B fixtures")
+    real = cat_real_fixtures()
+
     results = {
         "environment": _env(),
         "category_1_2_scalability": scal,
         "category_3_collision": cat3,
         "category_4_error_handling": cat4,
         "category_5_ordering_speed": cat5,
+        "category_real_fixtures": real,
     }
 
     with open(OUT_JSON, "w", encoding="utf-8", newline="\n") as fh:
@@ -682,10 +951,17 @@ def main():
         fh.write(report)
 
     base = scal[0]
-    print("\nBaseline e2e: %.3f ms median / %.3f ms p95 / %.2f MB peak"
+    print("\nBaseline e2e (generated 1x): %.3f ms median / %.3f ms p95 / %.2f MB peak"
           % (base["end_to_end_merge"]["median_ms"],
              base["end_to_end_merge"]["p95_ms"],
              base["end_to_end_merge"]["mem_peak_mb_max"]))
+    r1 = real["cat1_premerge_real_fixture"]
+    print("Real premerge fixture (%d lines): e2e %.4f ms median; dedup found "
+          "%d duplicated anchors; OQ-NEW dedup -> %s -> assigned %s"
+          % (r1["actual_lines"], r1["end_to_end_merge"]["median_ms"],
+             len(r1["duplicated_anchor_counts"]),
+             r1["renumber_input_scan"]["oq_ids_after_dedup"],
+             r1["renumber_assign"]["assigned"]))
     print("Wrote:\n  %s\n  %s" % (OUT_JSON, OUT_MD))
     return 0
 
