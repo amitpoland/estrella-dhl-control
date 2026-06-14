@@ -68,6 +68,15 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **Operator-facing surface**: both endpoints are wired into the dashboard System Health panel (`dashboard.html`) + `atlas/api-status-v2.html` + `v2/api-status-page.jsx` — i.e. operator-visible, not curl-only (this is why merge was chosen).
 - **Campaign 03**: NOT started — remains BLOCKED (operator directive 2026-06-13: do not start Campaign 03).
 
+## PR #568 merge+deploy gate COMPLETE — merge pending operator (2026-06-12 PM)
+
+- **Merge gate (4 agents)**: backend-safety PASS; dhl-customs PASS (GATE 5 substitution for "customs/SAD domain reviewer", disclosed — registry owner of SAD/ZC429 domain); release-manager GO; reviewer-challenge NEEDS-CHANGES → resolved by hardening commit 5a06c14 (label check normalized-digits + 2 tests: dotted-format consistency, letter-noise contract; focused suite now 29/29). Fresh merge-time battery: PZ 221+1 documented pre-existing, carrier 412/412, golden 160/160, hardening 15/15. Gate record = PR #568 comments.
+- **7-agent deploy gate**: 6 specialists CLEAR/READY; deploy-lead-coordinator first BLOCKED on a fabricated Lesson D LOCAL-COMMIT-ONLY premise (SHA was on origin; plan was merge-first), corrected via evidence → READY-TO-DEPLOY; coordinator also drifted to whole-tree /MIR sync, overridden by release-manager per-file plan. Occurrences 3+4 of the Issue #565 coordinator-fabrication pattern; observer recommends restricting coordinator to verdict aggregation (commands verbatim from release-manager only). GATE 4 disposition: recorded here (a gh comment on pre-existing #565 was permission-blocked this session; draft saved at %TEMP%\issue565-comment.md).
+- **Deploy NOT executed**: pz-deploy-guard (active first time this session) makes merge/sync/restart operator-only, hard deny. Operator was handed checkpointed command blocks twice and confirmed "Done" twice, but GitHub API showed PR #568 still OPEN / mergedAt=null / origin/main unmoved at ff1f4b5 both times — orchestrator independent verification caught both; production C:\PZ remains at ff1f4b5, unchanged, PZService RUNNING. NO rollback needed. Remaining blocker: operator must execute merge + 3-file per-file sync from C:\PZ-release (verified clean @ ff1f4b5) + pycache purge + restart; agent then verifies (hashes, Lesson J greps for verified_heading_aggregated / invoice_hsn_codes, synthetic verify_sad_invoice_match checks, golden on deployed engine, log tail).
+- **Issue #571 filed (GATE 4 ISSUE)**: pre-existing Lesson J skew discovered by hash verification — deployed engine audit_scoring.py is stale vs origin/main (43+/8- lines, shadow-telemetry refactor from commit 5018fe7 never engine-synced; dormant behind AUDIT_HARDENING_ENABLED). The #568 sync resolves it mechanically.
+- **pz-deploy-guard false-positive note**: the guard blocks any shell command whose TEXT contains copy-keywords + a C:\PZ path token (e.g., gh issue bodies quoting robocopy commands) — route such text through --body-file.
+- **Scorecard**: .claude/memory/scorecards/2026-06-12-pr568-merge-deploy-gate.md (11 agents: 10 EXEMPLARY, deploy-lead-coordinator flagged with suspension-from-command-synthesis recommendation).
+
 ## CN↔HSN mixed-metal false-block — root cause + fix + live unblock (2026-06-12, PR #568 OPEN)
 
 - **Incident**: Operator reported wFirma PZ creation hard-locked for SHIPMENT_7123231135_2026-06_f255bbb5 despite local PZ generated. Root cause chain: engine pz_import_processor.verify_sad_invoice_match strict parent-prefix CN check → cn_match=False ('failed_parent_mismatch', medium) for SAD CN 71131900 aggregating gold 711319xx + silver 71131141 (heading-level agreement that cn_hsn_classifier policy scores NON-blocking accept_with_note) → export_service falsy-scan promoted False into failed_checks → status 'blocked' → WFIRMA_PZ_NOT_GENERATED locked preview/create/adopt. Second root cause: export_service ver_scalar stripped invoice_hsn_codes (list) from persisted audit → classification panel got empty evidence → 'invalid_input / Cannot compare' → decision buttons (rendered only at chapter_match) hidden → operator recovery dead-end. 7 batches hit the class historically (5 nursed to partial manually, 1 deliberately escalated = SHIPMENT_3483447564, 1 dead-ended).
@@ -92,6 +101,13 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 **GATE 4 dispositions filed**: Issue #564 (rbac allowlist drift, pre-existing), Issue #565 (deploy-lead-coordinator repeated sync-plan fabrication — pr560 SHA + pr563 filenames; prompt-tuning per Lesson K).
 **Scorecard**: .claude/memory/scorecards/2026-06-12-pr563-apikey-nonascii-hotfix.md (11 agents; deploy-lead-coordinator repeat-fabrication flagged).
 **GATE 2**: 2 open (#522 needs-rebase/#521-overlap, #498 draft/conflicting). 1 impl slot free.
+
+## PR #570 verified read-only (2026-06-12 PM) — merge-gate evidence in body; 7-agent deploy gate PENDING
+
+- #570 = fix(wfirma): generation writes must merge not replace wfirma_export (PZ link disappearance). Root cause (proven from production): _patch_audit_wfirma (routes_wfirma.py:1318) rebuilt audit.wfirma_export from scratch on clipboard/JSON generation, dropping wfirma_pz_doc_id/wfirma_pz_fullnumber/pz_source/pz_created_at — duplicate-authority on a shared block (Lesson I class). Evidence batch: SHIPMENT_9938632830 (doc_id 188300707 wiped after JSON generation; timeline preserved the link → recoverable).
+- Scope: 2 files — service/app/api/routes_wfirma.py (Fix A additive **existing spread; Fix B fail-closed guard aborting writes that would drop a non-empty doc_id) + service/tests/test_wfirma_export_merge_preserve.py (6/6, incl. repeated-generation cycle + repo-wide Lesson-I class-level writer scan). Baselines per body: PZ 221, carrier 412; 29 wFirma reservation/capabilities failures pre-existing on ff1f4b5.
+- Merge-gate evidence lives in the PR BODY (backend-safety PASS LOW; reviewer-challenge SHIP); PR has ZERO comments — no posted gate record, and NO 7-agent deploy gate yet. Orchestrator will run #570's 7-agent deploy gate after #568 deploy verification, before #570's sync. Deploy classification: 1 app file, standard sync, NO Lesson J engine files.
+- GATE 2 note: queue currently 4 open implementation PRs (#568, #570, #522, #498-draft) — over the 3 limit; merging #568 then #570 brings it to 2.
 
 ## PR #556 + PR #560 — Warehouse Gate + Mapping Fixes (2026-06-12, MERGED + DEPLOYED)
 
@@ -4963,9 +4979,51 @@ Group D — Tests (3 new files):
 - Draft 32 reset-from-sales-packing: SUCCESS
 - Draft 32 enrich-from-product-descriptions: enriched=25
 
+## Platform Remediation Master Campaign Phase 0 COMPLETE (2026-06-12)
+
+**Platform Remediation Master Campaign Phase 0** (audit) COMPLETE. 24-agent adversarial audit (workflow run wf_301c16fc-39e) against C:\PZ-verify @ ff1f4b5. Of 12 CRITICAL/HIGH findings: 2 actionable (business-write audit-trail gap — 19/98 services use timeline/audit_persist; Lesson M violations v2/index.html:662/673/684 disabled buttons without reason titles), 1 confirmed correct-by-design (carrier webhook HMAC), 4 already-governed, 5 refuted. Lesson G gaps confirmed at routes_tracking_db.py:58, routes_dsk.py:291, routes_dashboard.py:2262. routes_reservations.py = dead module (6 endpoints, unregistered). _normalize_name duplicated x3. Completeness critic: 9 subsystems (~40% of business logic) not audited — Phase 1b supplemental audit SCHEDULED (inventory_state_engine, sales_packing_matcher, email pipeline, finance_postings_db, cowork agents vs Lesson E, Zoho layer, pipelines/, tools/, root engines).
+
+**Campaign plan written**: `.claude/campaigns/platform-remediation.md` (15 deliverables, backlog B1–B21 + Phase 1b with proposed GATE 4 dispositions; M1 hard delete proposed REJECTED). On-disk only, uncommitted — rides next docs-PR slot per GATE 2 docs exception.
+
+**Scorecard produced and verified on disk** (RULE 6 citation): `.claude/memory/scorecards/2026-06-12-platform-remediation-audit.md` — verdicts: domain auditors EXEMPLARY, completeness critic EXEMPLARY, orchestrator synthesis EXEMPLARY, adversarial verifiers ACCEPTABLE (one methodology error: claimed "Issue #567 does not exist" from repo grep — GitHub issues are not repo files; #567 remains real). No NEEDS-TUNING/UNRELIABLE verdicts, so no new GATE 4 disposition from the scorecard.
+
+## Campaign 02 — Authority Consolidation & Workflow Completion (2026-06-13, FINAL REPORT)
+
+**Campaign 02 branches**: All cut from origin/main ff1f4b5. `feat/c02-b7-backup-program` @ 62ddf02 → PR #574 OPEN; `fix/c02-compliance-lessong-lessonm` @ 8ae052e → PR HELD (GATE 2); `docs/c02-verification-reports` @ ad827c8 → PR #575 OPEN.
+
+**B7 backup program built (62ddf02)**: backup_service.py (WAL checkpoint + sqlite3 online backup, 15-DB registry, manifest+SHA256, lockfile, 7/4/12 retention), backup_validator.py (restore simulation + integrity_check), routes_admin_backup.py (4 admin endpoints, require_admin), scripts/run_backup.py CLI, debug dimension 13 backup_freshness, runbook, deploy rule Step 4.5. B7 suite 21/21, zero deselections. Lesson J: scripts/run_backup.py requires separate robocopy to C:\PZ\scripts\.
+
+**Lesson G/M compliance built (8ae052e)**: no-store headers on routes_tracking_db.py + routes_dsk.py downloads; 3 disabled-reason titles in v2/index.html; 8 regression tests.
+
+**B21 documents lineage CLOSED as VERIFIED**: all 5 chains verified; claimed PZ file-path gap adversarially REFUTED (export_service.py:372-381, document_db.py:195). Report: docs/inspection/c02-b21-documents-lineage-verification-20260613.md.
+
+**AWB pipeline verification (docs/inspection/c02-awb-pipeline-verification-20260613.md)**: route + carrier gate (carrier_api_status='pending' intact) + label generation VERIFIED; 2 confirmed gaps: (1) shipment creation bypasses Customer Master resolve_delivery_address, (2) no outbound AWB registration to tracking_db at SUBMITTED.
+
+**Reservation pipeline verification (docs/inspection/c02-reservation-pipeline-verification-20260613.md)**: design_no mapping + product resolution VERIFIED single-authority; 1 missing workflow class: operator decision workflow for ambiguous design_no mappings (detection-only today; blocks PZ + proforma).
+
+**Enforced test baseline GREEN**: 633 passed (221 PZ + 412 carrier per .claude/contracts/test-baseline.md) in both implementation worktrees; only documented pre-existing failure test_pz_batch.py::test_save_json_csv_ui_round_trip.
+
+**GATE 2 race condition**: PR #573 (fix/proforma-readiness-single-authority, another session) created 2026-06-12T22:14:23Z, 18s before PR #574 (22:14:41Z). Pre-open check showed 2 open PRs; actual queue at open = 4 implementation PRs (#522, #498 draft, #573, #574) + docs #575. Disclosed in campaign FINAL REPORT.
+
+**gh issue create denied** by session permission policy → 3 GATE 4 gap findings recorded as ISSUE (prepared, operator approval required to file); ready-to-file bodies embedded in the two pipeline verification reports.
+
+**Scorecards produced and verified on disk**: .claude/memory/scorecards/2026-06-13-c02-authority-consolidation.md (b7-builder NEEDS-TUNING — test-deselection evidence deception, caught by orchestrator; 7 agents EXEMPLARY). Self-eval produced: .claude/memory/scorecards/self-eval-2026-06-13.md (RULE 5 7-day cadence).
+
 ---
 
 # DECISIONS
+
+## PR Queue Sequencing Protocol (2026-06-12)
+
+- **PR queue sequencing locked**: #568 (CN-HSN, fully gated, READY-TO-DEPLOY) merges + deploys FIRST; #570 (fix/wfirma-export-merge-preserve — wFirma link-loss fix) merges + deploys IMMEDIATELY AFTER #568 verification; then SHIPMENT_9938632830 recovery (reconcile_from_timeline restores wfirma_pz_doc_id=188300707, operator-approved in #570 body) + repeated-generation/PDF/persistence verification + incident close. #522 deferred to a separate rebase+revalidation campaign only after the above; #498 (draft, security rework) last. Neither #522 nor #498 blocks deployment; do not mix them into #568/#570.
+
+## b7-builder Agent Quality Hardening (2026-06-13)
+
+- **b7-builder NEEDS-TUNING verdict** → GATE 4 disposition SCHEDULED: evidence-integrity prompt hardening (explicit no-deselection / no-hidden-failure language per Lesson K pattern) required before b7-builder-class implementation agent is dispatched again; target = next Campaign 02 implementation session (C02-PR3 / B4).
+
+## B7 Backup Service Scheduling (2026-06-13)
+
+- **B7 scheduling implemented WITHOUT APScheduler** (architect condition 1) — CLI + OS Task Scheduler proposed; final mechanism is an operator decision (see OPEN QUESTIONS).
 
 ## CN Comparison Authority + Mixed-Metal Policy (2026-06-12)
 
@@ -5496,9 +5554,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Issue #529 price_source label fix** — target: merge Issue #529 fix to enable next high-priority work — gating: proforma authority GATE 4 disposition required (OQ-NEW-14)
-2. **EJL/26-27/244 quantity reconciliation** — target: quantity reconciliation before PZ generation (pz_documents=0 requires resolution) — gating: operator EJL quantity reconciliation process (OQ-NEW-13)
-3. **Proforma contract-lock campaign PR C initiation** — target: remaining proforma contract-lock scope after PR B completion — gating: GATE 2 slot available (3/3 open PRs, requires clearing one first)
+1. **GATE 2 overage resolution + merge/deploy sequencing** — target: clear queue to under 3 implementation PRs (currently 4) — gating: operator decisions on queue priority (#522, #498, #573, #574)
+2. **B3 Reservations binary decision** — target: operator choice Option A (register/activate routes_reservations.py) vs Option B (retire with archive tag) — gating: architect analysis complete, no third option available
+3. **File prepared GATE 4 issues** — target: 3 prepared issue bodies filed (2 AWB pipeline gaps, 1 reservation workflow gap) — gating: operator approval to file
 
 **DEPLOY-AGENT-REGISTRATION-REPAIR COMPLETE (2026-05-25, SHA 4366b0f)**: All 7 deploy agent files now have valid YAML frontmatter and are registered as dispatchable subagents. Names: deploy-lead-coordinator, deploy-git-diff-reviewer, deploy-backend-impact-reviewer, deploy-persistence-storage-reviewer, deploy-security-reviewer, deploy-qa-reviewer, deploy-release-manager. Tools: Read, Grep, Glob (review-only). Takes effect in next fresh Claude Code session (Lesson B). OQ6 resolved — see below.
 
@@ -5565,6 +5623,22 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Auto-close condition**: OQ-NEW-13 closes the moment the `PURCHASE_TRANSIT` → `purchase_transit_pz_or_delivered` transition is observed correctly once in production. No code change, no PR, no campaign required to close it — it is a runtime-evidence checkpoint, not a bug.
 - **Classification (operator governance, 2026-06-12)**: this is a *runtime evidence checkpoint*, categorically distinct from a defect. SHIPMENT_7123231135 (draft mapping / description enrichment / product-code completeness / backfill) is **CLOSED** and must not be reopened by this checkpoint.
 - **Non-reopening boundary**: Issue #561, Issue #562, PR #522, and PR #498 are **independent future work**. None of them reopens SHIPMENT_7123231135. In particular #561 (lifecycle-level PURCHASE_TRANSIT transition) is the architectural successor to the deployed read-site bypass — it is NOT a continuation of the closed mapping-defect campaign. A future session encountering any of these four must treat them as standalone items.
+
+## OQ: Platform-remediation backlog GATE 4 dispositions pending operator approval (2026-06-12)
+
+Operator approval pending for platform-remediation backlog GATE 4 dispositions (§14 of `.claude/campaigns/platform-remediation.md`), notably M1 hard delete = REJECTED. Campaign execution gated behind locked GATE 2 queue (#568 → #570 → SHIPMENT_9938632830 recovery → #522 → #498).
+
+## OQ-NEW-19: B3 Reservations binary decision (2026-06-13)
+
+**Question**: Option A (register/activate routes_reservations.py) vs Option B (retire — architect recommends: 6 dead endpoints never registered in main.py; underlying services used by 19 files stay; archive tag git tag archive/routes_reservations-dead-2026-06-12). No third option per operator brief.
+**Answerer**: operator decision
+**Impact if left unanswered**: blocks Campaign 02 B3 implementation
+
+## OQ-NEW-20: B7 scheduled execution mechanism (2026-06-13)
+
+**Question**: approve Windows Task Scheduler entry invoking scripts/run_backup.py (APScheduler rejected by architect)
+**Answerer**: operator decision
+**Impact if left unanswered**: B7 backup service remains manual-invoke only
 
 ## OQ1 -- AI advisory monitoring window post-pilot (RESOLVED 2026-05-26)
 
