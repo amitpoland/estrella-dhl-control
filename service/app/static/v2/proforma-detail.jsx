@@ -1695,6 +1695,117 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         </TbBtn>
       </div>
 
+      {/* ── PROFORMA STATUS HEADER (Sprint 03.1-A) — persistent, always visible.
+          PURE RE-PRESENTATION of existing backend-authoritative props/state
+          (readinessPost / customer / pieces / lifecycle). No authority computed
+          here — readiness comes from the backend `ready` field only. */}
+      {(() => {
+        const pill = alreadyPosted
+          ? { label: 'Posted', tone: 'green' }
+          : (readinessPost == null)
+            ? { label: 'Checking readiness…', tone: 'neutral' }
+            : (postBlocked
+                ? { label: `Not ready · ${postBlockers.length} blocker${postBlockers.length === 1 ? '' : 's'}`, tone: 'red' }
+                : { label: 'Ready', tone: 'green' });
+        const toneBg = t => t === 'green' ? 'var(--badge-green-bg)' : t === 'red' ? 'var(--badge-red-bg)' : 'var(--bg-subtle)';
+        const toneFg = t => t === 'green' ? 'var(--badge-green-text)' : t === 'red' ? 'var(--badge-red-text)' : 'var(--text-2)';
+        const toneBd = t => t === 'green' ? 'var(--badge-green-border)' : t === 'red' ? 'var(--badge-red-border)' : 'var(--border)';
+        const custMapped = !!customer.wfirmaId;
+        const pieces = (typeof _cmrTotalPcs === 'number' && _cmrTotalPcs > 0) ? _cmrTotalPcs : null;
+        const awb = liveDraft.batch_id || (draft && draft.batch_id) || null;
+        const nextAction = (postBlocked && postBlockers.length)
+          ? postBlockers[0].repair_action
+          : (approveBlocked && approveBlockers.length)
+            ? approveBlockers[0].repair_action
+            : (stateAllowsApprove && !alreadyApproved)
+              ? 'Approve draft'
+              : canPost ? 'Post to wFirma'
+              : canConvert ? 'Convert to invoice'
+              : alreadyPosted ? '— posted; no action required'
+              : 'Review draft';
+        const chip = (testid, label, tone) => (
+          <span data-testid={testid} style={{
+            fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 12,
+            background: toneBg(tone), color: toneFg(tone), border: `1px solid ${toneBd(tone)}`,
+            whiteSpace: 'nowrap',
+          }}>{label}</span>
+        );
+        return (
+          <div data-testid="proforma-status-header" style={{
+            background: 'var(--card)',
+            borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+            borderTop: '1px solid var(--border)',
+            padding: '12px 24px',
+            display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+          }}>
+            {chip('proforma-readiness-pill', pill.label, pill.tone)}
+            {chip('proforma-customer-status-chip',
+              custMapped ? `Customer: ${customer.wfirmaName || customer.name} ✓` : `Customer: ${customer.name} · unmapped`,
+              custMapped ? 'green' : 'neutral')}
+            {chip('proforma-shipment-status-chip',
+              pieces ? `Shipment: ${pieces} pcs${awb ? ` · AWB ${awb}` : ''}` : 'Shipment: pending',
+              pieces ? 'neutral' : 'neutral')}
+            <span data-testid="proforma-next-action" style={{
+              fontSize: 12, color: 'var(--text)', fontWeight: 600, marginLeft: 'auto',
+            }}>Next: {nextAction}</span>
+          </div>
+        );
+      })()}
+
+      {/* ── UNIFIED "WHAT'S BLOCKING" PANEL (Sprint 03.1-B) — consolidates the
+          blocker sources that were previously scattered (readiness post-blockers
+          in the main panel + export blockers / blocking reasons surfaced only in
+          the Overview & Reservation tabs), each tagged by the action it gates.
+          PURE RE-PRESENTATION of existing arrays — no new authority, no new
+          computation. The interactive readiness panel below remains for the
+          design-ambiguity resolver (capability preserved). */}
+      {(() => {
+        const seen = new Set();
+        const rows = [];
+        const add = (reason, repair, gates) => {
+          if (!reason) return;
+          const key = `${reason}::${gates}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          rows.push({ reason, repair: repair || null, gates });
+        };
+        postBlockers.forEach(b => add(b.reason, b.repair_action, 'Post / Convert'));
+        approveBlockers.forEach(b => add(b.reason, b.repair_action, 'Approve'));
+        exportBlockers.forEach(r => add(r, null, 'Export / PDF'));
+        blockingReasons.forEach(r => add(r, null, 'Reservation'));
+        if (rows.length === 0) return null;
+        const tagColor = g => g.startsWith('Post') ? 'var(--badge-red-text)'
+          : g === 'Approve' ? 'var(--badge-amber-text, var(--text-2))'
+          : 'var(--text-2)';
+        return (
+          <div data-testid="proforma-blocker-panel" style={{
+            background: 'var(--card)',
+            borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+            borderTop: '1px solid var(--border)',
+            padding: '12px 24px',
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>
+              What&rsquo;s blocking — {rows.length} item{rows.length === 1 ? '' : 's'} across approve / post / convert / export
+            </div>
+            {rows.map((r, i) => (
+              <div key={i} data-testid={`proforma-blocker-row-${i}`} style={{ fontSize: 12, marginBottom: 5 }}>
+                <span style={{
+                  display: 'inline-block', fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',
+                  color: tagColor(r.gates), border: `1px solid var(--border)`, borderRadius: 4,
+                  padding: '0 6px', marginRight: 8, verticalAlign: 'middle',
+                }}>{r.gates}</span>
+                <span style={{ color: 'var(--text)' }}>{r.reason}</span>
+                {r.repair && (
+                  <div style={{ color: 'var(--text-dim, var(--text))', opacity: 0.75, paddingLeft: 14 }}>
+                    Fix: {r.repair}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
       {/* ── READINESS PANEL — single backend authority (split-authority fix) ──
           Renders the SAME gate the backend enforces on approve/post/convert:
           every blocker with its exact repair action (Lesson M), plus the
