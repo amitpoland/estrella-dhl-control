@@ -89,7 +89,14 @@ def db_path(tmp_path) -> Path:
 @pytest.fixture()
 def client(tmp_path) -> TestClient:
     from app.main import app
-    with patch.object(settings, "storage_root", tmp_path):
+    # routes_customer_master binds `_DB_PATH = settings.storage_root /
+    # "customer_master.sqlite"` at IMPORT time, so patching settings.storage_root
+    # alone cannot redirect that frozen constant — customer-master writes would
+    # leak into the live storage root. Redirect the module constant too so PUT
+    # writes land under tmp_path. (Test-isolation only; no production change.)
+    import app.api.routes_customer_master as _rcm
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(_rcm, "_DB_PATH", tmp_path / "customer_master.sqlite"):
         with TestClient(app, raise_server_exceptions=True) as c:
             yield c
 
