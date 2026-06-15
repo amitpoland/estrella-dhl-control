@@ -51,6 +51,20 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, model_validator
 
 from ..core.config import settings
+
+# ── Shared grammar import (Phase 2B4) ───────────────────────────────────────
+# Import METAL_PREPOSITIONAL so we can verify at import time that
+# _material_from_pl_desc()'s regex patterns can extract every shared
+# grammar metal form.  This catches grammar drift at import, not runtime.
+#
+# Path fix (Lesson J): use settings.engine_dir, NOT parents[3].
+#   dev:  parents[3] = C:\PZ-verify (repo root) ✓ but settings.engine_dir is also correct
+#   prod: parents[3] = C:\ (system root) ✗ — settings.engine_dir = C:\PZ\engine ✓
+_grammar_engine_dir = str(settings.engine_dir)
+if _grammar_engine_dir not in sys.path:
+    sys.path.insert(0, _grammar_engine_dir)
+from description_grammar import METAL_PREPOSITIONAL  # noqa: E402
+
 from ..core.logging import get_logger
 from ..core.security import require_api_key
 from ..core import timeline as tl
