@@ -39,13 +39,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# ── Shared grammar import (Phase 2B4) ───────────────────────────────────────
-# Import METAL_PREPOSITIONAL so we can verify at import time that
-# _material_from_pl_desc()'s regex patterns can extract every shared
-# grammar metal form.  This catches grammar drift at import, not runtime.
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from description_grammar import METAL_PREPOSITIONAL  # noqa: E402
-
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, model_validator
