@@ -90,7 +90,8 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **GATE 2**: opened as 3rd implementation PR (with #522, #498-draft; #575 docs) — within 3-impl limit. **Deploy operator-gated** (full 7-agent `/deploy`); not deployed autonomously.
 - **Branch / merge**: `fix/debug-health-endpoints` off `main` HEAD `f36bef4`; **squash-merged to `main` via PR #582 on 2026-06-13** (operator command). **MERGED to main only — NOT deployed. Production remains `f36bef4`; operators still see the two probe 500s until a separate operator-gated `/deploy`.** Deployment of #582 is an independent operator decision (bundle into next stabilization-checkpoint deploy or hold to 2026-06-20). PR: https://github.com/amitpoland/estrella-dhl-control/pull/582.
 - **Operator-facing surface**: both endpoints are wired into the dashboard System Health panel (`dashboard.html`) + `atlas/api-status-v2.html` + `v2/api-status-page.jsx` — i.e. operator-visible, not curl-only (this is why merge was chosen).
-- **Campaign 03**: NOT started — remains BLOCKED (operator directive 2026-06-13: do not start Campaign 03).
+- **Campaign 03**: NOT started — remains BLOCKED (operator directive 2026-06-13: do not start Campaign 03). **SUPERSEDED 2026-06-15 — see next line.**
+- **Campaign 03 UX Modernization: AUTHORIZED by operator override on 2026-06-15.** This supersedes the 2026-06-13 BLOCKED directive. Implementation may begin only after this authorization record is merged. (Anti-drift gate §1 in `.claude/campaigns/campaign-03-ux-modernization.md` still applies before Sprint 03.1 fires.)
 
 ## Campaign 04 PR1 (#529) — Price Source Authority Hardening (2026-06-14, MERGED)
 

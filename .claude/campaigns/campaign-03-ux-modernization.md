@@ -1,8 +1,8 @@
 # Campaign 03 — Professional UX & Operator-Experience Modernization
 
-**Status**: BLOCKED — do not start
-**Authority**: PROJECT_STATE.md DECISIONS, operator directive 2026-06-13
-**Note**: This campaign document is preserved as a draft/spec only. It is not authorized for execution. The "stabilization override 2026-06-14" referenced in earlier drafts of this header was never recorded in PROJECT_STATE.md DECISIONS; the authoritative record states Campaign 03 is BLOCKED / not started. Sprint 03.1 may NOT fire until an explicit DECISIONS override is committed to PROJECT_STATE.md by the operator.
+**Status**: AUTHORIZED — operator override 2026-06-15
+**Authority**: PROJECT_STATE.md DECISIONS
+**Note**: Authorized by operator override recorded in PROJECT_STATE.md DECISIONS on 2026-06-15, superseding the 2026-06-13 BLOCKED directive. Implementation may begin only after that authorization record is merged to main. The earlier "stabilization override 2026-06-14" claim was never recorded and is not the basis for this authorization; the authoritative basis is the 2026-06-15 operator override. The remaining anti-drift gates (§1) still apply before Sprint 03.1 fires.
 **Authored**: 2026-06-14 (operator-directed, scope confirmed: full sequenced program, Proforma UX leads)
 **Parent**: `.claude/campaigns/campaign-02-authority-consolidation.md` (authority-complete; Deploy #1 + Deploy #2 + #582 live)
 **Architecture reference**: `docs/v2-architecture-plan.md` (authority map, layer rules, phase plan)
@@ -38,7 +38,7 @@ separate authority/backend task, do not fold it in.
 
 | Gate | Check | Current |
 |---|---|---|
-| **Stabilization satisfied** | ≥7 days OR ≥100 shipments since anchor `2026-06-14 12:32 @ 6665597`, **or** operator override recorded in PROJECT_STATE.md DECISIONS | ❌ **NOT satisfied** — no override is recorded in PROJECT_STATE.md DECISIONS (the authoritative record states Campaign 03 BLOCKED, operator directive 2026-06-13). The "✅ OVERRIDDEN 2026-06-14" claim in earlier drafts was never committed to DECISIONS. |
+| **Stabilization satisfied** | ≥7 days OR ≥100 shipments since anchor `2026-06-14 12:32 @ 6665597`, **or** operator override recorded in PROJECT_STATE.md DECISIONS | ✅ **Satisfied via operator override 2026-06-15** — recorded in PROJECT_STATE.md DECISIONS (supersedes the 2026-06-13 BLOCKED directive). Takes effect once the authorization record is merged to main. (The earlier "2026-06-14" override claim was never recorded and is not the basis.) |
 | **Production parity clean** | `service/app` full-scan deltas=0 vs origin/main | ✅ at `6665597` (verified 2026-06-14) |
 | **Authority layer healthy** | no `authority_startup` / `authority_drift` errors in prod logs | ✅ (flag OFF, clean) |
 | **Atlas-V2 authority-clean confirmed** | no reachable mock data; per-page disabled-reason strings present | ✅ (2026-06-06 governed state) |
@@ -184,4 +184,5 @@ recorded; Campaign 03 closed in PROJECT_STATE.md.
 
 - 2026-06-14: Spec authored (operator scope: full sequenced program, Proforma UX leads). Status BLOCKED — gated on Campaign-02 stabilization window (anchor 2026-06-14 12:32 @ 6665597) or operator override. Written as uncommitted file in `C:\PZ-verify`; commit to be carried by the governance session/process (one-session rule — not committed by the authoring session).
 - 2026-06-14: A draft of this changelog asserted "**Operator stabilization OVERRIDE issued** → Status AUTHORIZED, recorded in PROJECT_STATE.md DECISIONS." **This was never committed to PROJECT_STATE.md DECISIONS and is NOT authoritative.** The authoritative record (PROJECT_STATE.md DECISIONS) states Campaign 03 is **BLOCKED / not started** (operator directive 2026-06-13). This entry is retained for history only; it does not authorize execution.
-- 2026-06-15: Header, §1 stabilization gate, and this changelog corrected to match authority (BLOCKED). Document preserved as a draft/spec via docs-only PR. No PROJECT_STATE.md change. Sprint 03.1 remains gated until an explicit DECISIONS override is committed by the operator.
+- 2026-06-15: Header, §1 stabilization gate, and this changelog corrected to match authority (BLOCKED). Document preserved as a draft/spec via docs-only PR (#604). No PROJECT_STATE.md change at that point. Sprint 03.1 remained gated.
+- 2026-06-15: **Operator authorization override issued and recorded in PROJECT_STATE.md DECISIONS.** This supersedes the 2026-06-13 BLOCKED directive. Status → AUTHORIZED. Recorded via the authorization PR (PROJECT_STATE.md DECISIONS line + this header flip). Implementation may begin only after the authorization record is merged to main. Remaining anti-drift gates (§1) still apply before Sprint 03.1 fires.
