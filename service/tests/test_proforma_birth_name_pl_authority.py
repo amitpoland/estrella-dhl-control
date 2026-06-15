@@ -307,3 +307,205 @@ def test_birth_without_lookup_is_noop(db_path):
     # And the blank is still surfaced in the advisory.
     detail = _birth_event_detail(db_path, draft.id)
     assert any("blank_name_pl" in u["reasons"] for u in detail["birth_unresolved"])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Campaign 04 PR4 — generated name_pl fallback + name_pl_source provenance +
+# missing-product-mapping birth advisory.
+#
+# These use the REAL generate_name_pl_if_sufficient (no stub — Lesson A: the
+# function under contract is exercised directly) and a dict-backed mapping
+# authority that is read-only by construction (it cannot write wFirma).
+# ════════════════════════════════════════════════════════════════════════════
+
+from app.api.sales_packing_parser import generate_name_pl_if_sufficient
+
+
+# A read-only wFirma product-mapping authority. Mirrors wfirma_db.get_product:
+# a row dict carrying wfirma_product_id (truthy ⇒ mapped) or None on a miss.
+_MAPPING_AUTHORITY = {
+    "RNG-100": {"wfirma_product_id": 555},   # mapped
+    "NCK-200": {"wfirma_product_id": 0},     # row exists but unmapped (falsy)
+    # UNKNOWN-999 → absent ⇒ unmapped
+}
+
+
+def _mapping_lookup(product_code):
+    return _MAPPING_AUTHORITY.get(str(product_code or "").strip())
+
+
+def _attr_line(product_code, *, name_pl="", unit_price=10.0,
+               ctg="", kt="", col="", quality="", price_source="excel_symbol"):
+    """A sales line carrying the optional generate-fallback attributes."""
+    return {
+        "product_code": product_code,
+        "design_no":    "D1",
+        "quantity":     2,
+        "unit_price":   unit_price,
+        "currency":     "EUR",
+        "price_source": price_source,
+        "client_ref":   "REF1",
+        "name_pl":      name_pl,
+        "ctg":          ctg,
+        "kt":           kt,
+        "col":          col,
+        "quality":      quality,
+    }
+
+
+def _reasons_for(detail, product_code) -> set:
+    for u in detail.get("birth_unresolved", []):
+        if u["product_code"] == product_code:
+            return set(u["reasons"])
+    return set()
+
+
+# ── PR4-1. generated fallback fills name_pl when PD misses + attrs sufficient ─
+
+def test_birth_generated_fallback_when_pd_misses(db_path):
+    # UNKNOWN-999 has NO product_descriptions authority, but the line carries a
+    # recognised category (RNG) ⇒ the generator supplies a real Polish name.
+    draft, _ = pildb.auto_create_draft_from_sales_packing(
+        db_path, batch_id="P1", client_name="ACME", currency="EUR",
+        lines=[_attr_line("UNKNOWN-999", name_pl="", ctg="RNG",
+                          kt="14KT", col="W", quality="GH-SI1")],
+        name_pl_lookup=_lookup,
+        desc_generate=generate_name_pl_if_sufficient,
+    )
+    ln = _editable(draft)[0]
+    assert ln["name_pl"], "generator should have produced a non-blank name_pl"
+    assert "pierścionek" in ln["name_pl"].lower()
+    assert ln["name_pl_source"] == pildb.NAME_PL_SOURCE_GENERATED
+    # transient attrs must not persist
+    assert "_gen_attrs" not in ln
+
+
+# ── PR4-2. anti-fabrication: generator declines for an unknown category ──────
+
+def test_birth_generated_declines_for_unknown_category(db_path):
+    # ctg "ZZZ" is not a recognised category ⇒ generate_name_pl_if_sufficient
+    # returns None ⇒ name_pl stays blank, source=blank (never the generic
+    # "wyrób" placeholder).
+    draft, _ = pildb.auto_create_draft_from_sales_packing(
+        db_path, batch_id="P2", client_name="ACME", currency="EUR",
+        lines=[_attr_line("UNKNOWN-999", name_pl="", ctg="ZZZ",
+                          kt="14KT", col="W", quality="GH-SI1")],
+        name_pl_lookup=_lookup,
+        desc_generate=generate_name_pl_if_sufficient,
+    )
+    ln = _editable(draft)[0]
+    assert ln["name_pl"] == ""
+    assert ln["name_pl_source"] == pildb.NAME_PL_SOURCE_BLANK
+
+
+# ── PR4-3. name_pl_source stamped correctly for all four provenance values ───
+
+def test_birth_name_pl_source_all_four_values(db_path):
+    draft, _ = pildb.auto_create_draft_from_sales_packing(
+        db_path, batch_id="P3", client_name="ACME", currency="EUR",
+        lines=[
+            _attr_line("RNG-100",     name_pl="Operator Curated"),  # operator
+            _attr_line("NCK-200",     name_pl=""),                  # product_descriptions
+            _attr_line("UNKNOWN-999", name_pl="", ctg="EAR"),       # generated
+            _attr_line("BLANK-000",   name_pl="", ctg=""),          # blank
+        ],
+        name_pl_lookup=_lookup,
+        desc_generate=generate_name_pl_if_sufficient,
+    )
+    by_code = {ln["product_code"]: ln for ln in _editable(draft)}
+    assert by_code["RNG-100"]["name_pl_source"]     == pildb.NAME_PL_SOURCE_OPERATOR
+    assert by_code["RNG-100"]["name_pl"]            == "Operator Curated"
+    assert by_code["NCK-200"]["name_pl_source"]     == pildb.NAME_PL_SOURCE_PD
+    assert by_code["NCK-200"]["name_pl"]            == "Naszyjnik srebrny"
+    assert by_code["UNKNOWN-999"]["name_pl_source"] == pildb.NAME_PL_SOURCE_GENERATED
+    assert by_code["UNKNOWN-999"]["name_pl"]
+    assert by_code["BLANK-000"]["name_pl_source"]   == pildb.NAME_PL_SOURCE_BLANK
+    assert by_code["BLANK-000"]["name_pl"]          == ""
+
+
+# ── PR4-4. missing_product_mapping advisory — only when lookup supplied ───────
+
+def test_birth_missing_product_mapping_advisory(db_path):
+    draft, _ = pildb.auto_create_draft_from_sales_packing(
+        db_path, batch_id="P4", client_name="ACME", currency="EUR",
+        lines=[
+            _attr_line("RNG-100",     name_pl="Has Name", unit_price=10.0),  # mapped
+            _attr_line("NCK-200",     name_pl="Has Name", unit_price=10.0),  # unmapped (id=0)
+            _attr_line("UNKNOWN-999", name_pl="Has Name", unit_price=10.0),  # unmapped (absent)
+        ],
+        name_pl_lookup=_lookup,
+        desc_generate=generate_name_pl_if_sufficient,
+        product_mapping_lookup=_mapping_lookup,
+    )
+    detail = _birth_event_detail(db_path, draft.id)
+    # mapped product carries NO missing_product_mapping
+    assert "missing_product_mapping" not in _reasons_for(detail, "RNG-100")
+    # unmapped products are flagged (read-only mapping check; never writes wFirma)
+    assert "missing_product_mapping" in _reasons_for(detail, "NCK-200")
+    assert "missing_product_mapping" in _reasons_for(detail, "UNKNOWN-999")
+
+
+def test_birth_no_mapping_advisory_without_lookup(db_path):
+    # Backward-compat: with no product_mapping_lookup, the mapping is simply
+    # not assessed — no missing_product_mapping reason is ever emitted.
+    draft, _ = pildb.auto_create_draft_from_sales_packing(
+        db_path, batch_id="P5", client_name="ACME", currency="EUR",
+        lines=[_attr_line("UNKNOWN-999", name_pl="Has Name", unit_price=10.0)],
+        name_pl_lookup=_lookup,
+        desc_generate=generate_name_pl_if_sufficient,
+        # product_mapping_lookup omitted
+    )
+    detail = _birth_event_detail(db_path, draft.id)
+    assert "missing_product_mapping" not in _reasons_for(detail, "UNKNOWN-999")
+
+
+# ── PR4-5. reset uses the same generated fallback + mapping advisory ─────────
+
+def test_reset_generated_fallback_and_mapping_advisory(db_path):
+    draft, _ = pildb.auto_create_draft_from_sales_packing(
+        db_path, batch_id="P6", client_name="ACME", currency="EUR",
+        lines=[_attr_line("RNG-100", name_pl="Seed", unit_price=10.0)],
+        name_pl_lookup=_lookup,
+        desc_generate=generate_name_pl_if_sufficient,
+        product_mapping_lookup=_mapping_lookup,
+    )
+    fresh = pildb.get_draft_by_id(db_path, draft.id)
+    refreshed = pildb.reset_draft_from_sales_packing(
+        db_path, draft.id, operator="tester",
+        expected_updated_at=fresh.updated_at,
+        sales_lines=[_attr_line("UNKNOWN-999", name_pl="", ctg="BRC",
+                                unit_price=10.0)],
+        name_pl_lookup=_lookup,
+        desc_generate=generate_name_pl_if_sufficient,
+        product_mapping_lookup=_mapping_lookup,
+    )
+    ln = _editable(refreshed)[0]
+    # generated fallback applied in reset path
+    assert ln["name_pl"], "reset generator produced no name_pl"
+    assert ln["name_pl_source"] == pildb.NAME_PL_SOURCE_GENERATED
+    assert "_gen_attrs" not in ln
+    # mapping advisory applied in reset path
+    detail = _reset_event_detail(db_path, draft.id)
+    assert "missing_product_mapping" in _reasons_for(detail, "UNKNOWN-999")
+
+
+# ── PR4-6. reset name_pl_source = product_descriptions on a PD hit ───────────
+
+def test_reset_stamps_pd_source(db_path):
+    draft, _ = pildb.auto_create_draft_from_sales_packing(
+        db_path, batch_id="P7", client_name="ACME", currency="EUR",
+        lines=[_attr_line("UNKNOWN-999", name_pl="", unit_price=10.0)],
+        name_pl_lookup=_lookup,
+        desc_generate=generate_name_pl_if_sufficient,
+    )
+    fresh = pildb.get_draft_by_id(db_path, draft.id)
+    refreshed = pildb.reset_draft_from_sales_packing(
+        db_path, draft.id, operator="tester",
+        expected_updated_at=fresh.updated_at,
+        sales_lines=[_attr_line("RNG-100", name_pl="", unit_price=10.0)],
+        name_pl_lookup=_lookup,
+        desc_generate=generate_name_pl_if_sufficient,
+    )
+    ln = _editable(refreshed)[0]
+    assert ln["name_pl"] == "Pierścionek złoty"
+    assert ln["name_pl_source"] == pildb.NAME_PL_SOURCE_PD
