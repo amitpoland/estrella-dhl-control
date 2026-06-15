@@ -25,13 +25,13 @@ from fastapi.testclient import TestClient
 _SVC = Path(__file__).parent.parent
 sys.path.insert(0, str(_SVC))
 
-DASHBOARD_HTML = Path(
-    "/Users/amitgupta/Downloads/CLI/service/app/static/dashboard.html"
-)
+# Atlas-V2 relocated the agency SAD decision card from dashboard.html into
+# shipment-detail.html. The UI source-grep target follows the card.
+SHIPMENT_DETAIL_HTML = Path(__file__).resolve().parents[1] / "app" / "static" / "shipment-detail.html"
 
 
 def _src() -> str:
-    return DASHBOARD_HTML.read_text(encoding="utf-8")
+    return SHIPMENT_DETAIL_HTML.read_text(encoding="utf-8")
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────

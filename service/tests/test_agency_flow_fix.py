@@ -10,6 +10,12 @@ shipments was reversed. Correct order:
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+_ROUTES_DHL_CLEARANCE = str(
+    Path(__file__).resolve().parents[1] / "app" / "api" / "routes_dhl_clearance.py"
+)
+
 
 def test_dhl_email_guard_skipped_for_agency_path():
     """Reading the route source: the guard must be skipped when clearance_path
@@ -18,7 +24,7 @@ def test_dhl_email_guard_skipped_for_agency_path():
     This is a structural test — it asserts the guard logic is conditional on
     clearance path, not unconditional.
     """
-    src_path = "/Users/amitgupta/Downloads/CLI/service/app/api/routes_dhl_clearance.py"
+    src_path = _ROUTES_DHL_CLEARANCE
     with open(src_path, "r", encoding="utf-8") as f:
         src = f.read()
 
@@ -38,7 +44,7 @@ def test_dhl_email_guard_skipped_for_agency_path():
 
 def test_auto_agency_trigger_block_present():
     """After Polish desc generation, an auto-agency-build block must exist."""
-    src_path = "/Users/amitgupta/Downloads/CLI/service/app/api/routes_dhl_clearance.py"
+    src_path = _ROUTES_DHL_CLEARANCE
     with open(src_path, "r", encoding="utf-8") as f:
         src = f.read()
     # The auto-build comment + queue_email + agency_reply_package write
@@ -50,7 +56,7 @@ def test_auto_agency_trigger_block_present():
 
 def test_response_includes_auto_agency_built_field():
     """generate-description response must surface auto_agency_built status."""
-    src_path = "/Users/amitgupta/Downloads/CLI/service/app/api/routes_dhl_clearance.py"
+    src_path = _ROUTES_DHL_CLEARANCE
     with open(src_path, "r", encoding="utf-8") as f:
         src = f.read()
     assert '"auto_agency_built"' in src

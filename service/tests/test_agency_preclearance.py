@@ -147,8 +147,8 @@ def test_preclearance_does_NOT_advance_clearance_status(tmp_path, monkeypatch):
 def test_dashboard_pending_label_not_zero_matched():
     """Dashboard must render 'Cowork search pending' for ai_bridge_pending,
     not 'Scanned 0 · 0 matched' (which implies a completed zero-result scan)."""
-    src = open("/Users/amitgupta/Downloads/CLI/service/app/static/dashboard.html",
-               "r", encoding="utf-8").read()
+    # Atlas-V2 relocated the Cowork-pending label into shipment-detail.html.
+    src = (Path(__file__).resolve().parents[1] / "app" / "static" / "shipment-detail.html").read_text(encoding="utf-8")
     # The pending branch must reference both the Cowork-pending message and
     # be conditional on scan_method === 'ai_bridge_pending'
     assert "Cowork search pending" in src
