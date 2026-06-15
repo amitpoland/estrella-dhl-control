@@ -10,13 +10,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-DASHBOARD = Path(
-    "/Users/amitgupta/Downloads/CLI/service/app/static/dashboard.html"
-)
+_STATIC = Path(__file__).resolve().parents[1] / "app" / "static"
+
+DASHBOARD = _STATIC / "dashboard.html"
+SHIPMENT_DETAIL = _STATIC / "shipment-detail.html"
 
 
 def _src() -> str:
+    """Dashboard shell source — owns the readiness component *definitions*."""
     return DASHBOARD.read_text(encoding="utf-8")
+
+
+def _sd_src() -> str:
+    """BatchDetailPage source — owns the readiness panel *usage* and the
+    decision-panel wiring extracted from dashboard.html at commit 015d90d
+    (feat(frontend): phase 2 — extract BatchDetailPage into shipment-detail.html)."""
+    return SHIPMENT_DETAIL.read_text(encoding="utf-8")
 
 
 # ── Component existence ───────────────────────────────────────────────────────
@@ -108,56 +117,68 @@ def test_batch_readiness_exact_endpoint_url():
 
 def test_dhl_readiness_endpoint_wired():
     """/api/v1/dhl/readiness/... must be called somewhere in the source."""
-    assert "/api/v1/dhl/readiness/" in _src()
+    assert "/api/v1/dhl/readiness/" in _sd_src()
 
 
 def test_dhl_readiness_exact_endpoint_url():
     """Exact DHL readiness endpoint URL fragment must be present."""
-    assert "/api/v1/dhl/readiness/${encodeURIComponent(batchId)}" in _src()
+    assert "/api/v1/dhl/readiness/${encodeURIComponent(batchId)}" in _sd_src()
 
 
 # ── State hooks ───────────────────────────────────────────────────────────────
 
 def test_batch_readiness_state_hook_exists():
-    assert "batchReadiness, setBatchReadiness" in _src()
+    assert "batchReadiness, setBatchReadiness" in _sd_src()
 
 
 def test_batch_readiness_loading_state_hook_exists():
-    assert "batchReadinessLoading, setBatchReadinessLoading" in _src()
+    assert "batchReadinessLoading, setBatchReadinessLoading" in _sd_src()
 
 
 def test_batch_readiness_error_state_hook_exists():
-    assert "batchReadinessError, setBatchReadinessError" in _src()
+    assert "batchReadinessError, setBatchReadinessError" in _sd_src()
 
 
 def test_dhl_readiness_state_hook_exists():
-    assert "dhlReadiness, setDhlReadiness" in _src()
+    assert "dhlReadiness, setDhlReadiness" in _sd_src()
 
 
 def test_dhl_readiness_loading_state_hook_exists():
-    assert "dhlReadinessLoading, setDhlReadinessLoading" in _src()
+    assert "dhlReadinessLoading, setDhlReadinessLoading" in _sd_src()
 
 
 def test_dhl_readiness_error_state_hook_exists():
-    assert "dhlReadinessError, setDhlReadinessError" in _src()
+    assert "dhlReadinessError, setDhlReadinessError" in _sd_src()
 
 
 # ── Banner testid markers ─────────────────────────────────────────────────────
 
 def test_readiness_banner_testid_warehouse():
-    assert 'readiness-banner-warehouse' in _src()
+    assert 'readiness-banner-warehouse' in _sd_src()
 
 
 def test_readiness_banner_testid_sales():
-    assert 'readiness-banner-sales' in _src()
+    assert 'readiness-banner-sales' in _sd_src()
 
 
 def test_readiness_banner_testid_wfirma():
-    assert 'readiness-banner-wfirma' in _src()
+    """wFirma readiness surface.
+
+    Retargeted after the BatchDetailPage extraction (015d90d): warehouse,
+    sales and dhl render dedicated per-panel ``<ReadinessBanner>`` components
+    with static ``readiness-banner-<domain>`` testids, but wFirma readiness is
+    consolidated into the OverallReadinessCard ``DOMAINS`` chip list instead.
+    The literal ``readiness-banner-wfirma`` never existed in this repo's
+    history — assert the genuine current surface: ``'wfirma'`` is a tracked
+    readiness domain in OverallReadinessCard.
+    """
+    assert "DOMAINS = ['warehouse', 'sales', 'wfirma', 'dhl']" in _sd_src(), (
+        "wFirma must remain a tracked readiness domain in OverallReadinessCard"
+    )
 
 
 def test_readiness_banner_testid_dhl():
-    assert 'readiness-banner-dhl' in _src()
+    assert 'readiness-banner-dhl' in _sd_src()
 
 
 def test_overall_readiness_card_testid():
@@ -165,7 +186,7 @@ def test_overall_readiness_card_testid():
 
 
 def test_dhl_readiness_panel_testid():
-    assert 'dhl-readiness-panel' in _src()
+    assert 'dhl-readiness-panel' in _sd_src()
 
 
 # ── Banners are inserted in the correct panels ────────────────────────────────
@@ -183,7 +204,7 @@ def _find_nth(src: str, needle: str, n: int = 1) -> int:
 
 def test_readiness_banner_in_warehouse_panel():
     """The warehouse banner must appear inside the Warehouse tab block (the panel, not the useEffect)."""
-    src = _src()
+    src = _sd_src()
     # The panel render block is the SECOND occurrence — first is in a useEffect
     wh_start = _find_nth(src, "activeTab === 'Warehouse'", 2)
     assert wh_start != -1, "Warehouse panel block (2nd occurrence) not found"
@@ -197,7 +218,7 @@ def test_readiness_banner_in_warehouse_panel():
 
 def test_readiness_banner_in_sales_panel():
     """The sales banner must appear inside the Sales tab block (the panel, not the useEffect)."""
-    src = _src()
+    src = _sd_src()
     # The panel render block is the SECOND occurrence — first is in a useEffect
     sa_start = _find_nth(src, "activeTab === 'Sales'", 2)
     assert sa_start != -1, "Sales panel block (2nd occurrence) not found"
@@ -210,22 +231,29 @@ def test_readiness_banner_in_sales_panel():
 
 
 def test_readiness_banner_in_wfirma_panel():
-    """The wFirma banner must appear inside the PZ / Accounting tab block (the panel, not the useEffect)."""
-    src = _src()
-    # The panel render block is the SECOND occurrence — first is in a useEffect
-    wf_start = _find_nth(src, "activeTab === 'PZ / Accounting'", 2)
-    assert wf_start != -1, "PZ / Accounting panel block (2nd occurrence) not found"
-    wf_end = src.find("activeTab === 'DHL / Customs'", wf_start)
-    assert wf_end != -1
-    snippet = src[wf_start:wf_end]
-    assert "readiness-banner-wfirma" in snippet, (
-        "ReadinessBanner with testid 'readiness-banner-wfirma' not in PZ / Accounting panel"
+    """wFirma readiness must be rendered in the OverallReadinessCard DOMAINS map.
+
+    Retargeted after the BatchDetailPage extraction (015d90d): unlike warehouse,
+    sales and dhl — which each render a dedicated per-panel ``<ReadinessBanner>``
+    — wFirma readiness is surfaced via the consolidated OverallReadinessCard
+    ``DOMAINS.map`` chip list (the PZ / Accounting panel itself renders the
+    legacy PZ details block, not a readiness banner). Assert the genuine
+    surface: wFirma is iterated by the OverallReadinessCard readiness map.
+    """
+    src = _sd_src()
+    card_start = src.find("function OverallReadinessCard(")
+    assert card_start != -1, "OverallReadinessCard not found in shipment-detail.html"
+    next_fn = src.find("\nfunction ", card_start + 1)
+    card_body = src[card_start:next_fn]
+    assert "DOMAINS.map" in card_body, "OverallReadinessCard must render a DOMAINS map"
+    assert "'wfirma'" in card_body, (
+        "wFirma must be a rendered readiness domain in OverallReadinessCard"
     )
 
 
 def test_readiness_banner_in_dhl_panel():
     """The DHL banner must appear inside the DHL / Customs tab block (the panel, not the useEffect)."""
-    src = _src()
+    src = _sd_src()
     # The panel block is the SECOND occurrence — first is in a useEffect
     dhl_start = _find_nth(src, "activeTab === 'DHL / Customs'", 2)
     assert dhl_start != -1, "DHL / Customs panel block (2nd occurrence) not found"
@@ -238,7 +266,7 @@ def test_readiness_banner_in_dhl_panel():
 
 def test_overall_readiness_card_in_overview_tab():
     """OverallReadinessCard must be rendered inside the Overview tab block."""
-    src = _src()
+    src = _sd_src()
     overview_start = src.find("activeTab === 'Overview'")
     assert overview_start != -1, "Overview tab block not found"
     # Next non-Overview activeTab check (Documents)
@@ -263,7 +291,7 @@ def test_batch_control_center_testid():
 
 def test_batch_control_center_in_overview_tab():
     """BatchControlCenter must be rendered inside the Overview tab block."""
-    src = _src()
+    src = _sd_src()
     overview_start = src.find("activeTab === 'Overview'")
     assert overview_start != -1, "Overview tab block not found"
     overview_end = src.find("activeTab === 'Documents'", overview_start)
@@ -283,13 +311,13 @@ def test_overall_next_step_rendered():
 
 def test_dhl_next_required_action_rendered():
     """dhl.next_required_action must be rendered with a testid."""
-    src = _src()
+    src = _sd_src()
     assert 'data-testid="dhl-next-required-action"' in src or "data-testid='dhl-next-required-action'" in src
 
 
 def test_dhl_panel_shows_pipeline_stages():
     """DHL panel must render the 7-stage pipeline labels."""
-    src = _src()
+    src = _sd_src()
     # Use the testid as anchor — it's inside the actual panel, not the useEffect
     panel_start = src.find("dhl-readiness-panel")
     assert panel_start != -1, "dhl-readiness-panel testid not found"
@@ -300,7 +328,7 @@ def test_dhl_panel_shows_pipeline_stages():
 
 def test_dhl_panel_shows_sla_breach_warning():
     """DHL panel must have an SLA breach warning block."""
-    src = _src()
+    src = _sd_src()
     panel_start = src.find("dhl-readiness-panel")
     assert panel_start != -1
     snippet = src[panel_start:panel_start + 8000]
@@ -318,16 +346,16 @@ def test_batch_readiness_error_state_used():
 
 
 def test_dhl_readiness_loading_state_used():
-    assert "dhlReadinessLoading" in _src()
+    assert "dhlReadinessLoading" in _sd_src()
 
 
 def test_dhl_readiness_error_state_used():
-    assert "dhlReadinessError" in _src()
+    assert "dhlReadinessError" in _sd_src()
 
 
 def test_dhl_panel_has_empty_state():
     """DHL tab must show a message when dr is null (no data yet)."""
-    src = _src()
+    src = _sd_src()
     panel_start = src.find("dhl-readiness-panel")
     assert panel_start != -1
     snippet = src[panel_start:panel_start + 5000]
@@ -336,7 +364,7 @@ def test_dhl_panel_has_empty_state():
 
 def test_dhl_panel_has_loading_state():
     """DHL tab must show a loading indicator while fetching."""
-    src = _src()
+    src = _sd_src()
     panel_start = src.find("dhl-readiness-panel")
     assert panel_start != -1
     snippet = src[panel_start:panel_start + 5000]
@@ -347,7 +375,7 @@ def test_dhl_panel_has_loading_state():
 
 def test_no_post_for_batch_readiness():
     """The batch readiness fetch must be GET-only — no POST method added."""
-    src = _src()
+    src = _sd_src()
     # Find the loadBatchReadiness function and confirm no POST
     start = src.find("loadBatchReadiness")
     assert start != -1
@@ -359,7 +387,7 @@ def test_no_post_for_batch_readiness():
 
 def test_no_post_for_dhl_readiness():
     """The DHL readiness fetch must be GET-only — no POST method added."""
-    src = _src()
+    src = _sd_src()
     start = src.find("loadDhlReadiness")
     assert start != -1
     snippet = src[start:start + 300]
@@ -385,24 +413,24 @@ def test_brace_balance():
 
 def test_decision_data_state_hook_exists():
     """decisionData state hook must be declared at the BatchDetailPage level."""
-    assert "decisionData, setDecisionData" in _src()
+    assert "decisionData, setDecisionData" in _sd_src()
 
 
 def test_decision_loading_state_hook_exists():
     """decisionLoading state hook must exist alongside decisionData."""
-    assert "decisionLoading, setDecisionLoading" in _src()
+    assert "decisionLoading, setDecisionLoading" in _sd_src()
 
 
 def test_load_decision_function_defined():
     """loadDecision callback must be defined and call the decision endpoint."""
-    src = _src()
+    src = _sd_src()
     assert "loadDecision" in src, "loadDecision callback not found"
     assert "/api/v1/agents/decision/" in src, "decision endpoint URL not found"
 
 
 def test_decision_loaded_on_batch_mount():
     """loadDecision must be called in the same useEffect as loadBatchReadiness."""
-    src = _src()
+    src = _sd_src()
     idx = src.find("loadBatchReadiness(); loadDecision();")
     assert idx != -1, (
         "loadDecision() must be invoked alongside loadBatchReadiness() in the mount effect"
@@ -411,19 +439,19 @@ def test_decision_loaded_on_batch_mount():
 
 def test_is_primary_action_helper_defined():
     """isPrimaryAction helper must be defined for decision advisory integration."""
-    assert "isPrimaryAction" in _src()
+    assert "isPrimaryAction" in _sd_src()
 
 
 def test_top_proposal_id_helper_defined():
     """topProposalId must be derived from decisionData.all_actions for proposal matching."""
-    src = _src()
+    src = _sd_src()
     assert "topProposalId" in src, "topProposalId not found"
     assert "decisionData.all_actions" in src, "decisionData.all_actions not referenced"
 
 
 def test_wfirma_primary_helper_defined():
     """wfirmaPrimary flag must be derived from decision advisory for create button highlight."""
-    src = _src()
+    src = _sd_src()
     assert "wfirmaPrimary" in src, "wfirmaPrimary not found"
     assert "decisionData.status === 'action_required'" in src, (
         "wfirmaPrimary must check decisionData.status"
@@ -432,7 +460,7 @@ def test_wfirma_primary_helper_defined():
 
 def test_decision_is_read_only():
     """loadDecision must use GET, not POST."""
-    src = _src()
+    src = _sd_src()
     idx = src.find("loadDecision")
     assert idx != -1
     snippet = src[idx:idx + 400]
@@ -471,7 +499,7 @@ def test_decision_banner_no_internal_fetch():
 
 def test_batch_detail_page_is_sole_decision_fetcher():
     """Only BatchDetailPage's loadDecision callback may call the decision endpoint."""
-    src = _src()
+    src = _sd_src()
     # All occurrences of the decision endpoint URL
     endpoint = "/api/v1/agents/decision/"
     count = src.count(endpoint)
@@ -497,7 +525,7 @@ def test_overall_readiness_card_passes_decision_props():
 
 def test_batch_detail_page_passes_decision_to_overall_readiness_card():
     """BatchDetailPage must pass decisionData and decisionLoading to OverallReadinessCard."""
-    src = _src()
+    src = _sd_src()
     # Find the OverallReadinessCard JSX call in BatchDetailPage
     idx = src.find("<OverallReadinessCard")
     assert idx != -1
@@ -516,7 +544,7 @@ def test_batch_detail_page_passes_decision_to_overall_readiness_card():
 def test_paren_balance():
     """Parentheses in the JS/JSX portion must be balanced."""
     import re
-    content = DASHBOARD.read_text(encoding="utf-8")
+    content = SHIPMENT_DETAIL.read_text(encoding="utf-8")
     scripts = re.findall(r"<script[^>]*>(.*?)</script>", content, re.DOTALL)
     jsx = max(scripts, key=len)
     opens  = jsx.count("(")
@@ -670,7 +698,7 @@ def test_default_active_tab_is_overview():
     Regression: dashboard was blank because useState('Pipeline') was the default
     but 'Pipeline' no longer exists in DETAIL_TABS, so no tab content ever rendered.
     """
-    src = _src()
+    src = _sd_src()
     assert "useState('Pipeline')" not in src and 'useState("Pipeline")' not in src, (
         "useState('Pipeline') found — default active tab must be 'Overview', "
         "not 'Pipeline' which no longer exists in DETAIL_TABS"
@@ -696,7 +724,7 @@ def test_overview_content_block_exists():
     This ensures the Overview tab has renderable content and won't
     silently blank the panel if the default active tab is 'Overview'.
     """
-    src = _src()
+    src = _sd_src()
     assert (
         "activeTab === 'Overview'" in src or 'activeTab === "Overview"' in src
     ), (
