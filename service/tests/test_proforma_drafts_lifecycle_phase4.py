@@ -81,6 +81,41 @@ def _force_state(db: Path, draft_id: int, *, state: str, status: str):
         conn.commit()
 
 
+def _stub_readiness_ready(monkeypatch):
+    """Neutralise the single-readiness-authority gate for the endpoint
+    lifecycle-mechanic tests below.
+
+    The approve route consults ``_derive_draft_readiness`` (split-authority
+    fix, 2026-06-12) and fail-closes any draft that has no sales rows, an
+    unmatched wfirma customer, blank name_pl, or unmapped wfirma_products —
+    so the bare ``_seed_draft`` fixture now returns 422 before the lifecycle
+    mechanic under test (approve transition, confirm-token validation,
+    optimistic-lock 409, re-open) is ever reached.
+
+    Phase 4 pins those state-machine mechanics, NOT readiness derivation.
+    Seeding all four authority sources here would couple these tests to
+    master-data plumbing; readiness derivation itself has dedicated no-stub
+    coverage in test_proforma_readiness_single_authority.py and
+    test_proforma_birth_name_pl_authority.py. This mirrors the identical
+    stub already used by the sibling Phase 5 POST-lifecycle suite. The stub
+    returns the real ``_derive_draft_readiness`` shape exactly (Lesson A)."""
+    from app.api import routes_proforma as rp
+
+    def _ready(draft, *, intent):
+        return {
+            "ready":             True,
+            "intent":            intent,
+            "draft_id":          int(draft.id),
+            "draft_status":      draft.status,
+            "blockers":          [],
+            "blocking_reasons":  [],
+            "warnings":          [],
+            "ambiguous_designs": {},
+            "resolved_designs":  {},
+        }
+    monkeypatch.setattr(rp, "_derive_draft_readiness", _ready)
+
+
 # ── Helpers — approve ───────────────────────────────────────────────────────
 
 def test_helper_approve_from_editing(db_path):
@@ -444,7 +479,8 @@ def test_helper_stale_lock_raises(db_path, op):
 
 # ── HTTP — approve ──────────────────────────────────────────────────────────
 
-def test_endpoint_approve(client, tmp_path):
+def test_endpoint_approve(client, tmp_path, monkeypatch):
+    _stub_readiness_ready(monkeypatch)
     db = tmp_path / "proforma_links.db"
     d = _seed_draft(db)
     r = client.post(
@@ -457,7 +493,10 @@ def test_endpoint_approve(client, tmp_path):
     assert r.json()["draft"]["draft_state"] == "approved"
 
 
-def test_endpoint_approve_bad_token(client, tmp_path):
+def test_endpoint_approve_bad_token(client, tmp_path, monkeypatch):
+    # Readiness must pass so the request reaches the confirm-token check
+    # (readiness 422 fires before token 400 in the route order).
+    _stub_readiness_ready(monkeypatch)
     db = tmp_path / "proforma_links.db"
     d = _seed_draft(db)
     r = client.post(
@@ -470,7 +509,8 @@ def test_endpoint_approve_bad_token(client, tmp_path):
     assert "confirm_token" in r.json()["detail"]
 
 
-def test_endpoint_approve_blocks_subsequent_patch(client, tmp_path):
+def test_endpoint_approve_blocks_subsequent_patch(client, tmp_path, monkeypatch):
+    _stub_readiness_ready(monkeypatch)
     db = tmp_path / "proforma_links.db"
     d = _seed_draft(db)
     r1 = client.post(
@@ -490,7 +530,8 @@ def test_endpoint_approve_blocks_subsequent_patch(client, tmp_path):
 
 # ── HTTP — re-open ──────────────────────────────────────────────────────────
 
-def test_endpoint_reopen(client, tmp_path):
+def test_endpoint_reopen(client, tmp_path, monkeypatch):
+    _stub_readiness_ready(monkeypatch)
     db = tmp_path / "proforma_links.db"
     d = _seed_draft(db)
     r1 = client.post(
@@ -694,7 +735,10 @@ def test_endpoint_remove_last_line_with_force_200(client, tmp_path):
 
 # ── HTTP — stale lock 409 on every endpoint ─────────────────────────────────
 
-def test_endpoint_stale_lock_409(client, tmp_path):
+def test_endpoint_stale_lock_409(client, tmp_path, monkeypatch):
+    # Readiness must pass so the approve case reaches the optimistic-lock
+    # check (readiness 422 fires before the stale-timestamp 409).
+    _stub_readiness_ready(monkeypatch)
     db = tmp_path / "proforma_links.db"
     d = _seed_draft(db)
     stale = "1999-01-01T00:00:00Z"
