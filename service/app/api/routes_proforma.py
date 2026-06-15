@@ -6117,6 +6117,7 @@ def reset_proforma_draft_from_sales_packing(
         expected,
         sales_lines=sales_lines,
         reset_all=reset_all,
+        name_pl_lookup=ddb.get_product_description,
     ))
 
 

@@ -145,11 +145,15 @@ def _auto_create_draft_for_client(
         check_creation_lines(editable_input)
         draft, was_created = pildb.auto_create_draft_from_sales_packing(
             _proforma_db_path(),
-            batch_id    = batch_id,
-            client_name = client,
-            currency    = (currency or "").upper(),
-            lines       = editable_input,
-            operator    = operator,
+            batch_id      = batch_id,
+            client_name   = client,
+            currency      = (currency or "").upper(),
+            lines         = editable_input,
+            operator      = operator,
+            # Fill blank name_pl from the product_descriptions authority at
+            # birth so drafts are not born with a missing commercial
+            # description. Never fabricates; never touches price.
+            name_pl_lookup = ddb.get_product_description,
         )
         log.info(
             "[%s] proforma draft %s for client=%r (id=%s, state=%s, lines=%d)",

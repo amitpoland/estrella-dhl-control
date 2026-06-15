@@ -569,6 +569,7 @@ def sync_draft_from_packing_upload(
                 currency=currency,
                 lines=lines,
                 operator=operator,
+                name_pl_lookup=ddb.get_product_description,
             )
 
             if was_created:
@@ -615,6 +616,7 @@ def sync_draft_from_packing_upload(
                         operator,
                         draft.updated_at,   # OCC token
                         sales_lines=lines,
+                        name_pl_lookup=ddb.get_product_description,
                     )
                     action = "synced"
                     _write_sync_metadata(db_path, updated.id, warning=None)
