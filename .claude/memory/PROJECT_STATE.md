@@ -5075,14 +5075,14 @@ Group D — Tests (3 new files):
 - **Date merged**: 2026-06-14 (PR merged as e955d1e)
 - **PR #587** — feat(proforma-v2): Sprint 03.1 A+B — status header + unified blocker panel
 - **Implementation**: Proforma V2 frontend advancement — unified status header and blocker panel components, authority-clean domain separation per Lesson F
-- **Deploy status**: NOT DEPLOYED — merge creates deploy candidate `main 8692b48 → C:\PZ` but 7-agent deploy gate has not been run
+- **Deploy status**: DEPLOYED (corrected 2026-06-15; supersedes stale NOT-DEPLOYED note). Carried to production by the `d37316e` deploy on 2026-06-15 14:58 +0200 (full 7-agent gate; `d37316e` = #522 Phase 2B, which synced `main@d37316e` — #587 commit `e955d1e` was already an ancestor of `d37316e`). Production `C:\PZ\app\static\v2\proforma-detail.jsx` is byte-identical to main HEAD (sha256 `362cb8d0…`), unchanged since the deploy, and contains all 4 Sprint-03.1 markers (`proforma-status-header` / `proforma-blocker-panel` / `proforma-readiness-pill` / `proforma-next-action`). **GATE 6 verified on disk 2026-06-15**: auth-gated production precluded a live browser smoke, so the deployment-safe substitute was used — prod-disk marker grep (4/4) + prod==main hash identity + `merge-base --is-ancestor e955d1e d37316e` = YES.
 
 ## PR #588 — Campaign 04 PR2 (#532) zero-price invoice protection (2026-06-14, MERGED)
 
 - **Date merged**: 2026-06-14 (PR merged as 8692b48)
 - **PR #588** — fix(proforma): block zero-price lines from reaching final invoice (#532) — Campaign 04 PR2 zero-price line filter
 - **Implementation**: Real builders parse_proforma_xml + build_final_invoice_plan A/B/C filter + ZeroBillableInvoice block; frozen-valuation invariant preserved (excluding a zero-price line removes no revenue)
-- **Deploy status**: NOT DEPLOYED — merge creates deploy candidate `main 8692b48 → C:\PZ` but 7-agent deploy gate has not been run
+- **Deploy status**: DEPLOYED (corrected 2026-06-15; supersedes stale NOT-DEPLOYED note). Carried to production by the `d37316e` deploy on 2026-06-15 14:58 +0200 (full 7-agent gate). #588 commit `8692b48` is an ancestor of `d37316e` (`merge-base --is-ancestor 8692b48 d37316e` = YES); verified during the #587 close-out since both notes shared identical stale wording and the same deploy event.
 
 ## Scorecard References — 2026-06-15 (RULE 6 compliance)
 
