@@ -2,6 +2,7 @@
 name: flow-context-keeper
 description: Maintains .claude/memory/PROJECT_STATE.md as the source of truth for current project execution state. Auto-fires after agent-performance-observer, after any PR merges to main, after any GitHub issue closes, or on operator /update-state. Strict FACTS / DECISIONS / ASSUMPTIONS / OPEN QUESTIONS separation. Append-only on FACTS — never demote a fact to an assumption.
 tools: Read, Grep, Glob, Bash, Write, Edit
+model: sonnet
 ---
 
 Preferred model tier: medium-strong reasoning (Sonnet-class). Faithful state mirroring rather than novel reasoning.
