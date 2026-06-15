@@ -64,26 +64,78 @@ function PanelCard({ title, subtitle, status, children, accent }) {
   );
 }
 
+// ── Honest five-state action primitives ──────────────────────────────────────
+// This V2 page is an authority-honest projection. Action controls below name a
+// real backend route that EXISTS, but wiring this page to that route is not yet
+// done (out of scope for this UX sprint). Per Lesson M we keep every capability
+// VISIBLE + DISABLED + with an explicit reason + the backend route reference,
+// rather than faking a success state. Execution happens on V1 today.
+const BACKEND_PENDING_HELP =
+  'Backend route exists; wiring this V2 page to it is scheduled (BACKEND_GAP_REGISTER.md). ' +
+  'Run this action on the V1 Shipment Detail page today.';
+
+// A disabled control that honestly advertises a planned-but-unwired capability.
+function PendingAction({ label, route, testid, icon, variant = 'outline', small }) {
+  return (
+    <Btn
+      variant={variant}
+      small={small}
+      disabled
+      data-testid={testid}
+      data-action-state="backend-pending"
+      data-backend-route={route}
+      title={`Not available in V2 yet. ${BACKEND_PENDING_HELP} Backend route: ${route}`}
+      aria-label={`${label}. Unavailable in V2 — backend wiring pending. Backend route ${route}.`}
+    >
+      {icon ? icon + ' ' : ''}{label}
+    </Btn>
+  );
+}
+
+// Amber explanatory banner that heads any panel whose actions are backend-pending.
+function BackendPendingBanner({ testid, children }) {
+  return (
+    <div
+      role="note"
+      data-testid={testid || 'backend-pending-banner'}
+      style={{
+        display: 'flex', alignItems: 'flex-start', gap: 10,
+        margin: '0 20px 4px', padding: '12px 14px', borderRadius: 8,
+        background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)',
+        color: 'var(--badge-amber-text)', fontSize: 12, lineHeight: 1.5,
+      }}
+    >
+      <span aria-hidden="true" style={{ fontWeight: 800, flexShrink: 0 }}>⚠</span>
+      <span>{children}</span>
+    </div>
+  );
+}
+
 function ShipmentDetailPage({ shipment, onBack }) {
   const [activeTab, setActiveTab] = React.useState('overview');
-  const [sadUploaded, setSadUploaded] = React.useState(shipment.sadStatus !== 'SAD Pending');
-  const [pzGenerated, setPzGenerated] = React.useState(shipment.pzStatus === 'Generated' || shipment.pzStatus === 'Exported');
-  const [pzExported, setPzExported] = React.useState(shipment.pzStatus === 'Exported');
-  const [pzNumber, setPzNumber] = React.useState(pzGenerated ? 'PZ/2024/001234' : '');
-  const [confirmingPz, setConfirmingPz] = React.useState(false);
-  const [dhlEmailReceived, setDhlEmailReceived] = React.useState(shipment.dhlStatus === 'DHL Email Received' || shipment.dhlStatus === 'Reply Sent');
-  const [replySent, setReplySent] = React.useState(shipment.dhlStatus === 'Reply Sent');
-  const [scanning, setScanning] = React.useState(false);
-  const [notification, setNotification] = React.useState(null);
 
-  const notify = (msg, type = 'success') => {
-    setNotification({ msg, type });
-    setTimeout(() => setNotification(null), 3000);
-  };
+  // Workflow state is DERIVED from authoritative shipment props — read-only.
+  // No local setters fake progress; the page reflects backend truth, never produces it.
+  const sadUploaded     = shipment.sadStatus !== 'SAD Pending';
+  const pzGenerated     = shipment.pzStatus === 'Generated' || shipment.pzStatus === 'Exported';
+  const pzExported      = shipment.pzStatus === 'Exported';
+  const dhlEmailReceived = shipment.dhlStatus === 'DHL Email Received' || shipment.dhlStatus === 'Reply Sent';
+  const replySent       = shipment.dhlStatus === 'Reply Sent';
+  const pzNumber        = pzGenerated ? (shipment.pzNumber || '') : '';
 
-  const simulateAction = (label, cb) => {
-    notify(`Running: ${label}…`, 'info');
-    setTimeout(() => { cb && cb(); notify(`${label} completed.`, 'success'); }, 1200);
+  // Keyboard navigation for the tablist (ArrowLeft/Right/Home/End), roving focus.
+  const onTabKeyDown = (e, idx) => {
+    let nextIdx = null;
+    if (e.key === 'ArrowRight')      nextIdx = (idx + 1) % SHIPMENT_TABS.length;
+    else if (e.key === 'ArrowLeft')  nextIdx = (idx - 1 + SHIPMENT_TABS.length) % SHIPMENT_TABS.length;
+    else if (e.key === 'Home')       nextIdx = 0;
+    else if (e.key === 'End')        nextIdx = SHIPMENT_TABS.length - 1;
+    if (nextIdx === null) return;
+    e.preventDefault();
+    const nt = SHIPMENT_TABS[nextIdx];
+    setActiveTab(nt.id);
+    const el = document.getElementById('tab-' + nt.id);
+    if (el) el.focus();
   };
 
   const stageState = (id) => {
@@ -115,15 +167,16 @@ function ShipmentDetailPage({ shipment, onBack }) {
   return (
     <div data-screen-label="Shipment Detail" style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
 
-      {notification && (
-        <div style={{
-          position: 'fixed', top: 70, right: 24, zIndex: 999,
-          background: notification.type === 'success' ? 'var(--badge-green-text)' : notification.type === 'info' ? 'var(--badge-blue-text)' : 'var(--badge-red-text)',
-          color: '#fff', padding: '10px 18px', borderRadius: 8,
-          fontSize: 12, fontWeight: 600, boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
-          animation: 'fadeIn 0.2s',
-        }}>{notification.msg}</div>
-      )}
+      <style>{`
+        [data-screen-label="Shipment Detail"] button:focus-visible,
+        [data-screen-label="Shipment Detail"] a:focus-visible,
+        [data-screen-label="Shipment Detail"] label:focus-within,
+        [data-screen-label="Shipment Detail"] [tabindex]:focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
+          border-radius: 6px;
+        }
+      `}</style>
 
       {/* Sub-header */}
       <div style={{
@@ -131,7 +184,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
         borderBottom: '1px solid var(--border)',
         display: 'flex', alignItems: 'center', gap: 20, flexShrink: 0,
       }}>
-        <button onClick={onBack} style={{
+        <button onClick={onBack} data-testid="detail-back" aria-label="Back to shipment list" style={{
           background: 'none', border: '1px solid var(--border)', cursor: 'pointer',
           display: 'flex', alignItems: 'center', gap: 6,
           color: 'var(--text-2)', fontSize: 12, padding: '6px 12px', borderRadius: 6,
@@ -157,7 +210,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
 
       {/* Workflow Strip */}
       <div style={{ padding: '20px 32px 0', background: 'var(--card)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 0, position: 'relative' }}>
+        <div role="list" aria-label="Shipment workflow progress" data-testid="workflow-strip" style={{ display: 'flex', alignItems: 'center', gap: 0, position: 'relative' }}>
           {WORKFLOW_STAGES.map((stage, i) => {
             const state = stageState(stage.id);
             const c = stageColors[state];
@@ -167,7 +220,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
 
             return (
               <React.Fragment key={stage.id}>
-                <div style={{
+                <div role="listitem" aria-label={`Stage ${stage.num}: ${stage.label} — ${state}`} style={{
                   display: 'flex', flexDirection: 'column', alignItems: 'center',
                   gap: 6, flexShrink: 0, padding: '0 4px', minWidth: 64,
                 }}>
@@ -188,7 +241,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
                   }}>{stage.label}</div>
                 </div>
                 {!isLast && (
-                  <div style={{
+                  <div aria-hidden="true" style={{
                     flex: 1, height: 2, marginTop: -16,
                     background: connectorDone ? '#22A06B' : 'var(--border)',
                     transition: 'background 0.15s',
@@ -202,24 +255,45 @@ function ShipmentDetailPage({ shipment, onBack }) {
       </div>
 
       {/* Tab nav */}
-      <div style={{
+      <div role="tablist" aria-label="Shipment detail sections" style={{
         display: 'flex', gap: 4, padding: '0 32px',
         background: 'var(--card)', borderBottom: '1px solid var(--border)',
       }}>
-        {SHIPMENT_TABS.map(t => (
-          <button key={t.id} onClick={() => setActiveTab(t.id)} style={{
-            padding: '12px 16px',
-            background: 'none', border: 'none', cursor: 'pointer',
-            borderBottom: `2px solid ${activeTab === t.id ? 'var(--accent)' : 'transparent'}`,
-            color: activeTab === t.id ? 'var(--text)' : 'var(--text-2)',
-            fontSize: 13, fontWeight: activeTab === t.id ? 700 : 500,
-            transition: 'all 0.12s', marginBottom: -1,
-          }}>{t.label}</button>
-        ))}
+        {SHIPMENT_TABS.map((t, i) => {
+          const selected = activeTab === t.id;
+          return (
+            <button
+              key={t.id}
+              id={'tab-' + t.id}
+              role="tab"
+              data-testid={'tab-' + t.id}
+              aria-selected={selected}
+              aria-current={selected ? 'page' : undefined}
+              aria-controls={'tabpanel-' + t.id}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => setActiveTab(t.id)}
+              onKeyDown={(e) => onTabKeyDown(e, i)}
+              style={{
+                padding: '12px 16px',
+                background: 'none', border: 'none', cursor: 'pointer',
+                borderBottom: `2px solid ${selected ? 'var(--accent)' : 'transparent'}`,
+                color: selected ? 'var(--text)' : 'var(--text-2)',
+                fontSize: 13, fontWeight: selected ? 700 : 500,
+                transition: 'all 0.12s', marginBottom: -1,
+              }}
+            >{t.label}</button>
+          );
+        })}
       </div>
 
       {/* Content */}
-      <div style={{ padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div
+        role="tabpanel"
+        id={'tabpanel-' + activeTab}
+        aria-labelledby={'tab-' + activeTab}
+        tabIndex={0}
+        style={{ padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 20 }}
+      >
 
         {/* Next-action callout */}
         {nextAction && activeTab === 'overview' && (
@@ -242,7 +316,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
               <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{nextAction.label}</div>
             </div>
             {activeTab !== nextAction.tab && (
-              <button onClick={() => setActiveTab(nextAction.tab)} style={{
+              <button onClick={() => setActiveTab(nextAction.tab)} data-testid="next-action-cta" aria-label={nextAction.cta} style={{
                 padding: '8px 16px', background: 'var(--text)', color: 'var(--card)',
                 border: 'none', borderRadius: 6, cursor: 'pointer',
                 fontSize: 12, fontWeight: 600,
@@ -259,21 +333,17 @@ function ShipmentDetailPage({ shipment, onBack }) {
         )}
         {activeTab === 'dhl' && (
           <DhlTab
-            shipment={shipment} sadUploaded={sadUploaded} setSadUploaded={setSadUploaded}
-            dhlEmailReceived={dhlEmailReceived} setDhlEmailReceived={setDhlEmailReceived}
-            replySent={replySent} setReplySent={setReplySent}
-            scanning={scanning} setScanning={setScanning}
-            notify={notify} simulateAction={simulateAction}
+            shipment={shipment} sadUploaded={sadUploaded}
+            dhlEmailReceived={dhlEmailReceived} replySent={replySent}
+            batchId={shipment && shipment.batch_id}
           />
         )}
         {activeTab === 'pz' && (
           <PzTab
             shipment={shipment} sadUploaded={sadUploaded}
-            pzGenerated={pzGenerated} setPzGenerated={setPzGenerated}
-            pzExported={pzExported} setPzExported={setPzExported}
-            pzNumber={pzNumber} setPzNumber={setPzNumber}
-            confirmingPz={confirmingPz} setConfirmingPz={setConfirmingPz}
-            notify={notify}
+            pzGenerated={pzGenerated} pzExported={pzExported} pzNumber={pzNumber}
+            batchId={shipment && shipment.batch_id}
+            setActiveTab={setActiveTab}
           />
         )}
         {activeTab === 'documents' && (
@@ -339,7 +409,7 @@ function OverviewTab({ shipment, sadUploaded, pzGenerated, pzExported, replySent
             { label: 'AWB PDF',        value: 'Uploaded ✓' },
           ]} />
           <div style={{ padding: '0 20px 16px' }}>
-            <button onClick={() => setActiveTab('dhl')} style={navLinkStyle()}>Open DHL / Customs →</button>
+            <button onClick={() => setActiveTab('dhl')} data-testid="ov-shipment-open-dhl" style={navLinkStyle()}>Open DHL / Customs →</button>
           </div>
         </PanelCard>
 
@@ -352,7 +422,7 @@ function OverviewTab({ shipment, sadUploaded, pzGenerated, pzExported, replySent
             { label: 'Reply Status',      value: replySent ? 'Sent ✓' : 'Not sent' },
           ]} />
           <div style={{ padding: '0 20px 16px' }}>
-            <button onClick={() => setActiveTab('dhl')} style={navLinkStyle()}>Open DHL / Customs →</button>
+            <button onClick={() => setActiveTab('dhl')} data-testid="ov-clearance-open-dhl" style={navLinkStyle()}>Open DHL / Customs →</button>
           </div>
         </PanelCard>
 
@@ -365,7 +435,7 @@ function OverviewTab({ shipment, sadUploaded, pzGenerated, pzExported, replySent
             { label: 'Customs Agent',  value: sadUploaded ? 'Agencja Celna' : '—' },
           ]} />
           <div style={{ padding: '0 20px 16px' }}>
-            <button onClick={() => setActiveTab('dhl')} style={navLinkStyle()}>Open DHL / Customs →</button>
+            <button onClick={() => setActiveTab('dhl')} data-testid="ov-customs-open-dhl" style={navLinkStyle()}>Open DHL / Customs →</button>
           </div>
         </PanelCard>
 
@@ -378,7 +448,7 @@ function OverviewTab({ shipment, sadUploaded, pzGenerated, pzExported, replySent
             { label: 'wFirma',     value: pzExported ? 'Exported ✓' : 'Not exported' },
           ]} />
           <div style={{ padding: '0 20px 16px' }}>
-            <button onClick={() => setActiveTab('pz')} style={navLinkStyle()}>Open PZ / Accounting →</button>
+            <button onClick={() => setActiveTab('pz')} data-testid="ov-open-pz" style={navLinkStyle()}>Open PZ / Accounting →</button>
           </div>
         </PanelCard>
       </div>
@@ -398,7 +468,8 @@ function navLinkStyle() {
 
 // ── DHL / CUSTOMS
 
-function DhlTab({ shipment, sadUploaded, setSadUploaded, dhlEmailReceived, setDhlEmailReceived, replySent, setReplySent, scanning, setScanning, notify, simulateAction }) {
+function DhlTab({ shipment, sadUploaded, dhlEmailReceived, replySent, batchId }) {
+  const bid = batchId || '{batch_id}';
   return (
     <>
       <SectionLabel>Step 1 · DHL clearance email & reply</SectionLabel>
@@ -427,17 +498,17 @@ function DhlTab({ shipment, sadUploaded, setSadUploaded, dhlEmailReceived, setDh
             <InfoRow label="Reply Sent"          value={replySent ? '27 Apr 2024 · 14:32' : 'Not sent'} />
           </div>
         </div>
+        <BackendPendingBanner testid="dhl-actions-pending-note">
+          DHL clearance actions are not yet wired into this V2 page. The backend routes exist —
+          run these on the V1 Shipment Detail page today. Wiring is tracked in BACKEND_GAP_REGISTER.md.
+        </BackendPendingBanner>
         <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Btn variant="outline" onClick={() => { setScanning(true); setTimeout(() => { setScanning(false); setDhlEmailReceived(true); notify('DHL inbox scanned — 1 email matched.'); }, 1500); }}>
-            {scanning ? '⟳ Scanning…' : '⌕ Scan DHL Inbox'}
-          </Btn>
-          <Btn variant="outline" onClick={() => { setDhlEmailReceived(true); notify('DHL email marked received.'); }}>✓ Mark Email Received</Btn>
-          <Btn variant="outline" onClick={() => simulateAction('Generate Polish Description')}>⊞ Generate Polish Desc.</Btn>
-          <Btn variant="outline" onClick={() => simulateAction('Generate DSK')}>⊟ Generate DSK</Btn>
-          <Btn variant="outline" onClick={() => simulateAction('Build DHL Reply Package')}>⊡ Build Reply Package</Btn>
-          <Btn variant={replySent ? 'ghost' : 'gold'} disabled={!dhlEmailReceived || replySent} onClick={() => { setReplySent(true); notify('Reply sent to DHL.'); }}>
-            {replySent ? '✓ Reply Sent' : '↗ Send Reply to DHL'}
-          </Btn>
+          <PendingAction label="Scan DHL Inbox"      icon="⌕" testid="scan-dhl-inbox"      route={'GET /api/v1/dhl/scan-inbox'} />
+          <PendingAction label="Mark Email Received" icon="✓" testid="mark-email-received" route={'POST /api/v1/dhl/mark-email-received/' + bid} />
+          <PendingAction label="Generate Polish Desc." icon="⊞" testid="generate-polish-desc" route={'POST /api/v1/dhl/generate-description/' + bid} />
+          <PendingAction label="Generate DSK"        icon="⊟" testid="generate-dsk"        route={'POST /api/v1/dhl/generate-customs-package/' + bid} />
+          <PendingAction label="Build Reply Package" icon="⊡" testid="build-reply-package" route={'POST /api/v1/dhl/generate-customs-package/' + bid} />
+          <PendingAction label="Send Reply to DHL"   icon="↗" testid="send-reply"          route={'POST /api/v1/dhl/send-reply/' + bid} variant="gold" />
         </div>
       </PanelCard>
 
@@ -492,16 +563,11 @@ function DhlTab({ shipment, sadUploaded, setSadUploaded, dhlEmailReceived, setDh
         )}
 
         <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <label style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            padding: '8px 14px', borderRadius: 6, border: '1px solid var(--border)',
-            cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--text)',
-            background: 'var(--card)',
-          }}>
-            <input type="file" style={{ display: 'none' }} onChange={() => { setSadUploaded(true); notify('SAD / ZC429 uploaded and parsed.'); }} />
-            ⊞ Upload SAD / ZC429
-          </label>
-          {sadUploaded && <span style={{ fontSize: 12, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ SAD uploaded — customs values parsed</span>}
+          <PendingAction label="Upload SAD / ZC429" icon="⊞" testid="upload-sad" route={'POST /api/v1/upload/shipment/' + bid + '/sad'} />
+          {sadUploaded
+            ? <span data-action-state="completed" style={{ fontSize: 12, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ SAD uploaded — customs values parsed</span>
+            : <span style={{ fontSize: 12, color: 'var(--text-2)' }}>Upload on the V1 page; this view reflects the result.</span>
+          }
         </div>
       </PanelCard>
     </>
@@ -510,11 +576,12 @@ function DhlTab({ shipment, sadUploaded, setSadUploaded, dhlEmailReceived, setDh
 
 // ── PZ / ACCOUNTING
 
-function PzTab({ shipment, sadUploaded, pzGenerated, setPzGenerated, pzExported, setPzExported, pzNumber, setPzNumber, confirmingPz, setConfirmingPz, notify }) {
+function PzTab({ shipment, sadUploaded, pzGenerated, pzExported, pzNumber, batchId, setActiveTab }) {
+  const bid = batchId || '{batch_id}';
   if (!sadUploaded) {
     return (
       <PanelCard title="PZ Document & wFirma Booking" subtitle="Goods receipt, audit files, and accounting export" status="Locked">
-        <div style={{ padding: 48, textAlign: 'center' }}>
+        <div data-testid="pz-locked" data-action-state="unavailable" style={{ padding: 48, textAlign: 'center' }}>
           <div style={{
             width: 56, height: 56, borderRadius: 28,
             background: 'var(--badge-neutral-bg)',
@@ -556,41 +623,25 @@ function PzTab({ shipment, sadUploaded, pzGenerated, setPzGenerated, pzExported,
           </div>
         </div>
 
-        {confirmingPz && (
-          <div style={{ margin: '0 20px 16px', padding: '14px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10, color: 'var(--text)' }}>Enter PZ number</div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <Input value={pzNumber} onChange={e => setPzNumber(e.target.value)} placeholder="e.g. PZ/2024/001234" style={{ flex: 1 }} />
-              <Btn variant="gold" onClick={() => { setConfirmingPz(false); notify('PZ number confirmed and saved.'); }}>Confirm</Btn>
-              <Btn variant="outline" onClick={() => setConfirmingPz(false)}>Cancel</Btn>
-            </div>
-          </div>
-        )}
-
+        <BackendPendingBanner testid="pz-actions-pending-note">
+          PZ generation and wFirma export are not yet wired into this V2 page. The backend routes
+          exist — run these on the V1 Shipment Detail page today. Wiring is tracked in BACKEND_GAP_REGISTER.md.
+        </BackendPendingBanner>
         <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Btn variant="gold" onClick={() => { setPzGenerated(true); setPzNumber('PZ/2024/001234'); notify('PZ generated successfully.'); }}>
-            {pzGenerated ? '↺ Regenerate PZ' : '▶ Run PZ'}
-          </Btn>
-          {pzGenerated && (
-            <>
-              <Btn variant="outline" onClick={() => setConfirmingPz(true)}>✎ Confirm PZ Number</Btn>
-              <Btn variant="outline" onClick={() => notify('Downloading PZ PDF…')}>↓ PZ PDF</Btn>
-              <Btn variant="outline" onClick={() => notify('Downloading Calculation XLSX…')}>↓ Calc XLSX</Btn>
-              <Btn variant="outline" onClick={() => notify('Downloading Audit EN PDF…')}>↓ Audit EN</Btn>
-              <Btn variant="outline" onClick={() => notify('Downloading Audit PL PDF…')}>↓ Audit PL</Btn>
-              <Btn variant="outline" onClick={() => notify('Downloading Audit Memo…')}>↓ Memo</Btn>
-              <Btn variant="outline" onClick={() => notify('Downloading Correction Report…')}>↓ Correction</Btn>
-            </>
-          )}
+          <PendingAction label={pzGenerated ? 'Regenerate PZ' : 'Run PZ'} icon={pzGenerated ? '↺' : '▶'} testid="run-pz"      route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_create'} variant="gold" />
+          <PendingAction label="Confirm PZ Number" icon="✎" testid="confirm-pz"    route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_confirm'} />
+          <PendingAction label="Copy wFirma Format" icon="⊞" testid="copy-wfirma"   route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/clipboard'} />
+          <PendingAction label="Export to wFirma"   icon="↗" testid="export-wfirma" route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_create'} />
         </div>
-        {pzGenerated && (
-          <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', display: 'flex', gap: 10 }}>
-            <Btn variant="outline" onClick={() => notify('wFirma format copied to clipboard.')}>⊞ Copy wFirma Format</Btn>
-            <Btn variant="default" disabled={pzExported} onClick={() => { setPzExported(true); notify('Exported to wFirma successfully.'); }}>
-              {pzExported ? '✓ Exported to wFirma' : '↗ Export to wFirma'}
-            </Btn>
-          </div>
-        )}
+        <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <Btn variant="outline" small data-testid="pz-open-documents" aria-label="Open generated PZ files in the Documents tab" onClick={() => setActiveTab('documents')}>
+            ↓ Open generated files in Documents →
+          </Btn>
+          <span style={{ fontSize: 12, color: 'var(--text-2)', flex: 1, minWidth: 220 }}>
+            Generated PZ files — PZ PDF, Calculation XLSX, Audit EN, Audit PL, Audit Memo, Corrections —
+            are served from backend authority in the <strong>Documents</strong> tab.
+          </span>
+        </div>
       </PanelCard>
     </>
   );
