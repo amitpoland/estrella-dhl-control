@@ -1519,14 +1519,78 @@ def list_attention_drafts(
     return results
 
 
+def _birth_enrich_name_pl(
+    lines:     List[Dict[str, Any]],
+    lookup_fn: Optional[Callable[[str], Optional[Dict[str, Any]]]],
+) -> List[Dict[str, Any]]:
+    """Fill blank ``name_pl`` from the product_descriptions authority.
+
+    Reuses :func:`enrich_lines_from_product_descriptions` but only fills
+    lines whose ``name_pl`` is currently blank, and only writes back the
+    ``name_pl`` annotation — never the description_* / item_type keys, so
+    the birth ``editable_lines`` shape stays minimal.
+
+    Invariants:
+      * operator-confirmed name_pl (already non-blank) is NEVER overwritten;
+      * a product_descriptions miss NEVER fabricates a value — blank stays
+        blank;
+      * pricing, currency, price_source and every other field are untouched;
+      * ``lookup_fn=None`` returns the lines unchanged (no DB I/O).
+    """
+    if lookup_fn is None:
+        return lines
+    blanks = [i for i, ln in enumerate(lines)
+              if not str(ln.get("name_pl") or "").strip()]
+    if not blanks:
+        return lines
+    subset = [lines[i] for i in blanks]
+    enriched, _hit, _miss = enrich_lines_from_product_descriptions(subset, lookup_fn)
+    for j, i in enumerate(blanks):
+        npl = str(enriched[j].get("name_pl") or "").strip()
+        if npl:
+            lines[i]["name_pl"] = npl
+    return lines
+
+
+def _birth_unresolved_lines(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Non-authoritative birth advisory.
+
+    Flags lines born with an unresolved commercial description (blank
+    ``name_pl`` after enrichment) or a zero/missing ``unit_price``. This is
+    a VISIBILITY surface recorded in the draft event log only — it is NOT
+    readiness truth, it is NOT stored on the draft row, and it does NOT
+    block creation. The single readiness authority
+    (:func:`_derive_draft_readiness`) re-derives blockers on read/post.
+    """
+    out: List[Dict[str, Any]] = []
+    for ln in lines:
+        reasons: List[str] = []
+        if not str(ln.get("name_pl") or "").strip():
+            reasons.append("blank_name_pl")
+        try:
+            up = float(ln.get("unit_price", 0) or 0)
+        except (TypeError, ValueError):
+            up = 0.0
+        if up <= 0:
+            reasons.append("zero_unit_price")
+        if reasons:
+            out.append({
+                "product_code": str(ln.get("product_code") or ""),
+                "design_no":    str(ln.get("design_no") or ""),
+                "reasons":      reasons,
+            })
+    return out
+
+
 def auto_create_draft_from_sales_packing(
-    db_path:     Path,
+    db_path:       Path,
     *,
-    batch_id:    str,
-    client_name: str,
-    currency:    str,
-    lines:       List[Dict[str, Any]],
-    operator:    str = "",
+    batch_id:      str,
+    client_name:   str,
+    currency:      str,
+    lines:         List[Dict[str, Any]],
+    operator:      str = "",
+    name_pl_lookup: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
 ) -> tuple:
     """Phase 2 — create a v=1 editable draft for (batch_id, client_name).
 
@@ -1541,10 +1605,18 @@ def auto_create_draft_from_sales_packing(
 
     Lines are normalised into the ``editable_lines_json`` shape:
       {product_code, design_no, qty, unit_price, currency, price_source,
-       client_ref}
+       client_ref, name_pl}
 
-    NB: this never mutates pricing or currency — it only persists what the
-    caller passed. Recalculation is the engine's job.
+    ``name_pl`` is carried through from the caller (operator-confirmed
+    values are preserved) and blank values are filled from the
+    product_descriptions authority when ``name_pl_lookup`` is supplied — it
+    is never fabricated. A blank name_pl or a zero/missing unit_price is
+    recorded in the ``created_from_sales_packing`` event ``birth_unresolved``
+    advisory (visibility only; not readiness truth, never blocks creation).
+
+    NB: this never mutates pricing, currency, price_source or totals — it
+    only persists what the caller passed plus the name_pl annotation.
+    Recalculation and readiness remain the engine's job.
     """
     if not (batch_id or "").strip():
         raise ValueError("batch_id is required")
@@ -1577,6 +1649,11 @@ def auto_create_draft_from_sales_packing(
             "currency":     str(ln.get("currency") or currency or "").upper(),
             "price_source": str(ln.get("price_source") or ""),
             "client_ref":   str(ln.get("client_ref") or ""),
+            # Carry any operator-confirmed/source name_pl through the birth
+            # boundary. Blank by default; product_descriptions enrichment
+            # (below, when name_pl_lookup is supplied) fills blanks without
+            # overwriting a non-blank value.
+            "name_pl":      str(ln.get("name_pl") or "").strip(),
         })
 
     init_db(db_path)
@@ -1613,6 +1690,13 @@ def auto_create_draft_from_sales_packing(
         # rather than silently writing an unmappable row.
         legacy_status = _normalise_draft_status(_PHASE2_LEGACY_STATUS)
         initial_state = _normalise_draft_state("draft")
+
+        # Fill blank name_pl from the product_descriptions authority (no-op
+        # when name_pl_lookup is None). Then compute the non-authoritative
+        # birth advisory. Both run only on the INSERT path — never on the
+        # idempotent "already exists" early-return above.
+        editable = _birth_enrich_name_pl(editable, name_pl_lookup)
+        birth_unresolved = _birth_unresolved_lines(editable)
 
         editable_json = json.dumps(editable, ensure_ascii=False, sort_keys=True)
         cur = conn.execute(
@@ -1658,6 +1742,10 @@ def auto_create_draft_from_sales_packing(
             "client_name": str(client_name),
             "currency":    str(currency or "").upper(),
             "line_count":  len(editable),
+            # Non-authoritative birth advisory: lines born with a blank
+            # commercial description or zero/missing unit_price. Visibility
+            # only — readiness remains backend-derived on read/post.
+            "birth_unresolved": birth_unresolved,
         }, ensure_ascii=False, sort_keys=True),
         operator    = operator or "",
     )
@@ -2765,6 +2853,7 @@ def reset_draft_from_sales_packing(
     *,
     sales_lines:         List[Dict[str, Any]],
     reset_all:           bool = False,
+    name_pl_lookup:      Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
 ) -> ProformaDraft:
     """Rebuild ``editable_lines_json`` from caller-supplied sales-packing
     lines. The DB layer does not read documents.db; the route resolves
@@ -2782,6 +2871,18 @@ def reset_draft_from_sales_packing(
         raise ValueError("sales_lines must be a list")
 
     d = _load_for_edit(db_path, draft_id, expected_updated_at)
+
+    # Preserve operator-confirmed name_pl across the rebuild: a reset must
+    # not strip a curated commercial description back to blank. Map the
+    # PRIOR draft's non-blank name_pl by product_code so matching rebuilt
+    # lines re-inherit it before product_descriptions enrichment fills any
+    # remaining blanks.
+    prior_names: Dict[str, str] = {}
+    for _pl in (json.loads(d.editable_lines_json or "[]") or []):
+        _pc  = str(_pl.get("product_code") or "").strip()
+        _npl = str(_pl.get("name_pl") or "").strip()
+        if _pc and _npl:
+            prior_names.setdefault(_pc, _npl)
 
     # Reshape sales_packing_lines columns into editable_lines shape.
     # Skip rows with no product_code — product_code is required for
@@ -2808,8 +2909,15 @@ def reset_draft_from_sales_packing(
             "currency":     str(r.get("currency") or d.currency or "").upper(),
             "price_source": str(r.get("price_source") or ""),
             "client_ref":   str(r.get("client_ref") or ""),
+            # Carry incoming name_pl if present, else re-inherit the prior
+            # operator-confirmed name_pl. Enrichment (below) fills any blank
+            # that survives without overwriting a non-blank value.
+            "name_pl":      (str(r.get("name_pl") or "").strip()
+                             or prior_names.get(product_code, "")),
         })
     rebuilt = _ensure_line_ids(rebuilt)
+    rebuilt = _birth_enrich_name_pl(rebuilt, name_pl_lookup)
+    reset_unresolved = _birth_unresolved_lines(rebuilt)
 
     kwargs: Dict[str, Any] = {
         "new_state":          _next_state_after_edit(d.draft_state),
@@ -2833,6 +2941,8 @@ def reset_draft_from_sales_packing(
             "reset_all":       bool(reset_all),
             "lines_before":    len(json.loads(d.editable_lines_json or "[]") or []),
             "lines_after":     len(rebuilt),
+            # Same non-authoritative advisory as birth — visibility only.
+            "birth_unresolved": reset_unresolved,
         }, ensure_ascii=False, sort_keys=True),
         operator=operator,
     )
