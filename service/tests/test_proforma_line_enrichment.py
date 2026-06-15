@@ -255,6 +255,44 @@ def test_enrich_draft_source_lines_json_untouched(db_path):
         assert "item_type" not in ln
 
 
+# ── 6b. Birth INSERT writes raw source, not the editable shape (#593 Cluster A) ─
+
+def test_birth_source_lines_json_is_raw_only(db_path):
+    """#593 Cluster A — auto_create_draft_from_sales_packing must snapshot
+    source_lines_json as the RAW sales-packing record only. The bug it guards
+    against: the birth INSERT wrote the same name_pl-annotated editable blob
+    into BOTH source_lines_json and editable_lines_json, polluting the
+    immutable source record at birth (before any enrichment ever runs).
+
+    This asserts the contract directly at birth — it does NOT depend on the
+    enrichment code path, so it pins the fix at its true root cause.
+    """
+    d = _seed_draft(db_path)
+
+    source = json.loads(d.source_lines_json)
+    assert len(source) == 2, "both seeded lines must be present in source"
+    for ln in source:
+        # Annotation / transient fields must NEVER be in source.
+        assert "name_pl"    not in ln
+        assert "item_type"  not in ln
+        assert "_gen_attrs" not in ln
+        # Source carries the raw sales_packing columns — and only those.
+        assert set(ln.keys()) == {
+            "product_code", "design_no", "qty", "unit_price",
+            "currency", "price_source", "client_ref",
+        }
+
+    # The editable copy IS the annotated working shape and carries name_pl
+    # (blank at birth here, since _seed_draft supplies no name_pl_lookup).
+    editable = json.loads(d.editable_lines_json)
+    assert len(editable) == 2
+    assert all("name_pl" in ln for ln in editable), (
+        "editable_lines_json must keep the name_pl annotation"
+    )
+    # _gen_attrs is transient and must not persist on either side.
+    assert all("_gen_attrs" not in ln for ln in editable)
+
+
 # ── 7. Event recorded ────────────────────────────────────────────────────────
 
 def test_enrich_draft_records_event(db_path):

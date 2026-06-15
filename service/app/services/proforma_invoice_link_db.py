@@ -1704,6 +1704,14 @@ def auto_create_draft_from_sales_packing(
     # product_code is required for sales/proforma identity; design_no alone
     # is not invoiceable.
     editable: List[Dict[str, Any]] = []
+    # source_lines_json is the IMMUTABLE raw-source record. It must contain
+    # ONLY the fields the caller supplied (the sales_packing columns) and must
+    # NEVER carry the editable/annotation shape. We build it in lock-step with
+    # the editable rows but deliberately exclude the name_pl annotation and the
+    # transient _gen_attrs, so the birth INSERT cannot pollute source with
+    # derived data (#593 Cluster A). editable_lines_json is the working copy
+    # that carries name_pl and is the only one enrichment/readiness may mutate.
+    source: List[Dict[str, Any]] = []
     for ln in (lines or []):
         product_code = str(ln.get("product_code") or "").strip()
         design_no    = str(ln.get("design_no") or "").strip()
@@ -1718,7 +1726,8 @@ def auto_create_draft_from_sales_packing(
             up_f = float(ln.get("unit_price", 0) or 0)
         except (TypeError, ValueError):
             up_f = 0.0
-        row = {
+        # Raw immutable source projection — sales_packing columns only.
+        raw_row = {
             "product_code": product_code,
             "design_no":    design_no,
             "qty":          qty_f,
@@ -1726,16 +1735,20 @@ def auto_create_draft_from_sales_packing(
             "currency":     str(ln.get("currency") or currency or "").upper(),
             "price_source": str(ln.get("price_source") or ""),
             "client_ref":   str(ln.get("client_ref") or ""),
-            # Carry any operator-confirmed/source name_pl through the birth
-            # boundary. Blank by default; product_descriptions enrichment
-            # (below, when name_pl_lookup is supplied) fills blanks without
-            # overwriting a non-blank value.
-            "name_pl":      str(ln.get("name_pl") or "").strip(),
         }
+        source.append(dict(raw_row))
+        # Editable copy starts from the same raw values, then gains the
+        # annotation fields that source must never hold.
+        row = dict(raw_row)
+        # Carry any operator-confirmed/source name_pl through the birth
+        # boundary on the EDITABLE copy only. Blank by default;
+        # product_descriptions enrichment (below, when name_pl_lookup is
+        # supplied) fills blanks without overwriting a non-blank value.
+        row["name_pl"] = str(ln.get("name_pl") or "").strip()
         # Transient sales-packing attributes for the generated-name fallback.
         # Read defensively from both parser keys and product-identity keys.
         # _birth_resolve_name_pl pops this so it never persists into
-        # editable_lines_json.
+        # editable_lines_json (and it is never added to the source copy).
         row["_gen_attrs"] = {
             "ctg":     str(ln.get("ctg") or ln.get("category") or "").strip(),
             "kt":      str(ln.get("kt") or ln.get("karat") or "").strip(),
@@ -1786,6 +1799,10 @@ def auto_create_draft_from_sales_packing(
         editable = _birth_resolve_name_pl(editable, name_pl_lookup, desc_generate)
         birth_unresolved = _birth_unresolved_lines(editable, product_mapping_lookup)
 
+        # source_lines_json gets the raw snapshot; editable_lines_json gets the
+        # name_pl-annotated working copy. These are intentionally DISTINCT — a
+        # single shared blob is the #593 Cluster A pollution bug.
+        source_json   = json.dumps(source,   ensure_ascii=False, sort_keys=True)
         editable_json = json.dumps(editable, ensure_ascii=False, sort_keys=True)
         cur = conn.execute(
             """
@@ -1803,7 +1820,7 @@ def auto_create_draft_from_sales_packing(
             """,
             (str(batch_id), str(client_name), legacy_status,
              str(currency or "").upper(),
-             editable_json, now, now,
+             source_json, now, now,
              initial_state, editable_json),
         )
         conn.commit()
