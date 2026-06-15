@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-15 (PR #522 merged to main + deployed to production; PR #599 test-only merge; origin/main HEAD 9dbd481; **PRODUCTION NOW LIVE at d37316e** — wFirma grammar-compat + Phase 2B4 engine path fix deployed + hash-flip verified, see DEPLOY FACTS entry; GATE 2 now 1/3 open PRs; PR #522 Phase 2B4 wFirma grammar-compat complete; PR #599 test-only repo-relative path fix complete).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-15 (PR #602 merged to main resolves Issue #598; origin/main HEAD f8108ae; **PRODUCTION NOW LIVE at d37316e** — wFirma grammar-compat + Phase 2B4 engine path fix deployed + hash-flip verified, see DEPLOY FACTS entry; GATE 2 now 1/3 open PRs; f8108ae merged-to-main-not-deployed awaiting next deploy window).
 
-**Last-run-at:** 2026-06-15 (PR #522 merge + deploy; PR #599 test-only merge). Origin/main HEAD: **9dbd481** (test(dashboard): replace hardcoded path with repo-relative lookup (#599) on top of d37316e). Production still **d37316e**. GATE 2: **1/3 open PRs** (#498 draft/Lesson-E only). TEST BASELINE: 160/160 PZ regression + 412/412 carrier suite. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
+**Last-run-at:** 2026-06-15 (PR #602 merge resolves Issue #598; PR #599 test-only merge; PR #522 merge + deploy). Origin/main HEAD: **f8108ae** (cleanup(wfirma): dead grammar import removal (#602) on top of 9dbd481). Production still **d37316e**. GATE 2: **1/3 open PRs** (#498 draft only). TEST BASELINE: 221/221 PZ regression + 412/412 carrier suite (per `.claude/contracts/test-baseline.md`). DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
 
 ---
 
@@ -102,6 +102,15 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **GATE 4 disposition**: deferred design_no / product-description authority work filed as ISSUE #586 (Campaign 05 — Product Description Authority Hardening), scoped-but-not-started, sequence after Campaign 04 PR3 (#533).
 - **GATE 2 state after merge**: 2 impl PRs remain open (#522 needs-rebase, #498 draft/ultracode) — slot freed for new work.
 - **#584 independent fix deployed**: `43b3c3e` (now on main) independently fixes the customer-master storage-leak leg discovered during #529 testing — proves #529 test deltas were pre-existing platform skew, not #529 regression.
+
+## PR #602 — wFirma dead grammar import cleanup (2026-06-15, MERGED) — resolves Issue #598
+
+- **PR #602 MERGED**: merged as **f8108ae** — cleanup(wfirma): removed the dead duplicate `parents[3]` grammar import block in `service/app/api/routes_wfirma.py` (7 deletions) + added regression test `service/tests/test_wfirma_grammar_import_dedup.py`. Branch `fix/wfirma-grammar-dead-import-598` (commit `ca97a1f`) merged to main 2026-06-15.
+- **Implementation**: Removed the dead duplicate import block (`sys.path.insert(0, Path(__file__).resolve().parents[3])` + `from description_grammar import METAL_PREPOSITIONAL`) that ran before `from ..core.config import settings`; `parents[3]` resolves to drive root in prod and only imported by accident via already-populated sys.path. Preserved the correct `settings.engine_dir` Lesson-J import block already deployed+verified in PR #522 / d37316e — now the sole grammar import. Import-time grammar-compat gate untouched.
+- **Testing**: Dedup+grammar regression test suite 75 passed; PZ baseline tests/test_pz_*.py 221 passed (+1 documented pre-existing failure test_save_json_csv_ui_round_trip); carrier baseline tests/test_carrier_*.py 420 passed (>=412 threshold).
+- **GATE 1 review verdicts**: backend-safety-reviewer PASS, reviewer-challenge SHIP-WITH-MITIGATIONS (all mitigations resolved inline).
+- **Deploy status**: #602 is production-code-bearing (routes_wfirma.py changed) but NOT deployed. Production runtime remains d37316e. f8108ae is merged-to-main-not-deployed. Deploy is low-risk and deferrable: #602 only removes a dead duplicate import and leaves the already-deployed settings.engine_dir path in place — strictly-safer-or-identical in prod.
+- **Issue #598 CLOSED**: via #602 merge. GATE 4 finding from PR #522 deploy now resolved.
 
 ## PR #599 — test-only repo-relative path fix (2026-06-15, MERGED)
 
@@ -5642,9 +5651,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Issue #598 cleanup** — target: resolve duplicate grammar import at routes_wfirma.py lines 46-47 (non-blocking cleanup from PR #522 deploy) — gating: GATE 4 ISSUE filed, requires SCHEDULED/ISSUE/REJECTED disposition
-2. **Issue #597 environment-disclosure-gap** — target: resolve observer self-degradation on environment disclosure gaps — gating: OPEN issue from self-eval-2026-06-15.md requires action
-3. **PR #498 draft completion** — target: operator decision to advance security draft from draft status or close — gating: GATE 4 H-R5/H-W3/H-W2 findings require disposition
+1. **Issue #597 environment-disclosure-gap** — target: resolve observer self-degradation on environment disclosure gaps — gating: OPEN issue from self-eval-2026-06-15.md requires action
+2. **PR #498 draft completion** — target: operator decision to advance security draft from draft status or close — gating: GATE 4 H-R5/H-W3/H-W2 findings require disposition (security: H-R5 admin role guard, H-W3 session-bound actor)
+3. **Deploy f8108ae** — target: deploy merged PR #602 wFirma dead import cleanup to production — gating: deferrable low-risk, production remains d37316e, awaiting next deploy window
 
 **DEPLOY-AGENT-REGISTRATION-REPAIR COMPLETE (2026-05-25, SHA 4366b0f)**: All 7 deploy agent files now have valid YAML frontmatter and are registered as dispatchable subagents. Names: deploy-lead-coordinator, deploy-git-diff-reviewer, deploy-backend-impact-reviewer, deploy-persistence-storage-reviewer, deploy-security-reviewer, deploy-qa-reviewer, deploy-release-manager. Tools: Read, Grep, Glob (review-only). Takes effect in next fresh Claude Code session (Lesson B). OQ6 resolved — see below.
 
@@ -5710,12 +5719,12 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Impact if unanswered**: Self-degradation detected in scorecard evaluation continues; observer scoring reliability decreases
 - **Source**: `.claude/memory/scorecards/self-eval-2026-06-15.md` RULE 5 self-evaluation
 
-## OQ: Issue #598 — Dead grammar import cleanup (2026-06-15)
+## OQ: Deploy pending — f8108ae merged but not deployed (2026-06-15)
 
-- **Question**: Complete removal of duplicate grammar import at routes_wfirma.py lines 46-47 (non-blocking)
-- **Who can answer**: Next implementation session can self-resolve via simple code cleanup
-- **Impact if unanswered**: Minor code hygiene debt, no functional impact
-- **Source**: GATE 4 salvage finding from PR #522 deploy verification — incomplete Lesson J fix
+- **Question**: When to deploy PR #602 (f8108ae) wFirma dead import cleanup
+- **Who can answer**: Operator (deploy scheduling decision)
+- **Impact if unanswered**: Low-risk deferrable; production stays d37316e; f8108ae only removes dead duplicate import, strictly-safer-or-identical
+- **Source**: PR #602 merged via Issue #598 resolution; GATE 2 now 1/3 open PRs
 
 ## OQ: Issue #600 — Test suite stale markers + Lesson-M review required (2026-06-15)
 
