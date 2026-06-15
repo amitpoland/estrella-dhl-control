@@ -140,9 +140,21 @@ def _auto_create_draft_for_client(
                 "currency":     (r.get("currency") or currency or "").upper(),
                 "price_source": r.get("price_source") or "",
                 "client_ref":   r.get("client_ref") or client_ref or "",
+                # Carry sales-packing attributes through for the generated
+                # name_pl fallback (used only on a product_descriptions miss).
+                # Generally absent on sales_packing_lines rows; passed through
+                # defensively so the fallback fires when they ARE present.
+                "ctg":            r.get("ctg") or r.get("category") or "",
+                "kt":             r.get("kt") or r.get("karat") or "",
+                "col":            r.get("col") or r.get("metal_color") or "",
+                "quality":        r.get("quality") or r.get("quality_string") or "",
             })
         # Governance check — no-op when proforma_draft_governance_enabled=False
         check_creation_lines(editable_input)
+        # Lazy imports to avoid import cycles (service layer stays free of
+        # route/parser imports; we inject these as callables instead).
+        from ..api.sales_packing_parser import generate_name_pl_if_sufficient
+        from ..services import wfirma_db as _wfdb
         draft, was_created = pildb.auto_create_draft_from_sales_packing(
             _proforma_db_path(),
             batch_id      = batch_id,
@@ -154,6 +166,12 @@ def _auto_create_draft_for_client(
             # birth so drafts are not born with a missing commercial
             # description. Never fabricates; never touches price.
             name_pl_lookup = ddb.get_product_description,
+            # Second-choice name_pl: generate from attributes ONLY when the
+            # category is recognised (declines None otherwise). Never fabricates.
+            desc_generate  = generate_name_pl_if_sufficient,
+            # Birth advisory: surface missing wFirma product mapping (read-only;
+            # never writes wFirma). Visibility only — does not block creation.
+            product_mapping_lookup = _wfdb.get_product,
         )
         log.info(
             "[%s] proforma draft %s for client=%r (id=%s, state=%s, lines=%d)",

@@ -555,6 +555,12 @@ def sync_draft_from_packing_upload(
         "designs_unresolved":    resolution_summary["designs_unresolved"],
     }
 
+    # Birth/reset name_pl fallback + mapping advisory callables. Lazy imports
+    # keep the service layer free of route/parser import cycles; both are
+    # read-only (never write wFirma, never fabricate).
+    from ..api.sales_packing_parser import generate_name_pl_if_sufficient
+    from . import wfirma_db as _wfdb
+
     # ── 3. Per-client sync ────────────────────────────────────────────────────
     for client_name, lines in by_client.items():
         currency = _modal_currency(lines)
@@ -570,6 +576,8 @@ def sync_draft_from_packing_upload(
                 lines=lines,
                 operator=operator,
                 name_pl_lookup=ddb.get_product_description,
+                desc_generate=generate_name_pl_if_sufficient,
+                product_mapping_lookup=_wfdb.get_product,
             )
 
             if was_created:
@@ -617,6 +625,8 @@ def sync_draft_from_packing_upload(
                         draft.updated_at,   # OCC token
                         sales_lines=lines,
                         name_pl_lookup=ddb.get_product_description,
+                        desc_generate=generate_name_pl_if_sufficient,
+                        product_mapping_lookup=_wfdb.get_product,
                     )
                     action = "synced"
                     _write_sync_metadata(db_path, updated.id, warning=None)

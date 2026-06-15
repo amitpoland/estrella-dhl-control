@@ -50,6 +50,7 @@ from .sales_packing_parser import (
     parse_ejl_sales_packing,
     validate_grand_total,
     build_patch_lookup,
+    generate_name_pl_if_sufficient,
 )
 
 log    = get_logger(__name__)
@@ -6098,6 +6099,13 @@ def reset_proforma_draft_from_sales_packing(
             "currency":     (r.get("currency") or d.currency or "").upper(),
             "price_source": r.get("price_source") or "",
             "client_ref":   r.get("client_ref") or "",
+            # Attribute passthrough for the generated name_pl fallback
+            # (used only on a product_descriptions miss; declines when the
+            # category is unrecognised). Generally absent on these rows.
+            "ctg":          r.get("ctg") or r.get("category") or "",
+            "kt":           r.get("kt") or r.get("karat") or "",
+            "col":          r.get("col") or r.get("metal_color") or "",
+            "quality":      r.get("quality") or r.get("quality_string") or "",
         }
         for r in matched
     ]
@@ -6118,6 +6126,8 @@ def reset_proforma_draft_from_sales_packing(
         sales_lines=sales_lines,
         reset_all=reset_all,
         name_pl_lookup=ddb.get_product_description,
+        desc_generate=generate_name_pl_if_sufficient,
+        product_mapping_lookup=wfdb.get_product,
     ))
 
 

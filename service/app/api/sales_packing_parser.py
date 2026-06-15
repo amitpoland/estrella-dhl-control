@@ -147,6 +147,33 @@ def generate_description(ctg: str, kt: str, col: str, quality: str) -> Tuple[str
     return pl, en
 
 
+def generate_name_pl_if_sufficient(
+    ctg:     str,
+    kt:      str = "",
+    col:     str = "",
+    quality: str = "",
+) -> Optional[str]:
+    """Birth-time fallback authority for a Polish commercial name (``name_pl``).
+
+    Returns a generated ``name_pl`` ONLY when the product category code is
+    recognised; otherwise returns ``None``. This is the anti-fabrication
+    guard: a blank or unknown ``ctg`` would make :func:`generate_description`
+    emit the generic placeholder noun "wyrób" ("article"), which is NOT a
+    real description — so we decline (``None``) instead. Karat / colour /
+    quality are optional refinements and never required.
+
+    Used by the proforma-draft birth/reset pipeline as the second-choice
+    name_pl source, AFTER the product_descriptions authority and only on a
+    miss there. The category vocabulary lives here, next to
+    :func:`generate_description`, so the service layer stays free of this
+    module's import and the callers stay thin (they pass this reference).
+    """
+    if (ctg or "").upper().strip() not in _CATEGORY_PL:
+        return None
+    pl, _en = generate_description(ctg, kt, col, quality)
+    return (pl or "").strip() or None
+
+
 # ── Header normalisation ──────────────────────────────────────────────────────
 
 def _normalise_header(raw: str) -> str:
