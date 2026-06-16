@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-16 (PR #614 MERGED to main at `178a392` — Sprint 03.3 Scope C E3a inbox evidence endpoint now on main, NOT YET DEPLOYED; open PR count = 0; GATE 4 Issues #611/#612/#613/#615 remain OPEN; hand-written under emergency clause — flow-context-keeper non-dispatchable pending model-pin fix; see OQ for fix status). Prior (2026-06-16): PR #614 OPEN → MERGED. Prior (2026-06-15): PR #608 merged as `1909fcc`, PR #602 resolves Issue #598.
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated on 2026-06-16 (E3a DEPLOYED to production at `C:\PZ`; `routes_inbox.py` SHA-256 69CB229A… hash-verified; PZService RUNNING; E3b now UNBLOCKED; hand-written under emergency clause — flow-context-keeper non-dispatchable pending model-pin fix; see OQ for fix status). Prior (2026-06-16): PR #614 MERGED to main at `178a392` — Sprint 03.3 Scope C E3a inbox evidence endpoint on main, NOT YET DEPLOYED. Prior (2026-06-16): PR #614 OPEN → MERGED. Prior (2026-06-15): PR #608 merged as `1909fcc`, PR #602 resolves Issue #598.
 
-**Last-run-at:** 2026-06-16 (PR #614 MERGED to main at `178a392` — Sprint 03.3 Scope C E3a `feat(inbox): add GET /api/v1/inbox/evidence/{item_id}`, merged 2026-06-16 06:38:53 UTC; commits bundled: `5206e6e` (E3a code) + `bd1ad79` (chore(memory) scorecard + prior PROJECT_STATE facts); GATE 4 Issues #611/#612/#613/#615 remain OPEN; open PR count = **0**; production NOT yet deployed — E3a endpoint on main only; next = deploy E3a → start PR-E3b frontend). Origin/main HEAD: **178a392** (`feat(inbox): add GET /api/v1/inbox/evidence/{item_id}` (#614) — 2026-06-16). Production: **d37316e** — #608 (1909fcc), #602 (f8108ae), #614 (178a392) all merged-not-deployed. GATE 2: **0/3 open impl PRs** (queue empty; #498 draft not counted active). TEST BASELINE: 221/221 PZ regression + 412/412 carrier suite (per `.claude/contracts/test-baseline.md`). DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
+**Last-run-at:** 2026-06-16 (E3a DEPLOYED — 7-agent gate ran; `routes_inbox.py` copied to `C:\PZ`; SHA-256 hash `69CB229A5DF076333514E04E6F5F20B4436D23D4A29875B445CC89E197A91B3D` verified; PZService RUNNING process 9840 on 127.0.0.1:47213; `/api/v1/health` → 401 auth-gated alive; E3b UNBLOCKED). Origin/main HEAD: **ce15c6c** (chore(memory): PROJECT_STATE — PR #614 MERGED, deploy pending — 2026-06-16). Production: **operator-confirmed E3a deploy** — routes_inbox.py + #608 (#608 1909fcc) + #602 (f8108ae) + #614 (178a392) deployed 2026-06-16; prior production SHA `d37316e`. GATE 2: **0/3 open impl PRs** (queue empty; #498 draft not counted active). TEST BASELINE: 221/221 PZ regression + 412/412 carrier suite (per `.claude/contracts/test-baseline.md`). DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: **Write Enablement Phase 1A+1B MERGED** — Edit/Cancel Draft/Prior Invoices/Send Email enabled; CMR/Generate remain disabled with reasons (Lesson M). **M2 SEND: FUNCTIONALLY COMPLETE** — full pipeline verified including PDF fetch; SMTP path deferred to natural workflow. ATLAS-V2: **WIRED_PAGES = 17/17 (100%)** — ALL V2 pages authority-honest, MOCK banner retired. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **PYCACHE RULE**: Backend deploys to C:\PZ must clear ALL __pycache__ recursively (app + engine) before restart — `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force` — else stale .pyc shadows new source silently. **EXCEL COLUMN MAPPING**: Advisory endpoint live (suggest-column-mapping), supplier template approval framework deployed, LLM safety gates enforced (operator_confirmed required). **M6 PRIOR PROFORMA SEARCH**: **CAMPAIGN CLOSED** (2026-06-08). **CUSTOMER MASTER ADDRESS AUTHORITY**: **CAMPAIGN CLOSED** (2026-06-07).
 
 ---
 
@@ -89,6 +89,26 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **GATE 2 after merge**: **0/3 open implementation PRs** — clean board.
 - **GATE 4 Issues remain OPEN**: #611 (get_email_by_id follow-up), #612 (admin helper extraction), #613 (pre-existing CSV test failure), #615 (backend-safety-reviewer NEEDS-TUNING prompt gap) — no disposition change; none closed by this merge.
 - **E3b gate status**: E3a MERGED — first gate condition satisfied. Second gate condition (E3a production deploy, hash-flip verified) remains OPEN. E3b branch must not open until deploy completes. See OQ-E3b.
+
+## DEPLOY — E3a + Sprint 03.2 + #602 bundle → C:\PZ (2026-06-16, DEPLOYED) — routes_inbox.py evidence endpoint + Shipment Detail V2 UX polish + wFirma dead-import cleanup
+
+- **Production deploy date**: 2026-06-16. Prior production SHA: `d37316e`. New production SHA: operator-confirmed. The deploy synced the full `origin/main` bundle (`178a392` / `ce15c6c` chain), NOT a single-file copy — independently confirmed by the orchestrator hash-comparing all three bundled files in `C:\PZ` against `C:\PZ-verify` (origin/main); all three MATCH (see acceptance evidence). Exact prod git-SHA not re-read per PATH-GUARD (C:\PZ is not a git repo) — recorded via per-file hash equality instead.
+- **7-agent deploy gate**: ran successfully for E3a prior to sync (operator-confirmed in trigger message).
+- **Acceptance evidence (operator-provided + orchestrator hash-verified, 2026-06-16)**:
+  - `routes_inbox.py` copied to `C:\PZ`; SHA-256 hash matched (operator + orchestrator): `69CB229A5DF076333514E04E6F5F20B4436D23D4A29875B445CC89E197A91B3D`
+  - `shipment-detail-page.jsx` (#608) prod hash = origin/main hash (orchestrator-verified 2026-06-16): `FC0FA87EDA80930ADFDD305B21F88DA9B54B372E55DA619451AA13DF68E83CBA`
+  - `routes_wfirma.py` (#602) prod hash = origin/main hash (orchestrator-verified 2026-06-16): `2FFB0347AE65AC1A8D1EC81317A1A7C2E9BD65321C604162B311893987B85577`
+  - Markers present in deployed `routes_inbox.py`: `unknown_item_type`, `evidence_read_error`, `_derive_is_admin`
+  - PZService: RUNNING (sc.exe query STATE 4 RUNNING; process 9840; listening 127.0.0.1:47213)
+  - stderr: clean uvicorn startup, no traceback ("Application startup complete")
+  - health: `/api/v1/health` reachable, returns auth-gated 401 (Authentication required) — acceptable; proves the app is alive and enforcing auth; no changed file touches the health route
+- **Runtime delta bundled in this deploy** (all three prior merged-not-deployed commits land together — each prod-hash-verified above):
+  - `app/api/routes_inbox.py` — E3a `GET /api/v1/inbox/evidence/{item_id}` route (PR #614, 178a392)
+  - `app/static/v2/shipment-detail-page.jsx` — Sprint 03.2 authority-honest UX polish; fake-success machinery removed; PendingAction controls (PR #608, 1909fcc)
+  - `app/api/routes_wfirma.py` — dead duplicate `parents[3]` grammar import block removed (PR #602, f8108ae); Lesson J grammar import via `settings.engine_dir` preserved (deployed at d37316e, still the sole import)
+- **No engine files in this bundle** (Lesson J N/A — none of PRs #614/#608/#602 touch root engine files `pz_import_processor.py` or `audit_scoring.py`). Standard `service/app` robocopy + pycache purge + PZService restart.
+- **E3b gate status**: BOTH conditions now satisfied — (1) E3a MERGED (178a392, 2026-06-16 06:38 UTC) + (2) E3a DEPLOYED (2026-06-16, hash-verified). E3b branch MAY NOW OPEN. See OQ-E3b (updated below).
+- **GATE 2 after deploy**: 0/3 open implementation PRs — clean board; E3b PR will be slot 1/3.
 
 ## DEPLOY — main `d37316e` → C:\PZ (2026-06-15, VERIFIED LIVE) — wFirma grammar-compat + Phase 2B4 engine path fix
 
@@ -5694,9 +5714,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Deploy origin/main `178a392` to production (C:\PZ)** — target: E3a inbox evidence route + #608 UX polish + #602 dead-import cleanup all land in production in one pass; hash-flip verify all changed files — gating: operator-gated 7-agent `/deploy` gate; `178a392` is a clean bundle (no engine files via Lesson J for this diff; standard `service/app` robocopy + pycache purge + PZService restart); GATE 2 at 0/3 (clean board, no slot pressure)
-2. **Start PR-E3b (EvidencePanel frontend, Sprint 03.3 Scope C)** — target: `inbox-page.jsx` `EvidencePanel` component calling `GET /api/v1/inbox/evidence/{item_id}`; frontend-only, no backend changes — gating: E3a production deploy must complete and hash-flip verified first (see OQ-E3b updated 2026-06-16)
-3. **Close GATE 4 Issues #611/#612/#613/#615** — target: verify each issue is tracked with appropriate assignee/label and no additional dispositions are needed; none of the four close automatically on merge — gating: none (read-only operator action; may be batched with any next session)
+1. **Start PR-E3b (EvidencePanel frontend, Sprint 03.3 Scope C)** — target: `inbox-page.jsx` `EvidencePanel` component calling `GET /api/v1/inbox/evidence/{item_id}`; frontend-only, no backend changes — gating: E3a production deploy COMPLETE (2026-06-16, hash-verified); E3b is NOW UNBLOCKED; GATE 2 slot available (0/3); open a new branch, implement EvidencePanel, GATE 1 review, PR open
+2. **Close GATE 4 Issues #611/#612/#613/#615** — target: verify each issue is tracked with appropriate assignee/label and no additional dispositions are needed; none of the four close automatically on merge — gating: none (read-only operator action; may be batched with E3b session or standalone)
+3. **Verify PURCHASE_TRANSIT bypass runtime exercise (OQ-NEW-13 checkpoint)** — target: observe next shipment batch reaching PZ-created-in-wFirma OR DHL-delivered state; confirm blocker changes from `PURCHASE_TRANSIT` to `purchase_transit_pz_or_delivered` in proforma preview — gating: none (passive runtime observation; no code, no PR required)
 
 **DEPLOY-AGENT-REGISTRATION-REPAIR COMPLETE (2026-05-25, SHA 4366b0f)**: All 7 deploy agent files now have valid YAML frontmatter and are registered as dispatchable subagents. Names: deploy-lead-coordinator, deploy-git-diff-reviewer, deploy-backend-impact-reviewer, deploy-persistence-storage-reviewer, deploy-security-reviewer, deploy-qa-reviewer, deploy-release-manager. Tools: Read, Grep, Glob (review-only). Takes effect in next fresh Claude Code session (Lesson B). OQ6 resolved — see below.
 
@@ -5753,12 +5773,11 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 # OPEN QUESTIONS
 
-## OQ-E3b: PR-E3b EvidencePanel frontend (Sprint 03.3 Scope C) — E3a MERGED; blocked on E3a production deploy (2026-06-16)
+## ~~OQ-E3b: PR-E3b EvidencePanel frontend (Sprint 03.3 Scope C) — E3a MERGED; blocked on E3a production deploy (2026-06-16)~~ — RESOLVED 2026-06-16: E3a DEPLOYED; E3b NOW UNBLOCKED
 
-- **Question**: When to start PR-E3b — the frontend `EvidencePanel` component in `inbox-page.jsx` that calls `GET /api/v1/inbox/evidence/{item_id}`?
-- **Who can answer**: Next session can self-resolve once E3a is deployed to production (full 7-agent `/deploy` gate; backend route sync + hash-flip verify). E3a merge gate is NOW SATISFIED (PR #614 merged as `178a392` on 2026-06-16 06:38:53 UTC).
-- **Impact if left unanswered**: Sprint 03.3 Scope C remains incomplete; the inbox evidence endpoint is implemented and on main but not surfaced to the operator via the V2 inbox UI.
-- **Gating precondition (updated 2026-06-16)**: ~~PR #614 merge~~ DONE (178a392) → production deploy (hash-flip verified) must complete before E3b branch opens. E3b is frontend-only (no backend changes) but its API contract is defined by the live E3a route. Deploy the 3-PR backlog (`178a392` bundles #614 + #608 + #602) via the 7-agent gate, then E3b is unblocked.
+- **Resolution (2026-06-16)**: Both gating conditions satisfied. (1) E3a MERGED to main as `178a392` on 2026-06-16 06:38 UTC. (2) E3a DEPLOYED to production `C:\PZ` on 2026-06-16 — `routes_inbox.py` SHA-256 `69CB229A5DF076333514E04E6F5F20B4436D23D4A29875B445CC89E197A91B3D` verified; PZService RUNNING (process 9840, 127.0.0.1:47213); health 401 auth-gated alive.
+- **E3b status**: UNBLOCKED. Next session may open E3b branch immediately. E3b is frontend-only (`inbox-page.jsx` `EvidencePanel` component calling `GET /api/v1/inbox/evidence/{item_id}`). No backend changes. GATE 2 slot available (0/3 open impl PRs).
+- **Impact if deferred**: Sprint 03.3 Scope C remains incomplete; the inbox evidence endpoint is live in production but not surfaced to the operator via the V2 inbox UI. No data risk — backend route is read-only.
 
 ## OQ: tests/test_cn_hsn_classifier.py 13/35 failing on main (Issue #567) — accept-sad flow live-verified working; test-context drift suspected (storage_root fixture interaction).
 
@@ -5769,13 +5788,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Impact if unanswered**: Self-degradation detected in scorecard evaluation continues; observer scoring reliability decreases
 - **Source**: `.claude/memory/scorecards/self-eval-2026-06-15.md` RULE 5 self-evaluation
 
-## OQ: Deploy pending — #608 (1909fcc) Shipment Detail V2 UX polish merged but not deployed (2026-06-15)
+## ~~OQ: Deploy pending — #608 (1909fcc) Shipment Detail V2 UX polish merged but not deployed (2026-06-15)~~ — RESOLVED 2026-06-16: DEPLOYED in E3a bundle
 
-- **Question**: When to deploy PR #608 (`1909fcc`) — Sprint 03.2 authority-honest UX polish for the Shipment Detail V2 page.
-- **Who can answer**: Operator (deploy scheduling decision; deploy is operator-gated, full 7-agent `/deploy` gate, static-asset sync + cache-bust).
-- **Impact if unanswered**: Operators continue to see the pre-polish Shipment Detail V2 page (which still contained fake-success controls). No data risk — change is static-asset/frontend-only, no backend/schema/authority code. Deferrable; can bundle with the next frontend/static deploy window.
-- **Deploy note**: served surface is `service/app/static/v2/shipment-detail-page.jsx` (Atlas-V2 SPA). Sync the static asset to `C:\PZ\app\static\v2\` + cache-bust; no engine-file sync (Lesson J N/A). NOT the standard backend-only flow.
-- **Source**: PR #608 merged 2026-06-15; see #608 FACT entry.
+- **Resolution (2026-06-16)**: PR #608 (`shipment-detail-page.jsx` Sprint 03.2 UX polish) deployed to production as part of the E3a bundle deploy on 2026-06-16. `service/app/static/v2/shipment-detail-page.jsx` synced to `C:\PZ\app\static\v2\`. Fake-success controls removed; PendingAction authority-honest controls live in production.
 
 ## OQ: flow-context-keeper non-dispatchable — fix applied, pending next-session validation (2026-06-15)
 
@@ -5785,12 +5800,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Who can answer / close**: Operator — merge the config PR, `git pull` it into the working tree (or refresh the harness agent config there), start a fresh session, and confirm `flow-context-keeper` dispatches (probe: read-only PROJECT_STATE check returning DISPATCH_OK). Closes when validated.
 - **Impact if unfixed**: Every future PR-merge / issue-close RULE 3 update must be hand-written under the emergency clause, raising drift risk and bypassing the agent's movement-rule matrix (FACTS append-only invariant then enforced manually).
 
-## OQ: Deploy pending — f8108ae merged but not deployed (2026-06-15)
+## ~~OQ: Deploy pending — f8108ae merged but not deployed (2026-06-15)~~ — RESOLVED 2026-06-16: DEPLOYED in E3a bundle
 
-- **Question**: When to deploy PR #602 (f8108ae) wFirma dead import cleanup
-- **Who can answer**: Operator (deploy scheduling decision)
-- **Impact if unanswered**: Low-risk deferrable; production stays d37316e; f8108ae only removes dead duplicate import, strictly-safer-or-identical
-- **Source**: PR #602 merged via Issue #598 resolution; GATE 2 now 1/3 open PRs
+- **Resolution (2026-06-16)**: PR #602 (`routes_wfirma.py` dead-import cleanup, f8108ae) deployed to production as part of the E3a bundle deploy on 2026-06-16. Dead duplicate `parents[3]` grammar import block removed from production; Lesson J `settings.engine_dir` import path remains the sole grammar import.
 
 ## OQ: Issue #600 — Test suite stale markers + Lesson-M review required (2026-06-15)
 
