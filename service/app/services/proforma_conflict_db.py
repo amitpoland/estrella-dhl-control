@@ -386,6 +386,16 @@ def resolve_conflict(
         ).fetchone()
         if existing is None:
             raise ValueError(f"conflict_id {conflict_id} not found")
+        # Terminal rows record a committed operator decision — they must not be
+        # silently re-resolved (the symmetric guard to upsert's no-resurrect at
+        # the top of this module). A genuine undo would be a distinct, explicit
+        # unlock path, not a side effect of the standard resolve action; this
+        # also makes the §5 conflict_posting_blocker gate (PR-2) tamper-safe.
+        if existing["status"] in TERMINAL_STATUSES:
+            raise ValueError(
+                f"conflict_id {conflict_id} is already in terminal status "
+                f"{existing['status']!r} and cannot be re-resolved"
+            )
         before = _row_to_conflict(existing).to_dict()
         conn.execute(
             """

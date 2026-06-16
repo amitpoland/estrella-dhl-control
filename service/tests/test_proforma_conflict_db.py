@@ -261,6 +261,29 @@ def test_resolve_requires_resolved_by(tmp_path):
                               resolution_reason=None, resolved_by="  ")
 
 
+def test_resolve_terminal_row_cannot_be_re_resolved(tmp_path):
+    # A committed operator decision is terminal — a second resolve must raise,
+    # not silently overwrite resolution_type/reason/resolved_by (symmetric to
+    # upsert's no-resurrect guard; keeps the §5 posting gate tamper-safe).
+    db = _db(tmp_path)
+    seeded = _seed(db)
+    first = pcdb.resolve_conflict(
+        db, seeded.conflict_id, resolution_type="use_master_default",
+        resolution_reason=None, resolved_by="operator-1",
+    )
+    assert first.status == STATUS_RESOLVED
+    with pytest.raises(ValueError, match="terminal status"):
+        pcdb.resolve_conflict(
+            db, seeded.conflict_id, resolution_type="override_with_reason",
+            resolution_reason="trying to overwrite", resolved_by="operator-2",
+        )
+    # The original decision is intact — no silent mutation occurred.
+    after = pcdb.get_conflict(db, seeded.conflict_id)
+    assert after.status == STATUS_RESOLVED
+    assert after.resolution_type == "use_master_default"
+    assert after.resolved_by == "operator-1"
+
+
 # ── upsert: detection-payload validation ──────────────────────────────────────
 
 def test_upsert_unknown_conflict_type_raises(tmp_path):

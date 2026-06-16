@@ -282,8 +282,13 @@ def _detect_customer_vat_eu_changed(
 
     # Translate the resolver's numeric id back to the draft's code-string
     # vocabulary so we compare "23"/"WDT"/"EXP", not 222/228/229. If the id is
-    # unexpectedly unmapped, stay silent rather than false-positive.
-    expected_str = _VAT_ID_TO_CODE.get(int(expected))
+    # unexpectedly unmapped or non-numeric, stay silent rather than raise or
+    # false-positive (fail-closed, consistent with the rest of this detector).
+    try:
+        expected_id = int(expected)
+    except (TypeError, ValueError):
+        return None
+    expected_str = _VAT_ID_TO_CODE.get(expected_id)
     if expected_str is None:
         return None
 
