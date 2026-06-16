@@ -512,5 +512,27 @@ class Settings(BaseSettings):
     # Default OFF (False): current hardcoded constants used unchanged.
     customs_identity_from_masters: bool = Field(default=False)
 
+    # ── ADR-029 Proforma Workspace — conflict detection (default OFF) ─────────
+    # Conflict detection is a TYPED EXTENSION of ADR-025 soft validation:
+    # advisory by default, one hard gate at the wFirma write boundary only.
+    # All four flags default OFF (ADR-010/018); rollback = flip OFF (+ remove
+    # the additive files). See ADR-029 §3/§5/§7 and
+    # docs/proforma-workspace-consolidation-plan.md §5/§6.
+    #
+    #   conflict_detection_enabled          → run validators + persist conflicts
+    #                                         + expose the /conflicts routes.
+    #   conflict_ui_mode                    → "panel" | "inline" rendering hint
+    #                                         (frontend only; no backend effect).
+    #   conflict_resolution_auto_use_defaults → auto-apply master defaults on
+    #                                         resolve (kept OFF — operator acts).
+    #   conflict_posting_blocker            → when ON, an OPEN error-severity
+    #                                         conflict blocks the wFirma write
+    #                                         specifically (ADR-029 §5). OFF in
+    #                                         early staging → ON before prod.
+    conflict_detection_enabled:            bool = Field(default=False)
+    conflict_ui_mode:                      str  = Field(default="panel")
+    conflict_resolution_auto_use_defaults: bool = Field(default=False)
+    conflict_posting_blocker:              bool = Field(default=False)
+
 
 settings = Settings()

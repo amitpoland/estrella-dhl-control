@@ -8470,3 +8470,199 @@ def get_dual_valuation(batch_id: str, client_name: str) -> JSONResponse:
 
 
 # (clone_proforma_draft already defined at line 3412 from PR #407 Phase 2/3 — no duplicate needed)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADR-029 Proforma Workspace — conflict detection foundation (PR-1)
+#
+# Advisory drift/eligibility detection (ADR-029 §3, a typed extension of ADR-025
+# soft validation). All three routes are gated by ``conflict_detection_enabled``
+# (default OFF) and return 404 when the flag is off so the surface is inert until
+# the workspace opt-in. Detection is pure / local-only / wFirma-free (ADR-021
+# Invariant 7): the customer is resolved from local masters and passed into the
+# pure detector; persistence + audit live in proforma_conflict_db.
+# ─────────────────────────────────────────────────────────────────────────────
+
+from ..services import proforma_conflict_db as pcdb        # noqa: E402
+from ..services.proforma_conflict_detector import (         # noqa: E402
+    detect_conflicts as _detect_conflicts,
+)
+from ..models.vat_resolver import CustomerForVAT as _CustomerForVAT  # noqa: E402
+
+
+def _proforma_conflicts_db_path():
+    """Separate store for advisory conflicts (kept out of proforma_links.db so
+    the drafts schema is untouched by this slice)."""
+    return settings.storage_root / "proforma_conflicts.db"
+
+
+def _conflicts_enabled() -> bool:
+    return bool(getattr(settings, "conflict_detection_enabled", False))
+
+
+def _resolve_customer_for_conflicts(draft: "pildb.ProformaDraft"):
+    """Local-only resolution: draft → CustomerMaster + CustomerForVAT context.
+
+    Returns ``(customer, vat_context)`` — either may be None when the customer
+    cannot be resolved locally. NEVER calls wFirma (ADR-021)."""
+    cn = (draft.client_name or "").strip()
+    if not cn:
+        return None, None
+    try:
+        cr = _resolve_customer(cn, batch_id=getattr(draft, "batch_id", None))
+    except Exception:
+        return None, None
+    cid = (cr.get("wfirma_customer_id") or "").strip()
+    if not cid:
+        return None, None
+    try:
+        customer = get_customer_master(_customer_master_db_path(), str(cid))
+    except Exception:
+        return None, None
+    if customer is None:
+        return None, None
+    vat_context = _CustomerForVAT(
+        country=getattr(customer, "country", None),
+        vat_eu_valid=getattr(customer, "vat_eu_valid", None),
+    )
+    return customer, vat_context
+
+
+class _ConflictResolveBody(_BaseModel):
+    resolution_type:   str
+    resolution_reason: Optional[str] = None
+
+
+@router.post("/draft/{draft_id}/conflicts/scan", dependencies=[_auth],
+             summary="ADR-029: detect advisory conflicts for a draft (flag-gated)")
+def scan_draft_conflicts(
+    draft_id:   int,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Run the PR-1 conflict detectors against a draft and upsert findings.
+
+    Advisory only — never blocks. Gated by ``conflict_detection_enabled``;
+    returns 404 when off. Pure/local detection; the detector does no wFirma I/O.
+    Returns the full current conflict list for the draft (including any prior
+    operator-resolved rows) so the UI sees the complete picture.
+    """
+    if not _conflicts_enabled():
+        raise HTTPException(status_code=404, detail="conflict detection is disabled")
+
+    draft = pildb.get_draft_by_id(_proforma_db_path(), draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+
+    pid = str(draft_id)
+    operator = (x_operator or "").strip() or None
+    customer, vat_context = _resolve_customer_for_conflicts(draft)
+
+    detections = _detect_conflicts(
+        proforma_id     = pid,
+        currency        = getattr(draft, "currency", None),
+        vat_code        = getattr(draft, "vat_code", None),
+        vat_context     = vat_context,
+        service_charges = getattr(draft, "service_charges_json", None),
+        customer        = customer,
+    )
+
+    db_path = _proforma_conflicts_db_path()
+    for d in detections:
+        pcdb.upsert_conflict(
+            db_path,
+            proforma_id     = pid,
+            conflict_type   = d.conflict_type,
+            severity        = d.severity,
+            authority_owner = d.authority_owner,
+            field_affected  = d.field_affected,
+            current_value   = d.current_value,
+            master_value    = d.master_value,
+            reason          = d.reason,
+            actor           = operator,
+        )
+
+    conflicts = pcdb.list_conflicts(db_path, pid)
+    return JSONResponse({
+        "draft_id":        draft_id,
+        "proforma_id":     pid,
+        "detected_count":  len(detections),
+        "customer_resolved": customer is not None,
+        "conflicts":       [c.to_dict() for c in conflicts],
+    })
+
+
+@router.get("/draft/{draft_id}/conflicts", dependencies=[_auth],
+            summary="ADR-029: list advisory conflicts for a draft (flag-gated)")
+def list_draft_conflicts(
+    draft_id: int,
+    statuses: Optional[str] = None,
+) -> JSONResponse:
+    """List stored conflicts for a draft. ``statuses`` is an optional CSV filter
+    (e.g. ``open,acknowledged``). Gated by ``conflict_detection_enabled``."""
+    if not _conflicts_enabled():
+        raise HTTPException(status_code=404, detail="conflict detection is disabled")
+
+    pid = str(draft_id)
+    status_filter: Optional[List[str]] = None
+    if statuses:
+        status_filter = [s.strip() for s in statuses.split(",") if s.strip()] or None
+
+    conflicts = pcdb.list_conflicts(
+        _proforma_conflicts_db_path(), pid, statuses=status_filter,
+    )
+    return JSONResponse({
+        "draft_id":    draft_id,
+        "proforma_id": pid,
+        "count":       len(conflicts),
+        "conflicts":   [c.to_dict() for c in conflicts],
+    })
+
+
+@router.post("/draft/{draft_id}/conflicts/{conflict_id}/resolve", dependencies=[_auth],
+             summary="ADR-029: apply an operator resolution to a conflict (flag-gated)")
+def resolve_draft_conflict(
+    draft_id:    int,
+    conflict_id: int,
+    body:        _ConflictResolveBody,
+    x_operator:  Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Apply an operator resolution (use_master_default / override_with_reason /
+    regenerate_lines / accept_and_proceed / revert) to one conflict.
+
+    ``override_with_reason`` requires a non-empty ``resolution_reason``.
+    The ``X-Operator`` header supplies ``resolved_by`` and is required for
+    attribution. Gated by ``conflict_detection_enabled``."""
+    if not _conflicts_enabled():
+        raise HTTPException(status_code=404, detail="conflict detection is disabled")
+
+    operator = (x_operator or "").strip()
+    if not operator:
+        raise HTTPException(status_code=400, detail="X-Operator header is required")
+
+    db_path = _proforma_conflicts_db_path()
+    existing = pcdb.get_conflict(db_path, conflict_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"conflict {conflict_id} not found")
+    if str(existing.proforma_id) != str(draft_id):
+        raise HTTPException(
+            status_code=404,
+            detail=f"conflict {conflict_id} does not belong to draft {draft_id}",
+        )
+
+    try:
+        resolved = pcdb.resolve_conflict(
+            db_path,
+            conflict_id,
+            resolution_type   = body.resolution_type,
+            resolution_reason = body.resolution_reason,
+            resolved_by       = operator,
+            actor             = operator,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return JSONResponse({
+        "draft_id":    draft_id,
+        "proforma_id": resolved.proforma_id,
+        "conflict":    resolved.to_dict(),
+    })
