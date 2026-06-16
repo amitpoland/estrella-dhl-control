@@ -5871,11 +5871,12 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Who can answer / close**: agent-prompt-refiner session — draft a patch adding the `Get-ChildItem` requirement to `deploy_release_manager.md` boundary clause, or operator direct edit. Closes when the next deploy-release-manager run on a PR touching `service/app/storage` correctly inventories directory state before verdict.
 - **Impact if unanswered**: Future deploy-release-manager verdicts may continue to mischaracterize robocopy behavior for untracked files, masking storage drift risks at the deploy gate.
 
-## OQ-E4D96B5-GATE4-2: routes_upload AWB customs-value end-to-end test gap — file as GitHub issue (GATE 4 SCHEDULED — 2026-06-17)
+## OQ-E4D96B5-GATE4-2: routes_upload AWB customs-value end-to-end test gap (GATE 4 — DISPOSITION EXECUTED 2026-06-17 → Issue #629 FILED)
 
-- **Question / requirement**: A GitHub issue must be filed (labels: test-coverage, routes_upload) covering the missing end-to-end test for AWB customs-value extraction through `routes_upload.py`. This test gap must be covered before any subsequent `routes_upload.py` PR re-enters the deploy gate.
+- **Disposition (2026-06-17)**: GATE-4 finding dispositioned as **ISSUE** — filed as GitHub issue **#629** (labels: test-coverage, routes_upload, testing, follow-up). The SCHEDULED requirement is now executed; tracking moves to #629. This test gap must be covered (acceptance criteria in #629) before any subsequent `routes_upload.py` PR re-enters the deploy gate.
+- **Question / requirement**: A GitHub issue must be filed (labels: test-coverage, routes_upload) covering the missing end-to-end test for AWB customs-value extraction through `routes_upload.py`. This test gap must be covered before any subsequent `routes_upload.py` PR re-enters the deploy gate. — **DONE: Issue #629.**
 - **Source**: Scorecard `.claude/memory/scorecards/2026-06-17-adr029-e4d96b5-deploy-gate.md` GATE-4 finding — routes_upload carries AWB customs-value extraction logic (related to `awb_customs` persistence hardening in PR #627) but no end-to-end test covers the extraction→persistence→clearance chain at the route level.
-- **Who can answer / close**: Operator files the GitHub issue (permission-gated for agent), or agent files in a session with gh write access. Closes when issue number is recorded here and the issue is open on GitHub.
+- **Who can answer / close**: Closes when the test in #629 lands in the regression baseline. Issue #629 is open on GitHub as of 2026-06-17.
 - **Impact if unanswered**: A future `routes_upload.py` PR may pass the deploy gate without the extraction chain being regression-tested, repeating the class of silent-zero-CIF bug that PR #627 fixed.
 
 ## ~~OQ-E3b: PR-E3b EvidencePanel frontend (Sprint 03.3 Scope C) — E3a MERGED; blocked on E3a production deploy (2026-06-16)~~ — RESOLVED 2026-06-16: E3a DEPLOYED; E3b MERGED as PR #621 (2144c0b)
