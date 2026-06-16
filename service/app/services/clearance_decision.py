@@ -303,28 +303,61 @@ def build_fedex_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
     FedEx chain: FedEx → Ganther (no ACS Spedycja involvement)
     FedEx requires: manual cesja submission to pl-import@fedex.com
 
+    CIF resolution is delegated to ``cif_resolver.resolve_cif`` — the SAME
+    tri-state authority used by the DHL path — so a FedEx extraction failure can
+    NEVER collapse to a silent 0.0. The verdict maps onto routing as:
+
+      UNKNOWN       → routing_pending, cif_extraction_gap surfaced, no fake zero
+      DECLARED_ZERO → Ganther path, flagged as an explicit zero (not a parser miss)
+      RESOLVED      → Ganther path with the resolved value
+
     Returns clearance_decision dict with FedEx-specific fields.
     """
     from datetime import datetime, timezone
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    ver      = audit.get("verification") or {}
-    it       = audit.get("invoice_totals") or {}
-    precheck = audit.get("dhl_precheck") or {}
+    # Tri-state CIF resolution — identical authority ladder to the DHL path.
+    res        = resolve_cif(audit)
+    cif_state  = res["cif_state"]
+    cif_source = res["cif_source"]
+    cif_gap    = res["extraction_gap"]
 
-    cif: float = (
-        float(ver.get("invoice_cif_total_usd") or 0)
-        or float(it.get("total_cif_usd") or 0)
-        or float(it.get("total_fob_usd") or 0)
-        or float(precheck.get("invoice_cif_total_usd") or 0)
-        or float(precheck.get("fob_total_usd") or 0)
-    )
+    # ── UNKNOWN — extraction failed / not run. Never a fake zero. ──────────
+    if cif_state == CIF_UNKNOWN:
+        log.warning(
+            "[clearance_decision] FedEx CIF UNKNOWN — routing_pending [gap=%s]",
+            (cif_gap or {}).get("first_failed_layer"),
+        )
+        return {
+            "carrier":                    "FEDEX",
+            "total_value_usd":            0.0,
+            "threshold_usd":              THRESHOLD_USD,
+            "clearance_path":             PATH_ROUTING_PENDING,
+            "require_dsk":                None,
+            "require_polish_description": False,
+            "carrier_handles":            None,
+            "require_cesja_manual":       None,
+            "cesja_target":               FEDEX_CESJA_TARGET,
+            "agency":                     None,
+            "agency_email":               None,
+            "sla_days":                   FEDEX_SLA_DAYS,
+            "dsk_source":                 None,
+            "cif_source":                 cif_source,   # always "unavailable" here
+            "cif_state":                  CIF_UNKNOWN,
+            "cif_extraction_gap":         cif_gap,
+            "decision_reason":            "fedex_cif_zero_routing_pending",
+            "computed_at":                now_iso,
+        }
 
-    # FedEx always uses external agency (Ganther) — no carrier self-clearance
-    # Cesja must be submitted manually by Estrella to pl-import@fedex.com
+    # ── RESOLVED / DECLARED_ZERO — FedEx always uses external agency (Ganther),
+    # no carrier self-clearance. Cesja must be submitted manually by Estrella.
+    # A genuine declared zero is allowed through but flagged distinctly so the
+    # operator never confuses it with an extraction failure.
+    cif = float(res["cif_usd"] or 0.0)
+
     base = {
         "carrier":                    "FEDEX",
-        "total_value_usd":            round(cif, 2) if cif else 0.0,
+        "total_value_usd":            round(cif, 2),
         "threshold_usd":              THRESHOLD_USD,
         "clearance_path":             "fedex_ganther_clearance",
         "require_dsk":                True,   # DSK via FedEx after cesja submission
@@ -336,14 +369,16 @@ def build_fedex_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
         "agency_email":               "ganther.com.pl",
         "sla_days":                   FEDEX_SLA_DAYS,
         "dsk_source":                 FEDEX_CESJA_TARGET,
-        "decision_reason":            "fedex_ganther_direct_path",
+        "cif_source":                 cif_source,
+        "cif_state":                  cif_state,
+        "cif_extraction_gap":         None,
+        "decision_reason":            (
+            "fedex_declared_zero"
+            if cif_state == CIF_DECLARED_ZERO
+            else "fedex_ganther_direct_path"
+        ),
         "computed_at":                now_iso,
     }
-
-    if cif == 0.0:
-        base["decision_reason"] = "fedex_cif_zero_routing_pending"
-        log.warning("[clearance_decision] FedEx CIF = 0 — routing pending")
-
     return base
 
 

@@ -218,6 +218,30 @@ def test_awb_explicit_zero_with_no_gap_is_declared_zero():
     assert res["cif_source"] == "awb_customs.value_usd"
 
 
+def test_awb_explicit_zero_empty_currency_is_declared_zero():
+    """Empty-currency edge: a waybill that carried a value field but no explicit
+    currency token is treated as USD (the carrier default), so an explicit 0 with
+    no gap is a declared zero — NOT a silent unknown."""
+    audit = {"awb_customs": {"value_usd": 0.0, "currency": "", "gap": None}}
+    res = resolve_cif(audit)
+    assert res["cif_state"] == CIF_DECLARED_ZERO
+    assert res["cif_usd"] == 0.0
+    assert res["cif_source"] == "awb_customs.value_usd"
+
+
+def test_awb_zero_non_usd_currency_is_not_declared_zero():
+    """A zero in a non-USD currency is NOT an authoritative USD declared zero —
+    it must fall through to UNKNOWN rather than assert a fake USD 0.00."""
+    audit = {
+        "invoice_names": ["inv.pdf"],
+        "invoice_totals": {"total_cif_usd": 0.0, "line_count": 2},
+        "awb_customs": {"value_usd": 0.0, "currency": "EUR", "gap": None},
+    }
+    res = resolve_cif(audit)
+    assert res["cif_state"] == CIF_UNKNOWN
+    assert res["cif_usd"] is None
+
+
 def test_declared_zero_does_not_fire_when_a_positive_layer_exists():
     """An explicit zero flag must not override a real positive invoice CIF."""
     audit = {

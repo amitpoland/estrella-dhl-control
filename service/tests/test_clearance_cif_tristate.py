@@ -26,7 +26,11 @@ _SVC = Path(__file__).parent.parent
 if str(_SVC) not in sys.path:
     sys.path.insert(0, str(_SVC))
 
-from app.services.clearance_decision import build_clearance_decision, THRESHOLD_USD
+from app.services.clearance_decision import (
+    build_clearance_decision,
+    build_fedex_clearance_decision,
+    THRESHOLD_USD,
+)
 from app.services.clearance_path_alias import (
     PATH_AGENCY_CLEARANCE,
     PATH_DHL_SELF_CLEARANCE,
@@ -111,6 +115,60 @@ def test_declared_zero_is_not_the_same_as_unknown():
     assert declared["clearance_path"] != unknown["clearance_path"]
 
 
+# ── FedEx path: the SAME tri-state contract — no silent 0.0 ───────────────────
+# Regression guard for the convergent reviewer CRITICAL: build_fedex_clearance_
+# decision historically used the pre-fix `float(... or 0)` chain, so a FedEx
+# extraction failure produced total_value_usd=0.0 with no cif_state/gap — the
+# exact silent-zero bug, alive on the FedEx path. It now delegates to resolve_cif.
+
+def test_fedex_unknown_cif_is_routing_pending_not_fake_zero():
+    dec = build_fedex_clearance_decision({})
+    assert dec["carrier"] == "FEDEX"
+    assert dec["clearance_path"] == PATH_ROUTING_PENDING
+    assert dec["cif_state"] == "unknown"
+    assert dec["cif_source"] == "unavailable"
+    # No fabricated routing: agency/cesja are NOT asserted while CIF is unknown.
+    assert dec["require_dsk"] is None
+    assert dec["require_cesja_manual"] is None
+    assert dec["agency"] is None
+    # The machine-readable gap is surfaced for the operator.
+    assert dec["cif_extraction_gap"] is not None
+    assert dec["cif_extraction_gap"]["first_failed_layer"] == "invoice_upload"
+    assert dec["cif_extraction_gap"]["next_action"]
+
+
+def test_fedex_resolved_cif_routes_ganther_with_state():
+    dec = build_fedex_clearance_decision({"invoice_totals": {"total_cif_usd": 3000.0}})
+    assert dec["carrier"] == "FEDEX"
+    assert dec["clearance_path"] == "fedex_ganther_clearance"
+    assert dec["total_value_usd"] == pytest.approx(3000.0)
+    assert dec["cif_state"] == "resolved"
+    assert dec["cif_extraction_gap"] is None
+    assert dec["require_cesja_manual"] is True
+    assert dec["agency"] == "Ganther"
+
+
+def test_fedex_resolves_from_awb_custom_val():
+    """FedEx proof-point parity: CIF reaches the audit only via the waybill."""
+    dec = build_fedex_clearance_decision(
+        {"awb_customs": {"value_usd": 732.0, "currency": "USD", "gap": None}}
+    )
+    assert dec["clearance_path"] == "fedex_ganther_clearance"
+    assert dec["total_value_usd"] == pytest.approx(732.0)
+    assert dec["cif_state"] == "resolved"
+    assert dec["cif_source"] == "awb_customs.value_usd"
+
+
+def test_fedex_declared_zero_is_distinct_from_unknown():
+    declared = build_fedex_clearance_decision({"customs_declared_value_zero": True})
+    unknown = build_fedex_clearance_decision({})
+    assert declared["cif_state"] == "declared_zero"
+    assert declared["decision_reason"] == "fedex_declared_zero"
+    assert declared["clearance_path"] == "fedex_ganther_clearance"
+    assert declared["cif_state"] != unknown["cif_state"]
+    assert declared["clearance_path"] != unknown["clearance_path"]
+
+
 # ── Dashboard surface: shipment-detail.html renders the tri-state UI ──────────
 
 def _shipment_detail_html() -> str:
@@ -141,3 +199,14 @@ def test_dashboard_reads_cif_state_not_just_source():
 def test_dashboard_labels_awb_custom_val_source():
     html = _shipment_detail_html()
     assert "AWB Custom Val (carrier-declared)" in html
+
+
+def test_dashboard_decision_value_shows_not_calculated_not_zero():
+    """The Decision Value row must render 'Not calculated' for an absent/zero CIF
+    — never a misleading 'USD 0.00' that reads like a real declared value."""
+    html = _shipment_detail_html()
+    assert 'data-testid="clearance-decision-value"' in html
+    assert "Not calculated" in html
+    # The guard is decCif != null && decCif > 0 — i.e. a null/zero CIF falls to
+    # the 'Not calculated' branch rather than formatting a fake USD 0.00.
+    assert "decCif != null && decCif > 0" in html

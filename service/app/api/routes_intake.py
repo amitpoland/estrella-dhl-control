@@ -197,6 +197,14 @@ def _validate_file(file: UploadFile, allowed_exts: set) -> None:
 
 async def _save(file: UploadFile, dest: Path) -> bytes:
     content = await file.read()
+    if not content:
+        # An empty (0-byte) upload would pass extension validation, save, then
+        # silently parse to no CIF — exactly the extraction-gap-as-silent-zero
+        # failure this work exists to prevent. Reject at the door instead.
+        raise HTTPException(
+            status_code=400,
+            detail=f"File '{file.filename}' is empty (0 bytes). Re-upload a valid document.",
+        )
     if len(content) > _MAX_BYTES:
         raise HTTPException(
             status_code=413,

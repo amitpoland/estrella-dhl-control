@@ -438,14 +438,25 @@ async def _run_dhl_precheck(
             _audit = json.loads(audit_path.read_text(encoding="utf-8"))
             _audit["dhl_precheck"] = precheck
             # Persist the AWB Custom Val authority block so cif_resolver can use
-            # it as the tertiary layer. Only written when invoice CIF was absent
-            # and an AWB was parsed — never clobbers a present invoice CIF.
+            # it as the tertiary layer. Merge-not-replace (authority-data rule):
+            # spread the existing block and only update from this run when the new
+            # read actually carries a value — a fresh run that parsed no AWB value
+            # (gap) must NOT downgrade a previously-captured good value to None.
             if awb_customs:
-                _audit["awb_customs"] = {
-                    "value_usd": awb_customs.get("value_usd"),
-                    "currency":  awb_customs.get("currency"),
-                    "gap":       awb_customs.get("gap"),
-                }
+                existing_awb = dict(_audit.get("awb_customs") or {})
+                new_value = awb_customs.get("value_usd")
+                if new_value is not None or not existing_awb.get("value_usd"):
+                    # New read has a value, or there is nothing good to preserve.
+                    _audit["awb_customs"] = {
+                        **existing_awb,
+                        "value_usd": new_value,
+                        "currency":  awb_customs.get("currency"),
+                        "gap":       awb_customs.get("gap"),
+                    }
+                else:
+                    # Preserve the prior good value; only refresh the gap note.
+                    existing_awb["gap"] = awb_customs.get("gap")
+                    _audit["awb_customs"] = existing_awb
             if carrier_upper == "DHL" and not _audit.get("clearance_status"):
                 _audit["clearance_status"] = "awaiting_dhl_customs_email"
             write_json_atomic(audit_path, _audit)
@@ -961,17 +972,21 @@ async def _run_pipeline(
                         batch_id, _ov_exc)
 
     # ── Guarantee clearance_decision is populated after pipeline ────────────
-    # Non-destructive: only writes if absent or value=0/routing_pending with real CIF now available
+    # Non-destructive: only writes if absent, or if we now have a real
+    # (non-routing_pending) decision. Uses the carrier-aware + timeline-aware
+    # builder so a FedEx shipment is not overwritten with DHL-rules output and
+    # any prior timeline override (agency_email_sent / dhl_reply_sent) survives.
     try:
-        from ..services.clearance_decision import build_clearance_decision
+        from ..services.clearance_decision import build_clearance_decision_for_carrier
         _audit_path = output_dir / "audit.json"
         _aud = json.loads(_audit_path.read_text(encoding="utf-8"))
-        _dec = build_clearance_decision(_aud)
+        _dec = build_clearance_decision_for_carrier(_aud)
         if _dec.get("clearance_path") != "routing_pending" or not _aud.get("clearance_decision"):
             _aud["clearance_decision"] = _dec
             write_json_atomic(_audit_path, _aud)
-            log.info("[%s] clearance_decision set after pipeline: path=%s cif=%.2f",
-                     batch_id, _dec.get("clearance_path"), _dec.get("total_value_usd", 0))
+            log.info("[%s] clearance_decision set after pipeline: path=%s cif=%.2f state=%s",
+                     batch_id, _dec.get("clearance_path"),
+                     _dec.get("total_value_usd", 0), _dec.get("cif_state"))
     except Exception as _cd_exc:
         log.warning("[%s] clearance_decision post-pipeline (non-fatal): %s", batch_id, _cd_exc)
 
