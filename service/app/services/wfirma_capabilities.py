@@ -95,17 +95,6 @@ def get_capabilities() -> Dict[str, Any]:
         "wfirma_create_pz_allowed": settings.wfirma_create_pz_allowed,
         "warehouse_id":             settings.wfirma_warehouse_id or None,
         "company_id":               settings.wfirma_company_id or None,
-        # ADR-029 Proforma Workspace conflict detection flags (read-only mirror;
-        # all default OFF). Surfaced so the workspace UI can reflect whether the
-        # advisory layer + its write-boundary blocker are active.
-        "conflict_detection_enabled":
-            bool(getattr(settings, "conflict_detection_enabled", False)),
-        "conflict_ui_mode":
-            getattr(settings, "conflict_ui_mode", "panel"),
-        "conflict_resolution_auto_use_defaults":
-            bool(getattr(settings, "conflict_resolution_auto_use_defaults", False)),
-        "conflict_posting_blocker":
-            bool(getattr(settings, "conflict_posting_blocker", False)),
         "blocking_reasons":         blocking_reasons,
         "ready_to_reserve":         api_configured and warehouse_module_enabled,
     }
