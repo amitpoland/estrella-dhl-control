@@ -26,7 +26,6 @@ log = get_logger(__name__)
 _RE_AWB        = re.compile(r'WAYBILL\s+(\d[\d\s]{6,20}\d)', re.IGNORECASE)
 _RE_AWB2       = re.compile(r'\b(\d{10,12})\b')          # fallback: standalone number
 _RE_REF        = re.compile(r'Ref:\s*([A-Z0-9/,\-\.]+)', re.IGNORECASE)
-_RE_CUSTOM_VAL = re.compile(r'Custom\s+Val[:\s]+([0-9,\.]+)\s*([A-Z]{3})?', re.IGNORECASE)
 _RE_WEIGHT     = re.compile(r'(\d+[\.,]\d*)\s*kg', re.IGNORECASE)
 _RE_PIECES     = re.compile(r'(?:Pce/Shpt|Pieces?)[:\s]+(\d+)', re.IGNORECASE)
 _RE_SHIP_DATE  = re.compile(r'(\d{4}-\d{2}-\d{2})', re.IGNORECASE)
@@ -40,9 +39,76 @@ _RE_CONTENTS   = re.compile(r'Contents?\s*:(.*?)(?:WAYBILL|License|$)', re.IGNOR
 _RE_ROUTE      = re.compile(r'([A-Z]{2}-[A-Z]{3}-[A-Z]{3})\s+([A-Z]{2}-[A-Z]{3}-[A-Z]{3})', re.IGNORECASE)
 _RE_PRODUCT    = re.compile(r'\[P\]\s+(.+?)(?:\(|\n)', re.IGNORECASE)
 
+# ── Customs value ("Custom Val" field) ─────────────────────────────────────────
+# DHL waybills render this field inconsistently. The currency can lead OR trail
+# the amount, can be glued to it, the amount can carry thousands separators, and
+# the label varies ("Custom Val", "Customs Value", "Customs Val:", with an
+# optional parenthetical). The previous single regex only matched the
+# currency-SUFFIX form (`Custom Val: 732.00 USD`) with the number immediately
+# after the colon; every other rendering silently produced customs_value=None,
+# which downstream coerced to 0.00 and blocked clearance routing.
+#
+# Strategy: locate the label, then scan a short window after it for an amount
+# with an optional adjacent currency code on EITHER side.
+_KNOWN_CURRENCIES = {
+    "USD", "EUR", "GBP", "INR", "CHF", "HKD", "SGD", "JPY",
+    "CNY", "AED", "PLN", "THB", "AUD", "CAD",
+}
+_RE_CUSTOM_VAL_LABEL = re.compile(
+    r'Custom(?:s)?\s*Val(?:ue)?\s*(?:\([^)]*\))?\s*[:\-]?\s*',
+    re.IGNORECASE,
+)
+# amount with optional leading and/or trailing 3-letter currency code,
+# allowing the currency to be glued to the number (USD732.00 / 732.00USD)
+_RE_VALUE_CCY = re.compile(
+    r'(?P<ccy_pre>[A-Z]{3})?\s*'
+    r'(?P<amt>\d{1,3}(?:[,\s]\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)'
+    r'\s*(?P<ccy_post>[A-Z]{3})?'
+)
+
 
 def _clean(s: str) -> str:
     return " ".join(s.split()).strip()
+
+
+def _extract_customs_value(text: str):
+    """Best-effort extraction of the waybill 'Custom Val' field.
+
+    Returns (value: Optional[float], currency: str, source: str). ``source``
+    documents how the value was obtained so callers can log provenance:
+      - "custom_val_label"  → matched amount adjacent to the Custom Val label
+      - "label_no_value"    → label present but no amount found (VERIFY-GAP)
+      - "no_label"          → the Custom Val label never appeared
+
+    Handles currency on either side of the amount, glued or spaced, with
+    optional thousands separators, and label variants (Custom Val / Customs
+    Value / parenthetical suffixes).
+    """
+    for lbl in _RE_CUSTOM_VAL_LABEL.finditer(text):
+        # Look at the remainder of the label's line first, then fall back to
+        # the next non-empty line (some layouts wrap the value).
+        tail = text[lbl.end(): lbl.end() + 64]
+        candidates = [seg for seg in tail.split("\n") if seg.strip()][:2]
+        for seg in candidates:
+            m = _RE_VALUE_CCY.match(seg.strip())
+            if not m or not m.group("amt"):
+                # search anywhere in the segment, not just at its start
+                m = _RE_VALUE_CCY.search(seg)
+            if m and m.group("amt"):
+                amt_str = m.group("amt").replace(",", "").replace(" ", "")
+                try:
+                    value = float(amt_str)
+                except ValueError:
+                    continue
+                ccy = ""
+                for grp in (m.group("ccy_post"), m.group("ccy_pre")):
+                    if grp and grp.upper() in _KNOWN_CURRENCIES:
+                        ccy = grp.upper()
+                        break
+                return value, ccy, "custom_val_label"
+        # Label found but nothing parseable on its line(s)
+        return None, "", "label_no_value"
+    return None, "", "no_label"
 
 
 def _extract_shipper_receiver(text: str):
@@ -164,19 +230,29 @@ def parse_awb_pdf(path: Path) -> Dict[str, Any]:
         result["shipment_reference"] = _clean(m.group(1).rstrip(','))
 
     # ── Customs value + currency ───────────────────────────────────────────────
-    m = _RE_CUSTOM_VAL.search(text)
-    if m:
-        val_str = m.group(1).replace(',', '').replace(' ', '')
-        try:
-            result["customs_value"] = float(val_str)
-        except ValueError:
-            pass
-        if m.group(2):
-            result["currency"] = m.group(2).upper()
+    cv_value, cv_ccy, cv_source = _extract_customs_value(text)
+    if cv_value is not None:
+        result["customs_value"] = cv_value
+        if cv_ccy:
+            result["currency"] = cv_ccy
         elif "USD" in text_upper:
             result["currency"] = "USD"
         elif "EUR" in text_upper:
             result["currency"] = "EUR"
+        log.info(
+            "AWB customs value parsed: value=%.2f currency=%s source=%s",
+            cv_value, result["currency"] or "?", cv_source,
+        )
+    else:
+        # None ≠ 0.00. Surface a verify-gap so downstream can distinguish
+        # "genuinely zero" from "parser could not read it" (the bug that
+        # silently blocked clearance routing for AWB 2315714531).
+        result["customs_value_gap"] = cv_source  # "label_no_value" | "no_label"
+        log.warning(
+            "AWB customs value NOT extracted (source=%s) — leaving "
+            "customs_value=None for downstream VERIFY-GAP handling, NOT 0.00",
+            cv_source,
+        )
 
     # ── Weight ────────────────────────────────────────────────────────────────
     m = _RE_WEIGHT.search(text)
