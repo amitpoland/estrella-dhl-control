@@ -31,6 +31,12 @@ from .clearance_path_alias import (
     PATH_DHL_SELF_CLEARANCE,
     PATH_ROUTING_PENDING,
 )
+from .cif_resolver import (
+    CIF_DECLARED_ZERO,
+    CIF_RESOLVED,
+    CIF_UNKNOWN,
+    resolve_cif,
+)
 
 log = logging.getLogger(__name__)
 
@@ -61,11 +67,19 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
     The decision is NOT written here — callers are responsible for persisting
     it to audit["clearance_decision"].  This keeps the function pure and testable.
 
-    CIF source priority:
+    CIF source priority (delegated to ``cif_resolver.resolve_cif``):
       1. audit["verification"]["invoice_cif_total_usd"]  (engine-verified)
       2. audit["invoice_totals"]["total_cif_usd"]
       3. audit["invoice_totals"]["total_fob_usd"]         (fallback, no freight)
-      4. 0.0 → routing_pending
+      4. audit["dhl_precheck"]["invoice_cif_total_usd"]
+      5. audit["dhl_precheck"]["fob_total_usd"]           (fallback)
+      6. audit["awb_customs"]["value_usd"]                (carrier-declared, USD only)
+      → UNKNOWN (extraction_gap) when no layer produces a value
+
+    Invoice authority (1–5) always outranks the carrier-declared AWB Custom
+    Val (6). A missing value surfaces as ``cif_state="unknown"`` +
+    ``cif_extraction_gap`` + ``clearance_path=routing_pending`` — NEVER a
+    fabricated 0.0.
 
     Returns
     -------
@@ -78,6 +92,9 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
       carrier_handles        bool
       agency                 str | None
       agency_email           str | None
+      cif_source             str
+      cif_state              "resolved" | "declared_zero" | "unknown"
+      cif_extraction_gap     dict | None   (operator-actionable gap when unknown)
       decision_reason        str
       computed_at            str (ISO)
     """
@@ -87,32 +104,21 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
     it       = audit.get("invoice_totals") or {}
     precheck = audit.get("dhl_precheck") or {}
 
-    # Resolve CIF + source in one pass so the UI can show which input
-    # actually drove the decision (operator clarity for the Clearance
-    # Routing card).
-    cif: float = 0.0
-    cif_source: str = "unavailable"
-    for value, source_label in (
-        (ver.get("invoice_cif_total_usd"),     "verification.invoice_cif_total_usd"),
-        (it.get("total_cif_usd"),              "invoice_totals.total_cif_usd"),
-        (it.get("total_fob_usd"),              "invoice_totals.total_fob_usd"),
-        (precheck.get("invoice_cif_total_usd"), "dhl_precheck.invoice_cif_total_usd"),
-        (precheck.get("fob_total_usd"),        "dhl_precheck.fob_total_usd"),
-    ):
-        try:
-            v = float(value or 0)
-        except (TypeError, ValueError):
-            v = 0.0
-        if v:
-            cif, cif_source = v, source_label
-            break
+    # Tri-state CIF resolution. The resolver owns the source ladder, the
+    # provenance trace, and the never-fake-zero contract. This builder reads
+    # its verdict and maps it onto the clearance routing decision.
+    res        = resolve_cif(audit)
+    cif_state  = res["cif_state"]
+    cif_source = res["cif_source"]
+    cif_gap    = res["extraction_gap"]
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    if cif == 0.0:
-        # Surface which downstream input is missing so the operator knows
-        # the smallest next step. Order matters — prefer the most operator-
-        # actionable missing piece.
+    # ── UNKNOWN — extraction failed / not run. Never a fake zero. ──────────
+    if cif_state == CIF_UNKNOWN:
+        # Operator-readable smallest-next-step. Kept here (not derived from the
+        # resolver gap) so the long-pinned substrings stay stable; the machine-
+        # readable gap travels alongside in cif_extraction_gap.
         if not audit.get("invoice_names") and not audit.get("inputs", {}).get("invoices"):
             missing_reason = "Purchase invoice not uploaded yet"
         elif not it and not ver and not precheck:
@@ -124,7 +130,10 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
         else:
             missing_reason = "CIF not calculated yet — run Recheck after invoice parse"
 
-        log.warning("[clearance_decision] CIF = 0 for batch — routing_pending (%s)", missing_reason)
+        log.warning(
+            "[clearance_decision] CIF UNKNOWN — routing_pending (%s) [gap=%s]",
+            missing_reason, (cif_gap or {}).get("first_failed_layer"),
+        )
         return {
             "total_value_usd":           0.0,
             "threshold_usd":             THRESHOLD_USD,
@@ -135,10 +144,40 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
             "agency":                    None,
             "agency_email":              None,
             "cif_source":                cif_source,        # always "unavailable" here
+            "cif_state":                 CIF_UNKNOWN,
+            "cif_extraction_gap":        cif_gap,
             "missing_reason":            missing_reason,
             "decision_reason":           "cif_zero_routing_pending",
             "computed_at":               now_iso,
         }
+
+    # ── DECLARED_ZERO — source explicitly says customs value is zero. ──────
+    # A genuine zero-value shipment (e.g. no-commercial-value sample). 0 is
+    # below threshold → carrier self-clearance, but flagged distinctly so the
+    # operator sees this is an explicit zero, not a parser miss.
+    if cif_state == CIF_DECLARED_ZERO:
+        log.info(
+            "[clearance_decision] CIF DECLARED_ZERO (source=%s) → %s",
+            cif_source, PATH_DHL_SELF_CLEARANCE,
+        )
+        return {
+            "total_value_usd":           0.0,
+            "threshold_usd":             THRESHOLD_USD,
+            "clearance_path":            PATH_DHL_SELF_CLEARANCE,
+            "require_dsk":               False,
+            "require_polish_description": True,
+            "carrier_handles":           True,
+            "agency":                    None,
+            "agency_email":              None,
+            "cif_source":                cif_source,
+            "cif_state":                 CIF_DECLARED_ZERO,
+            "cif_extraction_gap":        None,
+            "decision_reason":           "cif_declared_zero",
+            "computed_at":               now_iso,
+        }
+
+    # ── RESOLVED — a usable USD value was found. ───────────────────────────
+    cif = float(res["cif_usd"])
 
     if cif >= THRESHOLD_USD:
         log.info(
@@ -155,6 +194,8 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
             "agency":                    AGENCY_NAME,
             "agency_email":              AGENCY_EMAIL,
             "cif_source":                cif_source,
+            "cif_state":                 CIF_RESOLVED,
+            "cif_extraction_gap":        None,
             "decision_reason":           "value_above_threshold",
             "computed_at":               now_iso,
         }
@@ -173,6 +214,8 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
         "agency":                    None,
         "agency_email":              None,
         "cif_source":                cif_source,
+        "cif_state":                 CIF_RESOLVED,
+        "cif_extraction_gap":        None,
         "decision_reason":           "value_below_threshold",
         "computed_at":               now_iso,
     }

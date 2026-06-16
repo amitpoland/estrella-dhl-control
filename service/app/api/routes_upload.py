@@ -342,6 +342,54 @@ async def _run_dhl_precheck(
         except Exception as _pe:
             log.debug("[%s] precheck: invoice parsing unavailable: %s", batch_id, _pe)
 
+        # ── 1b. AWB Custom Val fallback (tertiary CIF authority) ─────────────
+        # When the invoice did not yield a CIF, the carrier-declared customs
+        # value on the AWB/waybill is the last authority before UNKNOWN. We
+        # parse it here and stash it on the audit so cif_resolver can use it as
+        # the tertiary layer. Never overrides invoice CIF — invoice authority
+        # always wins. Never fabricates 0.00; a parser miss stays a gap.
+        awb_customs: dict = {}
+        if invoice_cif_usd <= 0:
+            try:
+                from ..services.awb_parser import parse_awb_pdf as _parse_awb  # noqa: PLC0415
+                awb_dir = output_dir / "source" / "awb"
+                _awb_pdfs = sorted(awb_dir.glob("*.pdf")) if awb_dir.is_dir() else []
+                for _awb_pdf in _awb_pdfs:
+                    try:
+                        _awb_res = _parse_awb(_awb_pdf)
+                    except Exception as _ae:
+                        log.debug("[%s] precheck: AWB parse error %s: %s", batch_id, _awb_pdf.name, _ae)
+                        continue
+                    _cv  = _awb_res.get("customs_value")
+                    _ccy = (_awb_res.get("currency") or "").upper()
+                    _gap = _awb_res.get("customs_value_gap")
+                    if _cv is not None:
+                        awb_customs = {
+                            "value_usd": round(float(_cv), 2),
+                            "currency":  _ccy or "USD",
+                            "gap":       None,
+                            "source_pdf": _awb_pdf.name,
+                        }
+                        log.info(
+                            "[%s] precheck: AWB Custom Val fallback value=%.2f %s (from %s)",
+                            batch_id, float(_cv), _ccy or "USD", _awb_pdf.name,
+                        )
+                        break
+                    # No value — record the gap from the first AWB we tried.
+                    if not awb_customs:
+                        awb_customs = {
+                            "value_usd": None,
+                            "currency":  _ccy or "",
+                            "gap":       _gap or "no_label",
+                            "source_pdf": _awb_pdf.name,
+                        }
+                        log.warning(
+                            "[%s] precheck: AWB Custom Val NOT extracted (gap=%s) from %s",
+                            batch_id, _gap or "no_label", _awb_pdf.name,
+                        )
+            except Exception as _awe:
+                log.debug("[%s] precheck: AWB fallback unavailable: %s", batch_id, _awe)
+
         # ── 2. Compute routing hint ──────────────────────────────────────────
         precheck: dict = {
             "completed_at":          datetime.now(timezone.utc).isoformat(),
@@ -354,6 +402,10 @@ async def _run_dhl_precheck(
             "invoices_parsed":       parsed_count,
             "threshold_usd":         _DHL_BROKER_THRESHOLD_USD,
         }
+        if awb_customs:
+            precheck["awb_customs_value_usd"]  = awb_customs.get("value_usd")
+            precheck["awb_customs_currency"]   = awb_customs.get("currency")
+            precheck["awb_customs_value_gap"]  = awb_customs.get("gap")
 
         if carrier_upper == "DHL":
             if invoice_cif_usd > 0:
@@ -385,6 +437,15 @@ async def _run_dhl_precheck(
         try:
             _audit = json.loads(audit_path.read_text(encoding="utf-8"))
             _audit["dhl_precheck"] = precheck
+            # Persist the AWB Custom Val authority block so cif_resolver can use
+            # it as the tertiary layer. Only written when invoice CIF was absent
+            # and an AWB was parsed — never clobbers a present invoice CIF.
+            if awb_customs:
+                _audit["awb_customs"] = {
+                    "value_usd": awb_customs.get("value_usd"),
+                    "currency":  awb_customs.get("currency"),
+                    "gap":       awb_customs.get("gap"),
+                }
             if carrier_upper == "DHL" and not _audit.get("clearance_status"):
                 _audit["clearance_status"] = "awaiting_dhl_customs_email"
             write_json_atomic(audit_path, _audit)
