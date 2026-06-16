@@ -3546,6 +3546,35 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
                 precheck["clearance_hint"]    = "Invoice CIF not parsed — routing pending"
                 precheck["dsk_required_hint"] = None
                 precheck["note"] = "Invoice value could not be extracted."
+        # Merge-not-replace guard (#570 link-wipe class): a fresh text-parse that
+        # produced no CIF must NOT erase a CIF that a prior run already resolved
+        # into dhl_precheck (e.g. the OCR/AI vision fallback). Only overwrite
+        # invoice_cif_total_usd when this parse actually produced a positive value;
+        # otherwise preserve the previously-resolved value and re-derive its hint.
+        if cif_usd <= 0:
+            _prev_pc = audit.get("dhl_precheck") or {}
+            # Preserve every prior vision-written authority/provenance key the fresh
+            # text-parse does not itself produce — not just invoice_cif_total_usd.
+            # fob_total_usd is resolver ladder layer 5; vision_extracted /
+            # vision_source_page are provenance. Dropping any of these on a no-CIF
+            # recheck is the same #570 link-wipe class this guard exists to prevent.
+            for _k in ("fob_total_usd", "vision_extracted", "vision_source_page"):
+                if _k in _prev_pc and _k not in precheck:
+                    precheck[_k] = _prev_pc[_k]
+            _prev_cif = _prev_pc.get("invoice_cif_total_usd")
+            if isinstance(_prev_cif, (int, float)) and _prev_cif > 0:
+                precheck["invoice_cif_total_usd"] = round(_prev_cif, 2)
+                precheck["cif_source"] = _prev_pc.get("cif_source", "preserved")
+                precheck["invoice_cif_preserved"] = True
+                if carrier == "DHL":
+                    if _prev_cif > _DHL_BROKER_THRESHOLD_USD:
+                        precheck["clearance_hint"]    = "Broker / DSK may be required"
+                        precheck["dsk_required_hint"] = True
+                        precheck["note"] = (f"Invoice CIF ${_prev_cif:,.2f} (preserved) exceeds ${_DHL_BROKER_THRESHOLD_USD:,.0f} threshold.")
+                    else:
+                        precheck["clearance_hint"]    = "DHL standard clearance likely"
+                        precheck["dsk_required_hint"] = False
+                        precheck["note"] = (f"Invoice CIF ${_prev_cif:,.2f} (preserved) within ${_DHL_BROKER_THRESHOLD_USD:,.0f} threshold.")
         audit["dhl_precheck"] = precheck
         updated["dhl_precheck"] = True
         # Ensure clearance_status is set for DHL shipments so downstream guards
@@ -3727,6 +3756,50 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
     }
     audit["recheck"] = recheck_block
     write_json_atomic(audit_path, audit)
+
+    # ── E2. Image-only OCR/AI CIF fallback (LAST — self-contained) ───────────
+    # When text reparse above left CIF UNKNOWN because the AWB / invoice is an
+    # image-only scan, escalate to the vision extractor. It re-reads the
+    # just-written audit, no-ops unless CIF is still UNKNOWN, and does its own
+    # atomic merge-not-replace write. If it writes a CIF/AWB authority value,
+    # rebuild the clearance decision so THIS recheck reflects it rather than
+    # forcing the operator to recheck twice. Runs only on CIF-relevant modes.
+    if mode in ("all", "dhl_precheck", "invoice"):
+        try:
+            from ..services.vision_extractor import run_image_only_cif_fallback
+            _vres = run_image_only_cif_fallback(batch_dir, batch_id)
+            if _vres.get("wrote"):
+                updated["vision_extraction"] = True
+                warnings.append(
+                    "CIF/AWB value extracted via OCR/AI vision fallback from an "
+                    "image-only document — review the source before booking."
+                )
+                # Re-read the audit the fallback just wrote, rebuild clearance.
+                audit = json.loads(audit_path.read_text(encoding="utf-8"))
+                try:
+                    from ..services.clearance_decision import build_clearance_decision
+                    _dec2 = build_clearance_decision(audit)
+                    audit["clearance_decision"] = _dec2
+                    _clearance_dec_for_tl = _dec2
+                    updated["clearance_decision"] = True
+                except Exception as _de2:
+                    log.warning("[recheck] post-vision clearance rebuild failed: %s", _de2)
+                audit["recheck"]["updated_fields"] = [k for k, v in updated.items() if v]
+                write_json_atomic(audit_path, audit)
+                log.info("[recheck] vision CIF fallback wrote authority value for %s", batch_id)
+                # Authority-chain evidence: trace the OCR/AI-sourced CIF/AWB write.
+                tl.log_event(
+                    audit_path, tl.EV_VISION_CIF_WRITTEN, "recheck", "vision_fallback",
+                    detail={
+                        "source": f"recheck:{mode}",
+                        "documents": _vres.get("documents"),
+                        "reason": _vres.get("reason"),
+                    },
+                )
+            elif _vres.get("ran"):
+                log.info("[recheck] vision CIF fallback ran, no write: %s", _vres.get("reason"))
+        except Exception as _ve:
+            log.warning("[recheck] vision CIF fallback failed (non-fatal): %s", _ve)
 
     # ── Log timeline events (after write so they're not overwritten) ──────────
     if _clearance_dec_for_tl is not None:

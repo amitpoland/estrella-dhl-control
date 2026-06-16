@@ -543,6 +543,114 @@ def _anthropic_call(
     return raw_text, actual_in, actual_out, actual_cost_val, last_exc_type
 
 
+# ── Provider: Anthropic API (vision / multimodal) ─────────────────────────────
+
+def _anthropic_call_vision(
+    *,
+    api_key: str,
+    system: str,
+    user: str,
+    images: Any,
+    selected_model: str,
+    max_tokens: int,
+    max_retries: int,
+    timeout_s: int,
+    ledger: Any,
+) -> Tuple[Optional[str], Optional[int], Optional[int], Optional[float], Optional[str]]:
+    """Execute a multimodal (image + text) call via the Anthropic API.
+
+    Mirrors :func:`_anthropic_call` exactly — same client construction, retry
+    loop, usage capture, and circuit-breaker bookkeeping — but the user turn
+    carries one or more image blocks ahead of the text instruction. This is the
+    ONLY place in the codebase permitted to build an Anthropic vision request
+    (governance: client construction + model selection live in the gateway).
+
+    ``images`` is an iterable of dicts ``{"media_type": str, "data": str}``
+    where ``data`` is already base64-encoded. Non-image inputs are ignored.
+
+    Returns:
+        (raw_text, actual_in, actual_out, actual_cost_val, error_type)
+        raw_text is None on failure.
+    """
+    try:
+        import anthropic  # noqa: PLC0415
+    except ImportError:
+        log.error("[ai_gateway] anthropic package not installed — pip install anthropic")
+        return None, None, None, None, "ImportError"
+
+    # Build the multimodal user content: image blocks first, then the text
+    # instruction. An empty image list collapses to a text-only request, which
+    # is still valid but defeats the purpose — the caller is responsible for
+    # only invoking the vision path when it has images.
+    content: list = []
+    for img in images or []:
+        try:
+            media_type = img.get("media_type") or "image/png"
+            data = img.get("data")
+            if not data:
+                continue
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": data,
+                },
+            })
+        except AttributeError:
+            # Not a dict-shaped image entry — skip it rather than crash.
+            continue
+    content.append({"type": "text", "text": user})
+
+    client = anthropic.Anthropic(api_key=api_key, timeout=float(timeout_s))
+
+    raw_text:        Optional[str]   = None
+    actual_in:       Optional[int]   = None
+    actual_out:      Optional[int]   = None
+    actual_cost_val: Optional[float] = None
+    last_exc_type:   Optional[str]   = None
+
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            backoff = 2 ** (attempt - 1)  # 1s, 2s, 4s
+            log.info("[ai_gateway] vision retry %d/%d after %ds", attempt, max_retries, backoff)
+            time.sleep(backoff)
+
+        try:
+            response = client.messages.create(
+                model=selected_model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": content}],
+            )
+            raw_text = (response.content[0].text or "").strip()
+
+            usage = getattr(response, "usage", None)
+            if usage:
+                actual_in  = getattr(usage, "input_tokens",  None)
+                actual_out = getattr(usage, "output_tokens", None)
+                if actual_in is not None and actual_out is not None:
+                    actual_cost_val = ledger.estimate_cost(selected_model, actual_in, actual_out)
+
+            last_exc_type = None
+            _cb_record_success()
+            break
+
+        except Exception as exc:
+            exc_type = type(exc).__name__
+            last_exc_type = exc_type
+
+            retryable = _is_retryable(exc)
+            log.warning("[ai_gateway] vision attempt %d failed (%s): %s",
+                        attempt + 1, exc_type, exc)
+
+            if not retryable or attempt >= max_retries:
+                _cb_record_failure()
+                break
+
+    return raw_text, actual_in, actual_out, actual_cost_val, last_exc_type
+
+
 # ── Circuit-breaker failure discriminator ─────────────────────────────────────
 
 def _is_cb_failure(error_type: Optional[str]) -> bool:
@@ -844,6 +952,161 @@ def call(
 
     log.error("[ai_gateway] %s/%s FAILED model=%s provider_requested=%s",
               service_name, task_type, selected_model, provider_requested)
+    return None
+
+
+def call_vision(
+    *,
+    system:            str,
+    user:              str,
+    images:            Any,
+    task_type:         str,
+    service_name:      str           = "unknown",
+    object_id:         Optional[str] = None,
+    complexity:        str           = "moderate",
+    risk_level:        str           = "high",
+    context_size:      int           = 0,
+    confidence_score:  float         = 1.0,
+    max_tokens:        int           = 1500,
+    operator_override_model: Optional[str] = None,
+) -> Optional[str]:
+    """Execute one multimodal (image + text) AI call through the gateway.
+
+    This is the vision sibling of :func:`call`. It reuses every governance gate
+    (config enable, Anthropic circuit breaker, daily budget, model selection,
+    text redaction, ledger) and adds image content to the request.
+
+    Provider policy (ADR-020): vision is Anthropic-direct ONLY. The deprecated
+    cowork path is never used for vision — there is no cowork vision contract,
+    and ADR-020 makes the Anthropic API the sole approved provider. This keeps
+    the vision path simple and avoids reviving the dormant cowork bridge.
+
+    Governance note on secondary-model fallback: callers must NOT pass a
+    ``claude-*`` model string to escalate. To move from a cheaper to a stronger
+    model on a retry, raise ``complexity`` (``moderate`` → ``complex``) and/or
+    lower ``confidence_score`` so :func:`_select_model` escalates the tier. That
+    keeps model-name selection inside the gateway.
+
+    ``images`` is an iterable of ``{"media_type": str, "data": <base64 str>}``.
+
+    Returns the raw model response text, or None when disabled / no key /
+    budget exhausted / circuit breaker open / no images / all retries exhausted.
+    Never raises.
+    """
+    from . import ai_call_ledger as ledger  # noqa: PLC0415
+    from . import ai_redactor as redactor   # noqa: PLC0415
+
+    t_start = time.monotonic()
+
+    # ── Gate 1: config enabled ────────────────────────────────────────────────
+    try:
+        from ..core.config import settings  # noqa: PLC0415
+    except Exception as exc:
+        log.error("[ai_gateway] config import failed: %s", exc)
+        return None
+
+    if not getattr(settings, "ai_parser_enabled", False):
+        log.debug("[ai_gateway] ai_parser_enabled=False — skipping vision")
+        return None
+
+    # Vision is Anthropic-direct only — an API key is mandatory.
+    api_key = getattr(settings, "anthropic_api_key", None) or ""
+    if not api_key.strip():
+        log.debug("[ai_gateway] no Anthropic API key — vision unavailable")
+        return None
+
+    # Guard: a vision call with no images is a caller error — refuse it rather
+    # than silently degrade to a text-only request.
+    if not images:
+        log.warning("[ai_gateway] call_vision invoked with no images — skipping")
+        return None
+
+    # ── CB settings from config ───────────────────────────────────────────────
+    try:
+        cb_threshold = max(1, int(getattr(settings, "ai_gateway_circuit_breaker_threshold",
+                                          _CB_THRESHOLD)))
+        cb_reset_s   = float(getattr(settings, "ai_gateway_circuit_breaker_reset_s",
+                                     _CB_RESET_AFTER_S))
+    except (TypeError, ValueError):
+        cb_threshold = _CB_THRESHOLD
+        cb_reset_s   = _CB_RESET_AFTER_S
+
+    provider_requested = _PROVIDER_ANTHROPIC
+
+    # ── Gate 2: Anthropic circuit breaker ─────────────────────────────────────
+    if _cb_is_open(threshold=cb_threshold, reset_s=cb_reset_s):
+        log.warning("[ai_gateway] circuit breaker OPEN — skipping vision call")
+        return None
+
+    # ── Gate 3: daily budget ──────────────────────────────────────────────────
+    daily_budget = getattr(settings, "ai_gateway_daily_budget_usd", 0.0)
+    if daily_budget > 0:
+        spent = ledger.get_daily_cost_usd()
+        if spent >= daily_budget:
+            log.warning("[ai_gateway] daily budget %.4f USD exhausted (%.4f spent) — vision skipped",
+                        daily_budget, spent)
+            return None
+
+    # ── Model selection ───────────────────────────────────────────────────────
+    selected_model, selection_reason, escalation_reason = _select_model(
+        task_type=task_type,
+        complexity=complexity,
+        risk_level=risk_level,
+        confidence_score=confidence_score,
+        operator_override=operator_override_model,
+    )
+    model_tier = _TIER_NAMES.get(selected_model, "custom")
+
+    # ── Redact prompt text before any external call ───────────────────────────
+    # Only the text turns are redacted. The images are document scans the
+    # platform already holds; there is no text-redaction transform for raster
+    # bytes, and applying one is out of scope here.
+    system_clean, user_clean = redactor.redact_pair(system, user)
+    p_hash = ledger.prompt_hash(system_clean, user_clean)
+
+    est_in  = ledger.estimate_tokens(system_clean) + ledger.estimate_tokens(user_clean)
+    est_out = max_tokens // 2
+    est_cost = ledger.estimate_cost(selected_model, est_in, est_out)
+
+    max_retries = max(0, getattr(settings, "ai_gateway_max_retries", 3))
+    timeout_s   = getattr(settings, "ai_gateway_timeout_seconds", 30)
+
+    # ── Provider execution (Anthropic vision) ─────────────────────────────────
+    raw_text, actual_in, actual_out, actual_cost_val, error_type = _anthropic_call_vision(
+        api_key=api_key,
+        system=system_clean,
+        user=user_clean,
+        images=images,
+        selected_model=selected_model,
+        max_tokens=max_tokens,
+        max_retries=max_retries,
+        timeout_s=timeout_s,
+        ledger=ledger,
+    )
+    success       = raw_text is not None
+    provider_used = _PROVIDER_ANTHROPIC if success else None
+
+    latency_ms = int((time.monotonic() - t_start) * 1000)
+    _ledger_write(
+        ledger=ledger,
+        task_type=task_type, service_name=service_name, object_id=object_id,
+        requested_model=operator_override_model, selected_model=selected_model,
+        model_tier=model_tier, selection_reason=selection_reason,
+        escalation_reason=escalation_reason, confidence_score=confidence_score,
+        p_hash=p_hash, est_in=est_in, est_out=est_out, est_cost=est_cost,
+        actual_in=actual_in, actual_out=actual_out, actual_cost_val=actual_cost_val,
+        latency_ms=latency_ms,
+        success=success, fallback_reason=None, error_type=error_type,
+        provider_requested=provider_requested, provider_used=provider_used,
+        fallback_used=False,
+    )
+
+    if success:
+        log.info("[ai_gateway] %s/%s VISION OK model=%s latency=%dms",
+                 service_name, task_type, selected_model, latency_ms)
+        return raw_text
+
+    log.error("[ai_gateway] %s/%s VISION FAILED model=%s", service_name, task_type, selected_model)
     return None
 
 

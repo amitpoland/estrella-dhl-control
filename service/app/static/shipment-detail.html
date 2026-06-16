@@ -7452,6 +7452,46 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                     Declared zero — source-confirmed (not a parser miss)
                                   </span>} />
                               )}
+                              {/* OCR/AI vision fallback status — authority-honest layer
+                                  visibility (Lesson M). When the AWB/invoice was an
+                                  image-only scan, the deterministic text parsers produce
+                                  nothing; this line shows whether the automatic OCR/AI
+                                  fallback extracted a value, and from where, so the
+                                  operator can verify the source. Reads the persisted
+                                  audit.vision_extraction provenance, never invents state. */}
+                              {(() => {
+                                const ve = audit.vision_extraction || null;
+                                const runs = (ve && Array.isArray(ve.runs)) ? ve.runs : [];
+                                if (!runs.length) return null;
+                                const last = runs[runs.length - 1] || {};
+                                const docs = Array.isArray(last.documents) ? last.documents : [];
+                                // The doc whose extraction was written (resolved CIF/AWB).
+                                const written = docs.find(d => d && d.extraction && d.extraction.ok
+                                  && typeof d.write === 'string'
+                                  && (d.write.indexOf('value_usd') === 0 || d.write.indexOf('dhl_precheck') === 0));
+                                if (last.wrote && written) {
+                                  const ex = written.extraction || {};
+                                  const pg = ex.source_page != null ? ` from page ${ex.source_page}` : '';
+                                  const conf = ex.confidence != null ? ` (confidence ${(ex.confidence * 100).toFixed(0)}%)` : '';
+                                  return (
+                                    <InfoRow label="Extraction Method"
+                                      value={<span data-testid="clearance-extraction-method" style={{ fontSize: 11, color: 'var(--badge-green-text)', fontWeight: 600 }}>
+                                        Extracted by OCR/AI (Claude vision){pg}{conf} — verify source before booking
+                                      </span>} />
+                                  );
+                                }
+                                // Ran but did not write a usable value AND CIF still unknown.
+                                const attempted = docs.some(d => d && d.extraction);
+                                if (attempted && cifState === 'unknown') {
+                                  return (
+                                    <InfoRow label="Extraction Method"
+                                      value={<span data-testid="clearance-extraction-method" style={{ fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                                        OCR/AI extraction attempted — no usable value found, operator review needed
+                                      </span>} />
+                                  );
+                                }
+                                return null;
+                              })()}
                             </>
                           );
                         })()}

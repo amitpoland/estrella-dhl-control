@@ -478,6 +478,31 @@ async def _run_dhl_precheck(
                  batch_id, carrier_upper, invoice_cif_usd,
                  precheck.get("clearance_hint"), precheck.get("dsk_required_hint"))
 
+        # ── 5. Image-only OCR/AI CIF fallback (LAST — self-contained) ─────────
+        # When the text-based parsers above left CIF UNKNOWN because the AWB /
+        # invoice is an image-only scan, escalate to the vision extractor. It
+        # re-reads the fully-written audit, no-ops unless CIF is still UNKNOWN,
+        # and does its own atomic merge-not-replace write. Non-fatal.
+        try:
+            from ..services.vision_extractor import run_image_only_cif_fallback
+            _vres = run_image_only_cif_fallback(output_dir, batch_id)
+            if _vres.get("ran"):
+                log.info("[%s] vision CIF fallback: wrote=%s reason=%s",
+                         batch_id, _vres.get("wrote"), _vres.get("reason"))
+                if _vres.get("wrote"):
+                    # Authority-chain evidence: a CIF/AWB value entered the audit
+                    # via OCR/AI vision. Trace it on the timeline for the operator.
+                    tl.log_event(
+                        audit_path, tl.EV_VISION_CIF_WRITTEN, "system", "vision_fallback",
+                        detail={
+                            "source": "upload_precheck",
+                            "documents": _vres.get("documents"),
+                            "reason": _vres.get("reason"),
+                        },
+                    )
+        except Exception as _ve:
+            log.warning("[%s] vision CIF fallback failed (non-fatal): %s", batch_id, _ve)
+
     except Exception as exc:
         log.warning("[%s] DHL pre-check failed (non-fatal): %s", batch_id, exc)
 
