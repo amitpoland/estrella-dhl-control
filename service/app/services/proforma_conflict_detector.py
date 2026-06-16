@@ -26,11 +26,20 @@ The other four (inventory_insufficient, sku_missing_or_discontinued,
 customer_address_or_terms_changed, product_hs_origin_uom_changed) are registered
 in ``proforma_conflict_db.CONFLICT_TYPES`` but their detectors are deferred to
 PR-2 — see ``IMPLEMENTED_CONFLICT_TYPES`` below.
+
+STATUS (governance — PR sequencing):
+  - Divergence Detection (current draft vs current master) ... IMPLEMENTED (PR-1)
+  - Temporal Drift Detection ("changed since draft creation") . DEFERRED to the
+        ADR-022 snapshot layer (PR-2). Do NOT claim "changed since draft
+        creation" before the snapshot columns exist — doing so without them
+        asserts false authority. Divergence-class findings therefore carry
+        ``evidence["semantic"] = "divergence_not_temporal_drift"`` + a pr2_todo
+        marker so reviewers/UI never misread divergence as temporal drift.
 """
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
@@ -66,6 +75,13 @@ _FIXED_CHARGE_CURRENCIES = frozenset({"EUR", "USD"})
 # 222/228/229, so those three are sufficient.
 _VAT_ID_TO_CODE = {222: "23", 228: "WDT", 229: "EXP", 230: "NP"}
 
+# Governance marker (ADR-029 / ADR-022). PR-1 detects DIVERGENCE (current draft
+# vs current master), NOT temporal drift ("changed since draft creation"), which
+# needs the ADR-022 snapshot layer (PR-2). Every divergence-class finding carries
+# this so the marker is never silently mistaken for a since-creation claim.
+_PR2_TODO = "PR-2/ADR-022 snapshot: replace divergence with true since-creation drift"
+_DIVERGENCE_EVIDENCE = {"semantic": "divergence_not_temporal_drift", "pr2_todo": _PR2_TODO}
+
 
 @dataclass(frozen=True)
 class Detection:
@@ -81,6 +97,7 @@ class Detection:
     current_value:   Optional[str]
     master_value:    Optional[str]
     reason:          str
+    evidence:        Dict[str, Any] = field(default_factory=dict)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -208,6 +225,7 @@ def _detect_currency_vs_customer_default(
             f"default currency {master_cur}. Confirm the intended billing "
             f"currency before posting."
         ),
+        evidence=_DIVERGENCE_EVIDENCE,
     )
 
 
@@ -278,6 +296,7 @@ def _detect_customer_vat_eu_changed(
                 "Customer master VAT state is now ambiguous and cannot be "
                 f"auto-resolved: {exc}. Route to manual review before posting."
             ),
+            evidence=_DIVERGENCE_EVIDENCE,
         )
 
     # Translate the resolver's numeric id back to the draft's code-string
@@ -307,6 +326,7 @@ def _detect_customer_vat_eu_changed(
                 f"Draft has no VAT code; the customer master resolves to "
                 f"{expected_str}. Apply the master VAT code before posting."
             ),
+            evidence=_DIVERGENCE_EVIDENCE,
         )
     if draft_str == expected_str:
         return None
@@ -322,6 +342,7 @@ def _detect_customer_vat_eu_changed(
             f"{expected_str}. The customer's VAT treatment may have changed; "
             f"confirm or regenerate the lines."
         ),
+        evidence=_DIVERGENCE_EVIDENCE,
     )
 
 
@@ -356,6 +377,7 @@ def _detect_service_charge_defaults_changed(
             field_affected=f"service_charge.{charge_type}",
             current_value=(None if draft_amount is None else str(draft_amount)),
             master_value=str(master_fixed),
+            evidence=_DIVERGENCE_EVIDENCE,
             reason=(
                 f"Draft {charge_type} charge "
                 f"({'none' if draft_amount is None else draft_amount} {draft_cur}) "

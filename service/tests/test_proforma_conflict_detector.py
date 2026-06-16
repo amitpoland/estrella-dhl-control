@@ -248,3 +248,16 @@ def test_implemented_set_is_the_four_pr1_validators():
         "customer_vat_eu_changed",
         "service_charge_defaults_changed",
     }
+
+
+# ── ADR-029/ADR-022 divergence-vs-temporal governance marker ─────────────────
+
+def test_divergence_findings_carry_semantic_marker():
+    """Divergence-class findings must carry evidence["semantic"] so reviewers /
+    UI never read 'current draft != current master' as temporal drift."""
+    cust = _customer(default_currency="EUR")
+    out = detect_conflicts(proforma_id="1", currency="USD", customer=cust)
+    v3 = [d for d in out if d.conflict_type == "currency_vs_customer_default"]
+    assert v3, "expected a currency divergence finding"
+    assert v3[0].evidence.get("semantic") == "divergence_not_temporal_drift"
+    assert "pr2_todo" in v3[0].evidence
