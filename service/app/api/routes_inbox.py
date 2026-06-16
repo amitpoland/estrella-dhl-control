@@ -43,6 +43,36 @@ log = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/inbox", tags=["inbox"])
 _auth = Depends(require_api_key)
 
+
+# ── Shared admin derivation (single authority for both inbox + evidence) ─────
+
+def _derive_is_admin(pz_session: Optional[str]) -> bool:
+    """Return True only when the session cookie resolves to an admin user.
+
+    Uses get_current_user_optional (never raises). Non-session callers, decode
+    failures, and non-admin roles all resolve to False. This is the SINGLE
+    authority for admin gating across the inbox aggregator and the evidence
+    endpoint — duplicating it inline risks the two surfaces drifting apart.
+    """
+    if not pz_session:
+        return False
+    try:
+        from ..auth.dependencies import get_current_user_optional  # noqa: PLC0415
+        user = get_current_user_optional(pz_session=pz_session)
+        return bool(user and user.get("role") == "admin")
+    except Exception:
+        return False
+
+
+# ── Cache discipline (Lesson G — inbox views are regenerable) ─────────────────
+# no-store on every inbox response: the aggregator and the per-item evidence
+# detail are both live projections that must never be served from a stale cache.
+_NO_STORE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma":        "no-cache",
+    "Expires":       "0",
+}
+
 # ── Priority constants ────────────────────────────────────────────────────────
 
 PRIORITY_ORDER: Dict[str, int] = {"urgent": 0, "high": 1, "normal": 2, "info": 3}
@@ -270,15 +300,9 @@ def get_inbox(
                    dhl_cache:{ok,count}, proforma_drafts:{ok,count} } }
     """
     # Derive admin status from session for role-conditional email queue (OQ-1).
-    # Uses get_current_user_optional (does not raise) — non-session callers are non-admin.
-    is_admin = False
-    if pz_session:
-        try:
-            from ..auth.dependencies import get_current_user_optional  # noqa: PLC0415
-            user = get_current_user_optional(pz_session=pz_session)
-            is_admin = bool(user and user.get("role") == "admin")
-        except Exception:
-            is_admin = False
+    # Single authority: _derive_is_admin (does not raise) — non-session callers
+    # are non-admin.
+    is_admin = _derive_is_admin(pz_session)
 
     all_items: List[Dict[str, Any]] = []
     sources:   Dict[str, Any]       = {}
@@ -345,4 +369,306 @@ def get_inbox(
         "count":   len(all_items),
         "items":   all_items,
         "sources": sources,
-    })
+    }, headers=dict(_NO_STORE_HEADERS))
+
+
+# ── GET /api/v1/inbox/evidence/{item_id} ─────────────────────────────────────
+#
+# Per-item evidence detail for the V2 Inbox evidence panel (Sprint 03.3 / PR-E3a).
+#
+# HARD CONSTRAINTS (same posture as the aggregator above):
+#   - ZERO SIDE EFFECTS. Pure reads only. Never scans Zoho/Gmail, never sends
+#     email, never mutates lifecycle/proforma/evidence state.
+#   - DHL evidence is read from email_evidence_store.get_by_awb() ONLY — the
+#     stored-evidence path. scan_for_dhl_customs_emails is NEVER called here.
+#   - Per-source field allowlists ONLY. Raw source objects are never returned.
+#     Email bodies, attachments, draft to/cc/body, proforma JSON blobs, and
+#     financial fields are stripped at projection time.
+#   - Auth parity with the aggregator: email evidence is admin-only (403 for
+#     non-admin) so the inbox can never leak email content to a non-admin via a
+#     guessed email-* id. Proposal evidence is subject-only and visible to all
+#     roles (operator decision 2026-06-15).
+#   - Cache-Control: no-store on EVERY response (Lesson G — regenerable detail).
+#
+# Marker contract:
+#   - unknown prefix          → 404 {ok:false, error:"unknown_item_type"}
+#   - missing item            → 404 {ok:false, error:"not_found"}
+#   - resolved proposal       → 200 {ok:false, gone:true}
+#   - source read raised      → 200 {ok:false, degraded:true, error:"..."}
+#   - email-* as non-admin    → 403 {ok:false, error:"forbidden"}
+#
+# (_NO_STORE_HEADERS is defined once near the top of this module — both the
+#  aggregator and this evidence route share it.)
+
+
+def _ev_response(status: int, payload: Dict[str, Any]) -> JSONResponse:
+    """Build a JSONResponse with the no-store header set on every path."""
+    return JSONResponse(payload, status_code=status, headers=dict(_NO_STORE_HEADERS))
+
+
+def _ev_not_found(item_id: str) -> tuple[int, Dict[str, Any]]:
+    return 404, {"ok": False, "error": "not_found", "item_id": item_id}
+
+
+# ── Evidence projection: proposals (subject only, all roles) ──────────────────
+
+def _evidence_proposal(pid: str, item_id: str) -> tuple[int, Dict[str, Any]]:
+    """Project a single action proposal to evidence.
+
+    Exposes the draft SUBJECT only — never to/cc/body/attachments or any
+    financial field (operator decision 2026-06-15). A proposal that exists but
+    is no longer pending_review is reported as gone (it has left the inbox).
+    """
+    from ..services.proposals_reader import _iter_batch_proposals  # noqa: PLC0415
+
+    outputs_dir = settings.storage_root / "outputs"
+    for batch_id, _audit, proposals in _iter_batch_proposals(outputs_dir):
+        for prop in proposals:
+            if prop.get("proposal_id") != pid:
+                continue
+            status = prop.get("status", "")
+            if status != "pending_review":
+                # Resolved/approved/queued/rejected → no longer actionable here.
+                return 200, {
+                    "ok":      False,
+                    "gone":    True,
+                    "item_id": item_id,
+                    "status":  status,
+                }
+            draft = prop.get("draft") or {}
+            draft_subject = ""
+            if isinstance(draft, dict) and not draft.get("error"):
+                draft_subject = str(draft.get("subject") or "")
+            return 200, {
+                "ok":      True,
+                "item_id": item_id,
+                "kind":    "proposal",
+                "evidence": {
+                    "proposal_id":     pid,
+                    "proposal_type":   prop.get("type", "unknown"),
+                    "status":          status,
+                    # Bounded like the aggregator's detail field — reason is an
+                    # operator-facing string, capped so it can't carry an
+                    # unbounded blob into the panel.
+                    "reason":          str(prop.get("reason") or "")[:500],
+                    "created_at":      prop.get("created_at", ""),
+                    "linked_batch_id": batch_id,
+                    "can_approve":     True,
+                    # Subject-only exposure — NO to/cc/body/attachments.
+                    "draft_subject":   draft_subject,
+                },
+            }
+    return _ev_not_found(item_id)
+
+
+# ── Evidence projection: email queue (admin-only) ─────────────────────────────
+
+def _evidence_email(eid: str, item_id: str) -> tuple[int, Dict[str, Any]]:
+    """Project a single queued email to evidence (admin gate enforced upstream).
+
+    Exposes subject/to/status/timestamps ONLY — never body_html, body_text, or
+    attachments.
+    """
+    from ..services.email_service import get_all_emails  # noqa: PLC0415
+
+    # get_all_emails has no by-id lookup, so we scan a bounded recent window.
+    # The aggregator only surfaces email items from get_all_emails(limit=50),
+    # so any clickable email-* id is well within this 500-row margin; the bound
+    # keeps the queue file from being loaded unbounded on every panel click.
+    for e in get_all_emails(limit=500):
+        if str(e.get("id", "")) != eid:
+            continue
+        return 200, {
+            "ok":      True,
+            "item_id": item_id,
+            "kind":    "email",
+            "evidence": {
+                "email_id":        eid,
+                "subject":         e.get("subject") or "",
+                "to":              e.get("to") or "",
+                "status":          e.get("status") or "",
+                "queued_at":       e.get("queued_at") or e.get("created_at") or "",
+                "linked_batch_id": e.get("batch_id"),
+            },
+        }
+    return _ev_not_found(item_id)
+
+
+# ── Evidence projection: DHL evidence store (stored evidence only) ────────────
+
+# The DHL evidence summary is a fixed set of 9 boolean status flags
+# (email_evidence_store._summarise / _empty_awb_doc). We allowlist them
+# explicitly so a future writer that ever adds a non-flag field (operator note,
+# extracted identifier, PII) to the stored summary blob cannot leak it through
+# this projection.
+_DHL_SUMMARY_KEYS = (
+    "dhl_request_received",
+    "our_dhl_reply_sent",
+    "our_dhl_reply_queued",
+    "dhl_documents_received",
+    "agency_forward_sent",
+    "agency_forward_queued",
+    "agency_sad_received",
+    "dhl_invoice_received",
+    "agency_invoice_received",
+)
+
+
+def _dhl_doc_has_evidence(doc: Dict[str, Any]) -> bool:
+    """True when the AWB doc carries real stored evidence.
+
+    get_by_awb() returns an empty scaffold doc (never None) for an AWB with no
+    stored evidence, so a content check is what distinguishes found-vs-missing.
+    """
+    if doc.get("threads"):
+        return True
+    if doc.get("batch_ids"):
+        return True
+    if doc.get("last_message_at"):
+        return True
+    summary = doc.get("summary") or {}
+    return any(bool(v) for v in summary.values())
+
+
+def _evidence_dhl(awb: str, item_id: str) -> tuple[int, Dict[str, Any]]:
+    """Project DHL evidence for an AWB from STORED evidence only.
+
+    Hard-bound to email_evidence_store.get_by_awb() — never the scan path.
+    Thread lineage exposes direction/event_type/subject/sender/timestamp ONLY;
+    message body_text and attachments are stripped.
+    """
+    from ..services import email_evidence_store as ees  # noqa: PLC0415
+
+    doc = ees.get_by_awb(awb)
+    if not _dhl_doc_has_evidence(doc):
+        return _ev_not_found(item_id)
+
+    lineage: List[Dict[str, Any]] = []
+    for thread in doc.get("threads", []):
+        for msg in (thread.get("messages") or []):
+            lineage.append({
+                "direction":  msg.get("direction", ""),
+                "event_type": msg.get("event_type", ""),
+                "subject":    msg.get("subject") or "",
+                "sender":     msg.get("sender") or "",
+                "timestamp":  msg.get("timestamp") or "",
+            })
+
+    next_action = ""
+    try:
+        next_action = ees._derive_next_action(doc.get("summary") or {}) or ""
+    except Exception:
+        next_action = ""
+
+    # Allowlist the 9 known boolean flags — never pass the raw summary blob.
+    summary_raw = doc.get("summary") or {}
+    safe_summary = {k: bool(summary_raw.get(k, False)) for k in _DHL_SUMMARY_KEYS}
+
+    return 200, {
+        "ok":      True,
+        "item_id": item_id,
+        "kind":    "customs",
+        "evidence": {
+            "awb":             awb,
+            "batch_ids":       doc.get("batch_ids") or [],
+            "summary":         safe_summary,
+            "next_action":     next_action,
+            "last_message_at": doc.get("last_message_at"),
+            "last_scan_at":    doc.get("last_scan_at"),
+            "thread_lineage":  lineage,
+        },
+    }
+
+
+# ── Evidence projection: proforma drafts (state/client/fullnumber/dates) ──────
+
+def _evidence_proforma_draft(draft_id: str, item_id: str) -> tuple[int, Dict[str, Any]]:
+    """Project a single proforma draft to evidence.
+
+    Exposes lifecycle/identity fields ONLY — never line JSON, buyer/ship-to
+    overrides, payment terms, notes, or sales-price authority figures.
+    """
+    from ..services import proforma_invoice_link_db as pildb  # noqa: PLC0415
+
+    try:
+        did = int(draft_id)
+    except (TypeError, ValueError):
+        return _ev_not_found(item_id)
+
+    db_path = settings.storage_root / "proforma_links.db"
+    draft = pildb.get_draft_by_id(db_path, did)
+    if draft is None:
+        return _ev_not_found(item_id)
+
+    return 200, {
+        "ok":      True,
+        "item_id": item_id,
+        "kind":    "proforma_draft",
+        "evidence": {
+            "draft_id":       draft.id,
+            "draft_state":    draft.draft_state,
+            "client_name":    draft.client_name,
+            "batch_id":       draft.batch_id,
+            "currency":       draft.currency or "",
+            "fullnumber":     draft.wfirma_proforma_fullnumber or "",
+            "created_at":     draft.created_at or "",
+            "updated_at":     draft.updated_at or "",
+            "post_failed_at": draft.post_failed_at or "",
+        },
+    }
+
+
+# ── Prefix dispatch ───────────────────────────────────────────────────────────
+
+# Order matters only for documentation clarity — the four prefixes do not
+# overlap (proforma-draft- vs proposal- diverge at char 4).
+def _select_evidence_handler(item_id: str):
+    """Return (handler, arg) for an item id, or (None, None) for unknown prefix."""
+    if item_id.startswith("proforma-draft-"):
+        return _evidence_proforma_draft, item_id[len("proforma-draft-"):]
+    if item_id.startswith("proposal-"):
+        return _evidence_proposal, item_id[len("proposal-"):]
+    if item_id.startswith("email-"):
+        return _evidence_email, item_id[len("email-"):]
+    if item_id.startswith("dhl-"):
+        return _evidence_dhl, item_id[len("dhl-"):]
+    return None, None
+
+
+@router.get("/evidence/{item_id}", dependencies=[_auth])
+def get_inbox_evidence(
+    item_id:    str,
+    pz_session: Optional[str] = Cookie(default=None),
+) -> JSONResponse:
+    """Per-item evidence detail for the inbox evidence panel.
+
+    Read-only. See the module-level marker contract for status semantics.
+    """
+    is_admin = _derive_is_admin(pz_session)
+
+    # Email evidence is admin-only. Gate BEFORE lookup so a non-admin cannot use
+    # the response (403 vs 404) as an existence oracle for queued emails.
+    if item_id.startswith("email-") and not is_admin:
+        return _ev_response(403, {
+            "ok": False, "error": "forbidden", "item_id": item_id,
+        })
+
+    handler, arg = _select_evidence_handler(item_id)
+    if handler is None:
+        return _ev_response(404, {
+            "ok": False, "error": "unknown_item_type", "item_id": item_id,
+        })
+
+    try:
+        status, payload = handler(arg, item_id)
+    except Exception as exc:
+        # A source read failed — degrade gracefully, never 500 the panel.
+        # Full detail goes to the log only; the response carries a generic
+        # category so an exception string can never leak source content.
+        log.warning("[inbox] evidence source failed for %s: %s", item_id, exc)
+        return _ev_response(200, {
+            "ok": False, "degraded": True, "error": "evidence_read_error",
+            "item_id": item_id,
+        })
+
+    return _ev_response(status, payload)
