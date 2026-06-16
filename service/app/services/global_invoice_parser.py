@@ -77,15 +77,17 @@ _FOB_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Freight
+# Freight — accepts the full word "Freight" or the DHL/AWB abbreviation "FRI"
+# ("FRI US$ 100", "Freight: 125.00", "FRI $ 100").
 _FREIGHT_RE = re.compile(
-    r"[Ff]reight\s*(?:Charges?|Cost|Amount)?\s*[:=]?\s*(?:USD|US\$|\$)?\s*([\d,]+\.?\d*)",
+    r"(?:Freight|FRI)\b\s*(?:Charges?|Cost|Amount)?\s*[:=]?\s*(?:USD|US\$|\$)?\s*([\d,]+\.?\d*)",
     re.IGNORECASE,
 )
 
-# Insurance
+# Insurance — accepts the full word "Insurance" or the abbreviation "INS"
+# ("INS $ 25", "INS US$ 25", "Insurance: 25.00").
 _INS_RE = re.compile(
-    r"[Ii]nsurance\s*(?:Charges?|Cost|Amount)?\s*[:=]?\s*(?:USD|US\$|\$)?\s*([\d,]+\.?\d*)",
+    r"(?:Insurance|INS)\b\s*(?:Charges?|Cost|Amount)?\s*[:=]?\s*(?:USD|US\$|\$)?\s*([\d,]+\.?\d*)",
     re.IGNORECASE,
 )
 

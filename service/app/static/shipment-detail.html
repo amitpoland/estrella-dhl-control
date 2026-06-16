@@ -7395,8 +7395,12 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                             'invoice_totals.total_fob_usd':          'invoice totals (FOB fallback — freight not allocated)',
                             'dhl_precheck.invoice_cif_total_usd':    'DHL pre-check CIF',
                             'dhl_precheck.fob_total_usd':            'DHL pre-check FOB',
+                            'awb_customs.value_usd':                 'AWB Custom Val (carrier-declared)',
+                            'audit.customs_declared_value_zero':     'declared zero (source-confirmed)',
                             'unavailable':                           'unavailable',
                           })[decSource] || decSource;
+                          const cifState = dec.cif_state || (decSource === 'unavailable' ? 'unknown' : 'resolved');
+                          const cifGap   = dec.cif_extraction_gap || null;
                           return (
                             <>
                               <InfoRow label="Decision Value (USD)"
@@ -7417,6 +7421,35 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                 <InfoRow label="Reason"
                                   value={<span data-testid="clearance-pending-reason" style={{ fontSize: 11, color: 'var(--badge-amber-text)' }}>
                                     Routing Pending — {dec.missing_reason || 'CIF not calculated yet'}
+                                  </span>} />
+                              )}
+                              {/* CIF extraction gap — value is UNKNOWN (parser/OCR/AWB
+                                  failed), NOT a fake 0. Shows which layer failed first
+                                  and the operator's next action. */}
+                              {cifState === 'unknown' && cifGap && (
+                                <div data-testid="clearance-extraction-gap" style={{ marginTop: 6, padding: '6px 8px', borderRadius: 4, background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)' }}>
+                                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-amber-text)' }}>
+                                    ⚠ CIF unknown — extraction gap
+                                  </div>
+                                  <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>
+                                    First failed layer: <span style={{ fontFamily: 'monospace' }}>{cifGap.first_failed_layer || 'unknown'}</span>
+                                  </div>
+                                  {cifGap.reason && (
+                                    <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>{cifGap.reason}</div>
+                                  )}
+                                  {cifGap.next_action && (
+                                    <div data-testid="clearance-extraction-next-action" style={{ fontSize: 11, color: 'var(--text-1)', marginTop: 2, fontWeight: 600 }}>
+                                      Next: {cifGap.next_action}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              {/* Declared-zero — source explicitly states a zero customs
+                                  value. Distinct from a parser miss. */}
+                              {cifState === 'declared_zero' && (
+                                <InfoRow label="CIF Status"
+                                  value={<span data-testid="clearance-declared-zero" style={{ fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                                    Declared zero — source-confirmed (not a parser miss)
                                   </span>} />
                               )}
                             </>

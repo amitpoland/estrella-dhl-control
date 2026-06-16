@@ -58,6 +58,7 @@ from ..core.config import settings
 from ..core import timeline as tl
 from ..utils.io import write_json_atomic
 from .clearance_path_alias import is_agency_clearance, is_dhl_self_clearance
+from .cif_resolver import CIF_RESOLVED, resolve_cif
 
 import threading
 
@@ -864,10 +865,13 @@ def _run_path_a_validation_gate(
     if not _DHL_AWB_RE.match(awb):
         return False, "validation_failed:awb_format"
 
-    inv_totals = audit.get("invoice_totals") or {}
-    cif_inv = float(inv_totals.get("total_cif_usd") or 0)
-    cif_ver = float((audit.get("verification") or {}).get("invoice_cif_total_usd") or 0)
-    cif = cif_inv or cif_ver
+    # CIF via the tri-state authority resolver (invoice → precheck → AWB Custom
+    # Val). A non-resolved CIF is never coerced to a fake 0 — it fails the gate
+    # with an explicit, distinguishable reason instead of silently below-floor.
+    _cif_res = resolve_cif(audit)
+    if _cif_res["cif_state"] != CIF_RESOLVED:
+        return False, f"validation_failed:cif_{_cif_res['cif_state']}"
+    cif = float(_cif_res["cif_usd"])
     if cif < _VALUE_PLAUSIBILITY_FLOOR_USD:
         return False, "validation_failed:invoice_value_below_floor"
 
@@ -1512,10 +1516,22 @@ def _ensure_polish_description(audit_path: Path, audit: Dict[str, Any]) -> Dict[
     if not awb:
         return out
 
-    inv_totals = audit.get("invoice_totals") or {}
-    cif_inv    = float(inv_totals.get("total_cif_usd") or 0)
-    cif_ver    = float((audit.get("verification") or {}).get("invoice_cif_total_usd") or 0)
-    if cif_inv == 0.0 and cif_ver == 0.0:
+    # CIF via the tri-state authority resolver. The historic gate skipped
+    # silently whenever invoice_totals/verification CIF were both 0 — which
+    # blocked AWB-only shipments (e.g. 2315714531, CIF on the waybill but not in
+    # the invoice audit) with no signal. Now: only a RESOLVED CIF proceeds; an
+    # UNKNOWN / DECLARED_ZERO state records WHY instead of returning silently.
+    _cif_res = resolve_cif(audit)
+    if _cif_res["cif_state"] != CIF_RESOLVED:
+        out["cif_state"] = _cif_res["cif_state"]
+        out["cif_skip_reason"] = (
+            (_cif_res.get("extraction_gap") or {}).get("reason")
+            or "CIF did not resolve to a positive value"
+        )
+        log.warning(
+            "[active_shipment_monitor] polish-desc not generated for %s — "
+            "cif_state=%s (%s)", awb, _cif_res["cif_state"], out["cif_skip_reason"],
+        )
         return out
 
     out["skipped"] = False

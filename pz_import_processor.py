@@ -1134,10 +1134,14 @@ def parse_invoice_global_jewellery(pdf_path: str, text: str, lines: list,
     fob_usd       = (find_amount("FOB US$") or find_amount("FOB USD") or
                      find_amount("Total FOB") or find_amount("FOB Value") or
                      find_amount("FOB"))
-    _frt          = find_amount("FRI US$") or find_amount("Freight US$") or find_amount("Freight")
+    _frt          = (find_amount("FRI US$") or find_amount("FRI USD") or
+                     find_amount("FRI $") or find_amount("Freight US$") or
+                     find_amount("Freight"))
     freight_found = bool(_frt)
     freight_usd   = float(_frt) if _frt else 0.0
-    insurance_usd = find_amount("INS US$") or find_amount("Insurance US$") or find_amount("Insurance") or 0.0
+    insurance_usd = (find_amount("INS US$") or find_amount("INS USD") or
+                     find_amount("INS $") or find_amount("Insurance US$") or
+                     find_amount("Insurance") or 0.0)
 
     # Parsed CIF/Value from document
     cif_parsed = (find_amount("CIF US$") or find_amount("CIF Value") or
