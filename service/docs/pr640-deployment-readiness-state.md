@@ -28,7 +28,7 @@
 **Commits on the branch (over `4652292`):**
 - `d8c1710` — advisory image-only invoice extraction (FOB + line items + supplier)
 - `f6c7ec2` — reviewer-challenge REQUIRED findings (USD-only gate, engine_parsed guard, TOCTOU stickiness, negative-scope tests)
-- `d04e95c` — docs: ADR-030 + runbook + AWB 2315714531 handoff
+- `d04e95c` — docs: ADR-031 + runbook + AWB 2315714531 handoff
 
 ---
 
@@ -41,7 +41,7 @@ treat it as a regression and do not attempt to "unblock" it inside PR #640.
 
 **Why:** PR #640 only produces an *advisory* `vision_invoice` proposal. The only
 thing that could fill the accounting layer (layer 3) for an image-only shipment
-is that proposal — and ADR-030 forbids any machine proposal from becoming
+is that proposal — and ADR-031 forbids any machine proposal from becoming
 accounting authority until an operator confirms it. The operator-confirmation
 workflow does not exist yet. It is **PR-2**.
 
@@ -83,9 +83,9 @@ This is the load-bearing invariant of the whole campaign. Downstream services
 
 > **No service may read `vision_invoice` directly to drive PZ generation, wFirma
 > posting, landed-cost computation, accounting exports, or warehouse booking
-> unless `vision_invoice.operator_confirmed == true`.** — ADR-030 enforcement rule
+> unless `vision_invoice.operator_confirmed == true`.** — ADR-031 enforcement rule
 
-**Four-layer authority model (ADR-030):**
+**Four-layer authority model (ADR-031):**
 
 | Layer | Key | Trust | Owner / sole writer |
 |---|---|---|---|
@@ -120,7 +120,7 @@ already **RESOLVED (CIF USD 732)** and is unaffected by anything in PR #640.
   with `operator_confirmed=false`, `confidence`, gated on: engine-not-parsed AND
   image-only AND confidence ≥ `MIN_WRITE_CONFIDENCE`.
 - Authority-isolation guard tests (negative scope).
-- Governance docs: ADR-030, runbook, AWB 2315714531 handoff.
+- Governance docs: ADR-031, runbook, AWB 2315714531 handoff.
 
 ### Out of scope (deferred to PR-2 — must NOT appear in #640)
 - Operator-confirm endpoint / any writer of `operator_confirmed=true`.
@@ -185,7 +185,7 @@ operator-only; do not report "deployed" until the prod hash flips.
 | Reference | What it is in this chain |
 |---|---|
 | **PR #640** | This PR. PR-1 of the invoice-extraction campaign: the advisory `vision_invoice` recovery layer. Adds proposal data + governance docs; grants no accounting authority. |
-| **ADR-030** | `.claude/adr/ADR-030-invoice-extraction-authority-separation.md` — permanent four-layer authority law + enforcement rule + test pattern. The governing contract PR-2 must implement against. |
+| **ADR-031** | `.claude/adr/ADR-031-invoice-extraction-authority-separation.md` — permanent four-layer authority law + enforcement rule + test pattern. The governing contract PR-2 must implement against. |
 | **AWB 2315714531** | The triggering shipment: customs-cleared (CIF 732) but image-only invoice → no PZ computable. The first shipment to flow the permanent path once PR-2 deploys. Handoff: `service/docs/awb-2315714531-extraction-handoff.md`. |
 | **PZ / wFirma** | Purchase-accounting goods receipt (PZ = Przyjęcie Zewnętrzne) and the wFirma accounting system it posts to. Both read **layer 3 only**; blocked while layer 3 is empty. |
 | **PR-2** | Not yet opened. The operator-confirmation workflow: lifecycle state, confirm endpoint (sole writer of `operator_confirmed`), enabled confirm UI, **gated** engine injection. Unblocks PZ/wFirma. |

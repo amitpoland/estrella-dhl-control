@@ -49,7 +49,7 @@ mergeability* is stated correctly. Fail only if a blocker actually blocks merge 
 
 | # | Blocker | Classification | Blocks MERGE of #640? | Evidence |
 |---|---|---|---|---|
-| 2a | `vision_invoice` is proposal-only | **Informational — not actionable.** It is the intended end-state of PR-1, not a defect. | **NO** | ADR-030 layer-1 definition; `operator_confirmed=false` by design |
+| 2a | `vision_invoice` is proposal-only | **Informational — not actionable.** It is the intended end-state of PR-1, not a defect. | **NO** | ADR-031 layer-1 definition; `operator_confirmed=false` by design |
 | 2b | PZ / wFirma blocked pending PR-2 operator-confirmation workflow | **By-design dependency on the *shipment*, not the PR.** PZ/wFirma read layer 3 only; layer 3 stays empty for image-only shipments until PR-2. | **NO** | `pr640-deployment-readiness-state.md` §1; runbook §1 |
 
 **Key finding (decisive):**
@@ -63,14 +63,14 @@ mergeability* is stated correctly. Fail only if a blocker actually blocks merge 
 
 ## Category 3 — Authority and ownership verification
 
-**Pass criteria:** the PR respects the ADR-030 authority layers and the
+**Pass criteria:** the PR respects the ADR-031 authority layers and the
 established ownership boundaries (who may write what). Fail if any authority
 boundary is crossed or any ownership rule is violated.
 
 | # | Authority / ownership rule | Evidence artifact | Status |
 |---|---|---|---|
-| 3.1 | `vision_invoice` is layer-1 PROPOSAL only; cannot drive PZ/wFirma/landed-cost/exports/warehouse unless `operator_confirmed==true` | ADR-030 enforcement rule + gate table | ✅ PASS |
-| 3.2 | Sole writer of the proposal is `vision_extractor`; `operator_confirmed` has NO writer yet (PR-2 endpoint will be the only one) | code `f6c7ec2`; ADR-030 owner column | ✅ PASS |
+| 3.1 | `vision_invoice` is layer-1 PROPOSAL only; cannot drive PZ/wFirma/landed-cost/exports/warehouse unless `operator_confirmed==true` | ADR-031 enforcement rule + gate table | ✅ PASS |
+| 3.2 | Sole writer of the proposal is `vision_extractor`; `operator_confirmed` has NO writer yet (PR-2 endpoint will be the only one) | code `f6c7ec2`; ADR-031 owner column | ✅ PASS |
 | 3.3 | Engine never reads the proposal (`process_batch` only in comments in `vision_extractor.py`) | source review `f6c7ec2` | ✅ PASS |
 | 3.4 | Sticky confirmation + TOCTOU re-read before atomic write; `vision_invoice` in `audit_merge.PRESERVED_KEYS` | code `f6c7ec2`; `audit_merge.PRESERVED_KEYS` | ✅ PASS |
 | 3.5 | Blocker-status authority lives in `PROJECT_STATE.md`, owned by `flow-context-keeper` (CLAUDE.md RULE 3) — this PR adds no competing authority | PROJECT_STATE FACTS 'PR #640' block | ✅ PASS |
@@ -93,12 +93,12 @@ two ladders never cross. Fail if the proposal perturbs any customs/accounting va
 | 4.2 | `build_clearance_decision` CIF value/source invariant to the block | `::test_build_clearance_decision_ignores_vision_invoice` | ✅ PASS |
 | 4.3 | Poison-block invariance: a `99999` CIF-shaped value in the proposal never perturbs customs output | `::_POISON_VISION_INVOICE` assertions | ✅ PASS |
 | 4.4 | Static source contracts: `cif_resolver.py` / `clearance_decision.py` / `active_shipment_monitor.py` never name `vision_invoice` | static-contract tests (3) | ✅ PASS |
-| 4.5 | Vision **invoice** layer (#640) writes ONLY `vision_invoice` — never CIF keys / `invoice_totals` / `rows` / `customs_declaration`; separate ladder from the vision **CIF** fallback (#632/#633) | code review `f6c7ec2`; ADR-030 corollary 1 | ✅ PASS |
+| 4.5 | Vision **invoice** layer (#640) writes ONLY `vision_invoice` — never CIF keys / `invoice_totals` / `rows` / `customs_declaration`; separate ladder from the vision **CIF** fallback (#632/#633) | code review `f6c7ec2`; ADR-031 corollary 1 | ✅ PASS |
 | 4.6 | AWB 2315714531 customs/CIF (732) compatible with the PR — no adjustment needed | combination of 4.1–4.5 | ✅ PASS |
 
 **Forward note for PR-2 (not a PR-1 blocker):** the engine-injection step must
 read layer 3, or read layer 1 strictly behind `operator_confirmed` — never
-"whichever `fob_usd` exists" (duplicate-authority risk, ADR-030 Risks).
+"whichever `fob_usd` exists" (duplicate-authority risk, ADR-031 Risks).
 
 **Category 4 verdict:** ✅ PASS — _customs and accounting ladders are provably isolated from the proposal; AWB 2315714531 (CIF 732) is unaffected; no state-consistency adjustment required._
 

@@ -1,4 +1,4 @@
-# ADR-030: Invoice Extraction Authority Separation — Vision Proposal vs Operator-Confirmed Accounting Authority
+# ADR-031: Invoice Extraction Authority Separation — Vision Proposal vs Operator-Confirmed Accounting Authority
 
 **Status:** Accepted
 **Date:** 2026-06-17

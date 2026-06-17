@@ -120,10 +120,29 @@ async def build_agency_email_package(batch_id: str) -> AgencyPackageResponse:
 
     path = dec.get("clearance_path", "routing_pending")
     if path == "routing_pending":
+        # routing_pending means the customs CIF is UNRESOLVED (cif_state unknown),
+        # NOT that a raw invoice CIF literally equals 0 — a value can still resolve
+        # from AWB Custom Val or the OCR/AI fallback. Report the resolver's honest
+        # reason and next action instead of the misleading "invoice CIF is 0".
+        from ..services.cif_authority import get_cif_authority
+        _cif = get_cif_authority(audit)
+        _gap = _cif.get("extraction_gap") or {}
         raise HTTPException(
             status_code=422,
-            detail=f"Clearance path not yet determined — invoice CIF is 0. "
-                   f"Re-process the batch with valid invoices first.",
+            detail={
+                "guard":      "clearance_path_unresolved",
+                "error":     (
+                    "Clearance path not yet determined — the customs CIF value is "
+                    f"unresolved (cif_state={_cif.get('cif_state')}). "
+                    + (_cif.get("blocker_reason") or "")
+                ).strip(),
+                "code":       "clearance_path_unresolved",
+                "cif_state":  _cif.get("cif_state"),
+                "cif_source": _cif.get("cif_source"),
+                "hint":       _gap.get("next_action")
+                              or "Re-process the batch with valid invoices, or "
+                                 "confirm the AWB customs value, then retry.",
+            },
         )
     if not is_agency_clearance(path):
         cif = dec.get("total_value_usd", 0)

@@ -1,7 +1,7 @@
 # Handoff — AWB 2315714531 Invoice Extraction & PZ Unblock
 
 **Owner:** Amit (operator) · **Authored:** 2026-06-17
-**Governs:** ADR-030 (authority separation) · PR #640 (recovery layer) · PR-2 (confirmation workflow)
+**Governs:** ADR-031 (authority separation) · PR #640 (recovery layer) · PR-2 (confirmation workflow)
 **Related runbook:** `runbook-invoice-image-only-extraction-sequence.md`
 
 This is the single-page truth for "where is AWB 2315714531 right now, and what
@@ -39,7 +39,7 @@ one shipment.
 
 **Blocked-by-design, not by bug.** PZ and wFirma are blocked because the only
 thing that could fill the accounting layer for this shipment is an *unconfirmed
-machine proposal*, and ADR-030 forbids that proposal from becoming accounting
+machine proposal*, and ADR-031 forbids that proposal from becoming accounting
 authority without an operator confirmation that does not exist yet. That is the
 correct, honest state — not a regression.
 
@@ -95,10 +95,10 @@ sequence exists to prevent.
 | Responsibility | Owner |
 |---|---|
 | Review + merge PR #640; run `/deploy`; prod write | **Operator (Amit)** — prod write is operator-only |
-| PR-2 implementation (endpoint, UI, gated injection, Issues #638/#639) | next implementation session, ADR-030 as contract |
+| PR-2 implementation (endpoint, UI, gated injection, Issues #638/#639) | next implementation session, ADR-031 as contract |
 | Re-run AWB 2315714531 recovery + confirm + PZ preview | Operator-initiated, after PR-2 deploys |
 | Authority-isolation guard (must stay green every PR) | `test_vision_invoice_negative_scope.py` |
-| Governance record of this state | this doc + ADR-030 + PROJECT_STATE.md |
+| Governance record of this state | this doc + ADR-031 + PROJECT_STATE.md |
 
 Task #15 (PZ/wFirma goods-receipt for this AWB) remains **BLOCKED** and resumes
 only after PR-2 deploys. Do not attempt a PZ create or a manual invoice re-key as
@@ -112,13 +112,13 @@ a shortcut — that re-introduces the shipment-specific patch Lesson I forbids.
    (layer 1) and, post-parse, `invoice_totals` (layer 3). Safe **today** only
    because no single consumer reads both. **PR-2 must read layer 3, or read
    layer 1 strictly behind `operator_confirmed` — never "whichever exists."**
-   Tracked in ADR-030 Risks.
+   Tracked in ADR-031 Risks.
 2. **`operator_confirmed` must have exactly one writer** (the PR-2 endpoint). A
    second writer is an authority-forge risk. Add a static source contract if a
    second candidate path ever appears.
 3. **No auto-confirm.** Confidence is a model self-report, not human attestation.
    No machine-decidable "low-risk" boundary may auto-promote a proposal to
-   accounting authority (ADR-030 rejected alternative; Lesson M).
+   accounting authority (ADR-031 rejected alternative; Lesson M).
 4. **Customs stays isolated.** CIF (732) is final on its own ladder and must
    never be re-derived from `vision_invoice`, even once confirmed. Layer 4 and
    layers 1–3 are separate ladders that never cross.

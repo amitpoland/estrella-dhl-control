@@ -169,23 +169,27 @@ async def generate_dsk_endpoint(body: DskRequest) -> DskResponse:
                     )
                     _write_advisory_proposal(_guard_audit_path, _dsk_prop)
 
-    # ── Derive value_usd from audit if not supplied in payload ────────────────
+    # ── Resolve value_usd via the single CIF authority (operator override wins) ─
+    # An explicit payload value is the operator's own authority and is respected
+    # as-is. Otherwise the customs value is derived from the shared resolved-CIF
+    # authority (full ladder: verification → invoice CIF/FOB → DHL pre-check →
+    # AWB Custom Val → OCR/AI fallback), not just the two invoice layers — so a
+    # shipment whose CIF resolves only from the AWB Custom Val is no longer a
+    # false "Missing CIF value" block. UNKNOWN / DECLARED_ZERO block honestly via
+    # require_resolved_cif (codes cif_unresolved / cif_declared_zero).
     value_usd  = body.value_usd or 0.0
     value_source = "payload"
-    if not value_usd and _resolved_audit:
-        _ver = _resolved_audit.get("verification") or {}
-        _it  = _resolved_audit.get("invoice_totals") or {}
-        if _ver.get("invoice_cif_total_usd"):
-            value_usd    = float(_ver["invoice_cif_total_usd"])
-            value_source = "audit.verification"
-        elif _it.get("total_cif_usd"):
-            value_usd    = float(_it["total_cif_usd"])
-            value_source = "audit.invoice_totals"
     if not value_usd:
-        raise HTTPException(
-            status_code=422,
-            detail="Missing CIF value — run Recheck or upload valid invoices first",
-        )
+        if _resolved_audit:
+            from ..services.cif_authority import require_resolved_cif
+            _cif = require_resolved_cif(_resolved_audit, action="a DSK broker notification")
+            value_usd    = float(_cif["cif_usd"])
+            value_source = f"cif_authority:{_cif['cif_source']}"
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail="Missing CIF value — run Recheck or upload valid invoices first",
+            )
     log.info("[DSK] [%s] value_usd=%.2f source=%s", body.batch_id or "?", value_usd, value_source)
 
     try:
@@ -254,12 +258,23 @@ async def generate_dsk_endpoint(body: DskRequest) -> DskResponse:
                         "generated_at": _now_iso,
                     }
                     write_json_atomic(_audit_path, _audit)
+                    # Record the customs-value provenance on the timeline so an
+                    # explicit operator payload override (value_source="payload")
+                    # is auditable and distinguishable from an authority-derived
+                    # value — the override bypasses require_resolved_cif, so its
+                    # use must leave an audit trace.
                     tl.log_event(
                         _audit_path,
                         tl.EV_DSK_GENERATED,
                         trigger_source="dashboard",
                         actor="admin",
-                        detail={"filename": filename, "awb": body.awb},
+                        detail={
+                            "filename":     filename,
+                            "awb":          body.awb,
+                            "value_usd":    value_usd,
+                            "value_source": value_source,
+                            "value_override": value_source == "payload",
+                        },
                     )
                 except Exception as _e:
                     log.warning("DSK audit update failed (non-fatal): %s", _e)

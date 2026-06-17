@@ -88,7 +88,8 @@ What does this decision lock in for future work? What does it enable?
 | [ADR-027](ADR-027-proforma-vat-from-master.md) | Proforma VAT + Document Defaults from customer_master (SSOT) | Proposed |
 | [ADR-028](ADR-028-v2-shell-no-dashboard-shared.md) | Atlas-V2 (/v2/) shell MUST NOT load dashboard-shared.js; apiFetch provided inline | Proposed (pending operator approval) |
 | [ADR-029](ADR-029-proforma-workspace-orchestration-shell.md) | Proforma Workspace as an orchestration shell (authority-preserving) — bounded amendment to V2 domain isolation | Accepted |
-| [ADR-030](ADR-030-invoice-extraction-authority-separation.md) | Invoice Extraction Authority Separation — Vision Proposal vs Operator-Confirmed Accounting Authority | Accepted |
+| [ADR-030](ADR-030-cif-resolved-authority-single-gate.md) | Resolved-CIF is the single customs-value authority; raw parsed invoice fields are evidence. Shared `cif_authority.require_resolved_cif` / `get_cif_authority` gate (codes `cif_unresolved` / `cif_declared_zero`) wired into Polish-desc, customs-package, DSK, agency, and action-proposal routing. | Accepted |
+| [ADR-031](ADR-031-invoice-extraction-authority-separation.md) | Invoice Extraction Authority Separation — Vision Proposal vs Operator-Confirmed Accounting Authority | Accepted |
 
 ## When to write a new ADR
 

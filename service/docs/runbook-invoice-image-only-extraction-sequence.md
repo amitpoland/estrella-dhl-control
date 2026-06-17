@@ -1,7 +1,7 @@
 # Runbook — Image-Only Invoice Recovery: Implementation & Deployment Sequence
 
 **Owner:** Amit (operator) · **Authored:** 2026-06-17
-**Governs:** ADR-030 (authority separation) · PR #640 (recovery layer) · PR-2 (confirmation workflow)
+**Governs:** ADR-031 (authority separation) · PR #640 (recovery layer) · PR-2 (confirmation workflow)
 **Scope:** the permanent path by which an image-only commercial invoice becomes a PZ + wFirma goods receipt — for AWB 2315714531 and every future image-only shipment.
 
 ---
@@ -16,7 +16,7 @@ This order is mandatory, not stylistic. It is the Lesson I rule applied: fix the
 
 - **PR #640 ships the proposal layer with zero accounting authority.** It can be
   deployed safely *today* because nothing reads `vision_invoice` into PZ, wFirma,
-  landed cost, or customs (ADR-030 enforcement rule, pinned by
+  landed cost, or customs (ADR-031 enforcement rule, pinned by
   `test_vision_invoice_negative_scope.py`). Deploying it early lets real
   image-only invoices accumulate **reviewable proposals** in production while the
   confirmation UI is still being built — no risk, immediate diagnostic value.
@@ -127,7 +127,7 @@ correct, honest state until PR-2 exists.
 - **Duplicate `fob_usd`** lives in both `vision_invoice` (layer 1) and
   `invoice_totals` (layer 3). Safe today (no shared consumer). PR-2 must read
   layer 3, or layer 1 strictly behind `operator_confirmed` — never
-  "whichever exists." Tracked in ADR-030 Risks.
+  "whichever exists." Tracked in ADR-031 Risks.
 - **`operator_confirmed` must have exactly one writer** (the PR-2 endpoint). Any
   second writer is an authority-forge risk; add a static contract if a second
   candidate path appears.

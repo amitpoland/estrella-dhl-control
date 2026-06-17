@@ -1613,6 +1613,31 @@ def action_diagnostics(batch_id: str) -> Dict[str, Any]:
         except Exception:
             pass
 
+    # CIF authority for the DSK button hint. The DSK action gate (routes_dsk)
+    # resolves the customs value through the single cif_authority ladder, so this
+    # button hint must reflect the SAME authority — never a raw
+    # invoice_totals.total_cif_usd of 0, which falsely disabled DSK for shipments
+    # whose CIF resolves only from the AWB Custom Val (AWB 2315714531: invoice CIF
+    # 0, AWB Custom Val 732). is_resolved is True only for state=resolved, so a
+    # declared_zero / unknown value correctly leaves the button disabled.
+    try:
+        from ..services.cif_authority import get_cif_authority
+        _dsk_cif      = get_cif_authority(audit)
+        _dsk_cif_ok   = bool(_dsk_cif.get("is_resolved"))
+        _dsk_cif_why  = (
+            "Ready — CIF value available"
+            if _dsk_cif_ok
+            else (_dsk_cif.get("blocker_reason")
+                  or "CIF value required (run PZ or recheck first)")
+        )
+    except Exception:
+        _dsk_cif_ok  = bool((audit.get("invoice_totals") or {}).get("total_cif_usd"))
+        _dsk_cif_why = (
+            "Ready — CIF value available"
+            if _dsk_cif_ok
+            else "CIF value required (run PZ or recheck first)"
+        )
+
     # ── Agency email ─────────────────────────────────────────────────────────
     arp_queue_id = arp.get("queue_id") or arp.get("email_id")
     arp_status   = arp.get("status")
@@ -1703,16 +1728,12 @@ def action_diagnostics(batch_id: str) -> Dict[str, Any]:
             "file_missing_repair": bool(pd_file and not pd_exists),
         },
         "generate_dsk": {
-            "enabled": not dsk_exists and bool(
-                (audit.get("invoice_totals") or {}).get("total_cif_usd")
-            ),
+            "enabled": not dsk_exists and _dsk_cif_ok,
             "already_generated": dsk_exists,
             "path_exists": dsk_exists,
             "reason": (
                 "Already generated — use download"
-                if dsk_exists else
-                ("Ready — CIF value available" if (audit.get("invoice_totals") or {}).get("total_cif_usd")
-                 else "CIF value required (run PZ or recheck first)")
+                if dsk_exists else _dsk_cif_why
             ),
         },
         "download_dsk": {

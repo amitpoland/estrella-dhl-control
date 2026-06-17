@@ -476,6 +476,60 @@ class TestValueGuards:
 
         _assert_can_queue(prop, audit)  # must not raise
 
+    def test_declared_zero_blocks_routing_dependent_proposal(self, tmp_path):
+        """A genuine declared-zero customs value (total_value_usd == 0,
+        cif_state=declared_zero) must NOT silently auto-route the low-value
+        carrier_description_reply branch — it requires operator review and is
+        blocked at the G6b/G7b routing guard with a 409."""
+        bid, _, ap = _make_batch(tmp_path, extra={
+            "clearance_decision": {
+                "total_value_usd": 0.0,
+                "cif_state":       "declared_zero",
+                "clearance_path":  "dhl_self_clearance",
+                "require_dsk":     False,
+            }
+        })
+        audit = _read_audit(ap)
+
+        from app.api.routes_action_proposals import create_proposal, _assert_can_queue
+        from fastapi import HTTPException
+
+        prop = create_proposal(audit, bid, "carrier_description_reply", "reason", "high")
+        prop["status"]      = "approved"
+        prop["approved_by"] = "admin"
+        prop["draft"]["to"] = "odprawacelna@dhl.com"
+
+        with pytest.raises(HTTPException) as exc_info:
+            _assert_can_queue(prop, audit)
+        assert exc_info.value.status_code == 409
+        assert "declared zero" in exc_info.value.detail.lower()
+
+    def test_legacy_decision_without_cif_state_blocks_routing(self, tmp_path):
+        """A legacy clearance_decision that predates the cif_state field must be
+        treated as UNKNOWN (block), never as an implicit pass — a missing
+        tri-state cannot be allowed to slip a routing-dependent proposal past the
+        guard."""
+        bid, _, ap = _make_batch(tmp_path, extra={
+            "clearance_decision": {
+                "total_value_usd": 0.0,            # legacy silent-zero shape
+                "clearance_path":  "routing_pending",
+                # NOTE: no cif_state key — the legacy object predates it.
+            }
+        })
+        audit = _read_audit(ap)
+
+        from app.api.routes_action_proposals import create_proposal, _assert_can_queue
+        from fastapi import HTTPException
+
+        prop = create_proposal(audit, bid, "dhl_dsk_transfer", "reason", "high")
+        prop["status"]      = "approved"
+        prop["approved_by"] = "admin"
+        prop["draft"]["to"] = "odprawacelna@dhl.com"
+
+        with pytest.raises(HTTPException) as exc_info:
+            _assert_can_queue(prop, audit)
+        assert exc_info.value.status_code == 409
+
 
 # ── Test 9: Reject proposal blocks queue ──────────────────────────────────────
 
