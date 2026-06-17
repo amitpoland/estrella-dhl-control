@@ -201,9 +201,16 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **PR #628 MERGED** (2026-06-16): `docs(memory): record e4d96b5 deploy + production-truth correction; ADR-029 deploy scorecard`. Merged as `2a3a117`. Memory-only PR carrying PROJECT_STATE + scorecard updates.
 - **~~PR #627 OPEN~~** (prior FACTS entry for PR #627 as OPEN is superseded — see PR #627 MERGED above; prior entry preserved for history per append-only rule).
 
-## PR #633 — CIF-UI Resolved Authority (2026-06-17, OPEN — NOT MERGED, NOT DEPLOYED)
+## PR #633 — CIF-UI Resolved Authority (2026-06-17, MERGED as `4652292` + DEPLOYED to C:\PZ)
 
-- **PR #633 OPEN** (2026-06-17): Branch `fix/cif-ui-resolved-authority`, HEAD commit `49f1060`, base `origin/main` at `c284902` (OCR/AI fallback, PR #632). Title: `fix(customs): UI + Polish-desc gate read resolved CIF authority, not raw invoice 0`. STATUS: OPEN. NOT merged. NO deploy. https://github.com/amitpoland/estrella-dhl-control/pull/633
+- **~~PR #633 OPEN~~** (prior FACTS entry for PR #633 as OPEN / NOT MERGED / NOT DEPLOYED is superseded — see PR #633 MERGED below; prior OPEN entry preserved for history per append-only rule).
+- **PR #633 MERGED** (2026-06-17): Branch `fix/cif-ui-resolved-authority`. Title: `fix(customs): UI + Polish-desc gate read resolved CIF authority, not raw invoice 0`. Merged to main as squash SHA **`4652292`**. This is now **origin/main HEAD**. https://github.com/amitpoland/estrella-dhl-control/pull/633
+- **PR #633 DEPLOYED** (2026-06-17): Operator-executed deploy (deploy-guard hook = operator-only writes into `C:\PZ`). Deploy source: immutable detached worktree **`C:\PZ-deploy-633`** pinned at `4652292` — used instead of `C:\PZ-verify` because a concurrent Claude Code session had switched `C:\PZ-verify` off main mid-gate (see GATE 4 Issue #636). Live markers confirmed via read-only `Select-String` on deployed files: `cif_unresolved` = 2 matches in `routes_dhl_clearance.py`; `_dskBlocked = !_decResolved` = 1 match in `shipment-detail.html`; `cif_resolver` import = 1. PZService RUNNING.
+- **AWB 2315714531 live verification = PASS** (2026-06-17): Resolved CIF = USD 732 from `awb_customs.value_usd` (source `vision_llm`, page 2); invoice CIF = 0.0 (advisory only, not blocking); `cif_state=resolved`; `clearance_path=dhl_self_clearance`; `require_dsk=False`; `require_polish_description=True`. UI gates open: `_pdBlocked=False`, `_dskBlocked=False`. `generate_description` 422 `cif_unresolved` does NOT fire. Verified 3 independent ways: (1) deployed-file markers via `Select-String`; (2) deployed-code logic vs live audit; (3) running service's stored `clearance_decision` (computed `2026-06-17T12:28:36Z`). All 5 acceptance criteria green. Batch dir: `storage/outputs/SHIPMENT_2315714531_2026-06_ffe086f3`.
+- **GATE 4 Issue #636 FILED** (2026-06-17): "C:\PZ-verify concurrent-session branch drift during PR #633 deploy gate" — a second Claude Code session switched `C:\PZ-verify` off main mid-gate, causing two deploy reviewers (backend-impact, release-manager) to emit false-BLOCKER verdicts and QA a false file-absent note. Contained via immutable worktree `C:\PZ-deploy-633`; deploy correctness unaffected. Disposition: **ISSUE (#636)**.
+- **Scorecard (RULE 6 citation)**: `.claude/memory/scorecards/2026-06-17-pr633-cif-ui-deploy-verify.md` — 7-agent deploy gate scorecard for this campaign. (File path recorded per RULE 6 — to be disk-verified on next session per Lesson C.)
+- **GATE 2 after merge + deploy**: #633 cleared from open-PR queue. **1/3 open implementation PRs** — #630 (proforma governance) only; 2 slots remaining.
+- **Prior OPEN block details (2026-06-17)**: Branch `fix/cif-ui-resolved-authority`, HEAD commit `49f1060`, base `origin/main` at `c284902` (OCR/AI fallback, PR #632). STATUS was OPEN. NOT merged. NO deploy. All prior scope/regression/reviewer-verdict details remain accurate below.
 - **Scope**: Every DHL/customs UI panel + the `generate_description` gate now read `clearance_decision` resolved CIF authority (`cif_usd` / `cif_state` / `cif_source` / `extraction_gap`) instead of raw `invoice_cif=0`. `routes_dhl_clearance.py` raw-invoice `cif_zero` guard replaced by resolved-CIF tri-state guard: blocks only when `cif_state==unknown` (code `cif_unresolved`). `shipment-detail.html` splits "Invoice CIF" (advisory) vs "Resolved CIF"; suppresses the "CIF=0.00 — invoice values not parsed" banner when resolved CIF exists; header + Polish-desc button read resolved CIF; CIF-comparison color fixed.
 - **Proof point**: AWB 2315714531 — `invoice_cif=0`, `clearance_decision.cif_usd=732` (source AWB Custom Val); now routed `PATH_DHL_SELF_CLEARANCE`, `require_dsk=False`; no longer shows blocking CIF=0 warning; Polish Description gate not blocked.
 - **Regression tests**: `service/tests/test_polish_desc_cif_resolved_gate.py` — 7 tests covering: CIF-gate blocks on `UNKNOWN`, passes on `RESOLVED`, passes on `DECLARED_ZERO`; 3 reviewer agents (backend-safety-reviewer, reviewer-challenge, frontend-flow-reviewer) dispatched pre-PR-open. Test battery: CIF-gate 7/7 pass; smoke 63 pass / 1 skip; full suite zero new failures vs base (44→43 failed — fixes 1, adds 6).
@@ -217,10 +224,10 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 - **PR #630 OPEN** (2026-06-17): Branch `feat/pr1a-conflict-foundation-remediation`, base `main`. Title: `fix(proforma): remediate PR-1 conflict foundation governance gaps`. Status: ACTIVE. No scorecard produced for this PR in current session data; not yet assessed.
 
-## Current origin/main HEAD (2026-06-17): `a421fe9`
+## Current origin/main HEAD (2026-06-17): `4652292`
 
-- **origin/main HEAD**: `a421fe9` — `test(routes_upload): e2e CIF tri-state regression + fix merge-not-downgrade gap poisoning (#629) (#631)` (merged 2026-06-16T23:37Z).
-- ~~Prior HEAD was `d80a816` (ADR-029 PR-1 conflict-detection foundation, #626)~~ — superseded by the 2026-06-16 merge chain (#625 → #627 → #628 → #631).
+- **origin/main HEAD**: `4652292` — `fix(customs): UI + Polish-desc gate read resolved CIF authority, not raw invoice 0` (PR #633, merged 2026-06-17).
+- ~~Prior HEAD was `a421fe9` (PR #631 merge, 2026-06-16)~~ — superseded by PR #633 merge on 2026-06-17 as `4652292`.
 
 ## DEPLOY — e4d96b5 bundle (PRs #625+#626+#627) → C:\PZ (2026-06-17, VERIFIED LIVE)
 
