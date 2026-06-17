@@ -40,6 +40,24 @@ passed. AWB verification exercises production logic and may materialize
 
 ---
 
+## Gate authority ownership (who owns each gate's verdict)
+
+| Gate | Authority owner | Failure condition (one line) |
+|---|---|---|
+| STAGE 1 Pre-exec validation | **Operator** (code reviewer-challenge already PASS @ `f6c7ec2`) | any V1–V6 line false — esp. V2 showing a code file |
+| STAGE 2 Merge + SHA capture | **Operator** (`gh pr merge` is operator-only) | merge conflict / non-clean / real squash SHA not captured |
+| 7-agent deploy gate | **deploy-lead-coordinator** (final go/no-go); **deploy-security-reviewer** holds an un-overridable veto; **release-manager** must emit the rollback command | any QA fail / HIGH-CRITICAL security / forbidden-path / schema / missing guard |
+| STAGE 3 Deploy (3A capture / 3B sync) | **Operator** (prod write is operator-only) | 3A incomplete (no recoverable anchor) or 3B sync/service failure |
+| STAGE 4 Hash verified | **Operator** runs it; truth = `C:\PZ-verify` @ squash SHA | LF-normalized live hash ≠ clone @ squash SHA |
+| STAGE 4A Rollback anchor | **Operator** verifies; artifacts owned by **release-manager** (rollback cmd) + STAGE-3A (manifest/backup) | any of A1–A6 missing/inconsistent |
+| STAGE 5 AWB verified | **Operator** runs recheck; **`vision_extractor`** is the sole writer of `vision_invoice`; the **backend customs ladder (`resolve_cif`)** owns CIF authority (must stay 732) | any FORBIDDEN field changes → §A |
+| PROJECT_STATE close | **flow-context-keeper** (RULE 3, sole PROJECT_STATE owner) | promoting prod REPORTED→VERIFIED before STAGE 4 passed |
+
+No agent performs merge / deploy / prod-write — those gates are operator-executed. The
+7-agent gate and flow-context-keeper are the only non-operator verdict owners.
+
+---
+
 ## Field lock (applies at STAGE 5 — memorize before starting)
 
 | Class | Field(s) | Rule |
