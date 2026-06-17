@@ -1,260 +1,343 @@
-# Operator Runbook — PR #640: Merge → Deploy → Verification
+# OPERATOR RUNBOOK — PR #640: Merge → Deploy → Verify (AUTHORITATIVE)
 
-**Decision on record:** 🟢 **GO** for PR #640 merge. Shipment accounting (AWB
-2315714531) stays blocked **by design**. PR-2 is a separate, later PR.
+> This is the **single authoritative operator guide** for executing the PR #640
+> rollout. Execute top to bottom. Where a decision tree is given, follow it
+> exactly — **no operator discretion** is permitted inside a "NO EXCEPTIONS"
+> zone. All merge / deploy / prod-write actions are **operator-executed**; no
+> agent performs them.
 
-**Scope of this runbook:** the complete operator sequence from squash-merge
-through PROJECT_STATE update. Every step states what success looks like, what
-blocks progression, and what to do on failure. All merge / deploy / prod-write
-steps are **operator-executed** — no agent performs them.
+## Document control
 
-**Non-negotiable gate ordering:** the post-merge gate has **five** conditions.
-They are strict and sequential:
+| Field | Value |
+|---|---|
+| Decision on record | 🟢 GO for PR #640 merge (deploy under the gate below) |
+| Snapshot validated at | **2026-06-17T14:50:33Z** (re-validate per §1 before starting) |
+| Base (`origin/main`) | `4652292` |
+| Code SHA (frozen, reviewer-PASS) | `f6c7ec2` |
+| Branch HEAD (docs-only delta) | `69c6758` |
+| Squash SHA | `__________` (captured §STAGE 1) |
+| Five-stage gate | `MERGE → DEPLOY → HASH → ROLLBACK ANCHOR → AWB` |
 
-```
-MERGE VERIFIED → DEPLOY VERIFIED → HASH VERIFIED → ROLLBACK ANCHOR VERIFIED → AWB VERIFIED
-```
+**Execution log (operator fills timestamps):**
 
-- **`HASH VERIFIED` before `ROLLBACK ANCHOR VERIFIED`** — anchor integrity is
-  proven against a tree already confirmed to match the squash SHA.
-- **`ROLLBACK ANCHOR VERIFIED` before `AWB VERIFIED`** — AWB recheck is the first
-  step that **mutates production state** (it writes `vision_invoice` to the batch
-  audit) and interprets business behavior. Rollback safety must be locked **before**
-  that begins, not after. An anchor verified after a leak is verified too late.
-
-This ordering corrects an earlier ambiguity and is not negotiable.
-
----
-
-## ⛔ HOLD STATEMENT (in force until this sequence closes)
-
-Until all five gate conditions are VERIFIED and PROJECT_STATE is updated:
-
-- **No PR-2.** Do not open, implement, or combine the confirmation workflow.
-- **No PZ / wFirma.** Do not generate a PZ or post to wFirma for AWB 2315714531
-  or any image-only shipment.
-- **No new implementation campaign.** The GATE 2 queue is at ceiling (3 impl +
-  1 docs). The only permitted queue action is draining it via this merge.
-
-Violating the hold re-introduces the exact audit hole this sequence prevents.
+| Stage | Entered (UTC) | Exited (UTC) | Verdict |
+|---|---|---|---|
+| Pre-exec validation | | | |
+| STAGE 1 — MERGE | | | |
+| 7-agent deploy gate | | | |
+| STAGE 2 — DEPLOY | | | |
+| STAGE 3 — HASH | | | |
+| STAGE 4 — ROLLBACK ANCHOR | | | |
+| STAGE 5 — AWB | | | |
+| PROJECT_STATE close | | | |
 
 ---
 
-## Reference SHAs / anchors (fill during execution)
+## §0 — Governance state snapshot (validate before proceeding)
 
-| Name | Value | Meaning |
+This is the state the rollout assumes. **If any line is false at execution time,
+STOP and reconcile before starting.**
+
+| # | Asserted state | Source of truth |
 |---|---|---|
-| Base | `4652292` | `origin/main` the deploy gate diffs against |
-| Last code SHA | `f6c7ec2` | reviewer-challenge PASS; code frozen here |
-| Branch HEAD | `7b591f7` | docs-only delta since `f6c7ec2` |
-| **Squash SHA** | `__________` | **captured at Phase 1, step 1.3 — the deploy target** |
-| **PROD_BASELINE_MANIFEST** | `__________` | **pre-deploy LF-normalized hash manifest of the live tree (Phase 3, step 3.1)** |
-| **Backup path** | `__________` | **pre-deploy backup location, outside the overwrite target (step 3.1)** |
-| **Rollback command** | `__________` | **release-manager rollback command for this squash SHA (step 3.1)** |
-
-> Production is robocopy-synced, **not** a git checkout — there is no readable
-> `git` SHA on the live tree. The rollback baseline is therefore the
-> **PROD_BASELINE_MANIFEST + file backup**, not a "prod SHA."
+| 0.1 | PR #640 `OPEN / MERGEABLE / CLEAN`, not draft | `gh pr view 640` |
+| 0.2 | Code frozen at `f6c7ec2`; HEAD `69c6758` is docs-only ahead | `git log f6c7ec2..origin/<branch>` = docs only |
+| 0.3 | GATE 2 queue FULL: 3 impl (#643, #640, #630) + 1 docs (#637) | `gh pr list --state open` |
+| 0.4 | PZ / wFirma blocked **by design** (layer 3 empty; no confirmed path) | ADR-030; handoff doc |
+| 0.5 | PR-2 **not open** (separate, later PR) | `gh pr list` |
+| 0.6 | Production "deployed at `4652292`" is REPORTED, **not** hash-verified | PROJECT_STATE FACTS |
+| 0.7 | Authority chain clean: sole `vision_invoice` writer, no consumer, no daemon | code grep (verified) |
 
 ---
 
-## Phase 1 — Merge
+## §1 — PRE-EXECUTION VALIDATION (all must PASS — gate before STAGE 1)
 
-### Step 1.1 — Pre-merge review
-- **Do:** Confirm PR #640 is `OPEN / MERGEABLE / CLEAN`. Confirm the code SHA is
-  still `f6c7ec2` (delta to HEAD `7b591f7` is docs-only).
-- **Success:** mergeable + clean + code SHA unchanged.
-- **Blocks progression:** any code SHA other than `f6c7ec2`.
-- **On failure:** re-run reviewer-challenge against the new code SHA before any
-  merge. Do not proceed on an unreviewed code change.
-
-### Step 1.2 — Squash merge
-- **Do:** Squash-merge PR #640 into `main` (operator action: `gh pr merge --squash`).
-- **Success:** PR #640 shows `MERGED`.
-- **Blocks progression:** merge conflict or non-clean state.
-- **On failure:** stop. Rebase/resolve, re-review, restart Phase 1.
-
-### Step 1.3 — Capture the real squash SHA
-- **Do:** Read the **actual** new `origin/main` tip SHA. Record it in the table
-  above. Do **not** assume or reuse a prior value.
-- **Success:** a concrete squash SHA is written down and used by every later step.
-- **Blocks progression:** proceeding without the real SHA.
-- **On failure:** re-fetch `origin/main`; capture the tip before continuing.
-
-> **MERGE VERIFIED** ✅ is satisfied when 1.2 + 1.3 are complete.
-
----
-
-## Phase 2 — 7-Agent Deploy Gate
-
-### Step 2.1 — Run the gate
-- **Do:** Run the full 7-agent gate (`/deploy`) against `4652292 → <squash SHA>`:
-  lead-coordinator, git-diff-reviewer, backend-impact-reviewer,
-  persistence-storage-reviewer, security-reviewer, qa-reviewer, release-manager.
-- **Success:** every agent returns a verdict block; lead-coordinator issues GO.
-  Release-manager produces the exact rollback command for this squash SHA.
-- **Blocks progression:** any HIGH/CRITICAL finding; any test failure (QA is an
-  unconditional blocker); any forbidden-path or schema finding.
-- **On failure:** resolve the finding inline or escalate. Do **not** deploy on a
-  partial gate. The gate **cannot close** until all five conditions (Phase 5) are met.
-
-> Diff is backend-only (`service/app/**` + `service/tests/**`), no root-engine
-> file → standard robocopy; Lesson J is N/A here.
-
----
-
-## Phase 3 — Deployment
-
-### Step 3.1 — Capture rollback anchor inputs (BEFORE any overwrite)
-**This step must complete before the sync in 3.2. Once prod is overwritten, these
-inputs cannot be reconstructed.**
-- **Do:**
-  1. Compute and store the **PROD_BASELINE_MANIFEST** — LF-normalized SHA256 of
-     every live file the deploy will overwrite. Record it in the table.
-  2. **Back up** those files **plus the AWB 2315714531 batch audit/state files**
-     (Phase 4 mutates the audit) to a path **outside** the overwrite target.
-     Record the backup path.
-  3. Record the **rollback command** from release-manager (step 2.1).
-- **Success:** manifest stored, backup written and readable, rollback command recorded.
-- **Blocks progression:** missing manifest, missing/unreadable backup, or no
-  rollback command. Do **not** deploy without all three.
-- **On failure:** stop before any sync. Re-capture. A deploy without a verified
-  pre-overwrite baseline has no recoverable rollback target.
-
-### Step 3.2 — Deploy on GO only
-- **Do:** Only after a GO at 2.1 **and** anchor inputs captured at 3.1, perform
-  the standard sync (`service/app → prod app dir`) and restart the service
-  (operator-only prod write).
-- **Success:** sync completes; service restarts and is healthy.
-- **Blocks progression:** any sync error or service failing to start.
-- **On failure:** execute the recorded rollback command; restore from the backup
-  path; do not proceed to verification.
-
-> **DEPLOY VERIFIED** ✅ is satisfied when 3.2 completes cleanly.
-
----
-
-## Phase 4 — Verification (strict order: HASH → ANCHOR → AWB)
-
-### Step 4.1 — Hash-verify (MUST run before 4.2)
-- **Do:** Compute LF-normalized SHA256 of the live production files and compare
-  against the verification clone checked out at the **squash SHA**. Record both
-  the raw-CRLF (transfer) and LF-normalized (authority) hashes.
-- **Success:** LF-normalized live hash == verification clone @ squash SHA.
-- **Blocks progression:** any mismatch — **anchor verification (4.2) must NOT
-  run until this passes.**
-- **On failure:** the deployed tree does not match the intended SHA. Re-sync,
-  re-restart, re-hash. Do not promote "deployed" to a fact.
-
-> **HASH VERIFIED** ✅ satisfied here. Gates 4.2.
-
-### Step 4.2 — Rollback-anchor verify (MUST run before 4.3 / AWB)
-Lock rollback safety **before** any state-mutating business verification.
-- **Do:** Verify all of:
-  1. **Squash SHA** is recorded (Phase 1).
-  2. **PROD_BASELINE_MANIFEST** is recorded and matches the pre-deploy live tree (3.1).
-  3. **Backup files exist, are readable/restorable**, cover the overwrite set **and**
-     the AWB batch audit/state, and live outside the overwrite target (3.1).
-  4. **Release worktree SHA == squash SHA** *and the worktree is clean* (no local mods).
-  5. **Hash-comparison artifacts** (4.1 raw + LF hashes) are stored.
-  6. **Rollback command** is recorded and parseable.
-- **Success:** all six confirmed; rollback is executable on demand.
-- **Blocks progression:** any item missing/inconsistent — **AWB recheck (4.3)
-  must NOT begin.**
-- **On failure:** do not start AWB. Re-capture the missing artifact. If a backup
-  is missing and prod is already overwritten, treat as a deploy-integrity incident:
-  re-sync from the verification clone @ squash SHA and re-anchor before continuing.
-
-> **ROLLBACK ANCHOR VERIFIED** ✅ satisfied here. Gates 4.3.
-
-### Step 4.3 — Recheck AWB 2315714531 (state-mutating — anchor must be locked)
-- **Do:** Run the recheck/recovery on AWB 2315714531 through the deployed path.
-  (This writes the advisory `vision_invoice` proposal to the batch audit.)
-- **Success:** a `vision_invoice` proposal is written and the Phase 5
-  state-invariance sub-checklist all holds.
-- **Blocks progression:** any of the five protected fields changed (see below).
-- **On failure / leak:** see "Accounting-authority leak" below — HALT and roll back.
-
-> **AWB VERIFIED** ✅ satisfied when 4.3 + the state-invariance sub-checklist pass.
-
----
-
-## Phase 5 — Five-Condition Gate Checklist (work in sequence)
-
-The deploy gate **closes only** when all five are true, **in this order**:
+> 🔒 **NO EXCEPTIONS.** If any check fails, do not enter STAGE 1.
 
 ```
-[ ] 1. MERGE VERIFIED            — #640 squash-merged; real squash SHA captured (Phase 1)
-[ ] 2. DEPLOY VERIFIED           — robocopy + service restart completed (Phase 3)
-[ ] 3. HASH VERIFIED             — LF-normalized SHA256 live == C:\PZ-verify @ squash SHA (4.1)
-[ ] 4. ROLLBACK ANCHOR VERIFIED  — manifest + backup + clean worktree@SHA + rollback cmd (4.2)
-[ ] 5. AWB VERIFIED              — AWB 2315714531 recheck, state unchanged (4.3 + below)
+[ ] V1  PR status      : gh pr view 640 → state=OPEN, mergeable=MERGEABLE, mergeStateStatus=CLEAN, isDraft=false
+[ ] V2  Code SHA       : git log --oneline 4652292..origin/fix/invoice-image-only-lineitem-extraction
+                         → every commit AFTER f6c7ec2 is docs-only (.md / .claude). If a CODE file appears → FAIL.
+[ ] V3  Docs sync      : working tree clean (git status --short empty); HEAD == origin HEAD (69c6758 or newer docs-only)
+[ ] V4  Queue capacity : gh pr list --state open → ≤ 3 implementation PRs. #640 merge is slot-FREEING, allowed.
+[ ] V5  Blockers honest: PROJECT_STATE shows prod=REPORTED (not VERIFIED); PR-2 not open; PZ/wFirma blocked-by-design
+[ ] V6  Authority chain: grep -rn "vision_invoice" service/app  → writer only in vision_extractor; only status-flag
+                         read in routes_dashboard; no PZ/wFirma/customs/landed-cost consumer
 ```
 
-**Gating chain (non-negotiable):** `HASH (3)` gates `ANCHOR (4)` gates `AWB (5)`.
-Do not check a box until the box above it is checked.
-
-### AWB 2315714531 state-invariance sub-checklist (all must hold for box 5)
+**Decision:**
 ```
-[ ] vision_invoice ............ WRITTEN   (advisory proposal present — intended write)
-[ ] operator_confirmed ........ false     (no promotion — no True-writer exists yet)
-[ ] rows ...................... UNCHANGED (engine accounting layer untouched)
-[ ] invoice_totals ............ UNCHANGED
-[ ] clearance_decision ........ UNCHANGED
-[ ] CIF ....................... 732       (RESOLVED — customs ladder unaffected)
+All V1–V6 PASS ──────────────► proceed to STAGE 1
+Any V2 shows a code file ────► STOP; re-run reviewer-challenge on the new code SHA
+Any other FAIL ──────────────► STOP; reconcile the failing line; re-run §1
 ```
-
-Any unchecked box → gate stays OPEN; "deployed" stays REPORTED; the HOLD remains
-in force; PR-2 does not start.
 
 ---
 
-## Accounting-authority leak — if ANY protected field changes
+## ⛔ HOLD STATEMENT & NO-EXCEPTIONS ZONES
 
-`vision_invoice` **must exist** (intended write). But if `operator_confirmed`
-becomes `true`, or `rows` / `invoice_totals` / `clearance_decision` / CIF (732)
-change at all, **accounting authority has leaked. The deployment is FAILED
-regardless of test results.** This is CRITICAL.
+**HOLD (in force until the full five-stage sequence closes + PROJECT_STATE updated):**
+- **No PR-2.** Do not open / implement / combine the confirmation workflow.
+- **No PZ / wFirma** for AWB 2315714531 or any image-only shipment.
+- **No new implementation campaign** (GATE 2 full; only draining is allowed).
 
-1. **HALT immediately.** Do not confirm the proposal, do not generate PZ, do not
-   post to wFirma.
-2. **Execute the rollback** using the verified anchor (rollback command + backup /
-   PROD_BASELINE_MANIFEST).
-3. **Re-verify post-rollback**: the protected fields are back to baseline and
-   `operator_confirmed = false`.
-4. **File an incident; classify per Lesson I** — workflow class: "the advisory
-   proposal layer reached accounting/customs state." Fix at the class level, not
-   for this one shipment.
-5. Gate stays OPEN; "deployed" never promotes to VERIFIED; HOLD remains.
-
-The rollback anchor (box 4) is exactly what makes this rollback executable — which
-is why it is gated **before** AWB recheck begins.
+**NO-EXCEPTIONS zones (operator discretion forbidden):**
+1. §1 pre-execution validation.
+2. Gate ordering `HASH → ROLLBACK ANCHOR → AWB`.
+3. The forbidden-field incident protocol (§STAGE 5 / §6).
+4. "Deployed" stays REPORTED until HASH VERIFIED (STAGE 3) passes.
 
 ---
 
-## Phase 6 — PROJECT_STATE Update
+## §2 — FIVE-STAGE GATE (overview + gating chain)
 
-### Step 6.1 — Record the closed gate
-- **Do:** flow-context-keeper (sole PROJECT_STATE owner, RULE 3) records: the
-  squash SHA, the LF-normalized hash result, the rollback-anchor artifacts, and
-  all five VERIFIED conditions. Promote "deployed" from REPORTED → **VERIFIED**
-  only after box 3 (HASH) passed.
-- **Success:** PROJECT_STATE FACTS reflect a cryptographically clean baseline at
-  the squash SHA, with rollback anchor on record.
-- **Blocks progression:** none — this is the closing step.
-- **On failure:** if any box was not genuinely VERIFIED, do not record closure.
-  Re-open the relevant phase.
+```
+STAGE 1  MERGE VERIFIED ──┐
+STAGE … 7-agent gate ─────┤ (GO required before STAGE 2)
+STAGE 2  DEPLOY VERIFIED ─┤
+STAGE 3  HASH VERIFIED ───┤ gates ▼
+STAGE 4  ROLLBACK ANCHOR VERIFIED ─ gates ▼
+STAGE 5  AWB VERIFIED
+```
+Rationale for the order: AWB recheck (STAGE 5) **mutates production state** (writes
+`vision_invoice` to the batch audit). Rollback safety (STAGE 4) must be locked
+**before** any mutation, against a tree already proven correct by HASH (STAGE 3).
 
-> Optional, in-pattern: a single Cliq `#PZ` post on this same event path
-> (no daemon, no second state owner).
+---
+
+## STAGE 1 — MERGE  →  exit: **MERGE VERIFIED**
+
+**Entry:** §1 all PASS.
+**Execute:**
+1. `gh pr view 640` — re-confirm OPEN/MERGEABLE/CLEAN.
+2. `gh pr merge 640 --squash` (operator).
+3. `git fetch origin main && git rev-parse --short origin/main` — record the
+   **real** squash SHA in Document control. **Do not assume/reuse a prior value.**
+
+**Exit verification (pass/fail):**
+- ✅ PASS: PR #640 = MERGED **and** squash SHA recorded.
+- ❌ FAIL (conflict/non-clean): STOP → resolve/rebase → re-review → re-run STAGE 1.
+
+---
+
+## 7-AGENT DEPLOY GATE  (between STAGE 1 and STAGE 2 — GO required)
+
+Run `/deploy` against `4652292 → <squash SHA>`. Sequencing & dependencies:
+
+```
+        ┌─ deploy_git_diff_reviewer ──────────┐
+        ├─ deploy_backend_impact_reviewer ─────┤
+(parallel) deploy_persistence_storage_reviewer ┼─► deploy_lead_coordinator ─► GO / NO-GO
+        ├─ deploy_security_reviewer ───────────┤        (final authority)
+        ├─ deploy_qa_reviewer ─────────────────┤
+        └─ deploy_release_manager ─────────────┘
+```
+- All 6 reviewers run in parallel; **lead-coordinator decides last** and only after
+  all 6 verdicts are in.
+- **release_manager must emit the exact rollback command for this squash SHA** —
+  it is a required input to STAGE 4. No rollback command → gate cannot reach GO.
+- **Hard blockers (any one = NO-GO):** QA test failure (unconditional);
+  HIGH/CRITICAL security finding (cannot be overridden); forbidden-path or schema
+  finding; missing router registration / auth guard.
+
+**Decision:**
+```
+lead-coordinator GO + rollback cmd present ─► STAGE 2
+Any hard blocker ──────────────────────────► STOP; resolve inline or escalate; gate stays OPEN
+```
+> Diff is backend-only (`service/app/**` + `service/tests/**`), no root-engine file → standard robocopy; Lesson J N/A.
+
+---
+
+## STAGE 2 — DEPLOY  →  exit: **DEPLOY VERIFIED**
+
+**Entry:** 7-agent GO.
+
+### Step 2A — Capture rollback-anchor inputs **BEFORE any overwrite** 🔒 NO EXCEPTIONS
+> Once prod is overwritten these cannot be reconstructed.
+1. **PROD_BASELINE_MANIFEST** — LF-normalized SHA256 of every live file the deploy
+   will overwrite. Example:
+   ```powershell
+   Get-ChildItem -Recurse C:\PZ\app -File | ForEach-Object {
+     $lf = (Get-Content $_.FullName -Raw) -replace "`r`n","`n"
+     $h  = [System.BitConverter]::ToString(
+             [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+               [Text.Encoding]::UTF8.GetBytes($lf))).Replace("-","")
+     "$h  $($_.FullName)"
+   } | Set-Content C:\PZ-backups\pr640\PROD_BASELINE_MANIFEST.txt
+   ```
+2. **Backup** the overwrite set **+ the AWB 2315714531 batch audit/state files**
+   (STAGE 5 mutates the audit) to a path **outside** the overwrite target:
+   ```powershell
+   robocopy C:\PZ\app C:\PZ-backups\pr640\app /MIR /COPY:DAT
+   robocopy C:\PZ\<batch-store>\2315714531 C:\PZ-backups\pr640\audit /E /COPY:DAT
+   ```
+3. **Record** the release_manager **rollback command** verbatim in Document control.
+
+### Step 2B — Sync + restart (operator-only prod write)
+```powershell
+robocopy <repo>\service\app C:\PZ\app /MIR /COPY:DAT
+sc.exe stop PZService ; sc.exe start PZService
+```
+
+**Exit verification (pass/fail):**
+- ✅ PASS: manifest stored + backup readable + rollback cmd recorded (2A) **and**
+  sync clean + service healthy (2B).
+- ❌ FAIL (2A incomplete): STOP **before** sync — no recoverable rollback target.
+- ❌ FAIL (2B): execute rollback command; restore from backup; do not verify.
+
+---
+
+## STAGE 3 — HASH  →  exit: **HASH VERIFIED**  🔒 gates STAGE 4
+
+**Entry:** DEPLOY VERIFIED.
+**Execute:** LF-normalized SHA256 of live prod files vs the verification clone
+checked out at the **squash SHA**; record raw-CRLF (transfer) + LF (authority) hashes.
+```powershell
+git -C C:\PZ-verify fetch origin ; git -C C:\PZ-verify checkout <squash SHA>
+# hash live tree (as in 2A) and compare LF-normalized digests to C:\PZ-verify
+```
+**Exit verification (pass/fail):**
+- ✅ PASS: LF-normalized live == clone @ squash SHA. Promote prod REPORTED→**VERIFIED** allowed.
+- ❌ FAIL: deployed tree ≠ squash SHA. Re-sync, re-restart, re-hash.
+  **STAGE 4 must NOT begin. "Deployed" stays REPORTED.**
+
+---
+
+## STAGE 4 — ROLLBACK ANCHOR  →  exit: **ROLLBACK ANCHOR VERIFIED**  🔒 gates STAGE 5
+
+**Entry:** HASH VERIFIED. **Purpose:** lock executable rollback BEFORE the
+state-mutating AWB recheck.
+
+**Rollback-anchor package — all six artifacts required:**
+```
+[ ] A1  Squash SHA recorded (Document control)
+[ ] A2  PROD_BASELINE_MANIFEST present AND matches the pre-deploy live tree (2A.1)
+[ ] A3  Backup exists, is READABLE/RESTORABLE, covers overwrite set + AWB audit,
+        and is stored OUTSIDE the overwrite target (2A.2)
+[ ] A4  Release worktree SHA == squash SHA  AND  worktree CLEAN (no local mods)
+[ ] A5  Hash-comparison artifacts (STAGE 3 raw + LF digests) stored
+[ ] A6  Rollback command recorded AND parseable (release_manager, 7-agent gate)
+```
+**Verification procedure:** confirm A1–A6 individually; for A3, open one backed-up
+file and one backed-up audit file to confirm readability; for A4 run
+`git -C <release-worktree> status --porcelain` (empty) + `rev-parse HEAD` (==squash SHA).
+
+**Exit verification (pass/fail):**
+- ✅ PASS: A1–A6 all confirmed → rollback is executable on demand.
+- ❌ FAIL: **AWB recheck (STAGE 5) must NOT begin.** Re-capture the missing artifact.
+  If a backup is missing and prod already overwritten → deploy-integrity incident:
+  re-sync from clone @ squash SHA and re-anchor.
+
+---
+
+## STAGE 5 — AWB  →  exit: **AWB VERIFIED**
+
+**Entry:** ROLLBACK ANCHOR VERIFIED.
+
+### What AWB verification actually does in production (state-mutating)
+Running the recheck on AWB 2315714531 invokes `run_image_only_invoice_extraction`,
+which **writes** `audit["vision_invoice"]` — supplier, USD-only `fob_usd`, line
+items, `confidence`, `operator_confirmed=false` — into the batch audit JSON
+(`_merge_vision_invoice`, merge-not-replace, sticky, TOCTOU-guarded). This is the
+**only** intended mutation. It must **not** touch CIF / `invoice_totals` / `rows` /
+`clearance_decision`. The dashboard surfaces a status flag + "review and confirm"
+warning; nothing reads the proposal into accounting.
+
+### State-invariance sub-checklist (all must hold for AWB VERIFIED)
+```
+[ ] vision_invoice ........ WRITTEN   (intended materialization)
+[ ] operator_confirmed .... false     (NO True-writer exists yet)
+[ ] rows .................. UNCHANGED
+[ ] invoice_totals ........ UNCHANGED
+[ ] clearance_decision .... UNCHANGED
+[ ] CIF .................... 732 (RESOLVED)
+```
+Detection: diff the batch audit JSON against the STAGE-2A backup; assert the four
+accounting/customs keys are byte-identical and `operator_confirmed==false`.
+
+**Exit verification (pass/fail):**
+- ✅ PASS: `vision_invoice` written **and** all six sub-checklist lines hold.
+- ❌ FAIL — `vision_invoice` missing: functional failure → investigate extractor; not a leak.
+- ❌ FAIL — any protected field changed: **ACCOUNTING-AUTHORITY LEAK** → §6 protocol.
+
+---
+
+## §6 — FORBIDDEN-FIELD INCIDENT PROTOCOL  🔒 NO EXCEPTIONS
+
+**Trigger:** at STAGE 5, `operator_confirmed` becomes `true`, OR `rows` /
+`invoice_totals` / `clearance_decision` / resolved CIF (732) change at all.
+
+**Detection mechanism per field (diff vs STAGE-2A audit backup):**
+
+| Field | Detection | Expected |
+|---|---|---|
+| `operator_confirmed` | JSON value compare | `false` |
+| `rows` | array deep-equal vs backup | unchanged (empty for this AWB) |
+| `invoice_totals` | object deep-equal vs backup | unchanged |
+| `clearance_decision` | object deep-equal vs backup | unchanged |
+| resolved CIF | `resolve_cif(audit)` value+source | `RESOLVED`, `732`, `awb_customs.value_usd` |
+
+**Protocol — execute in order, no deviation:**
+```
+HALT ──► ROLLBACK ──► RE-VERIFY ──► INCIDENT RECORD ──► GATE REMAINS OPEN
+```
+1. **HALT** — do not confirm the proposal, do not generate PZ, do not post wFirma.
+2. **ROLLBACK** — run the recorded rollback command; restore backup / PROD_BASELINE_MANIFEST.
+3. **RE-VERIFY** — protected fields back to baseline; `operator_confirmed=false`.
+4. **INCIDENT RECORD** — file per Lesson I. Workflow class: "advisory proposal layer
+   reached accounting/customs state." Fix at class level, not this shipment.
+5. **GATE REMAINS OPEN** — "deployed" never promotes to VERIFIED; HOLD stays in force.
+
+> `vision_invoice` *must exist* (intended write). Its presence is NOT a leak; a
+> *changed accounting/customs field* is.
+
+---
+
+## §7 — PROJECT_STATE CLOSE  →  sequence closed
+
+**Execute:** flow-context-keeper (sole PROJECT_STATE owner, RULE 3) records: squash
+SHA, LF hash result, rollback-anchor artifacts, all five VERIFIED conditions.
+Promote prod REPORTED→VERIFIED only after STAGE 3 passed.
+> Optional in-pattern: one Cliq `#PZ` post on this same event path (no daemon, no second state owner).
+
+**Five-condition close (in order — do not check a box until the one above is checked):**
+```
+[ ] 1. MERGE VERIFIED
+[ ] 2. DEPLOY VERIFIED
+[ ] 3. HASH VERIFIED
+[ ] 4. ROLLBACK ANCHOR VERIFIED
+[ ] 5. AWB VERIFIED
+```
+
+---
+
+## §8 — WHAT UNBLOCKS WHAT (conditions, explicit)
+
+**PR-2 may be opened ONLY when ALL of:**
+```
+[ ] Five-condition gate fully VERIFIED (1–5) in order
+[ ] PROJECT_STATE updated (§7) — prod promoted to VERIFIED
+[ ] A GATE 2 implementation slot is free (this merge frees one)
+```
+Until then PR-2 stays closed (no implementation, no combining with PR-1).
+
+**PZ / wFirma remain BLOCKED until ALL of (a superset — needs PR-2 shipped):**
+```
+[ ] Full five-stage sequence closed (above)
+[ ] PR-2 merged + deployed (operator-confirm endpoint + gated injection)
+[ ] Operator CONFIRMS the AWB 2315714531 proposal (operator_confirmed=true via PR-2 endpoint)
+[ ] Engine recompute fills layer 3 (rows + positive invoice_totals)
+[ ] PZ preview (read-only) inspected first
+```
+Completing this runbook alone does **not** unblock PZ/wFirma — it produces a
+reviewable proposal and a clean baseline. Task #15 stays BLOCKED until PR-2 ships.
 
 ---
 
 ## Sequence-closed definition
 
-This sequence is **closed** only when:
-1. All five gate conditions are VERIFIED in order (HASH → ANCHOR → AWB), and
-2. PROJECT_STATE is updated with the squash SHA + hash result + anchor record.
-
-On closure: the HOLD lifts, a GATE 2 slot is freed, and PR-2 may be scoped as a
-separate PR. Until then, the HOLD statement at the top of this runbook governs.
+Closed only when (1) all five conditions VERIFIED in order (HASH → ANCHOR → AWB),
+and (2) PROJECT_STATE updated with squash SHA + hash result + anchor record. On
+closure the HOLD lifts and a GATE 2 slot frees; PR-2 may then be scoped separately.
+Until then the HOLD statement governs.
