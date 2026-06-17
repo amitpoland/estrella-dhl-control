@@ -55,6 +55,54 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
+## PR #632 — OCR/AI Image-Only Extraction Fallback (2026-06-17, OPEN — NOT DEPLOYED)
+
+- **PR #632 OPEN** (2026-06-17): Branch `feat/ocr-ai-image-only-extraction-fallback`, commit `eca52c7`. Title: `feat(extraction): automatic OCR/AI vision fallback for image-only customs docs`. Base: `main`. **NOT deployed.** 8 files changed, +1829 insertions. 42 tests pass. Pre-commit smoke passed.
+- **New services (campaign scope)**:
+  - `app/services/vision_extractor.py` — single authority for image-only vision fallback; stateless, no direct audit writes; calls `ai_gateway.call_vision`.
+  - `app/services/document_text_quality.py` — provides `assess_pdf_text_quality()` + `needs_vision_fallback()` pure functions (fitz-based text density scoring).
+  - `ai_gateway.py` enhanced — `_anthropic_call_vision()` + `call_vision()` added; model selection via complexity/confidence knobs — no hardcoded `claude-*` model strings as call args.
+- **Authority model (unchanged by this PR)**: Vision writes into the existing 6-layer CIF authority ladder keys (`verification.invoice_cif_total_usd` / `invoice_totals.total_cif_usd` / etc.). The tri-state CIF resolver (`cif_resolver.py`, PR #627) consumes them with NO resolver edit required. Invoice CIF priority over AWB Custom Val preserved. Unknown CIF stays `UNKNOWN (cif_usd=None)` / `extraction_gap` — never faked as 0.
+- **Invoice vision write gate**: requires explicit `custom_val_currency == "USD"` (blank/omitted → `withheld_unknown_currency_invoice`), symmetric with the waybill path. This prevents silent USD assumption on non-USD invoices.
+- **Timeline event**: `EV_VISION_CIF_WRITTEN` ("vision_cif_written") added; emitted on intake step 5 and on Recheck when vision writes a CIF/AWB authority value.
+- **C1 CRITICAL (resolved pre-merge)**: `routes_dashboard.py` dhl_precheck preservation guard (cif_usd <= 0 branch) now preserves `fob_total_usd` / `vision_extracted` / `vision_source_page` before the invoice_cif rescue — closes a #570-class partial-wipe regression caught by security-permissions reviewer.
+- **UI surface (Lesson M additive)**: `shipment-detail.html` gained authority-honest OCR/AI status InfoRow — `data-testid="clearance-extraction-method"` (green when vision wrote a value; amber when attempted but result unknown). No existing controls removed or hidden.
+- **Scorecard**: `.claude/memory/scorecards/2026-06-17-ocr-ai-image-only-extraction-fallback.md` — reviewer-challenge EXEMPLARY (30/30), security-permissions EXEMPLARY (30/30), backend-safety-reviewer ACCEPTABLE (26/35). No NEEDS-TUNING/UNRELIABLE verdicts. (RULE 6 citation — file existence verified on disk 2026-06-17 before this PROJECT_STATE update per Lesson C.)
+- **Self-eval not due**: last self-eval 2026-06-13; next due 2026-06-20 (7-day cadence).
+- **GATE 1 satisfied**: all CRITICAL/HIGH findings resolved inline before PR open. GATE 2 slot used: 2/3 open impl PRs (#632, #630).
+- **Deployment gate**: PR #632 is NOT deployed. Production deploy requires explicit operator approval + full 7-agent gate using `deploy-security-reviewer` (canonical) not `security-permissions` (runtime-user agent; GATE 5 substitution). wFirma/SAD/ZC429/VAT/deploy-scripts untouched by this campaign.
+- **DISCLOSED follow-ups** (tracked on PR #632 body, not blocking merge): batch_write_lock recheck race (no wrong-CIF risk); variance/derived-CIF not surfaced in UI; mtime retry-signature fragility.
+
+## PR #632 — 7-Agent Pre-Deploy Gate COMPLETE → READY-TO-DEPLOY (2026-06-17, awaiting operator merge + sync)
+
+- **Operator directive (2026-06-17)**: "Prod live: e4d96b5 / Open next PR: #632 OCR/AI image-only extraction fallback / Deploy status: not deployed / Review #632 → merge if clean → run 7-agent deploy gate → deploy → verify AWB 2315714531." This is explicit deploy approval contingent on a clean gate.
+- **Gate executed pre-merge** against `e4d96b5..7084931` (branch HEAD `7084931`; PR #632 MERGEABLE/CLEAN — diff is content-identical to post-merge main, so a blocker would prevent the merge). All 7 deploy agents dispatched successfully — **GATE 5 clean, no substitution** (canonical `deploy-security-reviewer` used, resolving OQ-OCR-GATE5).
+- **Verdict: READY-TO-DEPLOY (GO-WITH-CONDITIONS).** 6 dimensions CLEAR (git-diff, backend-impact, persistence-storage, security canonical, qa, release-manager); deploy-lead-coordinator final = READY-TO-DEPLOY. No hard blocker, no forbidden path, no schema/migration, no auth change, no off-limits path (wFirma/SAD-ZC429/VAT/deploy-scripts untouched).
+- **Pre-sync conditions A & B VERIFIED GREEN by orchestrator** against the exact prod interpreter (`C:\Users\Super Fashion\AppData\Local\Programs\Python\Python39\python.exe`, NSSM PZService, AppDirectory `C:\PZ`): [A] PyMuPDF/fitz `1.26.5` imports; [B] `C:\PZ\.env` has `ANTHROPIC_API_KEY` non-empty + `AI_PARSER_ENABLED=true`, `anthropic 0.104.1` importable. **Consequence: the vision fallback fires LIVE on day one** for image-only customs docs (intended; customs PDF page-images sent to Anthropic API — see GATE-4 [F]).
+- **Test baseline MET (deploy-qa-reviewer consumed pre-run output; did not re-run)**: PZ `test_pz_*.py` 221 passed (=221 required); carrier `test_carrier_*.py` 420 passed (≥412 required); 31 new vision+e2e tests pass; zero ERRORs. The lone PZ failure `test_pz_batch.py::test_save_json_csv_ui_round_trip` (assert 8==4) is **proven pre-existing** — reproduces identically on prod SHA `e4d96b5` in a throwaway worktree; CSV/batch_builder path is absent from the `e4d96b5..HEAD` diff. Windows `csv.writer` CRLF/`splitlines()` artifact. NOT a regression, NOT a blocker (already tracked as Issue #613).
+- **Deploy layout (Lesson J clear)**: all deployable code under `service/app/**` → `C:\PZ\app\**` standard robocopy. New files: `app/services/document_text_quality.py`, `app/services/vision_extractor.py` (NEW); `app/services/ai_gateway.py` (CHANGED). No root-level engine files touched → NO separate `C:\PZ\engine\` sync required.
+- **Merge + prod sync are OPERATOR-ONLY** (deploy-guard hook blocks agent `gh pr merge` + writes into `C:\PZ`). Staged operator package: `C:\PZ-ocr-fallback\tmp_operator_deploy_package.md` (merge `gh pr merge 632 --squash --delete-branch` → ff-only pull in `C:\PZ-verify` → backup → robocopy `service/app`→`C:\PZ\app` NO /MIR → purge ALL `__pycache__` → restart PZService → orchestrator read-only post-deploy verify). Clean rollback to `e4d96b5` via backup restore + git revert.
+- **Acceptance check (operator's)**: AWB 2315714531 clearance must NOT return `total_value_usd=0.0`. PASS = `cif_state=resolved` (positive USD) OR `cif_state=unknown` + `cif_usd=null` + `extraction_gap` (honest unknown). FAIL = fabricated `0.0` → rollback. Orchestrator will hit the clearance/recheck endpoint read-only and report the JSON after operator confirms restart.
+- **Deploy-gate scorecard (RULE 6 citation)**: `.claude/memory/scorecards/2026-06-17-pr632-ocr-fallback-deploy-gate.md` — all 7 deploy agents EXEMPLARY, no NEEDS-TUNING/UNRELIABLE verdicts, no GATE-4 salvage from agent quality. File existence disk-verified (26919 bytes) per Lesson C before this update.
+- **GATE-4 follow-ups from gate (disposition pending — see OPEN QUESTIONS)**: [D] recheck-route `POST /batches/{id}/recheck` vision integration test gap → ISSUE; [E] pre-existing CSV failure → already ISSUE #613 (REJECTED as deploy blocker, reasoning logged); [F] security advisory — customs PDF page-images to Anthropic API → record in DECISIONS/ADR within 30 days.
+
+## PRs #625/#627/#631/#628 — CIF Authority Bundle (2026-06-16, ALL MERGED to main)
+
+- **PR #625 MERGED** (2026-06-16): `fix(awb): robust DHL Custom Val extraction — no fake 0.00 CIF`. Merged as `729afe2`. Branch `fix/awb-custom-val-extraction-hardening`. Hardens `awb_customs.value_usd` extraction: empty/zero/non-USD Custom Val no longer downgrades a previously-good value; `awb_customs` persistence is merge-not-replace.
+- **PR #627 MERGED** (2026-06-16): `fix(customs): tri-state CIF authority resolver — extraction failure can never become a silent 0.00`. Merged as `e4d96b5`. New `app/services/cif_resolver.py` (RESOLVED/DECLARED_ZERO/UNKNOWN). Both DHL + FedEx clearance paths wired. 45/45 tests green. Previously recorded as OPEN.
+- **PR #631 MERGED** (2026-06-16): `test(routes_upload): e2e CIF tri-state regression + fix merge-not-downgrade gap poisoning (#629)`. Merged as `a421fe9`. Adds end-to-end test pinning the full CIF resolution ladder and fixes a merge-not-downgrade gap-poisoning edge case in `routes_upload.py` (gap re-run must never downgrade a previously-good `awb_customs.value_usd` to None). origin/main HEAD after this merge: **a421fe9**.
+- **PR #628 MERGED** (2026-06-16): `docs(memory): record e4d96b5 deploy + production-truth correction; ADR-029 deploy scorecard`. Merged as `2a3a117`. Memory-only PR carrying PROJECT_STATE + scorecard updates.
+- **~~PR #627 OPEN~~** (prior FACTS entry for PR #627 as OPEN is superseded — see PR #627 MERGED above; prior entry preserved for history per append-only rule).
+
+## PR #630 — Conflict Foundation Remediation (2026-06-17, OPEN)
+
+- **PR #630 OPEN** (2026-06-17): Branch `feat/pr1a-conflict-foundation-remediation`, base `main`. Title: `fix(proforma): remediate PR-1 conflict foundation governance gaps`. Status: ACTIVE. No scorecard produced for this PR in current session data; not yet assessed.
+
+## Current origin/main HEAD (2026-06-17): `a421fe9`
+
+- **origin/main HEAD**: `a421fe9` — `test(routes_upload): e2e CIF tri-state regression + fix merge-not-downgrade gap poisoning (#629) (#631)` (merged 2026-06-16T23:37Z).
+- ~~Prior HEAD was `d80a816` (ADR-029 PR-1 conflict-detection foundation, #626)~~ — superseded by the 2026-06-16 merge chain (#625 → #627 → #628 → #631).
+
 ## DEPLOY — e4d96b5 bundle (PRs #625+#626+#627) → C:\PZ (2026-06-17, VERIFIED LIVE)
 
 - **Production deploy date**: 2026-06-17. Operator executed deploy (deploy-guard hook = operator-only writes into `C:\PZ`). 7-agent gate was read-only Path B; lead-coordinator returned READY-TO-DEPLOY (GO). Operator confirmed: "e4d96b5 deployed / #626 deployed / #627 deployed / flags still OFF".
@@ -5242,11 +5290,19 @@ Group D — Tests (3 new files):
 - **Binding scope**: `cif_resolver.py` is the single resolution point. No new `float(... or 0)` CIF coercions may be introduced anywhere in the codebase — backend-safety-reviewer must flag any such pattern as a CRITICAL on future PRs touching clearance decision paths.
 - **Implementation carrier**: PR #627 (branch `fix/cif-authority-resolver-tristate`, commits `7a15d74` + `87c4548`). MERGED 2026-06-16; DEPLOYED 2026-06-17 as `e4d96b5`. Live in production as of 2026-06-17.
 
-## Next 3 actions in queue
+## Next 3 actions in queue (refreshed 2026-06-17 — PR #632 deploy gate complete)
 
-1. **File routes_upload AWB customs-value end-to-end test gap as GitHub issue** (GATE 4 SCHEDULED from scorecard `2026-06-17-adr029-e4d96b5-deploy-gate.md`) — target: issue filed with labels test-coverage + routes_upload before any subsequent routes_upload PR enters the deploy gate; gating: none (operator can file immediately).
-2. **Resolve deploy-release-manager prompt gap** (GATE 4 SCHEDULED — must add `Get-ChildItem` directory-state confirmation requirement before characterizing robocopy flag effects) — target: next agent-prompt-refiner session drafts the patch; gating: agent-prompt-refiner available or operator direct edit.
-3. **ADR-029 PR-2** (V1/V2/V6/V7 detectors + §5 hard gate + list_draft_conflicts 404 fix) — target: open implementation PR (GATE 2 slot 1/3 available); gating: OQ-ADR029-PR2-GATE4-1 (dual-subagent dispatch) + OQ-ADR029-PR2-GATE4-2 (schema-evidence grounding) must be addressed pre-PR-open; operator signals go-ahead.
+1. **Operator: merge + deploy PR #632** (7-agent gate = READY-TO-DEPLOY; conditions A & B verified green). Operator runs `tmp_operator_deploy_package.md` sequence (merge → ff-only pull → backup → robocopy → pycache purge → restart). Then orchestrator runs read-only post-deploy verify of AWB 2315714531 (must NOT be `total_value_usd=0.0`). Reports "deployed" only after prod hash flips. Gating: operator action (agent blocked by deploy-guard hook).
+2. **File routes_upload AWB customs-value end-to-end test gap as GitHub issue** (GATE 4 SCHEDULED from scorecard `2026-06-17-adr029-e4d96b5-deploy-gate.md`) — labels test-coverage + routes_upload, before any subsequent routes_upload PR enters the deploy gate. NOTE: PR #632 touches `routes_upload.py` (Step 5 vision branch) — this issue should be filed before #632's route seam is extended further. Gating: none (operator can file immediately).
+3. **Resolve deploy-release-manager prompt gap** (GATE 4 SCHEDULED — add `Get-ChildItem` directory-state confirmation before characterizing robocopy flag effects) — target: next agent-prompt-refiner session drafts the patch; gating: agent-prompt-refiner available or operator direct edit.
+
+## OCR/AI Vision Fallback — Technology + Architecture Decisions (2026-06-17)
+
+- **Vision-LLM over fitz-rasterized page PNGs is the OCR implementation** (decision date 2026-06-17): tesseract and pdf2image are not installed on the production host; fitz (`pymupdf`) renders page images natively; Anthropic vision API receives the PNG and returns structured CIF/AWB values. This is the permanent approach unless the host installs a separate OCR stack.
+- **Deterministic text/parse ladder runs first; vision is fallback only**: `needs_vision_fallback()` must return True before any vision call is attempted. Vision is never preferred over parseable text. This ordering is permanent per the `document_text_quality.py` gating contract.
+- **Manual CIF entry is NOT the primary solution** after OCR/AI fallback failure: manual entry remains an operator escape path, but the system must attempt vision extraction first. Operator manual override is a post-AI-failure path, not the primary design.
+- **Invoice CIF priority over AWB Custom Val is preserved unconditionally**: no vision extraction path may override this ladder ordering.
+- **Unknown CIF is UNKNOWN, never faked**: if vision cannot extract a confident value and the ladder has no other source, the result is `UNKNOWN/extraction_gap`, `cif_usd=None`. No path may coerce `None` to `0.0`.
 
 ## PR Queue Sequencing Protocol (2026-06-12)
 
@@ -5859,6 +5915,64 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ---
 
 # OPEN QUESTIONS
+
+## ~~OQ-OCR-GATE5: PR #632 deploy gate must use deploy-security-reviewer, not security-permissions (GATE 5 SCHEDULED — 2026-06-17)~~ — RESOLVED 2026-06-17
+
+- **Resolution (2026-06-17)**: PR #632 7-agent deploy gate fired with canonical `deploy-security-reviewer` (GO/CLEAR/LOW). No substitution; GATE 5 clean. Recorded in deploy-gate scorecard `.claude/memory/scorecards/2026-06-17-pr632-ocr-fallback-deploy-gate.md`. Requirement satisfied.
+- **Question / requirement**: When the 7-agent deploy gate fires for PR #632, the canonical security reviewer must be `deploy-security-reviewer` (and/or `security-write-action-reviewer`), NOT `security-permissions`. `security-permissions` is a user-level runtime agent, not a repo-canonical deploy-gate agent; using it without explicit GATE 5 substitution disclosure violates Lesson K.
+- **Source**: Scorecard `2026-06-17-ocr-ai-image-only-extraction-fallback.md` — GATE 5 substitution disclosure gap identified during the OCR campaign pre-PR-open review.
+- **Who can answer / close**: The session that fires the PR #632 7-agent deploy gate — must invoke `deploy-security-reviewer` by name; if `security-permissions` is used as substitute, a GATE 5 disclosure block naming capability equivalence must be present in the gate record. Closes when gate record shows the canonical agent OR a formally disclosed substitute.
+- **Impact if unanswered**: PR #632 deploy gate may silently use a non-canonical security reviewer, creating a GATE 5 violation and potentially missing deploy-specific security vectors (file-path traversal on PDF rasterization, model-call injection, etc.) not covered by the runtime agent's scope.
+
+## ~~OQ-OCR-BACKEND-SAFETY: backend-safety-reviewer fuller sweep of vision write paths required before PR #632 deploy gate (GATE 4 SCHEDULED — 2026-06-17)~~ — RESOLVED 2026-06-17
+
+- **Resolution (2026-06-17)**: The PR #632 deploy gate's `deploy-persistence-storage-reviewer` (GO/CLEAR/LOW) and `deploy-backend-impact-reviewer` (GO/CLEAR/LOW) covered the three concerns: (1) negative-evidence path — `_coerce_money` returns `None` for `<=0`, vision never writes zero; (2) idempotency — Step 5 re-reads audit and no-ops unless CIF still UNKNOWN, doubly non-fatal after the step-4 atomic write; (3) `_merge_awb_custom_val` + `_merge_precheck_invoice` spread `**existing` (#570-safe) and write only to the 6-layer ladder keys, never to `audit.wfirma_export`. Recorded in deploy-gate scorecard `.claude/memory/scorecards/2026-06-17-pr632-ocr-fallback-deploy-gate.md`.
+- **Question / requirement**: A dedicated backend-safety-reviewer run covering negative-evidence paths, idempotency of vision writes, and direct-audit-write confirmation must be completed and recorded before the PR #632 production deploy gate fires. The campaign's backend-safety-reviewer run was ACCEPTABLE (26/35) — sufficient for GATE 1 / PR open, but the scorecard recommends a fuller sweep on the vision write paths before production.
+- **Source**: Scorecard `2026-06-17-ocr-ai-image-only-extraction-fallback.md` — backend-safety-reviewer ACCEPTABLE verdict + explicit GATE 4 SCHEDULED disposition for pre-deploy re-run.
+- **Who can answer / close**: The session that prepares the PR #632 deploy gate — dispatch backend-safety-reviewer against the merged branch, focused on: (1) what happens when vision extraction returns partial/no values (negative-evidence path — must not write zero); (2) idempotency: if intake step 5 runs twice, does the second vision write overwrite a previously-good human-verified CIF?; (3) confirm `vision_extractor.py` writes ONLY to the 6-layer ladder keys and never writes directly to `audit.wfirma_export` or any block owned by another concern. Closes when a green backend-safety-reviewer verdict is recorded in the deploy gate report.
+- **Impact if unanswered**: Vision write paths may have idempotency or partial-write edge cases that reach production undetected. The #570-class preservation guard (C1 CRITICAL resolved pre-merge) protects against one class of wipe; a fuller sweep ensures coverage of the remaining write paths.
+
+## OQ-PR632-D: recheck-route `POST /batches/{id}/recheck` vision branch integration test gap (GATE 4 SCHEDULED — 2026-06-17)
+
+- **Question / requirement**: The vision fallback is unit-tested (31 tests) and exercised in intake via `_run_dhl_precheck` Step 5, but the **route seam** `POST /batches/{id}/recheck` → vision branch has no route-level integration test. File a GitHub issue (labels: test-coverage) for an integration test that drives the recheck endpoint and asserts the vision branch writes CIF authority correctly (and no-ops when CIF already resolved).
+- **Source**: PR #632 7-agent deploy gate — deploy-qa-reviewer GO-WITH-CONDITIONS; condition [D]. Recorded in deploy-gate scorecard `2026-06-17-pr632-ocr-fallback-deploy-gate.md`.
+- **Who can answer / close**: Operator/next session — file the issue; closes when the integration test lands in the carrier baseline. Should be filed before any subsequent `routes_upload.py`/recheck-route PR re-enters the deploy gate.
+- **Impact if unanswered**: The recheck route seam may regress (e.g. a future refactor disconnects the vision branch from the endpoint) without a failing test. Unit coverage would stay green while the live route breaks.
+
+## OQ-PR632-E: pre-existing CSV round-trip failure — REJECTED as deploy blocker (GATE 4 — DISPOSITION EXECUTED 2026-06-17)
+
+- **Disposition (2026-06-17)**: **REJECTED** as a PR #632 deploy blocker, with reasoning logged: `test_pz_batch.py::test_save_json_csv_ui_round_trip` (assert 8==4) reproduces identically on prod SHA `e4d96b5` in a throwaway worktree; the CSV/batch_builder path is absent from the `e4d96b5..HEAD` diff (`git diff --name-only e4d96b5..HEAD | grep -iE 'batch_build|csv|save_ui'` = none). It is a Windows `csv.writer` CRLF/`splitlines()` blank-line artifact, NOT introduced by this deploy. Baseline threshold (221) is MET. Already tracked as **Issue #613** (filed 2026-06-16). No new issue required — this OQ folds into #613.
+- **Source**: PR #632 deploy gate — deploy-qa-reviewer condition [E]. Scorecard `2026-06-17-pr632-ocr-fallback-deploy-gate.md`.
+- **Who can answer / close**: Closed by this disposition; residual fix tracked in Issue #613.
+- **Impact if unanswered**: None for this deploy — dispositioned. (Underlying Windows CSV artifact tracked separately in #613.)
+
+## OQ-PR632-F: security advisory — customs PDF page-images sent to Anthropic vision API (GATE 4 SCHEDULED — record in DECISIONS/ADR within 30 days, by 2026-07-17)
+
+- **Question / requirement**: With `AI_PARSER_ENABLED=true` in production, the vision fallback sends the first ≤4 rasterized customs PDF page-images (image bytes, not redacted) to the Anthropic vision API for image-only docs. This is intended/operator-approved design, but per Lesson G/security governance it must be formally recorded as a DECISION or ADR (data-egress scope, retention, what customs document classes are eligible) within 30 days — i.e. by **2026-07-17**.
+- **Source**: PR #632 deploy gate — deploy-security-reviewer advisory (GO/CLEAR/LOW; advisory not blocker). Scorecard `2026-06-17-pr632-ocr-fallback-deploy-gate.md`.
+- **Who can answer / close**: Operator + adr-historian — record the data-egress decision in PROJECT_STATE.md DECISIONS or a new ADR. Closes when the DECISION/ADR exists naming the egress scope and approval.
+- **Impact if unanswered**: Customs document image egress to a third-party API would be live in production without a recorded governance decision — an audit/compliance gap even though the behavior is intended.
+
+## OQ-OCR-DISCLOSED-1: batch_write_lock recheck race in vision path — disclosed, low risk, not blocking (2026-06-17)
+
+- **Question**: Is there a race between `batch_write_lock` acquire and the vision call completing, where a concurrent lock-holder could observe a partially-written CIF ladder entry?
+- **Source**: PR #632 DISCLOSED follow-up (not a GATE 4 SCHEDULED — no wrong-CIF risk identified; lock recheck is conservative).
+- **Who can answer**: Next session reviewing the vision path under concurrent-intake conditions. Self-resolvable by reading the lock-guard logic around the vision write site in `routes_intake.py`.
+- **Impact if unanswered**: Low — the worst case is a redundant vision call on the next recheck, not a wrong CIF value. Not blocking PR merge or deploy.
+
+## OQ-OCR-DISCLOSED-2: variance/derived-CIF from vision not surfaced in V2 UI (2026-06-17)
+
+- **Question**: After vision extraction writes a CIF value, should the V2 `shipment-detail.html` Clearance Routing card surface a variance indicator when the vision-extracted CIF differs from a declared AWB value?
+- **Source**: PR #632 DISCLOSED follow-up (UI gap identified during reviewer-challenge; not a CRITICAL/HIGH; Lesson M: capability remains in `withheld_unknown_currency_invoice` path and `clearance-extraction-method` InfoRow, which is authoritative).
+- **Who can answer**: Operator — UI design decision (whether to add a variance row vs. keep the current single-source InfoRow).
+- **Impact if unanswered**: Operators see `clearance-extraction-method` (green/amber status) but not the delta between vision-extracted CIF and any AWB-declared Custom Val. Low information gap.
+
+## OQ-OCR-DISCLOSED-3: mtime-based retry signature is fragile if file is touched between intake and recheck (2026-06-17)
+
+- **Question**: `needs_vision_fallback()` uses PDF mtime as part of the retry-idempotency signature; if a file is updated (re-upload) between intake and Recheck, does the mtime change cause a spurious re-trigger of vision?
+- **Source**: PR #632 DISCLOSED follow-up (noted in campaign; identified as edge-case; no evidence of production occurrence).
+- **Who can answer**: Next session reviewing retry logic in `document_text_quality.py`. Self-resolvable by inspecting the signature construction and confirming re-upload handling.
+- **Impact if unanswered**: A re-uploaded PDF that passes the mtime check may trigger a redundant vision call. Not a data-correctness risk — the existing CIF ladder ordering means a previously-good value is never downgraded by a re-run.
 
 ## ~~OQ-PR627: PR #627 CIF tri-state resolver — awaiting review/merge; deploy gated on operator approval (2026-06-16)~~ — RESOLVED 2026-06-17: MERGED + DEPLOYED as `e4d96b5`
 

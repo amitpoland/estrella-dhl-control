@@ -45,6 +45,7 @@ EV_DSK_GENERATED          = "dsk_generated"
 EV_DESCRIPTION_READY      = "description_ready"
 EV_REPLY_APPROVED         = "reply_approved"
 EV_DHL_PRECHECK_COMPLETED = "dhl_precheck_completed"
+EV_VISION_CIF_WRITTEN     = "vision_cif_written"   # OCR/AI vision fallback wrote a CIF/AWB authority value
 EV_ERROR              = "error"
 EV_STATUS_CHANGE      = "status_change"
 EV_WFIRMA_CLIPBOARD   = "wfirma_clipboard_generated"
