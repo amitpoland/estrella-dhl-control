@@ -7630,6 +7630,12 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                 const _dskExists = !!(audit.dsk_file_exists !== false && _dskFile);
                 const _dskMissing = _dskFile && !_dskExists;
                 const _dskReady   = _dskFile && _dskExists;
+                // DSK carries the customs value on the declaration — gate it on the
+                // SAME resolved-CIF authority as Polish Description so we never send a
+                // value_usd of 0 (a false zero-value customs declaration) when no
+                // authority has resolved a positive customs value. When enabled, the
+                // value_usd payload always falls through to the resolved CIF.
+                const _dskBlocked = !_decResolved;
 
                 // DHL reply state
                 const _drp     = audit.dhl_reply_package || {};
@@ -7723,16 +7729,18 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       ) : _dskMissing ? (
                         <>
                           <span style={{ fontSize: 11, color: 'var(--badge-red-text)', fontWeight: 600 }}>⚠ DSK marked generated but file missing</span>
-                          <Btn variant="danger" data-testid="btn-repair-dsk" disabled={!!busy.genDsk}
+                          <Btn variant="danger" data-testid="btn-repair-dsk" disabled={!!busy.genDsk || _dskBlocked}
+                            title={_dskBlocked ? 'Blocked: customs CIF unresolved — re-process invoices or confirm the AWB customs value before generating a DSK' : 'Re-generate the missing DSK PDF'}
                             onClick={() => doAction('genDsk', 'Repair DSK', () => apiFetch('/api/v1/dsk/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batch_id: batchId, awb: trackingNo || batchId, value_usd: ver.invoice_cif_total_usd || (audit.invoice_totals || {}).total_cif_usd || (_decResolved ? _decCifUsd : 0) }) }))}>
-                            {busy.genDsk ? '⟳ Repairing…' : '⚠ Repair DSK'}
+                            {busy.genDsk ? '⟳ Repairing…' : _dskBlocked ? '⚠ Repair DSK (CIF unresolved)' : '⚠ Repair DSK'}
                           </Btn>
                         </>
                       ) : (
                         <>
-                          <Btn variant="outline" data-testid="btn-generate-dsk" disabled={!!busy.genDsk}
+                          <Btn variant="outline" data-testid="btn-generate-dsk" disabled={!!busy.genDsk || _dskBlocked}
+                            title={_dskBlocked ? 'Blocked: customs CIF unresolved — re-process invoices or confirm the AWB customs value before generating a DSK' : `Generate DSK PDF (Resolved CIF = ${_decCifLabel})`}
                             onClick={() => doAction('genDsk', 'Generate DSK', () => apiFetch('/api/v1/dsk/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batch_id: batchId, awb: trackingNo || batchId, value_usd: ver.invoice_cif_total_usd || (audit.invoice_totals || {}).total_cif_usd || (_decResolved ? _decCifUsd : 0) }) }))}>
-                            {busy.genDsk ? '⟳ Generating…' : '⊟ Generate DSK'}
+                            {busy.genDsk ? '⟳ Generating…' : _dskBlocked ? '⊟ DSK (CIF unresolved)' : '⊟ Generate DSK'}
                           </Btn>
                           <Btn variant="ghost" disabled title="File not generated yet">
                             ↓ DSK PDF

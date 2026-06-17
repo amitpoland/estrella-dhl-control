@@ -254,3 +254,20 @@ def test_route_uses_resolved_cif_guard_not_raw_invoice_zero():
     assert "cif_state" in src and "cif_source" in src
     # The legacy raw-invoice blocker key is gone from this route.
     assert "cif_zero" not in src
+
+
+def test_ui_gates_dsk_on_resolved_cif_so_no_zero_value_declaration():
+    """The DSK generate/repair buttons carry the customs value on the
+    declaration. They must be gated on the SAME resolved-CIF authority as the
+    Polish Description (``_dskBlocked = !_decResolved``) so the UI can never POST
+    a ``value_usd`` of 0 — a false zero-value customs declaration — when no
+    authority has resolved a positive customs value. Source-grep contract on the
+    V1 shipment-detail page (vanilla JSX, no bundler to assert against)."""
+    html = (_SVC / "app" / "static" / "shipment-detail.html").read_text(encoding="utf-8")
+    # The DSK gate exists and keys off the resolved-CIF authority.
+    assert "_dskBlocked = !_decResolved" in html
+    # Both DSK buttons honour the gate (disabled when CIF unresolved).
+    assert html.count("|| _dskBlocked}") >= 2
+    # The block surfaces an explicit operator reason (Lesson M: visible + disabled + reason).
+    assert "CIF unresolved" in html
+    assert "before generating a DSK" in html
