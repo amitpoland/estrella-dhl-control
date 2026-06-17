@@ -1145,23 +1145,8 @@ def run_image_only_invoice_extraction(
         if wrote:
             break  # one good invoice proposal is enough
 
-    # TOCTOU stickiness guard — re-read the on-disk proposal immediately before
-    # writing. The operator may have CONFIRMED a proposal (operator_confirmed=true)
-    # in another request between our initial read and now. Our in-memory `audit`
-    # still carries the pre-confirmation block, so writing it would silently revert
-    # the operator's confirmation and any fields they accepted. If a confirmation
-    # landed in the gap, abort the write entirely — the operator owns that block.
-    try:
-        on_disk = (read_json(audit_path) or {}).get("vision_invoice") or {}
-    except Exception:
-        on_disk = {}
-    if on_disk.get("operator_confirmed") is True:
-        summary["wrote"] = False
-        summary["documents"] = doc_records
-        summary["reason"] = "operator confirmed vision_invoice mid-run — write aborted (sticky)"
-        return summary
-
     # Record the attempt ledger + run history on the block (merge-not-replace).
+    # Pure computation off the in-memory snapshot — done BEFORE taking the lock.
     vi2 = dict(audit.get("vision_invoice") or {})
     vi2["attempted_signatures"] = attempted_now
     runs = list(vi2.get("runs") or [])
@@ -1172,13 +1157,55 @@ def run_image_only_invoice_extraction(
         "wrote": wrote,
     })
     vi2["runs"] = runs[-10:]
-    audit["vision_invoice"] = vi2
+
+    # Atomic TOCTOU stickiness guard + merge-write under the per-batch lock.
+    # The operator may CONFIRM a proposal (operator_confirmed=true) in another
+    # request between our initial read at the top and now; our in-memory `audit`
+    # still carries the pre-confirmation block. Acquire the same per-batch write
+    # lock `confirm_vision_invoice` holds, re-read the authoritative audit from
+    # disk INSIDE the lock, and either (a) abort if a confirmation landed — the
+    # operator owns that block — or (b) overlay ONLY our advisory vision_invoice
+    # onto the fresh on-disk audit, so we never clobber a concurrent writer of any
+    # other key (#646 / #570-class lost update). Both callers (intake, recheck)
+    # invoke this OUTSIDE any held batch lock, so acquiring it here cannot deadlock.
+    from ..utils.batch_lock import batch_write_lock  # noqa: PLC0415
+
+    def _merge_write_locked() -> bool:
+        """Re-read fresh, abort on a landed confirmation, overlay vision_invoice,
+        write. Returns True if written, False if aborted (operator owns block)."""
+        try:
+            fresh = read_json(audit_path)
+        except Exception:
+            fresh = None
+        if not isinstance(fresh, dict):
+            fresh = audit  # no readable disk copy — fall back to our snapshot
+        if (fresh.get("vision_invoice") or {}).get("operator_confirmed") is True:
+            return False
+        fresh["vision_invoice"] = vi2
+        write_json_atomic(audit_path, fresh)
+        return True
 
     try:
-        write_json_atomic(audit_path, audit)
+        try:
+            with batch_write_lock(batch_id):
+                wrote_ok = _merge_write_locked()
+        except TimeoutError as exc:
+            # Lock contention must not strand the advisory proposal. Best-effort
+            # vision-safe fallback: identical merge-write semantics, unlocked.
+            log.warning(
+                "[vision] batch lock timeout for %s (%s) — vision-safe fallback write",
+                batch_id, exc,
+            )
+            wrote_ok = _merge_write_locked()
     except Exception as exc:
         summary["reason"] = f"audit write failed: {exc}"
         summary["documents"] = doc_records
+        return summary
+
+    if not wrote_ok:
+        summary["wrote"] = False
+        summary["documents"] = doc_records
+        summary["reason"] = "operator confirmed vision_invoice mid-run — write aborted (sticky)"
         return summary
 
     summary["wrote"] = wrote

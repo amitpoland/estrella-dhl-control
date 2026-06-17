@@ -3401,6 +3401,70 @@ class RecheckRequest(BaseModel):
     mode: str = "all"
 
 
+# Keys on the audit that recheck must NEVER author from its own in-memory
+# snapshot — they belong to a different sole-writer. recheck reads the audit
+# once at the top (unguarded) and writes the whole object back seconds later;
+# if an operator confirms the vision invoice inside that window, a whole-object
+# write would silently revert operator_confirmed=true (a #570-class lost
+# update). `confirm_vision_invoice` is the SOLE writer of operator_confirmed on
+# audit["vision_invoice"]; recheck overlays the on-disk authoritative copy of
+# these keys immediately before persisting so it can never clobber a concurrent
+# confirmation.
+_RECHECK_DISK_AUTHORITATIVE_KEYS = ("vision_invoice",)
+
+
+def _persist_recheck(audit_path: Path, batch_id: str, audit: Dict[str, Any]) -> None:
+    """Persist recheck's audit snapshot WITHOUT clobbering sole-writer-owned keys.
+
+    recheck legitimately owns most of the audit it rewrites (verification,
+    learning_traces, inputs.zc429_mrn, amendment_flags, cif_reconciliation,
+    clearance_decision, recheck, …). Those mutations are scattered and the local
+    ``updated`` dict keys are display labels, not audit keys — so copying "only
+    the keys recheck updated" would silently drop recheck's own writes. Instead
+    we persist recheck's full snapshot but OVERLAY the on-disk authoritative copy
+    of the keys recheck must never author (``_RECHECK_DISK_AUTHORITATIVE_KEYS``).
+
+    The overlay + write happen under ``batch_write_lock`` so a concurrent
+    ``confirm_vision_invoice`` (which holds the same per-batch lock) cannot
+    interleave between the disk re-read and the write. operator_confirmed=true
+    and its metadata (confirmed_by / confirmed_at) therefore survive recheck.
+    """
+    def _overlay_from_disk(target: Dict[str, Any]) -> None:
+        try:
+            fresh = json.loads(audit_path.read_text(encoding="utf-8"))
+        except Exception:
+            # No readable on-disk copy (first write / corrupt) — nothing to
+            # preserve. recheck's own snapshot is the best available truth.
+            return
+        if not isinstance(fresh, dict):
+            return
+        for _k in _RECHECK_DISK_AUTHORITATIVE_KEYS:
+            if _k in fresh:
+                target[_k] = fresh[_k]
+        _vi = target.get("vision_invoice")
+        if isinstance(_vi, dict) and _vi.get("operator_confirmed") is True:
+            log.info(
+                "[recheck] preserved operator-confirmed vision_invoice for %s "
+                "(confirmed_by=%s, confirmed_at=%s) — merge-write did not revert it",
+                batch_id, _vi.get("confirmed_by"), _vi.get("confirmed_at"),
+            )
+
+    try:
+        with batch_write_lock(batch_id):
+            _overlay_from_disk(audit)
+            write_json_atomic(audit_path, audit)
+    except TimeoutError as exc:
+        # Lock contention should not strand recheck's results. Fall back to a
+        # best-effort vision-safe write: overlay the disk-authoritative keys
+        # (still preserving a confirmation that landed) then persist unlocked.
+        log.warning(
+            "[recheck] batch lock timeout for %s (%s) — vision-safe fallback write",
+            batch_id, exc,
+        )
+        _overlay_from_disk(audit)
+        write_json_atomic(audit_path, audit)
+
+
 @router.post("/batches/{batch_id}/recheck", dependencies=[_op_auth])
 async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) -> Dict[str, Any]:
     """
@@ -3776,7 +3840,10 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
         "updated_fields":  [k for k, v in updated.items() if v],
     }
     audit["recheck"] = recheck_block
-    write_json_atomic(audit_path, audit)
+    # Merge-not-replace: persist recheck's snapshot but overlay disk-authoritative
+    # sole-writer keys (vision_invoice) so a concurrent operator confirmation that
+    # landed in the read→write window is not reverted (#646, #570-class).
+    _persist_recheck(audit_path, batch_id, audit)
 
     # ── E2. Image-only OCR/AI CIF fallback (LAST — self-contained) ───────────
     # When text reparse above left CIF UNKNOWN because the AWB / invoice is an
@@ -3806,7 +3873,10 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
                 except Exception as _de2:
                     log.warning("[recheck] post-vision clearance rebuild failed: %s", _de2)
                 audit["recheck"]["updated_fields"] = [k for k, v in updated.items() if v]
-                write_json_atomic(audit_path, audit)
+                # Merge-not-replace again: this post-fallback re-read+write also
+                # runs after the read→write window, so overlay the disk copy of
+                # vision_invoice rather than clobbering it (#646).
+                _persist_recheck(audit_path, batch_id, audit)
                 log.info("[recheck] vision CIF fallback wrote authority value for %s", batch_id)
                 # Authority-chain evidence: trace the OCR/AI-sourced CIF/AWB write.
                 tl.log_event(
