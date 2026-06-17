@@ -3822,6 +3822,25 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
         except Exception as _ve:
             log.warning("[recheck] vision CIF fallback failed (non-fatal): %s", _ve)
 
+        # Advisory image-only invoice extraction (LAST — self-contained). Recovers
+        # supplier / FOB / goods lines from an image-only invoice into the advisory
+        # `vision_invoice` proposal (operator_confirmed=false) so the operator can
+        # later confirm it to unblock PZ. Does NOT touch CIF / invoice_totals / rows.
+        try:
+            from ..services.vision_extractor import run_image_only_invoice_extraction
+            _ires = run_image_only_invoice_extraction(batch_dir, batch_id)
+            if _ires.get("wrote"):
+                updated["vision_invoice"] = True
+                warnings.append(
+                    "An image-only invoice was read by OCR/AI into an advisory "
+                    "proposal (supplier / FOB / goods lines) — review and confirm "
+                    "it before generating PZ."
+                )
+            elif _ires.get("ran"):
+                log.info("[recheck] vision invoice extraction ran, no write: %s", _ires.get("reason"))
+        except Exception as _ie:
+            log.warning("[recheck] vision invoice extraction failed (non-fatal): %s", _ie)
+
     # ── Log timeline events (after write so they're not overwritten) ──────────
     if _clearance_dec_for_tl is not None:
         tl.log_event(

@@ -682,3 +682,507 @@ def run_image_only_cif_fallback(
     summary["documents"] = doc_records
     summary["reason"] = "wrote authority key(s)" if wrote else "ran, no usable value written"
     return summary
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADVISORY invoice line-item extraction (image-only invoices) — PZ unblock layer
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Separate, isolated capability from the CIF fallback above. An image-only
+# commercial invoice that defeats the text parser collapses CIF to UNKNOWN
+# *and* produces no FOB / line items / supplier — so the PZ engine
+# (process_batch) cannot compute a goods receipt at all. The CIF fallback
+# resolves the customs value; this layer recovers the *purchase-accounting*
+# inputs the PZ engine needs.
+#
+# Authority isolation (Lesson F) — this writes ONLY the advisory
+# ``audit["vision_invoice"]`` block. It is:
+#   - operator_confirmed=false on every machine write (sticky: once an operator
+#     confirms the block, this layer never overwrites it);
+#   - NEVER consumed by cif_resolver.resolve_cif (the CIF ladder does not read
+#     vision_invoice — pinned by test_vision_invoice_negative_scope);
+#   - NEVER written into invoice_totals / rows / customs_declaration (engine
+#     authority is untouched — the operator-confirmed → process_batch injection
+#     is a separate, gated PR).
+# The frontend reflects truth; it does not produce it. This block is a
+# *proposal* awaiting operator confirmation, not booked accounting authority.
+
+
+def _build_invoice_lineitem_prompt() -> Tuple[str, str]:
+    """Return (system, user) prompts requesting a structured invoice summary.
+
+    Distinct from ``_build_prompt`` (the CIF/AWB extractor). This asks for the
+    purchase-accounting inputs — supplier, FOB, and per-line goods — that the PZ
+    engine needs, and is explicit that itemization may be impossible.
+    """
+    schema_desc = (
+        "{\n"
+        '  "supplier": string|null,                    // seller / exporter name\n'
+        '  "invoice_no": string|null,\n'
+        '  "currency": string|null,                    // ISO code you actually see, e.g. "USD"\n'
+        '  "fob_usd": number|null,                     // total goods value, USD only\n'
+        '  "itemization_available": boolean,           // true ONLY if you can read discrete line rows\n'
+        '  "line_items": [                             // [] when itemization_available is false\n'
+        "    {\n"
+        '      "description": string,                  // the goods description text\n'
+        '      "hsn": string|null,                     // HS / customs code if shown\n'
+        '      "quantity": number|null,\n'
+        '      "unit_price": number|null,\n'
+        '      "total": number|null,\n'
+        '      "gross_weight_g": number|null,          // grams\n'
+        '      "net_weight_g": number|null             // grams\n'
+        "    }\n"
+        "  ],\n"
+        '  "confidence": number,                       // 0..1 in the values above\n'
+        '  "source_page": number|null,\n'
+        '  "source_reason": string                     // the label/heading you read the table from\n'
+        "}"
+    )
+    system = (
+        "You are a precise commercial-invoice extraction engine. You read scanned "
+        "invoices and return ONLY structured JSON. You never guess: a value not "
+        "legibly present is null, never 0. If you cannot read discrete line-item "
+        "rows, set itemization_available=false and return line_items=[] — do NOT "
+        "fabricate rows. Report a currency only if you can actually see it; never "
+        "assume USD."
+    )
+    user = (
+        "This is a commercial invoice scan. Extract the supplier, invoice number, "
+        "currency, total goods value (FOB), and every goods line you can read.\n\n"
+        "Return ONLY a single JSON object (no prose, no markdown fences) matching "
+        f"exactly this schema:\n\n{schema_desc}\n\n"
+        "Rules:\n"
+        "- Numbers must be plain numerics (no symbols, no thousands separators).\n"
+        "- Report 'currency' as the ISO code you actually see; null if not legible. "
+        "Never assume USD. Only populate 'fob_usd' if the invoice is in USD.\n"
+        "- If a field is not visible, use null. Do NOT use 0 to mean 'unknown'.\n"
+        "- If the line-item table is unreadable, set itemization_available=false and "
+        "line_items=[]. A partial but honest result beats invented rows.\n"
+        "- 'source_reason' must quote the table heading / label you read from."
+    )
+    return system, user
+
+
+def _validate_line_item(item: Any) -> Optional[Dict[str, Any]]:
+    """Validate one model-returned line item. Returns a clean dict or None.
+
+    A line item is kept only if it carries a description AND at least one
+    numeric. Numerics reuse ``_coerce_money`` (positive, plausible, rounded).
+    """
+    if not isinstance(item, dict):
+        return None
+    clean: Dict[str, Any] = {}
+    desc = item.get("description")
+    if desc is not None and str(desc).strip():
+        clean["description"] = str(desc).strip()
+    hsn = item.get("hsn")
+    if hsn is not None and str(hsn).strip():
+        clean["hsn"] = str(hsn).strip()
+    for src, dst in (
+        ("quantity", "quantity"),
+        ("unit_price", "unit_price_usd"),
+        ("total", "total_usd"),
+        ("gross_weight_g", "gross_weight_g"),
+        ("net_weight_g", "net_weight_g"),
+    ):
+        v = _coerce_money(item.get(src))
+        if v is not None:
+            clean[dst] = v
+    if "description" not in clean:
+        return None
+    has_number = any(k in clean for k in ("quantity", "unit_price_usd", "total_usd"))
+    if not has_number:
+        return None
+    return clean
+
+
+def validate_invoice_extraction(
+    data: Dict[str, Any],
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Validate + normalize a parsed invoice line-item extraction.
+
+    Returns ``(clean, errors)``. ``clean`` always carries ``line_items`` (a
+    possibly-empty list) and ``itemization_unavailable`` (True when no usable
+    rows survived). Never raises.
+    """
+    errors: List[str] = []
+    if not isinstance(data, dict):
+        return {"line_items": [], "itemization_unavailable": True, "confidence": 0.0}, [
+            "extraction is not a JSON object"
+        ]
+
+    clean: Dict[str, Any] = {}
+
+    for f in ("supplier", "invoice_no", "source_reason"):
+        v = data.get(f)
+        if v is not None and str(v).strip():
+            clean[f] = str(v).strip()
+
+    cur = data.get("currency")
+    if cur is not None:
+        cur_s = str(cur).strip().upper()
+        if cur_s and re.fullmatch(r"[A-Z]{2,5}", cur_s):
+            clean["currency"] = cur_s
+        elif cur_s:
+            errors.append(f"currency={cur!r} rejected (not an ISO-like code)")
+
+    fob = _coerce_money(data.get("fob_usd"))
+    if fob is not None:
+        clean["fob_usd"] = fob
+
+    raw_items = data.get("line_items")
+    items: List[Dict[str, Any]] = []
+    if isinstance(raw_items, list):
+        for it in raw_items:
+            ci = _validate_line_item(it)
+            if ci is not None:
+                items.append(ci)
+            elif it:
+                errors.append("dropped an unparseable / numberless line item")
+    clean["line_items"] = items
+    # itemization_unavailable reflects the ACTUAL persisted state: do we hold
+    # any usable rows? (Independent of what the model claimed.)
+    clean["itemization_unavailable"] = len(items) == 0
+
+    sp = data.get("source_page")
+    if sp is not None:
+        try:
+            spi = int(sp)
+            if 1 <= spi <= 50:
+                clean["source_page"] = spi
+        except (TypeError, ValueError):
+            pass
+
+    conf = data.get("confidence")
+    try:
+        clean["confidence"] = max(0.0, min(1.0, float(conf)))
+    except (TypeError, ValueError):
+        clean["confidence"] = 0.0
+        errors.append("confidence missing/unparseable — defaulted to 0.0")
+
+    return clean, errors
+
+
+def extract_invoice_lineitems_via_vision(
+    pdf_path: str,
+    object_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Two-attempt vision extraction of an invoice's structured summary.
+
+    Same model-escalation discipline as ``extract_fields_via_vision`` (governance
+    via complexity/confidence knobs, never a model-name string). Returns a
+    provenance dict (never raises) whose ``fields`` carry the validated invoice
+    summary on success.
+    """
+    from . import ai_gateway  # noqa: PLC0415
+
+    prov: Dict[str, Any] = {
+        "ok": False,
+        "extraction_method": "failed",
+        "model_attempt": None,
+        "extraction_confidence": 0.0,
+        "fields": {},
+        "source_file": os.path.basename(pdf_path) if pdf_path else None,
+        "source_page": None,
+        "source_reason": None,
+        "failed_layers": [],
+        "validation_errors": [],
+        "pages_rasterized": 0,
+    }
+
+    if not ai_gateway.is_available():
+        prov["failed_layers"].append("ai_gateway_unavailable")
+        return prov
+
+    pages = rasterize_pdf(pdf_path)
+    prov["pages_rasterized"] = len(pages)
+    if not pages:
+        prov["failed_layers"].append("rasterize_failed")
+        return prov
+
+    images = [_png_to_image_block(png) for _, png in pages]
+    system, user = _build_invoice_lineitem_prompt()
+
+    attempts = [
+        ("primary", "vision_llm", {"complexity": "moderate", "confidence_score": 0.9}),
+        ("secondary", "vision_llm_fallback", {"complexity": "complex", "confidence_score": 0.2}),
+    ]
+
+    for attempt_name, method_label, knobs in attempts:
+        raw = ai_gateway.call_vision(
+            system=system,
+            user=user,
+            images=images,
+            task_type="invoice_lineitem_extraction",
+            service_name="vision_extractor",
+            object_id=object_id,
+            risk_level="high",
+            max_tokens=2400,
+            **knobs,
+        )
+        if raw is None:
+            prov["failed_layers"].append(f"{attempt_name}_no_response")
+            continue
+
+        parsed = _parse_json(raw)
+        if parsed is None:
+            prov["failed_layers"].append(f"{attempt_name}_unparseable_json")
+            continue
+
+        clean, errs = validate_invoice_extraction(parsed)
+        prov["validation_errors"] = errs
+
+        # Usable if we recovered ANY purchase-accounting input — line items,
+        # an FOB total, or at least a supplier identity.
+        has_value = bool(clean.get("line_items")) or (
+            clean.get("fob_usd") is not None
+        ) or bool(clean.get("supplier"))
+        if not has_value:
+            prov["failed_layers"].append(f"{attempt_name}_no_usable_value")
+            continue
+
+        prov["ok"] = True
+        prov["extraction_method"] = method_label
+        prov["model_attempt"] = attempt_name
+        prov["extraction_confidence"] = float(clean.get("confidence", 0.0))
+        prov["fields"] = clean
+        prov["source_page"] = clean.get("source_page")
+        prov["source_reason"] = clean.get("source_reason")
+        return prov
+
+    return prov
+
+
+def _merge_vision_invoice(
+    audit: Dict[str, Any], clean: Dict[str, Any], prov: Dict[str, Any]
+) -> bool:
+    """Write the advisory ``vision_invoice`` block, sticky + field-merge.
+
+    Returns True when the block was written, False when withheld because the
+    operator already confirmed it (sticky — a confirmed proposal is authority
+    the operator owns; the machine never silently overwrites it).
+    """
+    existing = dict(audit.get("vision_invoice") or {})
+    if existing.get("operator_confirmed") is True:
+        return False  # sticky: never overwrite an operator-confirmed proposal
+
+    merged = dict(existing)
+    merged["operator_confirmed"] = False
+    merged["source"] = "vision_llm"
+    merged["extracted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    merged["confidence"] = float(
+        prov.get("extraction_confidence", clean.get("confidence", 0.0))
+    )
+    if prov.get("source_file"):
+        merged["source_file"] = prov.get("source_file")
+    if clean.get("source_page") is not None:
+        merged["source_page"] = clean["source_page"]
+
+    # Scalar field-merge: a null in this run keeps the prior value (don't lose a
+    # supplier we read last time just because this page didn't show it).
+    for f in ("supplier", "invoice_no", "currency"):
+        if clean.get(f) is not None:
+            merged[f] = clean[f]
+
+    # USD-only discipline (mirrors the CIF fallback): fob_usd is a USD figure by
+    # contract. Only accept it when the invoice currency this run reads as USD.
+    # An unknown / non-USD currency is NOT USD — withhold the value rather than
+    # mislabel a foreign amount as dollars. A prior USD fob is left untouched.
+    _inv_currency = (clean.get("currency") or merged.get("currency") or "").upper()
+    if clean.get("fob_usd") is not None and _inv_currency == "USD":
+        merged["fob_usd"] = clean["fob_usd"]
+
+    # Line items: overwrite only when this run produced rows; otherwise keep any
+    # rows already held. itemization_unavailable then reflects the FINAL state.
+    new_items = clean.get("line_items") or []
+    if new_items:
+        merged["line_items"] = new_items
+    else:
+        merged.setdefault("line_items", [])
+    merged["itemization_unavailable"] = len(merged.get("line_items") or []) == 0
+
+    merged["provenance"] = {
+        "method": prov.get("extraction_method"),
+        "model_attempt": prov.get("model_attempt"),
+        "source_reason": prov.get("source_reason"),
+        "validation_errors": prov.get("validation_errors"),
+    }
+    audit["vision_invoice"] = merged
+    return True
+
+
+def run_image_only_invoice_extraction(
+    output_dir: Any,
+    batch_id: str,
+) -> Dict[str, Any]:
+    """Advisory image-only invoice recovery for the PZ purchase-accounting layer.
+
+    Re-reads the audit and acts ONLY when:
+      - the operator has NOT already confirmed a vision_invoice proposal, AND
+      - the engine has NOT already parsed real invoice line items (a populated
+        ``rows`` + a positive ``invoice_totals.total_fob_usd``).
+    For each image-only invoice PDF it runs vision extraction and writes the
+    advisory ``vision_invoice`` block (merge-not-replace, sticky). It never
+    touches CIF authority keys, invoice_totals, rows, or customs_declaration.
+
+    Called LAST from intake + recheck (after the CIF fallback). Returns a
+    summary dict (never raises); safe to call when nothing is needed.
+    """
+    from ..utils.io import write_json_atomic, read_json  # noqa: PLC0415
+    from . import document_text_quality as dtq  # noqa: PLC0415
+
+    out = Path(output_dir)
+    audit_path = out / "audit.json"
+    summary: Dict[str, Any] = {
+        "batch_id": batch_id,
+        "ran": False,
+        "wrote": False,
+        "reason": "",
+        "documents": [],
+    }
+
+    try:
+        audit = read_json(audit_path)
+    except Exception as exc:
+        summary["reason"] = f"audit unreadable: {exc}"
+        return summary
+    if not isinstance(audit, dict):
+        summary["reason"] = "audit not a dict"
+        return summary
+
+    vi = audit.get("vision_invoice") or {}
+    if vi.get("operator_confirmed") is True:
+        summary["reason"] = "vision_invoice operator_confirmed — not re-extracting"
+        return summary
+
+    # Need check — skip when the engine already produced real purchase-accounting
+    # line items. This layer exists only for the image-only failure case.
+    # NB: an absent/None rows AND a zero/None total_fob_usd both mean "no parse" —
+    # _coerce_money rejects 0 (returns None), so a declared-zero total never reads
+    # as a successful engine parse. Only a populated rows list together with a
+    # strictly-positive FOB total counts as "engine already parsed".
+    rows = audit.get("rows")
+    it = audit.get("invoice_totals") or {}
+    engine_parsed = (
+        isinstance(rows, list)
+        and len(rows) > 0
+        and _coerce_money(it.get("total_fob_usd")) is not None
+    )
+    if engine_parsed:
+        summary["reason"] = "engine already parsed invoice line items — advisory extraction not needed"
+        return summary
+
+    inv_dir = out / "source" / "invoices"
+    candidates = sorted(inv_dir.glob("*.pdf")) if inv_dir.is_dir() else []
+    if not candidates:
+        summary["reason"] = "no invoice source PDFs present"
+        return summary
+
+    prior_sigs: Dict[str, str] = dict(vi.get("attempted_signatures") or {})
+    expected_labels = ["description", "qty", "quantity", "amount", "total", "hsn", "pcs"]
+
+    summary["ran"] = True
+    wrote = False
+    doc_records: List[Dict[str, Any]] = []
+    attempted_now = dict(prior_sigs)
+
+    for pdf in candidates:
+        sig = _file_signature(pdf)
+        key = pdf.name
+        rec: Dict[str, Any] = {"file": pdf.name, "signature": sig}
+
+        if prior_sigs.get(key) == sig:
+            rec["skipped"] = "already_attempted_this_version"
+            doc_records.append(rec)
+            continue
+
+        quality = dtq.assess_pdf_text_quality(str(pdf), expected_labels=expected_labels)
+        should, reason = dtq.needs_vision_fallback(quality, value_missing=True)
+        rec["image_only"] = quality.get("image_only_pdf")
+        rec["extracted_text_chars"] = quality.get("extracted_text_chars")
+        rec["decision"] = reason
+        if not should:
+            rec["skipped"] = "not_image_only"
+            attempted_now[key] = sig
+            doc_records.append(rec)
+            continue
+
+        prov = extract_invoice_lineitems_via_vision(str(pdf), object_id=batch_id)
+        attempted_now[key] = sig
+        rec["extraction"] = {
+            "ok": prov["ok"],
+            "method": prov["extraction_method"],
+            "model_attempt": prov["model_attempt"],
+            "confidence": prov["extraction_confidence"],
+            "failed_layers": prov["failed_layers"],
+            "validation_errors": prov["validation_errors"],
+            "source_page": prov["source_page"],
+            "source_reason": prov["source_reason"],
+        }
+
+        if not prov["ok"]:
+            doc_records.append(rec)
+            continue
+
+        conf = prov["extraction_confidence"]
+        if conf < MIN_WRITE_CONFIDENCE:
+            rec["write"] = f"withheld_low_confidence({conf:.2f}<{MIN_WRITE_CONFIDENCE})"
+            doc_records.append(rec)
+            continue
+
+        did = _merge_vision_invoice(audit, prov["fields"], prov)
+        if did:
+            wrote = True
+            n_items = len(prov["fields"].get("line_items") or [])
+            rec["write"] = (
+                f"vision_invoice updated (line_items={n_items}, "
+                f"fob_usd={prov['fields'].get('fob_usd')}, operator_confirmed=false)"
+            )
+        else:
+            rec["write"] = "withheld_operator_confirmed"
+        doc_records.append(rec)
+        if wrote:
+            break  # one good invoice proposal is enough
+
+    # TOCTOU stickiness guard — re-read the on-disk proposal immediately before
+    # writing. The operator may have CONFIRMED a proposal (operator_confirmed=true)
+    # in another request between our initial read and now. Our in-memory `audit`
+    # still carries the pre-confirmation block, so writing it would silently revert
+    # the operator's confirmation and any fields they accepted. If a confirmation
+    # landed in the gap, abort the write entirely — the operator owns that block.
+    try:
+        on_disk = (read_json(audit_path) or {}).get("vision_invoice") or {}
+    except Exception:
+        on_disk = {}
+    if on_disk.get("operator_confirmed") is True:
+        summary["wrote"] = False
+        summary["documents"] = doc_records
+        summary["reason"] = "operator confirmed vision_invoice mid-run — write aborted (sticky)"
+        return summary
+
+    # Record the attempt ledger + run history on the block (merge-not-replace).
+    vi2 = dict(audit.get("vision_invoice") or {})
+    vi2["attempted_signatures"] = attempted_now
+    runs = list(vi2.get("runs") or [])
+    runs.append({
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "batch_id": batch_id,
+        "documents": doc_records,
+        "wrote": wrote,
+    })
+    vi2["runs"] = runs[-10:]
+    audit["vision_invoice"] = vi2
+
+    try:
+        write_json_atomic(audit_path, audit)
+    except Exception as exc:
+        summary["reason"] = f"audit write failed: {exc}"
+        summary["documents"] = doc_records
+        return summary
+
+    summary["wrote"] = wrote
+    summary["documents"] = doc_records
+    summary["reason"] = (
+        "wrote advisory vision_invoice proposal" if wrote else "ran, no usable invoice summary written"
+    )
+    return summary

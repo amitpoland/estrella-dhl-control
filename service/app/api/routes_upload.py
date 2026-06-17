@@ -510,6 +510,21 @@ async def _run_dhl_precheck(
         except Exception as _ve:
             log.warning("[%s] vision CIF fallback failed (non-fatal): %s", batch_id, _ve)
 
+        # ── 6. Advisory image-only invoice extraction (LAST — self-contained) ─
+        # When the invoice is an image-only scan the engine cannot parse goods
+        # lines / FOB / supplier, so PZ generation is impossible. Recover those
+        # purchase-accounting inputs into the advisory `vision_invoice` block
+        # (operator_confirmed=false — a proposal, never booked). Does NOT touch
+        # CIF authority, invoice_totals, or rows. Non-fatal.
+        try:
+            from ..services.vision_extractor import run_image_only_invoice_extraction
+            _ires = run_image_only_invoice_extraction(output_dir, batch_id)
+            if _ires.get("ran"):
+                log.info("[%s] vision invoice extraction: wrote=%s reason=%s",
+                         batch_id, _ires.get("wrote"), _ires.get("reason"))
+        except Exception as _ie:
+            log.warning("[%s] vision invoice extraction failed (non-fatal): %s", batch_id, _ie)
+
     except Exception as exc:
         log.warning("[%s] DHL pre-check failed (non-fatal): %s", batch_id, exc)
 
