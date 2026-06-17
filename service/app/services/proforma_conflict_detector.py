@@ -32,9 +32,17 @@ STATUS (governance — PR sequencing):
   - Temporal Drift Detection ("changed since draft creation") . DEFERRED to the
         ADR-022 snapshot layer (PR-2). Do NOT claim "changed since draft
         creation" before the snapshot columns exist — doing so without them
-        asserts false authority. Divergence-class findings therefore carry
-        ``evidence["semantic"] = "divergence_not_temporal_drift"`` + a pr2_todo
-        marker so reviewers/UI never misread divergence as temporal drift.
+        asserts false authority. The master-COMPARISON divergence checks
+        therefore carry ``evidence["semantic"] = "divergence_not_temporal_drift"``
+        + a pr2_todo marker so reviewers/UI never misread divergence as
+        temporal drift. That marker applies to the three checks that compare a
+        draft value against a *current* master value — V3 currency_vs_customer_default,
+        V5 customer_vat_eu_changed, V8 service_charge_defaults_changed — each of
+        which is divergence now and becomes a true temporal-drift check in PR-2.
+        V4 bank_account_currency_unsupported is deliberately NOT marked: it is a
+        STATIC eligibility error (the draft currency has no company bank account),
+        not a master comparison and never a temporal-drift candidate, so it
+        carries no semantic marker.
 """
 from __future__ import annotations
 
