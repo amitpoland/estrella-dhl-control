@@ -980,9 +980,17 @@ def _merge_vision_invoice(
 
     # Scalar field-merge: a null in this run keeps the prior value (don't lose a
     # supplier we read last time just because this page didn't show it).
-    for f in ("supplier", "invoice_no", "currency", "fob_usd"):
+    for f in ("supplier", "invoice_no", "currency"):
         if clean.get(f) is not None:
             merged[f] = clean[f]
+
+    # USD-only discipline (mirrors the CIF fallback): fob_usd is a USD figure by
+    # contract. Only accept it when the invoice currency this run reads as USD.
+    # An unknown / non-USD currency is NOT USD — withhold the value rather than
+    # mislabel a foreign amount as dollars. A prior USD fob is left untouched.
+    _inv_currency = (clean.get("currency") or merged.get("currency") or "").upper()
+    if clean.get("fob_usd") is not None and _inv_currency == "USD":
+        merged["fob_usd"] = clean["fob_usd"]
 
     # Line items: overwrite only when this run produced rows; otherwise keep any
     # rows already held. itemization_unavailable then reflects the FINAL state.
@@ -1049,6 +1057,10 @@ def run_image_only_invoice_extraction(
 
     # Need check — skip when the engine already produced real purchase-accounting
     # line items. This layer exists only for the image-only failure case.
+    # NB: an absent/None rows AND a zero/None total_fob_usd both mean "no parse" —
+    # _coerce_money rejects 0 (returns None), so a declared-zero total never reads
+    # as a successful engine parse. Only a populated rows list together with a
+    # strictly-positive FOB total counts as "engine already parsed".
     rows = audit.get("rows")
     it = audit.get("invoice_totals") or {}
     engine_parsed = (
@@ -1131,6 +1143,22 @@ def run_image_only_invoice_extraction(
         doc_records.append(rec)
         if wrote:
             break  # one good invoice proposal is enough
+
+    # TOCTOU stickiness guard — re-read the on-disk proposal immediately before
+    # writing. The operator may have CONFIRMED a proposal (operator_confirmed=true)
+    # in another request between our initial read and now. Our in-memory `audit`
+    # still carries the pre-confirmation block, so writing it would silently revert
+    # the operator's confirmation and any fields they accepted. If a confirmation
+    # landed in the gap, abort the write entirely — the operator owns that block.
+    try:
+        on_disk = (read_json(audit_path) or {}).get("vision_invoice") or {}
+    except Exception:
+        on_disk = {}
+    if on_disk.get("operator_confirmed") is True:
+        summary["wrote"] = False
+        summary["documents"] = doc_records
+        summary["reason"] = "operator confirmed vision_invoice mid-run — write aborted (sticky)"
+        return summary
 
     # Record the attempt ledger + run history on the block (merge-not-replace).
     vi2 = dict(audit.get("vision_invoice") or {})

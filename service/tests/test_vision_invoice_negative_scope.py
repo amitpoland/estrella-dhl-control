@@ -125,3 +125,29 @@ def test_source_contract_cif_resolver_does_not_name_vision_invoice():
         "cif_resolver.py references vision_invoice — the advisory invoice "
         "proposal must never be a CIF authority source (authority isolation)."
     )
+
+
+def test_source_contract_clearance_decision_does_not_name_vision_invoice():
+    """Static guard: the clearance decision builder must not read vision_invoice.
+
+    clearance_decision delegates CIF entirely to resolve_cif. If this source ever
+    started naming vision_invoice, a low-confidence OCR proposal could leak into a
+    customs routing decision — the exact authority bleed this module guards."""
+    src = (Path(_SVC) / "app" / "services" / "clearance_decision.py").read_text(encoding="utf-8")
+    assert "vision_invoice" not in src, (
+        "clearance_decision.py references vision_invoice — the advisory invoice "
+        "proposal must never influence a clearance/customs decision."
+    )
+
+
+def test_source_contract_active_shipment_monitor_does_not_name_vision_invoice():
+    """Static guard: the active-shipment monitor must not read vision_invoice.
+
+    The monitor surfaces CIF/value state via resolve_cif. Reading the advisory
+    proposal here would let an unconfirmed OCR guess drive monitor status —
+    authority bleed into the operator-facing shipment view."""
+    src = (Path(_SVC) / "app" / "services" / "active_shipment_monitor.py").read_text(encoding="utf-8")
+    assert "vision_invoice" not in src, (
+        "active_shipment_monitor.py references vision_invoice — the advisory "
+        "invoice proposal must never drive monitor/shipment status."
+    )

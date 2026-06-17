@@ -179,13 +179,40 @@ def test_merge_is_sticky_on_operator_confirmed():
 def test_merge_field_merge_keeps_prior_scalar_when_new_is_null():
     audit = {"vision_invoice": {"operator_confirmed": False, "supplier": "PRIOR SUPPLIER",
                                 "line_items": []}}
-    # New run reads FOB but NOT supplier → prior supplier must survive.
-    clean = {"fob_usd": 500.0, "line_items": [], "itemization_unavailable": True, "confidence": 0.7}
+    # New run reads FOB (in USD) but NOT supplier → prior supplier must survive.
+    clean = {"fob_usd": 500.0, "currency": "USD", "line_items": [],
+             "itemization_unavailable": True, "confidence": 0.7}
     vision_extractor._merge_vision_invoice(audit, clean, _prov(clean, conf=0.7))
     vi = audit["vision_invoice"]
     assert vi["supplier"] == "PRIOR SUPPLIER"  # not lost
     assert vi["fob_usd"] == 500.0              # new value applied
     assert vi["operator_confirmed"] is False
+
+
+def test_merge_withholds_fob_when_currency_not_usd():
+    """USD-only discipline: a FOB figure read under an unknown / non-USD currency
+    must NOT be written as fob_usd — mirrors the CIF fallback's USD gate. An
+    unknown currency is not USD; mislabelling a foreign amount as dollars would
+    feed a wrong purchase-accounting value downstream."""
+    # Unknown currency → withhold
+    audit = {"vision_invoice": {"operator_confirmed": False, "line_items": []}}
+    clean = {"fob_usd": 900.0, "line_items": [], "confidence": 0.8}  # no currency
+    vision_extractor._merge_vision_invoice(audit, clean, _prov(clean, conf=0.8))
+    assert "fob_usd" not in audit["vision_invoice"], "unknown currency must withhold fob_usd"
+
+    # Explicit non-USD currency → withhold
+    audit2 = {"vision_invoice": {"operator_confirmed": False, "line_items": []}}
+    clean2 = {"fob_usd": 900.0, "currency": "EUR", "line_items": [], "confidence": 0.8}
+    vision_extractor._merge_vision_invoice(audit2, clean2, _prov(clean2, conf=0.8))
+    assert "fob_usd" not in audit2["vision_invoice"], "EUR must not become fob_usd"
+    assert audit2["vision_invoice"]["currency"] == "EUR"  # currency itself is recorded
+
+    # A prior USD fob is left untouched when a later run reads a non-USD currency.
+    audit3 = {"vision_invoice": {"operator_confirmed": False, "fob_usd": 700.0,
+                                 "currency": "USD", "line_items": []}}
+    clean3 = {"fob_usd": 900.0, "currency": "EUR", "line_items": [], "confidence": 0.8}
+    vision_extractor._merge_vision_invoice(audit3, clean3, _prov(clean3, conf=0.8))
+    assert audit3["vision_invoice"]["fob_usd"] == 700.0  # prior USD value preserved
 
 
 # ══════════════════════════════════════════════════════════════════════════════
