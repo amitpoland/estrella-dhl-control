@@ -454,8 +454,15 @@ async def _run_dhl_precheck(
                         "gap":       awb_customs.get("gap"),
                     }
                 else:
-                    # Preserve the prior good value; only refresh the gap note.
-                    existing_awb["gap"] = awb_customs.get("gap")
+                    # Preserve the prior good value AND its usable state. The new
+                    # read failed (gap), but the gating ``gap`` field MUST stay as
+                    # the prior good value's (None) — cif_resolver treats any
+                    # truthy ``gap`` as an unusable layer (cif_resolver.py:156),
+                    # so overwriting ``gap`` here would silently downgrade a
+                    # captured good value to UNKNOWN at resolution time, which is
+                    # exactly the downgrade this branch exists to prevent. Record
+                    # the failed re-read under a NON-gating diagnostic key instead.
+                    existing_awb["last_reread_gap"] = awb_customs.get("gap")
                     _audit["awb_customs"] = existing_awb
             if carrier_upper == "DHL" and not _audit.get("clearance_status"):
                 _audit["clearance_status"] = "awaiting_dhl_customs_email"
