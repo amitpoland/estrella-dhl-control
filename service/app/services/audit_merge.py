@@ -97,6 +97,13 @@ PRESERVED_KEYS: tuple = (
     # here so REGENERATED_KEYS does not erase them.
     "_pz_engine_authority_rows",
     "_pz_engine_authority_meta",
+    # ── Advisory image-only invoice proposal (vision_extractor, 2026-06-17) ──
+    # run_image_only_invoice_extraction writes an operator-confirmable
+    # vision_invoice proposal (supplier / FOB / line items) when the engine
+    # could not parse an image-only invoice. The engine never writes this key,
+    # so it must be preserved across regeneration — including a sticky
+    # operator_confirmed=true once the operator accepts the proposal.
+    "vision_invoice",
 )
 
 # Engine outputs — always replaced by the fresh regeneration.
