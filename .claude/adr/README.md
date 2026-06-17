@@ -78,6 +78,7 @@ What does this decision lock in for future work? What does it enable?
 | [ADR-017](ADR-017-carrier-label-store-retention.md) | Carrier label store — retention policy (immutable evidence) | Accepted |
 | [ADR-018](ADR-018-shadow-mode-flag-defaults.md) | Shadow-mode flag defaults — Category B observation flags default True; live-enabled flags remain Category A default False. Amends ADR-010 with two-category model and forbidden state semantics. | Accepted |
 | [ADR-019](ADR-019-p2-ignition-pattern.md) | DHL self-clearance — proactive dispatch trigger surfaces and dedup contract (P2 ignition switch). Sweep primary + admin HTTP override route; `force` parameter contract; truth table for `triggered_by`. Extends ADR-013 caller pattern. | Accepted |
+| [ADR-030](ADR-030-cif-resolved-authority-single-gate.md) | Resolved-CIF is the single customs-value authority; raw parsed invoice fields are evidence. Shared `cif_authority.require_resolved_cif` / `get_cif_authority` gate (codes `cif_unresolved` / `cif_declared_zero`) wired into Polish-desc, customs-package, DSK, agency, and action-proposal routing. | Accepted |
 
 ## When to write a new ADR
 

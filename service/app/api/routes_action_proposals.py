@@ -315,8 +315,61 @@ def _assert_can_queue(proposal: Dict[str, Any], audit: Dict[str, Any]) -> None:
         )
 
     # G6 — high-value: block carrier_description_reply
+    # CIF authority: the persisted clearance_decision is the routing the operator
+    # is bound to, so its total_value_usd wins when present. Only when NO decision
+    # value exists do we derive from the shared resolver — instead of the old
+    # `or 0` that silently treated an *unresolved* customs value as 0 and let both
+    # routing branches bypass their threshold guards on a fake zero.
+    from ..services.cif_authority import get_cif_authority
+    from ..services.cif_resolver import CIF_DECLARED_ZERO, CIF_RESOLVED, CIF_UNKNOWN
     dec = audit.get("clearance_decision") or {}
-    cif = float(dec.get("total_value_usd") or 0)
+    _dec_cif = dec.get("total_value_usd")
+    if _dec_cif is not None:
+        # The persisted decision value is authoritative when present. Use it
+        # directly (NOT `_dec_cif or 0`, which would re-collapse a legitimate
+        # 0.0 decision value into the same silent-zero the gate exists to stop).
+        cif = float(_dec_cif)
+        cif_state = dec.get("cif_state")
+        if not cif_state:
+            # Legacy decision object predating the cif_state field: infer the
+            # tri-state from the routed value rather than assuming it is fine.
+            # A positive routed value means the shipment was routed on a real
+            # customs value (effectively resolved); a non-positive legacy value
+            # is exactly the silent-zero we must not trust → UNKNOWN (block),
+            # so a routing-dependent proposal cannot slip past the guard.
+            cif_state = CIF_RESOLVED if cif > 0 else CIF_UNKNOWN
+    else:
+        _auth = get_cif_authority(audit)
+        cif = float(_auth.get("cif_usd") or 0)
+        cif_state = _auth.get("cif_state") or CIF_UNKNOWN
+
+    # G6b/G7b — a customs value that is unresolved OR declared zero cannot route:
+    # block the value-sensitive proposal types rather than letting a fake/zero
+    # value silently pick a branch. DECLARED_ZERO is included because a genuine
+    # zero customs value (total_value_usd == 0) requires explicit operator review
+    # before a routing-dependent customs action is queued — it is not a license
+    # to auto-route the low-value (carrier reply) branch.
+    if prop_type in ("carrier_description_reply", "dhl_dsk_transfer") and cif_state in (
+        CIF_UNKNOWN,
+        CIF_DECLARED_ZERO,
+    ):
+        _reason = (
+            "is unresolved (cif_state=unknown), so the clearance path cannot be "
+            "determined"
+            if cif_state == CIF_UNKNOWN
+            else "is explicitly declared zero (cif_state=declared_zero) and "
+            "requires operator review"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot queue {prop_type}: customs CIF value {_reason}. "
+                "Resolve or confirm the customs value (re-process invoices, confirm "
+                "the AWB Custom Val, or complete operator review) before queueing a "
+                "routing-dependent action."
+            ),
+        )
+
     if prop_type == "carrier_description_reply" and cif > _THRESHOLD_USD:
         raise HTTPException(
             status_code=409,

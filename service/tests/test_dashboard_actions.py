@@ -481,3 +481,65 @@ def test_no_financial_fields_in_clearance_status_output():
     assert isinstance(result, str)
     assert a["customs_declaration"]["duty_a00_pln"] == original_duty
     assert a["customs_declaration"]["vat_b00_pln"]  == original_vat
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 10. DSK button uses the resolved-CIF authority, not raw invoice CIF=0
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_generate_dsk_enabled_when_cif_resolves_from_awb(tmp_path, monkeypatch):
+    """AWB 2315714531 shape: invoice CIF 0, AWB Custom Val USD 732 → RESOLVED.
+    The DSK button must be ENABLED (the value resolves from the shared CIF
+    authority), NOT falsely disabled on a raw invoice_totals.total_cif_usd of 0."""
+    from app.api import routes_dashboard as rd
+
+    monkeypatch.setattr(rd, "_OUTPUTS", tmp_path)
+    batch_id = "SHIPMENT_2315714531_2026-06_aaaa0001"
+    batch_dir = tmp_path / batch_id
+    batch_dir.mkdir()
+
+    audit = _audit({
+        "batch_id":       batch_id,
+        "awb":            "2315714531",
+        "invoice_totals": {"total_cif_usd": 0, "total_fob_usd": 0},
+        "awb_customs":    {"value_usd": 732.0, "currency": "USD", "gap": None},
+    })
+    (batch_dir / "audit.json").write_text(json.dumps(audit))
+
+    with patch("app.api.routes_dashboard._OUTPUTS", tmp_path), \
+         patch("app.services.email_service.get_all_emails", return_value=[]):
+        result = rd.action_diagnostics(batch_id)
+
+    dsk = result["actions"]["generate_dsk"]
+    assert dsk["enabled"] is True, f"DSK should be enabled (CIF resolves from AWB). Reason: {dsk.get('reason')}"
+    assert dsk["reason"] == "Ready — CIF value available"
+
+
+def test_generate_dsk_disabled_when_cif_unresolved(tmp_path, monkeypatch):
+    """A genuinely unresolved CIF (no invoice total, no AWB Custom Val) must leave
+    the DSK button DISABLED — the resolved-CIF authority is the gate, and an
+    unknown value is never treated as a usable zero."""
+    from app.api import routes_dashboard as rd
+
+    monkeypatch.setattr(rd, "_OUTPUTS", tmp_path)
+    batch_id = "SHIPMENT_UNKNOWNCIF_2026-06_aaaa0002"
+    batch_dir = tmp_path / batch_id
+    batch_dir.mkdir()
+
+    audit = _audit({
+        "batch_id":       batch_id,
+        "awb":            "2315714531",
+        "invoice_totals": {"total_cif_usd": 0, "total_fob_usd": 0},
+        "awb_customs":    {"value_usd": None, "currency": "", "gap": "label_no_value"},
+    })
+    (batch_dir / "audit.json").write_text(json.dumps(audit))
+
+    with patch("app.api.routes_dashboard._OUTPUTS", tmp_path), \
+         patch("app.services.email_service.get_all_emails", return_value=[]):
+        result = rd.action_diagnostics(batch_id)
+
+    dsk = result["actions"]["generate_dsk"]
+    assert dsk["enabled"] is False
+    # The disabled reason is the resolver's honest blocker, never the "ready" text.
+    assert dsk["reason"] != "Ready — CIF value available"
+    assert dsk["reason"]  # a human reason is always surfaced

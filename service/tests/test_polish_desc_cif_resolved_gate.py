@@ -247,13 +247,18 @@ def test_batch_detail_route_injects_resolved_cif_for_the_ui(tmp_path, monkeypatc
 
 def test_route_uses_resolved_cif_guard_not_raw_invoice_zero():
     src = (_SVC / "app" / "api" / "routes_dhl_clearance.py").read_text(encoding="utf-8")
-    # New resolved-CIF guard wiring is present.
-    assert "from ..services.cif_resolver import resolve_cif, CIF_RESOLVED" in src
-    assert "\"code\":   \"cif_unresolved\"" in src or '"code":   "cif_unresolved"' in src
-    # The route exposes the resolved provenance on the block.
-    assert "cif_state" in src and "cif_source" in src
+    # The route now gates on the shared require_resolved_cif() authority helper
+    # rather than an inline resolver call — single platform authority.
+    assert "from ..services.cif_authority import require_resolved_cif" in src
+    assert "require_resolved_cif(audit" in src
     # The legacy raw-invoice blocker key is gone from this route.
     assert "cif_zero" not in src
+
+    # The shared helper carries the resolved provenance + the unresolved code the
+    # behavioural test pins, so the contract moved with the authority.
+    helper = (_SVC / "app" / "services" / "cif_authority.py").read_text(encoding="utf-8")
+    assert "cif_unresolved" in helper
+    assert "cif_state" in helper and "cif_source" in helper
 
 
 def test_ui_gates_dsk_on_resolved_cif_so_no_zero_value_declaration():
