@@ -3868,6 +3868,87 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
     }
 
 
+# ── Vision-invoice operator confirmation (PR-2) ───────────────────────────────
+# Sole writer of operator_confirmed=true on audit["vision_invoice"]. The machine
+# extractor only ever writes operator_confirmed=false (sticky); this endpoint is
+# the one human write-gate that promotes an advisory image-only invoice proposal
+# to operator-attested authority. It does NOT inject into the engine, generate
+# PZ, or post to wFirma — those stay blocked by design until the gated injection
+# path ships (runbook Stage B).
+
+@router.post("/batches/{batch_id}/vision-invoice/confirm")
+async def confirm_vision_invoice_route(
+    batch_id: str,
+    session_user: dict = _op_auth,
+) -> Dict[str, Any]:
+    """Operator confirms the advisory image-only invoice proposal.
+
+    Sets ``operator_confirmed=true`` on ``audit["vision_invoice"]`` (sole writer)
+    and records ``confirmed_by`` / ``confirmed_at``. Advisory supplier
+    cross-validation is returned but never blocks. Returns 409 when there is no
+    confirmable proposal. Does NOT inject to the engine, generate PZ, or post to
+    wFirma — confirmation alone does not produce PZ rows.
+
+    Operator identity is the authenticated ``require_role`` user injected via
+    ``_op_auth`` — derived SERVER-SIDE only, never from a client header/body. The
+    role gate guarantees a real authenticated user, so ``operator_confirmed=true``
+    is always attributable to a named human (no ghost-identity fallback).
+    """
+    if "/" in batch_id or "\\" in batch_id or ".." in batch_id:
+        # Reject path separators (both POSIX and Windows) and parent-dir tokens
+        # before any filesystem resolution — _resolve_audit_path joins batch_id
+        # into a path, so traversal must be blocked here.
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    audit_path = _resolve_audit_path(batch_id)
+    if audit_path is None:
+        raise HTTPException(status_code=404, detail="Shipment not found.")
+    batch_dir = audit_path.parent
+
+    operator = (
+        (session_user.get("full_name") or "").strip()
+        or (session_user.get("email") or "").strip()
+        or str(session_user.get("id") or "").strip()
+    )
+    if not operator:
+        # require_role guarantees an authenticated user; this only fires on a
+        # malformed user record. Refuse rather than mint an unattributable attest.
+        raise HTTPException(status_code=401, detail="Operator identity required to confirm.")
+
+    suppliers_db_path = settings.storage_root / "suppliers.sqlite"
+
+    from ..services.vision_extractor import confirm_vision_invoice
+    result = confirm_vision_invoice(
+        batch_dir,
+        batch_id,
+        confirmed_by=operator,
+        suppliers_db_path=suppliers_db_path,
+    )
+
+    if not result.get("ok"):
+        reason = result.get("reason") or "cannot_confirm"
+        if reason == "no_proposal":
+            raise HTTPException(
+                status_code=409,
+                detail="No image-only invoice proposal to confirm for this shipment.",
+            )
+        if "unreadable" in reason or "audit not a dict" in reason:
+            raise HTTPException(status_code=404, detail="Shipment audit not found.")
+        if reason.startswith("batch busy"):
+            raise HTTPException(status_code=409, detail=reason)
+        raise HTTPException(status_code=400, detail=reason)
+
+    # Honest remaining-blocker disclosure (runbook Stage B): confirmation alone
+    # does not create PZ rows. Engine injection into process_batch() inputs is
+    # gated and ships separately (Issues #638/#639 must close first).
+    result["next_step"] = (
+        "Invoice proposal confirmed. PZ generation remains blocked until the "
+        "gated engine-injection path ships (runbook Stage B); confirmation does "
+        "not by itself create PZ rows or post to wFirma."
+    )
+    return result
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def _is_link_alive(url: str) -> bool:
