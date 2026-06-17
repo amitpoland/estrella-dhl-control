@@ -7300,6 +7300,19 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                   const pathColor  = isAgency  ? 'var(--badge-amber-text)' :
                                     isCarrier  ? 'var(--badge-green-text)' :
                                                  'var(--text-3)';
+                  // Resolved CIF authority (same source as clearance routing).
+                  // total_value_usd is the resolved CIF in USD; cif_state is the
+                  // tri-state (resolved / declared_zero / unknown). Used so the
+                  // values panel reads ONE authority, never raw invoice CIF = 0.
+                  const decCifUsd   = dec.total_value_usd;
+                  const decResolved = dec.cif_state === 'resolved' && decCifUsd != null && Number(decCifUsd) > 0;
+                  const cifSourceLabel = (src) => {
+                    if (!src) return 'unresolved (no source)';
+                    if (src === 'awb_customs.value_usd') return 'AWB Custom Val (carrier-declared)';
+                    if (src.indexOf('dhl_precheck') === 0) return 'DHL pre-check / OCR-AI fallback';
+                    if (src.indexOf('verification') === 0 || src.indexOf('invoice_totals') === 0) return 'Invoice';
+                    return src.replace(/_/g, ' ').replace('.', ' ');
+                  };
                   // dhlAction CTA strings removed in the action-panel
                   // consolidation — the authoritative next-action button
                   // now lives in DhlActionCard. The legacy "Send Polish
@@ -7310,7 +7323,16 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     <div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>DHL Clearance Values</div>
                       <InfoRow label="Invoice CIF (USD)"
-                        value={<span style={{ color: cifZero ? 'var(--badge-red-text)' : 'inherit', fontWeight: cifZero ? 700 : 'inherit' }}>{fmtUsd(cifUsd)}</span>} />
+                        value={cifZero && decResolved
+                          ? <span data-testid="invoice-cif-not-parsed" style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>not parsed</span>
+                          : <span style={{ color: cifZero ? 'var(--badge-red-text)' : 'inherit', fontWeight: cifZero ? 700 : 'inherit' }}>{fmtUsd(cifUsd)}</span>} />
+                      {decResolved && (
+                        <InfoRow label="Resolved CIF (USD)"
+                          value={<span data-testid="resolved-cif-value" style={{ color: 'var(--badge-green-text)', fontWeight: 700 }}>
+                            {fmtUsd(decCifUsd)}
+                            <span style={{ color: 'var(--text-3)', fontWeight: 400, fontSize: 10, marginLeft: 6 }}>· Source: {cifSourceLabel(dec.cif_source)}</span>
+                          </span>} />
+                      )}
                       <InfoRow label="Total Net (USD)" value={totalFobUsd != null ? `USD ${Number(totalFobUsd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'Not parsed — process invoices'} />
                       <InfoRow label="Freight (PLN)" data-testid="freight-pln-row"
                         value={(() => {
@@ -7355,8 +7377,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       {(() => {
                         const dskMeta = audit.dsk_meta;
                         const dskVal  = dskMeta ? dskMeta.value_usd
-                                      : (ver.invoice_cif_total_usd || it.total_cif_usd);
-                        const dskSrc  = dskMeta ? dskMeta.value_source : 'invoice CIF';
+                                      : (ver.invoice_cif_total_usd || it.total_cif_usd || (decResolved ? decCifUsd : null));
+                        const dskSrc  = dskMeta ? dskMeta.value_source
+                                      : ((ver.invoice_cif_total_usd || it.total_cif_usd) ? 'invoice CIF'
+                                         : decResolved ? cifSourceLabel(dec.cif_source) : 'invoice CIF');
                         if (!dskVal) return null;
                         return (
                           <InfoRow label="DSK Value (USD)"
@@ -7554,10 +7578,16 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         )}
                       </div>
 
-                      {cifZero && (
-                        <div style={{ marginTop: 10, padding: '10px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6 }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 3 }}>⚠ CIF = 0.00 — invoice values not parsed</div>
-                          <div style={{ fontSize: 10, color: 'var(--badge-red-text)', opacity: 0.9 }}>Generate Description is blocked until the batch is re-processed with valid invoice PDFs.</div>
+                      {cifZero && !decResolved && (
+                        <div data-testid="cif-unresolved-banner" style={{ marginTop: 10, padding: '10px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 3 }}>⚠ CIF unresolved — no customs value from any authority</div>
+                          <div style={{ fontSize: 10, color: 'var(--badge-red-text)', opacity: 0.9 }}>Generate Description is blocked until the batch is re-processed with valid invoice PDFs, or the AWB customs value is confirmed.</div>
+                        </div>
+                      )}
+                      {cifZero && decResolved && (
+                        <div data-testid="cif-resolved-advisory" style={{ marginTop: 10, padding: '10px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-amber-text)', marginBottom: 3 }}>ℹ Invoice totals not parsed — clearance routing resolved CIF from {cifSourceLabel(dec.cif_source)}</div>
+                          <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', opacity: 0.9 }}>Resolved CIF {fmtUsd(decCifUsd)} is used for routing and Polish Description. Re-process invoices to populate per-invoice CIF rows.</div>
                         </div>
                       )}
                     </div>
@@ -7586,11 +7616,26 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
 
                 // DSK state machine
                 const _dec       = audit.clearance_decision || {};
+                // Polish Description is gated on the RESOLVED CIF authority (same
+                // source as clearance routing), never raw invoice CIF = 0. Block
+                // only when no authority resolved a positive customs value.
+                const _decCifUsd   = _dec.total_value_usd;
+                const _decResolved = _dec.cif_state === 'resolved' && _decCifUsd != null && Number(_decCifUsd) > 0;
+                const _pdBlocked   = !_decResolved;
+                const _decCifLabel = _decResolved
+                  ? `USD ${Number(_decCifUsd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                  : '';
                 const _dskRequired = _dec.require_dsk !== false;   // default true unless explicitly false
                 const _dskFile   = audit.dsk_filename;
                 const _dskExists = !!(audit.dsk_file_exists !== false && _dskFile);
                 const _dskMissing = _dskFile && !_dskExists;
                 const _dskReady   = _dskFile && _dskExists;
+                // DSK carries the customs value on the declaration — gate it on the
+                // SAME resolved-CIF authority as Polish Description so we never send a
+                // value_usd of 0 (a false zero-value customs declaration) when no
+                // authority has resolved a positive customs value. When enabled, the
+                // value_usd payload always falls through to the resolved CIF.
+                const _dskBlocked = !_decResolved;
 
                 // DHL reply state
                 const _drp     = audit.dhl_reply_package || {};
@@ -7641,6 +7686,11 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     {/* B. Customs package files */}
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                       <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginRight: 4 }}>Customs Package</span>
+                      {_decResolved && (
+                        <span data-testid="customs-pkg-resolved-cif" style={{ fontSize: 10, color: 'var(--badge-green-text)', fontWeight: 600 }}>
+                          Resolved CIF = {_decCifLabel}
+                        </span>
+                      )}
 
                       {/* Polish Description — single state, never both Generate+Download */}
                       {_pdReady ? (
@@ -7650,17 +7700,18 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       ) : _pdMissing ? (
                         <>
                           <span style={{ fontSize: 11, color: 'var(--badge-red-text)', fontWeight: 600 }}>⚠ Marked generated but file missing</span>
-                          <Btn variant="danger" disabled={!!busy.genDesc}
+                          <Btn variant="danger" data-testid="btn-repair-polish-desc" disabled={!!busy.genDesc || _pdBlocked}
+                            title={_pdBlocked ? 'Blocked: customs CIF unresolved — re-process invoices or confirm the AWB customs value' : 'Re-generate the missing Polish Customs Description PDF'}
                             onClick={() => doAction('genDesc', 'Repair Polish Description', () => apiFetch(`/api/v1/dhl/generate-description/${encodeURIComponent(batchId)}`, { method: 'POST' }))}>
-                            {busy.genDesc ? '⟳ Repairing…' : '⚠ Repair Polish Description'}
+                            {busy.genDesc ? '⟳ Repairing…' : _pdBlocked ? '⚠ Repair (CIF unresolved)' : '⚠ Repair Polish Description'}
                           </Btn>
                         </>
                       ) : (
                         <>
-                          <Btn variant="outline" disabled={!!busy.genDesc || _cifZero}
-                            title={_cifZero ? 'Blocked: CIF = 0.00 — re-process batch with valid invoices' : 'Generate Polish Customs Description PDF'}
+                          <Btn variant="outline" data-testid="btn-generate-polish-desc" disabled={!!busy.genDesc || _pdBlocked}
+                            title={_pdBlocked ? 'Blocked: customs CIF unresolved — re-process invoices or confirm the AWB customs value' : `Generate Polish Customs Description PDF (Resolved CIF = ${_decCifLabel})`}
                             onClick={() => doAction('genDesc', 'Generate Polish Description', () => apiFetch(`/api/v1/dhl/generate-description/${encodeURIComponent(batchId)}`, { method: 'POST' }))}>
-                            {busy.genDesc ? '⟳ Generating…' : _cifZero ? '⊞ Polish Desc. (CIF = 0)' : '⊞ Generate Polish Description'}
+                            {busy.genDesc ? '⟳ Generating…' : _pdBlocked ? '⊞ Polish Desc. (CIF unresolved)' : '⊞ Generate Polish Description'}
                           </Btn>
                           <Btn variant="ghost" disabled title="File not generated yet">
                             ↓ Polish Description
@@ -7678,16 +7729,18 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       ) : _dskMissing ? (
                         <>
                           <span style={{ fontSize: 11, color: 'var(--badge-red-text)', fontWeight: 600 }}>⚠ DSK marked generated but file missing</span>
-                          <Btn variant="danger" disabled={!!busy.genDsk}
-                            onClick={() => doAction('genDsk', 'Repair DSK', () => apiFetch('/api/v1/dsk/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batch_id: batchId, awb: trackingNo || batchId, value_usd: ver.invoice_cif_total_usd || (audit.invoice_totals || {}).total_cif_usd || 0 }) }))}>
-                            {busy.genDsk ? '⟳ Repairing…' : '⚠ Repair DSK'}
+                          <Btn variant="danger" data-testid="btn-repair-dsk" disabled={!!busy.genDsk || _dskBlocked}
+                            title={_dskBlocked ? 'Blocked: customs CIF unresolved — re-process invoices or confirm the AWB customs value before generating a DSK' : 'Re-generate the missing DSK PDF'}
+                            onClick={() => doAction('genDsk', 'Repair DSK', () => apiFetch('/api/v1/dsk/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batch_id: batchId, awb: trackingNo || batchId, value_usd: ver.invoice_cif_total_usd || (audit.invoice_totals || {}).total_cif_usd || (_decResolved ? _decCifUsd : 0) }) }))}>
+                            {busy.genDsk ? '⟳ Repairing…' : _dskBlocked ? '⚠ Repair DSK (CIF unresolved)' : '⚠ Repair DSK'}
                           </Btn>
                         </>
                       ) : (
                         <>
-                          <Btn variant="outline" disabled={!!busy.genDsk}
-                            onClick={() => doAction('genDsk', 'Generate DSK', () => apiFetch('/api/v1/dsk/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batch_id: batchId, awb: trackingNo || batchId, value_usd: ver.invoice_cif_total_usd || (audit.invoice_totals || {}).total_cif_usd || 0 }) }))}>
-                            {busy.genDsk ? '⟳ Generating…' : '⊟ Generate DSK'}
+                          <Btn variant="outline" data-testid="btn-generate-dsk" disabled={!!busy.genDsk || _dskBlocked}
+                            title={_dskBlocked ? 'Blocked: customs CIF unresolved — re-process invoices or confirm the AWB customs value before generating a DSK' : `Generate DSK PDF (Resolved CIF = ${_decCifLabel})`}
+                            onClick={() => doAction('genDsk', 'Generate DSK', () => apiFetch('/api/v1/dsk/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batch_id: batchId, awb: trackingNo || batchId, value_usd: ver.invoice_cif_total_usd || (audit.invoice_totals || {}).total_cif_usd || (_decResolved ? _decCifUsd : 0) }) }))}>
+                            {busy.genDsk ? '⟳ Generating…' : _dskBlocked ? '⊟ DSK (CIF unresolved)' : '⊟ Generate DSK'}
                           </Btn>
                           <Btn variant="ghost" disabled title="File not generated yet">
                             ↓ DSK PDF
@@ -8223,7 +8276,15 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               const cifInv = ver.invoice_cif_total_usd;
               const cifSad = ver.sad_cif_total_usd;
               const cifDiff = ver.cif_difference_usd;
-              const showCif = hasSad && (cifInv != null || cifSad != null);
+              // Resolved customs CIF authority (clearance routing). When invoice
+              // CIF was not parsed, SAD CIF is compared against the resolved CIF
+              // (e.g. AWB Custom Val / OCR-AI) rather than an invoice-only 0.
+              const _cdDec = audit.clearance_decision || {};
+              const cifResolved = (_cdDec.cif_state === 'resolved' && _cdDec.total_value_usd != null && Number(_cdDec.total_value_usd) > 0)
+                ? Number(_cdDec.total_value_usd) : null;
+              const cifInvParsed = cifInv != null && cifInv > 0;
+              const cifCompareIsResolved = !cifInvParsed && cifResolved != null;
+              const showCif = hasSad && (cifInv != null || cifSad != null || cifResolved != null);
 
               return (
                 <Card>
@@ -8280,16 +8341,26 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>CIF Comparison</div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '3px 12px', fontSize: 11 }}>
                         <span style={{ color: 'var(--text-3)' }}>Invoice CIF:</span>
-                        <span style={{ fontWeight: 600, color: 'var(--text)' }}>{fmtUSD(cifInv) || '—'}</span>
+                        <span style={{ fontWeight: 600, color: 'var(--text)' }}>{cifInvParsed ? fmtUSD(cifInv) : (cifResolved != null ? 'not parsed' : (fmtUSD(cifInv) || '—'))}</span>
+                        {cifResolved != null && (
+                          <>
+                            <span style={{ color: 'var(--text-3)' }}>Resolved CIF:</span>
+                            <span data-testid="cif-compare-resolved" style={{ fontWeight: 600, color: 'var(--badge-green-text)' }}>{fmtUSD(cifResolved)}</span>
+                          </>
+                        )}
                         <span style={{ color: 'var(--text-3)' }}>SAD CIF:</span>
                         <span style={{ fontWeight: 600, color: 'var(--text)' }}>{fmtUSD(cifSad) || '—'}</span>
                         <span style={{ color: 'var(--text-3)' }}>Difference:</span>
-                        <span style={{ fontWeight: 700, color: (cifSad === 0 && cifInv > 0) ? 'var(--badge-amber-text)' : (cifDiff === 0) ? 'var(--badge-green-text)' : 'var(--badge-amber-text)' }}>
-                          {(cifSad === 0 && cifInv > 0)
+                        <span style={{ fontWeight: 700, color: (cifSad === 0 && (cifInvParsed || cifResolved != null)) ? 'var(--badge-amber-text)' : ((!cifCompareIsResolved && cifDiff === 0) || (cifCompareIsResolved && cifSad != null && Math.abs(cifSad - cifResolved) < 0.01)) ? 'var(--badge-green-text)' : 'var(--badge-amber-text)' }}>
+                          {(cifSad === 0 && (cifInvParsed || cifResolved != null))
                             ? 'SAD CIF not parsed — [VERIFY-GAP]'
-                            : cifDiff != null
-                              ? `${cifDiff > 0 ? '+' : ''}${fmtUSD(cifDiff)} ${cifDiff === 0 ? '✓' : '⚠'}`
-                              : '—'}
+                            : cifCompareIsResolved
+                              ? (cifSad != null
+                                  ? `${(cifSad - cifResolved) >= 0 ? '+' : ''}${fmtUSD(cifSad - cifResolved)} ${Math.abs(cifSad - cifResolved) < 0.01 ? '✓' : '⚠'} (vs resolved)`
+                                  : '—')
+                              : cifDiff != null
+                                ? `${cifDiff > 0 ? '+' : ''}${fmtUSD(cifDiff)} ${cifDiff === 0 ? '✓' : '⚠'}`
+                                : '—'}
                         </span>
                       </div>
                     </div>

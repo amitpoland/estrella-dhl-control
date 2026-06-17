@@ -459,8 +459,10 @@ def test_route_endpoint_uses_inject_from_sources_and_guards():
     AND apply the lines-missing guard + reconciliation."""
     src = (Path(__file__).resolve().parents[1] / "app" / "api"
            / "routes_dhl_clearance.py").read_text(encoding="utf-8")
-    # _inject_rows_from_sources is wired in at the prod endpoints.
-    assert src.count("audit = _inject_rows_from_sources(batch_id, audit)") >= 2
+    # _inject_rows_from_sources is wired in at the prod endpoints. One site
+    # passes the customs_view kwarg (invoice_positions vs packing_rows), so
+    # match the call prefix rather than an exact-paren signature.
+    assert src.count("audit = _inject_rows_from_sources(batch_id, audit") >= 2
     # The lines-missing guard fires at the production endpoints.
     assert src.count('"lines_missing_for_description"') >= 2
     # And the reconciliation guard fires there too.

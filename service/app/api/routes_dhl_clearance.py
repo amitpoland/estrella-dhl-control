@@ -3042,19 +3042,35 @@ async def generate_description(
                 },
             ) from _ge
 
-    # ── Guard: CIF must be non-zero ───────────────────────────────────────────
-    _inv_totals  = audit.get("invoice_totals") or {}
-    _cif_inv     = float(_inv_totals.get("total_cif_usd") or 0)
-    _cif_ver     = float((audit.get("verification") or {}).get("invoice_cif_total_usd") or 0)
-    if _cif_inv == 0.0 and _cif_ver == 0.0:
+    # ── Guard: CIF must be RESOLVED (positive) across the full authority ladder ──
+    # Authority parity with clearance_decision and the shipment UI: the blocker is
+    # an *unresolved* customs CIF, NOT a raw invoice CIF of 0. A CIF resolved from
+    # AWB Custom Val or the OCR/AI vision fallback is sufficient to proceed even
+    # when invoice parsing yielded 0 — see services/cif_resolver.resolve_cif
+    # (tri-state: resolved / declared_zero / unknown). Downstream guards
+    # (lines_missing_for_description, rows↔audit reconciliation) still protect
+    # per-line PDF integrity; this guard only rejects a genuinely unresolved or
+    # zero customs value, so a valid carrier-declared value is never a false block.
+    from ..services.cif_resolver import resolve_cif, CIF_RESOLVED
+    _cif_res   = resolve_cif(audit)
+    _cif_state = _cif_res.get("cif_state")
+    _cif_usd   = _cif_res.get("cif_usd")
+    if not (_cif_state == CIF_RESOLVED and _cif_usd and float(_cif_usd) > 0):
+        _cif_gap = _cif_res.get("extraction_gap") or {}
         raise HTTPException(
             status_code=422,
             detail={
-                "guard":  "cif_zero",
-                "error":  "Invoice CIF value is 0.00 — invoice values were not parsed correctly. "
-                          "Generating a Polish customs description with zero value would produce an invalid document.",
-                "code":   "cif_zero",
-                "hint":   "Re-process the batch with valid invoice PDFs before generating the customs description.",
+                "guard":  "cif_unresolved",
+                "error":  "Customs CIF value could not be resolved from any authority "
+                          "(invoice totals, DHL pre-check, AWB Custom Val, or OCR/AI "
+                          "fallback). Generating a Polish customs description without a "
+                          "resolved customs value would produce an invalid document.",
+                "code":   "cif_unresolved",
+                "cif_state":  _cif_state,
+                "cif_source": _cif_res.get("cif_source"),
+                "hint":   _cif_gap.get("next_action")
+                          or "Re-process the batch with valid invoice PDFs, or confirm the "
+                             "AWB customs value, before generating the customs description.",
             },
         )
 
