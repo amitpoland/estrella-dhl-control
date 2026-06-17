@@ -1,7 +1,7 @@
 # Deployment Runbook — PR #643 (single resolved-CIF authority)
 
 **Target PR:** [#643](https://github.com/amitpoland/estrella-dhl-control/pull/643) `feat/cif-authority-consistency-guard`
-**Deploy surface:** `service/app/**` only (6 files) → `C:\PZ\app` standard robocopy. No schema, no `.env`, no root-engine files.
+**Deploy surface:** `service/app/**` only (6 files) → `C:\PZ\app` via **per-file `robocopy … /COPY:DAT`** (the mandated pattern in `.claude/deploy/windows_prod_v2.json`). **`/MIR` is PERMANENTLY FORBIDDEN** — it would delete `.env`, `storage`, `logs`, `cloudflared`. No schema, no `.env`, no root-engine files.
 **Environment:** Production `C:\PZ` · service `PZService` (NSSM, port 47213) · public `https://pz.estrellajewels.eu` · git/hash source-of-truth `C:\PZ-verify`
 **Hard ordering rule:** Steps 1→2→3→D-1→4 are sequential gates. **Step 6 (PZ / wFirma) is BLOCKED until Steps 1–4 + D-1 are each VERIFIED.** Step 5 (state update) runs after Step 4.
 
