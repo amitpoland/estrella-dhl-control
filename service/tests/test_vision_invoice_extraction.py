@@ -335,3 +335,61 @@ def test_regeneration_preserves_confirmed_proposal():
     assert merged["rows"] == [{"new": 2}]                 # engine output wins
     assert merged["vision_invoice"]["operator_confirmed"] is True  # preserved
     assert merged["vision_invoice"]["supplier"] == "OPERATOR PICK"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# freight / insurance / cif extraction (2026-06-18, image-only landed-cost fix)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_validate_keeps_freight_insurance_cif():
+    """The invoice-for-PZ extractor must capture freight/insurance/cif so the
+    image-only landed cost can allocate the freight+insurance leg. Regression for
+    the AWB 2315714531 zero-F+I incident (schema previously had only fob_usd)."""
+    clean, errs = vision_extractor.validate_invoice_extraction({
+        "supplier": "Global Jewellery Pvt. Ltd.", "currency": "USD",
+        "fob_usd": 607.0, "freight_usd": 100.0, "insurance_usd": 25.0,
+        "cif_usd": 732.0, "itemization_available": True,
+        "line_items": [{"description": "RING", "quantity": 66, "total": 535.0},
+                       {"description": "RING", "quantity": 4, "total": 72.0}],
+        "confidence": 0.9,
+    })
+    assert clean["fob_usd"] == 607.0
+    assert clean["freight_usd"] == 100.0
+    assert clean["insurance_usd"] == 25.0
+    assert clean["cif_usd"] == 732.0
+
+
+def test_validate_never_keeps_zero_freight_insurance():
+    """USD-zero discipline: a 0 freight/insurance means 'unknown', not 'free' —
+    _coerce_money drops it so the engine treats the leg as genuinely absent."""
+    clean, _ = vision_extractor.validate_invoice_extraction(
+        {"currency": "USD", "fob_usd": 607.0, "freight_usd": 0,
+         "insurance_usd": 0, "line_items": [], "confidence": 0.5}
+    )
+    assert "freight_usd" not in clean
+    assert "insurance_usd" not in clean
+
+
+def test_merge_writes_freight_insurance_cif_in_usd():
+    audit = {}
+    clean = {"currency": "USD", "fob_usd": 607.0, "freight_usd": 100.0,
+             "insurance_usd": 25.0, "cif_usd": 732.0, "line_items": [],
+             "itemization_unavailable": True, "confidence": 0.9}
+    vision_extractor._merge_vision_invoice(audit, clean, _prov(clean))
+    vi = audit["vision_invoice"]
+    assert vi["freight_usd"] == 100.0
+    assert vi["insurance_usd"] == 25.0
+    assert vi["cif_usd"] == 732.0
+
+
+def test_merge_withholds_freight_insurance_when_currency_not_usd():
+    """Same USD-only gate as fob_usd: a freight/insurance figure read under a
+    non-USD currency must not be mislabelled as dollars."""
+    audit = {"vision_invoice": {"operator_confirmed": False, "line_items": []}}
+    clean = {"currency": "EUR", "freight_usd": 100.0, "insurance_usd": 25.0,
+             "cif_usd": 732.0, "line_items": [], "confidence": 0.8}
+    vision_extractor._merge_vision_invoice(audit, clean, _prov(clean, conf=0.8))
+    vi = audit["vision_invoice"]
+    assert "freight_usd" not in vi
+    assert "insurance_usd" not in vi
+    assert "cif_usd" not in vi

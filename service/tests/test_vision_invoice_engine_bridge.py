@@ -221,3 +221,92 @@ def test_exporter_name_defaults_when_no_vision_supplier():
     rows = p._authority_rows_from_confirmed_vision(_confirmed_audit(), "x", [])
     built = p._build_invoice_from_authority_rows("x", "x", audit, rows, [])
     assert built["exporter_name"] == "Global Jewellery"
+
+
+# ── 13. Image-only landed cost: freight/insurance from confirmed vision ───────
+# Regression for the AWB 2315714531 / inv 122/2026-2027 zero-F+I incident.
+# The image-only invoice's text layer is empty, so invoice_totals freight /
+# insurance are 0. The freight (USD 100) + insurance (USD 25) live ONLY on the
+# operator-confirmed vision_invoice. The bridge MUST carry them into the engine
+# input dict, or calculate_landed silently drops the entire freight+insurance
+# leg and PZ net collapses to FOB + duty.
+def _confirmed_audit_with_fi(**overrides):
+    """Production-shaped image-only audit whose CONFIRMED vision_invoice carries
+    invoice-level freight/insurance/CIF (FOB 607 + F 100 + I 25 = CIF 732)."""
+    return _confirmed_audit(
+        freight_usd=100.0, insurance_usd=25.0, cif_usd=732.0, **overrides
+    )
+
+
+def test_build_carries_freight_insurance_from_confirmed_vision():
+    audit = _confirmed_audit_with_fi()
+    rows = p._authority_rows_from_confirmed_vision(audit, "inv_122.pdf", [])
+    built = p._build_invoice_from_authority_rows("inv_122.pdf", "inv_122.pdf", audit, rows, [])
+    # Pre-fix this returned 0.0 / 0.0 / 607.0 (read only from invoice_totals).
+    assert abs(built["freight_usd"] - 100.0) < 0.01
+    assert abs(built["insurance_usd"] - 25.0) < 0.01
+    assert abs(built["cif_usd"] - 732.0) < 0.01
+    # FOB is untouched by the freight/insurance fallback.
+    assert abs(built["fob_usd"] - 607.0) < 0.01
+
+
+def test_build_freight_insurance_zero_when_vision_lacks_them():
+    """A confirmed proposal that does NOT carry freight/insurance must NOT have
+    them fabricated — this documents the exact production state that produced the
+    zero-F+I PZ (vision_invoice had fob only). The fix carries values when
+    present; it never invents them."""
+    audit = _confirmed_audit()  # no freight/insurance on the proposal
+    rows = p._authority_rows_from_confirmed_vision(audit, "inv_122.pdf", [])
+    built = p._build_invoice_from_authority_rows("inv_122.pdf", "inv_122.pdf", audit, rows, [])
+    assert built["freight_usd"] == 0.0
+    assert built["insurance_usd"] == 0.0
+    assert abs(built["cif_usd"] - 607.0) < 0.01  # cif == fob when no F+I authority
+
+
+def test_text_parsed_freight_not_overridden_by_vision():
+    """When invoice_totals already carries a (text-parsed) freight/insurance, the
+    vision proposal must NOT override it — invoice_totals is the stronger
+    authority for a text invoice; the fallback only fills a ZERO."""
+    audit = _confirmed_audit_with_fi()
+    audit["invoice_totals"] = {
+        "total_fob_usd": 0.0,          # FOB still self-computes from rows
+        "total_freight_usd": 40.0,     # real text-parsed freight
+        "total_insurance_usd": 8.0,
+    }
+    rows = p._authority_rows_from_confirmed_vision(audit, "inv_122.pdf", [])
+    built = p._build_invoice_from_authority_rows("inv_122.pdf", "inv_122.pdf", audit, rows, [])
+    assert abs(built["freight_usd"] - 40.0) < 0.01
+    assert abs(built["insurance_usd"] - 8.0) < 0.01
+
+
+def test_image_only_landed_allocates_freight_insurance():
+    """End-to-end through calculate_landed: confirmed-vision freight+insurance
+    must be allocated proportionally by value (CLAUDE.md financial rule), duty
+    must stay exactly the ZC429 A00 figure, and PZ net must exceed the broken
+    FOB+duty-only value."""
+    audit = _confirmed_audit_with_fi()
+    rows = p._authority_rows_from_confirmed_vision(audit, "inv_122.pdf", [])
+    inv = p._build_invoice_from_authority_rows("inv_122.pdf", "inv_122.pdf", audit, rows, [])
+
+    zc429 = {"duty_pln": 62.0, "total_cif_usd": 732.0, "lrn": "TEST_LRN",
+             "clearance_date": "2026-06-15", "agent": "DHL"}
+    nbp = {"usd_rate": 3.6542}
+    out_rows, totals = p.calculate_landed([inv], zc429, nbp, corrections_log=[])
+
+    # Allocated freight+insurance totals exactly USD 125 (100 + 25).
+    alloc_fi_usd = sum(r["allocated_ship_usd"] for r in out_rows)
+    assert abs(alloc_fi_usd - 125.0) < 0.01
+    # Per the expected split: row1 (535) ≈ 110.21, row2 (72) ≈ 14.79.
+    by_total = {round(r["total_usd"], 2): r["allocated_ship_usd"] for r in out_rows}
+    assert abs(by_total[535.0] - 110.21) < 0.05
+    assert abs(by_total[72.0] - 14.79) < 0.05
+    # Duty stays exactly the ZC429 A00 figure (residual-reconciled).
+    alloc_duty_pln = round(sum(r["allocated_duty_pln"] for r in out_rows), 2)
+    assert alloc_duty_pln == 62.0
+    # PZ net (sum of line netto) now includes the freight+insurance leg, so it
+    # exceeds the broken FOB×rate + duty value (607 × 3.6542 + 62 ≈ 2280.10).
+    pz_net = round(sum(r["line_netto_pln"] for r in out_rows), 2)
+    fob_plus_duty_only = round(607.0 * 3.6542 + 62.0, 2)
+    assert pz_net > fob_plus_duty_only + 100.0   # F+I adds 125 USD × 3.6542 ≈ 457 PLN
+    # totals echo the carried CIF (fob+freight+insurance).
+    assert abs(totals["total_cif_usd"] - 732.0) < 0.01

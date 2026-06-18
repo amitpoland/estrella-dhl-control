@@ -721,6 +721,9 @@ def _build_invoice_lineitem_prompt() -> Tuple[str, str]:
         '  "invoice_no": string|null,\n'
         '  "currency": string|null,                    // ISO code you actually see, e.g. "USD"\n'
         '  "fob_usd": number|null,                     // total goods value, USD only\n'
+        '  "freight_usd": number|null,                 // freight / shipping charge, USD only; null if not shown\n'
+        '  "insurance_usd": number|null,               // insurance charge, USD only; null if not shown\n'
+        '  "cif_usd": number|null,                     // CIF total (FOB+freight+insurance), USD only; null if not shown\n'
         '  "itemization_available": boolean,           // true ONLY if you can read discrete line rows\n'
         '  "line_items": [                             // [] when itemization_available is false\n'
         "    {\n"
@@ -754,7 +757,12 @@ def _build_invoice_lineitem_prompt() -> Tuple[str, str]:
         "Rules:\n"
         "- Numbers must be plain numerics (no symbols, no thousands separators).\n"
         "- Report 'currency' as the ISO code you actually see; null if not legible. "
-        "Never assume USD. Only populate 'fob_usd' if the invoice is in USD.\n"
+        "Never assume USD. Only populate 'fob_usd', 'freight_usd', 'insurance_usd', "
+        "and 'cif_usd' if the invoice is in USD.\n"
+        "- 'freight_usd' and 'insurance_usd' are the freight/shipping and insurance "
+        "charges shown on the invoice (labels such as 'Freight', 'Shipping', "
+        "'Insurance'). 'cif_usd' is the CIF total if a CIF / C.I.F. line is shown. "
+        "Use null for any of these not legibly present — never 0 to mean 'unknown'.\n"
         "- If a field is not visible, use null. Do NOT use 0 to mean 'unknown'.\n"
         "- If the line-item table is unreadable, set itemization_available=false and "
         "line_items=[]. A partial but honest result beats invented rows.\n"
@@ -829,6 +837,15 @@ def validate_invoice_extraction(
     fob = _coerce_money(data.get("fob_usd"))
     if fob is not None:
         clean["fob_usd"] = fob
+
+    # Freight / insurance / CIF — same _coerce_money discipline as FOB (positive,
+    # plausible, rounded). Absent values stay absent (never coerced to 0); the
+    # landed-cost engine treats a missing leg as 0 only when no authority carries
+    # it. These feed the image-only PZ freight+insurance allocation downstream.
+    for _src in ("freight_usd", "insurance_usd", "cif_usd"):
+        _v = _coerce_money(data.get(_src))
+        if _v is not None:
+            clean[_src] = _v
 
     raw_items = data.get("line_items")
     items: List[Dict[str, Any]] = []
@@ -992,6 +1009,18 @@ def _merge_vision_invoice(
     _inv_currency = (clean.get("currency") or merged.get("currency") or "").upper()
     if clean.get("fob_usd") is not None and _inv_currency == "USD":
         merged["fob_usd"] = clean["fob_usd"]
+
+    # Freight / insurance / CIF carry the same USD-only discipline as fob_usd:
+    # a freight/insurance figure is a USD amount by contract, so accept it only
+    # when this run reads the invoice currency as USD. These propagate into the
+    # operator-confirmed proposal and are consumed by the PZ engine bridge
+    # (_build_invoice_from_authority_rows) so image-only landed cost allocates
+    # freight+insurance instead of silently dropping it. Scalar field-merge:
+    # a null this run keeps any prior value.
+    if _inv_currency == "USD":
+        for _f in ("freight_usd", "insurance_usd", "cif_usd"):
+            if clean.get(_f) is not None:
+                merged[_f] = clean[_f]
 
     # Line items: overwrite only when this run produced rows; otherwise keep any
     # rows already held. itemization_unavailable then reflects the FINAL state.
