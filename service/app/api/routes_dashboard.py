@@ -3401,6 +3401,70 @@ class RecheckRequest(BaseModel):
     mode: str = "all"
 
 
+# Keys on the audit that recheck must NEVER author from its own in-memory
+# snapshot — they belong to a different sole-writer. recheck reads the audit
+# once at the top (unguarded) and writes the whole object back seconds later;
+# if an operator confirms the vision invoice inside that window, a whole-object
+# write would silently revert operator_confirmed=true (a #570-class lost
+# update). `confirm_vision_invoice` is the SOLE writer of operator_confirmed on
+# audit["vision_invoice"]; recheck overlays the on-disk authoritative copy of
+# these keys immediately before persisting so it can never clobber a concurrent
+# confirmation.
+_RECHECK_DISK_AUTHORITATIVE_KEYS = ("vision_invoice",)
+
+
+def _persist_recheck(audit_path: Path, batch_id: str, audit: Dict[str, Any]) -> None:
+    """Persist recheck's audit snapshot WITHOUT clobbering sole-writer-owned keys.
+
+    recheck legitimately owns most of the audit it rewrites (verification,
+    learning_traces, inputs.zc429_mrn, amendment_flags, cif_reconciliation,
+    clearance_decision, recheck, …). Those mutations are scattered and the local
+    ``updated`` dict keys are display labels, not audit keys — so copying "only
+    the keys recheck updated" would silently drop recheck's own writes. Instead
+    we persist recheck's full snapshot but OVERLAY the on-disk authoritative copy
+    of the keys recheck must never author (``_RECHECK_DISK_AUTHORITATIVE_KEYS``).
+
+    The overlay + write happen under ``batch_write_lock`` so a concurrent
+    ``confirm_vision_invoice`` (which holds the same per-batch lock) cannot
+    interleave between the disk re-read and the write. operator_confirmed=true
+    and its metadata (confirmed_by / confirmed_at) therefore survive recheck.
+    """
+    def _overlay_from_disk(target: Dict[str, Any]) -> None:
+        try:
+            fresh = json.loads(audit_path.read_text(encoding="utf-8"))
+        except Exception:
+            # No readable on-disk copy (first write / corrupt) — nothing to
+            # preserve. recheck's own snapshot is the best available truth.
+            return
+        if not isinstance(fresh, dict):
+            return
+        for _k in _RECHECK_DISK_AUTHORITATIVE_KEYS:
+            if _k in fresh:
+                target[_k] = fresh[_k]
+        _vi = target.get("vision_invoice")
+        if isinstance(_vi, dict) and _vi.get("operator_confirmed") is True:
+            log.info(
+                "[recheck] preserved operator-confirmed vision_invoice for %s "
+                "(confirmed_by=%s, confirmed_at=%s) — merge-write did not revert it",
+                batch_id, _vi.get("confirmed_by"), _vi.get("confirmed_at"),
+            )
+
+    try:
+        with batch_write_lock(batch_id):
+            _overlay_from_disk(audit)
+            write_json_atomic(audit_path, audit)
+    except TimeoutError as exc:
+        # Lock contention should not strand recheck's results. Fall back to a
+        # best-effort vision-safe write: overlay the disk-authoritative keys
+        # (still preserving a confirmation that landed) then persist unlocked.
+        log.warning(
+            "[recheck] batch lock timeout for %s (%s) — vision-safe fallback write",
+            batch_id, exc,
+        )
+        _overlay_from_disk(audit)
+        write_json_atomic(audit_path, audit)
+
+
 @router.post("/batches/{batch_id}/recheck", dependencies=[_op_auth])
 async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) -> Dict[str, Any]:
     """
@@ -3776,7 +3840,10 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
         "updated_fields":  [k for k, v in updated.items() if v],
     }
     audit["recheck"] = recheck_block
-    write_json_atomic(audit_path, audit)
+    # Merge-not-replace: persist recheck's snapshot but overlay disk-authoritative
+    # sole-writer keys (vision_invoice) so a concurrent operator confirmation that
+    # landed in the read→write window is not reverted (#646, #570-class).
+    _persist_recheck(audit_path, batch_id, audit)
 
     # ── E2. Image-only OCR/AI CIF fallback (LAST — self-contained) ───────────
     # When text reparse above left CIF UNKNOWN because the AWB / invoice is an
@@ -3806,7 +3873,10 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
                 except Exception as _de2:
                     log.warning("[recheck] post-vision clearance rebuild failed: %s", _de2)
                 audit["recheck"]["updated_fields"] = [k for k, v in updated.items() if v]
-                write_json_atomic(audit_path, audit)
+                # Merge-not-replace again: this post-fallback re-read+write also
+                # runs after the read→write window, so overlay the disk copy of
+                # vision_invoice rather than clobbering it (#646).
+                _persist_recheck(audit_path, batch_id, audit)
                 log.info("[recheck] vision CIF fallback wrote authority value for %s", batch_id)
                 # Authority-chain evidence: trace the OCR/AI-sourced CIF/AWB write.
                 tl.log_event(
@@ -3866,6 +3936,89 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
         "errors":   errors,
         "next_step": "Review updated values before regenerating PZ" if not errors else "Fix errors and recheck again",
     }
+
+
+# ── Vision-invoice operator confirmation (PR-2) ───────────────────────────────
+# Sole writer of operator_confirmed=true on audit["vision_invoice"]. The machine
+# extractor only ever writes operator_confirmed=false (sticky); this endpoint is
+# the one human write-gate that promotes an advisory image-only invoice proposal
+# to operator-attested authority. It does NOT inject into the engine, generate
+# PZ, or post to wFirma — those stay blocked by design until the gated injection
+# path ships (runbook Stage B).
+
+@router.post("/batches/{batch_id}/vision-invoice/confirm")
+async def confirm_vision_invoice_route(
+    batch_id: str,
+    session_user: dict = _op_auth,
+) -> Dict[str, Any]:
+    """Operator confirms the advisory image-only invoice proposal.
+
+    Sets ``operator_confirmed=true`` on ``audit["vision_invoice"]`` (sole writer)
+    and records ``confirmed_by`` / ``confirmed_at``. Advisory supplier
+    cross-validation is returned but never blocks. Returns 409 when there is no
+    confirmable proposal. Does NOT inject to the engine, generate PZ, or post to
+    wFirma — confirmation alone does not produce PZ rows.
+
+    Operator identity is the authenticated ``require_role`` user injected via
+    ``_op_auth`` — derived SERVER-SIDE only, never from a client header/body. The
+    role gate guarantees a real authenticated user, so ``operator_confirmed=true``
+    is always attributable to a named human (no ghost-identity fallback).
+    """
+    if "/" in batch_id or "\\" in batch_id or ".." in batch_id:
+        # Reject path separators (both POSIX and Windows) and parent-dir tokens
+        # before any filesystem resolution — _resolve_audit_path joins batch_id
+        # into a path, so traversal must be blocked here.
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    audit_path = _resolve_audit_path(batch_id)
+    if audit_path is None:
+        raise HTTPException(status_code=404, detail="Shipment not found.")
+    batch_dir = audit_path.parent
+
+    operator = (
+        (session_user.get("full_name") or "").strip()
+        or (session_user.get("email") or "").strip()
+        or str(session_user.get("id") or "").strip()
+    )
+    if not operator:
+        # require_role guarantees an authenticated user; this only fires on a
+        # malformed user record. Refuse rather than mint an unattributable attest.
+        raise HTTPException(status_code=401, detail="Operator identity required to confirm.")
+
+    suppliers_db_path = settings.storage_root / "suppliers.sqlite"
+
+    from ..services.vision_extractor import confirm_vision_invoice
+    result = confirm_vision_invoice(
+        batch_dir,
+        batch_id,
+        confirmed_by=operator,
+        suppliers_db_path=suppliers_db_path,
+    )
+
+    if not result.get("ok"):
+        reason = result.get("reason") or "cannot_confirm"
+        if reason == "no_proposal":
+            raise HTTPException(
+                status_code=409,
+                detail="No image-only invoice proposal to confirm for this shipment.",
+            )
+        if "unreadable" in reason or "audit not a dict" in reason:
+            raise HTTPException(status_code=404, detail="Shipment audit not found.")
+        if reason.startswith("batch busy"):
+            raise HTTPException(status_code=409, detail=reason)
+        raise HTTPException(status_code=400, detail=reason)
+
+    # Stage C is live: the PZ engine bridge (_authority_rows_from_confirmed_vision
+    # in pz_import_processor) consumes a confirmed vision_invoice as a Priority-3
+    # authority source. Confirmation alone still does not generate PZ — it arms the
+    # bridge — but the operator's next action ("Run/Retry PZ") now succeeds for
+    # image-only invoices. wFirma posting remains a separate, explicit operator step.
+    result["next_step"] = (
+        "Invoice proposal confirmed. Click \"Run PZ\" (or \"Retry PZ\") on this "
+        "shipment — the engine now reads these confirmed line items and generates "
+        "the PZ document. Posting to wFirma remains a separate Create-PZ step."
+    )
+    return result
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

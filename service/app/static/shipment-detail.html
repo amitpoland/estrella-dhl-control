@@ -6035,6 +6035,56 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                             : '';
                   return (
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {(() => {
+                      // ── Scanned (image-only) invoice confirm gate (Lesson M) ──
+                      // When the source invoice was an image-only scan, the text
+                      // parsers yield FOB $0 and PZ cannot compute a freight
+                      // share. The OCR/AI fallback writes an advisory
+                      // audit.vision_invoice proposal. The operator confirms it
+                      // here; that arms the PZ engine bridge
+                      // (_authority_rows_from_confirmed_vision) so Run PZ below
+                      // succeeds. ADR-031: this button only triggers the confirm
+                      // endpoint, the SOLE writer of operator_confirmed — it is
+                      // never set client-side.
+                      const vi = (audit && audit.vision_invoice) || null;
+                      if (!vi) return null;            // not a scanned-invoice batch
+                      const items = Array.isArray(vi.line_items) ? vi.line_items : [];
+                      const fob = Number(vi.fob_usd) || items.reduce((s, it) => s + (Number(it.total_usd) || 0), 0);
+                      const qty = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+                      if (vi.operator_confirmed === true) {
+                        // CONFIRMED — capability stays visible as a truthful badge.
+                        return (
+                          <span data-testid="vision-invoice-confirmed"
+                                title={`Confirmed by ${vi.confirmed_by || 'operator'}${vi.confirmed_at ? ' at ' + vi.confirmed_at : ''}`}
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, padding: '6px 10px', borderRadius: 4, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)' }}>
+                            ✓ Scanned invoice confirmed (FOB ${fob.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, {qty} pcs) — Run PZ to generate
+                          </span>
+                        );
+                      }
+                      const noItems = items.length === 0;
+                      return (
+                        <Btn variant="gold"
+                             data-testid="confirm-vision-invoice"
+                             disabled={!!busy.confirmVision || noItems}
+                             style={noItems ? { opacity: 0.5 } : {}}
+                             title={noItems
+                               ? 'OCR found no line items on the scanned invoice — manual entry required before PZ can run'
+                               : 'Confirm the OCR/AI-read invoice line items so the PZ engine can generate the goods receipt'}
+                             onClick={() => doAction('confirmVision', 'Confirm scanned invoice', async () => {
+                               const res = await fetch(`/dashboard/batches/${encodeURIComponent(batchId)}/vision-invoice/confirm`, { method: 'POST', credentials: 'include' });
+                               if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`HTTP ${res.status}: ${t.slice(0, 200)}`); }
+                               const body = await res.json().catch(() => ({}));
+                               if (body && body.next_step) onToast(body.next_step, 'info');
+                               return body;
+                             })}>
+                          {busy.confirmVision
+                            ? '⟳ Confirming…'
+                            : noItems
+                              ? '⛔ Scanned invoice — no line items'
+                              : `✓ Confirm scanned invoice (FOB $${fob.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, ${qty} pcs) → unblock PZ`}
+                        </Btn>
+                      );
+                    })()}
                     <Btn variant="gold" disabled={runPzDisabled} style={!canRunPZ && !busy.runPz && status !== 'blocked' ? { opacity: 0.5 } : {}} title={runPzTitle} onClick={() => doAction('runPz', 'Run PZ', async () => {
                       const res = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/process`, { method: 'POST', credentials: 'include' });
                       if (res.status === 409) {

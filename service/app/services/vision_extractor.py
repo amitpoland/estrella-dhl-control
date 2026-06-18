@@ -968,6 +968,7 @@ def _merge_vision_invoice(
 
     merged = dict(existing)
     merged["operator_confirmed"] = False
+    merged["status"] = "proposed"  # lifecycle: proposed → confirmed → injected
     merged["source"] = "vision_llm"
     merged["extracted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     merged["confidence"] = float(
@@ -1144,23 +1145,8 @@ def run_image_only_invoice_extraction(
         if wrote:
             break  # one good invoice proposal is enough
 
-    # TOCTOU stickiness guard — re-read the on-disk proposal immediately before
-    # writing. The operator may have CONFIRMED a proposal (operator_confirmed=true)
-    # in another request between our initial read and now. Our in-memory `audit`
-    # still carries the pre-confirmation block, so writing it would silently revert
-    # the operator's confirmation and any fields they accepted. If a confirmation
-    # landed in the gap, abort the write entirely — the operator owns that block.
-    try:
-        on_disk = (read_json(audit_path) or {}).get("vision_invoice") or {}
-    except Exception:
-        on_disk = {}
-    if on_disk.get("operator_confirmed") is True:
-        summary["wrote"] = False
-        summary["documents"] = doc_records
-        summary["reason"] = "operator confirmed vision_invoice mid-run — write aborted (sticky)"
-        return summary
-
     # Record the attempt ledger + run history on the block (merge-not-replace).
+    # Pure computation off the in-memory snapshot — done BEFORE taking the lock.
     vi2 = dict(audit.get("vision_invoice") or {})
     vi2["attempted_signatures"] = attempted_now
     runs = list(vi2.get("runs") or [])
@@ -1171,13 +1157,55 @@ def run_image_only_invoice_extraction(
         "wrote": wrote,
     })
     vi2["runs"] = runs[-10:]
-    audit["vision_invoice"] = vi2
+
+    # Atomic TOCTOU stickiness guard + merge-write under the per-batch lock.
+    # The operator may CONFIRM a proposal (operator_confirmed=true) in another
+    # request between our initial read at the top and now; our in-memory `audit`
+    # still carries the pre-confirmation block. Acquire the same per-batch write
+    # lock `confirm_vision_invoice` holds, re-read the authoritative audit from
+    # disk INSIDE the lock, and either (a) abort if a confirmation landed — the
+    # operator owns that block — or (b) overlay ONLY our advisory vision_invoice
+    # onto the fresh on-disk audit, so we never clobber a concurrent writer of any
+    # other key (#646 / #570-class lost update). Both callers (intake, recheck)
+    # invoke this OUTSIDE any held batch lock, so acquiring it here cannot deadlock.
+    from ..utils.batch_lock import batch_write_lock  # noqa: PLC0415
+
+    def _merge_write_locked() -> bool:
+        """Re-read fresh, abort on a landed confirmation, overlay vision_invoice,
+        write. Returns True if written, False if aborted (operator owns block)."""
+        try:
+            fresh = read_json(audit_path)
+        except Exception:
+            fresh = None
+        if not isinstance(fresh, dict):
+            fresh = audit  # no readable disk copy — fall back to our snapshot
+        if (fresh.get("vision_invoice") or {}).get("operator_confirmed") is True:
+            return False
+        fresh["vision_invoice"] = vi2
+        write_json_atomic(audit_path, fresh)
+        return True
 
     try:
-        write_json_atomic(audit_path, audit)
+        try:
+            with batch_write_lock(batch_id):
+                wrote_ok = _merge_write_locked()
+        except TimeoutError as exc:
+            # Lock contention must not strand the advisory proposal. Best-effort
+            # vision-safe fallback: identical merge-write semantics, unlocked.
+            log.warning(
+                "[vision] batch lock timeout for %s (%s) — vision-safe fallback write",
+                batch_id, exc,
+            )
+            wrote_ok = _merge_write_locked()
     except Exception as exc:
         summary["reason"] = f"audit write failed: {exc}"
         summary["documents"] = doc_records
+        return summary
+
+    if not wrote_ok:
+        summary["wrote"] = False
+        summary["documents"] = doc_records
+        summary["reason"] = "operator confirmed vision_invoice mid-run — write aborted (sticky)"
         return summary
 
     summary["wrote"] = wrote
@@ -1186,3 +1214,199 @@ def run_image_only_invoice_extraction(
         "wrote advisory vision_invoice proposal" if wrote else "ran, no usable invoice summary written"
     )
     return summary
+
+
+def _vision_invoice_has_proposal(vi: Any) -> bool:
+    """True when ``vision_invoice`` carries a confirmable proposal.
+
+    A block that only holds the run ledger (``runs`` / ``attempted_signatures``)
+    with no supplier, no FOB, and no line items is NOT a proposal — there is
+    nothing for the operator to attest. Confirming such a shell would mint an
+    ``operator_confirmed=true`` authority over empty content.
+    """
+    if not isinstance(vi, dict):
+        return False
+    if vi.get("supplier"):
+        return True
+    if vi.get("fob_usd") is not None:
+        return True
+    if vi.get("line_items"):
+        return True
+    return False
+
+
+def confirm_vision_invoice(
+    output_dir: Any,
+    batch_id: str,
+    *,
+    confirmed_by: str,
+    suppliers_db_path: Any = None,
+) -> Dict[str, Any]:
+    """Operator confirmation of an advisory ``vision_invoice`` proposal.
+
+    **SOLE WRITER of ``operator_confirmed=true``.** This is the only function in
+    the codebase that promotes a machine vision proposal to operator-attested
+    authority. The machine extractor (``run_image_only_invoice_extraction`` via
+    ``_merge_vision_invoice``) only ever writes ``operator_confirmed=false`` and
+    is sticky against this flag — it never sets it true and never overwrites a
+    confirmed block. Keeping exactly one writer of this flag is the authority-
+    forge guard the PR-2 runbook requires.
+
+    Authority isolation (ADR-031). This function:
+      - writes ONLY inside ``audit["vision_invoice"]``;
+      - never touches ``invoice_totals``, ``rows``, ``awb_customs``,
+        ``clearance_decision``, ``customs_declaration``, SAD/ZC429, or
+        ``wfirma_export`` — those stay byte-identical;
+      - reads the existing proposal and does NOT re-run extraction;
+      - snapshots the machine-original values (confidence + extracted fields)
+        before flipping the flag, so the original proposal stays auditable;
+      - records confirmation lineage (``confirmed_by`` / ``confirmed_at``) and
+        advances the lifecycle ``status`` proposed → confirmed.
+
+    Supplier cross-validation against the contractor/customer master is
+    **advisory only** — surfaced in the return payload and stored under
+    ``supplier_crosscheck`` (non-authoritative); it never blocks the confirm and
+    never mutates supplier authority.
+
+    Idempotent: a second confirm on an already-confirmed block is a no-op that
+    returns ``already_confirmed=true``. Returns ``ok=False, reason="no_proposal"``
+    when there is nothing confirmable (route maps to 409). Never re-runs
+    extraction; never raises on the expected paths.
+    """
+    from ..utils.io import write_json_atomic, read_json  # noqa: PLC0415
+    from ..utils.batch_lock import batch_write_lock  # noqa: PLC0415
+    from ..core import timeline as _tl  # noqa: PLC0415
+
+    out = Path(output_dir)
+    audit_path = out / "audit.json"
+    result: Dict[str, Any] = {
+        "ok": False,
+        "batch_id": batch_id,
+        "reason": "",
+        "operator_confirmed": False,
+        "supplier_crosscheck": None,
+    }
+
+    operator = (confirmed_by or "").strip()
+    if not operator:
+        result["reason"] = "missing_operator_identity"
+        return result
+
+    try:
+        with batch_write_lock(batch_id):
+            try:
+                audit = read_json(audit_path)
+            except Exception as exc:
+                result["reason"] = f"audit unreadable: {exc}"
+                return result
+            if not isinstance(audit, dict):
+                result["reason"] = "audit not a dict"
+                return result
+
+            vi = audit.get("vision_invoice")
+            if not _vision_invoice_has_proposal(vi):
+                result["reason"] = "no_proposal"
+                return result
+            vi = dict(vi)
+
+            # Idempotent: an already-confirmed block is owned by the operator.
+            if vi.get("operator_confirmed") is True:
+                result["ok"] = True
+                result["operator_confirmed"] = True
+                result["already_confirmed"] = True
+                result["reason"] = "already_confirmed"
+                result["confirmed_by"] = vi.get("confirmed_by")
+                result["confirmed_at"] = vi.get("confirmed_at")
+                result["supplier_crosscheck"] = vi.get("supplier_crosscheck")
+                return result
+
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+            # Snapshot the machine-original proposal before attestation, so the
+            # original (unconfirmed) confidence and extracted values remain
+            # auditable after the flag flips. First-confirm only (idempotent
+            # path returns above), so we never clobber an existing snapshot.
+            if not vi.get("machine_original"):
+                vi["machine_original"] = {
+                    "supplier": vi.get("supplier"),
+                    "invoice_no": vi.get("invoice_no"),
+                    "currency": vi.get("currency"),
+                    "fob_usd": vi.get("fob_usd"),
+                    "line_items": vi.get("line_items"),
+                    "confidence": vi.get("confidence"),
+                    "extracted_at": vi.get("extracted_at"),
+                    "source_file": vi.get("source_file"),
+                    "source_page": vi.get("source_page"),
+                }
+
+            # Advisory supplier cross-validation against the supplier master.
+            # Never blocks, never mutates supplier authority — payload only.
+            crosscheck: Dict[str, Any] = {
+                "supplier_name": vi.get("supplier"),
+                "checked": False,
+                "matched": False,
+                "wfirma_id": None,
+                "matched_name": None,
+            }
+            supplier_name = (vi.get("supplier") or "").strip()
+            if suppliers_db_path is not None and supplier_name:
+                try:
+                    from .suppliers_db import find_by_name_normalized  # noqa: PLC0415
+
+                    match = find_by_name_normalized(Path(suppliers_db_path), supplier_name)
+                    crosscheck["checked"] = True
+                    if match is not None:
+                        crosscheck["matched"] = True
+                        crosscheck["wfirma_id"] = match.wfirma_id
+                        crosscheck["matched_name"] = match.name
+                except Exception as exc:  # advisory only — never fail the confirm
+                    crosscheck["error"] = f"crosscheck_unavailable: {exc}"
+            vi["supplier_crosscheck"] = crosscheck
+
+            # Attestation — the single place operator_confirmed becomes true.
+            vi["operator_confirmed"] = True
+            vi["status"] = "confirmed"
+            vi["source"] = "vision_llm"
+            vi["confirmed_by"] = operator
+            vi["confirmed_at"] = now
+
+            audit["vision_invoice"] = vi
+            try:
+                write_json_atomic(audit_path, audit)
+            except Exception as exc:
+                result["reason"] = f"audit write failed: {exc}"
+                return result
+
+            # Timeline event (non-fatal). Kept INSIDE the batch lock: log_event
+            # does its own read-append-write of the whole audit, so running it
+            # outside the lock opens a lost-update window — a concurrent writer
+            # landing between the confirm write and log_event's read-modify-write
+            # could clobber the just-confirmed block (the #570 lost-update
+            # class). Holding the lock serializes it against lock-honouring
+            # writers. It must never fail the confirm, hence the bare except.
+            try:
+                _tl.log_event(
+                    audit_path,
+                    event="vision_invoice_confirmed",
+                    trigger_source="operator_confirm",
+                    actor=operator,
+                    detail={
+                        "supplier": supplier_name or None,
+                        "fob_usd": vi.get("fob_usd"),
+                        "line_items": len(vi.get("line_items") or []),
+                        "supplier_matched": crosscheck.get("matched"),
+                    },
+                )
+            except Exception:
+                pass
+    except TimeoutError as exc:
+        result["reason"] = f"batch busy: {exc}"
+        return result
+
+    result["ok"] = True
+    result["operator_confirmed"] = True
+    result["reason"] = "operator confirmed vision_invoice proposal"
+    result["confirmed_by"] = operator
+    result["confirmed_at"] = now
+    result["supplier_crosscheck"] = crosscheck
+    return result
