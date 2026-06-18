@@ -735,6 +735,120 @@ _AUTHORITY_FORBIDDEN_TOKENS = (
 )
 
 
+def _authority_rows_from_confirmed_vision(audit, fname, corrections_log):
+    """Priority-3 authority source (Stage C, 2026-06-18): an operator-CONFIRMED
+    ``vision_invoice`` proposal — the path for image-only / scanned invoices that
+    the text parser cannot read (no text layer → FOB $0 → freight share fails).
+
+    ADR-031 isolation: this function only READS ``audit["vision_invoice"]``; it
+    never sets ``operator_confirmed``. That flag is written solely by the
+    operator-confirm endpoint (``vision_extractor.confirm_vision_invoice``) or the
+    manual unblock tool. An UNconfirmed proposal is ignored here — image OCR never
+    auto-promotes into the PZ engine without an explicit operator gate.
+
+    Builds authority-shaped rows from ``vision_invoice.line_items`` and internally
+    reconciles their USD sum to the proposal FOB within $1. Returns the rows list
+    on success, or None (with a logged ``[bridge_miss] reason=…`` breadcrumb when
+    a confirmed proposal is present but unusable) so the caller falls through
+    cleanly. Absent/unconfirmed proposal returns None silently.
+    """
+    vi = audit.get("vision_invoice")
+    if not isinstance(vi, dict):
+        return None
+    if vi.get("operator_confirmed") is not True:
+        # Not an error — just no operator gate yet. Stay quiet to avoid noise on
+        # every text-invoice batch that carries an advisory proposal.
+        return None
+
+    items = vi.get("line_items")
+    if not isinstance(items, list) or not items:
+        corrections_log.append(
+            f"[{fname}] [bridge_miss] reason=vision_no_line_items"
+        )
+        return None
+    currency = (vi.get("currency") or "").strip().upper()
+    if currency and currency != "USD":
+        corrections_log.append(
+            f"[{fname}] [bridge_miss] reason=vision_currency_not_usd currency={currency!r}"
+        )
+        return None
+
+    inv_no = (vi.get("invoice_no") or "").strip()
+    rows = []
+    line_sum = 0.0
+    for i, it in enumerate(items, start=1):
+        if not isinstance(it, dict):
+            corrections_log.append(
+                f"[{fname}] [bridge_miss] reason=vision_non_dict_item line={i}"
+            )
+            return None
+        try:
+            qty   = float(it.get("quantity") or 0)
+            total = float(it.get("total_usd") or 0)
+        except (TypeError, ValueError):
+            corrections_log.append(
+                f"[{fname}] [bridge_miss] reason=vision_non_numeric line={i}"
+            )
+            return None
+        if qty <= 0 or total <= 0:
+            corrections_log.append(
+                f"[{fname}] [bridge_miss] reason=vision_qty_or_total_le_zero "
+                f"line={i} qty={qty} total={total}"
+            )
+            return None
+        try:
+            unit_p = float(it.get("unit_price_usd") or (total / qty if qty else 0))
+        except (TypeError, ValueError):
+            unit_p = total / qty if qty else 0.0
+        desc = (it.get("description") or "").strip()
+        hsn  = (it.get("hsn") or it.get("hsn_code") or "").strip()
+        rows.append({
+            "line_position":  i,
+            "invoice_number": inv_no,
+            "description":    desc,
+            "description_en": desc,
+            "item_type":      _gj_infer_item_type(desc),
+            "hsn_code":       hsn,
+            "quantity":       int(qty) if qty == int(qty) else qty,
+            "uom":            "PCS",
+            "unit_price":     round(unit_p, 4),
+            "line_total_usd": round(total, 2),
+            "line_total":     round(total, 2),
+        })
+        line_sum += total
+
+    line_sum = round(line_sum, 2)
+    try:
+        fob_proposal = float(vi.get("fob_usd") or 0)
+    except (TypeError, ValueError):
+        fob_proposal = 0.0
+    # A confirmed proposal MUST carry a positive FOB. For an image-only invoice
+    # the audit has NO independent FOB anchor (invoice_totals.total_fob_usd == 0
+    # and no _customs_aggregation), so fob_usd is the ONLY external cross-check
+    # on the LLM-extracted row sum. Without it the row sum would silently set its
+    # own FOB downstream (_build_invoice_from_authority_rows self-compute) with no
+    # reconciliation — a wrong AI total would enter freight/landed-cost unchecked.
+    # Reject instead: the operator must correct the proposal before confirming.
+    if fob_proposal <= 0:
+        corrections_log.append(
+            f"[{fname}] [bridge_miss] reason=vision_fob_absent_or_zero "
+            f"rows_sum=${line_sum:,.2f} (confirmed proposal requires fob_usd > 0)"
+        )
+        return None
+    if abs(line_sum - fob_proposal) > 1.0:
+        corrections_log.append(
+            f"[{fname}] [bridge_miss] reason=vision_fob_drift "
+            f"rows_sum=${line_sum:,.2f} proposal_fob=${fob_proposal:,.2f}"
+        )
+        return None
+
+    corrections_log.append(
+        f"[{fname}] [bridge] built {len(rows)} rows from confirmed vision_invoice "
+        f"(inv={inv_no!r}, rows_sum=${line_sum:,.2f})"
+    )
+    return rows
+
+
 def _try_invoice_from_authority_rows(pdf_path, fname, corrections_log):
     """Return a parser-shaped dict from PR #269 invoice-position authority
     when it is present and valid; return None to mean "fall through to the
@@ -769,26 +883,24 @@ def _try_invoice_from_authority_rows(pdf_path, fname, corrections_log):
         rows = audit.get("_pz_engine_authority_rows")
         if isinstance(rows, list) and rows:
             source_label = "sidecar:_pz_engine_authority_rows"
+        # Priority 2: fresh-regenerate audit.rows under invoice authority.
+        elif (audit.get("_rows_source") or "") == "invoice_positions_authority" \
+                and isinstance(audit.get("rows"), list) and audit.get("rows"):
+            rows = audit["rows"]
+            source_label = "audit.rows (fresh regen)"
         else:
-            # Priority 2: fresh-regenerate audit.rows under invoice authority.
-            if (audit.get("_rows_source") or "") != "invoice_positions_authority":
+            # Priority 3: operator-confirmed vision_invoice (image-only invoices).
+            rows = _authority_rows_from_confirmed_vision(audit, fname, corrections_log)
+            if not rows:
                 corrections_log.append(
                     f"[{fname}] [bridge_miss] audit_path={audit_path} "
                     f"reason=no_authority_source "
                     f"got_rows_source={audit.get('_rows_source')!r} "
-                    f"sidecar_rows={type(audit.get('_pz_engine_authority_rows')).__name__}"
+                    f"sidecar_rows={type(audit.get('_pz_engine_authority_rows')).__name__} "
+                    f"vision_confirmed={(audit.get('vision_invoice') or {}).get('operator_confirmed')!r}"
                 )
                 return None
-            rows_candidate = audit.get("rows")
-            if not isinstance(rows_candidate, list) or not rows_candidate:
-                corrections_log.append(
-                    f"[{fname}] [bridge_miss] audit_path={audit_path} "
-                    f"reason=rows_empty_or_not_list "
-                    f"rows_type={type(rows_candidate).__name__}"
-                )
-                return None
-            rows = rows_candidate
-            source_label = "audit.rows (fresh regen)"
+            source_label = "vision_invoice (operator-confirmed)"
 
         ok, why = _validate_authority_rows(rows, audit)
         if not ok:
@@ -956,12 +1068,20 @@ def _build_invoice_from_authority_rows(pdf_path, fname, audit, rows, corrections
         f"audit.json: {len(items)} positions, qty {qty_sum}, FOB ${fob_usd:,.2f}"
     )
 
+    # Exporter identity: prefer the supplier named on a confirmed vision_invoice
+    # (Stage C image-only path) so a non-Global-Jewellery scanned invoice does not
+    # inherit a wrong exporter on its customs/PZ document. Fall back to the
+    # historical "Global Jewellery" default for the PR #269 sidecar/text path that
+    # carries no vision_invoice supplier.
+    _supplier = ((audit.get("vision_invoice") or {}).get("supplier") or "").strip()
+    exporter_name = _supplier or "Global Jewellery"
+
     return {
         "filename":              fname,
         "invoice_format":        "global_jewellery",
         "invoice_no":            invoice_no,
         "invoice_date":          invoice_date,
-        "exporter_name":         "Global Jewellery",
+        "exporter_name":         exporter_name,
         "exporter_address":      "",
         "exporter_tax_id":       "",
         "consignee_name":        "",
@@ -969,7 +1089,7 @@ def _build_invoice_from_authority_rows(pdf_path, fname, audit, rows, corrections
         "buyer_name":            "",
         "buyer_address":         "",
         "importer_vat":          "",
-        "seller_name":           "Global Jewellery",
+        "seller_name":           exporter_name,
         "buyer_nip":             "",
         "transport":             "",
         "country_origin":        "IN",
@@ -1491,6 +1611,17 @@ def parse_invoice(pdf_path: str, corrections_log: list) -> dict:
                                          _learning_agent, _supplier_key, _fingerprint, _hints)
 
     if fmt == "generic":
+        # Image-only / scanned invoices land here: pdfplumber found no text layer,
+        # so no template marker matched and detect_invoice_format fell through to
+        # "generic". Before the text-blind generic parser (which would yield FOB $0
+        # and fail freight share), try the authority bridge — it fires only when an
+        # operator has explicitly supplied authority data: PR #269 sidecar rows, a
+        # fresh invoice-position regen, or (Stage C) a CONFIRMED vision_invoice.
+        # Returns None and falls through when no such authority is present.
+        _bridge = _try_invoice_from_authority_rows(pdf_path, fname, corrections_log)
+        if _bridge is not None:
+            return _apply_learning_postparse(_bridge, text, lines, corrections_log,
+                                             _learning_agent, _supplier_key, _fingerprint, _hints)
         result = parse_invoice_generic(pdf_path, text, lines, corrections_log)
         return _apply_learning_postparse(result, text, lines, corrections_log,
                                          _learning_agent, _supplier_key, _fingerprint, _hints)

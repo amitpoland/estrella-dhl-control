@@ -109,9 +109,13 @@ def test_confirm_happy_path_returns_200_and_attests(client):
     # Identity is the SERVER-SIDE authenticated user — never client-supplied.
     assert body["confirmed_by"] == "Test Operator"
     assert body.get("confirmed_at")
-    # Honest remaining-blocker disclosure: confirm does not create PZ.
+    # Stage C is live: confirm arms the PZ engine bridge, so next_step now
+    # directs the operator to Run/Retry PZ (and notes wFirma is a separate
+    # step). Confirm itself still does not generate PZ or post to wFirma.
     assert "next_step" in body
-    assert "blocked" in body["next_step"].lower()
+    _ns = body["next_step"].lower()
+    assert "pz" in _ns and ("run" in _ns or "retry" in _ns)
+    assert "wfirma" in _ns
 
     # Persisted on disk: flag flipped, lifecycle advanced.
     audit = json.loads(audit_path.read_text(encoding="utf-8"))

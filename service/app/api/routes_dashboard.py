@@ -4008,13 +4008,15 @@ async def confirm_vision_invoice_route(
             raise HTTPException(status_code=409, detail=reason)
         raise HTTPException(status_code=400, detail=reason)
 
-    # Honest remaining-blocker disclosure (runbook Stage B): confirmation alone
-    # does not create PZ rows. Engine injection into process_batch() inputs is
-    # gated and ships separately (Issues #638/#639 must close first).
+    # Stage C is live: the PZ engine bridge (_authority_rows_from_confirmed_vision
+    # in pz_import_processor) consumes a confirmed vision_invoice as a Priority-3
+    # authority source. Confirmation alone still does not generate PZ — it arms the
+    # bridge — but the operator's next action ("Run/Retry PZ") now succeeds for
+    # image-only invoices. wFirma posting remains a separate, explicit operator step.
     result["next_step"] = (
-        "Invoice proposal confirmed. PZ generation remains blocked until the "
-        "gated engine-injection path ships (runbook Stage B); confirmation does "
-        "not by itself create PZ rows or post to wFirma."
+        "Invoice proposal confirmed. Click \"Run PZ\" (or \"Retry PZ\") on this "
+        "shipment — the engine now reads these confirmed line items and generates "
+        "the PZ document. Posting to wFirma remains a separate Create-PZ step."
     )
     return result
 
