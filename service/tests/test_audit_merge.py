@@ -221,6 +221,101 @@ class TestEdgeCases:
         assert m["inputs"]["zc429"] == "z.pdf"
 
 
+# ── wFirma PZ export authority preservation (#570-class, 2026-06-18) ──────────
+#
+# Origin: AWB 2315714531 / PZ 4/6/2026 (doc_id 189364835). After the booked PZ
+# was created live in wFirma, four Run PZ regenerations (image-only landed-cost
+# correction) left audit.wfirma_export = null. The engine never writes
+# wfirma_export, so without it in PRESERVED_KEYS each regen's `merged =
+# dict(regenerated)` silently dropped the booked-PZ pointer — the canonical link
+# to the accounting document was lost from audit.json and survived only in the
+# timeline. These tests fail pre-fix (wfirma_export absent from PRESERVED_KEYS)
+# and pass post-fix.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _audit_with_booked_pz():
+    """Existing audit for a batch whose PZ is already booked in wFirma."""
+    return {
+        "batch_id": "SHIPMENT_2315714531_2026-06",
+        "status": "partial",
+        "wfirma_export": {
+            "wfirma_pz_doc_id":     "189364835",
+            "wfirma_pz_fullnumber": "PZ 4/6/2026",
+            "pz_source":            "created_via_app",
+            "pz_created_at":        "2026-06-18T06:09:11",
+            "pz_mapped_at":         "2026-06-18T06:09:11",
+        },
+        "totals": {"net": 2280.10, "gross": 2804.52, "duty": 62.0},
+    }
+
+
+def _regen_engine_only():
+    """Fresh engine output — _write_audit builds this dict and it carries NO
+    wfirma_export key (the engine has no knowledge of the booked-PZ pointer)."""
+    return {
+        "batch_id": "SHIPMENT_2315714531_2026-06",
+        "status": "partial",
+        "totals": {"net": 2736.87, "gross": 3366.36, "duty": 62.0},
+        "rows": [{"product_code": "122/2026-2027-1"}],
+    }
+
+
+class TestWfirmaExportPreservation:
+    def test_wfirma_export_in_preserved_keys(self):
+        assert "wfirma_export" in PRESERVED_KEYS
+
+    def test_booked_pz_pointer_survives_regen_when_engine_omits_it(self):
+        """The exact AWB 2315714531 failure: regen omits wfirma_export entirely;
+        the existing booked-PZ pointer must survive."""
+        m = merge_regenerated_audit(_audit_with_booked_pz(), _regen_engine_only())
+        we = m.get("wfirma_export") or {}
+        assert we.get("wfirma_pz_doc_id")     == "189364835", m
+        assert we.get("wfirma_pz_fullnumber") == "PZ 4/6/2026", m
+        assert we.get("pz_source")            == "created_via_app", m
+        assert we.get("pz_created_at")        == "2026-06-18T06:09:11", m
+        assert we.get("pz_mapped_at")         == "2026-06-18T06:09:11", m
+
+    def test_booked_pz_pointer_not_wiped_to_null_by_regen(self):
+        """If the engine wrote an explicit null (placeholder), the meaningful
+        existing pointer must still win — never downgraded to null."""
+        ex = _audit_with_booked_pz()
+        rg = _regen_engine_only()
+        rg["wfirma_export"] = None          # engine placeholder
+        m = merge_regenerated_audit(ex, rg)
+        assert (m.get("wfirma_export") or {}).get("wfirma_pz_doc_id") == "189364835", m
+
+    def test_engine_outputs_still_replace_after_preserving_pointer(self):
+        """Preserving the pointer must not freeze engine outputs — the corrected
+        landed-cost totals (net 2736.87) replace the stale booked totals."""
+        m = merge_regenerated_audit(_audit_with_booked_pz(), _regen_engine_only())
+        assert m["totals"]["net"] == 2736.87
+        assert (m.get("wfirma_export") or {}).get("wfirma_pz_doc_id") == "189364835"
+
+    def test_no_pointer_on_either_side_stays_absent(self):
+        """A batch with no booked PZ must not gain a spurious wfirma_export."""
+        ex = {"batch_id": "B", "status": "partial"}
+        rg = {"batch_id": "B", "status": "partial", "totals": {"net": 1.0}}
+        m = merge_regenerated_audit(ex, rg)
+        assert not m.get("wfirma_export")
+
+    def test_cleared_pointer_is_not_resurrected_by_regen(self):
+        """After clear-mapping strips the doc-id fields (leaving only generation
+        flags), a subsequent regen must NOT bring the old pointer back. The
+        preservation rule may carry the doc-id-absent block forward, but the
+        booked-PZ pointer itself stays gone — preservation is not resurrection."""
+        ex = _audit_with_booked_pz()
+        # simulate /wfirma/pz/clear-mapping: pop the four doc-id fields,
+        # leave a non-empty generation-flag remnant behind.
+        we = dict(ex["wfirma_export"])
+        for k in ("wfirma_pz_doc_id", "wfirma_pz_fullnumber",
+                  "pz_source", "pz_created_at"):
+            we.pop(k, None)
+        we["clipboard_generated"] = True
+        ex["wfirma_export"] = we
+        m = merge_regenerated_audit(ex, _regen_engine_only())
+        assert not (m.get("wfirma_export") or {}).get("wfirma_pz_doc_id"), m
+
+
 # ── Preserved-keys contract ───────────────────────────────────────────────────
 
 def test_preserved_keys_includes_all_required_workflow_fields():
@@ -236,6 +331,7 @@ def test_preserved_keys_includes_all_required_workflow_fields():
         "action_proposals",
         "queued_replies", "sent_replies",
         "manual_status_flags", "tracking_overrides", "operator_notes",
+        "wfirma_export",
     }
     missing = required - set(PRESERVED_KEYS)
     assert not missing, f"Required workflow fields missing from PRESERVED_KEYS: {missing}"
