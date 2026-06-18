@@ -181,8 +181,10 @@ def merge_regenerated_audit(
     Rules:
         1. For every key in ``preserve_keys``: if the existing audit has a
            meaningful value AND the regen did NOT write a meaningful one,
-           use the existing value. Otherwise use whichever is meaningful
-           (regen wins on tie).
+           use the existing value. The rule is ASYMMETRIC — the existing
+           overlay only wins when the regen value is not meaningful; a
+           meaningful regen value always wins (so a flow that legitimately
+           resets the field is never blocked). Regen also wins on tie.
         2. The regenerated ``timeline`` is preserved by extension: if the
            regen produced new timeline events, they are appended to the
            existing list (deduplicated by `(ts, event)`).

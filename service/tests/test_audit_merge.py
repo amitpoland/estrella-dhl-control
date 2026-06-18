@@ -298,6 +298,23 @@ class TestWfirmaExportPreservation:
         m = merge_regenerated_audit(ex, rg)
         assert not m.get("wfirma_export")
 
+    def test_cleared_pointer_is_not_resurrected_by_regen(self):
+        """After clear-mapping strips the doc-id fields (leaving only generation
+        flags), a subsequent regen must NOT bring the old pointer back. The
+        preservation rule may carry the doc-id-absent block forward, but the
+        booked-PZ pointer itself stays gone — preservation is not resurrection."""
+        ex = _audit_with_booked_pz()
+        # simulate /wfirma/pz/clear-mapping: pop the four doc-id fields,
+        # leave a non-empty generation-flag remnant behind.
+        we = dict(ex["wfirma_export"])
+        for k in ("wfirma_pz_doc_id", "wfirma_pz_fullnumber",
+                  "pz_source", "pz_created_at"):
+            we.pop(k, None)
+        we["clipboard_generated"] = True
+        ex["wfirma_export"] = we
+        m = merge_regenerated_audit(ex, _regen_engine_only())
+        assert not (m.get("wfirma_export") or {}).get("wfirma_pz_doc_id"), m
+
 
 # ── Preserved-keys contract ───────────────────────────────────────────────────
 
