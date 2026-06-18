@@ -335,3 +335,107 @@ def test_regeneration_preserves_confirmed_proposal():
     assert merged["rows"] == [{"new": 2}]                 # engine output wins
     assert merged["vision_invoice"]["operator_confirmed"] is True  # preserved
     assert merged["vision_invoice"]["supplier"] == "OPERATOR PICK"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# freight / insurance / cif extraction (2026-06-18, image-only landed-cost fix)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_validate_keeps_freight_insurance_cif():
+    """The invoice-for-PZ extractor must capture freight/insurance/cif so the
+    image-only landed cost can allocate the freight+insurance leg. Regression for
+    the AWB 2315714531 zero-F+I incident (schema previously had only fob_usd)."""
+    clean, errs = vision_extractor.validate_invoice_extraction({
+        "supplier": "Global Jewellery Pvt. Ltd.", "currency": "USD",
+        "fob_usd": 607.0, "freight_usd": 100.0, "insurance_usd": 25.0,
+        "cif_usd": 732.0, "itemization_available": True,
+        "line_items": [{"description": "RING", "quantity": 66, "total": 535.0},
+                       {"description": "RING", "quantity": 4, "total": 72.0}],
+        "confidence": 0.9,
+    })
+    assert clean["fob_usd"] == 607.0
+    assert clean["freight_usd"] == 100.0
+    assert clean["insurance_usd"] == 25.0
+    assert clean["cif_usd"] == 732.0
+
+
+def test_validate_never_keeps_zero_freight_insurance():
+    """USD-zero discipline: a 0 freight/insurance means 'unknown', not 'free' —
+    _coerce_money drops it so the engine treats the leg as genuinely absent."""
+    clean, _ = vision_extractor.validate_invoice_extraction(
+        {"currency": "USD", "fob_usd": 607.0, "freight_usd": 0,
+         "insurance_usd": 0, "line_items": [], "confidence": 0.5}
+    )
+    assert "freight_usd" not in clean
+    assert "insurance_usd" not in clean
+
+
+def test_merge_writes_freight_insurance_cif_in_usd():
+    audit = {}
+    clean = {"currency": "USD", "fob_usd": 607.0, "freight_usd": 100.0,
+             "insurance_usd": 25.0, "cif_usd": 732.0, "line_items": [],
+             "itemization_unavailable": True, "confidence": 0.9}
+    vision_extractor._merge_vision_invoice(audit, clean, _prov(clean))
+    vi = audit["vision_invoice"]
+    assert vi["freight_usd"] == 100.0
+    assert vi["insurance_usd"] == 25.0
+    assert vi["cif_usd"] == 732.0
+
+
+def test_merge_withholds_freight_insurance_when_currency_not_usd():
+    """Same USD-only gate as fob_usd: a freight/insurance figure read under a
+    non-USD currency must not be mislabelled as dollars."""
+    audit = {"vision_invoice": {"operator_confirmed": False, "line_items": []}}
+    clean = {"currency": "EUR", "freight_usd": 100.0, "insurance_usd": 25.0,
+             "cif_usd": 732.0, "line_items": [], "confidence": 0.8}
+    vision_extractor._merge_vision_invoice(audit, clean, _prov(clean, conf=0.8))
+    vi = audit["vision_invoice"]
+    assert "freight_usd" not in vi
+    assert "insurance_usd" not in vi
+    assert "cif_usd" not in vi
+
+
+def test_merge_non_usd_run_does_not_overwrite_prior_usd_freight_insurance():
+    """Sticky field-merge: a prior (unconfirmed) proposal already holds USD
+    freight/insurance/cif; a later run reading EUR must NOT overwrite or wipe the
+    earlier USD figures. The USD-only gate skips the write and the field-merge
+    keeps the prior value (parallels the prior-USD-fob preservation rule)."""
+    audit = {"vision_invoice": {"operator_confirmed": False, "currency": "USD",
+                                "freight_usd": 100.0, "insurance_usd": 25.0,
+                                "cif_usd": 732.0, "line_items": []}}
+    clean = {"currency": "EUR", "freight_usd": 88.0, "insurance_usd": 9.0,
+             "cif_usd": 700.0, "line_items": [], "confidence": 0.7}
+    vision_extractor._merge_vision_invoice(audit, clean, _prov(clean, conf=0.7))
+    vi = audit["vision_invoice"]
+    assert vi["freight_usd"] == 100.0   # prior USD value retained, not the EUR 88
+    assert vi["insurance_usd"] == 25.0
+    assert vi["cif_usd"] == 732.0
+
+
+def test_merge_sticky_confirmed_proposal_untouched_by_new_fi():
+    """A confirmed proposal is authority the operator owns — a subsequent
+    extraction run (even a USD one carrying different freight/insurance) must NOT
+    mutate it. _merge_vision_invoice returns False and leaves the block intact."""
+    audit = {"vision_invoice": {"operator_confirmed": True, "currency": "USD",
+                                "freight_usd": 100.0, "insurance_usd": 25.0,
+                                "cif_usd": 732.0, "line_items": [{"description": "RING"}]}}
+    clean = {"currency": "USD", "freight_usd": 55.0, "insurance_usd": 5.0,
+             "cif_usd": 667.0, "line_items": [], "confidence": 0.9}
+    wrote = vision_extractor._merge_vision_invoice(audit, clean, _prov(clean))
+    assert wrote is False
+    vi = audit["vision_invoice"]
+    assert vi["freight_usd"] == 100.0   # confirmed values untouched
+    assert vi["insurance_usd"] == 25.0
+    assert vi["cif_usd"] == 732.0
+
+
+def test_validate_drops_negative_freight_insurance():
+    """'null not 0' discipline extends to negatives: a negative freight/insurance
+    is noise (mis-read), not a credit — _coerce_money drops it from the clean
+    output rather than carrying a negative into the engine."""
+    clean, _ = vision_extractor.validate_invoice_extraction(
+        {"currency": "USD", "fob_usd": 607.0, "freight_usd": -10.0,
+         "insurance_usd": -5.0, "line_items": [], "confidence": 0.5}
+    )
+    assert "freight_usd" not in clean
+    assert "insurance_usd" not in clean

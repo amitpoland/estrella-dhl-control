@@ -1007,6 +1007,59 @@ def _build_invoice_from_authority_rows(pdf_path, fname, audit, rows, corrections
                 f"fob_usd=${fob_usd:,.2f}"
             )
 
+    # ── Freight / insurance fallback for image-only invoices (2026-06-18) ─────
+    # invoice_totals carries freight/insurance ONLY for text invoices whose
+    # regex parser read an explicit "Freight" / "Insurance" label. An image-only
+    # / scanned invoice has no text layer, so total_freight_usd /
+    # total_insurance_usd stay 0 and the SOLE freight/insurance authority is the
+    # operator-CONFIRMED ``vision_invoice``. Without this fallback,
+    # calculate_landed computes freight_rate_pct = (0+0)/fob = 0 and the landed
+    # cost silently drops the entire freight+insurance leg — PZ net collapses to
+    # FOB + duty (the AWB 2315714531 / inv 122/2026-2027 zero-F+I incident).
+    #
+    # ADR-031 isolation: READ-only. We never set operator_confirmed here; we only
+    # consume an already-confirmed proposal. USD discipline mirrors the F+I gate
+    # in _merge_vision_invoice: currency must read EXPLICITLY "USD". An absent or
+    # blank currency is treated as non-USD (unknown) and is NOT backfilled — this
+    # avoids the gate being more permissive than the writer that produced the
+    # proposal (GATE 1 follow-up, 2026-06-18). Only a ZERO/absent invoice_totals
+    # value is backfilled — a real text-parsed freight/insurance is never
+    # overridden by the vision proposal.
+    _vi = audit.get("vision_invoice") or {}
+    if isinstance(_vi, dict) and _vi.get("operator_confirmed") is True \
+            and (_vi.get("currency") or "").strip().upper() == "USD":
+        def _vi_money(key):
+            try:
+                v = float(_vi.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+            return v if v > 0 else 0.0
+        _changed = False
+        if freight_usd <= 0 and _vi_money("freight_usd") > 0:
+            freight_usd = _vi_money("freight_usd")
+            _changed = True
+        if insurance_usd <= 0 and _vi_money("insurance_usd") > 0:
+            insurance_usd = _vi_money("insurance_usd")
+            _changed = True
+        if _changed:
+            corrections_log.append(
+                f"[{fname}] [bridge] freight/insurance from confirmed vision_invoice "
+                f"(invoice_totals had freight={it_totals.get('total_freight_usd')!r} "
+                f"insurance={it_totals.get('total_insurance_usd')!r}); "
+                f"freight_usd=${freight_usd:,.2f} insurance_usd=${insurance_usd:,.2f}"
+            )
+            # Soft reconciliation against a vision-supplied CIF, if present. The
+            # engine's authoritative CIF is fob+freight+insurance (computed
+            # below); a >$1 drift from the proposal CIF is a breadcrumb, never a
+            # block (the operator already attested the proposal).
+            _vi_cif = _vi_money("cif_usd")
+            _computed_cif = fob_usd + freight_usd + insurance_usd
+            if _vi_cif > 0 and abs(_vi_cif - _computed_cif) > 1.0:
+                corrections_log.append(
+                    f"[{fname}] [bridge] vision CIF drift: proposal cif_usd="
+                    f"${_vi_cif:,.2f} vs fob+freight+insurance=${_computed_cif:,.2f}"
+                )
+
     invoice_no = ""
     for r in rows:
         invoice_no = (r.get("invoice_number") or "").strip()
