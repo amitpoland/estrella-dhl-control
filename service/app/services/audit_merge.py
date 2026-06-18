@@ -104,6 +104,18 @@ PRESERVED_KEYS: tuple = (
     # so it must be preserved across regeneration — including a sticky
     # operator_confirmed=true once the operator accepts the proposal.
     "vision_invoice",
+    # ── wFirma PZ export authority pointer (#570-class fix, 2026-06-18) ──
+    # When a PZ is created live in wFirma, global_pz_push writes the booked-PZ
+    # reference (wfirma_pz_doc_id, wfirma_pz_fullnumber, pz_source, pz_created_at,
+    # pz_mapped_at) into audit.wfirma_export. The engine never writes this key, so
+    # without preservation every subsequent Run PZ regeneration wipes the pointer
+    # to null — the canonical link to the booked document is lost from audit.json
+    # and survives only in the timeline (recoverable via
+    # audit_persist.reconcile_from_timeline, but that is a manual one-shot, not an
+    # automatic read-path recovery). Observed on AWB 2315714531 / PZ 4/6/2026
+    # (doc_id 189364835): four post-correction regenerations left wfirma_export
+    # null. Preserve it so a regen can never silently drop accounting authority.
+    "wfirma_export",
 )
 
 # Engine outputs — always replaced by the fresh regeneration.
