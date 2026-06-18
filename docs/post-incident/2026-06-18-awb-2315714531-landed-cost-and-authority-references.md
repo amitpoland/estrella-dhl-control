@@ -185,6 +185,23 @@ its value is conditional on a safety proof that does not yet exist.
 
 ---
 
+## Architectural Maturity Progression
+
+This incident advanced the platform's audit/authority posture by two capability stages. Read the
+stages as the operations the platform reliably performs on a PZ's authority state:
+
+| Stage | Capabilities | What it means |
+|---|---|---|
+| **Before incident** | Calculate → Store → Export | The engine computed landed cost (Calculate), wrote `audit.json` (Store), and pushed a booked PZ to wFirma (Export). There was no contract that authority survived regeneration and no recovery path — a regenerate silently dropped external references, and a degraded ingestion path silently produced incomplete input. |
+| **After incident** | Calculate → **Preserve** → **Recover** → **Govern** | **Preserve** = Rule 2 / `PRESERVED_KEYS` keeps external-reference authority across regeneration. **Recover** = `reconcile_from_timeline()` restores a lost pointer from append-only timeline authority. **Govern** = no-API-price-edit policy, operator-gated wFirma writes, deploy-guard, 7-agent gate. Calculate is now complete on every ingestion path (Rule 1). |
+| **Future state** | Calculate → Preserve → Recover → Govern → **Reconcile** | **Reconcile** = the Global PZ ↔ wFirma comparison layer (Rule 3) that surfaces divergence between the recalculated PZ and the booked wFirma document before a period closes. This is the only stage still missing, and it is the one that would have caught AWB 2315714531 without a human. |
+
+The progression is cumulative: each stage is a permanent capability the platform did not previously
+guarantee. Preserve and Recover and Govern are live. Reconcile is the next strategic project (§4),
+not a separate initiative — it completes the same authority lifecycle.
+
+---
+
 **Production posture.** The system is in a good, verified state. No further production changes are
 scheduled. Items 1–3 are future development; item 1 begins with a design spec / ADR (authority
 owner, comparison rule, surfacing point) before any code.

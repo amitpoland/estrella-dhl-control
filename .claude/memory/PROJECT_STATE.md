@@ -55,6 +55,12 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
+## Current origin/main HEAD (2026-06-18, updated): `03ffce9`
+
+- **origin/main HEAD = `03ffce9`** — `fix(audit): preserve wfirma_export PZ pointer across Run PZ regeneration (#570-class) (#652)` (merged 2026-06-18). This is the current HEAD; the dedicated "Current origin/main HEAD (2026-06-17, updated): `b45dda7`" block below is **superseded** (append-only — prior entry retained).
+- **Production functional SHA = `03ffce9`** (#652 deployed + verified, single-file `audit_merge.py` sync). The prior "last verified prod SHA = `e4d96b5`" record was stale — production was already at `8024c50` (#648) before #652.
+- Docs branch `docs/wfirma-posted-pz-correction-decision` (PR #653) carries the 2026-06-18 governance/incident docs; not merged (operator-only).
+
 ## AWB 2315714531 — two authority defects + #652 deploy record (2026-06-18, DEPLOYED + VERIFIED)
 
 **FACT — one shipment exposed two independent authority-loss defects:**
@@ -88,7 +94,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 - **Context**: AWB 2315714531 / wFirma PZ **4/6/2026** (doc id **189364835**) was booked with stale line prices. Live read-only GET confirmed booked values netto **2280.14** (line1 unit 30.45 / line2 unit 67.61) vs the corrected local authority (`pz_rows.json`) total netto **2736.87** (line1 unit 36.55 / line2 unit 81.16) — a **+456.73 (+20.0%)** gap. Track B research investigated whether the booked PZ line prices can be safely corrected via the wFirma API.
 - **Research finding (read-only, no wFirma writes performed)**: The EJ wFirma client (`service/app/services/wfirma_client.py`) exposes for `warehouse_document_p_z` only `create_warehouse_pz`, `fetch_warehouse_pz` (read), and `find_warehouse_pz_by_number` — **no edit/update/delete/cancel method**. The sole governed write path (`service/app/services/global_pz_push.py`) is **create-only** ("No update, cancel, or delete"; "CANCEL_AND_RECREATE is OUT OF SCOPE"; "wFirma documents cannot be deleted via API — manual wFirma intervention required"). Booked PZ line prices are **NOT safely editable via API**.
-- **#652 MERGED to origin/main as `03ffce9`** (2026-06-18, operator-merged squash): `fix(audit): preserve wfirma_export PZ pointer across Run PZ regeneration (#570-class)`. Adds `wfirma_export` to `audit_merge.PRESERVED_KEYS` so a Run-PZ regeneration can never again wipe the booked-PZ pointer to null. **#652 is pointer-preservation only — NOT value correction.** NOT yet deployed to production (last verified prod SHA remains `e4d96b5`); deploy requires operator approval + 7-agent gate.
+- **#652 MERGED to origin/main as `03ffce9`** (2026-06-18, operator-merged squash): `fix(audit): preserve wfirma_export PZ pointer across Run PZ regeneration (#570-class)`. Adds `wfirma_export` to `audit_merge.PRESERVED_KEYS` so a Run-PZ regeneration can never again wipe the booked-PZ pointer to null. **#652 is pointer-preservation only — NOT value correction.** ~~NOT yet deployed to production (last verified prod SHA remains `e4d96b5`)~~ — **SUPERSEDED 2026-06-18: #652 is now DEPLOYED + VERIFIED live to `C:\PZ` (see the "AWB 2315714531 — two authority defects + #652 deploy record" block above and scorecard `2026-06-18-pr652-deploy-gate.md`).** The "last verified prod SHA = `e4d96b5`" claim was itself stale: an on-disk probe proved production was functionally at `8024c50` (#648) before this deploy.
 
 **DECISIONS (2026-06-18, operator)**:
 - **Decision**: Do not attempt API price edits on already-booked wFirma PZ documents unless proven first in a wFirma sandbox on a posted PZ.
