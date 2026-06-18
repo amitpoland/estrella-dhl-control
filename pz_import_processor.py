@@ -1018,13 +1018,16 @@ def _build_invoice_from_authority_rows(pdf_path, fname, audit, rows, corrections
     # FOB + duty (the AWB 2315714531 / inv 122/2026-2027 zero-F+I incident).
     #
     # ADR-031 isolation: READ-only. We never set operator_confirmed here; we only
-    # consume an already-confirmed proposal. USD discipline mirrors the FOB gate
-    # in _authority_rows_from_confirmed_vision (currency must read USD). Only a
-    # ZERO/absent invoice_totals value is backfilled — a real text-parsed
-    # freight/insurance is never overridden by the vision proposal.
+    # consume an already-confirmed proposal. USD discipline mirrors the F+I gate
+    # in _merge_vision_invoice: currency must read EXPLICITLY "USD". An absent or
+    # blank currency is treated as non-USD (unknown) and is NOT backfilled — this
+    # avoids the gate being more permissive than the writer that produced the
+    # proposal (GATE 1 follow-up, 2026-06-18). Only a ZERO/absent invoice_totals
+    # value is backfilled — a real text-parsed freight/insurance is never
+    # overridden by the vision proposal.
     _vi = audit.get("vision_invoice") or {}
     if isinstance(_vi, dict) and _vi.get("operator_confirmed") is True \
-            and (_vi.get("currency") or "USD").strip().upper() == "USD":
+            and (_vi.get("currency") or "").strip().upper() == "USD":
         def _vi_money(key):
             try:
                 v = float(_vi.get(key) or 0)

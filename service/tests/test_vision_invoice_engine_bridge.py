@@ -310,3 +310,108 @@ def test_image_only_landed_allocates_freight_insurance():
     assert pz_net > fob_plus_duty_only + 100.0   # F+I adds 125 USD × 3.6542 ≈ 457 PLN
     # totals echo the carried CIF (fob+freight+insurance).
     assert abs(totals["total_cif_usd"] - 732.0) < 0.01
+
+
+# ── 14. GATE 1 follow-up (2026-06-18): F+I backfill gate hardening ────────────
+# The backfill gate inside _build_invoice_from_authority_rows must mirror the
+# WRITER discipline in _merge_vision_invoice exactly: operator-confirmed AND
+# EXPLICITLY USD, dropping zero/negative values. These pin the gate in isolation
+# (the normal _try_invoice router rejects unconfirmed/non-USD proposals BEFORE
+# the builder, so the builder's own guard would otherwise be source-grep-only).
+
+def test_absent_currency_does_not_backfill_fi():
+    """A confirmed proposal carrying freight/insurance but NO currency key must
+    NOT be backfilled. Pre-hardening the gate defaulted absent currency to USD —
+    more permissive than _merge_vision_invoice, which withholds F+I unless the
+    currency reads explicitly USD. The gate now treats absent/blank as non-USD."""
+    rows_audit = _confirmed_audit_with_fi()
+    rows = p._authority_rows_from_confirmed_vision(rows_audit, "inv_122.pdf", [])
+    audit = _confirmed_audit_with_fi()
+    audit["vision_invoice"].pop("currency")  # currency absent entirely
+    built = p._build_invoice_from_authority_rows("inv_122.pdf", "inv_122.pdf", audit, rows, [])
+    assert built["freight_usd"] == 0.0
+    assert built["insurance_usd"] == 0.0
+    assert abs(built["cif_usd"] - 607.0) < 0.01  # cif collapses to fob — no backfill
+
+
+def test_blank_currency_does_not_backfill_fi():
+    """An empty-string currency is also non-USD — must not backfill."""
+    rows_audit = _confirmed_audit_with_fi()
+    rows = p._authority_rows_from_confirmed_vision(rows_audit, "inv_122.pdf", [])
+    audit = _confirmed_audit_with_fi(currency="")
+    built = p._build_invoice_from_authority_rows("inv_122.pdf", "inv_122.pdf", audit, rows, [])
+    assert built["freight_usd"] == 0.0
+    assert built["insurance_usd"] == 0.0
+
+
+def test_unconfirmed_vision_does_not_backfill_fi():
+    """Direct-unit guard: even with valid pre-built rows, an UNCONFIRMED proposal
+    carrying freight/insurance must not have them promoted into the engine. The
+    operator_confirmed gate lives inside the builder, not only in the router."""
+    rows_audit = _confirmed_audit_with_fi()
+    rows = p._authority_rows_from_confirmed_vision(rows_audit, "inv_122.pdf", [])
+    audit = _confirmed_audit_with_fi(operator_confirmed=False)
+    built = p._build_invoice_from_authority_rows("inv_122.pdf", "inv_122.pdf", audit, rows, [])
+    assert built["freight_usd"] == 0.0
+    assert built["insurance_usd"] == 0.0
+    assert abs(built["cif_usd"] - 607.0) < 0.01
+
+
+def test_non_usd_vision_does_not_backfill_fi():
+    """A confirmed EUR proposal must not backfill USD freight/insurance (currency
+    mixing). The router rejects EUR before the builder; this pins the builder's
+    own gate in isolation."""
+    rows_audit = _confirmed_audit_with_fi()
+    rows = p._authority_rows_from_confirmed_vision(rows_audit, "inv_122.pdf", [])
+    audit = _confirmed_audit_with_fi(currency="EUR")
+    built = p._build_invoice_from_authority_rows("inv_122.pdf", "inv_122.pdf", audit, rows, [])
+    assert built["freight_usd"] == 0.0
+    assert built["insurance_usd"] == 0.0
+
+
+def test_negative_fi_values_dropped():
+    """Negative freight/insurance on the proposal are noise, not authority — they
+    must be dropped ("null not 0" discipline), never backfilled."""
+    rows_audit = _confirmed_audit_with_fi()
+    rows = p._authority_rows_from_confirmed_vision(rows_audit, "inv_122.pdf", [])
+    audit = _confirmed_audit(freight_usd=-10.0, insurance_usd=-5.0, cif_usd=732.0)
+    built = p._build_invoice_from_authority_rows("inv_122.pdf", "inv_122.pdf", audit, rows, [])
+    assert built["freight_usd"] == 0.0
+    assert built["insurance_usd"] == 0.0
+    assert abs(built["cif_usd"] - 607.0) < 0.01
+
+
+def test_zero_fi_values_not_backfilled():
+    """Explicit zero freight/insurance on the proposal must not be backfilled —
+    a zero carries no allocation authority."""
+    rows_audit = _confirmed_audit_with_fi()
+    rows = p._authority_rows_from_confirmed_vision(rows_audit, "inv_122.pdf", [])
+    audit = _confirmed_audit(freight_usd=0.0, insurance_usd=0.0, cif_usd=607.0)
+    built = p._build_invoice_from_authority_rows("inv_122.pdf", "inv_122.pdf", audit, rows, [])
+    assert built["freight_usd"] == 0.0
+    assert built["insurance_usd"] == 0.0
+
+
+def test_one_leg_insurance_backfilled_freight_text_wins():
+    """Asymmetric single-leg: text-parsed freight present (40) but insurance zero.
+    Freight must stay text-parsed (40, not overridden); insurance must backfill
+    from the confirmed vision proposal (25). The two legs are independent."""
+    audit = _confirmed_audit_with_fi()
+    audit["invoice_totals"] = {"total_fob_usd": 0.0, "total_freight_usd": 40.0,
+                               "total_insurance_usd": 0.0}
+    rows = p._authority_rows_from_confirmed_vision(audit, "inv_122.pdf", [])
+    built = p._build_invoice_from_authority_rows("inv_122.pdf", "inv_122.pdf", audit, rows, [])
+    assert abs(built["freight_usd"] - 40.0) < 0.01    # text-parsed freight preserved
+    assert abs(built["insurance_usd"] - 25.0) < 0.01  # insurance backfilled from vision
+
+
+def test_one_leg_freight_backfilled_insurance_text_wins():
+    """Mirror of the above: text-parsed insurance present (8) but freight zero.
+    Insurance stays text-parsed (8); freight backfills from vision (100)."""
+    audit = _confirmed_audit_with_fi()
+    audit["invoice_totals"] = {"total_fob_usd": 0.0, "total_freight_usd": 0.0,
+                               "total_insurance_usd": 8.0}
+    rows = p._authority_rows_from_confirmed_vision(audit, "inv_122.pdf", [])
+    built = p._build_invoice_from_authority_rows("inv_122.pdf", "inv_122.pdf", audit, rows, [])
+    assert abs(built["freight_usd"] - 100.0) < 0.01   # freight backfilled from vision
+    assert abs(built["insurance_usd"] - 8.0) < 0.01   # text-parsed insurance preserved
