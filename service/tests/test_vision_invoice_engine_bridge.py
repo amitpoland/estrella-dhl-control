@@ -367,6 +367,7 @@ def test_non_usd_vision_does_not_backfill_fi():
     built = p._build_invoice_from_authority_rows("inv_122.pdf", "inv_122.pdf", audit, rows, [])
     assert built["freight_usd"] == 0.0
     assert built["insurance_usd"] == 0.0
+    assert abs(built["cif_usd"] - 607.0) < 0.01
 
 
 def test_negative_fi_values_dropped():
