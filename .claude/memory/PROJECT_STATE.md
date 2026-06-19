@@ -201,26 +201,53 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **PR #628 MERGED** (2026-06-16): `docs(memory): record e4d96b5 deploy + production-truth correction; ADR-029 deploy scorecard`. Merged as `2a3a117`. Memory-only PR carrying PROJECT_STATE + scorecard updates.
 - **~~PR #627 OPEN~~** (prior FACTS entry for PR #627 as OPEN is superseded — see PR #627 MERGED above; prior entry preserved for history per append-only rule).
 
-## PR #633 — CIF-UI Resolved Authority (2026-06-17, OPEN — NOT MERGED, NOT DEPLOYED)
+## PR #633 — CIF-UI Resolved Authority (2026-06-17, MERGED as `4652292` + DEPLOYED to C:\PZ)
 
-- **PR #633 OPEN** (2026-06-17): Branch `fix/cif-ui-resolved-authority`, HEAD commit `49f1060`, base `origin/main` at `c284902` (OCR/AI fallback, PR #632). Title: `fix(customs): UI + Polish-desc gate read resolved CIF authority, not raw invoice 0`. STATUS: OPEN. NOT merged. NO deploy. https://github.com/amitpoland/estrella-dhl-control/pull/633
+- **~~PR #633 OPEN~~** (prior FACTS entry for PR #633 as OPEN / NOT MERGED / NOT DEPLOYED is superseded — see PR #633 MERGED below; prior OPEN entry preserved for history per append-only rule).
+- **PR #633 MERGED** (2026-06-17): Branch `fix/cif-ui-resolved-authority`. Title: `fix(customs): UI + Polish-desc gate read resolved CIF authority, not raw invoice 0`. Merged to main as squash SHA **`4652292`**. This is now **origin/main HEAD**. https://github.com/amitpoland/estrella-dhl-control/pull/633
+- **PR #633 DEPLOYED** (2026-06-17): Operator-executed deploy (deploy-guard hook = operator-only writes into `C:\PZ`). Deploy source: immutable detached worktree **`C:\PZ-deploy-633`** pinned at `4652292` — used instead of `C:\PZ-verify` because a concurrent Claude Code session had switched `C:\PZ-verify` off main mid-gate (see GATE 4 Issue #636). Live markers confirmed via read-only `Select-String` on deployed files: `cif_unresolved` = 2 matches in `routes_dhl_clearance.py`; `_dskBlocked = !_decResolved` = 1 match in `shipment-detail.html`; `cif_resolver` import = 1. PZService RUNNING.
+- **AWB 2315714531 live verification = PASS** (2026-06-17): Resolved CIF = USD 732 from `awb_customs.value_usd` (source `vision_llm`, page 2); invoice CIF = 0.0 (advisory only, not blocking); `cif_state=resolved`; `clearance_path=dhl_self_clearance`; `require_dsk=False`; `require_polish_description=True`. UI gates open: `_pdBlocked=False`, `_dskBlocked=False`. `generate_description` 422 `cif_unresolved` does NOT fire. Verified 3 independent ways: (1) deployed-file markers via `Select-String`; (2) deployed-code logic vs live audit; (3) running service's stored `clearance_decision` (computed `2026-06-17T12:28:36Z`). All 5 acceptance criteria green. Batch dir: `storage/outputs/SHIPMENT_2315714531_2026-06_ffe086f3`.
+- **GATE 4 Issue #636 FILED** (2026-06-17): "C:\PZ-verify concurrent-session branch drift during PR #633 deploy gate" — a second Claude Code session switched `C:\PZ-verify` off main mid-gate, causing two deploy reviewers (backend-impact, release-manager) to emit false-BLOCKER verdicts and QA a false file-absent note. Contained via immutable worktree `C:\PZ-deploy-633`; deploy correctness unaffected. Disposition: **ISSUE (#636)**.
+- **Scorecard (RULE 6 citation)**: `.claude/memory/scorecards/2026-06-17-pr633-cif-ui-deploy-verify.md` — 7-agent deploy gate scorecard for this campaign. (File path recorded per RULE 6 — to be disk-verified on next session per Lesson C.)
+- **GATE 2 after merge + deploy**: #633 cleared from open-PR queue. **1/3 open implementation PRs** — #630 (proforma governance) only; 2 slots remaining.
+- **Prior OPEN block details (2026-06-17)**: Branch `fix/cif-ui-resolved-authority`, HEAD commit `49f1060`, base `origin/main` at `c284902` (OCR/AI fallback, PR #632). STATUS was OPEN. NOT merged. NO deploy. All prior scope/regression/reviewer-verdict details remain accurate below.
 - **Scope**: Every DHL/customs UI panel + the `generate_description` gate now read `clearance_decision` resolved CIF authority (`cif_usd` / `cif_state` / `cif_source` / `extraction_gap`) instead of raw `invoice_cif=0`. `routes_dhl_clearance.py` raw-invoice `cif_zero` guard replaced by resolved-CIF tri-state guard: blocks only when `cif_state==unknown` (code `cif_unresolved`). `shipment-detail.html` splits "Invoice CIF" (advisory) vs "Resolved CIF"; suppresses the "CIF=0.00 — invoice values not parsed" banner when resolved CIF exists; header + Polish-desc button read resolved CIF; CIF-comparison color fixed.
 - **Proof point**: AWB 2315714531 — `invoice_cif=0`, `clearance_decision.cif_usd=732` (source AWB Custom Val); now routed `PATH_DHL_SELF_CLEARANCE`, `require_dsk=False`; no longer shows blocking CIF=0 warning; Polish Description gate not blocked.
 - **Regression tests**: `service/tests/test_polish_desc_cif_resolved_gate.py` — 7 tests covering: CIF-gate blocks on `UNKNOWN`, passes on `RESOLVED`, passes on `DECLARED_ZERO`; 3 reviewer agents (backend-safety-reviewer, reviewer-challenge, frontend-flow-reviewer) dispatched pre-PR-open. Test battery: CIF-gate 7/7 pass; smoke 63 pass / 1 skip; full suite zero new failures vs base (44→43 failed — fixes 1, adds 6).
 - **Reviewer verdicts (GATE 1 satisfied)**: backend-safety-reviewer PASS; reviewer-challenge ship-with-mitigations (all mitigations inline); frontend-flow-reviewer initial BLOCK (F-1 comparison color, F-2 testids) → both cleared before PR open. All CRITICAL/HIGH findings resolved inline.
 - **Scorecard (RULE 6 citation — file existence disk-verified 2026-06-17 per Lesson C)**: `C:\PZ-cif-ui\.claude\memory\scorecards\2026-06-17-pr633-cif-ui-resolved-authority.md` — all 3 reviewers EXEMPLARY; frontend-flow-reviewer BLOCK→clear cycle (F-1/F-2) a quality signal of correct gate behavior; no NEEDS-TUNING / UNRELIABLE verdicts.
 - **GATE 2 state**: #630 (proforma governance OPEN) + #633 (this PR OPEN) = **2/3 implementation slots used**. 1 slot remaining.
-- **Deploy gate**: PR #633 NOT deployed. Production deploy requires full 7-agent gate + explicit operator approval. Zero backend route changes, zero schema, zero engine files — static `shipment-detail.html` (V1-frozen critical-fix class, same exception class as PR #627 per Lesson F) + `routes_dhl_clearance.py` (service/app standard robocopy). Lesson J N/A (no root engine files touched). wFirma / SAD / ZC429 / VAT / deploy-scripts untouched.
+- **~~Deploy gate: PR #633 NOT deployed~~** (prior entry — superseded; PR #633 is now MERGED and DEPLOYED; see ## DEPLOY — PR #633 block below; stale text preserved per append-only rule).
 - **Observer-noted Environment scoring gap** (2026-06-17): All 3 review agents scored Environment 2/5 — none self-declared working-tree path / branch / SHA in their verdict blocks. Scorecard recommends adding PATH GUARD self-declaration requirement to reviewer prompt templates. Recorded as OPEN QUESTION OQ-CIF633-ENV-DISCLOSURE below.
+
+## DEPLOY — PR #633 (resolved-CIF authority gate) → C:\PZ (2026-06-17, INDEPENDENTLY VERIFIED)
+
+- **2026-06-17**: PR #633 DEPLOYED to production (C:\PZ) and independently verified (read-only post-deploy verification; prod hashes confirmed flipped).
+- **Source authority**: origin/main @ `4652292` (verify tree HEAD confirmed `4652292a38db5557602972d60a90e6629dac2749`).
+- **Runtime delta**: exactly 2 deployed files (both standard robocopy, `service/app/**` → `C:\PZ\app\**`):
+  - `service/app/api/routes_dhl_clearance.py` — backend resolver wiring. `generate_description` guard swapped from raw dual-field `cif_zero` check to `resolve_cif(audit)` tri-state; emits HTTP 422 `cif_unresolved` only when genuinely unresolved (AWB-custom-val / OCR-AI resolved CIF now proceeds). Auth retained: `require_api_key` + `require_role("admin","logistics")`.
+  - `service/app/static/shipment-detail.html` — V1 page (Lesson F critical-fix exception). Adds Resolved CIF (USD) row + advisory/unresolved banners; gates Polish-Desc + DSK buttons visible+disabled with explicit reason (Lesson M compliant — capability loosened, not suppressed).
+- **Prod LF-SHA256 (LF-normalized authority hashes), both MATCH source@4652292**:
+  - `routes_dhl_clearance.py` = `74e42fdf122a857feae34725b0498fdef846c980f586af8047da541c470f64f0`
+  - `shipment-detail.html` = `e85d57db68f99d3b48de25bd8112def8cb78785c9c7e11c26acfcfa73f252bae`
+- **Token verification on prod**: backend `resolve_cif` ×3, `cif_unresolved` ×2, `cif_zero` ABSENT (old guard removed); frontend `resolved-cif-value` ×1, `cif-resolved-advisory` ×1.
+- **PZService**: Running. Liveness: service responding on port 47213 (HTTP returned; /health observed 404 by orchestrator vs 401 reported by operator — both confirm service up, path/header discrepancy noted, NOT a deploy failure; see OQ-633-HEALTH below).
+- **7-agent gate**: all 6 reviewers CLEAR + deploy-lead-coordinator READY-TO-DEPLOY (gate run earlier this session against `4652292`).
+- **Test evidence at gate time**: 27 #633-specific passed; PZ baseline 221 + 1 documented pre-existing accepted failure (`test_pz_batch::test_save_json_csv_ui_round_trip`); carrier baseline 420; 4 broad-CIF-regression failures PROVEN pre-existing on parent `c284902` (zero new failures from #633).
+- **ADR-029 flags remain OFF**: deployment did not enable any ADR-029 flag.
+- **PR-2 NOT started**: ADR-029 PR-2 scope (V1/V2/V6/V7 detectors + §5 hard gate + list_draft_conflicts 404 fix) not started as of this deploy.
+- **4 files in #633 changeset NOT deployed** (Lesson J / .claude exclusion): `PROJECT_STATE.md`, scorecard, `test_polish_desc_cif_resolved_gate.py` (added), `test_dhl_description_db_injection.py` (assertion relaxed).
+- **GATE 4 pre-existing test failures (PENDING-ISSUE)**: 4 broad-CIF-regression test-harness failures (`test_clearance_routing_display` ×1 dashboard-fields; `test_polish_desc_validator` ×3 event-loop) are pre-existing on parent `c284902` — zero new failures introduced by #633. Recommended disposition: ISSUE (label: test-harness / pre-existing / non-blocking). Status: **PENDING-ISSUE** — awaiting operator confirmation to file. See DECISIONS GATE-4 ledger and OQ-633-PRETESTS below.
+- **Lesson J N/A**: no root engine files (pz_import_processor.py / audit_scoring.py / description_grammar.py) in the #633 diff; only `service/app/**` files deployed.
 
 ## PR #630 — Conflict Foundation Remediation (2026-06-17, OPEN)
 
 - **PR #630 OPEN** (2026-06-17): Branch `feat/pr1a-conflict-foundation-remediation`, base `main`. Title: `fix(proforma): remediate PR-1 conflict foundation governance gaps`. Status: ACTIVE. No scorecard produced for this PR in current session data; not yet assessed.
 
-## Current origin/main HEAD (2026-06-17): `a421fe9`
+## Current origin/main HEAD (2026-06-17): `4652292`
 
-- **origin/main HEAD**: `a421fe9` — `test(routes_upload): e2e CIF tri-state regression + fix merge-not-downgrade gap poisoning (#629) (#631)` (merged 2026-06-16T23:37Z).
-- ~~Prior HEAD was `d80a816` (ADR-029 PR-1 conflict-detection foundation, #626)~~ — superseded by the 2026-06-16 merge chain (#625 → #627 → #628 → #631).
+- **origin/main HEAD**: `4652292` — `fix(customs): UI + Polish-desc gate read resolved CIF authority, not raw invoice 0` (PR #633, merged 2026-06-17).
+- ~~Prior HEAD was `a421fe9` (PR #631 merge, 2026-06-16)~~ — superseded by PR #633 merge on 2026-06-17 as `4652292`.
 
 ## DEPLOY — e4d96b5 bundle (PRs #625+#626+#627) → C:\PZ (2026-06-17, VERIFIED LIVE)
 
