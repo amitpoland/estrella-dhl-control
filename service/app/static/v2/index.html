@@ -10,13 +10,17 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-<!-- Production React builds — floating react@18 (SECURITY_CONSIDERATION: SRI dropped; accepted
-     for internal tool; operator may pin sha384 in a maintenance window). -->
-<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<!-- CDN guard: if React or Babel failed to load (network block, CDN outage), show a
-     visible message instead of a silent blank screen. -->
+<!-- Vendor-first loading: tries local copies in /v2/vendor/ first; falls back to CDN.
+     Operator: run service/scripts/download-v2-vendor.ps1 on the Windows server to
+     populate vendor/ with local copies (eliminates CDN dependency in production). -->
+<script src="/v2/vendor/react.production.min.js" crossorigin onerror="window.__vnd_react=1"></script>
+<script>if(window.__vnd_react)document.write('\x3Cscript src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin\x3E\x3C\/script\x3E');</script>
+<script src="/v2/vendor/react-dom.production.min.js" crossorigin onerror="window.__vnd_rdom=1"></script>
+<script>if(window.__vnd_rdom)document.write('\x3Cscript src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin\x3E\x3C\/script\x3E');</script>
+<script src="/v2/vendor/babel.min.js" onerror="window.__vnd_babel=1"></script>
+<script>if(window.__vnd_babel)document.write('\x3Cscript src="https://unpkg.com/@babel/standalone/babel.min.js"\x3E\x3C\/script\x3E');</script>
+<!-- Boot guard: if either vendor files AND CDN both failed to load, show a visible
+     message instead of a silent blank screen. -->
 <script>
 (function() {
   function _showBootError(msg) {
@@ -25,12 +29,13 @@
       el.innerHTML = '<div style="font-family:sans-serif;padding:40px;color:#c0392b;">'
         + '<h2>Estrella Atlas — failed to load</h2><p style="margin-top:8px">' + msg + '</p>'
         + '<p style="margin-top:12px;font-size:13px;color:#555">Open browser DevTools (F12) → Console for details.</p>'
+        + '<p style="margin-top:8px;font-size:13px;color:#555">Fix: run <code>service/scripts/download-v2-vendor.ps1</code> on the server to add local vendor files.</p>'
         + '</div>';
     });
   }
-  if (typeof React === 'undefined')  { _showBootError('React CDN script did not load. Check network access to unpkg.com.'); return; }
-  if (typeof ReactDOM === 'undefined') { _showBootError('ReactDOM CDN script did not load. Check network access to unpkg.com.'); return; }
-  if (typeof Babel === 'undefined')  { _showBootError('Babel CDN script did not load. Check network access to unpkg.com.'); return; }
+  if (typeof React === 'undefined')  { _showBootError('React failed to load (vendor file missing and CDN unreachable). Check network or run download-v2-vendor.ps1.'); return; }
+  if (typeof ReactDOM === 'undefined') { _showBootError('ReactDOM failed to load (vendor file missing and CDN unreachable). Check network or run download-v2-vendor.ps1.'); return; }
+  if (typeof Babel === 'undefined')  { _showBootError('Babel failed to load (vendor file missing and CDN unreachable). Check network or run download-v2-vendor.ps1.'); return; }
   // Surface any uncaught errors (e.g. Babel compile failure or React render crash) visibly.
   window.addEventListener('error', function(ev) {
     var root = document.getElementById('root');
