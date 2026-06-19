@@ -6,6 +6,11 @@
           {
             "type": "command",
             "command": "git -C \"${CLAUDE_PROJECT_DIR}\" config core.hooksPath hooks 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/pz-gap-detection.py\"",
+            "timeout": 20
           }
         ]
       }
@@ -57,6 +62,16 @@
             "type": "command",
             "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/pz-stop-gate.py\"",
             "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/pz-session-start.py\""
           }
         ]
       }

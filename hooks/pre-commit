@@ -63,6 +63,45 @@ if git diff --cached --name-only | grep -q "^${GOLDEN}$"; then
     fi
 fi
 
+# ── Duplicate-module guard ────────────────────────────────────────────────────
+# Blocks any staged NEW file whose basename already exists elsewhere in
+# service/app/** under a different path — prevents parallel implementations.
+# Exempt: __init__.py, conftest.py, .gitkeep, test_*.py, components.js/.jsx
+# Override: git commit --no-verify  (document justification in PR body)
+
+STAGED_NEW="$(git diff --cached --name-only --diff-filter=A 2>/dev/null || true)"
+APP_NEW="$(printf '%s\n' "$STAGED_NEW" | grep -E '^service/app/.*\.(py|html|js|jsx)$' || true)"
+
+if [ -n "$APP_NEW" ]; then
+    DUPE_REPORT=""
+    while IFS= read -r new_file; do
+        [ -z "$new_file" ] && continue
+        bname="$(basename "$new_file")"
+        case "$bname" in
+            __init__.py|conftest.py|.gitkeep|components.js|components.jsx) continue ;;
+            test_*.py|*_test.py) continue ;;
+        esac
+        existing="$(git ls-files "service/app/" | grep "/${bname}$" | grep -v "^${new_file}$" || true)"
+        if [ -n "$existing" ]; then
+            DUPE_REPORT="${DUPE_REPORT}  new:      ${new_file}\n  existing: ${existing}\n\n"
+        fi
+    done <<< "$APP_NEW"
+
+    if [ -n "$DUPE_REPORT" ]; then
+        echo "" >&2
+        echo "  ✗  DUPLICATE MODULE — commit blocked" >&2
+        echo "  ─────────────────────────────────────────────────────" >&2
+        echo "  A staged file shares a basename with an existing module." >&2
+        echo "  Extend the existing file instead of creating a parallel implementation." >&2
+        echo "" >&2
+        printf "%b" "$DUPE_REPORT" >&2
+        echo "  To override: git commit --no-verify  (document justification in PR body)" >&2
+        echo "  ─────────────────────────────────────────────────────" >&2
+        echo "" >&2
+        exit 1
+    fi
+fi
+
 # ── Smoke gate: app-source-scoped, blocking ─────────────────────────────────
 # Runs `pytest -m smoke` (alpha set) whenever any service/app/*.py is staged.
 # Skips on docs/tooling/test-only commits to keep them fast. Reuses the same
