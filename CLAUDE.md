@@ -1,3 +1,86 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+---
+
+## Commands
+
+### Root-level regression (run before ANY live batch or PR)
+```bash
+make verify        # Fast gate: unit tests + format checks (~2s) — required before every batch
+make verify-full   # Full gate: unit + golden PDF pipeline (~30s) — required before PRs
+make reference     # Regenerate reference_batch/ expected outputs (only when intentionally changing golden constants)
+make install-hooks # Install pre-commit hook that blocks on test failure
+```
+
+### Service development
+```bash
+cd service
+make install  # pip install -r requirements.txt
+make dev      # uvicorn app.main:app --reload --port 8000
+make verify   # Run PZ regression tests inside service/
+```
+
+### Running individual tests
+```bash
+# From repo root (targets root-level test suite)
+pytest test_pz_regression.py -k "test_golden_duty_totals" -v
+
+# From service/ (targets FastAPI test suite, 748 files)
+cd service && pytest tests/test_routes_pz.py -v
+cd service && pytest tests/ -m smoke -v   # Fast smoke subset only
+```
+
+### Root-level PZ engine CLI
+```bash
+python pz_import_processor.py --invoices invoice.xlsx --zc429 zc429.pdf --rate 4.2 --pdf --xlsx --doc-no PZ/001/2026
+```
+
+---
+
+## Architecture
+
+### Repo layout
+```
+estrella-dhl-control/
+├── service/              # FastAPI backend (production service, port 47213)
+│   ├── app/
+│   │   ├── main.py       # FastAPI entry point — imports 50+ route modules
+│   │   ├── api/          # 70 route modules (routes_*.py)
+│   │   ├── services/     # 214 service modules — all business logic lives here
+│   │   ├── agents/       # Decision engines (proposal, cowork coordinator)
+│   │   ├── core/         # Config, audit, guards, circuit breaker, security
+│   │   ├── auth/         # JWT + session authentication
+│   │   └── static/       # HTML + vanilla JS (V1) and React/JSX (V2 under static/v2/)
+│   └── tests/            # 748 pytest files
+├── pz_import_processor.py     # Standalone CLI: invoice → PDF/XLSX export
+├── customs_description_engine.py  # Polish customs description generator
+├── pz_calculator.py           # Landed-cost calculation engine
+├── test_pz_regression.py      # 90 golden regression tests
+├── reference_batch/           # Golden expected outputs for regression
+├── docs/                      # Operational markdown (52 files)
+└── .claude/                   # Agents, campaigns, memory, contracts, skills
+```
+
+### Key architectural facts
+
+**Calculation authority** — `process_batch()` in `pz_import_processor.py` is the ONLY calculation path for landed cost, freight allocation, duty, and totals. Never recompute in routes, services, or the Cliq layer.
+
+**Databases** — SQLite only, one file per domain. Each `service/app/services/*_db.py` module owns its database. No shared ORM; queries are direct `sqlite3` calls.
+
+**Frontend** — V1 pages (`shipment-detail.html`, `dashboard.html`) are Vanilla HTML + Babel JSX. V2 pages (`static/v2/*.jsx`) are also Babel JSX — no bundler, no TypeScript, no Tailwind. Do NOT apply TypeScript/Tailwind defaults here. Shared primitives live in `static/components.js` and `static/v2/components.jsx`.
+
+**Route registration** — All routes import into `service/app/main.py`. Adding a new route file requires adding its `include_router` call there.
+
+**AI integration** — `service/app/services/ai_gateway.py` wraps the Anthropic Claude API. `service/app/services/ai_bridge.py` handles structured task dispatch. Tests isolate the AI gateway via `conftest.py` fixtures.
+
+**Feature flags** — `service/app/core/config.py` exposes runtime flags (`audit_hardening_enabled`, `compliance_intelligence_resolver_enabled`, `series_bootstrap_enabled`). No `.env` file; configuration is environment-variable driven.
+
+**Deploy layout** — Standard robocopy syncs `service/app → C:\PZ\app`. Root-level engine files (`pz_import_processor.py`, `polish_description_generator.py`) deploy to `C:\PZ\engine\` via a SEPARATE sync command (Lesson J).
+
+---
+
 # Estrella PZ Processor + Zoho Cliq Integration
 
 You are operating as the orchestration layer for Estrella's PZ processing workflow.

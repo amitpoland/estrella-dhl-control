@@ -638,10 +638,20 @@ def serve_v2_static(path: str, request: Request) -> Response:
 
     file_path = _v2_static_dir / (path or "index.html")
     if not file_path.exists() or not file_path.is_file():
+        # Asset paths (have a file extension: .js, .jsx, .css, .html, …) must 404
+        # so that <script onerror="..."> fallback handlers fire correctly.
+        # Extension-free paths are SPA routes → serve index.html.
+        import pathlib as _pathlib  # noqa: PLC0415
+        if _pathlib.PurePosixPath(path).suffix:
+            return Response(status_code=404)
         file_path = _v2_static_dir / "index.html"
 
     content = file_path.read_bytes()
     mime, _ = _mimetypes.guess_type(str(file_path))
+    # Python mimetypes has no entry for .jsx; browsers with strict MIME checking
+    # refuse to execute application/octet-stream scripts → blank screen.
+    if file_path.suffix == ".jsx":
+        mime = "text/javascript"
     mime    = mime or "application/octet-stream"
     headers = (
         {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}

@@ -116,9 +116,23 @@ def test_counts_match_pieces_aggregation():
         assert len(data["pieces"]) == 4
 
 
+def _collect_routes(router_or_app):
+    """Recursively collect APIRoute objects; handles FastAPI _IncludedRouter wrappers."""
+    from fastapi.routing import APIRoute
+    result = []
+    for r in getattr(router_or_app, "routes", []):
+        if isinstance(r, APIRoute):
+            result.append(r)
+        # FastAPI wraps include_router() in _IncludedRouter with .original_router
+        inner = getattr(r, "original_router", None)
+        if inner is not None:
+            result.extend(_collect_routes(inner))
+    return result
+
+
 def test_no_write_methods_on_state_path():
     routes = [
-        r for r in app.routes
+        r for r in _collect_routes(app)
         if getattr(r, "path", "").startswith("/api/v1/inventory/state")
     ]
     assert routes, "/api/v1/inventory/state route not registered"
