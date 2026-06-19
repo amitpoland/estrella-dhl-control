@@ -17,27 +17,31 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
-- **Task:** Governance Sprint – Authority Ownership Framework (AUTHORITY_MAP.md)
-- **Started:** 2026-06-20
-- **Status:** IN_PROGRESS
+- **Task:** Build Anti-HOLD and Workflow Completion Governance
+- **Started:** 2026-06-19
+- **Status:** COMPLETE
 - **HOLD reason (if BLOCKED-HOLD):** —
 
 ### Completion criteria
 
-- [x] `docs/governance/AUTHORITY_MAP.md` created — 9 domains, all 7 dimensions each
-- [x] Cross-domain authority rules documented (§10)
-- [x] Worked examples showing how Claude decides where changes belong (§10)
-- [x] Gaps and open questions recorded (§11)
-- [ ] Committed to `claude/authority-map`, pushed, draft PR opened
-- [ ] Both #659 (Anti-HOLD) and the authority-map PR reviewed together (operator gate)
-- [ ] TASK_STATE.md → COMPLETE on merge; flow-context-keeper records FACT
+- [x] Anti-HOLD rule added to `CLAUDE.md` (§ANTI-HOLD AND WORKFLOW COMPLETION)
+- [x] Full governance doc created (`docs/governance/anti-hold-and-completion.md`):
+      principle, decision table, four HOLD conditions, must-continue list,
+      worked examples, completion checklist
+- [x] Task-state tracker created (`.claude/memory/TASK_STATE.md`)
+- [x] Stop/continue conditions defined (4 stop, 6 continue)
+- [x] Verified: sample HOLD decisions shown; normal dev not blocked;
+      destructive actions still require operator approval
+- [x] Only intended files changed (docs/state only; no `service/app`, no runtime)
+- [x] Committed to `claude/anti-hold-governance`, pushed, draft PR opened (PR #659)
+- [x] TASK_STATE.md → COMPLETE on merge (PR #659 merged)
 
 ---
 
 ## History (most recent first)
 
-- 2026-06-20 — Task opened: Authority Ownership Framework.
-  Operator held PR #659 (Anti-HOLD governance) pending this map;
-  both will merge together as the first complete governance package.
-- 2026-06-19 — Previous task COMPLETE: Anti-HOLD and Workflow Completion Governance
-  (PR #659 open, awaiting authority map before merge).
+- 2026-06-20 — PR #659 merged. First complete governance package landed:
+  Anti-HOLD + TASK_STATE + AUTHORITY_MAP (PR #660, merged 2026-06-20).
+- 2026-06-19 — Task opened: Anti-HOLD and Workflow Completion Governance.
+  Docs-only by decision (no blocking hook — would contradict ANTI-HOLD
+  fail-open principle and risk wedging the session).
