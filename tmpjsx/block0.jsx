@@ -1,0 +1,16109 @@
+
+
+// Phase 1 + 1B — pull shared utilities + sidebar shell from
+// dashboard-shared.js.  Sidebar is now prop-driven (navTree=).
+const {
+  apiFetch, fmtPLN,
+  Badge, Card, Btn, Sel, Toast, SessionBanner,
+  EstrellaMark, SubTabStrip, Sidebar,
+  _resolveOperator,
+} = window.EstrellaShared;
+
+// ══════════════════════════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════════════════════════
+
+const GOLD = 'var(--accent)';
+// SIDEBAR_W extracted to dashboard-shared.js (Phase 1B) — Sidebar
+// now manages its own width default; pass `width` prop to override.
+
+const NAV_TREE = [
+  { id: 'dashboard',  label: 'Dashboard',  icon: '▦' },
+  { id: 'inbox',      label: 'Inbox',      icon: '✉', badge: 'NEW' },
+  { id: 'shipments',  label: 'Shipments',  icon: '⬡' },
+  { id: 'documents',  label: 'Documents',  icon: '📄' },
+  { id: 'accounting', label: 'Accounting', icon: '⊞', badge: 'NEW' },
+  { id: 'inventory',  label: 'Inventory',  icon: '◫' },
+  { id: 'reports',    label: 'Reports',    icon: '≡' },
+  { id: 'g_setup', label: 'Setup', icon: '⚙', defaultId: 'admin', children: [
+    { id: 'admin',             label: 'Settings' },
+    { id: 'admin_users',       label: 'Admin · Users' },
+    { id: 'master',            label: 'Master Data' },
+    { id: 'carriers',          label: 'Carriers' },
+    { id: 'wfirma_setup',      label: 'wFirma' },
+    { id: 'api_status',        label: 'API Status' },
+    { id: 'diagnostics',       label: 'Diagnostics' },
+    { id: 'automation',        label: 'Automation' },
+    { id: 'intelligence_grp',  label: 'Parser / Learning' },
+    { id: 'coverage',          label: 'Coverage Matrix' },
+    { id: 'warehouse_scanner', label: 'Warehouse Scanner', href: '/dashboard/warehouse.html' },
+  ]},
+];
+
+// Flat index for quick lookup: id → item (including children)
+const NAV_INDEX = {};
+(function buildIndex(tree) {
+  tree.forEach(n => { NAV_INDEX[n.id] = n; if (n.children) buildIndex(n.children); });
+})(NAV_TREE);
+
+// Legacy/alternate ids that map to a canonical id
+const ROUTE_REDIRECTS = {
+  'pz_accounting': 'accounting',
+  'pz': 'accounting',
+  'dhl_clearance': 'dhl',
+  'customs_documents': 'documents',
+  'customs': 'documents',
+  'wfirma': 'wfirma_setup',
+  'ai_bridge': 'automation',
+  'learning': 'intelligence_grp',
+};
+
+// Which group (if any) owns a given leaf id
+function navGroupOf(id) {
+  for (const n of NAV_TREE) {
+    if (n.children && n.children.some(c => c.id === id)) return n;
+  }
+  return null;
+}
+
+const STATUS_MAP = {
+  'Draft':                 { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+  'In Transit':            { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+  'Pre-check Pending':     { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+  'Pre-check Completed':   { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  'Awaiting DHL Email':    { bg: 'var(--badge-orange-bg)',  text: 'var(--badge-orange-text)',  border: 'var(--badge-orange-border)' },
+  'DHL Email Received':    { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+  'Reply Sent':            { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  'Reply Queued':          { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+  'SAD Pending':           { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+  'SAD Uploaded':          { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+  'Customs Parsed':        { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  'Verification Needed':   { bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+  'Customs Verified':      { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  'Locked':                { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+  'Ready for PZ':          { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  'PZ Failed':             { bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+  'Generated':             { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  'Ready for Booking':     { bg: 'var(--badge-purple-bg)',  text: 'var(--badge-purple-text)',  border: 'var(--badge-purple-border)' },
+  'Exported':              { bg: 'var(--badge-accent-bg)',  text: 'var(--badge-accent-text)',  border: 'var(--badge-accent-border)' },
+  'Awaiting DHL':          { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+  'Awaiting SAD':          { bg: 'var(--badge-orange-bg)',  text: 'var(--badge-orange-text)',  border: 'var(--badge-orange-border)' },
+  'Action Required':       { bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+  'In Preparation':        { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+  'Completed':             { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  'Pending':               { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+  'Live':                  { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  'Awaiting Clearance':    { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+  'Processing':            { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+  'Reply Package Prepared':{ bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+};
+
+// ══════════════════════════════════════════════════════════
+// HELPERS
+// ══════════════════════════════════════════════════════════
+
+// fmtPLN — extracted to dashboard-shared.js (Phase 1).
+
+function mapOverall(status) {
+  const m = {
+    success: 'Ready for Booking', partial: 'Ready for Booking',
+    blocked: 'Action Required', failed: 'Action Required',
+    awaiting_dhl_email: 'Awaiting DHL', awaiting_sad: 'Awaiting SAD',
+    awaiting_clearance: 'Awaiting Clearance',
+    in_preparation: 'In Preparation', draft: 'Draft',
+    ready: 'Ready for PZ', processing: 'In Preparation',
+    collecting: 'In Preparation',
+  };
+  return m[status] || (status ? status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Pending');
+}
+
+function mapDhlStatus(s) {
+  if (!s) return '—';
+  const m = {
+    awaiting_dhl_email: 'Awaiting DHL Email',
+    dhl_email_received: 'DHL Email Received',
+    reply_sent: 'Reply Sent',
+    reply_queued: 'Reply Queued',
+    pre_check_completed: 'Pre-check Completed',
+    pre_check_pending: 'Pre-check Pending',
+    reply_package_prepared: 'Reply Package Prepared',
+  };
+  return m[s] || s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function mapSadStatus(s) {
+  if (!s) return 'SAD Pending';
+  const m = {
+    // frontend legacy values
+    sad_pending:          'SAD Pending',
+    sad_uploaded:         'SAD Uploaded',
+    customs_parsed:       'Customs Parsed',
+    customs_verified:     'Customs Verified',
+    verification_needed:  'Verification Needed',
+    // backend _derive_sad_status() values
+    missing:              'SAD Pending',
+    uploaded:             'SAD Uploaded',
+    uploaded_parsed:      'Customs Parsed',
+  };
+  return m[s] || s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function mapPzStatus(s) {
+  if (!s) return 'Locked';
+  const m = {
+    locked: 'Locked', ready: 'Ready for PZ', generated: 'Generated', exported: 'Exported',
+    // PZ Preview Authority Audit (2026-05-21) — surface engine failure on
+    // the same badge that previously claimed "Ready for PZ". Single
+    // authority for the PZ workflow status.
+    failed: 'PZ Failed', complete: 'Generated',
+  };
+  return m[s] || s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function Modal({ title, onClose, children, wide }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'var(--overlay)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      zIndex: 1000, padding: 24,
+    }} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{
+        background: 'var(--card)', borderRadius: 10,
+        width: wide ? 680 : 480, maxWidth: '100%',
+        maxHeight: '90vh', overflow: 'auto',
+        boxShadow: '0 20px 60px var(--shadow-heavy)',
+        border: '1px solid var(--border)',
+      }}>
+        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, fontFamily: '"DM Serif Display",serif', color: 'var(--text)' }}>{title}</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: 'var(--text-3)' }}>×</button>
+        </div>
+        <div style={{ padding: 24 }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function FormField({ label, children, hint }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{label}</label>
+      {children}
+      {hint && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 3 }}>{hint}</div>}
+    </div>
+  );
+}
+
+function Inp({ value, onChange, placeholder, type = 'text', style: s }) {
+  return (
+    <input value={value} onChange={onChange} placeholder={placeholder} type={type} style={{
+      width: '100%', padding: '8px 10px', borderRadius: 6,
+      border: '1px solid var(--border)', fontSize: 12, color: 'var(--text)',
+      background: 'var(--bg-subtle)', outline: 'none',
+      boxSizing: 'border-box', fontFamily: 'inherit', ...s,
+    }} />
+  );
+}
+
+// Sel — extracted to dashboard-shared.js (Phase 1).
+
+function SectionHeader({ icon, title, subtitle, status }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 20px', borderBottom: '1px solid var(--border)', background: 'var(--bg-subtle)' }}>
+      <div style={{ width: 32, height: 32, borderRadius: 6, background: 'var(--accent-subtle)', border: '1px solid var(--accent-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, color: 'var(--accent)' }}>{icon}</div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{title}</div>
+        {subtitle && <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 1 }}>{subtitle}</div>}
+      </div>
+      {status && <Badge status={status} />}
+    </div>
+  );
+}
+
+function InfoRow({ label, value, mono }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+      <span style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 500 }}>{label}</span>
+      <span style={{ fontSize: 11, color: 'var(--text)', fontWeight: 600, fontFamily: mono ? 'monospace' : 'inherit', textAlign: 'right', maxWidth: '60%', wordBreak: 'break-all' }}>{value ?? '—'}</span>
+    </div>
+  );
+}
+
+// Toast — extracted to dashboard-shared.js (Phase 1).
+
+// ══════════════════════════════════════════════════════════
+// SIDEBAR
+// ══════════════════════════════════════════════════════════
+
+// EstrellaMark — extracted to dashboard-shared.js (Phase 1B).
+
+// SubTabStrip — extracted to dashboard-shared.js (Phase 1B).
+
+// Sidebar — extracted to dashboard-shared.js (Phase 1B).
+// Now prop-driven: pass navTree={NAV_TREE} from the render site below.
+
+// ══════════════════════════════════════════════════════════
+// TOP BAR
+// ══════════════════════════════════════════════════════════
+
+function TopBar({ onNewShipment, onToggleDark, isDark, user, onLogout }) {
+  const [searchOpen, setSearchOpen] = React.useState(false);
+  const [search, setSearch] = React.useState('');
+  const initials = user ? user.full_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() : 'U';
+
+  React.useEffect(() => {
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); setSearchOpen(o => !o); }
+      if (e.key === 'Escape') setSearchOpen(false);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  return (
+    <>
+    {searchOpen && (
+      <div onClick={() => setSearchOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 8000, background: 'var(--overlay)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 120 }}>
+        <div onClick={e => e.stopPropagation()} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, boxShadow: '0 16px 48px var(--shadow-heavy)', width: '100%', maxWidth: 560, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+            <span style={{ color: 'var(--text-3)', fontSize: 16 }}>⌕</span>
+            <input autoFocus value={search} onChange={e => setSearch(e.target.value)} placeholder="Search AWB, MRN, batch ID…"
+              style={{ flex: 1, border: 'none', outline: 'none', fontSize: 14, color: 'var(--text)', background: 'transparent', fontFamily: 'inherit' }} />
+            <kbd style={{ fontSize: 10, color: 'var(--text-3)', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 4, padding: '2px 6px' }}>Esc</kbd>
+          </div>
+          <div style={{ padding: '8px 16px 12px', fontSize: 11, color: 'var(--text-3)' }}>Type to search shipments, AWBs, MRNs…</div>
+        </div>
+      </div>
+    )}
+    <header style={{ height: 56, background: 'var(--card)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', padding: '0 24px', gap: 12, flexShrink: 0 }}>
+      <button onClick={() => setSearchOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-3)', fontSize: 12, fontFamily: 'inherit', flex: 1, maxWidth: 280, textAlign: 'left' }}>
+        <span style={{ fontSize: 14 }}>⌕</span>
+        <span style={{ flex: 1, color: 'var(--text-3)' }}>Search…</span>
+        <kbd style={{ fontSize: 10, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 4, padding: '1px 5px', color: 'var(--text-3)' }}>⌘K</kbd>
+      </button>
+      <div style={{ flex: 1 }} />
+      <button onClick={onToggleDark} title={isDark ? 'Light mode' : 'Dark mode'} style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', fontSize: 14, color: 'var(--text-2)', fontFamily: 'inherit' }}>
+        {isDark ? '☀' : '🌿'}
+      </button>
+      <button onClick={onNewShipment} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
+        <span style={{ fontSize: 16, lineHeight: 1 }}>+</span> New Shipment
+      </button>
+      {user && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ width: 34, height: 34, borderRadius: '50%', background: 'linear-gradient(135deg,var(--accent),var(--accent-light))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: 'var(--accent-text)', boxShadow: '0 1px 3px rgba(0,0,0,.1)', border: '2px solid var(--accent-border)', letterSpacing: '0.02em' }}>{initials}</div>
+          <div style={{ lineHeight: 1.3 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', letterSpacing: '-0.01em' }}>{user.full_name}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+              <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--accent)', background: 'var(--accent-subtle)', border: '1px solid var(--accent-border)', padding: '1px 6px', borderRadius: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{user.role}</span>
+              {user.is_approved && <span style={{ fontSize: 9, color: 'var(--badge-green-text)', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', padding: '1px 5px', borderRadius: 10, fontWeight: 600 }}>✓</span>}
+            </div>
+          </div>
+          <div style={{ width: 1, height: 24, background: 'var(--border)', margin: '0 2px' }} />
+          <button onClick={onLogout} style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 500, color: 'var(--text-2)', padding: '5px 12px', fontFamily: 'inherit', transition: 'all .15s' }} onMouseEnter={e => { e.currentTarget.style.background = 'var(--badge-red-bg)'; e.currentTarget.style.color = 'var(--badge-red-text)'; e.currentTarget.style.borderColor = 'var(--badge-red-border)'; }} onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-subtle)'; e.currentTarget.style.color = 'var(--text-2)'; e.currentTarget.style.borderColor = 'var(--border)'; }}>Logout</button>
+        </div>
+      )}
+    </header>
+    </>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+// SECTION LABEL / PANEL CARD / STAT TILE
+// ══════════════════════════════════════════════════════════
+
+function SectionLabel({ children, style }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, ...style }}>
+      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.12em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{children}</span>
+      <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+    </div>
+  );
+}
+
+function PanelCard({ title, subtitle, status, children, accent }) {
+  return (
+    <div style={{
+      background: 'var(--card)', borderRadius: 10,
+      boxShadow: '0 1px 2px var(--shadow)', overflow: 'hidden',
+      border: accent ? `1px solid var(--border)` : '1px solid var(--border)',
+      borderLeft: accent ? `3px solid ${accent}` : '1px solid var(--border)',
+    }}>
+      {(title || status) && (
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: 'var(--bg-subtle)' }}>
+          <div>
+            {title && <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{title}</div>}
+            {subtitle && <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>{subtitle}</div>}
+          </div>
+          {status && <Badge status={status} />}
+        </div>
+      )}
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function StatTile({ label, value, sub, accent }) {
+  return (
+    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 20px', boxShadow: '0 1px 2px var(--shadow)' }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: accent || 'var(--text)', fontFamily: '"DM Serif Display",serif', letterSpacing: '-0.01em', lineHeight: 1 }}>{value ?? '—'}</div>
+      {sub && <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 4 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+// STUB PAGE — placeholder for design-IA pages awaiting backend
+// ══════════════════════════════════════════════════════════
+
+const IntakeSectionHeader = ({ icon, label, sub }) => (
+  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14, paddingBottom:10, borderBottom:'1px solid var(--border)' }}>
+    <span style={{ fontSize:16 }}>{icon}</span>
+    <div>
+      <div style={{ fontSize:13, fontWeight:700, color:'var(--text)', letterSpacing:'-0.01em' }}>{label}</div>
+      {sub && <div style={{ fontSize:11, color:'var(--text-3)', marginTop:1 }}>{sub}</div>}
+    </div>
+  </div>
+);
+
+const IntakeFileDropZone = ({ accept, multiple, hint, files, onChange, compact }) => {
+  const ref = React.useRef();
+  const label = files && files.length > 0
+    ? (multiple ? files.map(f=>f.name).join(', ') : files[0].name)
+    : hint;
+  return (
+    <label style={{ display:'flex', alignItems:'center', gap:8,
+      padding: compact ? '12px 14px' : '18px 14px',
+      borderRadius:6, border:'2px dashed var(--badge-neutral-border)',
+      cursor:'pointer', background:'var(--bg-subtle)',
+      justifyContent:'center', flexDirection:'column', textAlign:'center',
+      transition:'border-color .15s' }}>
+      <input ref={ref} type="file" accept={accept} multiple={!!multiple}
+        onChange={e => onChange(Array.from(e.target.files))} style={{ display:'none' }} />
+      <span style={{ fontSize: compact ? 16 : 22, color:'var(--text-3)' }}>
+        {files && files.length > 0 ? '✓' : (accept.includes('.pdf') ? '📄' : '📊')}
+      </span>
+      <span style={{ fontSize:11, color: files && files.length > 0 ? 'var(--badge-green-text)' : 'var(--text-2)',
+        fontWeight: files && files.length > 0 ? 600 : 400 }}>{label}</span>
+    </label>
+  );
+};
+
+const IntakeRemoveBtn = ({ onClick }) => (
+  <button onClick={onClick} title="Remove"
+    style={{ background:'var(--badge-red-bg)', border:'1px solid var(--badge-red-border)',
+      borderRadius:5, padding:'3px 8px', fontSize:11, color:'var(--badge-red-text)',
+      cursor:'pointer', fontFamily:'inherit', fontWeight:600 }}>✕ Remove</button>
+);
+
+// ── Main modal ─────────────────────────────────────────────
+//
+// Atlas-aligned New Shipment modal.
+//
+// Visuals follow the Atlas reference (modals.jsx): shipment-level
+// AWB / Carrier / Client / Supplier on top, then a flat list of
+// document slots, each with its own type + optional per-document
+// party override, then optional note + footer actions.
+//
+// Backend wiring is unchanged: at submit time the slot list is
+// flattened into the existing /api/v1/shipment/intake multipart
+// payload (invoices[], packing_lists[], sales_documents[],
+// sales_packing_lists[], awb, metadata) so packing-list pipeline,
+// PZ, SAD, DHL, wFirma, proforma logic stay untouched.
+//
+// Contractor identity always comes from REAL master data
+// (/customer-master/ for clients, /suppliers/ for suppliers).
+// No hardcoded Estrella/Bonacchi party rows. Free-text fallback
+// is preserved only when master data is empty.
+
+// Per-slot extension policy MUST mirror the backend allow-list in
+// routes_intake.py (_ALLOWED_INVOICE_EXT / _PACKING_EXT / _SERVICE_EXT /
+// _CARNET_EXT / _OTHER_EXT). Used both as the HTML `<input accept>` and
+// as the client-side preflight check before submit, so users see a
+// friendly error before the request fires. Hotfix 2026-05-17.
+const _NS_DOC_TYPES = [
+  { id: 'purchase_invoice', label: 'Purchase Invoice',       icon: '📄', hint: 'Commercial invoice from supplier (purchase price)',                multi: true,  needsClient: false, needsSupplier: true,  accept: '.pdf',                          allowedExts: ['.pdf'] },
+  { id: 'sales_proforma',   label: 'Sales Proforma Invoice', icon: '📑', hint: 'Proforma issued to client — sales price · pre-acceptance',         multi: true,  needsClient: true,  needsSupplier: false, accept: '.pdf',                          allowedExts: ['.pdf'] },
+  { id: 'sales_invoice',    label: 'Sales Invoice (Final)',  icon: '🧾', hint: 'Final commercial invoice issued to client',                         multi: true,  needsClient: true,  needsSupplier: false, accept: '.pdf',                          allowedExts: ['.pdf'] },
+  { id: 'purchase_packing_list', label: 'Purchase Packing List',  icon: '📋', hint: 'Items + purchase prices — flows to customs (CIF / SAD)',           multi: true,  needsClient: false, needsSupplier: true,  accept: '.pdf,.xlsx,.xls',               allowedExts: ['.pdf', '.xlsx', '.xls'] },
+  { id: 'sales_packing_list',    label: 'Sales Packing List',     icon: '📋', hint: 'Same items + sales prices — flows to warehouse stock valuation',   multi: true,  needsClient: true,  needsSupplier: false, accept: '.pdf,.xlsx,.xls',               allowedExts: ['.pdf', '.xlsx', '.xls'] },
+  { id: 'awb',              label: 'AWB / Tracking PDF',     icon: '📎', hint: 'Air-waybill / tracking document',                                   multi: false, needsClient: false, needsSupplier: false, accept: '.pdf',                          allowedExts: ['.pdf'] },
+  { id: 'service_invoice',  label: 'Service Invoice',        icon: '💼', hint: 'Shipping, insurance, customs-agent or handling invoice',           multi: true,  needsClient: false, needsSupplier: true,  accept: '.pdf,.xlsx,.xls',               allowedExts: ['.pdf', '.xlsx', '.xls'] },
+  { id: 'carnet',           label: 'ATA Carnet / Temp Doc',  icon: '🛂', hint: 'Temporary import / export document',                                multi: false, needsClient: false, needsSupplier: false, accept: '.pdf',                          allowedExts: ['.pdf'] },
+  { id: 'other',            label: 'Other Document',         icon: '📁', hint: 'Any supporting document',                                            multi: true,  needsClient: false, needsSupplier: false, accept: '.pdf,.xlsx,.xls,.jpg,.jpeg,.png', allowedExts: ['.pdf', '.xlsx', '.xls', '.jpg', '.jpeg', '.png'] },
+];
+
+// Document-types whose files the current /shipment/intake endpoint accepts.
+// All 9 Atlas DOC_TYPES are wired: purchase/sales/awb flow through their
+// existing parser pipelines; service_invoice / carnet / other are
+// persisted as local-only shipment documents (saved + registered, never
+// parsed, never trigger DHL/PZ/SAD/wFirma/proforma).
+const _NS_WIRED_TYPES = new Set([
+  'purchase_invoice', 'purchase_packing_list',
+  'sales_proforma', 'sales_invoice', 'sales_packing_list',
+  'awb',
+  'service_invoice', 'carnet', 'other',
+]);
+
+function AddDocumentModal({ batchId, onClose, onUploaded }) {
+  const [docType, setDocType]       = React.useState('purchase_invoice');
+  const [file, setFile]             = React.useState(null);
+  const [slotError, setSlotError]   = React.useState('');
+  const [submitError, setSubmitError] = React.useState('');
+  const [submitting, setSubmitting] = React.useState(false);
+
+  // Master data + confirmed identity defaults
+  const [clientList, setClientList]       = React.useState([]);
+  const [supplierList, setSupplierList]   = React.useState([]);
+  const [defaultClientCid, setDefaultClientCid]     = React.useState('');
+  const [defaultSupplierCid, setDefaultSupplierCid] = React.useState('');
+  const [clientOverride, setClientOverride]     = React.useState('');
+  const [supplierOverride, setSupplierOverride] = React.useState('');
+
+  const docTypes = React.useMemo(
+    () => _NS_DOC_TYPES.filter(t => t.id !== 'sad'),
+    [],
+  );
+  const type = docTypes.find(t => t.id === docType) || docTypes[0];
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [cm, sup, rClient, rSupplier] = await Promise.all([
+          apiFetch('/api/v1/customer-master/?limit=500').catch(() => null),
+          apiFetch('/api/v1/suppliers/?limit=500').catch(() => null),
+          apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/contractor-resolution/client`).catch(() => null),
+          apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/contractor-resolution/supplier`).catch(() => null),
+        ]);
+        if (cancelled) return;
+        if (cm) {
+          const arr = Array.isArray(cm) ? cm : (cm.customers || []);
+          setClientList(arr.map(c => ({
+            contractor_id: c.bill_to_contractor_id || c.id || '',
+            name:          c.bill_to_name || c.name || '',
+            country:       c.country || '',
+          })).filter(x => x.contractor_id && x.name));
+        }
+        if (sup) {
+          setSupplierList((sup.suppliers || []).filter(x => x.contractor_id && x.name));
+        }
+        if (rClient && rClient.matched_master_id) {
+          const id = String(rClient.matched_master_id);
+          setDefaultClientCid(id);
+          setClientOverride(id);
+        }
+        if (rSupplier && rSupplier.matched_master_id) {
+          const id = String(rSupplier.matched_master_id);
+          setDefaultSupplierCid(id);
+          setSupplierOverride(id);
+        }
+      } catch (_) { /* non-fatal */ }
+    })();
+    return () => { cancelled = true; };
+  }, [batchId]);
+
+  const fileInputRef = React.useRef(null);
+  const handleFile = (e) => {
+    const f = (e.target.files || [])[0];
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (!f) return;
+    const allowed = (type.allowedExts || ['.pdf']).map(s => s.toLowerCase());
+    const dot = f.name.lastIndexOf('.');
+    const ext = (dot >= 0 ? f.name.slice(dot) : '').toLowerCase();
+    if (allowed.indexOf(ext) < 0) {
+      setSlotError(`File type ${ext || '(none)'} not allowed for ${type.label}. Allowed: ${allowed.join(', ')}`);
+      setFile(null);
+      return;
+    }
+    setSlotError('');
+    setFile(f);
+  };
+
+  const hasMasterClients   = clientList.length > 0;
+  const hasMasterSuppliers = supplierList.length > 0;
+  const saveDisabled = !file || submitting;
+
+  const handleSave = async () => {
+    if (!file) return;
+    setSubmitting(true);
+    setSubmitError('');
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('document_type', docType);
+      if (supplierOverride) fd.append('supplier_contractor_id', supplierOverride);
+      if (clientOverride)   fd.append('client_contractor_id',   clientOverride);
+      const r = await fetch(
+        `/api/v1/shipment/${encodeURIComponent(batchId)}/add-document`,
+        { method: 'POST', body: fd, credentials: 'include' },
+      );
+      if (!r.ok) {
+        const msg = await r.text().catch(() => 'Upload failed');
+        throw new Error(msg);
+      }
+      const data = await r.json();
+      if (onUploaded) onUploaded({ document_type: docType, ...data });
+      onClose();
+    } catch (e) {
+      setSubmitError(e.message || 'Upload failed.');
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal title="Add Document" onClose={onClose}>
+      {submitError && (
+        <div data-testid="add-doc-submit-error" style={{
+          marginBottom: 14, padding: '10px 14px', borderRadius: 6,
+          background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+          fontSize: 12, color: 'var(--badge-red-text)',
+        }}>{submitError}</div>
+      )}
+
+      <FormField label="Document Type" hint={type.hint}>
+        <Sel
+          data-testid="add-doc-type-select"
+          value={docType}
+          onChange={e => { setDocType(e.target.value); setFile(null); setSlotError(''); }}
+        >
+          {docTypes.map(t => (
+            <option key={t.id} value={t.id}>{t.icon} {t.label}</option>
+          ))}
+        </Sel>
+      </FormField>
+
+      <FormField label="File" hint={`Allowed: ${(type.allowedExts || []).join(', ')}`}>
+        <input
+          ref={fileInputRef}
+          data-testid="add-doc-file"
+          type="file"
+          accept={type.accept || '.pdf'}
+          onChange={handleFile}
+          style={{ width: '100%', fontSize: 12 }}
+        />
+        {file && (
+          <div data-testid="add-doc-file-name" style={{ fontSize: 11, marginTop: 4, color: 'var(--text-2)' }}>
+            📄 {file.name}
+          </div>
+        )}
+        {slotError && (
+          <div data-testid="add-doc-slot-error" style={{ fontSize: 11, marginTop: 4, color: 'var(--badge-red-text)' }}>{slotError}</div>
+        )}
+      </FormField>
+
+      {(type.needsClient || type.needsSupplier) && (
+        <div style={{
+          padding: '12px 14px', borderRadius: 6, background: 'var(--bg-subtle)',
+          border: '1px solid var(--border)', marginBottom: 14,
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+            Per-document contractor (override)
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: type.needsClient && type.needsSupplier ? '1fr 1fr' : '1fr', gap: 12 }}>
+            {type.needsClient && (
+              <div>
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>Client</div>
+                {hasMasterClients ? (
+                  <Sel
+                    data-testid="add-doc-client-override"
+                    value={clientOverride}
+                    onChange={e => setClientOverride(e.target.value)}
+                  >
+                    <option value="">— inherit shipment-level —</option>
+                    {clientList.map(c => (
+                      <option key={c.contractor_id} value={c.contractor_id}>
+                        {c.name}{c.country ? ` (${c.country})` : ''}
+                      </option>
+                    ))}
+                  </Sel>
+                ) : (
+                  <Inp
+                    data-testid="add-doc-client-fallback"
+                    value={clientOverride}
+                    onChange={e => setClientOverride(e.target.value)}
+                    placeholder="contractor id (master data empty)"
+                  />
+                )}
+              </div>
+            )}
+            {type.needsSupplier && (
+              <div>
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>Supplier</div>
+                {hasMasterSuppliers ? (
+                  <Sel
+                    data-testid="add-doc-supplier-override"
+                    value={supplierOverride}
+                    onChange={e => setSupplierOverride(e.target.value)}
+                  >
+                    <option value="">— inherit shipment-level —</option>
+                    {supplierList.map(s => (
+                      <option key={s.contractor_id} value={s.contractor_id}>
+                        {s.name}{s.country ? ` (${s.country})` : ''}
+                      </option>
+                    ))}
+                  </Sel>
+                ) : (
+                  <Inp
+                    data-testid="add-doc-supplier-fallback"
+                    value={supplierOverride}
+                    onChange={e => setSupplierOverride(e.target.value)}
+                    placeholder="contractor id (master data empty)"
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+        <button
+          data-testid="add-doc-cancel"
+          onClick={onClose}
+          disabled={submitting}
+          style={{
+            padding: '8px 16px', background: 'transparent',
+            border: '1px solid var(--border)', borderRadius: 6,
+            fontSize: 12, fontWeight: 600, color: 'var(--text-2)',
+            cursor: submitting ? 'not-allowed' : 'pointer',
+          }}
+        >Cancel</button>
+        <button
+          data-testid="add-doc-save"
+          onClick={handleSave}
+          disabled={saveDisabled}
+          style={{
+            padding: '8px 18px',
+            background: saveDisabled ? 'var(--bg-subtle)' : 'var(--accent)',
+            border: '1px solid ' + (saveDisabled ? 'var(--border)' : 'var(--accent)'),
+            borderRadius: 6, fontSize: 12, fontWeight: 700,
+            color: saveDisabled ? 'var(--text-3)' : '#fff',
+            cursor: saveDisabled ? 'not-allowed' : 'pointer',
+          }}
+          title={!file ? 'Select a file first' : (submitting ? 'Uploading…' : 'Upload document')}
+        >{submitting ? 'Uploading…' : 'Save'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+
+// ══════════════════════════════════════════════════════════
+// UI-3.x SHARED OPERATIONAL PREDICATES (module scope)
+// ──────────────────────────────────────────────────────────
+// Single source of truth for bucket logic, used by:
+//   - DashboardPage cross-batch cards (UI-3.1b / UI-3.2a / UI-3.2b)
+//   - DashboardPage active-table filter (UI-3.3)
+//   - BatchDetailPage per-batch Pipeline Summary (UI-3.4)
+// Lifted out of DashboardPage in UI-3.4 so per-batch and cross-batch
+// surfaces consume the SAME predicate set. React state (opFilter and
+// its setter/handlers) intentionally remains inside DashboardPage.
+// ══════════════════════════════════════════════════════════
+const PZ_DONE_LABELS     = new Set(['Generated', 'Exported']);
+const PZ_PENDING_LABELS  = new Set(['Ready for PZ', 'Locked']);
+const SAD_CLEARED_KEYS   = new Set(['uploaded_parsed', 'customs_parsed', 'customs_verified']);
+const TRACK_ATTENTION    = new Set(['exception', 'customs']);
+const DHL_FLOW_LIVE_KEYS = new Set([
+  'dhl_email_received', 'reply_queued', 'reply_sent',
+  'reply_package_prepared', 'pre_check_pending', 'pre_check_completed',
+]);
+const OP_PREDICATES = {
+  warehouse: {
+    unknown:          (r) => (r.warehouseHint || 'n/a') === 'n/a',
+    awaiting:         (r) => r.warehouseHint === 'empty',
+    partial_received: (r) => r.warehouseHint === 'partial',
+    in_warehouse:     (r) => r.warehouseHint === 'clean' && !PZ_DONE_LABELS.has(r.pzStatus || ''),
+    reserved:         (r) => r.warehouseHint === 'clean' &&  PZ_DONE_LABELS.has(r.pzStatus || ''),
+  },
+  sales_accounting: {
+    sales_ready:    (r) => (r.salesHint || 'n/a') === 'present',
+    sales_missing:  (r) => { const h = r.salesHint || 'n/a'; return h === 'none' || h === 'n/a'; },
+    wfirma_preview: (r) => (r.wfirmaHint || 'n/a') === 'preview_built',
+    wfirma_pending: (r) => { const h = r.wfirmaHint || 'n/a'; return h === 'none' || h === 'n/a'; },
+    pz_done:        (r) =>  PZ_DONE_LABELS.has(r.pzStatus || ''),
+    pz_pending:     (r) => !PZ_DONE_LABELS.has(r.pzStatus || ''),
+  },
+  dhl_customs: {
+    awaiting_customs_docs: (r) => !r.has_sad && DHL_FLOW_LIVE_KEYS.has((r._raw && r._raw.dhl_status) || ''),
+    sad_present:     (r) => !!r.has_sad,
+    sad_missing:     (r) => !r.has_sad,
+    customs_cleared: (r) => !!r.has_sad && SAD_CLEARED_KEYS.has((r._raw && r._raw.sad_status) || ''),
+    dhl_in_transit:  (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'in_transit',
+    dhl_delivered:   (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'delivered',
+  },
+};
+const WAREHOUSE_LIFECYCLE_KEYS = ['unknown', 'awaiting', 'partial_received', 'in_warehouse', 'reserved'];
+const deriveWarehouseLifecycle = (row) => {
+  for (const k of WAREHOUSE_LIFECYCLE_KEYS) {
+    if (OP_PREDICATES.warehouse[k](row)) return k;
+  }
+  return 'unknown';
+};
+const ATTENTION_PREDICATES = {
+  warehouse:        (r) =>
+    OP_PREDICATES.warehouse.awaiting(r) ||
+    OP_PREDICATES.warehouse.partial_received(r),
+  sales_accounting: (r) =>
+    OP_PREDICATES.sales_accounting.sales_missing(r) ||
+    OP_PREDICATES.sales_accounting.wfirma_pending(r) ||
+    OP_PREDICATES.sales_accounting.pz_pending(r),
+  dhl_customs:      (r) =>
+    OP_PREDICATES.dhl_customs.awaiting_customs_docs(r) ||
+    (((r._raw && r._raw.sad_status)         || '') === 'missing') ||
+    (((r._raw && r._raw.dhl_status)         || '') === 'dhl_email_received') ||
+    TRACK_ATTENTION.has((r._raw && r._raw.tracking_status_key) || ''),
+};
+// Lifecycle label/tone tables — shared so cross-batch (UI-3.1b) and
+// per-batch (UI-3.4) surfaces use identical operator-readable copy.
+const WAREHOUSE_LIFECYCLE_LABEL = {
+  unknown:          'No packing list',
+  awaiting:         'Awaiting receipt',
+  partial_received: 'Partially received',
+  in_warehouse:     'In warehouse',
+  reserved:         'Reserved (PZ created)',
+};
+
+// ══════════════════════════════════════════════════════════
+// DASHBOARD KANBAN — workflow-first pipeline view (real batch data)
+// ══════════════════════════════════════════════════════════
+
+function ReadinessBanner({ domain, status, ready, message, loading, error, 'data-testid': testId }) {
+  if (loading) {
+    return (
+      <div data-testid={testId || `readiness-banner-${domain}`}
+        style={{ padding: '7px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 10, fontSize: 11, color: 'var(--text-3)' }}>
+        ⟳ Loading readiness…
+      </div>
+    );
+  }
+  if (error || !status) {
+    return (
+      <div data-testid={testId || `readiness-banner-${domain}`}
+        style={{ padding: '7px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 10, fontSize: 11, color: 'var(--text-3)' }}>
+        Readiness data unavailable
+      </div>
+    );
+  }
+  const isNA = status === 'n/a' || status === 'none';
+  const bgColor = isNA ? 'var(--bg-subtle)'
+    : ready ? 'var(--badge-green-bg)'
+    : (status === 'partial' || status === 'warnings' || status === 'missing' || status === 'blocked') ? 'var(--badge-amber-bg)'
+    : 'var(--badge-red-bg)';
+  const borderColor = isNA ? 'var(--border)'
+    : ready ? 'var(--badge-green-border)'
+    : (status === 'partial' || status === 'warnings' || status === 'missing' || status === 'blocked') ? 'var(--badge-amber-border)'
+    : 'var(--badge-red-border)';
+  const textColor = isNA ? 'var(--text-3)'
+    : ready ? 'var(--badge-green-text)'
+    : (status === 'partial' || status === 'warnings' || status === 'missing' || status === 'blocked') ? 'var(--badge-amber-text)'
+    : 'var(--badge-red-text)';
+  const icon = isNA ? '○' : ready ? '✓' : '⚠';
+  return (
+    <div data-testid={testId || `readiness-banner-${domain}`}
+      style={{ padding: '7px 12px', background: bgColor, border: `1px solid ${borderColor}`, borderRadius: 6, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 12, color: textColor }}>{icon}</span>
+      <span style={{ fontSize: 11, fontWeight: 700, color: textColor, textTransform: 'capitalize' }}>{status.replace(/_/g, ' ')}</span>
+      {message && <span style={{ fontSize: 11, color: textColor, opacity: 0.85 }}>— {message}</span>}
+    </div>
+  );
+}
+
+/**
+ * BrokerFollowupPanel
+ * Surfaces operator-approvable broker email drafts generated by the
+ * GET /dashboard/broker-followups detector for blocked batches that hit
+ * forbidden override types (invoice_refs_match / cif_match).
+ *
+ * Strict rules:
+ *  - No default broker recipient. The 'To' field is operator-entered.
+ *  - No auto-send. Confirmation modal required before POST.
+ *  - Send disabled when 'To' is empty or invalid.
+ *  - Sent draft disables further sends.
+ *  - On error, draft state is not marked sent.
+ *  - This panel never modifies failed_checks, status, customs values.
+ */
+function BrokerFollowupPanel({ batchId }) {
+  const [drafts,    setDrafts]    = React.useState([]);
+  const [loading,   setLoading]   = React.useState(false);
+  const [loadError, setLoadError] = React.useState('');
+  const [forms,     setForms]     = React.useState({});  // {draft_id: {to, cc, from_address}}
+  const [busy,      setBusy]      = React.useState({});  // {draft_id: bool}
+  const [errors,    setErrors]    = React.useState({});  // {draft_id: string}
+  const [confirmFor, setConfirmFor] = React.useState(null); // draft object or null
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  const loadDrafts = React.useCallback(async () => {
+    setLoading(true); setLoadError('');
+    try {
+      const data = await apiFetch('/dashboard/broker-followups');
+      const all  = (data && data.drafts) || [];
+      // Filter to current batch only
+      const mine = all.filter(d => d.batch_id === batchId);
+      setDrafts(mine);
+    } catch (ex) {
+      setLoadError(ex.message || 'Failed to load broker follow-ups');
+    } finally {
+      setLoading(false);
+    }
+  }, [batchId]);
+
+  React.useEffect(() => { loadDrafts(); }, [loadDrafts]);
+
+  const updateForm = (draftId, field, value) => {
+    setForms(prev => ({ ...prev, [draftId]: { ...(prev[draftId] || {}), [field]: value } }));
+  };
+
+  const isValidTo = (toVal) => !!toVal && EMAIL_RE.test(toVal.trim());
+
+  const sendDraft = async (draft) => {
+    const form = forms[draft.draft_id] || {};
+    if (!isValidTo(form.to)) return;       // hard guard — should be unreachable from disabled button
+    setBusy(prev => ({ ...prev, [draft.draft_id]: true }));
+    setErrors(prev => ({ ...prev, [draft.draft_id]: '' }));
+    try {
+      const body = { to: form.to.trim(), cc: (form.cc || '').trim() };
+      if (form.from_address && form.from_address.trim()) {
+        body.from_address = form.from_address.trim();
+      }
+      await apiFetch(`/dashboard/broker-followups/${encodeURIComponent(batchId)}/send`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      });
+      setConfirmFor(null);
+      await loadDrafts();   // refresh — sent drafts will show status:sent
+    } catch (ex) {
+      setErrors(prev => ({ ...prev, [draft.draft_id]: ex.message || 'Send failed' }));
+    } finally {
+      setBusy(prev => ({ ...prev, [draft.draft_id]: false }));
+    }
+  };
+
+  return (
+    <Card data-testid="broker-followup-panel" style={{ marginTop: 4 }}>
+      <div style={{ padding: '14px 18px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📧 Broker Follow-up</div>
+          <Btn small variant="outline" onClick={loadDrafts} disabled={loading} data-testid="broker-followup-refresh-btn">
+            {loading ? '⟳ Loading…' : 'Refresh'}
+          </Btn>
+        </div>
+        <div data-testid="broker-followup-description" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>
+          Drafts created automatically when the SAD references a missing invoice or the
+          declared CIF value diverges from the invoice total. Operator must enter the recipient
+          before any email is queued. This panel never modifies customs, PZ, or audit values.
+        </div>
+
+        {loadError && (
+          <div data-testid="broker-followup-load-error" style={{ marginBottom: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', color: 'var(--badge-red-text)', fontSize: 11, fontWeight: 600 }}>
+            {loadError}
+          </div>
+        )}
+
+        {!loading && !loadError && drafts.length === 0 && (
+          <div data-testid="broker-followup-empty" style={{ fontSize: 11, color: 'var(--text-3)' }}>
+            No broker follow-up drafts for this shipment.
+          </div>
+        )}
+
+        {drafts.map(draft => {
+          const form     = forms[draft.draft_id] || {};
+          const sent     = draft.status === 'sent' || draft.status === 'queued';
+          const toValid  = isValidTo(form.to);
+          const sendDisabled = sent || !toValid || !!busy[draft.draft_id];
+          const err      = errors[draft.draft_id];
+
+          return (
+            <div
+              key={draft.draft_id}
+              data-testid="broker-followup-draft"
+              data-draft-id={draft.draft_id}
+              data-draft-status={draft.status}
+              style={{ marginBottom: 14, padding: '10px 12px', border: '1px solid var(--border-subtle)', borderRadius: 6, background: 'var(--surface-2)' }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)' }}>
+                  AWB {draft.awb || '—'} · MRN {draft.mrn || '—'}
+                </div>
+                <span data-testid="broker-followup-status-badge" style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, fontWeight: 700, border: '1px solid', background: sent ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)', color: sent ? 'var(--badge-green-text)' : 'var(--badge-amber-text)', borderColor: sent ? 'var(--badge-green-border)' : 'var(--badge-amber-border)' }}>
+                  {sent ? 'Sent' : 'Draft'}
+                </span>
+              </div>
+
+              {(draft.missing_invoices && draft.missing_invoices.length > 0) && (
+                <div data-testid="broker-followup-missing-invoices" style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 4 }}>
+                  Missing invoice{draft.missing_invoices.length > 1 ? 's' : ''}: <strong>{draft.missing_invoices.join(', ')}</strong>
+                </div>
+              )}
+              {draft.cif_gap && (
+                <div data-testid="broker-followup-cif-gap" style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 8 }}>
+                  CIF gap — invoices ${Number(draft.cif_gap.invoices).toLocaleString()} vs SAD ${Number(draft.cif_gap.sad).toLocaleString()} (diff ${Number(draft.cif_gap.diff).toLocaleString()})
+                </div>
+              )}
+
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 8, marginBottom: 4 }}>Subject</div>
+              <div data-testid="broker-followup-subject" style={{ fontSize: 11, color: 'var(--text)', marginBottom: 8, padding: '6px 8px', background: 'var(--surface-1)', borderRadius: 4, border: '1px solid var(--border-subtle)' }}>
+                {draft.subject}
+              </div>
+
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Body preview</div>
+              <pre data-testid="broker-followup-body" style={{ fontSize: 11, color: 'var(--text)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 220, overflow: 'auto', padding: '8px 10px', background: 'var(--surface-1)', borderRadius: 4, border: '1px solid var(--border-subtle)', margin: 0, marginBottom: 10 }}>
+                {draft.body}
+              </pre>
+
+              {!sent && (
+                <div data-testid="broker-followup-form" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                  <label style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                    To <span style={{ color: 'var(--badge-red-text)' }}>*</span>
+                    <input
+                      data-testid="broker-followup-to"
+                      type="email"
+                      required
+                      placeholder="broker@example.com"
+                      value={form.to || ''}
+                      onChange={e => updateForm(draft.draft_id, 'to', e.target.value)}
+                      style={{ display: 'block', width: '100%', marginTop: 2, padding: '6px 8px', fontSize: 11, border: '1px solid var(--border-subtle)', borderRadius: 4, background: 'var(--surface-1)', color: 'var(--text)' }}
+                    />
+                  </label>
+                  <label style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                    CC (optional)
+                    <input
+                      data-testid="broker-followup-cc"
+                      type="text"
+                      placeholder="cc@example.com"
+                      value={form.cc || ''}
+                      onChange={e => updateForm(draft.draft_id, 'cc', e.target.value)}
+                      style={{ display: 'block', width: '100%', marginTop: 2, padding: '6px 8px', fontSize: 11, border: '1px solid var(--border-subtle)', borderRadius: 4, background: 'var(--surface-1)', color: 'var(--text)' }}
+                    />
+                  </label>
+                  <details style={{ gridColumn: '1 / -1', fontSize: 10, color: 'var(--text-3)' }}>
+                    <summary style={{ cursor: 'pointer' }}>Advanced — override sender</summary>
+                    <input
+                      data-testid="broker-followup-from"
+                      type="text"
+                      placeholder="from-override@estrellajewels.eu"
+                      value={form.from_address || ''}
+                      onChange={e => updateForm(draft.draft_id, 'from_address', e.target.value)}
+                      style={{ display: 'block', width: '100%', marginTop: 4, padding: '6px 8px', fontSize: 11, border: '1px solid var(--border-subtle)', borderRadius: 4, background: 'var(--surface-1)', color: 'var(--text)' }}
+                    />
+                  </details>
+                </div>
+              )}
+
+              {err && (
+                <div data-testid="broker-followup-error" style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600, background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', border: '1px solid var(--badge-red-border)' }}>
+                  ⚠ {err}
+                </div>
+              )}
+
+              {sent && draft.sent_to && (
+                <div data-testid="broker-followup-sent-info" style={{ fontSize: 11, color: 'var(--badge-green-text)', marginBottom: 4 }}>
+                  ✓ Sent to {draft.sent_to}{draft.sent_at ? ` at ${draft.sent_at}` : ''}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <Btn
+                  data-testid="broker-followup-send-btn"
+                  small
+                  variant="primary"
+                  disabled={sendDisabled}
+                  style={{ opacity: sendDisabled ? 0.45 : 1, cursor: sendDisabled ? 'not-allowed' : 'pointer' }}
+                  onClick={() => setConfirmFor(draft)}
+                >
+                  {busy[draft.draft_id] ? '⟳ Sending…' : sent ? 'Sent' : 'Send…'}
+                </Btn>
+                <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                  {sent
+                    ? 'Email already queued for this draft.'
+                    : !toValid
+                      ? 'Enter a valid recipient to enable send.'
+                      : 'Confirmation required before queueing.'}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+
+        {/* ── Confirmation modal ──────────────────────────────────────── */}
+        {confirmFor && (() => {
+          const f = forms[confirmFor.draft_id] || {};
+          return (
+            <div
+              data-testid="broker-followup-confirm-modal"
+              role="dialog"
+              aria-modal="true"
+              style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+            >
+              <div style={{ background: 'var(--surface-1)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: 20, width: 'min(560px, 90vw)', boxShadow: '0 8px 32px rgba(0,0,0,0.25)' }}>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>Confirm broker follow-up email</div>
+                <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 4 }}><strong>Batch:</strong> {confirmFor.batch_id}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 4 }}><strong>To:</strong> {f.to}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 4 }}><strong>CC:</strong> {f.cc || '—'}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 10 }}><strong>Subject:</strong> {confirmFor.subject}</div>
+                <div data-testid="broker-followup-confirm-warning" style={{ marginBottom: 14, padding: '8px 10px', borderRadius: 4, background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', color: 'var(--badge-amber-text)', fontSize: 11 }}>
+                  ⚠ This will queue an email. It will not modify customs/PZ values.
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <Btn small variant="outline" onClick={() => setConfirmFor(null)} data-testid="broker-followup-confirm-cancel">
+                    Cancel
+                  </Btn>
+                  <Btn
+                    small
+                    variant="primary"
+                    onClick={() => sendDraft(confirmFor)}
+                    disabled={!!busy[confirmFor.draft_id]}
+                    data-testid="broker-followup-confirm-send"
+                  >
+                    {busy[confirmFor.draft_id] ? '⟳ Sending…' : 'Confirm & queue email'}
+                  </Btn>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * BrokerReplyAnalyzerPanel
+ * Helper-only paste-and-classify tool. Operator pastes a broker email
+ * reply; the panel POSTs to /dashboard/broker-reply/analyze and renders
+ * the structured suggestion.
+ *
+ * Strict rules:
+ *  - No audit mutation. No drafts created. No emails sent.
+ *  - The route is read-only (pure classifier).
+ *  - The panel never auto-runs anything based on the result.
+ */
+function BrokerReplyAnalyzerPanel() {
+  const [text,    setText]    = React.useState('');
+  const [busy,    setBusy]    = React.useState(false);
+  const [error,   setError]   = React.useState('');
+  const [result,  setResult]  = React.useState(null);
+
+  const analyze = async () => {
+    if (!text.trim()) return;
+    setBusy(true); setError(''); setResult(null);
+    try {
+      const data = await apiFetch('/dashboard/broker-reply/analyze', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ text }),
+      });
+      setResult(data);
+    } catch (ex) {
+      setError(ex.message || 'Analyze failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clear = () => { setText(''); setResult(null); setError(''); };
+
+  const caseColor = (c) =>
+    c === 'A' ? 'var(--badge-green-text)' :
+    c === 'B' ? 'var(--badge-amber-text)' :
+    c === 'C' ? 'var(--badge-amber-text)' :
+    c === 'D' ? 'var(--text-2)'           :
+    c === 'E' ? 'var(--badge-red-text)'   :
+                'var(--text-3)';
+
+  return (
+    <Card data-testid="broker-reply-analyzer-panel" style={{ marginTop: 4 }}>
+      <div style={{ padding: '14px 18px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📋 Paste Broker Reply</div>
+        </div>
+        <div data-testid="broker-reply-analyzer-description" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+          Paste the broker's email body to get a quick case classification (A–E) and recommended
+          next action. Read-only helper — no email is sent, no audit field is changed.
+        </div>
+
+        <textarea
+          data-testid="broker-reply-input"
+          value={text}
+          onChange={e => setText(e.target.value)}
+          placeholder="Paste broker reply text here…"
+          rows={8}
+          style={{ width: '100%', padding: '8px 10px', fontSize: 11, fontFamily: 'inherit', border: '1px solid var(--border-subtle)', borderRadius: 4, background: 'var(--surface-1)', color: 'var(--text)', resize: 'vertical' }}
+        />
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <Btn
+            data-testid="broker-reply-analyze-btn"
+            small
+            variant="primary"
+            disabled={busy || !text.trim()}
+            title={busy ? 'Analyzing reply…' : !text.trim() ? 'Paste broker reply text above first' : 'Analyze the pasted broker reply'}
+            style={{ opacity: (busy || !text.trim()) ? 0.45 : 1, cursor: (busy || !text.trim()) ? 'not-allowed' : 'pointer' }}
+            onClick={analyze}
+          >
+            {busy ? '⟳ Analyzing…' : 'Analyze'}
+          </Btn>
+          <Btn
+            data-testid="broker-reply-clear-btn"
+            small
+            variant="outline"
+            disabled={busy || (!text && !result && !error)}
+            title={busy ? 'Analyze in progress — wait to clear' : (!text && !result && !error) ? 'Nothing to clear' : 'Clear the reply text and result'}
+            onClick={clear}
+          >
+            Clear
+          </Btn>
+        </div>
+
+        {error && (
+          <div data-testid="broker-reply-error" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600, background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', border: '1px solid var(--badge-red-border)' }}>
+            ⚠ {error}
+          </div>
+        )}
+
+        {result && (
+          <div data-testid="broker-reply-result" style={{ marginTop: 12, padding: '10px 12px', border: '1px solid var(--border-subtle)', borderRadius: 6, background: 'var(--surface-2)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-3)' }}>Case</div>
+              <div data-testid="broker-reply-result-case" style={{ fontSize: 16, fontWeight: 800, color: caseColor(result.case) }}>
+                {result.case || '—'}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)' }}>·</div>
+              <div data-testid="broker-reply-result-confidence" style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)' }}>
+                Confidence: {result.confidence}
+              </div>
+            </div>
+
+            {result.extracted && (result.extracted.invoice_ids || []).length > 0 && (
+              <div data-testid="broker-reply-result-invoices" style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 4 }}>
+                Invoice IDs: <strong>{result.extracted.invoice_ids.join(', ')}</strong>
+              </div>
+            )}
+            {result.extracted && (result.extracted.usd_amounts || []).length > 0 && (
+              <div data-testid="broker-reply-result-amounts" style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 8 }}>
+                USD amounts: <strong>{result.extracted.usd_amounts.join(', ')}</strong>
+              </div>
+            )}
+
+            {result.recommended_action && (
+              <div data-testid="broker-reply-result-recommendation" style={{ marginTop: 8, padding: '8px 10px', borderRadius: 4, background: 'var(--surface-1)', border: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text)', lineHeight: 1.4 }}>
+                {result.recommended_action}
+              </div>
+            )}
+
+            <div data-testid="broker-reply-result-safety-note" style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 8 }}>
+              Suggestion only — does not run PZ, change customs values, send email, or apply overrides.
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * MissingFunctionsMatrix
+ * Read-only operator visibility card: lists all parked/incomplete modules,
+ * their backend/UI/test status and recommended next action.
+ * Phase 2 static data — no API calls, no write actions.
+ */
+function MissingFunctionsMatrix() {
+  const BADGE_STYLES = {
+    Complete:     { background: '#dcfce7', color: '#166534', border: '1px solid #bbf7d0' },
+    Partial:      { background: '#dbeafe', color: '#1e40af', border: '1px solid #bfdbfe' },
+    Parked:       { background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db' },
+    'Missing UI': { background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a' },
+    Risky:        { background: '#fee2e2', color: '#991b1b', border: '1px solid #fecaca' },
+    Superseded:   { background: '#ede9fe', color: '#5b21b6', border: '1px solid #ddd6fe' },
+    Missing:      { background: '#fef9c3', color: '#713f12', border: '1px solid #fef08a' },
+  };
+
+  const Badge = ({ label }) => (
+    <span style={{
+      ...(BADGE_STYLES[label] || BADGE_STYLES['Parked']),
+      display: 'inline-block', padding: '1px 7px', borderRadius: 10,
+      fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap',
+    }}>{label}</span>
+  );
+
+  const ROWS = [
+    {
+      module:     'Proforma → Invoice converter',
+      backend:    'Parked',
+      ui:         'Missing UI',
+      tests:      'Parked',
+      flow:       'Parked',
+      action:     'Define spec; backend skeleton in routes_proposals',
+    },
+    {
+      module:     'PZ Chrome AutoFill preview',
+      backend:    'Complete',
+      ui:         'Partial',
+      tests:      'Partial',
+      flow:       'Partial',
+      action:     'Accessible from PZ / Accounting tab; no immediate action',
+    },
+    {
+      module:     'Packing list upload',
+      backend:    'Complete',
+      ui:         'Partial',
+      tests:      'Partial',
+      flow:       'Partial',
+      action:     'Verify packing list → warehouse scan flow end-to-end',
+    },
+    {
+      module:     'Barcode / label print',
+      backend:    'Parked',
+      ui:         'Parked',
+      tests:      'Missing',
+      flow:       'Parked',
+      action:     'Parked — no timeline; post-Phase 2',
+    },
+    {
+      module:     'DHL documents received',
+      backend:    'Complete',
+      ui:         'Partial',
+      tests:      'Partial',
+      flow:       'Risky',
+      action:     'Add document receipt confirmation step in DHL / Customs tab',
+    },
+    {
+      module:     'Agency documents received',
+      backend:    'Complete',
+      ui:         'Partial',
+      tests:      'Partial',
+      flow:       'Risky',
+      action:     'Run end-to-end SAD / PZC import test with real agency reply',
+    },
+    {
+      module:     'Service invoice receipt',
+      backend:    'Partial',
+      ui:         'Missing UI',
+      tests:      'Missing',
+      flow:       'Missing UI',
+      action:     'Add service invoice card — DHL + agency invoices tracked separately',
+    },
+    {
+      module:     'Shipment closure',
+      backend:    'Partial',
+      ui:         'Missing UI',
+      tests:      'Missing',
+      flow:       'Risky',
+      action:     'Add closure confirmation UI with readiness gate before any write',
+    },
+    {
+      module:     'wFirma create guard',
+      backend:    'Complete',
+      ui:         'Partial',
+      tests:      'Partial',
+      flow:       'Risky',
+      action:     'Verify guard prevents double API call; add idempotency check',
+    },
+    {
+      module:     'Old batch flow cleanup',
+      backend:    'Partial',
+      ui:         'Parked',
+      tests:      'Partial',
+      flow:       'Parked',
+      action:     'Admin cleanup tool; not operator-facing — low priority',
+    },
+  ];
+
+  const thStyle = {
+    textAlign: 'left', padding: '6px 10px',
+    borderBottom: '2px solid var(--border)',
+    fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+    textTransform: 'uppercase', letterSpacing: '0.05em',
+    whiteSpace: 'nowrap',
+  };
+  const tdStyle = {
+    padding: '7px 10px', borderBottom: '1px solid var(--border)',
+    fontSize: 11, verticalAlign: 'middle',
+  };
+
+  return (
+    <Card data-testid="missing-functions-matrix" style={{ marginBottom: 16 }}>
+      <div style={{ padding: '14px 18px 6px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
+            ⊟ Missing / Parked Modules
+          </span>
+          <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10,
+            background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db',
+            fontWeight: 600 }}>
+            Phase 2 status
+          </span>
+        </div>
+        <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 12,
+          padding: '6px 10px', background: '#f9fafb', borderRadius: 5,
+          border: '1px solid #e5e7eb' }}
+          data-testid="missing-functions-matrix-readonly-warning">
+          ⚠ This matrix is read-only and does not trigger actions.
+        </div>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+          <thead>
+            <tr style={{ background: 'var(--surface-2)' }}>
+              <th style={thStyle}>Module</th>
+              <th style={thStyle}>Backend</th>
+              <th style={thStyle}>UI</th>
+              <th style={thStyle}>Tests</th>
+              <th style={thStyle}>Operator flow</th>
+              <th style={{ ...thStyle, minWidth: 220 }}>Recommended next action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ROWS.map((row, i) => (
+              <tr key={i} style={{ background: i % 2 === 0 ? 'transparent' : 'var(--surface-2, #fafafa)' }}>
+                <td style={{ ...tdStyle, fontWeight: 600, color: 'var(--text)' }}
+                  data-testid={`mfm-row-${i}`}>
+                  {row.module}
+                </td>
+                <td style={tdStyle}><Badge label={row.backend} /></td>
+                <td style={tdStyle}><Badge label={row.ui} /></td>
+                <td style={tdStyle}><Badge label={row.tests} /></td>
+                <td style={tdStyle}><Badge label={row.flow} /></td>
+                <td style={{ ...tdStyle, color: 'var(--text-2)', maxWidth: 280 }}>
+                  {row.action}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * BatchControlCenter
+ * Read-only operator control panel showing batch progress checklist,
+ * overall readiness, and navigation shortcuts to relevant tabs.
+ * Data comes from existing batchReadiness + dhlReadiness — no new fetches.
+ */
+function BatchControlCenter({ batchId, audit, batchReadiness, batchReadinessLoading,
+                               batchReadinessError, dhlReadiness, onTabSwitch }) {
+  if (!batchId) return null;
+
+  const br = batchReadiness;
+  const dr = dhlReadiness;
+  const aud = audit || {};
+
+  // ── Derive step states ──────────────────────────────────────────────────────
+  const hasSad        = !!(aud.sad_file || aud.sad_imported_at);
+  const hasPz         = !!(aud.pz_pdf_filename || aud.pz_generated_at);
+  const hasDhlContact = !!(aud.dhl_email_sent_at || (dr && dr.dhl_status && dr.dhl_status !== 'awaiting_start'));
+  const hasDhlReply   = !!(dr && ['dhl_replied','agency_forwarded','customs_cleared'].includes(dr.dhl_status));
+  const hasDsk        = !!(dr && dr.dsk_docs_received) || !!(aud.dsk_uploaded_at || (dr && dr.dhl_status && ['dhl_replied','agency_forwarded','customs_cleared'].includes(dr.dhl_status)));
+  const hasAgency     = !!(dr && dr.agency_forwarded) || !!(dr && dr.dhl_status && ['agency_forwarded','customs_cleared'].includes(dr.dhl_status));
+  const hasSadPzc     = !!(dr && dr.sad_received) || !!(dr && dr.dhl_status === 'customs_cleared');
+  const whReady       = br && br.warehouse && br.warehouse.ready;
+  const salesReady    = br && br.sales && br.sales.ready;
+  const wfirmaReady   = br && br.wfirma && (br.wfirma.status === 'ready' || br.wfirma.status === 'created');
+  const allReady      = br && br.overall && br.overall.ready_for_closure;
+  const nextStep      = br && br.overall && br.overall.next_step;
+  const blockedDomains = br && br.overall && br.overall.blocked_domains || [];
+
+  const steps = [
+    { label: 'Batch created',         done: !!batchId,      tab: null },
+    { label: 'SAD / customs doc uploaded', done: hasSad,    tab: 'DHL / Customs' },
+    { label: 'PZ document generated', done: hasPz,          tab: 'PZ / Accounting' },
+    { label: 'DHL contacted',         done: hasDhlContact,  tab: 'DHL / Customs' },
+    { label: 'DHL reply received',    done: hasDhlReply,    tab: 'DHL / Customs' },
+    { label: 'DSK docs received',     done: hasDsk,         tab: 'DHL / Customs' },
+    { label: 'Forwarded to agency',   done: hasAgency,      tab: 'DHL / Customs' },
+    { label: 'SAD / PZC from agency', done: hasSadPzc,      tab: 'DHL / Customs' },
+    { label: 'Warehouse scanned',     done: whReady,        tab: 'Warehouse' },
+    { label: 'Sales linked',          done: salesReady,     tab: 'Sales' },
+    { label: 'wFirma reservation',    done: wfirmaReady,    tab: 'PZ / Accounting' },
+    { label: 'Customs cleared',       done: hasSadPzc && hasDsk, tab: 'DHL / Customs' },
+    { label: 'Ready for closure',     done: allReady,       tab: null },
+  ];
+
+  // Find current active step (first not done)
+  const activeStepIdx = steps.findIndex(s => !s.done);
+
+  const cardStyle = { marginBottom: 16, padding: 16 };
+  const stepRowStyle = { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 12 };
+  const pillStyle = (blocked) => ({
+    display: 'inline-block', padding: '2px 8px', borderRadius: 12, fontSize: 10,
+    fontWeight: 600, marginLeft: 4,
+    background: blocked ? '#fef2f2' : '#f0fdf4',
+    color: blocked ? '#991b1b' : '#166534',
+  });
+
+  return (
+    <Card data-testid="batch-control-center" style={cardStyle}>
+      <SectionHeader icon="⊞" title="Batch Control Center"
+        subtitle={allReady ? 'All domains ready — batch can be closed' : (nextStep || 'Checking readiness…')} />
+
+      {batchReadinessLoading && (
+        <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '8px 0' }}>⟳ Loading readiness…</div>
+      )}
+      {batchReadinessError && (
+        <div style={{ fontSize: 12, color: '#991b1b', padding: '8px 0' }}>⚠ {batchReadinessError}</div>
+      )}
+
+      {/* Step checklist */}
+      <div style={{ marginBottom: 12 }}>
+        {steps.map((step, i) => {
+          const isCurrent = i === activeStepIdx;
+          const icon = step.done ? '✅' : isCurrent ? '🔵' : '⬜';
+          return (
+            <div key={i} style={{...stepRowStyle, fontWeight: isCurrent ? 700 : 400}}>
+              <span>{icon}</span>
+              <span style={{ flex: 1, color: step.done ? 'var(--text-2)' : isCurrent ? 'var(--text-1)' : 'var(--text-3)' }}>
+                {step.label}
+              </span>
+              {step.tab && isCurrent && (
+                <button
+                  style={{ fontSize: 10, padding: '2px 8px', cursor: 'pointer', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--surface-2)', color: 'var(--text-1)' }}
+                  onClick={() => onTabSwitch && onTabSwitch(step.tab)}
+                >
+                  Go →
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Blocked domains */}
+      {blockedDomains.length > 0 && (
+        <div style={{ fontSize: 11, marginBottom: 8 }}>
+          <span style={{ fontWeight: 600, color: 'var(--text-2)' }}>Blocked: </span>
+          {blockedDomains.map(d => <span key={d} style={pillStyle(true)}>{d}</span>)}
+        </div>
+      )}
+
+      {/* Next step highlight */}
+      {nextStep && !allReady && (
+        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: '#92400e' }}>
+          <strong>Next: </strong>{nextStep}
+        </div>
+      )}
+
+      {/* Parked modules note */}
+      <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--surface-2)', borderRadius: 6, fontSize: 11, color: 'var(--text-3)' }}>
+        <strong>Parked modules:</strong> Proforma converter · Barcode / label print
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * DecisionBanner
+ * Renders the decision engine output passed in via props (fetched by BatchDetailPage).
+ * Falls back to the readiness-layer next_step when decisionData is absent.
+ */
+function DecisionBanner({ decisionData, decisionLoading, fallbackStep }) {
+  if (decisionLoading) return null;
+
+  const action = decisionData && decisionData.primary_action;
+  const displayText = action || fallbackStep;
+  if (!displayText) return null;
+
+  const isDecision = !!(action);
+  return (
+    <div
+      data-testid="decision-banner"
+      style={{
+        fontSize: 11, padding: '7px 10px', borderRadius: 5,
+        border: `1px solid ${isDecision ? 'var(--badge-blue-border, var(--border))' : 'var(--border)'}`,
+        background: isDecision ? 'var(--badge-blue-bg, var(--bg-subtle))' : 'var(--bg-subtle)',
+        color: isDecision ? 'var(--badge-blue-text, var(--text-2))' : 'var(--text-2)',
+      }}
+    >
+      <span style={{ fontWeight: 700 }}>{isDecision ? '▶ Next Action: ' : 'Next: '}</span>
+      <span data-testid="overall-next-step" data-decision-action="true">{displayText}</span>
+    </div>
+  );
+}
+
+/**
+ * OverallReadinessCard
+ * Shows batch-level aggregated readiness summary in the Pipeline tab.
+ * Read-only. No buttons.
+ */
+function OverallReadinessCard({ batchReadiness, loading, error, decisionData, decisionLoading }) {
+  if (loading) {
+    return (
+      <Card data-testid="overall-readiness-card">
+        <div style={{ padding: 16, fontSize: 12, color: 'var(--text-3)' }}>⟳ Loading readiness…</div>
+      </Card>
+    );
+  }
+  if (error || !batchReadiness) {
+    return (
+      <Card data-testid="overall-readiness-card">
+        <div style={{ padding: 16, fontSize: 12, color: 'var(--text-3)' }}>
+          {error || 'Readiness data unavailable'}
+        </div>
+      </Card>
+    );
+  }
+  const overall = batchReadiness.overall || {};
+  const ready = overall.ready_for_closure;
+  const blocked = overall.blocked_domains || [];
+  const nextStep = overall.next_step || '';
+  const DOMAIN_ICONS = { warehouse: '📦', sales: '🛒', wfirma: '↗', dhl: '✈' };
+  const DOMAINS = ['warehouse', 'sales', 'wfirma', 'dhl'];
+  return (
+    <Card data-testid="overall-readiness-card">
+      <div style={{ padding: '14px 18px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>🔍 Batch Readiness</span>
+          <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
+            background: ready ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+            color: ready ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+            border: `1px solid ${ready ? 'var(--badge-green-border)' : 'var(--badge-amber-border)'}` }}>
+            {ready ? 'Ready for closure' : `${blocked.length} domain(s) blocked`}
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+          {DOMAINS.map(d => {
+            const dom = batchReadiness[d] || {};
+            const isReady = dom.ready;
+            const st = dom.status || 'n/a';
+            const isNA = st === 'n/a' || st === 'none';
+            return (
+              <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px',
+                borderRadius: 5, fontSize: 11, fontWeight: 600,
+                background: isNA ? 'var(--bg-2)' : isReady ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+                color: isNA ? 'var(--text-3)' : isReady ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+                border: `1px solid ${isNA ? 'var(--border)' : isReady ? 'var(--badge-green-border)' : 'var(--badge-amber-border)'}`,
+              }} title={dom.message || ''}>
+                <span>{DOMAIN_ICONS[d] || '•'}</span>
+                <span style={{ textTransform: 'capitalize' }}>{d}</span>
+                <span style={{ fontWeight: 400 }}>— {st.replace(/_/g, ' ')}</span>
+              </div>
+            );
+          })}
+        </div>
+        <DecisionBanner decisionData={decisionData} decisionLoading={decisionLoading} fallbackStep={nextStep} />
+      </div>
+    </Card>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+// BATCH DETAIL PAGE (real API)
+// ══════════════════════════════════════════════════════════
+
+const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / Accounting', 'Timeline', 'Intelligence', 'Proposals'];
+
+const WORKFLOW_STAGES = [
+  { id: 'intake',   num: 1, label: 'Intake' },
+  { id: 'precheck', num: 2, label: 'Pre-check' },
+  { id: 'reply',    num: 3, label: 'DHL Reply' },
+  { id: 'sad',      num: 4, label: 'SAD / ZC429' },
+  { id: 'verified', num: 5, label: 'Verified' },
+  { id: 'pz',       num: 6, label: 'PZ Generated' },
+  { id: 'wfirma',   num: 7, label: 'wFirma Booked' },
+];
+
+function WorkflowStrip({ audit }) {
+  if (!audit) return null;
+
+  // ── Derived projections ──────────────────────────────────────────
+  // The audit writers never persist {dhl,sad,pz}_status at the top
+  // level of audit.json. Project them here from what IS in audit:
+  //   audit.customs_declaration  (SAD parser output)
+  //   audit.timeline             (event log; canonical EV_* names)
+  //   audit.wfirma_export        (PZ export evidence)
+  // Read-only — no writes, no API calls.
+  const cd       = audit.customs_declaration || {};
+  const timeline = Array.isArray(audit.timeline) ? audit.timeline : [];
+  const wfExport = audit.wfirma_export || {};
+  const has = (event) => timeline.some(e => e && e.event === event);
+
+  // SAD lifecycle: missing → uploaded → parsed → verified
+  const sadParsed   = !!(cd.mrn || cd.duty_a00_pln != null
+                       || cd.sad_customs_rate || cd.exchange_rate);
+  const sadVerified = !!cd.verification_passed;
+  const sad = audit.sad_status
+           || (sadVerified ? 'customs_verified'
+             : sadParsed   ? 'customs_parsed'
+             : has('sad_uploaded') ? 'uploaded_parsed'
+             : 'missing');
+
+  // DHL lifecycle: pre_check → email_received → reply_sent
+  // Event constants from core/timeline.py:
+  //   EV_DHL_PRECHECK_COMPLETED = "dhl_precheck_completed"
+  //   EV_DHL_EMAIL_RECEIVED     = "dhl_email_received"
+  //   EV_DSK_TRANSFER_SENT      = "dsk_transfer_sent"
+  const dhl = audit.dhl_status
+           || (has('dsk_transfer_sent')        ? 'reply_sent'
+             : has('dhl_email_received')       ? 'dhl_email_received'
+             : has('dhl_precheck_completed')   ? 'pre_check_completed'
+             : '');
+
+  // PZ lifecycle: generated → exported (wFirma)
+  //   audit.wfirma_export.wfirma_pz_doc_id non-empty → exported
+  //   timeline event "pz_generated"                  → generated
+  //   timeline event "wfirma_pz_created"             → exported
+  const pzExported  = !!((wfExport.wfirma_pz_doc_id || '').trim())
+                      || has('wfirma_pz_created');
+  const pz = audit.pz_status
+           || (pzExported          ? 'exported'
+             : has('pz_generated') ? 'generated'
+             : '');
+
+  const stageState = (id) => {
+    if (id === 'intake')   return 'done';
+    if (id === 'precheck') return (dhl === 'pre_check_completed' || dhl === 'reply_sent' || dhl === 'reply_queued') ? 'done' : (dhl ? 'active' : 'pending');
+    if (id === 'reply')    return (dhl === 'reply_sent') ? 'done' : (dhl === 'reply_queued' || dhl === 'reply_package_prepared' || dhl === 'dhl_email_received') ? 'active' : 'pending';
+    if (id === 'sad')      return (sad === 'customs_verified' || sad === 'uploaded_parsed' || sad === 'customs_parsed') ? 'done' : (dhl === 'reply_sent' && sad !== 'missing') ? 'active' : 'pending';
+    if (id === 'verified') return (sad === 'customs_verified') ? 'done' : (sad === 'customs_parsed' || sad === 'uploaded_parsed') ? 'active' : 'pending';
+    if (id === 'pz')       return (pz === 'generated' || pz === 'exported') ? 'done' : (sad === 'customs_verified') ? 'active' : 'pending';
+    if (id === 'wfirma')   return (pz === 'exported') ? 'done' : (pz === 'generated') ? 'active' : 'pending';
+    return 'pending';
+  };
+
+  const colors = {
+    done:    { numBg: '#22A06B', numBorder: '#22A06B', numText: '#fff', labelColor: '#186838' },
+    active:  { numBg: 'var(--accent-subtle)', numBorder: 'var(--accent-border)', numText: 'var(--accent)', labelColor: 'var(--accent)' },
+    pending: { numBg: 'var(--card)', numBorder: 'var(--border)', numText: 'var(--text-3)', labelColor: 'var(--text-3)' },
+  };
+
+  return (
+    <div style={{ padding: '14px 32px', background: 'var(--card)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 0, flexShrink: 0, overflowX: 'auto' }}>
+      {WORKFLOW_STAGES.map((stage, i) => {
+        const s = stageState(stage.id);
+        const c = colors[s];
+        return (
+          <React.Fragment key={stage.id}>
+            {i > 0 && <div style={{ flex: 1, minWidth: 12, height: 1, background: s === 'done' ? '#22A06B' : 'var(--border)', opacity: s === 'done' ? 0.5 : 1 }} />}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+              <div style={{ width: 26, height: 26, borderRadius: '50%', background: c.numBg, border: `2px solid ${c.numBorder}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: c.numText }}>
+                {s === 'done' ? '✓' : stage.num}
+              </div>
+              <span style={{ fontSize: 10, fontWeight: 500, color: c.labelColor, whiteSpace: 'nowrap' }}>{stage.label}</span>
+            </div>
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── W-5 P2: read-only Path A self-clearance state pill ──
+// Renders the current state from GET /api/v1/dhl/selfclearance/state/{batch_id}.
+// Greyed-out when the shipment is not on Path A (in_scope=false).
+// Per Windows Atlas memory rule, NO write controls — read-only display.
+function SelfclearanceStatePill({ batchId }) {
+  const [data, setData] = React.useState(null);
+  const [err, setErr] = React.useState('');
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!batchId) return;
+    (async () => {
+      try {
+        const r = await fetch(`/api/v1/dhl/selfclearance/state/${encodeURIComponent(batchId)}`, {
+          credentials: 'include',
+        });
+        if (!r.ok) {
+          if (!cancelled) setErr(`HTTP ${r.status}`);
+          return;
+        }
+        const j = await r.json();
+        if (!cancelled) setData(j);
+      } catch (e) {
+        if (!cancelled) setErr(String(e));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [batchId]);
+
+  if (err) return null;          // honest silence on transient error
+  if (!data) return null;        // loading
+  // Hide entirely when shipment is not on Path A — previously the pill
+  // rendered greyed out, but operators flagged this as visual noise on
+  // non-self-clearance shipments. Pill is Path-A-only visibility.
+  if (data.in_scope === false) return null;
+
+  const state = data.state || 'n/a';
+  const inScope = !!data.in_scope;
+  const shadow = data.p2_dispatch && data.p2_dispatch.shadow;
+
+  // Color map per state — neutral grey for n/a, blue for active, amber for failure.
+  const colorByState = {
+    'awaiting_preemptive_send':    '#6b7280',
+    'awaiting_poland_arrival':     '#2563eb',
+    'followup_active':             '#2563eb',
+    'dhl_requested_clarification': '#d97706',
+    'clarification_sent':          '#2563eb',
+    'awaiting_sad':                '#2563eb',
+    'sad_received':                '#16a34a',
+    'pz_unlocked':                 '#16a34a',
+    'shipment_closed':             '#16a34a',
+    'dispatch_failed':             '#dc2626',
+    'scope_gate_violated':         '#dc2626',
+    'operator_override_active':    '#d97706',
+    'pz_failed':                   '#dc2626',
+    'n/a':                         '#9ca3af',
+  };
+  const color = colorByState[state] || '#6b7280';
+
+  return (
+    <div
+      data-testid="selfclearance-state-pill"
+      style={{
+        margin: '8px 0',
+        padding: '8px 12px',
+        border: '1px solid var(--border-subtle, #e5e7eb)',
+        borderRadius: 6,
+        background: 'var(--surface, #fff)',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 10,
+        fontSize: 13,
+      }}
+      title={inScope
+        ? `DHL self-clearance (Path A) state — operator controls on Windows Atlas`
+        : `Not on Path A self-clearance — pill informational only`}
+    >
+      <span style={{ fontWeight: 600 }}>Self-clearance:</span>
+      <span
+        style={{
+          display: 'inline-block',
+          padding: '2px 8px',
+          borderRadius: 12,
+          background: color,
+          color: '#fff',
+          fontFamily: 'monospace',
+          fontSize: 12,
+        }}
+      >
+        {state}
+      </span>
+      {inScope && shadow === true && (
+        <span style={{ color: '#6b7280', fontSize: 12 }}>(shadow)</span>
+      )}
+      {inScope && shadow === false && (
+        <span style={{ color: '#16a34a', fontSize: 12 }}>(live)</span>
+      )}
+      {!inScope && (
+        <span style={{ color: '#9ca3af', fontSize: 12 }}>(not Path A)</span>
+      )}
+    </div>
+  );
+}
+
+// ── B0.X R3 — Contractor Resolution panel ─────────────────────────────────
+//
+// Operator-facing UI for the packing-list contractor resolver (PR #161 +
+// #162). Reads + writes ONLY the new
+//   GET  /api/v1/packing/{batch_id}/contractor-resolution
+//   POST /api/v1/packing/{batch_id}/contractor-resolution
+//   POST /api/v1/packing/{batch_id}/contractor-resolution/confirm
+// routes. Never calls wFirma. Never touches proforma / PZ / DHL / customs /
+// finance. "Create new" stays disabled until a separate confirm-modal
+// batch is approved.
+
+function ContractorResolutionRoleCard({
+  batchId, role, label, suggestedSource, onToast,
+}) {
+  const [verdict, setVerdict]   = React.useState(null);   // null | persisted row
+  const [loading, setLoading]   = React.useState(false);
+  const [busy, setBusy]         = React.useState(false);
+  const [error, setError]       = React.useState(null);
+  const [chosenId, setChosenId] = React.useState("");
+
+  // Load on mount + when batchId or role changes.
+  React.useEffect(() => {
+    if (!batchId) return;
+    let alive = true;
+    setLoading(true); setError(null);
+    apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/contractor-resolution/${role}`)
+      .then(d => { if (alive) { setVerdict(d); setChosenId(d.matched_master_id ? String(d.matched_master_id) : ""); } })
+      .catch(e => {
+        if (!alive) return;
+        // 404 just means nothing resolved yet — not an error to display.
+        if (/\b404\b/.test(String(e.message || ""))) {
+          setVerdict(null);
+        } else {
+          setError(e.message || String(e));
+        }
+      })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [batchId, role]);
+
+  const reload = React.useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const d = await apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/contractor-resolution/${role}`);
+      setVerdict(d);
+      setChosenId(d.matched_master_id ? String(d.matched_master_id) : "");
+    } catch (e) {
+      if (/\b404\b/.test(String(e.message || ""))) setVerdict(null);
+      else setError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [batchId, role]);
+
+  const resolveNow = async () => {
+    const parsed_name    = window.prompt(
+      `Parsed ${label} name (from packing list / filename):`,
+      (suggestedSource && suggestedSource[role]) || ""
+    );
+    if (!parsed_name) return;
+    const parsed_country = window.prompt(`Parsed country (ISO alpha-2, optional):`, "") || "";
+    setBusy(true); setError(null);
+    try {
+      const body = { role, parsed_name, parsed_country };
+      const r = await apiFetch(
+        `/api/v1/packing/${encodeURIComponent(batchId)}/contractor-resolution`,
+        { method: "POST", headers: { "X-Operator-User": "dashboard" }, body: JSON.stringify(body) },
+      );
+      setVerdict(r);
+      setChosenId(r.matched_master_id ? String(r.matched_master_id) : "");
+      onToast && onToast(`${label} resolver: ${r.status} (tier ${r.tier})`, "success");
+    } catch (e) {
+      setError(e.message || String(e));
+      onToast && onToast(`${label} resolve failed: ${e.message || e}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmOrOverride = async () => {
+    if (!verdict) return;
+    setBusy(true); setError(null);
+    try {
+      const body = { role };
+      // If operator picked a candidate different from the auto match,
+      // attach the override fields so the route flips status to 'overridden'.
+      const currentMatchId = verdict.matched_master_id ? String(verdict.matched_master_id) : "";
+      if (chosenId && chosenId !== currentMatchId) {
+        const cand = (verdict.candidates || []).find(c => String(c.master_id) === chosenId);
+        if (cand) {
+          body.matched_master_type = cand.master_type;
+          body.matched_master_id   = cand.master_id;
+          body.matched_wfirma_id   = cand.wfirma_id;
+        }
+      }
+      const r = await apiFetch(
+        `/api/v1/packing/${encodeURIComponent(batchId)}/contractor-resolution/confirm`,
+        { method: "POST", headers: { "X-Operator-User": "dashboard" }, body: JSON.stringify(body) },
+      );
+      setVerdict(r);
+      onToast && onToast(`${label} ${r.status}` + (r.operator_override ? " (override)" : ""), "success");
+    } catch (e) {
+      setError(e.message || String(e));
+      onToast && onToast(`${label} confirm failed: ${e.message || e}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Visual styles for status badge.
+  const statusStyle = (s) => {
+    const map = {
+      auto:        { bg: 'var(--badge-blue-bg)',  fg: 'var(--badge-blue-text)',  brd: 'var(--badge-blue-border)' },
+      unresolved:  { bg: 'var(--badge-red-bg)',   fg: 'var(--badge-red-text)',   brd: 'var(--badge-red-border)' },
+      confirmed:   { bg: 'var(--badge-green-bg)', fg: 'var(--badge-green-text)', brd: 'var(--badge-green-border)' },
+      overridden:  { bg: 'var(--badge-amber-bg)', fg: 'var(--badge-amber-text)', brd: 'var(--badge-amber-border)' },
+    };
+    return map[s] || { bg: 'var(--badge-neutral-bg)', fg: 'var(--badge-neutral-text)', brd: 'var(--badge-neutral-border)' };
+  };
+
+  return (
+    <div data-testid={`contractor-resolution-${role}-card`}
+      data-status={verdict ? verdict.status : 'none'}
+      style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8,
+        background: 'var(--card)', marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <div style={{ flex: 1, fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>
+          {label} role
+        </div>
+        {verdict && (() => {
+          const st = statusStyle(verdict.status);
+          return (
+            <span data-testid={`contractor-resolution-${role}-status`}
+              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px',
+                borderRadius: 10, background: st.bg, color: st.fg,
+                border: `1px solid ${st.brd}`, letterSpacing: '0.04em',
+                textTransform: 'uppercase' }}>
+              {verdict.status}
+            </span>
+          );
+        })()}
+        {verdict && (
+          <span data-testid={`contractor-resolution-${role}-tier`}
+            style={{ fontSize: 10, color: 'var(--text-3)' }}>
+            tier {verdict.tier} · conf {Number(verdict.confidence || 0).toFixed(2)}
+          </span>
+        )}
+      </div>
+
+      {loading && (
+        <div data-testid={`contractor-resolution-${role}-loading`}
+          style={{ padding: 8, fontSize: 11, color: 'var(--text-3)' }}>Loading…</div>
+      )}
+      {error && (
+        <div data-testid={`contractor-resolution-${role}-error`}
+          style={{ padding: 8, fontSize: 11, color: 'var(--badge-red-text)',
+            background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+            borderRadius: 6 }}>{error}</div>
+      )}
+
+      {!loading && !verdict && (
+        <div data-testid={`contractor-resolution-${role}-empty`}
+          style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+          No resolution stored yet. Click <strong>Resolve</strong> to match the
+          packing list {label.toLowerCase()} against the local master cache.
+        </div>
+      )}
+
+      {verdict && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 11, color: 'var(--text-2)', marginBottom: 8 }}>
+          <div>
+            <div style={{ fontSize: 9, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>parsed</div>
+            <div data-testid={`contractor-resolution-${role}-parsed-name`} style={{ fontWeight: 600 }}>
+              {verdict.parsed_name || '—'}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)' }}>
+              {[verdict.parsed_country, verdict.parsed_tax_id].filter(Boolean).join(' · ') || '—'}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 9, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>matched</div>
+            <div data-testid={`contractor-resolution-${role}-matched`} style={{ fontWeight: 600 }}>
+              {(verdict.candidates || []).find(c => String(c.master_id) === String(verdict.matched_master_id))
+                ?.display_name || (verdict.matched_master_id ? `#${verdict.matched_master_id}` : '—')}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)' }}>
+              {verdict.matched_master_type || '—'}
+              {verdict.matched_wfirma_id && <span> · wFirma {verdict.matched_wfirma_id}</span>}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)' }}>reason: {verdict.reason || '—'}</div>
+          </div>
+        </div>
+      )}
+
+      {verdict && (verdict.candidates || []).length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 9, color: 'var(--text-3)', textTransform: 'uppercase',
+            letterSpacing: '0.04em', marginBottom: 4 }}>Override (pick from candidates)</div>
+          <select data-testid={`contractor-resolution-${role}-override`}
+            value={chosenId} onChange={e => setChosenId(e.target.value)}
+            style={{ width: '100%', padding: '5px 8px', fontSize: 11, fontFamily: 'inherit',
+              background: 'var(--bg-subtle)', color: 'var(--text)',
+              border: '1px solid var(--border)', borderRadius: 4 }}>
+            <option value="">— Keep automatic match —</option>
+            {(verdict.candidates || []).map((c, i) => (
+              <option key={c.master_id || i} value={String(c.master_id || '')}>
+                {c.display_name || `#${c.master_id}`} · {c.country || '?'}
+                {c.score != null ? ` · score ${c.score}` : ''}
+                {c.wfirma_id ? ` · wFirma ${c.wfirma_id}` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button data-testid={`contractor-resolution-${role}-resolve-btn`}
+          disabled={busy || loading || !batchId}
+          onClick={resolveNow}
+          style={{ padding: '5px 10px', fontSize: 11, fontWeight: 600,
+            background: 'var(--accent)', color: '#fff',
+            border: 'none', borderRadius: 6,
+            cursor: (busy || loading || !batchId) ? 'not-allowed' : 'pointer',
+            opacity: (busy || loading || !batchId) ? 0.5 : 1, fontFamily: 'inherit' }}>
+          {busy ? '…' : 'Resolve'}
+        </button>
+        <button data-testid={`contractor-resolution-${role}-confirm-btn`}
+          disabled={busy || loading || !verdict}
+          onClick={confirmOrOverride}
+          title={!verdict ? 'No resolution to confirm yet' : ''}
+          style={{ padding: '5px 10px', fontSize: 11, fontWeight: 600,
+            background: 'var(--bg-subtle)', color: 'var(--text)',
+            border: '1px solid var(--accent)', borderRadius: 6,
+            cursor: (busy || loading || !verdict) ? 'not-allowed' : 'pointer',
+            opacity: (busy || loading || !verdict) ? 0.5 : 1, fontFamily: 'inherit' }}>
+          {chosenId && verdict && chosenId !== (verdict.matched_master_id ? String(verdict.matched_master_id) : '')
+            ? 'Override'
+            : 'Use this match'}
+        </button>
+        {verdict && verdict.matched_master_id && (
+          <button data-testid={`contractor-resolution-${role}-open-master-btn`}
+            onClick={() => {
+              const tip = role === 'client'
+                ? 'Open Master Data → Client Master → row id ' + verdict.matched_master_id
+                : 'Open Master Data → Suppliers → row id ' + verdict.matched_master_id;
+              onToast && onToast(tip, 'info');
+            }}
+            style={{ padding: '5px 10px', fontSize: 11, background: 'var(--card)',
+              color: 'var(--text-2)', border: '1px solid var(--border)', borderRadius: 6,
+              cursor: 'pointer', fontFamily: 'inherit' }}>
+            Open {role === 'client' ? 'Client Master' : 'Supplier Master'}
+          </button>
+        )}
+        <button data-testid={`contractor-resolution-${role}-create-new-btn`}
+          disabled
+          title={`To add a new ${role === 'client' ? 'client' : 'supplier'}: create the contractor record in wFirma (Contractors menu → New contractor), then click Resolve above to find it by name.`}
+          style={{ padding: '5px 10px', fontSize: 11, background: 'var(--card)',
+            color: 'var(--text-3)', border: '1px dashed var(--border)', borderRadius: 6,
+            cursor: 'not-allowed', fontFamily: 'inherit', opacity: 0.6 }}>
+          + Create new (disabled — create in wFirma first)
+        </button>
+      </div>
+
+      {verdict && verdict.status === 'unresolved' && (
+        <div data-testid={`contractor-resolution-${role}-unresolved-warning`}
+          style={{ marginTop: 8, padding: '6px 10px', fontSize: 11,
+            background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
+            border: '1px solid var(--badge-amber-border)', borderRadius: 6 }}>
+          Operator must pick a candidate (or create the master row separately)
+          before proforma / PZ can use this {label.toLowerCase()}.
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function ContractorResolutionPanel({ batchId, packingInfo }) {
+  // Pre-fill the resolve prompt with whatever the existing packing parser
+  // suggested for the client. The supplier side has no parser today —
+  // operator types it in manually.
+  const suggested = React.useMemo(() => {
+    const docs = (packingInfo && packingInfo.documents) || [];
+    const first = docs[0] || {};
+    return { client: first.suggested_client_name || '', supplier: '' };
+  }, [packingInfo]);
+
+  if (!batchId) return null;
+
+  return (
+    <Card data-testid="contractor-resolution-panel" style={{ marginTop: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
+            🧭 Contractor resolution
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+            Match the packing-list contractors against the local Client / Supplier
+            Master cache. Read-only against wFirma. No automatic create.
+          </div>
+        </div>
+      </div>
+      <ContractorResolutionRoleCard
+        batchId={batchId} role="client" label="Client"
+        suggestedSource={suggested}
+        onToast={(msg, kind) => { /* parent toast already exists via packing parent */ }}
+      />
+      <ContractorResolutionRoleCard
+        batchId={batchId} role="supplier" label="Supplier"
+        suggestedSource={suggested}
+        onToast={(msg, kind) => { /* parent toast */ }}
+      />
+    </Card>
+  );
+}
+
+
+function BatchDetailPage({ batchId, onBack, onToast }) {
+  const [audit, setAudit] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [err, setErr] = React.useState('');
+  const [activeTab, setActiveTab] = React.useState('Overview');
+  const [timeline, setTimeline] = React.useState([]);
+  const [busy, setBusy] = React.useState({});
+  const [pzNumber, setPzNumber] = React.useState('');
+  const [confirmingPz, setConfirmingPz] = React.useState(false);
+  const [pzPreview, setPzPreview] = React.useState(null);           // BatchBuildResult from pz_preview
+  const [pzPreviewLoading, setPzPreviewLoading] = React.useState(false);
+  const [pzCreateBusy, setPzCreateBusy] = React.useState(false);
+  const [pzCreateResult, setPzCreateResult] = React.useState(null); // {status, wfirma_pz_doc_id, ...}
+  const [pzCreateConfirm, setPzCreateConfirm] = React.useState(false);
+  const [pzAdoptInput, setPzAdoptInput] = React.useState('');       // doc id or number typed by user
+  const [pzAdoptBusy, setPzAdoptBusy] = React.useState(false);
+  const [pzAdoptResult, setPzAdoptResult] = React.useState(null);   // {status, wfirma_pz_doc_id, ...}
+  const [pzAdoptOpen, setPzAdoptOpen] = React.useState(false);      // toggle adopt panel
+  const [pzDocumentData, setPzDocumentData] = React.useState(null); // null | fetched PZ doc
+  const [pzDocumentLoading, setPzDocumentLoading] = React.useState(false);
+  const [pzDocumentOpen, setPzDocumentOpen] = React.useState(false);
+  // per-client proforma doc state: { [client_name]: { data, loading, open } }
+  const [proformaDocState, setProformaDocState] = React.useState({});
+  // per-client manual Proforma→Invoice conversion state
+  // { [client_name]: { previewLoading, preview, error, confirmToken,
+  //                    executing, result, open } }
+  const [convertState, setConvertState] = React.useState({});
+  const [scanResult, setScanResult] = React.useState(null);          // DHL inbox scan response
+  const [confirmingMarkRec, setConfirmingMarkRec] = React.useState(false);
+  const _markRecDefaults = { sender: 'odprawacelna@dhl.com', subject: '', ticket: '', request_type: 'unknown', note: '' };
+  const [markRecFields, setMarkRecFields] = React.useState(_markRecDefaults);
+  const [replyStatus, setReplyStatus] = React.useState(null);   // live delivery check result
+  const [recheckBusy, setRecheckBusy] = React.useState(false);
+  const [recheckPanel, setRecheckPanel] = React.useState(null); // null | result object
+  const [trackingData, setTrackingData] = React.useState(null); // null | tracking API result
+  const [trackingBusy, setTrackingBusy] = React.useState(false);
+  const [dbEvents, setDbEvents] = React.useState([]);           // DB tracking events
+  const [intelData, setIntelData] = React.useState(null);       // null | per-batch intel response
+  const [intelLoading, setIntelLoading] = React.useState(false);
+  const [proposals, setProposals] = React.useState([]);          // action proposals list
+  const [proposalsBusy, setProposalsBusy] = React.useState({});  // proposal_id → bool
+  const [proposalsLoading, setProposalsLoading] = React.useState(false);
+  const [warehouseAudit, setWarehouseAudit] = React.useState(null);    // null | full audit response
+  const [warehouseAuditLoading, setWarehouseAuditLoading] = React.useState(false);
+  const [salesLinkage, setSalesLinkage] = React.useState(null);        // null | linkage response
+  const [salesLinkageLoading, setSalesLinkageLoading] = React.useState(false);
+  const [reservationPreview, setReservationPreview] = React.useState(null);
+  const [reservationPreviewLoading, setReservationPreviewLoading] = React.useState(false);
+  // Phase 3.A: per-client live create state
+  const [createConfirm, setCreateConfirm] = React.useState(null); // null | { client_name, doc }
+  const [createBusy, setCreateBusy] = React.useState(false);
+  const [createResults, setCreateResults] = React.useState({});   // client_name → {ok, code, error, wfirma_reservation_id}
+  const [docRegistry, setDocRegistry] = React.useState(null);          // null | response
+  const [docRegistryLoading, setDocRegistryLoading] = React.useState(false);
+  const [expandedDocId, setExpandedDocId] = React.useState(null);
+  // Post-draft "+ Add Document" modal: backed by the live endpoint
+  // POST /api/v1/shipment/{batch}/add-document.
+  const [addDocOpen, setAddDocOpen] = React.useState(false);
+  // P1 parser observability: which Packing List row's diagnostic is expanded.
+  const [expandedDiagDocId, setExpandedDiagDocId] = React.useState(null);
+  // P2 "Reparse all" busy + summary state.
+  const [reparseBusy, setReparseBusy]         = React.useState(false);
+  const [reparseSummary, setReparseSummary]   = React.useState('');
+  // LLM column-mapping suggest: null when idle, doc_id string while running.
+  const [llmSuggestBusyDocId, setLlmSuggestBusyDocId] = React.useState(null);
+  const [packingInfo, setPackingInfo] = React.useState(null);            // null | {documents,packing_lines,...}
+  const [packingInfoLoading, setPackingInfoLoading] = React.useState(false);
+  // Lane readiness (sales + purchase) — single read-only banner fetch
+  // attached to the Packing List card lifecycle.  Refetched after
+  // Reparse-all completes.
+  const [laneReadiness, setLaneReadiness] = React.useState(null);
+  const [packingUploading, setPackingUploading] = React.useState(false);
+  // Per-document delete busy tracker: { [doc_id]: true } while DELETE is in-flight.
+  const [packingDeleting, setPackingDeleting] = React.useState({});
+  const [timelineFilter, setTimelineFilter] = React.useState('all'); // 'all' | 'ai_bridge'
+  // Phase 2: batch + DHL readiness (read-only)
+  const [batchReadiness, setBatchReadiness] = React.useState(null);
+  const [batchReadinessLoading, setBatchReadinessLoading] = React.useState(false);
+  const [batchReadinessError, setBatchReadinessError] = React.useState('');
+  const [dhlReadiness, setDhlReadiness] = React.useState(null);
+  const [dhlReadinessLoading, setDhlReadinessLoading] = React.useState(false);
+  const [dhlReadinessError, setDhlReadinessError] = React.useState('');
+  // Phase 4.2: per-batch inventory state strip (read-only)
+  const [invState, setInvState] = React.useState(null);
+  const [invStateLoading, setInvStateLoading] = React.useState(false);
+  const [invStateError, setInvStateError] = React.useState('');
+  // Phase 3.6: decision engine advisory output (read-only, never blocks execution)
+  const [decisionData, setDecisionData] = React.useState(null);
+  const [decisionLoading, setDecisionLoading] = React.useState(false);
+  const sadRef = React.useRef();
+  const dhlDocsRef = React.useRef();
+  const [dhlDocsBusy,   setDhlDocsBusy]   = React.useState(false);
+  const [dhlDocsResult, setDhlDocsResult] = React.useState(null);
+  const [dhlDocsError,  setDhlDocsError]  = React.useState('');
+  const agencyDocsRef = React.useRef();
+  const [agencyDocsBusy,   setAgencyDocsBusy]   = React.useState(false);
+  const [agencyDocsResult, setAgencyDocsResult] = React.useState(null);
+  const [agencyDocsError,  setAgencyDocsError]  = React.useState('');
+  const svcInvoiceRef = React.useRef();
+  const [svcInvoiceBusy,   setSvcInvoiceBusy]   = React.useState(false);
+  const [svcInvoiceResult, setSvcInvoiceResult] = React.useState(null);
+  const [svcInvoiceError,  setSvcInvoiceError]  = React.useState('');
+  const [closureCheck,        setClosureCheck]        = React.useState(null);
+  const [closureCheckLoading, setClosureCheckLoading] = React.useState(false);
+  const [closureCheckError,   setClosureCheckError]   = React.useState('');
+  const [closureConfirmBusy,  setClosureConfirmBusy]  = React.useState(false);
+  const [closureConfirmResult, setClosureConfirmResult] = React.useState(null);
+  const [dhlSendReplyResult,  setDhlSendReplyResult]  = React.useState(null);
+  // Proforma draft pipeline — per-batch lifecycle aggregation.
+  // Fetched once on mount; refreshed after any proforma action via refreshProformaPipeline.
+  const [proformaPipeline,        setProformaPipeline]        = React.useState(null);
+  const [proformaPipelineLoading, setProformaPipelineLoading] = React.useState(false);
+
+  // C25A — Setup-detail panel state was moved to OperatorWorkflowCard
+  // in fix/c25a-regression-cm-scope after a Safari ReferenceError on the
+  // 'cm' variable confirmed the JSX in OperatorWorkflowCard cannot reach
+  // state/handlers declared in BatchDetailPage.  See OperatorWorkflowCard
+  // for setupDetail / setupProductPreview / setupCustomerResolve hooks +
+  // handlers.
+
+  const setBusyKey = (k, v) => setBusy(p => ({ ...p, [k]: v }));
+
+  const load = React.useCallback(async () => {
+    setLoading(true); setErr('');
+    try {
+      const a = await apiFetch(`/dashboard/batches/${encodeURIComponent(batchId)}`);
+      setAudit(a);
+      // Canonical: wfirma_export.wfirma_pz_fullnumber wins. Manual
+      // doc_no remains as a fallback for batches that pre-date the
+      // auto-mapping landing or where the wFirma fetch failed.
+      const canon = (a.wfirma_export || {}).wfirma_pz_fullnumber || '';
+      if (canon)        setPzNumber(canon);
+      else if (a.doc_no) setPzNumber(a.doc_no);
+    } catch (e) { setErr(e.message); }
+    setLoading(false);
+  }, [batchId]);
+
+  const loadTimeline = React.useCallback(async () => {
+    try {
+      const tl = await apiFetch(`/api/v1/tracking/shipment/${encodeURIComponent(batchId)}/timeline`);
+      setTimeline(Array.isArray(tl) ? tl : (tl.timeline || tl.events || []));
+    } catch (e) {}
+  }, [batchId]);
+
+  // C25A — Setup-detail fetch (read-only).
+  // C25A state + handlers moved to OperatorWorkflowCard (see line ~9730+).
+  // Reason: the C25A JSX panel lives inside OperatorWorkflowCard, so its
+  // state and onClick handlers must live there too.  Declaring them in
+  // BatchDetailPage caused a Safari ReferenceError ("Can't find variable:
+  // cm") on render because the JSX references variables from the wrong
+  // lexical scope.
+
+  // Proforma pipeline fetch — lightweight (read-only, no side effects).
+  // Called on mount + after any proforma write action.
+  const refreshProformaPipeline = React.useCallback(async () => {
+    setProformaPipelineLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/proforma/pipeline/${encodeURIComponent(batchId)}`);
+      setProformaPipeline(d);
+    } catch (e) {
+      // Non-fatal — pipeline data is supplemental; UI degrades gracefully.
+      setProformaPipeline(null);
+    }
+    setProformaPipelineLoading(false);
+  }, [batchId]);
+
+  const loadDbEvents = React.useCallback(async () => {
+    try {
+      const res = await apiFetch(`/api/v1/tracking/events/${encodeURIComponent(batchId)}`);
+      setDbEvents(Array.isArray(res.events) ? res.events : []);
+    } catch (e) {}
+  }, [batchId]);
+
+  const fetchTracking = React.useCallback(async (refresh = false) => {
+    // Only fetch if there is an AWB on the audit object
+    const awb = (audit || {}).tracking_no;
+    if (!awb) return;
+    const carr = (audit || {}).carrier || 'DHL';
+    setTrackingBusy(true);
+    try {
+      const url = refresh
+        ? `/api/v1/tracking/${encodeURIComponent(awb)}/refresh?carrier=${encodeURIComponent(carr)}&batch_id=${encodeURIComponent(batchId)}`
+        : `/api/v1/tracking/${encodeURIComponent(awb)}?carrier=${encodeURIComponent(carr)}&batch_id=${encodeURIComponent(batchId)}`;
+      const method = refresh ? 'POST' : 'GET';
+      const td = await apiFetch(url, { method });
+      setTrackingData(td);
+    } catch (e) {
+      // Normalize network-level failures into the same envelope shape used by the backend.
+      const _msg = String(e && e.message || e || 'Network error');
+      const _src = e && e.type === 'auth' ? 'unauthorized' : 'network_error';
+      setTrackingData({
+        available: false, ok: false, source: _src, status: _src,
+        fallback_available: true,
+        message: _src === 'unauthorized'
+          ? 'Session expired or DHL API credential issue.'
+          : 'Could not reach the tracking service.',
+        error: _msg, tracking_url: '',
+      });
+    } finally { setTrackingBusy(false); }
+  }, [batchId, audit]);
+
+  const loadIntelligence = React.useCallback(async () => {
+    setIntelLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/intelligence/suggestions/${encodeURIComponent(batchId)}`);
+      setIntelData(d);
+    } catch (e) { setIntelData({ error: e.message }); }
+    setIntelLoading(false);
+  }, [batchId]);
+
+  const loadProposals = React.useCallback(async () => {
+    setProposalsLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/action-proposals/${encodeURIComponent(batchId)}`);
+      setProposals(d.proposals || []);
+    } catch (e) { setProposals([]); }
+    setProposalsLoading(false);
+  }, [batchId]);
+
+  const loadWarehouseAudit = React.useCallback(async () => {
+    setWarehouseAuditLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/warehouse/audit/${encodeURIComponent(batchId)}`);
+      setWarehouseAudit(d);
+    } catch (e) { setWarehouseAudit({ error: e.message }); }
+    setWarehouseAuditLoading(false);
+  }, [batchId]);
+
+  const loadSalesLinkage = React.useCallback(async () => {
+    setSalesLinkageLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/sales/linkage/${encodeURIComponent(batchId)}?mode=preview`);
+      setSalesLinkage(d);
+    } catch (e) { setSalesLinkage({ error: e.message }); }
+    setSalesLinkageLoading(false);
+  }, [batchId]);
+
+  const loadReservationPreview = React.useCallback(async () => {
+    setReservationPreviewLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/wfirma/reservation-preview/${encodeURIComponent(batchId)}`);
+      setReservationPreview(d);
+    } catch (e) { setReservationPreview({ error: e.message }); }
+    setReservationPreviewLoading(false);
+  }, [batchId]);
+
+  const loadPzPreview = React.useCallback(async () => {
+    setPzPreviewLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_preview`);
+      setPzPreview(d);
+    } catch (e) { setPzPreview({ error: e.message }); }
+    setPzPreviewLoading(false);
+  }, [batchId]);
+
+  const resolveProducts = React.useCallback(async () => {
+    setBusyKey('pzResolve', true);
+    try {
+      await apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/products/resolve`, { method: 'POST' });
+      onToast('Products resolved — refreshing preview…', 'success');
+      await loadPzPreview();
+    } catch (e) { onToast('Resolve failed: ' + e.message, 'error'); }
+    setBusyKey('pzResolve', false);
+  }, [batchId, onToast, loadPzPreview]);
+
+  const submitPzCreate = React.useCallback(async () => {
+    setPzCreateBusy(true);
+    setPzCreateConfirm(false);
+    try {
+      const _op = _resolveOperator();
+      const _hdrs = _op ? { 'X-Operator': _op } : {};
+      const d = await apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_create`,
+                               { method: 'POST', headers: _hdrs });
+      setPzCreateResult(d);
+      onToast(`wFirma PZ created: ${d.wfirma_pz_doc_id}`, 'success');
+      await loadPzPreview();
+    } catch (e) {
+      let body = { status: 'failed', error: e.message };
+      try { body = JSON.parse((e.message || '').split(': ').slice(1).join(': ')) || body; } catch {}
+      setPzCreateResult(body);
+      onToast('PZ create failed: ' + (body.error || e.message), 'error');
+    }
+    setPzCreateBusy(false);
+  }, [batchId, onToast, loadPzPreview]);
+
+  const submitPzAdopt = React.useCallback(async () => {
+    const val = pzAdoptInput.trim();
+    if (!val) { onToast('Enter a PZ doc ID or document number first', 'error'); return; }
+    // Heuristic: if it looks like all digits → pz_doc_id, otherwise pz_number
+    const isNumericId = /^\d+$/.test(val);
+    const payload = isNumericId ? { pz_doc_id: val } : { pz_number: val };
+    setPzAdoptBusy(true);
+    try {
+      const _op = _resolveOperator();
+      const _adoptHdrs = { 'Content-Type': 'application/json',
+                           ...(_op ? { 'X-Operator': _op } : {}) };
+      const d = await apiFetch(
+        `/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_adopt`,
+        { method: 'POST', headers: _adoptHdrs, body: JSON.stringify(payload) },
+      );
+      setPzAdoptResult(d);
+      if (d.status === 'adopted' || d.status === 'already_adopted') {
+        onToast(`PZ adopted: ${d.wfirma_pz_doc_id}`, 'success');
+        setPzAdoptOpen(false);
+        await loadPzPreview();
+      } else {
+        const reason = (d.blocking_reasons || []).join('; ') || d.error || 'blocked';
+        onToast('PZ adopt blocked: ' + reason, 'error');
+      }
+    } catch (e) {
+      onToast('PZ adopt error: ' + e.message, 'error');
+    }
+    setPzAdoptBusy(false);
+  }, [batchId, pzAdoptInput, onToast, loadPzPreview]);
+
+  const loadPzDocument = React.useCallback(async () => {
+    setPzDocumentLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_document`);
+      setPzDocumentData(d);
+      setPzDocumentOpen(true);
+    } catch (e) {
+      onToast('PZ document fetch failed: ' + e.message, 'error');
+    }
+    setPzDocumentLoading(false);
+  }, [batchId, onToast]);
+
+  const loadProformaDocument = React.useCallback(async (clientName) => {
+    setProformaDocState(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), loading: true } }));
+    try {
+      const d = await apiFetch(`/api/v1/proforma/${encodeURIComponent(batchId)}/${encodeURIComponent(clientName)}/document`);
+      setProformaDocState(prev => ({ ...prev, [clientName]: { data: d, loading: false, open: true } }));
+    } catch (e) {
+      // C14A: PROFORMA_NOT_LINKED is a normal empty state (draft exists, not yet posted).
+      // Store structured error so the panel can show a helpful message instead of silence.
+      const isNotLinked = e && (e.code === 'PROFORMA_NOT_LINKED' ||
+                                 (e.message && e.message.includes('PROFORMA_NOT_LINKED')));
+      setProformaDocState(prev => ({
+        ...prev,
+        [clientName]: {
+          ...(prev[clientName] || {}),
+          loading: false,
+          open: true,
+          error: isNotLinked ? 'not_linked' : (e.message || 'fetch_failed'),
+        },
+      }));
+      if (!isNotLinked) onToast(`Proforma fetch failed for ${clientName}: ` + e.message, 'error');
+    }
+  }, [batchId, onToast]);
+
+  // ── Manual Proforma → Invoice conversion (two-step flow) ──────────────
+  // Step A: load preview. Never calls wFirma create. Result shape:
+  //   { ok, status: 'preview', summary, plan_xml, warning } on success
+  //   or                  'blocked' with blocking_reasons[].
+  const loadConvertPreview = React.useCallback(async (clientName) => {
+    setConvertState(prev => ({
+      ...prev,
+      [clientName]: { ...(prev[clientName] || {}),
+                      previewLoading: true, error: null, open: true },
+    }));
+    try {
+      const d = await apiFetch(
+        `/api/v1/proforma/to-invoice-preview/${encodeURIComponent(batchId)}/${encodeURIComponent(clientName)}`
+      );
+      setConvertState(prev => ({
+        ...prev,
+        [clientName]: { ...(prev[clientName] || {}),
+                        previewLoading: false, preview: d,
+                        confirmToken: '', result: null, open: true },
+      }));
+    } catch (e) {
+      setConvertState(prev => ({
+        ...prev,
+        [clientName]: { ...(prev[clientName] || {}),
+                        previewLoading: false,
+                        error: e.message, open: true },
+      }));
+      onToast(`Convert preview failed for ${clientName}: ` + e.message, 'error');
+    }
+  }, [batchId, onToast]);
+
+  // Step B: execute conversion. Operator MUST have typed the confirm
+  // token AND clicked the button explicitly. Never auto-fired.
+  const executeConvert = React.useCallback(async (clientName) => {
+    const st = convertState[clientName] || {};
+    if (!st.preview || st.preview.status !== 'preview') {
+      onToast('Preview must succeed before converting', 'error'); return;
+    }
+    const token = (st.confirmToken || '').trim();
+    if (token !== 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA') {
+      onToast('Type the exact confirm token to convert', 'error'); return;
+    }
+    const operator = (localStorage.getItem('pz_operator_name') || '').trim();
+    if (!operator) {
+      onToast('Set X-Operator (pz_operator_name) before converting', 'error'); return;
+    }
+    setConvertState(prev => ({
+      ...prev,
+      [clientName]: { ...(prev[clientName] || {}),
+                      executing: true, error: null },
+    }));
+    try {
+      const r = await fetch(
+        `/api/v1/proforma/to-invoice/${encodeURIComponent(batchId)}/${encodeURIComponent(clientName)}`,
+        { method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json',
+                     'X-Operator': operator },
+          body: JSON.stringify({ confirm: token }) }
+      );
+      const data = await r.json();
+      if (!r.ok || data.ok !== true) {
+        throw new Error(
+          (data.blocking_reasons && data.blocking_reasons.join('; '))
+          || data.error || `HTTP ${r.status}`
+        );
+      }
+      setConvertState(prev => ({
+        ...prev,
+        [clientName]: { ...(prev[clientName] || {}),
+                        executing: false, result: data, error: null },
+      }));
+      onToast(`Invoice ${data.wfirma_invoice_number} issued`, 'success');
+    } catch (e) {
+      setConvertState(prev => ({
+        ...prev,
+        [clientName]: { ...(prev[clientName] || {}),
+                        executing: false, error: e.message },
+      }));
+      onToast(`Convert failed for ${clientName}: ` + e.message, 'error');
+    }
+  }, [batchId, convertState, onToast]);
+
+  const submitReservation = React.useCallback(async (clientName) => {
+    setCreateBusy(true);
+    try {
+      const d = await apiFetch('/api/v1/execute/wfirma_create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batch_id: batchId, payload: { client_name: clientName } }),
+      });
+      if (!d.ok) {
+        // Engine returns 200 with ok=false for blocked/skipped — treat as soft error
+        const reason = d.reason || d.error || 'blocked';
+        setCreateResults(prev => ({ ...prev, [clientName]: d }));
+        onToast(`Create blocked for ${clientName}: ${reason}`, 'error');
+      } else if (d.status === 'skipped') {
+        setCreateResults(prev => ({ ...prev, [clientName]: d }));
+        onToast(`Reservation already exists for ${clientName}`, 'info');
+        await Promise.all([loadReservationPreview(), loadBatchReadiness(), loadDecision()]);
+      } else {
+        setCreateResults(prev => ({ ...prev, [clientName]: d }));
+        onToast(`Reservation created for ${clientName} (${d.wfirma_reservation_id})`, 'success');
+        await Promise.all([loadReservationPreview(), loadBatchReadiness(), loadDecision()]);
+      }
+    } catch (e) {
+      // apiFetch throws on non-2xx — extract structured payload if available
+      let body = { ok: false, code: 'CLIENT_ERROR', error: e.message };
+      try { body = JSON.parse((e.message || '').split(': ').slice(1).join(': ')) || body; } catch {}
+      setCreateResults(prev => ({ ...prev, [clientName]: body }));
+      onToast(`Create failed for ${clientName}: ${body.error || e.message}`, 'error');
+    }
+    setCreateBusy(false);
+    setCreateConfirm(null);
+  }, [batchId, onToast, loadReservationPreview, loadBatchReadiness, loadDecision]);
+
+  const loadDocRegistry = React.useCallback(async () => {
+    setDocRegistryLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/documents`);
+      setDocRegistry(d);
+    } catch (e) { setDocRegistry({ error: e.message }); }
+    setDocRegistryLoading(false);
+  }, [batchId]);
+
+  const loadPackingInfo = React.useCallback(async () => {
+    setPackingInfoLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}`);
+      setPackingInfo(d);
+    } catch (e) { setPackingInfo({ error: e.message }); }
+    setPackingInfoLoading(false);
+  }, [batchId]);
+
+  // Lane readiness — read-only, attached to Packing List card lifecycle.
+  const loadLaneReadiness = React.useCallback(async () => {
+    try {
+      const d = await apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/lane-readiness`);
+      setLaneReadiness(d);
+    } catch (e) { setLaneReadiness({ error: e.message }); }
+  }, [batchId]);
+
+  // Phase 2 — read-only readiness loaders (no side effects)
+  const loadBatchReadiness = React.useCallback(async () => {
+    setBatchReadinessLoading(true); setBatchReadinessError('');
+    try {
+      const d = await apiFetch(`/api/v1/batch/${encodeURIComponent(batchId)}/readiness`);
+      setBatchReadiness(d);
+    } catch (e) { setBatchReadinessError(e.message || 'Failed to load'); }
+    setBatchReadinessLoading(false);
+  }, [batchId]);
+
+  const loadDhlReadiness = React.useCallback(async () => {
+    setDhlReadinessLoading(true); setDhlReadinessError('');
+    try {
+      const d = await apiFetch(`/api/v1/dhl/readiness/${encodeURIComponent(batchId)}`);
+      setDhlReadiness(d);
+    } catch (e) { setDhlReadinessError(e.message || 'Failed to load'); }
+    setDhlReadinessLoading(false);
+  }, [batchId]);
+
+  // ── Centralised refresh dispatcher ───────────────────────────────────
+  // Single source of truth for "what reloads after operator action X".
+  // Replaces scattered ad-hoc refresh calls that previously missed
+  // downstream consumers (DHL readiness, lane readiness, sales linkage,
+  // wFirma previews, batch readiness).
+  //
+  // Scopes:
+  //   'add_document' — Add Document modal upload completed.
+  //   'reparse'      — Reparse-all completed.
+  //   'awb'          — AWB-specific (currently same as add_document).
+  //
+  // Each loader is best-effort; one failing does not stop the others.
+  // Read-only fetches — no writes, no execution paths.
+  const refreshAll = React.useCallback((scope) => {
+    const fns = [
+      load,
+      loadDocRegistry,
+      loadPackingInfo,
+      loadLaneReadiness,
+      loadDhlReadiness,
+      loadBatchReadiness,
+      loadSalesLinkage,
+      loadReservationPreview,
+      loadPzPreview,
+      loadWarehouseAudit,
+    ];
+    for (const fn of fns) {
+      try { if (typeof fn === 'function') fn(); }
+      catch (_) { /* loader-internal failure already surfaces via state */ }
+    }
+  }, [
+    load, loadDocRegistry, loadPackingInfo, loadLaneReadiness,
+    loadDhlReadiness, loadBatchReadiness, loadSalesLinkage,
+    loadReservationPreview, loadPzPreview, loadWarehouseAudit,
+  ]);
+
+  // Phase 4.2: per-batch inventory state (GET /api/v1/inventory/state/{batch_id})
+  const loadInvState = React.useCallback(async () => {
+    setInvStateLoading(true); setInvStateError('');
+    try {
+      const d = await apiFetch(`/api/v1/inventory/state/${encodeURIComponent(batchId)}`);
+      setInvState(d);
+    } catch (e) { setInvStateError(e.message || 'Failed to load'); }
+    setInvStateLoading(false);
+  }, [batchId]);
+
+  // Phase 3.6: fetch decision advisory (GET only — read, no writes)
+  const loadDecision = React.useCallback(async () => {
+    setDecisionLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/agents/decision/${encodeURIComponent(batchId)}`);
+      setDecisionData(d);
+    } catch (e) { /* decision is advisory — silently absorb errors */ }
+    setDecisionLoading(false);
+  }, [batchId]);
+
+  const proposalAction = async (proposalId, action, body) => {
+    setProposalsBusy(p => ({ ...p, [proposalId]: true }));
+    try {
+      await apiFetch(`/api/v1/action-proposals/${encodeURIComponent(proposalId)}/${action}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      onToast(`Proposal ${action}d.`, 'success');
+      await loadProposals();
+    } catch (e) { onToast(e.message || `Failed to ${action}`, 'error'); }
+    setProposalsBusy(p => ({ ...p, [proposalId]: false }));
+  };
+
+  React.useEffect(() => { load(); loadTimeline(); loadDbEvents(); refreshProformaPipeline(); }, [batchId]);
+  // Fetch tracking once the audit loads (audit is needed for tracking_no)
+  React.useEffect(() => { if (audit) fetchTracking(); }, [audit?.tracking_no]);
+  // Fetch intelligence when tab is activated
+  React.useEffect(() => { if (activeTab === 'Intelligence' && !intelData) loadIntelligence(); }, [activeTab]);
+  // Fetch proposals when tab is activated
+  React.useEffect(() => { if (activeTab === 'Proposals') loadProposals(); }, [activeTab]);
+  // Fetch warehouse audit when tab is activated
+  React.useEffect(() => { if (activeTab === 'Warehouse' && !warehouseAudit) loadWarehouseAudit(); }, [activeTab]);
+  // UI-3.4: Pipeline Summary on the batch overview tab consumes
+  // warehouseAudit for the Warehouse lifecycle pill. Trigger the same
+  // existing load when entering the overview view (no new endpoint —
+  // just earlier activation). A separate useEffect (not merged into
+  // the Warehouse one above) so prior tab-locator tests that count
+  // literal tab-equality substrings in dashboard.html are unaffected.
+  React.useEffect(() => {
+    if (activeTab && activeTab.toLowerCase() === 'overview' && !warehouseAudit) {
+      loadWarehouseAudit();
+    }
+  }, [activeTab]);
+  // Fetch sales linkage when tab is activated
+  React.useEffect(() => { if (activeTab === 'Sales' && !salesLinkage) loadSalesLinkage(); }, [activeTab]);
+  // Fetch wFirma reservation preview and PZ preview when tab is activated
+  React.useEffect(() => {
+    if (activeTab === 'PZ / Accounting') {
+      if (!reservationPreview) loadReservationPreview();
+      if (!pzPreview) loadPzPreview();
+    }
+  }, [activeTab]);
+  // Fetch document registry when Documents tab is activated
+  React.useEffect(() => { if (activeTab === 'Documents' && !docRegistry) loadDocRegistry(); }, [activeTab]);
+  // Fetch packing info when Documents tab is activated
+  React.useEffect(() => { if (activeTab === 'Documents' && !packingInfo) loadPackingInfo(); }, [activeTab]);
+  React.useEffect(() => { if (activeTab === 'Documents' && !laneReadiness) loadLaneReadiness(); }, [activeTab]);
+  // Phase 2: fetch batch readiness on mount (Pipeline tab shows OverallReadinessCard)
+  // Phase 3.6: also fetch decision advisory on mount — runs alongside readiness, never blocks
+  React.useEffect(() => { loadBatchReadiness(); loadDecision(); loadInvState(); }, [batchId]);
+  // Phase 2: fetch DHL readiness when DHL tab is activated
+  React.useEffect(() => { if (activeTab === 'DHL / Customs' && !dhlReadiness) loadDhlReadiness(); }, [activeTab]);
+
+  const doAction = async (key, label, fn) => {
+    setBusyKey(key, true);
+    onToast(`Running: ${label}…`, 'info');
+    try {
+      await fn();
+      onToast(`${label} completed.`, 'success');
+      await load();
+    } catch (e) {
+      onToast(`${label} failed: ${e.message}`, 'error');
+    } finally { setBusyKey(key, false); }
+  };
+
+  if (loading) return (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-3)', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 32, animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</div>
+      <div style={{ fontSize: 13 }}>Loading shipment…</div>
+    </div>
+  );
+
+  if (err) return (
+    <div style={{ flex: 1, padding: 40 }}>
+      <div style={{ padding: 16, borderRadius: 8, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', color: 'var(--badge-red-text)', fontSize: 13, marginBottom: 16 }}>{err}</div>
+      <Btn variant="outline" onClick={load}>↻ Retry</Btn>
+    </div>
+  );
+  if (!audit) return null;
+
+  const t = audit.totals || {};
+  const inp = audit.inputs || {};
+  const ver = audit.verification || {};
+  const _fd_raw = audit.files_detail || {};
+  const fd = _fd_raw.files || _fd_raw || {};
+  const sf = audit.source_files || _fd_raw.source_files || {};
+  const status = audit.status || 'unknown';
+  // Action layout: v2 global panel removed in favour of per-section actions
+  // owned by each Section card. The flag is preserved (default OFF) so the
+  // legacy global ActionsV2Panel and its rendering branches stay dead unless
+  // explicitly re-enabled with ?actions_v2=1 for debugging. Informational
+  // sections (shipment info, customs values, PZ totals, tracking, audit
+  // notes) are unaffected and always visible.
+  const v2Active = new URLSearchParams(window.location.search).get('actions_v2') === '1';
+  const trackingNo = audit.tracking_no || '';
+  const carrier = audit.carrier || 'Unknown';
+  const mrn = inp.zc429_mrn || audit.mrn || '—';
+  const dhlClearance = audit.clearance_status || '';
+  const hasSad = !!(inp.zc429) || ['sad_uploaded','customs_parsed','customs_verified','verification_needed'].includes(audit.sad_status);
+  const pzGenerated = !!(fd.pz_pdf?.exists);
+
+  // Phase 3.6: decision advisory helpers — visual-only, never gate execution
+  const isPrimaryAction = (label) => !!(decisionData && decisionData.primary_action && decisionData.primary_action === label);
+  const topProposalId = (decisionData && decisionData.all_actions && decisionData.all_actions.length > 0)
+    ? (decisionData.all_actions[0].proposal_id || null) : null;
+  const wfirmaPrimary = !!(decisionData && decisionData.status === 'action_required' && (
+    isPrimaryAction('Create Reservation') ||
+    (decisionData.primary_action || '').toLowerCase().includes('wfirma')
+  ));
+
+  const fileUrl = (key) => fd[key]?.url || '';
+  const fileExists = (key) => !!(fd[key]?.exists);
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+      {/* Sub-header — design-faithful 3 info-block layout
+           AWB / Importer / Pieces overlines + values, separated by dividers.
+           Real audit data only; missing fields fall back to muted em-dash. */}
+      <div data-testid="detail-subheader" style={{ padding: '14px 32px', background: 'var(--card)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 18, flexShrink: 0, flexWrap: 'wrap' }}>
+        <button onClick={onBack} style={{ background: 'none', border: '1px solid var(--border)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-2)', fontSize: 12, padding: '6px 12px', borderRadius: 6, fontFamily: 'inherit', fontWeight: 500 }}>← Back</button>
+        <div data-testid="detail-subheader-awb" style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>AWB / Tracking</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 280 }}>{trackingNo || batchId}</div>
+        </div>
+        <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
+        <div data-testid="detail-subheader-importer" style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>Importer</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 240 }}>
+            {(
+              inp.importer
+              || inp.importer_name
+              || audit.importer
+              || audit.importer_name
+              || (audit.customs_declaration && audit.customs_declaration.importer_name)
+            ) || <span style={{ color: 'var(--text-3)' }} title="No importer name in audit">—</span>}
+          </div>
+        </div>
+        <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
+        <div data-testid="detail-subheader-pieces" style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>Lines</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: 'monospace' }}>
+            {t.line_count ?? audit.line_count ?? <span style={{ color: 'var(--text-3)' }}>—</span>}
+          </div>
+        </div>
+        {audit.doc_no && <>
+          <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
+          <div data-testid="detail-subheader-doc-no" style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>Doc No</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: 'monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>{audit.doc_no}</div>
+          </div>
+        </>}
+        <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
+        <Badge status={mapOverall(status)} />
+        <div style={{ flex: 1 }} />
+        {DETAIL_TABS.map(tab => (
+          <button key={tab} onClick={() => setActiveTab(tab)} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer', background: activeTab === tab ? 'var(--text)' : 'transparent', color: activeTab === tab ? '#fff' : 'var(--text-2)', fontSize: 12, fontWeight: activeTab === tab ? 600 : 400, fontFamily: 'inherit' }}>{tab}</button>
+        ))}
+        <Btn small variant="outline" onClick={load}>↻ Refresh</Btn>
+        <Btn small variant="ghost" disabled={recheckBusy} title="Re-run parsers against existing uploaded files"
+          onClick={async () => {
+            if (!window.confirm(`Recheck shipment ${trackingNo || batchId}?\n\nThis re-runs invoice, SAD, and DHL parsers against existing uploaded files.\nParsed values may be updated. PZ will NOT be regenerated automatically.`)) return;
+            setRecheckBusy(true); setRecheckPanel(null);
+            try {
+              const res = await apiFetch(`/dashboard/batches/${encodeURIComponent(batchId)}/recheck`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'all' }) });
+              setRecheckPanel(res);
+              await load(); await loadTimeline();
+              onToast(res.ok ? 'Recheck complete — values updated' : 'Recheck completed with errors', res.ok ? 'success' : 'error');
+            } catch (e) {
+              setRecheckPanel({ ok: false, errors: [e.message] });
+              onToast(`Recheck failed: ${e.message}`, 'error');
+            } finally { setRecheckBusy(false); }
+          }}>
+          {recheckBusy ? '⟳ Rechecking…' : '⟳ Recheck'}
+        </Btn>
+      </div>
+
+      {/* Workflow strip */}
+      <WorkflowStrip audit={audit} />
+
+      {/* Next operator action callout */}
+      {(() => {
+        const dhl = audit.dhl_status || '';
+        const sad = audit.sad_status || '';
+        const pz  = audit.pz_status  || '';
+        let label = null, cta = null, tab = null;
+        if (!dhl || dhl === 'awaiting_dhl_email') { label = 'Scan DHL inbox for clearance email'; cta = 'DHL / Customs'; tab = 'DHL / Customs'; }
+        else if (dhl === 'dhl_email_received' || dhl === 'reply_package_prepared') { label = 'Send reply package to DHL Customs'; cta = 'DHL / Customs'; tab = 'DHL / Customs'; }
+        else if (!sad || sad === 'missing' || sad === 'sad_pending') { label = 'Upload SAD / ZC429 from customs agent'; cta = 'DHL / Customs'; tab = 'DHL / Customs'; }
+        else if (sad === 'verification_needed') { label = 'Verify customs document values'; cta = 'DHL / Customs'; tab = 'DHL / Customs'; }
+        else if (!pz || pz === 'locked') { label = 'Generate PZ document'; cta = 'PZ / Accounting'; tab = 'PZ / Accounting'; }
+        else if (pz === 'generated') { label = 'Export PZ to wFirma'; cta = 'PZ / Accounting'; tab = 'PZ / Accounting'; }
+        if (!label) return null;
+        return (
+          <div style={{ margin: '12px 32px 0', padding: '12px 18px', background: 'linear-gradient(90deg,var(--accent-subtle),#F8EDD0)', border: '1px solid var(--accent-border)', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
+            <span style={{ fontSize: 16 }}>→</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 2 }}>Next Action</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{label}</div>
+            </div>
+            <button onClick={() => setActiveTab(tab)} style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}>{cta} →</button>
+          </div>
+        );
+      })()}
+
+      {/* Recheck result panel */}
+      {recheckPanel && (
+        <div style={{ margin: '0 32px 0', padding: '10px 14px', background: recheckPanel.ok ? 'var(--badge-green-bg)' : 'var(--badge-red-bg)', border: `1px solid ${recheckPanel.ok ? 'var(--badge-green-border)' : 'var(--badge-red-border)'}`, borderRadius: 6, display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: recheckPanel.ok ? 'var(--badge-green-text)' : 'var(--badge-red-text)', marginBottom: 4 }}>
+              {recheckPanel.ok ? '✓ Recheck complete' : '✗ Recheck failed'}
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 12px' }}>
+              {Object.entries(recheckPanel.updated || {}).filter(([,v])=>v).map(([k]) => (
+                <span key={k} style={{ fontSize: 10, color: 'var(--badge-green-text)' }}>• {k.replace(/_/g,' ')} updated</span>
+              ))}
+            </div>
+            {(recheckPanel.warnings || []).length > 0 && (
+              <div style={{ marginTop: 4 }}>
+                {recheckPanel.warnings.map((w,i) => <div key={i} style={{ fontSize: 10, color: 'var(--badge-amber-text)' }}>⚠ {w}</div>)}
+              </div>
+            )}
+            {(recheckPanel.errors || []).length > 0 && (
+              <div style={{ marginTop: 4 }}>
+                {recheckPanel.errors.map((e,i) => <div key={i} style={{ fontSize: 10, color: 'var(--badge-red-text)' }}>{e}</div>)}
+              </div>
+            )}
+            {recheckPanel.next_step && <div style={{ marginTop: 4, fontSize: 10, color: 'var(--text-2)', fontStyle: 'italic' }}>{recheckPanel.next_step}</div>}
+          </div>
+          <button onClick={() => setRecheckPanel(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: 'var(--text-3)', padding: '0 4px', alignSelf: 'flex-start' }}>✕</button>
+        </div>
+      )}
+
+      <div style={{ padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+        {/* ── Stale-cache banner — single source of truth for cache state.
+             Download buttons live in the existing "Actions V2 → PZ /
+             Accounting" section below; do not duplicate them here. ── */}
+        {audit.cache_freshness && audit.cache_freshness.stale && (() => {
+          const cf = audit.cache_freshness;
+          const cmd = `python3 -m service.app.tools.regenerate_stale_batches --apply --batch ${batchId}`;
+          const reason = cf.rows_missing_fields && cf.rows_missing_fields.length > 0
+            ? `${cf.rows_missing_fields.length}/${cf.row_count} rows missing v2 fields`
+            : `schema ${cf.row_schema_version || '(missing)'} → ${cf.current_row_schema_version}`;
+          return (
+            <div style={{
+              padding: '8px 14px',
+              background: 'var(--badge-amber-bg)',
+              border: '1px solid var(--badge-amber-border)',
+              borderRadius: 6,
+              display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+            }} title={`Run to regenerate: ${cmd}`}>
+              <span style={{ fontSize: 14, color: 'var(--badge-amber-text)' }}>⚠</span>
+              <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-amber-text)' }}>
+                Cached audit is stale
+              </span>
+              <span style={{ fontSize: 11, color: 'var(--text-2)' }}>· {reason}</span>
+              <div style={{ flex: 1 }} />
+              <Btn small variant="outline"
+                title={`Copy regeneration command to clipboard:\n${cmd}`}
+                onClick={() => {
+                  if (navigator.clipboard) {
+                    navigator.clipboard.writeText(cmd).then(
+                      () => onToast && onToast('Regenerate command copied', 'success'),
+                      () => onToast && onToast('Could not copy', 'error'),
+                    );
+                  }
+                }}>
+                ⧉ Copy regen command
+              </Btn>
+            </div>
+          );
+        })()}
+
+        {/* ── ACTIONS V2 (feature flag: ?actions_v2=1) ── */}
+        {activeTab === 'Overview' && v2Active && (
+          <ActionsV2Panel batchId={batchId} />
+        )}
+
+        {/* EmailEvidenceTimeline removed from Overview — duplicates the
+            Timeline tab (audit timeline already covers email events).
+            Kept in Timeline tab below for the canonical chronological view. */}
+
+        {/* ── W-5 P2: read-only self-clearance state pill ──
+            Source: GET /api/v1/dhl/selfclearance/state/{batchId}
+            Read-only per Windows Atlas memory rule — no write controls.
+            Pill self-gates: returns null when data.in_scope === false. */}
+        {activeTab === 'Overview' && (
+          <SelfclearanceStatePill batchId={batchId} />
+        )}
+
+        {/* ── OVERVIEW TAB — Batch Control Center + Readiness ── */}
+        {activeTab === 'Overview' && (
+          <>
+            <BatchControlCenter
+              batchId={batchId}
+              audit={audit}
+              batchReadiness={batchReadiness}
+              batchReadinessLoading={batchReadinessLoading}
+              batchReadinessError={batchReadinessError}
+              dhlReadiness={dhlReadiness}
+              onTabSwitch={setActiveTab}
+            />
+            {/* Phase 2C — Detailed readiness moved into a collapsed
+                <details> so the Overview surfaces one primary readiness
+                card (BatchControlCenter).  Operators can expand to see
+                OverallReadinessCard + MissingFunctionsMatrix on demand. */}
+            <details data-testid="overview-detailed-readiness"
+                     style={{ marginTop: 12, padding: '4px 0' }}>
+              <summary style={{ cursor: 'pointer', fontSize: 11,
+                                color: 'var(--text-2)', padding: '6px 0',
+                                letterSpacing: '0.04em' }}>
+                Detailed readiness breakdown
+              </summary>
+              <OverallReadinessCard
+                batchReadiness={batchReadiness}
+                loading={batchReadinessLoading}
+                error={batchReadinessError}
+                decisionData={decisionData}
+                decisionLoading={decisionLoading}
+              />
+              <MissingFunctionsMatrix />
+            </details>
+
+            {/* ── Phase 4.2: Inventory state strip (per-batch, read-only) ──
+                Source: GET /api/v1/inventory/state/{batchId}
+                Phase 2C — collapse under <details> when total === 0 so the
+                empty state stops occupying the Overview viewport. */}
+            {!invStateError && invState && invState.total === 0 && !invStateLoading ? (
+              <details data-testid="inventory-batch-state-collapsed"
+                       style={{ margin: '12px 0', padding: '10px 14px',
+                                background: '#fff', border: '1px solid #e5e7eb',
+                                borderRadius: 8, fontSize: 13 }}>
+                <summary style={{ cursor: 'pointer', color: '#6b7280',
+                                  fontSize: 11 }}>
+                  Inventory: 0 rows
+                </summary>
+                <div data-testid="inventory-batch-state-empty"
+                     style={{ color: '#6b7280', fontSize: 12, marginTop: 8 }}>
+                  No inventory rows for this batch yet.
+                </div>
+              </details>
+            ) : (
+              <div
+                data-testid="inventory-batch-state-strip"
+                style={{
+                  margin: '12px 0', padding: '12px 14px',
+                  background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
+                  fontSize: 13,
+                }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between',
+                              alignItems: 'baseline', marginBottom: 8 }}>
+                  <strong style={{ color: '#111827' }}>Inventory state</strong>
+                  {invStateLoading && (
+                    <span data-testid="inventory-batch-state-loading"
+                          style={{ color: '#6b7280', fontSize: 12 }}>…</span>
+                  )}
+                  {!invStateLoading && invState && (
+                    <span style={{ color: '#6b7280', fontSize: 12 }}>
+                      total {invState.total}
+                      {invState.degraded ? ' · degraded' : ''}
+                    </span>
+                  )}
+                </div>
+                {invStateError && (
+                  <div data-testid="inventory-batch-state-error"
+                       style={{ color: '#991b1b', fontSize: 12 }}>
+                    ⚠ {invStateError}
+                  </div>
+                )}
+                {!invStateError && invState && invState.total > 0 && (
+                  <div style={{ display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                                gap: 8 }}>
+                    {Object.entries(invState.counts || {}).map(([stateName, count]) => (
+                      <div key={stateName}
+                           data-testid={`inventory-batch-state-tile-${stateName}`}
+                           data-pending={count === 0 ? 'true' : undefined}
+                           style={{ padding: '8px 10px', background: '#f9fafb',
+                                    border: '1px solid #e5e7eb', borderRadius: 6 }}>
+                        <div style={{ fontSize: 11, color: '#6b7280',
+                                      textTransform: 'lowercase' }}>
+                          {stateName.replace(/_/g, ' ').toLowerCase()}
+                        </div>
+                        <div style={{ fontSize: 18, color: count > 0 ? '#111827' : '#9ca3af',
+                                      fontWeight: 600 }}>
+                          {count > 0 ? String(count) : '—'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── UI-3.4: Per-Batch Pipeline Summary ─────────────────────────
+                Read-only three-section snapshot mirroring the cross-batch
+                operational triptych at single-batch scope. Consumes the
+                module-scope shared helpers (OP_PREDICATES, ATTENTION_PREDICATES,
+                deriveWarehouseLifecycle, WAREHOUSE_LIFECYCLE_LABEL) — the
+                exact same predicate set as UI-3.1b / UI-3.2a / UI-3.2b.
+
+                Source data (all already loaded by BatchDetailPage):
+                  audit.*                — batch audit JSON from
+                                           GET /dashboard/batches/{id}
+                  warehouseAudit.summary — from GET /api/v1/warehouse/audit/{id}
+                                           (eager-loaded on Overview via the
+                                           useEffect above; no new endpoint)
+                  batchReadiness.*       — already loaded for the readiness banners
+                  mapPzStatus / mapDhlStatus / mapSadStatus — existing helpers.
+
+                Sales hint is NOT surfaced here as a derived bucket because
+                the cross-batch sales_status_hint backend derivation runs
+                against the documents DB that BatchDetailPage does not query.
+                We label this honestly rather than inventing a state.
+            */}
+            {(() => {
+              const inp = (audit && audit.inputs) || {};
+              const wf  = (audit && audit.wfirma_export) || {};
+              const tk  = (audit && audit.tracking) || {};
+              const SAD_DERIVED_KEYS = ['sad_uploaded', 'customs_parsed', 'customs_verified', 'verification_needed'];
+              const hasSadDerived =
+                !!inp.zc429 || SAD_DERIVED_KEYS.includes((audit && audit.sad_status) || '');
+              // Row-like object consumed by shared predicates. Field names
+              // match the cross-batch row shape so OP_PREDICATES applies
+              // without duplication.
+              const pipelineRow = {
+                warehouseHint: (() => {
+                  const wa = warehouseAudit;
+                  if (!wa || wa.error) return 'n/a';
+                  const s = wa.summary || {};
+                  const total   = Number(s.total_items   || 0);
+                  const scanned = Number(s.scanned_items || 0);
+                  const missing = Number(s.missing_items || 0);
+                  if (total === 0) return 'n/a';
+                  if (missing === 0 && scanned > 0) return 'clean';
+                  if (scanned > 0)                  return 'partial';
+                  return 'empty';
+                })(),
+                pzStatus:    mapPzStatus(audit && audit.pz_status),
+                // wFirma surfaces "preview built" when any wFirma artifact
+                // exists in the audit — same field the per-batch UI-3.1a
+                // badge uses for the "Reserved" lifecycle key.
+                wfirmaHint:  (wf.wfirma_pz_doc_id || (audit && audit.wfirma_reservation_id))
+                  ? 'preview_built'
+                  : 'n/a',
+                // UI-3.6: batch detail now injects sales_status_hint so
+                // Pipeline Summary reflects true packing-line presence.
+                salesHint: (audit && audit.sales_status_hint) || 'n/a',
+                has_sad:     hasSadDerived,
+                mrn:         (audit && audit.mrn) || inp.zc429_mrn || '',
+                _raw: {
+                  dhl_status:          (audit && audit.dhl_status) || (audit && audit.clearance_status) || '',
+                  sad_status:          (audit && audit.sad_status) || '',
+                  tracking_status_key: tk.status       || '',
+                  tracking_status:     tk.status_label || '',
+                  timestamp:           (audit && audit.timestamp) || '',
+                },
+              };
+              const warehouseLifecycle      = deriveWarehouseLifecycle(pipelineRow);
+              const warehouseLifecycleLabel = WAREHOUSE_LIFECYCLE_LABEL[warehouseLifecycle];
+              const warehouseAttention      = ATTENTION_PREDICATES.warehouse(pipelineRow);
+              const salesAttention          = ATTENTION_PREDICATES.sales_accounting(pipelineRow);
+              const dhlAttention            = ATTENTION_PREDICATES.dhl_customs(pipelineRow);
+
+              const pillBase = { fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, display: 'inline-block', whiteSpace: 'nowrap', border: '1px solid var(--border)' };
+              const pillNeutral = { ...pillBase, background: 'var(--badge-neutral-bg)', color: 'var(--badge-neutral-text)', borderColor: 'var(--badge-neutral-border)' };
+              const pillAmber   = { ...pillBase, background: 'var(--badge-amber-bg)',   color: 'var(--badge-amber-text)',   borderColor: 'var(--badge-amber-border)' };
+              const pillGreen   = { ...pillBase, background: 'var(--badge-green-bg)',   color: 'var(--badge-green-text)',   borderColor: 'var(--badge-green-border)' };
+              const pillBlue    = { ...pillBase, background: 'var(--badge-blue-bg)',    color: 'var(--badge-blue-text)',    borderColor: 'var(--badge-blue-border)' };
+              const pillRed     = { ...pillBase, background: 'var(--badge-red-bg)',    color: 'var(--badge-red-text)',    borderColor: 'var(--badge-red-border)' };
+              const lifecycleTone =
+                  warehouseLifecycle === 'reserved'         ? pillGreen
+                : warehouseLifecycle === 'in_warehouse'     ? pillBlue
+                : warehouseLifecycle === 'partial_received' ? pillAmber
+                : warehouseLifecycle === 'awaiting'         ? pillRed
+                : pillNeutral;
+              const sectionStyle = { padding: 12, background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' };
+              const sectionHeadStyle = { fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6, letterSpacing: '0.04em', textTransform: 'uppercase' };
+
+              return (
+                <Card
+                  data-testid="pipeline-summary-panel"
+                  style={{ padding: 16, marginBottom: 16 }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>📋 Pipeline Summary</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 12 }}>
+                    Read-only operational snapshot for this batch — same lifecycle lenses as the cross-batch cards, derived from the existing batch payload. Open any tab for full detail.
+                  </div>
+
+                  {/* UI-3.5: each pill below is a <button> that navigates
+                      to the corresponding existing tab via the existing
+                      setActiveTab setter — pure frontend navigation, no
+                      new API calls, no write actions, no new tabs. */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+
+                    {/* Warehouse */}
+                    <div data-testid="pipeline-summary-warehouse" data-lifecycle-state={warehouseLifecycle} style={sectionStyle}>
+                      <div style={sectionHeadStyle}>Warehouse</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        <button
+                          type="button"
+                          data-testid="pipeline-summary-warehouse-lifecycle-pill"
+                          data-lifecycle-state={warehouseLifecycle}
+                          data-nav-target="Warehouse"
+                          onClick={() => setActiveTab('Warehouse')}
+                          title="Open Warehouse tab"
+                          aria-label={`${warehouseLifecycleLabel} — open Warehouse tab`}
+                          style={{ ...lifecycleTone, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                        >
+                          {warehouseLifecycleLabel}
+                        </button>
+                        {batchReadiness && batchReadiness.warehouse && (
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-warehouse-readiness-pill"
+                            data-readiness-status={batchReadiness.warehouse.status || ''}
+                            data-nav-target="Warehouse"
+                            onClick={() => setActiveTab('Warehouse')}
+                            title="Open Warehouse tab"
+                            aria-label={`Warehouse readiness ${batchReadiness.warehouse.status || 'unknown'} — open Warehouse tab`}
+                            style={{ ...pillNeutral, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            Readiness: {batchReadiness.warehouse.status || 'unknown'}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          data-testid="pipeline-summary-warehouse-packing-list-pill"
+                          data-nav-target="Warehouse"
+                          onClick={() => setActiveTab('Warehouse')}
+                          title="Open Warehouse tab"
+                          aria-label="Packing list status — open Warehouse tab"
+                          style={{ ...pillNeutral, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                        >
+                          Packing list: {pipelineRow.warehouseHint === 'n/a' ? 'absent' : 'present'}
+                        </button>
+                        {warehouseAttention && (
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-warehouse-attention"
+                            data-nav-target="Warehouse"
+                            onClick={() => setActiveTab('Warehouse')}
+                            title="Open Warehouse tab"
+                            aria-label="Warehouse needs attention — open Warehouse tab"
+                            style={{ ...pillAmber, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            ⚠ Needs attention
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Sales & Accounting */}
+                    <div data-testid="pipeline-summary-sales-accounting" style={sectionStyle}>
+                      <div style={sectionHeadStyle}>Sales &amp; Accounting</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        <button
+                          type="button"
+                          data-testid="pipeline-summary-sales-pill"
+                          data-sales-hint={pipelineRow.salesHint}
+                          data-nav-target="Sales"
+                          onClick={() => setActiveTab('Sales')}
+                          title="Open Sales tab"
+                          aria-label="Sales linkage — open Sales tab"
+                          style={{ ...pillNeutral, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                        >
+                          Sales: {pipelineRow.salesHint === 'present'
+                            ? 'Linked'
+                            : 'See Sales tab'}
+                        </button>
+                        {(() => {
+                          // Pipeline-stage-aware wFirma pill.
+                          // Prefers proforma draft lifecycle (from /api/v1/proforma/pipeline)
+                          // over the static wfirmaHint when pipeline data is available.
+                          const ps = proformaPipeline && proformaPipeline.pipeline_stage;
+                          let pillStyle = pillNeutral;
+                          let pillLabel = 'Not prepared';
+                          let dataStage = ps || pipelineRow.wfirmaHint || 'n/a';
+                          if (ps === 'all_posted') {
+                            pillStyle = pillGreen;
+                            pillLabel = `Proforma: Posted (${proformaPipeline.by_state?.posted || ''})`;
+                          } else if (ps === 'partial_posted') {
+                            pillStyle = pillGreen;
+                            pillLabel = `Proforma: Partial (${proformaPipeline.by_state?.posted || 0}/${proformaPipeline.client_count || 0})`;
+                          } else if (ps === 'post_failed') {
+                            pillStyle = pillRed;
+                            pillLabel = `Proforma: Failed`;
+                          } else if (ps === 'approved') {
+                            pillStyle = pillBlue;
+                            pillLabel = 'Proforma: Approved';
+                          } else if (ps === 'drafting') {
+                            pillStyle = pillAmber;
+                            pillLabel = 'Proforma: Draft';
+                          } else if (pipelineRow.wfirmaHint === 'preview_built') {
+                            pillStyle = pillBlue;
+                            pillLabel = 'Preview built';
+                          }
+                          const needsAttn = proformaPipeline && proformaPipeline.needs_attention;
+                          if (needsAttn) pillStyle = { ...pillStyle, outline: '2px solid var(--badge-red-border)', outlineOffset: 1 };
+                          return (
+                            <button
+                              type="button"
+                              data-testid="pipeline-summary-wfirma-pill"
+                              data-wfirma-hint={pipelineRow.wfirmaHint}
+                              data-pipeline-stage={dataStage}
+                              data-nav-target="PZ / Accounting"
+                              onClick={() => setActiveTab('PZ / Accounting')}
+                              title="Open PZ / Accounting tab"
+                              aria-label={`wFirma / Proforma status: ${pillLabel} — open PZ / Accounting tab`}
+                              style={{ ...pillStyle, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                            >
+                              wFirma: {proformaPipelineLoading ? '…' : pillLabel}
+                            </button>
+                          );
+                        })()}
+                        <button
+                          type="button"
+                          data-testid="pipeline-summary-pz-pill"
+                          data-pz-status={pipelineRow.pzStatus}
+                          data-nav-target="PZ / Accounting"
+                          onClick={() => setActiveTab('PZ / Accounting')}
+                          title="Open PZ / Accounting tab"
+                          aria-label={`PZ status ${pipelineRow.pzStatus || 'unknown'} — open PZ / Accounting tab`}
+                          style={{ ...(PZ_DONE_LABELS.has(pipelineRow.pzStatus) ? pillGreen : pillNeutral), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                        >
+                          PZ: {pipelineRow.pzStatus || '—'}
+                        </button>
+                        {salesAttention && (
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-sales-attention"
+                            data-nav-target="Sales"
+                            onClick={() => setActiveTab('Sales')}
+                            title="Open Sales tab"
+                            aria-label="Sales & Accounting needs attention — open Sales tab"
+                            style={{ ...pillAmber, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            ⚠ Needs attention
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* DHL & Customs */}
+                    <div data-testid="pipeline-summary-dhl-customs" style={sectionStyle}>
+                      <div style={sectionHeadStyle}>DHL &amp; Customs</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        <button
+                          type="button"
+                          data-testid="pipeline-summary-dhl-status-pill"
+                          data-dhl-status={pipelineRow._raw.dhl_status}
+                          data-nav-target="DHL / Customs"
+                          onClick={() => setActiveTab('DHL / Customs')}
+                          title="Open DHL / Customs tab"
+                          aria-label={`DHL status — open DHL / Customs tab`}
+                          style={{ ...(pipelineRow._raw.dhl_status === 'dhl_email_received' ? pillAmber : pillNeutral), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                        >
+                          DHL: {mapDhlStatus(pipelineRow._raw.dhl_status) || '—'}
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="pipeline-summary-sad-pill"
+                          data-sad-status={pipelineRow._raw.sad_status}
+                          data-has-sad={pipelineRow.has_sad ? 'true' : 'false'}
+                          data-nav-target="DHL / Customs"
+                          onClick={() => setActiveTab('DHL / Customs')}
+                          title="Open DHL / Customs tab"
+                          aria-label="SAD status — open DHL / Customs tab"
+                          style={{ ...(pipelineRow.has_sad ? pillGreen : pillRed), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                        >
+                          SAD: {pipelineRow.has_sad
+                            ? mapSadStatus(pipelineRow._raw.sad_status)
+                            : 'SAD missing'}
+                        </button>
+                        {pipelineRow.mrn && (
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-mrn-pill"
+                            data-nav-target="DHL / Customs"
+                            onClick={() => setActiveTab('DHL / Customs')}
+                            title="Open DHL / Customs tab"
+                            aria-label="Customs MRN — open DHL / Customs tab"
+                            style={{ ...pillNeutral, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            MRN: <span style={{ fontFamily: 'monospace' }}>{pipelineRow.mrn}</span>
+                          </button>
+                        )}
+                        {(pipelineRow._raw.tracking_status_key || pipelineRow._raw.tracking_status) && (
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-tracking-pill"
+                            data-tracking-key={pipelineRow._raw.tracking_status_key}
+                            data-nav-target="DHL / Customs"
+                            onClick={() => setActiveTab('DHL / Customs')}
+                            title="Open DHL / Customs tab"
+                            aria-label="Carrier tracking — open DHL / Customs tab"
+                            style={{ ...(pipelineRow._raw.tracking_status_key === 'delivered'
+                              ? pillGreen
+                              : pipelineRow._raw.tracking_status_key === 'in_transit'
+                              ? pillBlue
+                              : TRACK_ATTENTION.has(pipelineRow._raw.tracking_status_key)
+                              ? pillRed
+                              : pillNeutral), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            Tracking: {pipelineRow._raw.tracking_status || pipelineRow._raw.tracking_status_key}
+                          </button>
+                        )}
+                        {dhlAttention && (
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-dhl-attention"
+                            data-nav-target="DHL / Customs"
+                            onClick={() => setActiveTab('DHL / Customs')}
+                            title="Open DHL / Customs tab"
+                            aria-label="DHL & Customs needs attention — open DHL / Customs tab"
+                            style={{ ...pillAmber, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            ⚠ Needs attention
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                  </div>
+                </Card>
+              );
+            })()}
+
+            {/* MissingFunctionsMatrix moved into the Overview
+                <details data-testid="overview-detailed-readiness"> above
+                (Phase 2C deduplication). */}
+
+            {/* ── Closure Evaluation ── */}
+            {(() => {
+              const CHECK_LABELS = {
+                customs_docs_received: 'Customs documents received',
+                pz_generated:          'PZ generated',
+              };
+              const NEXT_STEP_MAP = {
+                customs_docs_received: 'Upload SAD/PZC from the customs agency (DHL / Customs tab)',
+                pz_generated:          'Generate PZ document (PZ / Accounting tab)',
+              };
+              const cc = closureCheck;
+              const alreadyDone = cc && cc.already_completed;
+              const isReady = cc && cc.ready && !alreadyDone;
+              const missing = (cc && cc.missing) || [];
+              const checks  = (cc && cc.checks)  || {};
+              const accountingChecks   = (cc && cc.accounting_checks) || {};
+              const accountingFollowup = !!(cc && cc.accounting_followup_required);
+              const invoiceStatus      = (cc && cc.invoice_status) || null;
+              // Readiness gate: PZ must exist before closure evaluation is meaningful.
+              // Authority: wfirma_pz_doc_id is ground truth (same rule as _derive_pz_status).
+              // A batch with a real wFirma PZ document (doc ID set) is PZ-complete even if
+              // pz_pdf_filename / pz_generated_at are absent from the audit (e.g. PZ created
+              // through wFirma directly or via an older flow that didn't write those fields).
+              const _wfExport   = (audit && audit.wfirma_export) || {};
+              const _pzDocId    = (_wfExport.wfirma_pz_doc_id || '').trim();
+              // Mirror server-side evaluate_closure() check: any of these fields
+              // indicates a PZ or equivalent document exists.
+              // polish_desc_filename (Polish customs description PDF) also satisfies
+              // the PZ-equivalent check on the server — keep UI in sync.
+              const _pzOutput   = ((audit && audit.pz_output) || {}).pdf || '';
+              const pzGenerated = !!(audit && (
+                audit.pz_pdf_filename ||
+                audit.pz_generated_at ||
+                audit.pz_generated ||
+                audit.pz_filename ||
+                audit.polish_desc_filename ||
+                _pzDocId ||
+                _pzOutput
+              ));
+              const batchCompletedStatus = !!(audit && audit.status === 'completed');
+              const closureEvalDisabled = closureCheckLoading || !pzGenerated || batchCompletedStatus;
+              const closureEvalDisabledReason = batchCompletedStatus
+                ? 'Shipment already completed — no further action needed'
+                : !pzGenerated
+                ? 'PZ document must be generated first (PZ / Accounting tab)'
+                : null;
+              return (
+                <Card data-testid="closure-eval-card" style={{ marginTop: 4 }}>
+                  <div style={{ padding: '14px 18px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>🔒 Closure Evaluation</div>
+                      {cc && (
+                        <span data-testid="closure-eval-status-badge" style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, fontWeight: 700, border: '1px solid', background: alreadyDone ? 'var(--badge-green-bg)' : isReady ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)', color: alreadyDone ? 'var(--badge-green-text)' : isReady ? 'var(--badge-green-text)' : 'var(--badge-amber-text)', borderColor: alreadyDone ? 'var(--badge-green-border)' : isReady ? 'var(--badge-green-border)' : 'var(--badge-amber-border)' }}>
+                          {alreadyDone ? 'Completed' : isReady ? 'Ready' : 'Blocked'}
+                        </span>
+                      )}
+                    </div>
+                    <div data-testid="closure-eval-description" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>
+                      Checks hard blockers for closure: customs documents received and PZ generated.
+                      Service invoices are accounting signals only — not closure blockers.
+                      Evaluation only — does not close the shipment.
+                    </div>
+
+                    {cc && (
+                      <div data-testid="closure-eval-checklist" style={{ marginBottom: 12 }}>
+                        {Object.entries(CHECK_LABELS).map(([key, label]) => {
+                          const done = checks[key];
+                          return (
+                            <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                              <span style={{ fontSize: 13, color: done ? 'var(--badge-green-text)' : 'var(--badge-amber-text)', width: 18 }}>{done ? '✓' : '○'}</span>
+                              <span style={{ fontSize: 11, color: done ? 'var(--text)' : 'var(--text-3)', fontWeight: done ? 400 : 400 }}>{label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {cc && (
+                      <div data-testid="closure-accounting-signals" style={{ marginBottom: 12 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', marginBottom: 4 }}>Service invoices (accounting)</div>
+                        {[['agency_invoice_received','Agency invoice'],['dhl_invoice_received','DHL invoice']].map(([key, label]) => {
+                          const done = accountingChecks[key];
+                          return (
+                            <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                              <span style={{ fontSize: 13, color: done ? 'var(--badge-green-text)' : 'var(--badge-amber-text)', width: 18 }}>{done ? '✓' : '○'}</span>
+                              <span style={{ fontSize: 11, color: done ? 'var(--text)' : 'var(--text-3)' }}>{label}</span>
+                              {!done && <span data-testid="closure-invoice-pending-label" style={{ fontSize: 10, color: 'var(--badge-amber-text)' }}>pending accounting</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {cc && missing.length > 0 && (
+                      <div data-testid="closure-eval-blocking-reasons" style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)' }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--badge-amber-text)', textTransform: 'uppercase', marginBottom: 6 }}>Blocking</div>
+                        {missing.map(key => (
+                          <div key={key} style={{ marginBottom: 4 }}>
+                            <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>{CHECK_LABELS[key] || key}</div>
+                            <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', opacity: 0.85 }}>{NEXT_STEP_MAP[key] || '—'}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {cc && alreadyDone && (
+                      <div data-testid="closure-eval-already-completed" style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-green-text)' }}>✓ Shipment is already marked as completed.</div>
+                        {audit && (audit.closure_approved_by || audit.closed_at) && (
+                          <div data-testid="closure-metadata" style={{ marginTop: 4, fontSize: 10, color: 'var(--badge-green-text)', opacity: 0.85 }}>
+                            {audit.closure_approved_by && <span>Approved by: {audit.closure_approved_by}</span>}
+                            {audit.closure_approved_by && audit.closed_at && <span> · </span>}
+                            {audit.closed_at && <span>Closed: {new Date(audit.closed_at).toLocaleString()}</span>}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {cc && isReady && (
+                      <div data-testid="closure-eval-next-step" style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--badge-green-text)', textTransform: 'uppercase', marginBottom: 2 }}>Next step</div>
+                        <div style={{ fontSize: 11, color: 'var(--badge-green-text)' }}>All conditions met. Shipment is ready for final closure.</div>
+                      </div>
+                    )}
+
+                    {cc && isReady && accountingFollowup && (
+                      <div data-testid="closure-accounting-followup-notice" style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)' }}>
+                        <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>Service invoices pending — accounting follow-up required after closure.</div>
+                      </div>
+                    )}
+
+                    {closureCheckError && (
+                      <div data-testid="closure-eval-error" style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)' }}>
+                        <div style={{ fontSize: 11, color: 'var(--badge-red-text)', fontWeight: 600 }}>Evaluation failed: {closureCheckError}</div>
+                      </div>
+                    )}
+
+                    <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+                      <Btn
+                        data-testid="closure-eval-btn"
+                        small
+                        variant="outline"
+                        disabled={closureEvalDisabled}
+                        title={closureEvalDisabled ? (closureEvalDisabledReason || 'Closure evaluation not yet available — finish prior steps first.') : 'Run a read-only check of all closure prerequisites.'}
+                        style={{ opacity: closureEvalDisabled && !closureCheckLoading ? 0.45 : 1, cursor: closureEvalDisabled && !closureCheckLoading ? 'not-allowed' : 'pointer' }}
+                        onClick={async () => {
+                          setClosureCheckLoading(true); setClosureCheckError('');
+                          try {
+                            const result = await apiFetch(`/api/v1/closure/${encodeURIComponent(batchId)}/check`);
+                            setClosureCheck(result);
+                            await loadBatchReadiness();
+                          } catch (ex) {
+                            setClosureCheckError(ex.message || 'Evaluation failed');
+                          } finally {
+                            setClosureCheckLoading(false);
+                          }
+                        }}
+                      >
+                        {closureCheckLoading ? '⟳ Evaluating…' : 'Evaluate Closure Readiness'}
+                      </Btn>
+                      {!closureCheckLoading && closureEvalDisabledReason && (
+                        <div data-testid="closure-eval-disabled-reason" style={{ fontSize: 10, color: 'var(--badge-amber-text)', marginTop: 6, padding: '4px 8px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 4 }}>
+                          ⚠ {closureEvalDisabledReason}
+                        </div>
+                      )}
+                      <div data-testid="closure-eval-safe-note" style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 6 }}>
+                        Read-only check — does not close or modify the shipment.
+                      </div>
+
+                      {/* ── Confirm Closure — execution engine write path ── */}
+                      <div data-testid="closure-confirm-section" style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--border-subtle)' }}>
+                        {closureConfirmResult && (
+                          <div style={{ marginBottom: 8 }}>
+                            <div
+                              data-testid="closure-confirm-result"
+                              style={{ padding: '6px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+                                background: closureConfirmResult.ok ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+                                color:      closureConfirmResult.ok ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+                                border:     '1px solid ' + (closureConfirmResult.ok ? 'var(--badge-green-border)' : 'var(--badge-amber-border)'),
+                              }}
+                            >
+                              {closureConfirmResult.ok
+                                ? ((closureConfirmResult.stage === 'milestone_skip' || (closureConfirmResult.reason && closureConfirmResult.reason.startsWith('milestone_skip:')))
+                                    ? 'Skipped: already progressed (SAD/PZ/Completed)'
+                                    : closureConfirmResult.status === 'skipped'
+                                      ? '✓ Shipment was already completed (no change)'
+                                      : '✓ Shipment closure confirmed successfully')
+                                : ('⚠ Closure blocked: ' + (closureConfirmResult.reason || closureConfirmResult.error || 'not ready'))}
+                            </div>
+                            {closureConfirmResult.log_write_failed && (
+                              <div data-testid="closure-confirm-log-warn" style={{ marginTop: 4, fontSize: 10, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                                ⚠ Action completed but log write failed
+                              </div>
+                            )}
+                            {closureConfirmResult.ok && !(closureConfirmResult.stage === 'milestone_skip' || closureConfirmResult.reason?.startsWith('milestone_skip:')) && closureConfirmResult.status !== 'skipped' && (audit && (audit.closure_approved_by || closureConfirmResult.closed_at)) && (
+                              <div data-testid="closure-confirm-metadata" style={{ marginTop: 4, fontSize: 10, color: 'var(--badge-green-text)' }}>
+                                {audit.closure_approved_by && <span>Approved by: {audit.closure_approved_by}</span>}
+                                {audit.closure_approved_by && closureConfirmResult.closed_at && <span> · </span>}
+                                {closureConfirmResult.closed_at && <span>Closed: {new Date(closureConfirmResult.closed_at).toLocaleString()}</span>}
+                              </div>
+                            )}
+                            {closureConfirmResult.ok && closureConfirmResult.accounting_followup_required && (
+                              <div data-testid="closure-confirm-accounting-notice" style={{ marginTop: 4, fontSize: 10, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                                Closed with accounting follow-up: service invoices pending.
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        <Btn
+                          data-testid="closure-confirm-btn"
+                          small
+                          variant="primary"
+                          disabled={closureEvalDisabled || closureConfirmBusy || !(closureCheck && closureCheck.ready && !closureCheck.already_completed)}
+                          title={
+                            closureEvalDisabled
+                              ? (closureEvalDisabledReason || 'Closure not yet available — earlier pipeline steps incomplete.')
+                              : !closureCheck
+                                ? 'Run "Evaluate Closure Readiness" first — closure requires all checks to pass.'
+                                : closureCheck.already_completed
+                                  ? 'Shipment is already closed — no further action needed.'
+                                  : !closureCheck.ready
+                                    ? ('Closure not ready: ' + (closureCheck.next_step || closureCheck.reason || 'prerequisites missing'))
+                                    : 'Apply final closure for this shipment.'
+                          }
+                          style={{
+                            opacity: (closureEvalDisabled || !(closureCheck && closureCheck.ready && !closureCheck.already_completed)) && !closureConfirmBusy ? 0.45 : 1,
+                            cursor:  (closureEvalDisabled || !(closureCheck && closureCheck.ready && !closureCheck.already_completed)) && !closureConfirmBusy ? 'not-allowed' : 'pointer',
+                          }}
+                          onClick={async () => {
+                            const approvedBy = (prompt('Confirm closure — enter operator name:', 'operator') || '').trim() || 'operator';
+                            setClosureConfirmBusy(true);
+                            setClosureConfirmResult(null);
+                            try {
+                              const d = await apiFetch('/api/v1/execute/closure_confirm', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ batch_id: batchId, payload: { approved_by: approvedBy } }),
+                              });
+                              setClosureConfirmResult(d);
+                              if (d.ok) {
+                                onToast(
+                                  d.status === 'skipped'
+                                    ? 'Shipment already completed'
+                                    : 'Closure confirmed — shipment marked completed',
+                                  d.status === 'skipped' ? 'info' : 'success'
+                                );
+                                await Promise.all([load(), loadBatchReadiness(), loadDecision()]);
+                              } else {
+                                onToast('Closure blocked: ' + (d.reason || d.error || 'not ready'), 'error');
+                              }
+                            } catch (e) {
+                              const body = { ok: false, error: e.message };
+                              setClosureConfirmResult(body);
+                              onToast('Closure confirm failed: ' + e.message, 'error');
+                            } finally {
+                              setClosureConfirmBusy(false);
+                            }
+                          }}
+                        >
+                          {closureConfirmBusy ? '⟳ Confirming…' : '🔒 Confirm Closure'}
+                        </Btn>
+                        {!(closureCheck && closureCheck.ready && !closureCheck.already_completed) && !closureEvalDisabled && (
+                          <div data-testid="closure-confirm-not-ready-reason" style={{ fontSize: 10, color: 'var(--badge-amber-text)', marginTop: 4 }}>
+                            Run Evaluate first — closure requires all checks to pass.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              );
+            })()}
+
+            {/* ── Broker Follow-up (manual operator-approved send) ── */}
+            <BrokerFollowupPanel batchId={batchId} />
+
+            {/* ── Paste Broker Reply (read-only classifier) ── */}
+            <BrokerReplyAnalyzerPanel />
+          </>
+        )}
+
+        {/* ── DOCUMENTS TAB ── */}
+        {activeTab === 'Documents' && (() => {
+          const deleteSourceFile = async (category, filename) => {
+            if (!confirm(`Delete source file "${filename}"?`)) return;
+            try {
+              await apiFetch(`/dashboard/batches/${encodeURIComponent(batchId)}/files/source/${category}/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+              load();
+            } catch(e) { alert('Delete failed: ' + e.message); }
+          };
+          const deleteOutputFile = async (filename) => {
+            if (!confirm(`Delete output file "${filename}"?`)) return;
+            try {
+              // Polish customs description PDFs live under
+              //   storage_root/polish_descriptions/<filename>
+              // NOT under outputs/<batch>/<filename>. Route to the
+              // dedicated endpoint that knows the real location and
+              // clears the audit pointer.
+              const isPolishDesc = /^POLISH_DESC_/i.test(filename);
+              if (isPolishDesc) {
+                await apiFetch(
+                  `/dashboard/batches/${encodeURIComponent(batchId)}/polish-description`,
+                  { method: 'DELETE' },
+                );
+              } else {
+                await apiFetch(
+                  `/dashboard/batches/${encodeURIComponent(batchId)}/files/${encodeURIComponent(filename)}`,
+                  { method: 'DELETE' },
+                );
+              }
+              load();
+            } catch(e) { alert('Delete failed: ' + e.message); }
+          };
+          const regenerateAll = async () => {
+            if (!confirm('Delete all generated output files and reset for fresh processing?')) return;
+            try {
+              const d = await apiFetch(`/dashboard/batches/${encodeURIComponent(batchId)}/regenerate`, { method: 'POST' });
+              alert(`Deleted ${d.deleted_files?.length || 0} files. Ready for re-processing.`);
+              load();
+            } catch(e) { alert('Regenerate failed: ' + e.message); }
+          };
+          const srcCatMap = {};
+          (sf.invoices || []).forEach(f => { srcCatMap[f.name] = 'invoices'; });
+          (sf.sad || []).forEach(f => { srcCatMap[f.name] = 'sad'; });
+          (sf.awb || []).forEach(f => { srcCatMap[f.name] = 'awb'; });
+          return (<>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Uploaded Source Files</div>
+                <Btn small variant="outline"
+                     data-testid="source-files-add-doc"
+                     onClick={() => setAddDocOpen(true)}>+ Add Document</Btn>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {[
+                  ...(sf.invoices || []).map(f => ({ name: f.name, type: 'Invoice PDF', url: f.url, cat: 'invoices' })),
+                  ...(sf.sad || []).map(f => ({ name: f.name, type: 'SAD / ZC429 PDF', url: f.url, cat: 'sad' })),
+                  ...(sf.awb || []).map(f => ({ name: f.name, type: 'AWB PDF', url: f.url, cat: 'awb' })),
+                ].map((doc, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)' }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 6, background: 'var(--badge-blue-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>📄</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.name}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text-2)', marginTop: 1 }}>{doc.type}</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {doc.url && <a href={doc.url} download style={{ textDecoration: 'none' }}><Btn small variant="outline">↓</Btn></a>}
+                      <button onClick={() => deleteSourceFile(doc.cat, doc.name)} title="Delete file"
+                        style={{ background: 'none', border: '1px solid var(--badge-red-border)', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: 'var(--badge-red-text)', lineHeight: 1 }}>✕</button>
+                    </div>
+                  </div>
+                ))}
+                {(!sf.invoices?.length && !sf.sad?.length && !sf.awb?.length) && <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '20px 0' }}>No source files recorded</div>}
+              </div>
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Generated Output Files</div>
+                <button onClick={regenerateAll} title="Delete all outputs and regenerate fresh"
+                  style={{ background: 'none', border: '1px solid var(--accent)', borderRadius: 6, cursor: 'pointer', padding: '4px 12px', fontSize: 10, color: 'var(--accent)', fontWeight: 600, fontFamily: 'inherit' }}>Regenerate All</button>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {[
+                  { key: 'pz_pdf',    label: 'PZ PDF',            icon: '📄' },
+                  { key: 'calc_xlsx', label: 'Calculation XLSX',   icon: '📊' },
+                  { key: 'audit_en',  label: 'Audit EN PDF',       icon: '📄' },
+                  { key: 'audit_pl',  label: 'Audit PL PDF',       icon: '📄' },
+                  { key: 'audit_memo',label: 'Audit Memo PDF',     icon: '📄' },
+                  { key: 'corrections',label:'Correction Report',  icon: '📄' },
+                ].map(f => {
+                  const exists = fileExists(f.key);
+                  const url = fileUrl(f.key);
+                  const fname = fd[f.key]?.name;
+                  return (
+                    <div key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)' }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 6, background: exists ? 'var(--badge-blue-bg)' : 'var(--badge-neutral-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>{f.icon}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: exists ? 'var(--text)' : 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fname || f.label}</div>
+                        <div style={{ fontSize: 10, color: 'var(--text-2)', marginTop: 1 }}>{f.label}</div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {exists ? <span style={{ fontSize: 10, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ Generated</span> : <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Not generated</span>}
+                        {exists && url && <a href={url} download style={{ textDecoration: 'none' }}><Btn small variant="outline">↓</Btn></a>}
+                        {exists && fname && <button onClick={() => deleteOutputFile(fname)} title="Delete file"
+                          style={{ background: 'none', border: '1px solid var(--badge-red-border)', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: 'var(--badge-red-text)', lineHeight: 1 }}>✕</button>}
+                      </div>
+                    </div>
+                  );
+                })}
+                {/* Polish Customs Description — stored separately via audit.polish_desc_filename */}
+                {(() => {
+                  const fn = audit.polish_desc_filename;
+                  return (
+                    <div data-testid="generated-output-polish-desc" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)' }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 6, background: fn ? 'var(--badge-blue-bg)' : 'var(--badge-neutral-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>📄</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: fn ? 'var(--text)' : 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fn || 'Polish Customs Description'}</div>
+                        <div style={{ fontSize: 10, color: 'var(--text-2)', marginTop: 1 }}>Polish Customs Description (DHL)</div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {fn ? <span style={{ fontSize: 10, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ Generated</span> : <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Not generated</span>}
+                        {fn && <a href={`/api/v1/dhl/download/${encodeURIComponent(fn)}`} download style={{ textDecoration: 'none' }}><Btn small variant="outline">↓</Btn></a>}
+                        {fn && <button onClick={() => deleteOutputFile(fn)} title="Delete file"
+                          style={{ background: 'none', border: '1px solid var(--badge-red-border)', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: 'var(--badge-red-text)', lineHeight: 1 }}>✕</button>}
+                      </div>
+                    </div>
+                  );
+                })()}
+                {/* DSK Document — stored separately via audit.dsk_filename. Display-only
+                    parallel to the Polish Description row above; reuses the same
+                    /api/v1/dhl/download endpoint and the same status pattern. */}
+                {(() => {
+                  const fn = audit.dsk_filename;
+                  return (
+                    <div data-testid="generated-output-dsk" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)' }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 6, background: fn ? 'var(--badge-blue-bg)' : 'var(--badge-neutral-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>📄</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: fn ? 'var(--text)' : 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fn || 'DSK Document'}</div>
+                        <div style={{ fontSize: 10, color: 'var(--text-2)', marginTop: 1 }}>DSK Document (Broker Notification)</div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {fn
+                          ? <span data-testid="generated-output-dsk-status" style={{ fontSize: 10, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ Generated</span>
+                          : <span data-testid="generated-output-dsk-status" style={{ fontSize: 10, color: 'var(--text-3)' }}>Not generated</span>}
+                        {fn && <a data-testid="generated-output-dsk-download" href={`/api/v1/dhl/download/${encodeURIComponent(fn)}`} download style={{ textDecoration: 'none' }}><Btn small variant="outline">↓</Btn></a>}
+                        {fn && <button onClick={() => deleteOutputFile(fn)} title="Delete file"
+                          style={{ background: 'none', border: '1px solid var(--badge-red-border)', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: 'var(--badge-red-text)', lineHeight: 1 }}>✕</button>}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+
+          {/* ── Packing List card ─────────────────────────────────────────── */}
+          {(() => {
+            const pl = packingInfo && !packingInfo.error ? packingInfo : null;
+            const docs = pl ? (pl.documents || []) : [];
+            const lineCount = pl ? (pl.packing_lines || []).length : 0;
+            const hasDoc = docs.length > 0;
+
+            const handlePackingUpload = async (e) => {
+              const f = e.target.files && e.target.files[0];
+              if (!f) return;
+              e.target.value = '';
+              setPackingUploading(true);
+              try {
+                const formData = new FormData();
+                formData.append('file', f);
+                await apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/upload`, {
+                  method: 'POST',
+                  body: formData,
+                });
+                await loadPackingInfo();
+                await loadBatchReadiness();
+                onToast('Packing list uploaded successfully.', 'success');
+              } catch (ex) {
+                onToast('Packing upload failed: ' + ex.message, 'error');
+              }
+              setPackingUploading(false);
+            };
+
+            const handlePackingDelete = async (doc) => {
+              const docId   = doc.id;
+              const fname   = (doc.source_file_path || '').split('/').pop() || doc.file_name || docId;
+              const sideRaw = (doc.side || '').toLowerCase();
+              const isSalesDoc = sideRaw === 'sales' || doc.document_type === 'sales_packing_list';
+              const sideWord   = isSalesDoc ? 'SALES' : 'PURCHASE';
+              if (!window.confirm(
+                `Delete ${sideWord} packing file?\n\n${fname}\n\n` +
+                `This will permanently remove the file and all ${doc.row_count ?? '?'} extracted rows from the database. ` +
+                (isSalesDoc ? 'The proforma draft must be deleted first if one exists. ' : '') +
+                'This cannot be undone.'
+              )) return;
+
+              setPackingDeleting(prev => ({ ...prev, [docId]: true }));
+              try {
+                const r = await apiFetch(
+                  `/api/v1/packing/${encodeURIComponent(batchId)}/document/${encodeURIComponent(docId)}`,
+                  { method: 'DELETE' }
+                );
+                onToast(`Packing file deleted — ${r.deleted_lines ?? 0} rows removed.`, 'success');
+                await loadPackingInfo();
+                await loadBatchReadiness();
+              } catch (ex) {
+                const detail = ex.detail || ex.message || String(ex);
+                if (ex.status === 409 || (detail && detail.includes('PROFORMA'))) {
+                  const msg = (typeof detail === 'object' ? detail.message : detail) ||
+                    'Cannot delete: active proforma draft exists. Delete the proforma first.';
+                  onToast(msg, 'error');
+                } else {
+                  onToast('Delete failed: ' + (typeof detail === 'string' ? detail : JSON.stringify(detail)), 'error');
+                }
+              } finally {
+                setPackingDeleting(prev => { const n = { ...prev }; delete n[docId]; return n; });
+              }
+            };
+
+            return (
+              <Card style={{ marginTop: 20 }} data-testid="packing-list-card">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📦 Packing List</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>Packing list upload feeds Warehouse Audit and Sales Linkage.</div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Btn small variant="outline"
+                         data-testid="packing-list-reparse-all"
+                         onClick={async () => {
+                           if (reparseBusy) return;
+                           setReparseBusy(true);
+                           setReparseSummary('');
+                           try {
+                             const r = await fetch(`/api/v1/packing/${encodeURIComponent(batchId)}/reprocess`, {
+                               method: 'POST',
+                               headers: { 'Content-Type': 'application/json' },
+                               credentials: 'include',
+                               body: JSON.stringify({}),
+                             });
+                             if (!r.ok) {
+                               const msg = await r.text().catch(() => 'Reparse failed');
+                               throw new Error(msg);
+                             }
+                             const data = await r.json();
+                             const s = data && data.summary ? data.summary : {};
+                             setReparseSummary(`Reparse complete: ${s.files ?? 0} files, ${s.rows ?? 0} rows (${s.purchase ?? 0} purchase, ${s.sales ?? 0} sales)`);
+                             refreshAll('reparse');
+                           } catch (e) {
+                             setReparseSummary('Reparse failed: ' + (e.message || 'unknown'));
+                           } finally {
+                             setReparseBusy(false);
+                           }
+                         }}
+                         disabled={reparseBusy || packingInfoLoading || packingUploading}>
+                      {reparseBusy ? 'Reparsing…' : '⟳ Reparse all'}
+                    </Btn>
+                    <Btn small variant="outline" onClick={loadPackingInfo} disabled={packingInfoLoading || packingUploading}>
+                      {packingInfoLoading ? 'Loading…' : '↺ Refresh'}
+                    </Btn>
+                    <label style={{ cursor: packingUploading ? 'not-allowed' : 'pointer', display: 'inline-block' }}>
+                      <input
+                        type="file"
+                        accept=".pdf,.xlsx,.xls"
+                        style={{ display: 'none' }}
+                        onChange={handlePackingUpload}
+                        disabled={packingUploading}
+                        data-testid="packing-list-upload-input"
+                      />
+                      <span style={{
+                        display: 'inline-block', fontSize: 11, fontWeight: 600, padding: '5px 12px',
+                        borderRadius: 6, border: '1px solid var(--accent)', color: packingUploading ? 'var(--text-3)' : 'var(--accent)',
+                        background: 'transparent', fontFamily: 'inherit', lineHeight: 1, pointerEvents: packingUploading ? 'none' : 'auto',
+                      }}>
+                        {packingUploading ? 'Uploading…' : '↑ Upload'}
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                {packingInfoLoading && !pl && (
+                  <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>Loading packing info…</div>
+                )}
+
+                {reparseSummary && (
+                  <div data-testid="packing-list-reparse-summary"
+                       style={{ fontSize: 11, color: 'var(--text-2)', padding: '6px 8px',
+                                marginBottom: 8, borderRadius: 4,
+                                background: 'var(--bg-subtle)',
+                                border: '1px solid var(--border-subtle)' }}>
+                    {reparseSummary}
+                  </div>
+                )}
+
+                {packingInfo && packingInfo.error && (
+                  <div style={{ padding: 12, fontSize: 12, color: 'var(--badge-red-text)' }}>Could not load packing data: {packingInfo.error}</div>
+                )}
+
+                {!packingInfoLoading && !hasDoc && !(packingInfo && packingInfo.error) && (
+                  <div style={{ padding: '20px 0', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }} data-testid="packing-list-empty-state">
+                    No packing list uploaded yet. Upload a PDF or XLSX to enable warehouse audit and sales linkage.
+                  </div>
+                )}
+
+                {hasDoc && (
+                  <div data-testid="packing-list-status">
+                    {/* P1 parser observability: track which diagnostic is open */}
+                    {(() => null)()}
+                    {docs.map((doc, i) => {
+                      const fileName = (doc.source_file_path || '').split('/').pop() || doc.file_name || doc.invoice_no || '—';
+                      const uploadedAt = doc.created_at ? doc.created_at.slice(0, 16).replace('T', ' ') : '—';
+                      const isLatest = i === 0;
+                      // Fallback rows from shipment_documents (Atlas-intake
+                      // uploads with no parser output) are flagged by the
+                      // backend with fallback_unparsed=true. Render them
+                      // with an amber "uploaded — extraction pending"
+                      // badge instead of the green "extracted" badge so
+                      // we never claim parsed status that doesn't exist.
+                      const isFallback = !!doc.fallback_unparsed;
+                      // Purchase vs sales badge sourced from backend
+                      // `side` field (preferred) with document_type fallback.
+                      // Never inferred from filename — keeps purchase/sales
+                      // separation honest end-to-end.
+                      const sideRaw = (doc.side || '').toLowerCase();
+                      const isSales = sideRaw === 'sales' || doc.document_type === 'sales_packing_list';
+                      const sideLabel  = isSales ? 'SALES' : 'PURCHASE';
+                      const sideBadgeBg     = isSales ? 'var(--badge-purple-bg, #f3e8ff)'   : 'var(--badge-blue-bg)';
+                      const sideBadgeText   = isSales ? 'var(--badge-purple-text, #6b21a8)' : 'var(--badge-blue-text)';
+                      const sideBadgeBorder = isSales ? 'var(--badge-purple-border, #c4b5fd)' : 'var(--badge-blue-border)';
+                      const badgeBg     = isFallback ? 'var(--badge-amber-bg)'     : 'var(--badge-green-bg)';
+                      const badgeText   = isFallback ? 'var(--badge-amber-text)'   : 'var(--badge-green-text)';
+                      const badgeBorder = isFallback ? 'var(--badge-amber-border)' : 'var(--badge-green-border)';
+                      const badgeIcon   = isFallback ? '⏳' : '✓';
+                      const badgeLabel  = isFallback
+                        ? (doc.extraction_status === 'extraction_failed'
+                            ? 'extraction failed'
+                            : 'extraction pending')
+                        : (doc.extraction_status || 'extracted');
+                      const diag = doc.parser_diagnostic || null;
+                      const hasDiag = diag && Object.keys(diag).length > 0;
+                      const diagOpen = expandedDiagDocId === (doc.id || ('row-' + i));
+                      const matched = diag && Array.isArray(diag.mapped_columns)
+                        ? diag.mapped_columns.map(m => `${m.raw}→${m.canonical_field}`).slice(0, 12)
+                        : [];
+                      const unmatched = diag && Array.isArray(diag.unmatched_columns)
+                        ? diag.unmatched_columns.slice(0, 20)
+                        : [];
+                      const sheetNames = diag && Array.isArray(diag.workbook_sheet_names)
+                        ? diag.workbook_sheet_names.join(', ')
+                        : '';
+                      return (
+                        <React.Fragment key={doc.id || i}>
+                        <div
+                          data-testid={isFallback ? 'packing-list-row-fallback' : 'packing-list-row-parsed'}
+                          style={{
+                          display: 'flex', alignItems: 'center', gap: 12,
+                          padding: '10px 0',
+                          borderBottom: (!diagOpen && i < docs.length - 1) ? '1px solid var(--border-subtle)' : 'none',
+                        }}>
+                          <div style={{ width: 32, height: 32, borderRadius: 6, background: isFallback ? 'var(--badge-amber-bg)' : 'var(--badge-blue-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>📄</div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={fileName}>{fileName}</div>
+                            <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                              <span>{uploadedAt}</span>
+                              <span
+                                data-testid={isSales ? 'packing-list-row-side-sales' : 'packing-list-row-side-purchase'}
+                                style={{
+                                  fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3,
+                                  background: sideBadgeBg, color: sideBadgeText,
+                                  border: '1px solid ' + sideBadgeBorder,
+                                  letterSpacing: 0.4,
+                                }}>{sideLabel}</span>
+                              {isSales && typeof doc.row_count === 'number' && doc.row_count > 0 && (
+                                <span style={{ color: 'var(--text-2)' }}>{doc.row_count} rows extracted</span>
+                              )}
+                              {!isSales && isLatest && !isFallback && lineCount > 0 && (
+                                <span style={{ color: 'var(--text-2)' }}>{lineCount} rows extracted</span>
+                              )}
+                              {isFallback && <span style={{ color: 'var(--badge-amber-text)' }}>Uploaded — extraction pending or failed</span>}
+                            </div>
+                          </div>
+                          {hasDiag && (
+                            <button
+                              data-testid={`packing-list-diagnostic-toggle-${doc.id || i}`}
+                              onClick={() => setExpandedDiagDocId(diagOpen ? null : (doc.id || ('row-' + i)))}
+                              style={{
+                                padding: '2px 8px', fontSize: 10, fontWeight: 600,
+                                background: 'transparent', border: '1px solid var(--border)',
+                                borderRadius: 4, cursor: 'pointer',
+                                color: 'var(--text-2)', fontFamily: 'inherit',
+                              }}
+                              title="Parser diagnostic"
+                            >{diagOpen ? '▾ Diagnostic' : '▸ Diagnostic'}</button>
+                          )}
+                          {doc.id && (
+                            <a
+                              data-testid={`packing-list-download-${doc.id}`}
+                              href={`/api/v1/packing/${encodeURIComponent(batchId)}/document/${encodeURIComponent(doc.id)}/download`}
+                              download
+                              title="Download original file"
+                              style={{ textDecoration: 'none' }}
+                            >
+                              <button style={{
+                                padding: '2px 8px', fontSize: 11, fontWeight: 600,
+                                background: 'transparent', border: '1px solid var(--badge-blue-border)',
+                                borderRadius: 4, cursor: 'pointer',
+                                color: 'var(--badge-blue-text)', fontFamily: 'inherit', lineHeight: 1,
+                              }}>⬇</button>
+                            </a>
+                          )}
+                          {doc.id && (
+                            <button
+                              data-testid={`packing-list-delete-${doc.id}`}
+                              onClick={() => handlePackingDelete(doc)}
+                              disabled={!!packingDeleting[doc.id]}
+                              title="Delete this packing file and all extracted rows"
+                              style={{
+                                padding: '2px 8px', fontSize: 11, fontWeight: 600,
+                                background: 'transparent',
+                                border: '1px solid var(--badge-red-border)',
+                                borderRadius: 4,
+                                cursor: packingDeleting[doc.id] ? 'not-allowed' : 'pointer',
+                                color: packingDeleting[doc.id] ? 'var(--text-3)' : 'var(--badge-red-text)',
+                                fontFamily: 'inherit', lineHeight: 1,
+                              }}
+                            >{packingDeleting[doc.id] ? '…' : '🗑'}</button>
+                          )}
+                          <span style={{
+                            fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
+                            background: badgeBg, color: badgeText, border: '1px solid ' + badgeBorder,
+                          }}>{badgeIcon} {badgeLabel}</span>
+                        </div>
+                        {hasDiag && diagOpen && (
+                          <div
+                            data-testid={`packing-list-diagnostic-${doc.id || i}`}
+                            style={{
+                              padding: '10px 12px 12px',
+                              fontSize: 11,
+                              background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border-subtle)',
+                              borderRadius: 6,
+                              marginTop: 4,
+                              marginBottom: 8,
+                              borderBottom: i < docs.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+                              fontFamily: 'ui-monospace, monospace',
+                              color: 'var(--text-2)',
+                              whiteSpace: 'normal',
+                            }}
+                          >
+                            <div style={{ marginBottom: 4 }}>
+                              <span style={{ color: 'var(--text-3)' }}>Reason: </span>
+                              <span style={{ color: 'var(--badge-amber-text)', fontWeight: 700 }}>
+                                {diag.failure_reason || 'none'}
+                              </span>
+                            </div>
+                            <div style={{ marginBottom: 4 }}>
+                              <span style={{ color: 'var(--text-3)' }}>Parser: </span>
+                              {diag.parser_name || '—'} v{diag.parser_version || '?'} ({diag.file_type || '—'})
+                            </div>
+                            {sheetNames && (
+                              <div style={{ marginBottom: 4 }}>
+                                <span style={{ color: 'var(--text-3)' }}>Sheets: </span>{sheetNames}
+                              </div>
+                            )}
+                            <div style={{ marginBottom: 4 }}>
+                              <span style={{ color: 'var(--text-3)' }}>Header detected: </span>
+                              {diag.chosen_header
+                                ? `yes (row ${diag.chosen_header.row_index} on "${diag.chosen_header.sheet}")`
+                                : 'no'}
+                            </div>
+                            {diag.exception_class && (
+                              <div style={{ marginBottom: 4, color: 'var(--badge-red-text)' }}>
+                                <span style={{ color: 'var(--text-3)' }}>Exception: </span>
+                                {diag.exception_class}: {diag.exception_message || ''}
+                              </div>
+                            )}
+                            {matched.length > 0 && (
+                              <div style={{ marginBottom: 4 }}>
+                                <span style={{ color: 'var(--text-3)' }}>Matched aliases: </span>
+                                <span style={{ color: 'var(--badge-green-text)' }}>
+                                  {matched.join(', ')}
+                                </span>
+                              </div>
+                            )}
+                            {unmatched.length > 0 && (
+                              <div style={{ marginBottom: 4 }}>
+                                <span style={{ color: 'var(--text-3)' }}>Raw columns seen (unmatched): </span>
+                                <span style={{ color: 'var(--text)' }}>
+                                  {unmatched.map(c => JSON.stringify(c)).join(', ')}
+                                </span>
+                              </div>
+                            )}
+                            {Array.isArray(diag.candidate_header_rows) && diag.candidate_header_rows.length > 0 && (
+                              <div style={{ marginTop: 6 }}>
+                                <div style={{ color: 'var(--text-3)' }}>Candidate header rows:</div>
+                                {diag.candidate_header_rows.slice(0, 5).map((c, ci) => (
+                                  <div key={ci} style={{ paddingLeft: 12 }}>
+                                    • {c.sheet} row {c.row_index} ({c.alias_hits} hits): {(c.raw_cells_sample || []).slice(0, 8).map(x => JSON.stringify(x)).join(', ')}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {/* ── Excel column mapping audit ──────────────────────────────────
+                                Shows per-column method (alias/fuzzy/fuzzy_warning/llm/unresolved)
+                                and confidence. Only present when extractor ran the three-tier
+                                column-mapping layer (xlsx/xls EJL path). Advisory methods are
+                                flagged; LLM suggestions include explicit safety disclaimer.    */}
+                            {Array.isArray(diag.column_mapping_audit) && diag.column_mapping_audit.length > 0 && (
+                              <div
+                                data-testid={`packing-list-mapping-audit-${doc.id || i}`}
+                                style={{ marginTop: 8, borderTop: '1px solid var(--border-subtle)', paddingTop: 6 }}
+                              >
+                                <div style={{ color: 'var(--text-3)', marginBottom: 4, fontWeight: 600 }}>
+                                  Excel column mapping ({diag.column_mapping_audit.length} columns):
+                                </div>
+                                {diag.column_mapping_audit.map((m, mi) => {
+                                  const methodColor =
+                                    m.method === 'supplier_template' ? 'var(--badge-green-text)'  :
+                                    m.method === 'alias'             ? 'var(--badge-green-text)'  :
+                                    m.method === 'fuzzy'             ? 'var(--badge-blue-text)'   :
+                                    m.method === 'fuzzy_warning'     ? 'var(--badge-amber-text)'  :
+                                    m.method === 'llm'               ? 'var(--badge-purple-text)' :
+                                    /* unresolved */                   'var(--badge-red-text)';
+                                  const methodBg =
+                                    m.method === 'supplier_template' ? 'var(--badge-green-bg)'  :
+                                    m.method === 'alias'             ? 'var(--badge-green-bg)'  :
+                                    m.method === 'fuzzy'             ? 'var(--badge-blue-bg)'   :
+                                    m.method === 'fuzzy_warning'     ? 'var(--badge-amber-bg)'  :
+                                    m.method === 'llm'               ? 'var(--badge-purple-bg)' :
+                                    /* unresolved */                   'var(--badge-red-bg)';
+                                  const methodLabel = m.method === 'supplier_template' ? 'template' : m.method;
+                                  const isAdvisory = m.method === 'llm' || m.method === 'unresolved' || m.method === 'fuzzy_warning';
+                                  return (
+                                    <div
+                                      key={mi}
+                                      data-testid={`mapping-audit-row-${m.method}`}
+                                      style={{
+                                        display: 'flex', gap: 6, alignItems: 'center',
+                                        marginBottom: 3, paddingLeft: 4, flexWrap: 'wrap',
+                                      }}
+                                    >
+                                      <span
+                                        style={{
+                                          color: 'var(--text-2)', minWidth: 0, maxWidth: 140,
+                                          overflow: 'hidden', textOverflow: 'ellipsis',
+                                          whiteSpace: 'nowrap', flex: '0 0 auto',
+                                        }}
+                                        title={m.original_header}
+                                      >{m.original_header || '(empty)'}</span>
+                                      <span style={{ color: 'var(--text-3)' }}>&rarr;</span>
+                                      <span style={{
+                                        color: m.canonical_field ? 'var(--text)' : 'var(--badge-red-text)',
+                                        fontWeight: 600,
+                                      }}>{m.canonical_field || '—'}</span>
+                                      <span style={{
+                                        fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+                                        background: methodBg, color: methodColor,
+                                        border: '1px solid ' + methodBg, flexShrink: 0,
+                                      }}>{methodLabel}</span>
+                                      {typeof m.confidence === 'number' && m.method !== 'alias' && m.method !== 'supplier_template' && (
+                                        <span style={{ color: 'var(--text-3)', fontSize: 10, flexShrink: 0 }}>
+                                          {Math.round(m.confidence * 100)}%
+                                        </span>
+                                      )}
+                                      {isAdvisory && (
+                                        <span
+                                          data-testid="mapping-advisory-flag"
+                                          style={{ color: 'var(--badge-amber-text)', fontSize: 9, flexShrink: 0 }}
+                                        >&#9888; review</span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                {diag.column_mapping_audit.some(m => m.method === 'llm') && (
+                                  <div
+                                    data-testid="mapping-llm-advisory-copy"
+                                    style={{
+                                      marginTop: 6, padding: '4px 8px',
+                                      background: 'var(--badge-purple-bg)', color: 'var(--badge-purple-text)',
+                                      borderRadius: 4, fontSize: 10, fontStyle: 'italic',
+                                    }}
+                                  >AI/LLM suggestions are advisory only. They do not create products, customers, PZ, or wFirma records. Supplier templates are reused only after operator approval. AI suggestions are not saved automatically.</div>
+                                )}
+                                {diag.column_mapping_audit.some(m => m.method === 'llm') && (
+                                  <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                    <Btn
+                                      small
+                                      variant="outline"
+                                      data-testid="approve-header-mapping-btn"
+                                      onClick={async () => {
+                                        const llmMappings = diag.column_mapping_audit
+                                          .filter(m => m.method === 'llm' && m.canonical_field)
+                                          .map(m => ({ raw_header: m.original_header, canonical_field: m.canonical_field, col_index: m.col_index, source_method: m.method, operator_confirmed: true }));
+                                        if (!llmMappings.length) return;
+                                        const preview = llmMappings.map(m => `  "${m.raw_header}" → ${m.canonical_field}`).join('\n');
+                                        const confirmed = window.confirm(
+                                          `Save ${llmMappings.length} AI-suggested mapping(s) as supplier templates?\n\n${preview}\n\nThis stores them for all future uploads from this supplier.`
+                                        );
+                                        if (!confirmed) return;
+                                        try {
+                                          const r = await fetch(
+                                            `/api/v1/packing/${encodeURIComponent(batchId)}/approve-header-mapping`,
+                                            {
+                                              method: 'POST',
+                                              headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ document_id: doc.id || '', mappings: llmMappings }),
+                                            }
+                                          );
+                                          const data = await r.json().catch(() => ({}));
+                                          if (!r.ok) {
+                                            onToast('Approval failed: ' + (data.detail || r.statusText));
+                                          } else {
+                                            onToast(`${data.approved_count || 0} mapping(s) approved and saved as supplier templates.`);
+                                          }
+                                        } catch (e) {
+                                          onToast('Approve failed: ' + (e.message || 'unknown'));
+                                        }
+                                      }}
+                                    >Approve selected mappings for this supplier</Btn>
+                                    <span
+                                      data-testid="approve-header-mapping-note"
+                                      style={{ fontSize: 9, color: 'var(--text-3)' }}
+                                    >Supplier templates are reused only after operator approval. AI suggestions are not saved automatically.</span>
+                                  </div>
+                                )}
+                                {diag.column_mapping_audit.some(m => m.method === 'unresolved' || m.method === 'fuzzy_warning') && (
+                                  <div
+                                    data-testid="mapping-unresolved-notice"
+                                    style={{
+                                      marginTop: 4, padding: '3px 8px',
+                                      background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
+                                      borderRadius: 4, fontSize: 10,
+                                    }}
+                                  >{diag.column_mapping_audit.filter(m => m.method === 'unresolved').length} unresolved column(s) — operator review required before use.</div>
+                                )}
+                                {/* ── "Suggest column mapping with AI" button ───────────────────
+                                    Only shown when unresolved or fuzzy_warning columns exist.
+                                    Operator must click explicitly — never fires automatically.
+                                    LLM output is advisory only; does not write business records. */}
+                                {diag.column_mapping_audit.some(m => m.method === 'unresolved' || m.method === 'fuzzy_warning') && (
+                                  <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                    <Btn
+                                      small
+                                      variant="outline"
+                                      data-testid="suggest-column-mapping-btn"
+                                      disabled={llmSuggestBusyDocId !== null}
+                                      onClick={async () => {
+                                        const docIdForLlm = doc.id || '';
+                                        if (!docIdForLlm || llmSuggestBusyDocId !== null) return;
+                                        setLlmSuggestBusyDocId(docIdForLlm);
+                                        try {
+                                          const r = await fetch(
+                                            `/api/v1/packing/${encodeURIComponent(batchId)}/suggest-column-mapping`,
+                                            {
+                                              method: 'POST',
+                                              headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ document_id: docIdForLlm }),
+                                            }
+                                          );
+                                          if (!r.ok) {
+                                            const msg = await r.text().catch(() => r.statusText);
+                                            throw new Error(msg);
+                                          }
+                                          setPackingInfoLoading(true);
+                                          try {
+                                            const pr = await fetch(`/api/v1/packing/${encodeURIComponent(batchId)}`);
+                                            if (pr.ok) setPackingInfo(await pr.json());
+                                          } finally {
+                                            setPackingInfoLoading(false);
+                                          }
+                                        } catch (e) {
+                                          onToast('AI column mapping failed: ' + (e.message || 'unknown'));
+                                        } finally {
+                                          setLlmSuggestBusyDocId(null);
+                                        }
+                                      }}
+                                    >{llmSuggestBusyDocId === (doc.id || '') ? 'Requesting AI suggestions…' : 'Suggest column mapping with AI'}</Btn>
+                                    <span
+                                      data-testid="suggest-column-mapping-advisory-note"
+                                      style={{ fontSize: 9, color: 'var(--text-3)' }}
+                                    >Advisory only — does not create business records.</span>
+                                  </div>
+                                )}
+                                {diag.llm_mapping_meta && (
+                                  <div
+                                    data-testid="llm-mapping-meta"
+                                    style={{ marginTop: 4, fontSize: 9, color: 'var(--text-3)' }}
+                                  >AI run: {diag.llm_mapping_meta.triggered_at || '?'} · advisory_only: true</div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                )}
+              </Card>
+            );
+          })()}
+
+          {/* ── Lane Readiness banners (read-only operator visibility) ───
+              Sales and purchase lane readiness in one glance.  No
+              execution buttons. No new fetch loops — single load
+              attached to Documents tab + Reparse-all completion.
+              Sales banner hidden when drafts_total === 0 to avoid
+              shouting empty state at the operator. */}
+          {(() => {
+            const lr = laneReadiness;
+            if (!lr || lr.error) return null;
+            const s = lr.sales    || {};
+            const p = lr.purchase || {};
+            const switchToAccounting = () => {
+              try { setActiveTab && setActiveTab('PZ / Accounting'); }
+              catch (_) {}
+            };
+            // Purchase banner color: blue when ready, amber when blocked,
+            // neutral when no packing yet.
+            const pzReady = !!p.pz_ready;
+            const noPacking = (p.packing_rows || 0) === 0;
+            const purchaseBg     = noPacking ? 'var(--bg-subtle)'
+              : pzReady ? 'var(--badge-blue-bg)'  : 'var(--badge-amber-bg)';
+            const purchaseBorder = noPacking ? 'var(--border-subtle)'
+              : pzReady ? 'var(--badge-blue-border)' : 'var(--badge-amber-border)';
+            const purchaseText   = noPacking ? 'var(--text-2)'
+              : pzReady ? 'var(--badge-blue-text)' : 'var(--badge-amber-text)';
+            const blockedLabel = Array.isArray(p.pz_blocked_by) && p.pz_blocked_by.length > 0
+              ? p.pz_blocked_by.join(', ')
+              : '';
+            const showSales = (s.drafts_total || 0) > 0;
+            return (
+              <div style={{ marginTop: 12, display: 'flex',
+                            flexDirection: 'column', gap: 8 }}>
+                {showSales && (
+                  <div
+                    data-testid="lane-readiness-sales"
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 12,
+                      padding: '10px 14px',
+                      background: 'var(--badge-purple-bg, #f3e8ff)',
+                      border: '1px solid var(--badge-purple-border, #c4b5fd)',
+                      borderRadius: 6,
+                    }}>
+                    <div style={{
+                      width: 28, height: 28, borderRadius: 6,
+                      background: 'var(--badge-purple-bg, #f3e8ff)',
+                      display: 'flex', alignItems: 'center',
+                      justifyContent: 'center', fontSize: 14,
+                    }}>🧾</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700,
+                                    letterSpacing: 0.6,
+                                    color: 'var(--badge-purple-text, #6b21a8)' }}>
+                        SALES LANE
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text)',
+                                    marginTop: 2, display: 'flex',
+                                    gap: 14, flexWrap: 'wrap' }}>
+                        <span><strong>{s.drafts_total || 0}</strong> drafts</span>
+                        <span><strong>{s.drafts_needs_review || 0}</strong> need review</span>
+                        <span><strong>{s.drafts_posted || 0}</strong> posted</span>
+                        {(s.drafts_post_failed || 0) > 0 && (
+                          <span style={{ color: 'var(--badge-red-text)' }}>
+                            <strong>{s.drafts_post_failed}</strong> post failed
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      data-testid="lane-readiness-sales-open-accounting"
+                      onClick={switchToAccounting}
+                      style={{
+                        padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                        background: 'transparent',
+                        border: '1px solid var(--badge-purple-border, #c4b5fd)',
+                        borderRadius: 4, cursor: 'pointer',
+                        color: 'var(--badge-purple-text, #6b21a8)',
+                        fontFamily: 'inherit',
+                      }}>Open Accounting</button>
+                  </div>
+                )}
+                {!showSales && (
+                  <div
+                    data-testid="lane-readiness-sales-empty"
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '10px 14px',
+                      background: 'var(--bg-subtle)',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: 6,
+                      fontSize: 11, color: 'var(--text-3)',
+                    }}>
+                    <span style={{ fontSize: 12 }}>🧾</span>
+                    <span style={{ fontSize: 11, fontWeight: 700,
+                                   letterSpacing: 0.6,
+                                   color: 'var(--text-2)' }}>SALES LANE</span>
+                    <span>· Sales drafts: 0 — run Reparse all after upload</span>
+                  </div>
+                )}
+                <div
+                  data-testid="lane-readiness-purchase"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    padding: '10px 14px',
+                    background: purchaseBg,
+                    border: '1px solid ' + purchaseBorder,
+                    borderRadius: 6,
+                  }}>
+                  <div style={{
+                    width: 28, height: 28, borderRadius: 6,
+                    background: purchaseBg,
+                    display: 'flex', alignItems: 'center',
+                    justifyContent: 'center', fontSize: 14,
+                  }}>📦</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700,
+                                  letterSpacing: 0.6, color: purchaseText }}>
+                      PURCHASE LANE
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text)',
+                                  marginTop: 2, display: 'flex',
+                                  gap: 14, flexWrap: 'wrap' }}>
+                      <span>
+                        products: <strong>{p.products_ready || 0}</strong>
+                        {' / '}<strong>{p.distinct_product_codes || 0}</strong> ready
+                      </span>
+                      {(p.products_missing || 0) > 0 && (
+                        <span><strong>{p.products_missing}</strong> missing</span>
+                      )}
+                      <span data-testid="lane-readiness-purchase-pz-status">
+                        PZ:{' '}
+                        {pzReady
+                          ? <strong style={{ color: 'var(--badge-blue-text)' }}>READY</strong>
+                          : noPacking
+                            ? <span style={{ color: 'var(--text-3)' }}>awaiting packing</span>
+                            : <span>blocked by <strong>{blockedLabel}</strong></span>}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* ── B0.X R3 — Contractor Resolution panel ─────────────────────
+              Pre-flights the packing-list contractor matches against the
+              local Client Master + Supplier Master caches and persists
+              the operator's confirm/override decision via the R2 routes
+              (PR #162). Inserted between the Packing List card and the
+              Document Registry. Does NOT change proforma / PZ / DHL /
+              customs / finance behaviour. Does NOT auto-create master
+              rows. Does NOT call wFirma. */}
+          <ContractorResolutionPanel batchId={batchId} packingInfo={packingInfo} />
+
+          {/* ── Document Registry (per-batch, read-only) ─────────────────── */}
+          {(() => {
+            const dr = docRegistry;
+            const isErr = dr && dr.error;
+            const docs = dr && !isErr ? (dr.documents || []) : [];
+
+            const sectionStyle = { padding: 14, marginTop: 20 };
+            const tblStyle = { width: '100%', borderCollapse: 'collapse', fontSize: 11 };
+            const thStyle  = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em' };
+            const tdStyle  = { padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)', verticalAlign: 'top' };
+
+            const pillStyle = (kind) => {
+              const map = {
+                ok:   { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+                warn: { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+                err:  { bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+                info: { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+                neutral: { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+              };
+              const c = map[kind] || map.neutral;
+              return { fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: c.bg, color: c.text, border: `1px solid ${c.border}`, display: 'inline-block', whiteSpace: 'nowrap' };
+            };
+
+            const statusKind = (s) => {
+              const v = (s || '').toLowerCase();
+              if (v === 'complete' || v === 'completed' || v === 'ok' || v === 'success') return 'ok';
+              if (v === 'pending' || v === 'in_progress' || v === 'processing') return 'warn';
+              if (v === 'failed' || v === 'error' || v === 'rejected') return 'err';
+              return 'neutral';
+            };
+            const statusBadge = (s) => <span style={pillStyle(statusKind(s))}>{s || '—'}</span>;
+
+            return (
+              <Card style={sectionStyle}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📚 Document Registry</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>Structured records from <code style={{ fontSize: 10 }}>shipment_documents</code>, with extracted fields per row.</div>
+                  </div>
+                  <Btn small variant="outline" onClick={loadDocRegistry} disabled={docRegistryLoading}>
+                    {docRegistryLoading ? 'Loading…' : '↺ Refresh'}
+                  </Btn>
+                </div>
+
+                {docRegistryLoading && !dr && (
+                  <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>Loading registry…</div>
+                )}
+
+                {isErr && (
+                  <div style={{ padding: 12, fontSize: 12, color: 'var(--badge-red-text)' }}>Registry failed: {dr.error}</div>
+                )}
+
+                {dr && !isErr && docs.length === 0 && (
+                  <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No documents registered yet.</div>
+                )}
+
+                {dr && !isErr && docs.length > 0 && (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={tblStyle}>
+                      <thead><tr>
+                        <th style={{ ...thStyle, width: 24 }}></th>
+                        <th style={thStyle}>Filename</th>
+                        <th style={thStyle}>Type</th>
+                        <th style={thStyle}>Parser</th>
+                        <th style={thStyle}>Extraction</th>
+                        <th style={thStyle}>Review</th>
+                        <th style={thStyle}>Hash</th>
+                        <th style={thStyle}>Created</th>
+                        <th style={thStyle}>Lines / Fields</th>
+                      </tr></thead>
+                      <tbody>
+                        {docs.map((d, i) => {
+                          const isOpen = expandedDocId === d.id;
+                          const fields = d.fields || [];
+                          const fieldsTotal = d.fields_total ?? fields.length;
+                          // Invoice rows: invoice extraction writes to
+                          // invoice_lines, not document_extracted_fields.
+                          // The 2026-05-17 registry payload enrichment adds
+                          // lines_count + lines_preview so we can show
+                          // "N lines" instead of misleading "Fields: 0".
+                          const isInvoice = d.document_type === 'purchase_invoice' || d.document_type === 'sales_invoice';
+                          const linesCount = d.lines_count;
+                          const linesPreview = d.lines_preview || [];
+                          // Count column: invoices show "N lines"; everything
+                          // else keeps "N fields" semantics. Honest "—"
+                          // when the relevant store is empty for the row's
+                          // doc type (avoids the misleading "0").
+                          let countCell;
+                          if (isInvoice) {
+                            if (typeof linesCount === 'number') {
+                              countCell = linesCount > 0
+                                ? <span data-testid="doc-registry-lines-count">{linesCount}{d.lines_truncated ? '+' : ''} lines</span>
+                                : (d.extraction_status === 'extraction_failed'
+                                    ? <span style={{ color: 'var(--badge-amber-text)' }}>extraction failed</span>
+                                    : <span style={{ color: 'var(--text-3)' }}>no lines</span>);
+                            } else {
+                              countCell = <span style={{ color: 'var(--text-3)' }}>—</span>;
+                            }
+                          } else {
+                            countCell = <span>{fieldsTotal}{d.fields_truncated ? '+' : ''}{fieldsTotal > 0 ? ' fields' : ''}</span>;
+                          }
+                          return (
+                            <React.Fragment key={d.id || i}>
+                              <tr data-testid={isInvoice ? 'doc-registry-row-invoice' : 'doc-registry-row-other'} style={{ cursor: 'pointer' }} onClick={() => setExpandedDocId(isOpen ? null : d.id)}>
+                                <td style={{ ...tdStyle, color: 'var(--text-3)' }}>{isOpen ? '▾' : '▸'}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace', color: 'var(--text)', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.canonical_file_name || d.file_name}>
+                                  {d.canonical_file_name || d.file_name || '—'}
+                                </td>
+                                <td style={tdStyle}>{d.document_type || '—'}</td>
+                                <td style={tdStyle}>{statusBadge(d.parser_status)}</td>
+                                <td style={tdStyle}>{statusBadge(d.extraction_status)}</td>
+                                <td style={tdStyle}>
+                                  {d.requires_manual_review
+                                    ? <span style={pillStyle('err')}>Review</span>
+                                    : <span style={{ fontSize: 10, color: 'var(--text-3)' }}>—</span>}
+                                </td>
+                                <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace', fontSize: 10 }} title={d.file_hash}>{(d.file_hash || '').slice(0, 8) || '—'}</td>
+                                <td style={tdStyle}>{d.created_at ? d.created_at.slice(0,16).replace('T',' ') : '—'}</td>
+                                <td style={tdStyle}>{countCell}</td>
+                              </tr>
+                              {isOpen && (
+                                <tr>
+                                  <td colSpan={9} style={{ padding: '0 8px 12px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border-subtle)' }}>
+                                    {isInvoice && linesPreview.length > 0 ? (
+                                      <div data-testid="doc-registry-invoice-preview">
+                                        <table style={{ ...tblStyle, marginTop: 8, marginBottom: 4, marginLeft: 16 }}>
+                                          <thead><tr>
+                                            <th style={thStyle}>#</th>
+                                            <th style={thStyle}>Invoice</th>
+                                            <th style={thStyle}>Product</th>
+                                            <th style={thStyle}>Description</th>
+                                            <th style={thStyle}>Qty</th>
+                                            <th style={thStyle}>Unit</th>
+                                            <th style={thStyle}>Total</th>
+                                            <th style={thStyle}>Currency</th>
+                                          </tr></thead>
+                                          <tbody>
+                                            {linesPreview.map((ln, li) => (
+                                              <tr key={ln.id || li}>
+                                                <td style={tdStyle}>{ln.line_position ?? li + 1}</td>
+                                                <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace' }}>{ln.invoice_no || '—'}</td>
+                                                <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace' }}>{ln.product_code || '—'}</td>
+                                                <td style={{ ...tdStyle, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ln.description}>{ln.description || '—'}</td>
+                                                <td style={tdStyle}>{ln.quantity ?? 0}</td>
+                                                <td style={tdStyle}>{typeof ln.unit_price === 'number' ? ln.unit_price.toFixed(2) : (ln.unit_price || 0)}</td>
+                                                <td style={tdStyle}>{typeof ln.total_value === 'number' ? ln.total_value.toFixed(2) : (ln.total_value || 0)}</td>
+                                                <td style={tdStyle}>{ln.currency || '—'}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                        {d.lines_truncated && (
+                                          <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '4px 16px 8px' }}>Showing first {linesPreview.length} of {linesCount} lines.</div>
+                                        )}
+                                      </div>
+                                    ) : isInvoice ? (
+                                      <div data-testid="doc-registry-invoice-empty" style={{ fontSize: 11, color: 'var(--text-3)', padding: '12px 4px' }}>
+                                        {d.extraction_status === 'extraction_failed'
+                                          ? 'Invoice extraction failed. Re-upload or run Recheck after fixing the source PDF.'
+                                          : (d.parser_status === 'pending' || d.extraction_status === 'pending')
+                                            ? 'Invoice extraction pending — run Recheck to parse.'
+                                            : 'No invoice lines extracted for this document.'}
+                                      </div>
+                                    ) : fields.length === 0 ? (
+                                      <div style={{ fontSize: 11, color: 'var(--text-3)', padding: '12px 4px' }}>No extracted fields for this document.</div>
+                                    ) : (
+                                      <table style={{ ...tblStyle, marginTop: 8, marginBottom: 4, marginLeft: 16 }}>
+                                        <thead><tr>
+                                          <th style={thStyle}>Field</th>
+                                          <th style={thStyle}>Value</th>
+                                          <th style={thStyle}>Confidence</th>
+                                          <th style={thStyle}>Verified</th>
+                                        </tr></thead>
+                                        <tbody>
+                                          {fields.map((fd, fi) => (
+                                            <tr key={fi}>
+                                              <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace', color: 'var(--text)' }}>{fd.field_name}</td>
+                                              <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace', maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={fd.normalized_value}>{fd.normalized_value || '—'}</td>
+                                              <td style={tdStyle}>{typeof fd.confidence === 'number' ? fd.confidence.toFixed(2) : '—'}</td>
+                                              <td style={tdStyle}>
+                                                {fd.verified_status === 'verified'
+                                                  ? <span style={pillStyle('ok')}>Verified</span>
+                                                  : <span style={{ fontSize: 10, color: 'var(--text-3)' }}>{fd.verified_status || 'unverified'}</span>}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    )}
+                                    {!isInvoice && d.fields_truncated && (
+                                      <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '4px 16px 8px' }}>Showing first 50 of {fieldsTotal} fields.</div>
+                                    )}
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Card>
+            );
+          })()}
+          </>);
+        })()}
+
+        {/* ── DHL / CUSTOMS TAB ──────────────────────────────────────────
+            Root cause of the prior black-screen bug: the 'DHL / Customs'
+            tab button existed and triggered loadDhlReadiness() at click
+            time, but NO render branch matched activeTab='DHL / Customs',
+            so the content area rendered nothing.  This branch surfaces
+            the dhlReadiness data that the useEffect at line ~2790
+            already loads — no new fetches, no new endpoints, no new
+            backend dependency.  Wrapped in TabErrorBoundary as the
+            safety-net layer mirroring dashboard.html. */}
+        {/* DHL / Customs render is OWNED by the two pre-existing
+            branches further down this file at:
+              - line ~6913 (Section 1 — Shipment & DHL Clearance)
+              - line ~8408 (DHL Customs Pipeline / readiness panel)
+            The earlier campaign that ADDED a render branch here did so
+            under the false premise that no branch existed — in fact
+            two did.  That redundant branch has been removed.  The
+            white-screen bug originates inside one of the two
+            pre-existing branches; locating which is the next
+            campaign's job. */}
+
+        {/* ── TIMELINE TAB ── */}
+        {activeTab === 'Timeline' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* ── Filter pills ── */}
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              {[['all', 'All Events'], ['ai_bridge', '⇌ AI Bridge']].map(([id, label]) => (
+                <button key={id} onClick={() => setTimelineFilter(id)}
+                  style={{ fontSize: 11, padding: '4px 12px', borderRadius: 12, border: '1px solid var(--border)', cursor: 'pointer', fontFamily: 'inherit',
+                    background: timelineFilter === id ? 'var(--accent)' : 'transparent',
+                    color:      timelineFilter === id ? '#fff' : 'var(--text-muted)',
+                    fontWeight: timelineFilter === id ? 700 : 400 }}>
+                  {label}
+                </button>
+              ))}
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 6 }}>
+                {timelineFilter === 'ai_bridge'
+                  ? `${timeline.filter(e => (e.event||'').startsWith('ai_bridge') || e.event === 'column_mapping_llm_requested').length} events`
+                  : `${timeline.length} events`}
+              </span>
+            </div>
+
+            {/* ── GOODS MOVEMENT TIMELINE ────────────────────────────────
+                Relocated from the Warehouse tab — chronological
+                events belong to Timeline. Source data is identical
+                (dbEvents / audit.tracking_events). */}
+            {(() => {
+              const rawEvents = dbEvents.length > 0
+                ? dbEvents.map(e => ({
+                    ...e,
+                    event_id:            e.id,
+                    raw_description:     e.description,
+                    requires_manual_review: !!e.requires_manual_review,
+                  }))
+                : (Array.isArray(audit && audit.tracking_events) ? audit.tracking_events : []);
+              const events = rawEvents;
+              const STAGE_COLOR = {
+                SHIPMENT_CREATED:            '#6b7280',
+                LABEL_CREATED:               '#6b7280',
+                PICKED_UP:                   '#2563eb',
+                DEPARTED_ORIGIN:             '#2563eb',
+                ARRIVED_ORIGIN_HUB:          '#2563eb',
+                DEPARTED_ORIGIN_HUB:         '#2563eb',
+                IN_TRANSIT:                  '#2563eb',
+                ARRIVED_DESTINATION_COUNTRY: '#0891b2',
+                CUSTOMS_PENDING:             '#d97706',
+                CUSTOMS_DOCUMENTS_REQUESTED: '#dc2626',
+                CUSTOMS_DOCUMENTS_SENT:      '#16a34a',
+                CUSTOMS_UNDER_REVIEW:        '#d97706',
+                CUSTOMS_CLEARED:             '#16a34a',
+                HANDED_TO_BROKER:            '#7c3aed',
+                OUT_FOR_DELIVERY:            '#d97706',
+                DELIVERED:                   '#16a34a',
+                EXCEPTION:                   '#dc2626',
+                CLOSED:                      '#6b7280',
+              };
+              const SOURCE_LABEL = {
+                dhl_api: 'DHL API', public_tracking: 'Public', manual: 'Manual',
+                email: 'Email', system: 'System',
+              };
+              const allEventsForDisplay = events.slice().sort((a, b) => (b.event_time || '').localeCompare(a.event_time || ''));
+              return (
+                <div style={{ padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                      Goods Movement Timeline {events.length > 0 && <span style={{ fontWeight: 400 }}>· {events.length} event{events.length !== 1 ? 's' : ''}{dbEvents.length > 0 ? ' (DB)' : ''}</span>}
+                    </div>
+                    {events.length > 0 && (
+                      <button
+                        onClick={async () => {
+                          try {
+                            await fetch(`/api/v1/tracking/events/export`, { method: 'POST', credentials: 'include' });
+                            window.open('/api/v1/tracking/events/export/download', '_blank');
+                          } catch (e) {}
+                        }}
+                        style={{ fontSize: 9, padding: '2px 7px', borderRadius: 3, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text-2)', cursor: 'pointer' }}
+                      >↓ Export XLSX</button>
+                    )}
+                  </div>
+                  {events.length === 0 ? (
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic' }}>No movement events recorded yet.</div>
+                  ) : (
+                    <div>
+                      {allEventsForDisplay.map((ev, i) => {
+                        const displayStage = ev.normalized_stage || ev.stage || 'UNKNOWN';
+                        const stageColor = STAGE_COLOR[displayStage] || '#6b7280';
+                        const needsReview = ev.requires_manual_review;
+                        const isWorkflowOnly = ev.stage && !ev.normalized_stage;
+                        return (
+                          <div key={ev.event_id || ev.id || i} style={{ display: 'flex', gap: 8, marginBottom: 6, alignItems: 'flex-start' }}>
+                            <span style={{ marginTop: 3, width: 7, height: 7, borderRadius: isWorkflowOnly ? '2px' : '50%', background: stageColor, flexShrink: 0, display: 'inline-block' }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap', marginBottom: 1 }}>
+                                <span style={{ fontSize: 10, fontWeight: 700, color: stageColor }}>
+                                  {displayStage.replace(/_/g, ' ')}
+                                </span>
+                                {isWorkflowOnly && (
+                                  <span style={{ fontSize: 9, padding: '1px 4px', borderRadius: 3, background: '#ede9fe', color: '#5b21b6', border: '1px solid #ddd6fe', fontWeight: 600 }}>
+                                    workflow
+                                  </span>
+                                )}
+                                {needsReview && (
+                                  <span style={{ fontSize: 9, padding: '1px 4px', borderRadius: 3, background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', fontWeight: 600 }}>
+                                    review
+                                  </span>
+                                )}
+                                <span style={{ fontSize: 9, color: 'var(--text-3)' }}>
+                                  via {SOURCE_LABEL[ev.source] || ev.source}
+                                </span>
+                              </div>
+                              {(ev.raw_description || ev.description) && (
+                                <div style={{ fontSize: 10, color: 'var(--text-2)', lineHeight: 1.3 }}>
+                                  {ev.raw_description || ev.description}
+                                </div>
+                              )}
+                              <div style={{ display: 'flex', gap: 8, fontSize: 9, color: 'var(--text-3)', marginTop: 1 }}>
+                                {ev.event_time && <span>{ev.event_time.slice(0, 16).replace('T', ' ')}</span>}
+                                {ev.location && <span>📍 {ev.location}</span>}
+                                {ev.confidence != null && ev.confidence < 0.9 && ev.confidence > 0 && (
+                                  <span style={{ opacity: 0.6 }}>conf {Math.round(ev.confidence * 100)}%</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* ── Timeline list ── */}
+            <Card style={{ padding: 28 }}>
+              {(() => {
+                const AI_BRIDGE_EVENTS = new Set(['ai_bridge_task_created', 'ai_bridge_result_received', 'column_mapping_llm_requested']);
+                const filtered = timelineFilter === 'ai_bridge'
+                  ? timeline.filter(e => AI_BRIDGE_EVENTS.has(e.event))
+                  : timeline;
+                if (filtered.length === 0) return (
+                  <div style={{ textAlign: 'center', color: 'var(--text-3)', padding: 40 }}>
+                    <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>⏱</div>
+                    <div style={{ fontSize: 13 }}>
+                      {timelineFilter === 'ai_bridge' ? 'No AI Bridge events recorded' : 'No timeline events recorded'}
+                    </div>
+                  </div>
+                );
+                return (
+                  <div style={{ position: 'relative', paddingLeft: 32 }}>
+                    <div style={{ position: 'absolute', left: 7, top: 0, bottom: 0, width: 2, background: 'var(--border)' }} />
+                    {filtered.map((e, i) => {
+                      const done = e.done || e.status === 'done' || e.completed;
+                      const EVENT_LABELS = {
+                        'column_mapping_llm_requested': 'AI: column mapping suggestions requested',
+                      };
+                      const label = e.label || EVENT_LABELS[e.event] || e.event || e.action || e.message || `Event ${i+1}`;
+                      const ts = e.ts || e.timestamp || e.time || e.date;
+                      const isAiBridge = AI_BRIDGE_EVENTS.has(e.event);
+                      return (
+                        <div key={i} style={{ position: 'relative', marginBottom: 20, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+                          <div style={{ position: 'absolute', left: -32, width: 16, height: 16, borderRadius: '50%',
+                            background: isAiBridge ? '#EFF6FF' : done ? GOLD : 'var(--card)',
+                            border: `2px solid ${isAiBridge ? '#93C5FD' : done ? GOLD : 'var(--badge-neutral-border)'}`,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1, top: 1 }}>
+                            {isAiBridge && <span style={{ fontSize: 8, color: '#1D4ED8' }}>⇌</span>}
+                            {!isAiBridge && done && <span style={{ fontSize: 7, color: 'var(--text)' }}>✓</span>}
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 12, fontWeight: isAiBridge || done ? 600 : 400,
+                              color: isAiBridge ? '#1D4ED8' : done ? 'var(--text)' : 'var(--text-3)' }}>{label}</div>
+                            {e.actor && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 1 }}>actor: {e.actor}</div>}
+                            {ts && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 1 }}>{new Date(ts).toLocaleString('pl-PL')}</div>}
+                            {!ts && done && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 1 }}>Completed</div>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </Card>
+
+            {/* ── AI Bridge Results from audit ── */}
+            {audit && (audit.ai_bridge_results || []).length > 0 && (
+              <Card style={{ padding: '14px 20px' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#1D4ED8', marginBottom: 10 }}>⇌ AI Bridge Results</div>
+                {(audit.ai_bridge_results || []).map((r, i) => (
+                  <div key={i} style={{ padding: '8px 10px', background: '#EFF6FF', border: '1px solid #93C5FD', borderRadius: 6, marginBottom: 6, fontSize: 11 }}>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                      <span style={{ color: '#1D4ED8', fontWeight: 600 }}>{r.task_type || r.type || '—'}</span>
+                      <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>{(r.task_id || '').slice(0,12)}…</span>
+                      {r.confidence && <span style={{ color: 'var(--text-muted)' }}>confidence: {r.confidence}</span>}
+                      {r.tool_used  && <span style={{ color: 'var(--text-muted)' }}>tool: {r.tool_used}</span>}
+                      <span style={{ marginLeft: 'auto', color: 'var(--text-muted)' }}>{r.timestamp ? new Date(r.timestamp).toLocaleString('pl-PL') : ''}</span>
+                    </div>
+                  </div>
+                ))}
+              </Card>
+            )}
+
+            {/* ── AI Bridge Errors from audit ── */}
+            {audit && (audit.ai_bridge_errors || []).length > 0 && (
+              <Card style={{ padding: '14px 20px' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#B91C1C', marginBottom: 10 }}>⚠ AI Bridge Rejected Results</div>
+                {(audit.ai_bridge_errors || []).map((r, i) => (
+                  <div key={i} style={{ padding: '8px 10px', background: '#FEF2F2', border: '1px solid #FCA5A5', borderRadius: 6, marginBottom: 6, fontSize: 11 }}>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                      <span style={{ color: '#B91C1C', fontWeight: 600 }}>REJECTED</span>
+                      <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>{(r.task_id || '').slice(0,12)}…</span>
+                      <span style={{ color: 'var(--text-muted)' }}>{r.task_type || '—'}</span>
+                      <span style={{ marginLeft: 'auto', color: 'var(--text-muted)' }}>{r.timestamp ? new Date(r.timestamp).toLocaleString('pl-PL') : ''}</span>
+                    </div>
+                    <div style={{ color: '#B91C1C', marginTop: 4 }}>{r.reason}</div>
+                  </div>
+                ))}
+              </Card>
+            )}
+          </div>
+        )}
+
+        {/* ── Live Intelligence Status tab ─────────────────────────────────── */}
+        {activeTab === 'Intelligence' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* Header row */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>◈ Live Intelligence Status</div>
+              <Btn small variant="outline" onClick={loadIntelligence} disabled={intelLoading}>
+                {intelLoading ? '⟳ Loading…' : '↻ Refresh'}
+              </Btn>
+            </div>
+
+            {/* Error state */}
+            {intelData?.error && (
+              <div style={{ padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)' }}>
+                {intelData.error}
+              </div>
+            )}
+
+            {/* Loading skeleton */}
+            {intelLoading && !intelData && (
+              <div style={{ textAlign: 'center', color: 'var(--text-3)', padding: 40 }}>
+                <div style={{ fontSize: 24, animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</div>
+              </div>
+            )}
+
+            {intelData && !intelData.error && (() => {
+              const slaW  = intelData.sla_warnings  || [];
+              const sug   = intelData.suggestions   || [];
+              const risks = intelData.risk_warnings  || [];
+              const sla   = intelData.sla_summary   || {};
+              const last  = intelData.last_event;
+              const next  = intelData.next_step;
+
+              const highSug  = sug.filter(s => s.confidence === 'high');
+              const highSla  = slaW.filter(w => w.severity === 'HIGH');
+              const highRisk = risks.filter(r => r.severity === 'HIGH');
+              const totalAlerts = highSug.length + highSla.length + highRisk.length;
+
+              return (
+                <React.Fragment>
+                  {/* ── Status summary bar ─────────────────────────────────── */}
+                  <Card style={{ padding: '14px 20px' }}>
+                    <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Active Alerts</div>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: totalAlerts > 0 ? 'var(--badge-red-text)' : 'var(--badge-green-text)' }}>
+                          {totalAlerts}
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.06em' }}>SLA</div>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: highSla.length > 0 ? 'var(--badge-red-text)' : slaW.length > 0 ? 'var(--badge-amber-text)' : 'var(--badge-green-text)' }}>
+                          {sla.full_sla_pct != null ? `${sla.full_sla_pct}% used` : '—'}
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Timeline depth</div>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{intelData.timeline_depth} events</div>
+                      </div>
+                      <div style={{ flex: 1 }} />
+                      <div style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                        {intelData.generated_at ? new Date(intelData.generated_at).toLocaleString('pl-PL') : ''}
+                      </div>
+                    </div>
+                  </Card>
+
+                  {/* ── Last detected event ────────────────────────────────── */}
+                  <Card style={{ padding: '14px 20px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Last Detected Event</div>
+                    {last ? (
+                      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                        <div style={{ padding: '3px 10px', background: 'var(--badge-blue-bg)', borderRadius: 4, fontSize: 11, fontWeight: 700, color: 'var(--badge-blue-text)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                          {last.event}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 200 }}>
+                          {last.actor && last.actor !== 'system' && (
+                            <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 2 }}>via {last.actor}</div>
+                          )}
+                          {last.ts && (
+                            <div style={{ fontSize: 10, color: 'var(--text-3)' }}>{new Date(last.ts).toLocaleString('pl-PL')}</div>
+                          )}
+                          {(last.detail?.awb || last.detail?.mrn || last.detail?.pln_amount) && (
+                            <div style={{ display: 'flex', gap: 10, marginTop: 4, flexWrap: 'wrap' }}>
+                              {last.detail.awb && <span style={{ fontSize: 10, color: 'var(--text-3)' }}>AWB: {last.detail.awb}</span>}
+                              {last.detail.mrn && <span style={{ fontSize: 10, color: 'var(--text-3)' }}>MRN: {last.detail.mrn}</span>}
+                              {last.detail.pln_amount && <span style={{ fontSize: 10, color: 'var(--badge-amber-text)', fontWeight: 700 }}>{last.detail.pln_amount} PLN</span>}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12, color: 'var(--text-3)', fontStyle: 'italic' }}>
+                        No email-sourced events on timeline yet
+                      </div>
+                    )}
+                  </Card>
+
+                  {/* ── Next expected step ─────────────────────────────────── */}
+                  {next && (
+                    <Card style={{ padding: '14px 20px', borderLeft: '3px solid var(--accent)' }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Next Expected Step</div>
+                      <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.5 }}>{next}</div>
+                    </Card>
+                  )}
+
+                  {/* ── SLA warnings ──────────────────────────────────────── */}
+                  {slaW.length > 0 && (
+                    <Card style={{ padding: '14px 20px' }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}>SLA Warnings ({slaW.length})</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {slaW.map((w, i) => (
+                          <div key={i} style={{ padding: '8px 12px', borderRadius: 6, background: w.severity === 'HIGH' ? 'var(--badge-red-bg)' : 'var(--badge-amber-bg)', border: `1px solid ${w.severity === 'HIGH' ? 'var(--badge-red-border)' : 'var(--badge-amber-border)'}`, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: w.severity === 'HIGH' ? 'var(--badge-red-text)' : 'var(--badge-amber-text)', whiteSpace: 'nowrap', paddingTop: 1 }}>{w.severity}</span>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', marginBottom: 2, fontFamily: 'monospace' }}>{w.code}</div>
+                              <div style={{ fontSize: 11, color: 'var(--text-2)' }}>{w.message}</div>
+                              {w.elapsed_h != null && (
+                                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{w.elapsed_h.toFixed(1)}h elapsed</div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </Card>
+                  )}
+
+                  {/* ── Active suggestions ────────────────────────────────── */}
+                  {sug.length > 0 && (
+                    <Card style={{ padding: '14px 20px' }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Cowork Suggestions ({sug.length})</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {sug.map((s, i) => (
+                          <div key={i} style={{ padding: '8px 12px', borderRadius: 6, background: 'var(--bg-subtle)', border: '1px solid var(--border)', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: s.confidence === 'high' ? 'var(--badge-red-text)' : s.confidence === 'medium' ? 'var(--badge-amber-text)' : 'var(--text-3)', textTransform: 'uppercase', whiteSpace: 'nowrap', paddingTop: 2 }}>{s.confidence}</span>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', marginBottom: 2, fontFamily: 'monospace' }}>{s.trigger}</div>
+                              <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 3 }}>{s.reason}</div>
+                              <div style={{ fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic' }}>→ {s.action}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </Card>
+                  )}
+
+                  {/* ── No alerts state ───────────────────────────────────── */}
+                  {totalAlerts === 0 && sug.length === 0 && !intelLoading && (
+                    <Card style={{ padding: 28, textAlign: 'center' }}>
+                      <div style={{ fontSize: 28, marginBottom: 8 }}>✓</div>
+                      <div style={{ fontSize: 13, color: 'var(--badge-green-text)', fontWeight: 600 }}>No active alerts</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>SLA on track · No triggers detected</div>
+                    </Card>
+                  )}
+                </React.Fragment>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* ── Action Proposals tab ─────────────────────────────────────────── */}
+        {activeTab === 'Proposals' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>⚡ Action Proposals</div>
+              <Btn small variant="outline" onClick={loadProposals} disabled={proposalsLoading}>
+                {proposalsLoading ? 'Loading…' : '↺ Refresh'}
+              </Btn>
+            </div>
+
+            {proposalsLoading && proposals.length === 0 && (
+              <Card style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+                Loading proposals…
+              </Card>
+            )}
+
+            {!proposalsLoading && proposals.length === 0 && (
+              <Card style={{ padding: 28, textAlign: 'center' }}>
+                <div style={{ fontSize: 28, marginBottom: 8 }}>✓</div>
+                <div style={{ fontSize: 13, color: 'var(--badge-green-text)', fontWeight: 600 }}>No pending proposals</div>
+                <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>All cowork triggers resolved · No action required</div>
+              </Card>
+            )}
+
+            {proposals.map(p => {
+              const statusColor = {
+                pending_review: 'var(--badge-amber-text)',
+                approved: 'var(--badge-green-text)',
+                queued: '#6366f1',
+                rejected: 'var(--badge-red-text)',
+                sent: 'var(--badge-green-text)',
+                done: 'var(--badge-green-text)',
+              }[p.status] || 'var(--text-3)';
+              const statusBg = {
+                pending_review: 'var(--badge-amber-bg)',
+                approved: 'var(--badge-green-bg)',
+                queued: '#ede9fe',
+                rejected: 'var(--badge-red-bg)',
+                sent: 'var(--badge-green-bg)',
+                done: 'var(--badge-green-bg)',
+              }[p.status] || 'var(--bg-2)';
+              const draft = p.draft || {};
+              const busy = proposalsBusy[p.proposal_id];
+              const isPending = p.status === 'pending_review';
+              const isApproved = p.status === 'approved';
+              const isDone = p.status === 'done';
+              const isTrackingLookup = p.type === 'tracking_lookup';
+              // Phase 3.6: decision advisory — is this proposal the top recommended action?
+              const proposalIsPrimary = !!(topProposalId && topProposalId === p.proposal_id);
+              const canApprove = p.can_approve;
+              const approveDisabledReason = p.approve_blocked_reason;
+              return (
+                <Card key={p.proposal_id} style={{ padding: 16, borderLeft: `4px solid ${statusColor}`, outline: proposalIsPrimary && isPending ? '2px solid var(--badge-green-border)' : undefined }}>
+                  {/* Header row */}
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace' }}>{p.type}</span>
+                        {isTrackingLookup && (
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: '#dbeafe', color: '#1d4ed8' }}>COWORK TASK</span>
+                        )}
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: statusBg, color: statusColor, textTransform: 'uppercase' }}>{p.status.replace(/_/g, ' ')}</span>
+                        {p.confidence && (
+                          <span style={{ fontSize: 10, color: p.confidence === 'high' ? 'var(--badge-red-text)' : p.confidence === 'medium' ? 'var(--badge-amber-text)' : 'var(--text-3)', textTransform: 'uppercase', fontWeight: 600 }}>{p.confidence}</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 4 }}>{p.reason}</div>
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
+                      {p.created_at ? new Date(p.created_at).toLocaleString('pl-PL') : ''}
+                    </div>
+                  </div>
+
+                  {/* Tracking lookup: cowork task card */}
+                  {isTrackingLookup && (
+                    <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '8px 10px', fontSize: 11, marginBottom: 10 }}>
+                      <div style={{ fontWeight: 600, color: '#1e40af', marginBottom: 4 }}>🔍 {draft.instruction || 'Fetch latest status from public tracking page'}</div>
+                      <div><span style={{ color: '#3b82f6' }}>AWB:</span> {draft.awb || p.awb || ''}</div>
+                      <div><span style={{ color: '#3b82f6' }}>Carrier:</span> {draft.carrier || ''}</div>
+                      {draft.tracking_url && (
+                        <div style={{ marginTop: 6 }}>
+                          <a href={draft.tracking_url} target="_blank" rel="noopener noreferrer"
+                            style={{ fontSize: 11, fontWeight: 600, color: '#1d4ed8', textDecoration: 'none', padding: '3px 8px', border: '1px solid #93c5fd', borderRadius: 4, background: '#dbeafe' }}>
+                            ↗ Open Public Tracking
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Email draft preview (non-tracking types) */}
+                  {!isTrackingLookup && draft.to && (
+                    <div style={{ background: 'var(--bg-2)', borderRadius: 6, padding: '8px 10px', fontSize: 11, marginBottom: 10, fontFamily: 'monospace', lineHeight: 1.6 }}>
+                      <div><span style={{ color: 'var(--text-3)' }}>To:</span> {draft.to}</div>
+                      {draft.cc && <div><span style={{ color: 'var(--text-3)' }}>CC:</span> {draft.cc}</div>}
+                      <div><span style={{ color: 'var(--text-3)' }}>Subject:</span> {draft.subject}</div>
+                      {(draft.attachments || []).length > 0 && (
+                        <div style={{ marginTop: 4 }}>
+                          <span style={{ color: 'var(--text-3)' }}>Attachments:</span>{' '}
+                          {(draft.attachments || []).map(a => (
+                            <span key={a.label} style={{ background: 'var(--bg-3)', borderRadius: 3, padding: '1px 5px', marginRight: 4, color: 'var(--text-2)' }}>{a.label}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Approval info */}
+                  {p.approved_by && !isTrackingLookup && (
+                    <div style={{ fontSize: 10, color: 'var(--badge-green-text)', marginBottom: 8 }}>
+                      ✓ Approved by {p.approved_by}{p.approved_at ? ` at ${new Date(p.approved_at).toLocaleString('pl-PL')}` : ''}
+                    </div>
+                  )}
+                  {p.status === 'rejected' && (
+                    <div style={{ fontSize: 10, color: 'var(--badge-red-text)', marginBottom: 8 }}>
+                      ✗ Rejected by {p.rejected_by}: {p.reject_reason}
+                    </div>
+                  )}
+                  {isDone && (
+                    <div style={{ fontSize: 10, color: 'var(--badge-green-text)', marginBottom: 8 }}>
+                      ✓ Done{p.done_at ? ` · ${p.done_at.slice(0,19).replace('T',' ')}` : ''}{p.done_source ? ` via ${p.done_source}` : ''}
+                    </div>
+                  )}
+                  {p.email_id && (
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 8 }}>
+                      Queue ID: <span style={{ fontFamily: 'monospace' }}>{p.email_id}</span>
+                    </div>
+                  )}
+
+                  {/* ── TRACKING LOOKUP action buttons ── */}
+                  {isTrackingLookup && (isPending || isApproved) && !isDone && (
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <Btn small variant="primary" disabled={busy} onClick={() => {
+                        const status   = window.prompt('Tracking status (in_transit / delivered / customs / out_for_delivery / exception / unknown):', 'in_transit');
+                        if (!status) return;
+                        const lastEv   = window.prompt('Last event:', '');
+                        if (lastEv === null) return;
+                        const location = window.prompt('Location (e.g. WARSAW - PL):', '');
+                        setProposalsBusy(prev => ({ ...prev, [p.proposal_id]: true }));
+                        apiFetch(`/api/v1/tracking/batch/${encodeURIComponent(batchId)}/update`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            status,
+                            last_event:  lastEv,
+                            location:    location || '',
+                            source:      'operator_manual',
+                            proposal_id: p.proposal_id,
+                          }),
+                        })
+                        .then(() => { onToast('Tracking updated.', 'success'); loadProposals(); fetchTracking(true); })
+                        .catch(e => onToast(e.message || 'Failed', 'error'))
+                        .finally(() => setProposalsBusy(prev => ({ ...prev, [p.proposal_id]: false })));
+                      }}>
+                        {busy ? '…' : '✓ Mark as Done'}
+                      </Btn>
+                      <Btn small variant="outline" disabled={busy} onClick={() => {
+                        const reason = window.prompt('Reject reason:');
+                        if (reason) proposalAction(p.proposal_id, 'reject', { rejected_by: 'admin', reason });
+                      }}>
+                        {busy ? '…' : '✗ Reject'}
+                      </Btn>
+                    </div>
+                  )}
+
+                  {/* ── EMAIL proposal action buttons ── */}
+                  {!isTrackingLookup && (isPending || isApproved) && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {isPending && approveDisabledReason && (
+                        <div data-testid="proposal-approve-disabled-reason" style={{ fontSize: 10, color: 'var(--badge-amber-text)', padding: '4px 8px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 4 }}>
+                          ⚠ Approve disabled — {approveDisabledReason}
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {isPending && (
+                        <>
+                          <Btn small variant="primary"
+                            data-testid="proposal-approve-btn"
+                            disabled={busy || !canApprove}
+                            style={{ opacity: !canApprove ? 0.45 : 1, cursor: !canApprove ? 'not-allowed' : 'pointer' }}
+                            onClick={() => {
+                              const approver = window.prompt('Approve as (enter your name/email):');
+                              if (approver) proposalAction(p.proposal_id, 'approve', { approved_by: approver });
+                            }}>
+                            {busy ? '…' : '✓ Approve'}
+                          </Btn>
+                          <Btn small variant="outline" disabled={busy} onClick={() => {
+                            const reason = window.prompt('Reject reason:');
+                            if (reason) proposalAction(p.proposal_id, 'reject', { rejected_by: 'admin', reason });
+                          }}>
+                            {busy ? '…' : '✗ Reject'}
+                          </Btn>
+                        </>
+                      )}
+                      {isApproved && (
+                        <Btn small variant="primary" disabled={busy} onClick={() => {
+                          if (window.confirm(`Queue email to ${draft.to}?\n\nThis will add the email to the send queue. No email is auto-sent.`)) {
+                            proposalAction(p.proposal_id, 'queue', {});
+                          }
+                        }}>
+                          {busy ? 'Queuing…' : '→ Queue Email'}
+                        </Btn>
+                      )}
+                    </div>
+                    </div>
+                  )}
+                </Card>
+              );
+            })}
+          </div>
+        )}
+
+        {activeTab === 'Warehouse' && (() => {
+          const wa = warehouseAudit;
+          const isErr = wa && wa.error;
+          const summary = wa && !isErr ? (wa.summary || {}) : {};
+          const missing = wa && !isErr ? (wa.missing_scans || []) : [];
+          const stuck   = wa && !isErr ? (wa.stuck_inventory || []) : [];
+          const invalid = wa && !isErr ? (wa.invalid_flows || []) : [];
+          const orphans = wa && !isErr ? (wa.orphan_inventory || []) : [];
+          // C13D: synthetic PURCHASE_TRANSIT batches have no warehouse scans yet — not a gap.
+          // C18A: also recognise non-synthetic batches where ALL pieces are in PURCHASE_TRANSIT.
+          const isTransit      = !!(invState &&
+                                    ((invState.synthetic === true) ||
+                                     (invState.total > 0 &&
+                                      invState.total === ((invState.counts || {}).PURCHASE_TRANSIT || 0))) &&
+                                    ((invState.counts || {}).PURCHASE_TRANSIT || 0) > 0);
+          const displayMissing  = isTransit ? [] : missing;
+          const cleanGate = !isErr && displayMissing.length === 0 && stuck.length === 0 && invalid.length === 0 && orphans.length === 0;
+          const sectionStyle = { padding: 14, marginBottom: 12 };
+          const headStyle    = { fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
+          const tblStyle     = { width: '100%', borderCollapse: 'collapse', fontSize: 11 };
+          const thStyle      = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em' };
+          const tdStyle      = { padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' };
+          const badge        = (n, color) => (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: n === 0 ? 'var(--badge-green-bg)' : color.bg, color: n === 0 ? 'var(--badge-green-text)' : color.text }}>{n}</span>
+          );
+          // UI-3.1a: derive operator-readable inventory lifecycle from existing payload.
+          // Inputs are purely existing backend fields — no new endpoints, no new allowlist.
+          //   warehouseAudit.summary.{total_items, scanned_items, dispatched_items, missing_items}
+          //   audit.wfirma_export.wfirma_pz_doc_id  → reserved signal
+          // Operator-readable labels live in a map; technical key is exposed via data-lifecycle-state.
+          const wfExp = (audit && audit.wfirma_export) || {};
+          const hasPzDocId = !!(wfExp.wfirma_pz_doc_id && String(wfExp.wfirma_pz_doc_id).trim());
+          const lifecycleState = (() => {
+            if (!wa || isErr) return 'unknown';
+            const total      = Number(summary.total_items      || 0);
+            const scanned    = Number(summary.scanned_items    || 0);
+            const dispatched = Number(summary.dispatched_items || 0);
+            if (total === 0) return 'unknown';
+            if (dispatched > 0 && dispatched >= total) return 'dispatched';
+            if (dispatched > 0)                        return 'partial_dispatch';
+            if (isTransit)                             return 'in_transit';  // C13D
+            if (scanned === 0)                         return 'awaiting';
+            if (scanned < total)                       return 'partial_received';
+            if (hasPzDocId)                            return 'reserved';
+            return 'in_warehouse';
+          })();
+          const lifecycleLabel = {
+            unknown:          'No packing list',
+            in_transit:       'In transit / Awaiting warehouse receive',  // C13D
+            awaiting:         'Awaiting receipt',
+            partial_received: 'Partially received',
+            in_warehouse:     'In warehouse',
+            reserved:         'Reserved (PZ created)',
+            partial_dispatch: 'Partial dispatch',
+            dispatched:       'Dispatched',
+          }[lifecycleState] || 'No packing list';
+          const lifecycleTone = {
+            unknown:          { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+            in_transit:       { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },  // C13D
+            awaiting:         { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+            partial_received: { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+            in_warehouse:     { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+            reserved:         { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+            partial_dispatch: { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+            dispatched:       { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+          }[lifecycleState] || { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
+
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {/* Phase 2: Readiness banner */}
+              <ReadinessBanner
+                data-testid="readiness-banner-warehouse"
+                domain="warehouse"
+                status={batchReadiness && batchReadiness.warehouse ? batchReadiness.warehouse.status : null}
+                ready={batchReadiness && batchReadiness.warehouse ? batchReadiness.warehouse.ready : false}
+                message={batchReadiness && batchReadiness.warehouse ? batchReadiness.warehouse.message : null}
+                loading={batchReadinessLoading && !batchReadiness}
+                error={batchReadinessError}
+              />
+              {/* UI-3.1a: operator-readable inventory lifecycle badge (read-only, derived). */}
+              <div
+                data-testid="warehouse-inventory-lifecycle-badge"
+                data-lifecycle-state={lifecycleState}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text-2)' }}
+              >
+                <span style={{ color: 'var(--text-3)' }}>Inventory lifecycle:</span>
+                <span
+                  data-testid="warehouse-inventory-lifecycle-pill"
+                  style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: lifecycleTone.bg, color: lifecycleTone.text, border: `1px solid ${lifecycleTone.border}`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                >
+                  {lifecycleLabel}
+                </span>
+                <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                  Derived from warehouse audit + wFirma PZ state — no manual control.
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📦 Warehouse Audit</div>
+                <Btn small variant="outline" onClick={loadWarehouseAudit} disabled={warehouseAuditLoading}>
+                  {warehouseAuditLoading ? 'Loading…' : '↺ Refresh'}
+                </Btn>
+              </div>
+
+              {warehouseAuditLoading && !wa && (
+                <Card style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>Loading audit…</Card>
+              )}
+
+              {isErr && (
+                <Card style={{ padding: 16 }}>
+                  <div style={{ fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }}>Audit failed: {wa.error}</div>
+                </Card>
+              )}
+
+              {wa && !isErr && (
+                <>
+                  {/* Summary card */}
+                  <Card style={sectionStyle}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>Completion Summary</div>
+                      <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-2)' }}>
+                        <div><span style={{ color: 'var(--text-3)' }}>Total:</span> <b>{summary.total_items ?? 0}</b></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Scanned:</span> <b>{summary.scanned_items ?? 0}</b></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Dispatched:</span> <b>{summary.dispatched_items ?? 0}</b></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Missing:</span> <b style={{ color: (summary.missing_items || 0) > 0 ? 'var(--badge-red-text)' : 'var(--text)' }}>{summary.missing_items ?? 0}</b></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Completion:</span> <b>{summary.completion_pct ?? 0}%</b></div>
+                      </div>
+                    </div>
+                  </Card>
+
+                  {/* Reservation gate */}
+                  <Card style={{ ...sectionStyle, background: cleanGate ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)', border: `1px solid ${cleanGate ? 'var(--badge-green-border)' : 'var(--badge-amber-border)'}` }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: cleanGate ? 'var(--badge-green-text)' : 'var(--badge-amber-text)' }}>
+                      {cleanGate ? '✓ Audit clean — reservation gate OPEN' : '⚠ Audit issues present — reservation gate BLOCKED'}
+                    </div>
+                    {!cleanGate && (
+                      <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 4 }}>
+                        Resolve all sections below before creating a wFirma reservation.
+                      </div>
+                    )}
+                  </Card>
+
+                  {/* Missing scans — C13D: suppressed for pure-transit batches */}
+                  <Card style={sectionStyle}>
+                    <div style={headStyle}>
+                      <span>Missing scans {badge(displayMissing.length, { bg: 'var(--badge-red-bg)', text: 'var(--badge-red-text)' })}</span>
+                      <span style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 400 }}>Packing lines not yet scanned into warehouse</span>
+                    </div>
+                    {isTransit && missing.length > 0 ? (
+                      <div style={{ fontSize: 11, color: 'var(--badge-blue-text)', background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)', borderRadius: 4, padding: '6px 10px' }}
+                           data-testid="warehouse-transit-note">
+                        {missing.length} item(s) in transit (PURCHASE_TRANSIT) — goods are en route, not yet received at warehouse. No action required until delivery.
+                      </div>
+                    ) : displayMissing.length === 0 ? (
+                      <div style={{ fontSize: 11, color: 'var(--text-3)' }}>No missing scans.</div>
+                    ) : (
+                      <table style={tblStyle}>
+                        <thead><tr>
+                          <th style={thStyle}>Expected scan code</th>
+                          <th style={thStyle}>Product</th>
+                          <th style={thStyle}>Design</th>
+                          <th style={thStyle}>Pcs</th>
+                        </tr></thead>
+                        <tbody>
+                          {displayMissing.slice(0, 200).map((m, i) => (
+                            <tr key={i}>
+                              <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace' }}>{m._expected_scan_code || '—'}</td>
+                              <td style={tdStyle}>{m.product_code || '—'}</td>
+                              <td style={tdStyle}>{m.design_no || '—'}</td>
+                              <td style={tdStyle}>{m.qty ?? m.quantity ?? '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                    {displayMissing.length > 200 && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 6 }}>Showing first 200 of {displayMissing.length}.</div>}
+                  </Card>
+
+                  {/* Stuck inventory */}
+                  <Card style={sectionStyle}>
+                    <div style={headStyle}>
+                      <span>Stuck inventory {badge(stuck.length, { bg: 'var(--badge-amber-bg)', text: 'var(--badge-amber-text)' })}</span>
+                      <span style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 400 }}>Items at RECV* &gt; 24h since last move</span>
+                    </div>
+                    {stuck.length === 0 ? (
+                      <div style={{ fontSize: 11, color: 'var(--text-3)' }}>No stuck items.</div>
+                    ) : (
+                      <table style={tblStyle}>
+                        <thead><tr>
+                          <th style={thStyle}>Scan code</th>
+                          <th style={thStyle}>Location</th>
+                          <th style={thStyle}>Status</th>
+                          <th style={thStyle}>Hours</th>
+                        </tr></thead>
+                        <tbody>
+                          {stuck.slice(0, 200).map((s, i) => (
+                            <tr key={i}>
+                              <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace' }}>{s.scan_code}</td>
+                              <td style={tdStyle}>{s.current_location || '—'}</td>
+                              <td style={tdStyle}>{s.current_status || '—'}</td>
+                              <td style={tdStyle}>{s._stuck_hours ?? '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </Card>
+
+                  {/* Invalid flows */}
+                  <Card style={sectionStyle}>
+                    <div style={headStyle}>
+                      <span>Invalid flows {badge(invalid.length, { bg: 'var(--badge-red-bg)', text: 'var(--badge-red-text)' })}</span>
+                      <span style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 400 }}>Out-of-order scan sequences</span>
+                    </div>
+                    {invalid.length === 0 ? (
+                      <div style={{ fontSize: 11, color: 'var(--text-3)' }}>No flow violations.</div>
+                    ) : (
+                      <table style={tblStyle}>
+                        <thead><tr>
+                          <th style={thStyle}>Scan code</th>
+                          <th style={thStyle}>Violation</th>
+                          <th style={thStyle}>Actions observed</th>
+                          <th style={thStyle}>First event</th>
+                        </tr></thead>
+                        <tbody>
+                          {invalid.slice(0, 200).map((v, i) => (
+                            <tr key={i}>
+                              <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace' }}>{v.scan_code}</td>
+                              <td style={tdStyle}>{v.violation}</td>
+                              <td style={tdStyle}>{(v.actions_observed || []).join(' → ')}</td>
+                              <td style={tdStyle}>{v.first_event_time ? v.first_event_time.slice(0,16).replace('T',' ') : '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </Card>
+
+                  {/* Orphan inventory */}
+                  <Card style={sectionStyle}>
+                    <div style={headStyle}>
+                      <span>Orphan scans {badge(orphans.length, { bg: 'var(--badge-amber-bg)', text: 'var(--badge-amber-text)' })}</span>
+                      <span style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 400 }}>Scanned codes not in packing data</span>
+                    </div>
+                    {orphans.length === 0 ? (
+                      <div style={{ fontSize: 11, color: 'var(--text-3)' }}>No orphan scans.</div>
+                    ) : (
+                      <table style={tblStyle}>
+                        <thead><tr>
+                          <th style={thStyle}>Scan code</th>
+                          <th style={thStyle}>Location</th>
+                          <th style={thStyle}>Status</th>
+                          <th style={thStyle}>Updated</th>
+                        </tr></thead>
+                        <tbody>
+                          {orphans.slice(0, 200).map((o, i) => (
+                            <tr key={i}>
+                              <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace' }}>{o.scan_code}</td>
+                              <td style={tdStyle}>{o.current_location || '—'}</td>
+                              <td style={tdStyle}>{o.current_status || '—'}</td>
+                              <td style={tdStyle}>{o.updated_at ? o.updated_at.slice(0,16).replace('T',' ') : '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </Card>
+                </>
+              )}
+            </div>
+          );
+        })()}
+
+        {activeTab === 'Sales' && (() => {
+          const sl = salesLinkage;
+          const isErr = sl && sl.error;
+          const summary         = sl && !isErr ? (sl.summary || {}) : {};
+          const items           = sl && !isErr ? (sl.items || []) : [];
+          const warnings        = sl && !isErr ? (sl.audit_warnings || []) : [];
+          const blockingReasons = sl && !isErr ? (sl.blocking_reasons || []) : [];
+          const ready           = sl && !isErr ? !!sl.ready_for_invoice : false;
+          const blocked         = sl && !isErr ? !!sl.blocked : false;
+          // Display reasons: prefer explicit blocking_reasons, fall back to audit_warnings
+          // (preview mode never populates blocking_reasons; audit_warnings carry the same info).
+          const displayReasons  = blockingReasons.length > 0 ? blockingReasons : warnings;
+
+          // Group items by client_name (+ client_ref) — one card per client document
+          const groups = {};
+          for (const it of items) {
+            const key = (it.client_name || '—') + ' | ' + (it.client_ref || '');
+            if (!groups[key]) groups[key] = { client_name: it.client_name || '—', client_ref: it.client_ref || '', rows: [] };
+            groups[key].rows.push(it);
+          }
+          const groupList = Object.values(groups);
+
+          const sectionStyle = { padding: 14, marginBottom: 12 };
+          const tblStyle = { width: '100%', borderCollapse: 'collapse', fontSize: 11 };
+          const thStyle  = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em' };
+          const tdStyle  = { padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' };
+
+          // C14A: transit detection — used for context banner and summary counter label only.
+          // Per-line sales status badge is NOT remapped: "missing_scan" reflects the real
+          // sales-linkage state (warehouse scan pending). The transit banner explains why.
+          // C18A: handle non-synthetic batches where ALL pieces are PURCHASE_TRANSIT.
+          const isTransit = !!(invState &&
+                               ((invState.synthetic === true) ||
+                                (invState.total > 0 &&
+                                 invState.total === ((invState.counts || {}).PURCHASE_TRANSIT || 0))) &&
+                               ((invState.counts || {}).PURCHASE_TRANSIT || 0) > 0);
+          const STATUS_BADGE = {
+            ready:            { bg: 'var(--badge-green-bg)',  text: 'var(--badge-green-text)',  label: 'Ready' },
+            pending_dispatch: { bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   label: 'Pending dispatch' },
+            not_ready:        { bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  label: 'Not ready' },
+            missing_scan:     { bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  label: 'Pending arrival' },  // C14A: amber not red; "pending arrival" while in transit
+            in_transit:       { bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   label: 'In transit' },
+          };
+          const statusBadge = (s) => {
+            const c = STATUS_BADGE[s] || { bg: 'var(--bg-2)', text: 'var(--text-3)', label: s || '—' };
+            return <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: c.bg, color: c.text }}>{c.label}</span>;
+          };
+
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {/* PR-202: Proforma draft editor is a Sales-flow surface.
+                  This primary mount lives in the Sales tab; the existing
+                  PZ/Accounting mount is preserved for backwards
+                  compatibility but the Sales tab is the canonical
+                  operator entry point. */}
+              <div data-testid="sales-tab-proforma-draft-panel">
+                <ProformaDraftPanel batchId={batchId} onToast={onToast} />
+              </div>
+
+              {/* Phase 2: Readiness banner */}
+              <ReadinessBanner
+                data-testid="readiness-banner-sales"
+                domain="sales"
+                status={batchReadiness && batchReadiness.sales ? batchReadiness.sales.status : null}
+                ready={batchReadiness && batchReadiness.sales ? batchReadiness.sales.ready : false}
+                message={batchReadiness && batchReadiness.sales ? batchReadiness.sales.message : null}
+                loading={batchReadinessLoading && !batchReadiness}
+                error={batchReadinessError}
+              />
+              {/* C27.1: Sales Linkage block removed from Pro Forma surface.
+                  Domain belonged to sales linkage / warehouse diagnostics,
+                  not document editing. Data still available via
+                  /api/v1/sales-linkage/{batch_id} endpoint for any future
+                  Warehouse-tab relocation (C27.3+). */}
+            </div>
+          );
+        })()}
+
+
+        {/* ── PZ / Accounting — Sections moved from Overview ── */}
+        {activeTab === 'PZ / Accounting' && (
+          <>
+            {/* Unified operator workflow — one ordered view with the 6 stages:
+                Evidence → Classification → Products → Customers → Preview → Execute.
+                Each section is collapsible and reuses the per-stage components
+                already defined below. Read-only by default; every write button
+                lives inside its section and is operator-click-only. */}
+            <OperatorWorkflowCard batchId={batchId} onToast={onToast} />
+            {/* Global Jewellery PZ Lineage — read-only, Global supplier only.
+                Renders null for Estrella and all non-Global batches. */}
+            <GlobalPZLineageCard batchId={batchId} onToast={onToast} />
+            {/* Global PZ Correction Proposal — read-only advisory, Global supplier only.
+                Renders null for Estrella and all non-Global batches.
+                No POST, no wFirma calls, no PZ mutation. */}
+            <GlobalPZCorrectionProposalCard batchId={batchId} onToast={onToast} />
+            {/* ── Legacy / advanced panel ────────────────────────────────────
+                The unified workflow above is the canonical operator surface.
+                Older Section 3 + reservation/wFirma panels stay available
+                here for download buttons and detailed views, but are
+                collapsed by default to remove the contradictory readiness
+                noise the operator was seeing. */}
+            <details data-testid="legacy-pz-details"
+                     style={{ marginBottom: 16, border: '1px solid var(--border,#e5e7eb)',
+                              borderRadius: 8, background: 'var(--bg-soft,#f9fafb)',
+                              padding: 8 }}>
+              <summary data-testid="legacy-pz-summary"
+                       style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700,
+                                color: 'var(--text-2,#6b7280)', padding: '4px 8px' }}>
+                Advanced / legacy reservation &amp; PZ panel
+                <span style={{ fontWeight: 400, marginLeft: 8 }}>
+                  (download buttons + raw section views)
+                </span>
+              </summary>
+            {/* Section 3: PZ */}
+            <Card>
+              <SectionHeader icon="⊞" title="Section 3 — PZ / Accounting"
+                subtitle="Goods receipt document, wFirma export, and audit files"
+                status={hasSad ? (pzGenerated ? 'Generated' : 'Ready for PZ') : 'Locked'} />
+              {!hasSad ? (
+                <div style={{ padding: 28, textAlign: 'center' }}>
+                  <div style={{ fontSize: 32, marginBottom: 10 }}>🔒</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>PZ Locked</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-2)' }}>SAD / ZC429 required before PZ generation</div>
+                </div>
+              ) : (
+                <div style={{ padding: 20 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 16 }}>
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>PZ Details</div>
+                      <InfoRow label="PZ Status" value={pzGenerated ? 'Generated' : 'Ready for PZ'} />
+                      {(() => {
+                        // Show whether the displayed PZ number is the
+                        // canonical wFirma full_number (auto-mapped) or
+                        // the manual fallback. Operators reading the card
+                        // need to know which one they're looking at.
+                        const wf = (audit && audit.wfirma_export) || {};
+                        const canonName = (wf.wfirma_pz_fullnumber || '').trim();
+                        const sourceLabel = canonName
+                          ? '✓ canonical · auto-mapped from wFirma'
+                          : (audit && audit.doc_no
+                              ? '⚠ manual entry · refresh mapping or re-create to canonicalise'
+                              : '');
+                        return (<>
+                          <InfoRow label="PZ / Doc Number" value={pzNumber || '—'} mono />
+                          {sourceLabel && (
+                            <div style={{ fontSize: 10, color: 'var(--text-3)',
+                                           marginTop: -4, marginBottom: 6,
+                                           paddingLeft: 2 }}>{sourceLabel}</div>
+                          )}
+                          {wf.wfirma_pz_doc_id && (
+                            <InfoRow label="wFirma PZ ID"
+                                     value={wf.wfirma_pz_doc_id} mono />
+                          )}
+                        </>);
+                      })()}
+                      <InfoRow label="Net Value" value={fmtPLN(t.net)} />
+                      <InfoRow label="Gross Value" value={fmtPLN(t.gross)} />
+                      <InfoRow label="Duty A00" value={fmtPLN(t.duty)} />
+                      <InfoRow label="Line Count" value={audit.totals?.line_count ?? audit.line_count ?? '—'} />
+                      {(() => {
+                        const it  = audit.invoice_totals || {};
+                        const pbu = it.product_counts_by_unit || {};
+                        const pcs = it.total_pcs ?? null;
+                        const prs = it.total_prs ?? null;
+                        if (pcs === null && prs === null) return null;
+                        const fmtCats = (obj) => Object.entries(obj || {})
+                          .filter(([, v]) => v > 0)
+                          .map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`)
+                          .join(' · ');
+                        return (
+                          <div style={{ marginTop: 8 }}>
+                            <InfoRow label="Total Units" value={String(it.total_units ?? (pcs + prs))} />
+                            {(pcs > 0 || prs > 0) && (
+                              <div style={{ marginTop: 6, padding: '8px 10px', background: 'var(--bg-subtle)', borderRadius: 5, border: '1px solid var(--border)' }}>
+                                <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>Unit Breakdown</div>
+                                {pcs > 0 && (
+                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 11, marginBottom: 3 }}>
+                                    <span style={{ fontWeight: 700, color: 'var(--badge-blue-text)', minWidth: 28 }}>PCS</span>
+                                    <span style={{ fontWeight: 700, color: 'var(--text)' }}>{pcs}</span>
+                                    <span style={{ color: 'var(--text-3)', fontSize: 10 }}>{fmtCats(pbu.PCS)}</span>
+                                  </div>
+                                )}
+                                {prs > 0 && (
+                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 11, marginBottom: 3 }}>
+                                    <span style={{ fontWeight: 700, color: 'var(--badge-green-text)', minWidth: 28 }}>PRS</span>
+                                    <span style={{ fontWeight: 700, color: 'var(--text)' }}>{prs}</span>
+                                    <span style={{ color: 'var(--text-3)', fontSize: 10 }}>{fmtCats(pbu.PRS)}</span>
+                                  </div>
+                                )}
+                                {(() => {
+                                  const qv = it.qty_validation;
+                                  if (!qv) return null;
+                                  const ok = qv.status === 'ok';
+                                  return (
+                                    <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'flex-start', gap: 5 }}>
+                                      <span style={{ fontSize: 11, fontWeight: 700, color: ok ? 'var(--badge-green-text)' : 'var(--badge-red-text)', flexShrink: 0 }}>
+                                        {ok ? '✓' : '⚠'}
+                                      </span>
+                                      <span style={{ fontSize: 10, color: ok ? 'var(--badge-green-text)' : 'var(--badge-red-text)', lineHeight: 1.4 }}>
+                                        {ok
+                                          ? (qv.note || 'Quantity consistent')
+                                          : `Mismatch: ${qv.total_from_lines} from lines vs ${qv.calculated_total_items} calculated`}
+                                      </span>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>Verification Summary</div>
+                      <InfoRow label="Run Status" value={status === 'success' ? '✓ Clean' : status === 'partial' ? '⚠ Verification Gaps' : status === 'blocked' ? '✗ Blocked' : status ? status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Not processed'} />
+                      <InfoRow label="Amendment Flags" value={audit.amendment_flags?.length ? `${audit.amendment_flags.length} flag(s)` : 'None'} />
+                      <InfoRow label="Engine Version" value={audit.engine_version || '—'} />
+                    </div>
+                  </div>
+
+                  {confirmingPz && (
+                    <div style={{ marginBottom: 16, padding: 14, background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8, color: 'var(--text)' }}>Enter PZ Number or Document ID</div>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <Inp data-testid="input-pz-number-confirm"
+                             value={pzNumber} onChange={e => setPzNumber(e.target.value)}
+                             placeholder="PZ 9/5/2026  or  185759075" style={{ flex: 1 }} />
+                        <Btn variant="gold"
+                             data-testid="btn-confirm-pz-number"
+                             disabled={!pzNumber || !pzNumber.trim() || !!busy.setPz}
+                             title={!pzNumber || !pzNumber.trim() ? 'Enter a PZ number or document ID first' : ''}
+                             onClick={async () => {
+                               const _t = (pzNumber || '').trim();
+                               if (!_t) return;
+                               // Auto-detect: numeric string → pz_doc_id, formatted → pz_number
+                               const payload = /^\d+$/.test(_t)
+                                 ? { pz_doc_id: _t }
+                                 : { pz_number: _t };
+                               await doAction('setPz', 'Confirm PZ Number', async () => {
+                                 const r = await fetch(
+                                   `/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_confirm`,
+                                   { method: 'POST',
+                                     headers: { 'Content-Type': 'application/json' },
+                                     body: JSON.stringify(payload),
+                                     credentials: 'include' }
+                                 );
+                                 let _rj = null;
+                                 try { _rj = await r.json(); } catch (_) {}
+                                 if (!r.ok) {
+                                   // Parse structured error — never surface raw "HTTP 422"
+                                   const reason =
+                                     _rj?.detail?.error ||
+                                     (Array.isArray(_rj?.detail) && _rj.detail[0]?.msg) ||
+                                     _rj?.message ||
+                                     `Confirm PZ failed (${r.status})`;
+                                   throw new Error(String(reason));
+                                 }
+                                 return _rj;
+                               });
+                               setConfirmingPz(false);
+                             }}>
+                          {busy.setPz ? '⟳ Confirming…' : 'Confirm'}
+                        </Btn>
+                        <Btn variant="outline" onClick={() => setConfirmingPz(false)}>Cancel</Btn>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── CN/HSN Decision Panel (hierarchical compare) ─────────────
+                      Replaces the legacy strict 8-digit equality test. Reads from
+                        GET /dashboard/batches/{id}/cn-hsn-classification
+                      and decides whether the comparison blocks PZ:
+                        exact / hs6 / heading_match → review note only (NOT a blocker)
+                        chapter_match               → operator decision
+                        different_chapter           → hard block
+                      Decision buttons call the new endpoints — they record into
+                      correction_registry and NEVER auto-run PZ. */}
+                  <CNHSNDecisionPanel batchId={batchId} onToast={(m) => alert(m)} />
+
+                  {!v2Active && (() => {
+                    const sadDecision = (audit && audit.agency_sad_decision) || {};
+                    const sadDecisionPresent = sadDecision.safe_to_run_pz !== undefined;
+                    const canRunPZ = !sadDecisionPresent || sadDecision.safe_to_run_pz === true;
+                    const sadBlockReason = !canRunPZ
+                      ? (sadDecision.reason || 'Blocked by SAD validation')
+                      : '';
+                    const runPzDisabled = !!busy.runPz || status === 'blocked' || !canRunPZ;
+                    const runPzTitle = status === 'blocked'
+                      ? 'Blocked — resolve verification mismatch before reprocessing'
+                      : status === 'failed'
+                        ? 'Previous run failed — click to retry'
+                        : status === 'processing'
+                          ? 'Previous run may be stuck — click to restart'
+                          : !canRunPZ
+                            ? `SAD validation: ${sadBlockReason}`
+                            : '';
+                  return (
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {(() => {
+                      // ── Scanned (image-only) invoice confirm gate (Lesson M) ──
+                      // When the source invoice was an image-only scan, the text
+                      // parsers yield FOB $0 and PZ cannot compute a freight
+                      // share. The OCR/AI fallback writes an advisory
+                      // audit.vision_invoice proposal. The operator confirms it
+                      // here; that arms the PZ engine bridge
+                      // (_authority_rows_from_confirmed_vision) so Run PZ below
+                      // succeeds. ADR-031: this button only triggers the confirm
+                      // endpoint, the SOLE writer of operator_confirmed — it is
+                      // never set client-side.
+                      const vi = (audit && audit.vision_invoice) || null;
+                      if (!vi) return null;            // not a scanned-invoice batch
+                      const items = Array.isArray(vi.line_items) ? vi.line_items : [];
+                      const fob = Number(vi.fob_usd) || items.reduce((s, it) => s + (Number(it.total_usd) || 0), 0);
+                      const qty = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+                      if (vi.operator_confirmed === true) {
+                        // CONFIRMED — capability stays visible as a truthful badge.
+                        return (
+                          <span data-testid="vision-invoice-confirmed"
+                                title={`Confirmed by ${vi.confirmed_by || 'operator'}${vi.confirmed_at ? ' at ' + vi.confirmed_at : ''}`}
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, padding: '6px 10px', borderRadius: 4, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)' }}>
+                            ✓ Scanned invoice confirmed (FOB ${fob.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, {qty} pcs) — Run PZ to generate
+                          </span>
+                        );
+                      }
+                      const noItems = items.length === 0;
+                      return (
+                        <Btn variant="gold"
+                             data-testid="confirm-vision-invoice"
+                             disabled={!!busy.confirmVision || noItems}
+                             style={noItems ? { opacity: 0.5 } : {}}
+                             title={noItems
+                               ? 'OCR found no line items on the scanned invoice — manual entry required before PZ can run'
+                               : 'Confirm the OCR/AI-read invoice line items so the PZ engine can generate the goods receipt'}
+                             onClick={() => doAction('confirmVision', 'Confirm scanned invoice', async () => {
+                               const res = await fetch(`/dashboard/batches/${encodeURIComponent(batchId)}/vision-invoice/confirm`, { method: 'POST', credentials: 'include' });
+                               if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`HTTP ${res.status}: ${t.slice(0, 200)}`); }
+                               const body = await res.json().catch(() => ({}));
+                               if (body && body.next_step) onToast(body.next_step, 'info');
+                               return body;
+                             })}>
+                          {busy.confirmVision
+                            ? '⟳ Confirming…'
+                            : noItems
+                              ? '⛔ Scanned invoice — no line items'
+                              : `✓ Confirm scanned invoice (FOB $${fob.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, ${qty} pcs) → unblock PZ`}
+                        </Btn>
+                      );
+                    })()}
+                    <Btn variant="gold" disabled={runPzDisabled} style={!canRunPZ && !busy.runPz && status !== 'blocked' ? { opacity: 0.5 } : {}} title={runPzTitle} onClick={() => doAction('runPz', 'Run PZ', async () => {
+                      const res = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/process`, { method: 'POST', credentials: 'include' });
+                      if (res.status === 409) {
+                        let body = {};
+                        try { body = await res.json(); } catch {}
+                        if (body.error === 'sad_validation_blocked') {
+                          let msg = `SAD validation blocked PZ run: ${body.reason || 'unknown'}`;
+                          if (body.mrn_parsed)   msg += ` — Parsed MRN: ${body.mrn_parsed}`;
+                          if (body.mrn_declared) msg += ` — Declared MRN: ${body.mrn_declared}`;
+                          throw new Error(msg);
+                        }
+                        let detail = '';
+                        try { const b = await res.json(); detail = b.detail || JSON.stringify(b); } catch { detail = await res.text().catch(() => ''); }
+                        throw new Error(`Cannot run PZ: ${detail.slice(0, 300)}`);
+                      }
+                      if (!res.ok) { const text = await res.text().catch(() => ''); throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`); }
+                      return res.headers.get('content-type')?.includes('json') ? res.json() : res.text();
+                    })}>
+                      {busy.runPz ? '⟳ Processing…' : (status === 'blocked' ? '✗ PZ Blocked' : !canRunPZ ? '⛔ SAD validation failed' : status === 'failed' ? '↺ Retry PZ' : status === 'processing' ? '↺ Restart PZ' : (pzGenerated ? '↺ Regenerate PZ' : '▶ Run PZ'))}
+                    </Btn>
+                    {pzGenerated && (() => {
+                      // Canonical mapping check. ``wfirma_pz_fullnumber`` is
+                      // stamped by the create flow's auto-fetch (or by the
+                      // refresh-mapping endpoint). When present, the manual
+                      // "Confirm PZ Number" entry is fallback-only and stays
+                      // hidden — operator instead sees a "Refresh Mapping"
+                      // button for stale/historical batches.
+                      const wf = (audit && audit.wfirma_export) || {};
+                      const canonId   = (wf.wfirma_pz_doc_id || '').trim();
+                      const canonName = (wf.wfirma_pz_fullnumber || '').trim();
+                      const mapped    = !!(canonId && canonName);
+                      return mapped ? (
+                        <Btn variant="outline" title={`Re-fetch full_number from wFirma for ${canonId}`}
+                             onClick={async () => {
+                               await doAction('refreshPzMapping', 'Refresh Mapping', async () => {
+                                 const r = await fetch(
+                                   `/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz/refresh-mapping`,
+                                   { method: 'POST', credentials: 'include',
+                                     headers: { 'X-Operator': (localStorage.getItem('pz_operator_name') || '') } },
+                                 );
+                                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                                 return r.json();
+                               });
+                               await load();
+                             }}>↻ Refresh Mapping</Btn>
+                      ) : (
+                        <Btn variant="outline" onClick={() => setConfirmingPz(true)}>✎ Confirm PZ Number</Btn>
+                      );
+                    })()}
+                    {/* Expected downloads always render. Enabled link when the
+                        file exists; disabled ghost chip with a clear tooltip
+                        otherwise. Layout never collapses when a file is
+                        missing — operators always see what's expected. */}
+                    {[
+                      ['pz_pdf',     'PZ PDF',      'Run PZ to generate this file.'],
+                      ['calc_xlsx',  'Calc XLSX',   'Run PZ to generate this file.'],
+                      ['audit_en',   'Audit EN',    'Audit report not generated yet — run PZ.'],
+                      ['audit_pl',   'Audit PL',    'Audit report not generated yet — run PZ.'],
+                      ['audit_memo', 'Memo',        'Audit memo not generated yet — run PZ.'],
+                      ['corrections','Corrections', 'No correction report — run PZ to generate.'],
+                    ].map(([key, label, missingReason]) => (
+                      fileExists(key) && fileUrl(key) ? (
+                        <a key={key} href={fileUrl(key)} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
+                          <Btn variant="outline" title={`Download ${label}`}>↓ {label}</Btn>
+                        </a>
+                      ) : (
+                        <Btn key={key} variant="ghost" disabled
+                             title={`File not generated yet — ${missingReason}`}>
+                          ↓ {label}
+                        </Btn>
+                      )
+                    ))}
+                  </div>
+                  );
+                  })()}
+
+                  {/* Polish-desc + DSK download buttons live in Section 1 only.
+                      Section 3 keeps a small text hint when those Section-1
+                      outputs are still missing, but never re-renders the
+                      download buttons here. ── */}
+                  {pzGenerated && hasSad && (!audit.polish_desc_filename || !audit.dsk_filename) && (
+                    <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                      <div style={{ padding: '8px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 5, fontSize: 11, color: 'var(--badge-amber-text)' }}>
+                        <strong>⏭ Next step:</strong>{' '}
+                        {!audit.polish_desc_filename && !audit.dsk_filename
+                          ? 'Use Section 1 → "Generate Polish Desc." and "Generate DSK" to complete the customs package.'
+                          : !audit.polish_desc_filename
+                            ? 'Use Section 1 → "Generate Polish Desc." to complete the customs package.'
+                            : 'Use Section 1 → "Generate DSK" to complete the customs package.'}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </Card>
+
+            {/* ── wFirma Warehouse Card ── */}
+            <Card>
+              <SectionHeader icon="🏭" title="wFirma Warehouse"
+                subtitle="Import PZ — create warehouse receipt in wFirma"
+                status={
+                  pzPreview?.wfirma_pz_doc_id ? 'Created'
+                  : !hasSad ? 'Locked'
+                  : !pzGenerated ? 'Locked'
+                  : pzPreview?.ready ? 'Ready'
+                  : pzPreview ? 'Not ready'
+                  : 'Loading'
+                } />
+
+              {(!hasSad || !pzGenerated) ? (
+                <div style={{ padding: '20px 24px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' }}>
+                    <span style={{ fontSize: 20 }}>🔒</span>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 2 }}>wFirma warehouse locked — PZ not generated</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-2)' }}>{!hasSad ? 'Upload SAD/ZC429 and run PZ first.' : 'Run PZ processing to unlock wFirma warehouse.'}</div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: '20px 24px' }}>
+
+                  {/* Already created banner */}
+                  {pzPreview?.wfirma_pz_doc_id && (
+                    <div data-testid="pz-already-created-banner" style={{ marginBottom: 8, padding: '10px 14px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{ fontSize: 16 }}>✓</span>
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-green-text)' }}>wFirma PZ created</div>
+                          <div style={{ fontSize: 11, color: 'var(--badge-green-text)', opacity: 0.85, fontFamily: 'monospace' }}>
+                            {pzPreview.wfirma_pz_doc_id}
+                            {pzPreview.wfirma_pz_fullnumber && (
+                              <span style={{ marginLeft: 8, opacity: 0.7 }}>· {pzPreview.wfirma_pz_fullnumber}</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                        {pzPreview.wfirma_pz_view_url && (
+                          <a data-testid="btn-pz-view-wfirma"
+                             href={pzPreview.wfirma_pz_view_url}
+                             target="_blank"
+                             rel="noopener noreferrer"
+                             style={{ fontSize: 11, padding: '4px 10px', border: '1px solid var(--badge-green-border)', borderRadius: 4, color: 'var(--badge-green-text)', textDecoration: 'none', whiteSpace: 'nowrap', background: 'transparent' }}>
+                            View in wFirma →
+                          </a>
+                        )}
+                        <Btn small variant="outline"
+                            data-testid="btn-view-pz"
+                            disabled={pzDocumentLoading}
+                            onClick={() => pzDocumentOpen ? setPzDocumentOpen(false) : loadPzDocument()}>
+                          {pzDocumentLoading ? '⟳ Loading…' : pzDocumentOpen ? '▲ Hide PZ' : '▼ View PZ'}
+                        </Btn>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* PZ Document inline viewer — first-class read-only view
+                       Authority: warehouse_document_p_z/get/{id} via /wfirma/pz_document
+                       Works for created, adopted, and recovered PZs.
+                       No dependency on app.wfirma.pl URLs. */}
+                  {pzDocumentOpen && pzDocumentData && (
+                    <div data-testid="pz-document-panel" style={{ marginBottom: 16, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', fontSize: 12 }}>
+
+                      {/* Header */}
+                      <div style={{ padding: '10px 14px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div>
+                          <span style={{ fontWeight: 700, color: 'var(--text)', fontSize: 13 }}>
+                            {pzDocumentData.pz_number || `PZ ${pzDocumentData.pz_doc_id}`}
+                          </span>
+                          {pzDocumentData.status && (
+                            <Badge label={pzDocumentData.status} status={pzDocumentData.status === 'confirmed' ? 'Completed' : 'Pending'} small style={{ marginLeft: 8 }} />
+                          )}
+                        </div>
+                        <Btn small variant="ghost" data-testid="btn-pz-document-close" onClick={() => setPzDocumentOpen(false)}>✕</Btn>
+                      </div>
+
+                      {/* Document metadata */}
+                      <div style={{ padding: '10px 14px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '6px 20px', borderBottom: '1px solid var(--border-subtle)', fontSize: 11 }}>
+                        <div><span style={{ color: 'var(--text-3)' }}>Document ID </span><span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{pzDocumentData.pz_doc_id}</span></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Date </span><b style={{ color: 'var(--text)' }}>{pzDocumentData.date || '—'}</b></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Currency </span><span>{pzDocumentData.currency || 'PLN'}</span></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Source </span><span>{pzDocumentData.pz_source === 'created_via_app' ? 'Created via app' : pzDocumentData.pz_source === 'adopted_existing' ? 'Adopted existing' : pzDocumentData.pz_source || '—'}</span></div>
+                        <div style={{ gridColumn: '1 / -1' }}>
+                          <span style={{ color: 'var(--text-3)' }}>Contractor </span>
+                          <b style={{ color: 'var(--text)' }}>{pzDocumentData.contractor_name || '—'}</b>
+                          {pzDocumentData.contractor_id && <span style={{ color: 'var(--text-3)', fontFamily: 'monospace', fontSize: 10, marginLeft: 6 }}>ID {pzDocumentData.contractor_id}</span>}
+                        </div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Warehouse ID </span><span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{pzDocumentData.warehouse_id || '—'}</span></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Lines </span><b>{pzDocumentData.line_count ?? pzDocumentData.lines?.length ?? '—'}</b></div>
+                      </div>
+
+                      {/* Compact audit notes (description) */}
+                      {pzDocumentData.description && (
+                        <div data-testid="pz-document-notes" style={{ padding: '8px 14px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Audit notes</div>
+                          <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{pzDocumentData.description}</pre>
+                        </div>
+                      )}
+
+                      {/* Line items table */}
+                      {pzDocumentData.lines?.length > 0 && (
+                        <div style={{ overflowX: 'auto' }}>
+                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                            <thead>
+                              <tr style={{ background: 'var(--sidebar-bg)' }}>
+                                {['#', 'Good ID', 'Description', 'Qty', 'Unit price netto (PLN)', 'Line total (PLN)'].map(h => (
+                                  <th key={h} style={{ padding: '5px 10px', textAlign: h === 'Qty' || h.startsWith('Unit') || h.startsWith('Line') ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'white', whiteSpace: 'nowrap' }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pzDocumentData.lines.map((ln, i) => {
+                                const lineTotal = (ln.count || 0) * (ln.price_netto || 0);
+                                return (
+                                  <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)', background: i % 2 === 0 ? 'transparent' : 'var(--bg-subtle)' }}>
+                                    <td style={{ padding: '5px 10px', color: 'var(--text-3)', fontSize: 10, textAlign: 'right' }}>{i + 1}</td>
+                                    <td style={{ padding: '5px 10px', fontFamily: 'monospace', color: 'var(--text-2)', fontSize: 10, whiteSpace: 'nowrap' }}>{ln.good_id || '—'}</td>
+                                    <td style={{ padding: '5px 10px', color: 'var(--text)', maxWidth: 320 }}>{ln.name || '—'}</td>
+                                    <td style={{ padding: '5px 10px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{ln.count}</td>
+                                    <td style={{ padding: '5px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{(ln.price_netto || 0).toLocaleString('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                    <td style={{ padding: '5px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>{lineTotal.toLocaleString('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                            {(pzDocumentData.netto_total > 0 || pzDocumentData.brutto_total > 0) && (
+                              <tfoot>
+                                <tr style={{ background: 'var(--bg-subtle)', borderTop: '2px solid var(--border)' }}>
+                                  <td colSpan={4} style={{ padding: '6px 10px', fontWeight: 700, fontSize: 11, color: 'var(--text-2)' }}>Totals</td>
+                                  <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700 }}>
+                                    <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Netto</div>
+                                    {(pzDocumentData.netto_total || 0).toLocaleString('pl-PL', { minimumFractionDigits: 2 })}
+                                  </td>
+                                  <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700 }}>
+                                    <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Brutto</div>
+                                    {(pzDocumentData.brutto_total || 0).toLocaleString('pl-PL', { minimumFractionDigits: 2 })}
+                                  </td>
+                                </tr>
+                              </tfoot>
+                            )}
+                          </table>
+                        </div>
+                      )}
+                      {!pzDocumentData.lines?.length && (
+                        <div style={{ padding: '12px 14px', color: 'var(--text-3)', fontSize: 11 }}>No line items in wFirma response.</div>
+                      )}
+
+                      {/* PDF note + generated-PDF download */}
+                      <div data-testid="pz-document-pdf-note"
+                           style={{ padding: '8px 14px', background: 'var(--bg-subtle)', borderTop: '1px solid var(--border-subtle)',
+                                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 10.5, color: 'var(--text-3)', fontStyle: 'italic', flex: '1 1 auto' }}>
+                          PZ PDF download is not available through confirmed wFirma API. Verified PZ data shown from wFirma document API.
+                        </span>
+                        <a data-testid="btn-pz-download-generated-pdf"
+                           href={`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_document.pdf`}
+                           target="_blank" rel="noopener noreferrer"
+                           style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', textDecoration: 'underline', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                          ↓ Generated PDF
+                        </a>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── PZ Lifecycle Banner (PR #281) — single authority ──────
+                       Reads `pzPreview.pz_lifecycle.state` as the canonical
+                       source. For the alarming states (RECOVERY_REQUIRED,
+                       DUPLICATE_DETECTED, LOCKED, RECONCILED) this banner is
+                       the PRIMARY status display; the legacy pz_lock_status
+                       banner below is suppressed for those states to avoid
+                       contradictory messages. For CREATED / READY_TO_CREATE /
+                       NOT_READY states, the legacy banner still renders to
+                       carry granular detail. Backward-compatible: when
+                       pz_lifecycle is absent (older backend), the legacy
+                       banner renders unchanged. */}
+                  {pzPreview?.pz_lifecycle && (() => {
+                    const _lf = pzPreview.pz_lifecycle;
+                    const _alarming = (
+                      _lf.state === 'PZ_RECOVERY_REQUIRED' ||
+                      _lf.state === 'PZ_DUPLICATE_DETECTED' ||
+                      _lf.state === 'PZ_LOCKED' ||
+                      _lf.state === 'PZ_RECONCILED'
+                    );
+                    if (!_alarming) return null;   // legacy banner handles the rest
+                    let _tone, _headline, _subtitle;
+                    if (_lf.state === 'PZ_RECOVERY_REQUIRED') {
+                      _tone = 'red';
+                      _headline = 'PZ recovery required';
+                      _subtitle = 'PZ was created in wFirma, but local audit mapping is missing. Confirm the existing PZ to recover.';
+                    } else if (_lf.state === 'PZ_DUPLICATE_DETECTED') {
+                      _tone = 'red';
+                      _headline = 'Duplicate wFirma PZ doc id detected';
+                      _subtitle = _lf.duplicate_owner_batch_id
+                        ? `Doc id is claimed by batch ${_lf.duplicate_owner_batch_id}. Resolve cross-batch conflict before proceeding.`
+                        : 'A wFirma PZ doc id is claimed by another batch. Resolve cross-batch conflict before proceeding.';
+                    } else if (_lf.state === 'PZ_LOCKED') {
+                      _tone = 'neutral';
+                      _headline = 'PZ locked';
+                      _subtitle = 'Batch locked by accounting period close or operator hold.';
+                    } else {   // PZ_RECONCILED
+                      _tone = 'amber';
+                      _headline = 'PZ mapping cleared — recreate when ready';
+                      _subtitle = 'The previous wFirma PZ was unlinked. A new PZ can be created when all gates pass.';
+                    }
+                    const _bg = {
+                      red: 'var(--badge-red-bg)', amber: 'var(--badge-amber-bg)',
+                      neutral: 'var(--bg-subtle)',
+                    }[_tone];
+                    const _bd = {
+                      red: 'var(--badge-red-border)', amber: 'var(--badge-amber-border)',
+                      neutral: 'var(--border)',
+                    }[_tone];
+                    const _fg = {
+                      red: 'var(--badge-red-text)', amber: 'var(--badge-amber-text)',
+                      neutral: 'var(--text-2)',
+                    }[_tone];
+                    const _icon = _tone === 'red' ? '✗' : _tone === 'amber' ? '⚠' : '🔒';
+                    return (
+                      <div data-testid="pz-lifecycle-banner"
+                           data-state={_lf.state}
+                           data-primary-action={_lf.primary_action || ''}
+                           style={{ marginBottom: 12, padding: '12px 16px',
+                                    background: _bg, border: `1px solid ${_bd}`, borderRadius: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <span style={{ fontSize: 16, color: _fg }}>{_icon}</span>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: _fg }}>{_headline}</div>
+                            <div style={{ fontSize: 11, color: _fg, opacity: 0.9, marginTop: 3 }}>{_subtitle}</div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* PZ Lock-Status Banner — legacy granular detail (PR #281:
+                       suppressed when pz_lifecycle is in an alarming state to
+                       prevent contradictory messages). */}
+                  {pzPreview?.pz_lock_status && !(
+                    pzPreview?.pz_lifecycle && (
+                      pzPreview.pz_lifecycle.state === 'PZ_RECOVERY_REQUIRED' ||
+                      pzPreview.pz_lifecycle.state === 'PZ_DUPLICATE_DETECTED' ||
+                      pzPreview.pz_lifecycle.state === 'PZ_LOCKED' ||
+                      pzPreview.pz_lifecycle.state === 'PZ_RECONCILED'
+                    )
+                  ) && (() => {
+                    const ls = pzPreview.pz_lock_status;
+                    // Tone selection drives banner color + icon
+                    const tone =
+                      ls.recovery_required                    ? 'red'    :
+                      ls.locked                                ? 'green'  :
+                      (pzPreview.unresolved_count > 0
+                        || pzPreview.conflict_count > 0
+                        || (pzPreview.unresolved_product_codes || []).length > 0
+                        || (pzPreview.price_conflicts || []).length > 0)  ? 'amber'  :
+                      ls.can_create                            ? 'neutral':
+                                                                  'amber';
+                    const _bg = {
+                      green:   'var(--badge-green-bg)',
+                      amber:   'var(--badge-amber-bg)',
+                      red:     'var(--badge-red-bg)',
+                      neutral: 'var(--bg-subtle)',
+                    }[tone];
+                    const _bd = {
+                      green:   'var(--badge-green-border)',
+                      amber:   'var(--badge-amber-border)',
+                      red:     'var(--badge-red-border)',
+                      neutral: 'var(--border)',
+                    }[tone];
+                    const _fg = {
+                      green:   'var(--badge-green-text)',
+                      amber:   'var(--badge-amber-text)',
+                      red:     'var(--badge-red-text)',
+                      neutral: 'var(--text-2)',
+                    }[tone];
+                    const _icon = tone === 'green' ? '✓' : tone === 'red' ? '✗' : tone === 'amber' ? '⚠' : '○';
+
+                    // Headline + subtitle for each known reason
+                    let headline, subtitle;
+                    if (ls.reason === 'pz_created_by_system') {
+                      headline = 'PZ created by system';
+                      subtitle = 'wFirma PZ was generated from this shipment.';
+                    } else if (ls.reason === 'pz_adopted_existing') {
+                      headline = 'Existing wFirma PZ adopted';
+                      subtitle = 'A pre-existing wFirma PZ was linked to this shipment.';
+                    } else if (ls.reason === 'audit_write_recovery_required') {
+                      headline = 'PZ audit write recovery required';
+                      subtitle = ls.terminal_event === 'wfirma_pz_created'
+                        ? 'The timeline shows a PZ was created in wFirma but the local audit was not updated. Use Confirm Existing PZ with the live wFirma doc id to recover.'
+                        : 'The timeline shows a PZ was adopted but the local audit was not updated. Use Confirm Existing PZ to recover.';
+                    } else if (ls.reason === 'pz_doc_id_set') {
+                      headline = 'PZ already linked';
+                      subtitle = 'A wFirma PZ doc id is already on this shipment.';
+                    } else if (pzPreview.unresolved_count > 0
+                        || (pzPreview.unresolved_product_codes || []).length > 0) {
+                      headline = 'PZ not ready — unresolved products';
+                      subtitle = `${pzPreview.unresolved_count || (pzPreview.unresolved_product_codes || []).length} product code(s) need mapping. Click Resolve Products.`;
+                    } else if (pzPreview.conflict_count > 0
+                        || (pzPreview.price_conflicts || []).length > 0) {
+                      headline = 'PZ not ready — price conflicts';
+                      subtitle = 'Different unit prices for the same product code. Review the planned lines.';
+                    } else if (ls.can_create) {
+                      headline = 'Ready to create wFirma PZ';
+                      subtitle = 'All product codes resolved. Click Create wFirma PZ to proceed.';
+                    } else {
+                      headline = 'No PZ linked yet';
+                      subtitle = 'Earlier pipeline steps must finish before PZ can be created or adopted.';
+                    }
+
+                    return (
+                      <div data-testid="pz-lock-status-banner"
+                           data-reason={ls.reason}
+                           data-can-create={String(!!ls.can_create)}
+                           data-can-adopt={String(!!ls.can_adopt)}
+                           style={{ marginBottom: 12, padding: '10px 14px', background: _bg, border: `1px solid ${_bd}`, borderRadius: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 14, color: _fg }}>{_icon}</span>
+                          <div style={{ flex: 1, minWidth: 200 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: _fg }}>{headline}</div>
+                            <div style={{ fontSize: 11, color: _fg, opacity: 0.85, marginTop: 2 }}>{subtitle}</div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 12, fontSize: 10, color: _fg, opacity: 0.85, flexWrap: 'wrap' }}>
+                            {ls.wfirma_pz_doc_id && (
+                              <span data-testid="pz-lock-doc-id">
+                                doc id: <code style={{ fontFamily: 'monospace' }}>{ls.wfirma_pz_doc_id}</code>
+                              </span>
+                            )}
+                            {ls.pz_source && (
+                              <span data-testid="pz-lock-source">
+                                source: <code style={{ fontFamily: 'monospace' }}>{ls.pz_source}</code>
+                              </span>
+                            )}
+                            {ls.terminal_event && (
+                              <span data-testid="pz-lock-event">
+                                event: <code style={{ fontFamily: 'monospace' }}>{ls.terminal_event}</code>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* After-create result banner (session only) */}
+                  {pzCreateResult && pzCreateResult.status === 'created' && !pzPreview?.wfirma_pz_doc_id && (
+                    <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 6 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-green-text)' }}>Created: {pzCreateResult.wfirma_pz_doc_id}</div>
+                    </div>
+                  )}
+
+                  {/* Error banner */}
+                  {pzPreview?.error && (
+                    <div style={{ marginBottom: 16, padding: '8px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-red-text)' }}>
+                      Preview error: {pzPreview.error}
+                    </div>
+                  )}
+
+                  {/* Metadata row */}
+                  {pzPreview && !pzPreview.error && (
+                    <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginBottom: 16, fontSize: 11, color: 'var(--text-2)' }}>
+                      <div><span style={{ color: 'var(--text-3)' }}>MRN: </span><span style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{pzPreview.mrn || '—'}</span></div>
+                      <div><span style={{ color: 'var(--text-3)' }}>Clearance: </span><span style={{ color: 'var(--text)' }}>{pzPreview.clearance_date || '—'}</span></div>
+                      <div><span style={{ color: 'var(--text-3)' }}>Lines: </span><span style={{ color: 'var(--text)', fontWeight: 600 }}>{pzPreview.line_count ?? '—'}</span></div>
+                      {(pzPreview.unresolved_count > 0) && (
+                        <div style={{ color: 'var(--badge-red-text)' }}><span>⚠ Unresolved: </span><strong>{pzPreview.unresolved_count}</strong></div>
+                      )}
+                      {(pzPreview.conflict_count > 0) && (
+                        <div style={{ color: 'var(--badge-red-text)' }}><span>⚠ Price conflicts: </span><strong>{pzPreview.conflict_count}</strong></div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Unresolved products list */}
+                  {pzPreview?.unresolved_product_codes?.length > 0 && (
+                    <div style={{ marginBottom: 14, padding: '8px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-amber-text)', marginBottom: 4 }}>Unresolved product codes ({pzPreview.unresolved_product_codes.length})</div>
+                      <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', fontFamily: 'monospace', lineHeight: 1.7 }}>
+                        {pzPreview.unresolved_product_codes.join(', ')}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Planned lines table */}
+                  {pzPreview?.planned_lines?.length > 0 && (
+                    <div style={{ marginBottom: 16, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                      <div style={{ padding: '8px 14px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Planned lines — {pzPreview.planned_lines.length}</span>
+                      </div>
+                      <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                          <thead>
+                            <tr style={{ background: 'var(--sidebar-bg)' }}>
+                              {['Product code','Good ID','Qty','Price PLN','Status'].map(h => (
+                                <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'white', whiteSpace: 'nowrap' }}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pzPreview.planned_lines.map((pl, i) => (
+                              <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)', background: i % 2 === 0 ? 'white' : 'var(--bg-subtle)' }}>
+                                <td style={{ padding: '6px 10px', fontFamily: 'monospace', color: 'var(--text)', fontSize: 10 }}>{pl.product_code}</td>
+                                <td style={{ padding: '6px 10px', fontFamily: 'monospace', color: 'var(--text-2)', fontSize: 10 }}>{pl.good_id || '—'}</td>
+                                <td style={{ padding: '6px 10px', textAlign: 'right', color: 'var(--text)' }}>{pl.count}</td>
+                                <td style={{ padding: '6px 10px', textAlign: 'right', color: 'var(--text)', fontFamily: 'monospace' }}>{pl.price_pln?.toLocaleString('pl-PL', {minimumFractionDigits:2})}</td>
+                                <td style={{ padding: '6px 10px' }}>
+                                  <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10,
+                                    background: pl.resolved ? 'var(--badge-green-bg)' : 'var(--badge-red-bg)',
+                                    color: pl.resolved ? 'var(--badge-green-text)' : 'var(--badge-red-text)',
+                                    border: `1px solid ${pl.resolved ? 'var(--badge-green-border)' : 'var(--badge-red-border)'}`,
+                                  }}>{pl.resolved ? '✓' : '✗ unresolved'}</span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Action buttons */}
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <Btn variant="outline" disabled={pzPreviewLoading} onClick={loadPzPreview}
+                        data-testid="btn-pz-refresh">
+                      {pzPreviewLoading ? '⟳ Loading…' : '↻ Refresh PZ Preview'}
+                    </Btn>
+
+                    {/* Resolve Products — hidden when pz_lifecycle says so
+                         (PR #281: e.g. PZ_RECOVERY_REQUIRED hides this
+                         because the operator must Confirm Existing PZ
+                         instead). */}
+                    {!(pzPreview?.pz_lifecycle && pzPreview.pz_lifecycle.hide_resolve_products) && (
+                      <Btn variant="outline" disabled={!!busy.pzResolve} onClick={resolveProducts}
+                          data-testid="btn-pz-resolve"
+                          title={pzPreview?.unresolved_count > 0 ? 'Match unresolved product codes to wFirma goods' : 'Re-run product resolution'}>
+                        {busy.pzResolve ? '⟳ Resolving…' : '⚙ Resolve Products'}
+                      </Btn>
+                    )}
+
+                    {/* Create wFirma PZ — hidden when pz_lifecycle says so;
+                         otherwise gated by pz_lock_status.can_create (legacy
+                         authority preserved for granular reasons). PR #281
+                         single-authority discipline: lifecycle's hide_create_button
+                         takes precedence over the legacy gate. */}
+                    {!(pzPreview?.pz_lifecycle && pzPreview.pz_lifecycle.hide_create_button) && (!pzCreateConfirm ? (
+                      <Btn variant="gold"
+                          data-testid="btn-pz-create"
+                          disabled={
+                            // pz_lock_status.can_create is the authoritative gate.
+                            // Fallback to the legacy ad-hoc checks when lock_status
+                            // isn't yet present (older preview responses).
+                            (pzPreview?.pz_lock_status
+                              ? !pzPreview.pz_lock_status.can_create
+                              : (
+                                  !pzPreview?.ready ||
+                                  !!(pzPreview?.unresolved_count > 0) ||
+                                  !!(pzPreview?.conflict_count > 0) ||
+                                  !!pzPreview?.wfirma_pz_doc_id
+                                )
+                            ) || pzCreateBusy
+                          }
+                          title={(() => {
+                            const ls = pzPreview?.pz_lock_status;
+                            if (!pzPreview) return 'Loading PZ preview…';
+                            if (pzCreateBusy) return 'Creating PZ in wFirma…';
+                            if (ls?.recovery_required)            return 'Audit write recovery required — use Confirm Existing PZ.';
+                            if (ls?.reason === 'pz_created_by_system')  return `Already created in wFirma (id ${ls.wfirma_pz_doc_id || pzPreview?.wfirma_pz_doc_id || '—'})`;
+                            if (ls?.reason === 'pz_adopted_existing')   return `Already adopted (id ${ls.wfirma_pz_doc_id || pzPreview?.wfirma_pz_doc_id || '—'})`;
+                            if (ls?.reason === 'pz_doc_id_set')         return `Already linked (id ${ls.wfirma_pz_doc_id || pzPreview?.wfirma_pz_doc_id || '—'})`;
+                            if (pzPreview?.unresolved_count > 0)        return `Unresolved products: ${pzPreview.unresolved_count} — click Resolve Products first`;
+                            if (pzPreview?.conflict_count > 0)          return `Product mapping conflicts: ${pzPreview.conflict_count} — review before creating`;
+                            if (!pzPreview?.ready)                       return 'Preview not ready — earlier pipeline steps incomplete';
+                            return 'Create warehouse PZ in wFirma';
+                          })()}
+                          onClick={() => setPzCreateConfirm(true)}>
+                        {pzCreateBusy ? '⟳ Creating…' : '✦ Create wFirma PZ'}
+                      </Btn>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6 }}>
+                        <span style={{ fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>Create one wFirma PZ for this batch?</span>
+                        <Btn small variant="gold" disabled={pzCreateBusy} onClick={submitPzCreate}
+                            data-testid="btn-pz-create-confirm">
+                          {pzCreateBusy ? '⟳…' : 'Confirm'}
+                        </Btn>
+                        <Btn small variant="ghost" onClick={() => setPzCreateConfirm(false)}>Cancel</Btn>
+                      </div>
+                    ))}
+
+                    {/* Confirm Existing PZ — adopt a manually-created or historical PZ.
+                         PR #281: when pz_lifecycle.primary_action ===
+                         "confirm_existing_pz" we render as variant="gold" (primary)
+                         instead of variant="outline" (secondary) so the operator
+                         sees the recovery CTA prominently. */}
+                    {!pzAdoptOpen ? (
+                      <Btn variant={pzPreview?.pz_lifecycle?.primary_action === 'confirm_existing_pz' ? 'gold' : 'outline'}
+                          data-testid="btn-pz-adopt-open"
+                          data-primary={String(pzPreview?.pz_lifecycle?.primary_action === 'confirm_existing_pz')}
+                          disabled={
+                            // pz_lock_status.can_adopt is the authoritative gate.
+                            // Recovery case (timeline event without doc_id) keeps
+                            // can_adopt=true so the operator can manually link the
+                            // live wFirma PZ back into audit.
+                            (pzPreview?.pz_lock_status
+                              ? !pzPreview.pz_lock_status.can_adopt
+                              : !!pzPreview?.wfirma_pz_doc_id
+                            ) || pzAdoptBusy
+                          }
+                          title={(() => {
+                            const ls = pzPreview?.pz_lock_status;
+                            if (ls?.recovery_required)                  return 'Use this to link the live wFirma PZ back into audit (recovery).';
+                            if (ls?.reason === 'pz_created_by_system')  return 'PZ was already created by the system — adoption not needed.';
+                            if (ls?.reason === 'pz_adopted_existing')   return 'PZ has already been adopted for this shipment.';
+                            if (ls?.reason === 'pz_doc_id_set')         return 'PZ doc id already set on this shipment.';
+                            return 'Attach an existing wFirma PZ to this shipment';
+                          })()}
+                          onClick={() => { setPzAdoptOpen(true); setPzAdoptResult(null); }}>
+                        ✔ Confirm Existing PZ
+                      </Btn>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', background: 'var(--badge-blue-bg, #eff6ff)', border: '1px solid var(--badge-blue-border, #bfdbfe)', borderRadius: 6 }}>
+                        <input
+                          data-testid="input-pz-adopt"
+                          value={pzAdoptInput}
+                          onChange={e => setPzAdoptInput(e.target.value)}
+                          placeholder="PZ doc ID or number (e.g. 183167843)"
+                          style={{ fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #cbd5e1', width: 220 }}
+                        />
+                        <Btn small variant="gold" disabled={pzAdoptBusy || !pzAdoptInput.trim()}
+                            data-testid="btn-pz-adopt-confirm"
+                            onClick={submitPzAdopt}>
+                          {pzAdoptBusy ? '⟳…' : 'Adopt'}
+                        </Btn>
+                        <Btn small variant="ghost" onClick={() => { setPzAdoptOpen(false); setPzAdoptInput(''); }}>Cancel</Btn>
+                        {pzAdoptResult && pzAdoptResult.status === 'blocked' && (
+                          <span style={{ fontSize: 11, color: 'var(--badge-red-text, #b91c1c)' }}>
+                            {(pzAdoptResult.blocking_reasons || [pzAdoptResult.error || 'blocked'])[0]}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                </div>
+              )}
+            </Card>
+
+            {/* Service Invoices */}
+            <Card>
+              <SectionHeader icon="🧾" title="Service Invoices"
+                subtitle="DHL and agency invoices for customs closure"
+                status={
+                  (audit.dhl_invoice_received && audit.agency_invoice_received)
+                    ? 'All received'
+                    : (audit.dhl_invoice_received || audit.agency_invoice_received)
+                      ? 'Partial'
+                      : 'Pending'
+                }
+              />
+              <div style={{ padding: 20 }}>
+
+                {/* Status badges */}
+                <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+                  <div data-testid="svc-invoice-dhl-status" style={{
+                    padding: '5px 12px', borderRadius: 20, fontSize: 11, fontWeight: 700,
+                    background: audit.dhl_invoice_received ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+                    color:      audit.dhl_invoice_received ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+                    border:     `1px solid ${audit.dhl_invoice_received ? 'var(--badge-green-border)' : 'var(--badge-amber-border)'}`,
+                  }}>
+                    {audit.dhl_invoice_received ? '✓ DHL Invoice received' : '○ DHL Invoice not received'}
+                  </div>
+                  <div data-testid="svc-invoice-agency-status" style={{
+                    padding: '5px 12px', borderRadius: 20, fontSize: 11, fontWeight: 700,
+                    background: audit.agency_invoice_received ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+                    color:      audit.agency_invoice_received ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+                    border:     `1px solid ${audit.agency_invoice_received ? 'var(--badge-green-border)' : 'var(--badge-amber-border)'}`,
+                  }}>
+                    {audit.agency_invoice_received ? '✓ Agency Invoice received' : '○ Agency Invoice not received'}
+                  </div>
+                </div>
+
+                {/* Existing invoices list */}
+                {(audit.service_invoices || []).length > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+                      Registered ({(audit.service_invoices || []).length})
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      {(audit.service_invoices || []).map((inv, i) => (
+                        <div key={i} data-testid="svc-invoice-file-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', background: 'var(--bg-subtle)', borderRadius: 5, border: '1px solid var(--border-subtle)' }}>
+                          <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 10, fontWeight: 700,
+                            background: inv.vendor === 'DHL' ? 'var(--badge-blue-bg, #e0f0ff)' : 'var(--badge-neutral-bg)',
+                            color:      inv.vendor === 'DHL' ? 'var(--badge-blue-text, #0060b0)' : 'var(--text-3)',
+                          }}>{inv.vendor || 'unknown'}</span>
+                          <span style={{ fontSize: 11, color: 'var(--text-2)', fontFamily: 'monospace' }}>{inv.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Upload */}
+                <div style={{ borderTop: (audit.service_invoices || []).length > 0 ? '1px solid var(--border-subtle)' : 'none', paddingTop: (audit.service_invoices || []).length > 0 ? 14 : 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <label data-testid="svc-invoice-upload-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 6, border: '1px solid var(--badge-neutral-border)', cursor: svcInvoiceBusy ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600, color: svcInvoiceBusy ? 'var(--text-3)' : 'var(--text)', background: 'transparent', opacity: svcInvoiceBusy ? 0.6 : 1, width: 'fit-content' }}>
+                    <input
+                      data-testid="svc-invoice-file-input"
+                      ref={svcInvoiceRef}
+                      type="file"
+                      accept=".pdf,.xml,.html,.htm,.jpg,.jpeg,.png"
+                      multiple
+                      disabled={svcInvoiceBusy}
+                      style={{ display: 'none' }}
+                      onChange={async (e) => {
+                        const files = Array.from(e.target.files || []);
+                        if (!files.length) return;
+                        setSvcInvoiceBusy(true); setSvcInvoiceResult(null); setSvcInvoiceError('');
+                        try {
+                          const fd = new FormData();
+                          files.forEach(f => fd.append('files', f));
+                          fd.append('source', 'operator');
+                          const r = await fetch(`/api/v1/service-invoices/${encodeURIComponent(batchId)}/upload`, {
+                            method: 'POST',
+                            body: fd,
+                            credentials: 'include',
+                          });
+                          if (!r.ok) {
+                            const msg = await r.text().catch(() => `HTTP ${r.status}`);
+                            throw new Error(msg);
+                          }
+                          const result = await r.json();
+                          setSvcInvoiceResult(result);
+                          await Promise.all([load(), loadBatchReadiness(), loadDecision()]);
+                        } catch (ex) {
+                          setSvcInvoiceError(ex.message || 'Upload failed');
+                        } finally {
+                          setSvcInvoiceBusy(false);
+                          if (svcInvoiceRef.current) svcInvoiceRef.current.value = '';
+                        }
+                      }}
+                    />
+                    {svcInvoiceBusy ? '⟳ Uploading…' : '⊞ Upload service invoices'}
+                  </label>
+                  <div data-testid="svc-invoice-accepted-extensions" style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                    Accepted: .pdf, .xml, .html, .htm, .jpg, .jpeg, .png
+                  </div>
+                </div>
+
+                {/* Upload result */}
+                {svcInvoiceResult && (
+                  <div data-testid="svc-invoice-upload-success" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-green-text)', marginBottom: 2 }}>
+                      ✓ {(svcInvoiceResult.imported || []).length} invoice(s) registered
+                    </div>
+                    {(svcInvoiceResult.skipped || []).length > 0 && (
+                      <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', marginTop: 2 }}>
+                        {svcInvoiceResult.skipped.length} skipped — check file types or duplicates
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Upload error */}
+                {svcInvoiceError && (
+                  <div data-testid="svc-invoice-upload-error" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)' }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-red-text)' }}>Upload failed: {svcInvoiceError}</div>
+                  </div>
+                )}
+
+              </div>
+            </Card>
+            </details>
+          </>
+        )}
+
+        {/* C27.1: Advanced/legacy reservation IIFE removed.
+            Block duplicated reservation authority already exposed by
+            /setup-detail and proforma-readiness (C25A/C26 unified those).
+            A single scoped reservation surface will live inside the Screen B
+            drilldown Reservation tab (C27.4). */}
+
+        {/* ── DHL TAB — Phase 2 read-only DHL pipeline panel ── */}
+
+        {/* ── DHL / CUSTOMS — Sections moved from Overview ── */}
+        {activeTab === 'DHL / Customs' && (
+          <>
+            {/* Section 1: DHL */}
+            <Card>
+              <SectionHeader icon="✈" title="Section 1 — Shipment & DHL Clearance"
+                subtitle="DHL pre-check, email correspondence, reply package"
+                status={dhlClearance ? mapDhlStatus(dhlClearance) : undefined} />
+              <div style={{ padding: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+                <div>
+                  {/* Phase 2C — collapse duplicate Shipment metadata under
+                      <details>.  The same AWB / Carrier / Batch ID values
+                      are surfaced by detail-subheader-* at the top of every
+                      tab; copy/paste access preserved via expand. */}
+                  <details data-testid="dhl-shipment-metadata-collapsed"
+                           style={{ marginBottom: 12 }}>
+                    <summary style={{ cursor: 'pointer', fontSize: 10,
+                                      fontWeight: 700, color: 'var(--text-3)',
+                                      letterSpacing: '0.08em',
+                                      textTransform: 'uppercase' }}>
+                      Shipment metadata
+                    </summary>
+                    <div style={{ marginTop: 8 }}>
+                      <InfoRow label="AWB / Tracking" value={trackingNo || '—'} mono />
+                      <InfoRow label="Carrier" value={carrier} />
+                      <InfoRow label="Batch ID" value={batchId} mono />
+                      <InfoRow label="Invoice Files" value={(inp.invoices || []).length > 0 ? `${(inp.invoices || []).length} file(s)` : 'None uploaded'} />
+                      <InfoRow label="AWB PDF" value={inp.awb ? 'Uploaded ✓' : 'Not uploaded'} />
+                    </div>
+                  </details>
+
+                  {/* ── Live Tracking Status ── */}
+                  {trackingNo && (() => {
+                    const td = trackingData;
+                    // Phase 2C — hide tracking block entirely when carrier
+                    // API is unconfigured AND operator hasn't manually
+                    // set tracking.  Operator should configure credentials
+                    // in admin, not see a per-batch reminder.
+                    const _apiModeGuard = (td && td.api_status) || '';
+                    const _isManualGuard = _apiModeGuard === 'manual' || (td && td.source === 'manual');
+                    const isNoCreds = _apiModeGuard === 'no_credentials' || _apiModeGuard === 'disabled';
+                    if (isNoCreds && !_isManualGuard) return null;
+                    const STATUS_DOT = { delivered: '#16a34a', in_transit: '#2563eb', out_for_delivery: '#d97706', exception: '#dc2626', unknown: '#9ca3af' };
+                    const dotColor   = td ? (STATUS_DOT[td.status] || STATUS_DOT.unknown) : STATUS_DOT.unknown;
+                    // API states: disabled = no creds; failed = call errored; active = OK; manual = operator-set.
+                    // Pending banner fires when API is NOT active (disabled/failed/no-credentials/no-data-yet),
+                    // unless the operator manually updated tracking — in which case treat as live.
+                    const _apiMode = (td && td.api_status) || '';
+                    const isManual   = _apiMode === 'manual' || (td && td.source === 'manual');
+                    const isPending  = !isManual && (
+                      !td
+                      || _apiMode === 'disabled' || _apiMode === 'failed' || _apiMode === 'no_credentials'
+                      || td.source === 'api_disabled' || td.source === 'api_failed'
+                      || td.source === 'api_pending' || td.source === 'no_credentials'
+                      || (td.available === false && (_apiMode === 'pending' || _apiMode === 'no_credentials'))
+                    );
+                    // Structured error envelope: source ∈ { unauthorized, rate_limited,
+                    // carrier_error, network_error, config_error, error }. Treat any
+                    // non-pending failure with a status-code-bearing source as a
+                    // config/credential issue so the user sees actionable text.
+                    const _ERR_SOURCES = new Set(['error', 'unauthorized', 'rate_limited',
+                                                  'carrier_error', 'network_error', 'config_error']);
+                    const isError    = td && !td.available && _ERR_SOURCES.has(td.source);
+                    const isAuthErr  = td && (td.source === 'unauthorized' || td.status === 'unauthorized');
+                    const isLive     = td && td.available === true;
+                    const needsCoworkLookup = td && td.cowork_tracking_required && !td.cowork_result_received;
+                    const coworkResultReceived = td && td.cowork_result_received;
+                    // Disable refresh when pending — clicking would just re-confirm the same state
+                    const refreshBlocked = isPending && !isLive;
+                    return (
+                      <div style={{ marginTop: 12, padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                            Live Tracking
+                          </div>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                            {/* Refresh — disabled with toast when pending OR when shipment is terminal */}
+                            {td && td.tracking_terminal ? (
+                              <span title={`Tracking frozen: ${td.tracking_terminal_reason || 'terminal status'} — no further DHL API calls`}
+                                style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)', fontWeight: 700 }}>
+                                ✓ Tracking stopped
+                              </span>
+                            ) : (
+                              <button
+                                disabled={trackingBusy}
+                                onClick={() => {
+                                  if (refreshBlocked) {
+                                    const m = (td && td.api_status) || '';
+                                    const msg = m === 'failed'
+                                      ? 'DHL API failed — retry or use manual'
+                                      : 'DHL API disabled — credentials are not active';
+                                    onToast(msg, 'info');
+                                    return;
+                                  }
+                                  fetchTracking(true);
+                                }}
+                                style={{ fontSize: 10, cursor: trackingBusy ? 'default' : 'pointer', background: 'none', border: '1px solid var(--border)', borderRadius: 4, padding: '1px 6px', color: refreshBlocked ? 'var(--text-3)' : 'var(--text-2)', fontFamily: 'inherit', opacity: refreshBlocked ? 0.5 : 1 }}>
+                                {trackingBusy ? '⟳' : '↻'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* ── DHL API NON-ACTIVE STATE + FALLBACK ── */}
+                        {isPending && !isError && (
+                          <div>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 8px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 4, marginBottom: 8 }}>
+                              <span style={{ fontSize: 12 }}>⚠</span>
+                              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-amber-text)' }}>
+                                {(() => {
+                                  const m = (td && td.api_status) || '';
+                                  if (td && td.api_status === 'no_credentials') return 'FedEx API — No Credentials';
+                                  if (m === 'failed')   return 'DHL API failed';
+                                  return 'DHL API disabled';
+                                })()}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 8 }}>
+                              {(() => {
+                                const m = (td && td.api_status) || '';
+                                if (m === 'failed')
+                                  return 'Retry API or use public/manual tracking.';
+                                return 'Credentials are not active. Use public tracking or manual update.';
+                              })()}
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                              {td && td.tracking_url ? (
+                                <a href={td.tracking_url} target="_blank" rel="noopener noreferrer"
+                                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600, color: 'var(--badge-blue-text)', textDecoration: 'none', padding: '4px 10px', border: '1px solid var(--badge-blue-border)', borderRadius: 4, background: 'var(--badge-blue-bg)' }}>
+                                  ↗ Open Public Tracking
+                                </a>
+                              ) : (
+                                <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Tracking URL unavailable</div>
+                              )}
+                            </div>
+
+                            {/* ── Fallback tracking available ── */}
+                            {needsCoworkLookup && (
+                              <div style={{ marginTop: 10, padding: '8px 10px', background: '#fefce8', border: '1px solid #fde047', borderRadius: 6 }}>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: '#854d0e', marginBottom: 4 }}>
+                                  ↗ Fallback tracking available
+                                </div>
+                                <div style={{ fontSize: 10, color: '#92400e', marginBottom: 8 }}>
+                                  Open the public tracking page or report the latest status manually below.
+                                </div>
+                                <button
+                                  onClick={() => {
+                                    const awb    = audit.awb || audit.tracking_no || '';
+                                    const status = window.prompt('Tracking status (in_transit / delivered / out_for_delivery / customs / exception / unknown):', 'in_transit');
+                                    if (!status) return;
+                                    const lastEv = window.prompt('Last event description:', '');
+                                    if (lastEv === null) return;
+                                    const lastLoc = window.prompt('Last location (e.g. WARSAW - PL):', '');
+                                    const note   = window.prompt('Optional note:', '');
+                                    apiFetch(`/api/v1/tracking/${encodeURIComponent(awb)}/cowork-result`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({
+                                        status,
+                                        last_event:    lastEv,
+                                        last_location: lastLoc || '',
+                                        source:        'operator_manual',
+                                        batch_id:      batchId,
+                                        note:          note || null,
+                                      }),
+                                    })
+                                    .then(() => { onToast('Tracking result saved.', 'success'); fetchTracking(true); })
+                                    .catch(e => onToast(e.message || 'Failed to save tracking result', 'error'));
+                                  }}
+                                  style={{ fontSize: 11, fontWeight: 600, cursor: 'pointer', background: '#854d0e', color: '#fff', border: 'none', borderRadius: 4, padding: '5px 12px', fontFamily: 'inherit' }}>
+                                  Update tracking result manually
+                                </button>
+                                <button
+                                  onClick={async () => {
+                                    try {
+                                      await apiFetch(`/api/v1/ai-bridge/tasks/${encodeURIComponent(batchId)}`, {
+                                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ task_type: 'tracking_lookup', note: 'Created from shipment detail view' }),
+                                      });
+                                      onToast('Tracking task created in AI Bridge ⇌', 'success');
+                                    } catch(e) { onToast('Failed to create task: ' + e.message, 'error'); }
+                                  }}
+                                  style={{ fontSize: 11, fontWeight: 600, cursor: 'pointer', background: '#1D4ED8', color: '#fff', border: 'none', borderRadius: 4, padding: '5px 12px', fontFamily: 'inherit' }}>
+                                  ⇌ Create AI Bridge Task
+                                </button>
+                              </div>
+                            )}
+
+                            {/* ── Cowork result already received ── */}
+                            {coworkResultReceived && (
+                              <div style={{ marginTop: 8, fontSize: 10, color: 'var(--badge-green-text)' }}>
+                                ✓ Cowork tracking result received · {td.cowork_result_at ? td.cowork_result_at.slice(0,19).replace('T',' ') : ''}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* ── ERROR STATE — structured config/auth/network errors ── */}
+                        {isError && (
+                          <div>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 8px',
+                              background: isAuthErr ? 'var(--badge-amber-bg)' : 'var(--badge-red-bg)',
+                              border: `1px solid ${isAuthErr ? 'var(--badge-amber-border)' : 'var(--badge-red-border)'}`,
+                              borderRadius: 4, marginBottom: 6 }}>
+                              <span style={{ fontSize: 12 }}>{isAuthErr ? '⚙' : '✗'}</span>
+                              <span style={{ fontSize: 11, fontWeight: 700,
+                                color: isAuthErr ? 'var(--badge-amber-text)' : 'var(--badge-red-text)' }}>
+                                {isAuthErr        ? 'DHL API — Configuration Issue'
+                                 : td.source === 'rate_limited'  ? 'DHL API — Rate Limited'
+                                 : td.source === 'carrier_error' ? 'DHL API — Upstream Error'
+                                 : td.source === 'network_error' ? 'DHL API — Network Error'
+                                 :                                 'Tracking Error'}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 6 }}>
+                              {td.message || td.error || 'Tracking unavailable.'}
+                            </div>
+                            {isAuthErr && (
+                              <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 8 }}>
+                                Stored timeline and email evidence still display below — only the live API call is unavailable.
+                              </div>
+                            )}
+                            {td.tracking_url && (
+                              <a href={td.tracking_url} target="_blank" rel="noopener noreferrer"
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
+                                  color: 'var(--badge-blue-text)', textDecoration: 'none', padding: '4px 10px',
+                                  border: '1px solid var(--badge-blue-border)', borderRadius: 4, background: 'var(--badge-blue-bg)' }}>
+                                ↗ Open Public Tracking
+                              </a>
+                            )}
+                          </div>
+                        )}
+
+                        {/* ── MANUAL UPDATE STATE ── */}
+                        {isManual && !isLive && (
+                          <div>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 8px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 4, marginBottom: 8 }}>
+                              <span style={{ fontSize: 11 }}>✓</span>
+                              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-green-text)' }}>
+                                Tracking updated manually
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 4 }}>
+                              Manual tracking is saved.
+                              {td && td.updated_at && (
+                                <span style={{ color: 'var(--text-3)' }}> · {td.updated_at.slice(0,19).replace('T',' ')}</span>
+                              )}
+                            </div>
+                            {td && td.tracking_url && (
+                              <a href={td.tracking_url} target="_blank" rel="noopener noreferrer"
+                                style={{ fontSize: 11, color: 'var(--badge-blue-text)', textDecoration: 'none' }}>
+                                ↗ Open Public Tracking
+                              </a>
+                            )}
+                          </div>
+                        )}
+
+                        {/* ── LIVE STATE ── */}
+                        {isLive && (
+                          <div>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 8px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 4, marginBottom: 8 }}>
+                              <span style={{ fontSize: 11 }}>✓</span>
+                              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-green-text)' }}>
+                                {td.tracking_terminal ? 'Delivered — tracking stopped' : 'Live Tracking'}
+                              </span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                              <span style={{ width: 7, height: 7, borderRadius: '50%', background: dotColor, display: 'inline-block', flexShrink: 0 }} />
+                              <span style={{ fontSize: 12, fontWeight: 700, color: dotColor }}>{td.status_label}</span>
+                            </div>
+                            {td.last_location && (
+                              <div style={{ fontSize: 10, color: 'var(--text-2)', marginBottom: 1 }}>📍 {td.last_location}</div>
+                            )}
+                            {td.last_update_display && (
+                              <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 1 }}>🕐 {td.last_update_display}</div>
+                            )}
+                            {td.origin && td.destination && (
+                              <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>{td.origin} → {td.destination}</div>
+                            )}
+                            {td.tracking_url && (
+                              <a href={td.tracking_url} target="_blank" rel="noopener noreferrer"
+                                style={{ fontSize: 10, color: 'var(--badge-blue-text)', textDecoration: 'none' }}>
+                                ↗ Open DHL Tracking
+                              </a>
+                            )}
+
+                            {/* ── Full event timeline (last 10, newest first) ── */}
+                            {Array.isArray(td.events) && td.events.length > 0 && (
+                              <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
+                                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 6 }}>
+                                  Movement timeline ({td.events.length} events)
+                                </div>
+                                {td.events.slice().reverse().slice(0, 10).map((ev, i) => (
+                                  <div key={i} style={{ display: 'flex', gap: 6, fontSize: 10, color: 'var(--text-2)', marginBottom: 3, lineHeight: 1.3 }}>
+                                    <span style={{ fontFamily: 'monospace', color: 'var(--text-3)', flexShrink: 0, minWidth: 95 }}>
+                                      {(ev.timestamp || '').slice(0, 16).replace('T', ' ')}
+                                    </span>
+                                    <span style={{ color: 'var(--text-2)', flexShrink: 0, minWidth: 110, fontWeight: 600 }}>
+                                      {ev.location || '—'}
+                                    </span>
+                                    <span style={{ color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                      {ev.description || ev.status || ''}
+                                    </span>
+                                  </div>
+                                ))}
+                                {td.events.length > 10 && (
+                                  <div style={{ fontSize: 9, color: 'var(--text-3)', marginTop: 2, opacity: 0.7 }}>
+                                    +{td.events.length - 10} earlier events
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* ── DHL Follow-up SLA panel ── */}
+                            {audit.dhl_followup && (() => {
+                              const f = audit.dhl_followup || {};
+                              const isActive = !!f.active;
+                              const nextAt = f.next_followup_at ? new Date(f.next_followup_at) : null;
+                              const overdue = isActive && nextAt && nextAt <= new Date();
+                              const bg     = !isActive ? 'var(--badge-neutral-bg)'
+                                            : overdue   ? 'var(--badge-red-bg)'
+                                            :             'var(--badge-amber-bg)';
+                              const fg     = !isActive ? 'var(--text-3)'
+                                            : overdue   ? 'var(--badge-red-text)'
+                                            :             'var(--badge-amber-text)';
+                              return (
+                                <div style={{ marginTop: 8, padding: 8, borderRadius: 4, background: bg, border: '1px solid var(--border)', fontSize: 10 }}>
+                                  <div style={{ fontWeight: 700, color: fg, marginBottom: 3 }}>
+                                    {isActive ? (overdue ? '🚨 DHL Follow-up overdue' : '⏱ DHL Follow-up SLA active') : '✓ DHL Follow-up stopped'}
+                                  </div>
+                                  {f.trigger_reason && <div style={{ color: 'var(--text-2)' }}>Trigger: {f.trigger_reason}</div>}
+                                  {f.first_followup_at && <div style={{ color: 'var(--text-3)' }}>First follow-up: {f.first_followup_at.slice(0,16).replace('T',' ')}</div>}
+                                  {isActive && f.next_followup_at && <div style={{ color: fg }}>Next follow-up: {f.next_followup_at.slice(0,16).replace('T',' ')}</div>}
+                                  <div style={{ color: 'var(--text-3)' }}>Sent so far: {f.followup_count || 0}</div>
+                                  {f.last_followup_at && <div style={{ color: 'var(--text-3)' }}>Last sent: {f.last_followup_at.slice(0,16).replace('T',' ')}</div>}
+                                  {!isActive && f.stop_reason && <div style={{ color: 'var(--text-2)', marginTop: 2 }}>Stop reason: {f.stop_reason}</div>}
+                                  {isActive && (
+                                    <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                      <button
+                                        onClick={async () => {
+                                          const op = prompt('Operator name (for audit):', 'admin'); if (!op) return;
+                                          await apiFetch(`/api/v1/dhl-followup/${encodeURIComponent(batchId)}/send-now`,
+                                            { method: 'POST', headers: {'Content-Type':'application/json'},
+                                              body: JSON.stringify({approved_by: op}) });
+                                          await load();
+                                        }}
+                                        style={{ fontSize: 10, padding: '2px 6px', border: '1px solid var(--border)', borderRadius: 3, background: 'var(--card)', cursor: 'pointer' }}>
+                                        ↗ Send follow-up now
+                                      </button>
+                                      <button
+                                        onClick={async () => {
+                                          const reason = prompt('Stop reason (required):'); if (!reason) return;
+                                          const op     = prompt('Operator name:', 'admin'); if (!op) return;
+                                          await apiFetch(`/api/v1/dhl-followup/${encodeURIComponent(batchId)}/stop`,
+                                            { method: 'POST', headers: {'Content-Type':'application/json'},
+                                              body: JSON.stringify({reason, operator: op}) });
+                                          await load();
+                                        }}
+                                        style={{ fontSize: 10, padding: '2px 6px', border: '1px solid var(--border)', borderRadius: 3, background: 'var(--card)', cursor: 'pointer' }}>
+                                        ⏹ Stop follow-up
+                                      </button>
+                                      <button
+                                        onClick={async () => {
+                                          await apiFetch(`/api/v1/dhl-followup/${encodeURIComponent(batchId)}/recalculate`,
+                                            { method: 'POST' });
+                                          await load();
+                                        }}
+                                        style={{ fontSize: 10, padding: '2px 6px', border: '1px solid var(--border)', borderRadius: 3, background: 'var(--card)', cursor: 'pointer' }}>
+                                        ↻ Recalculate
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
+
+                            {/* ── Pending DHL email trigger from monitor ── */}
+                            {audit.pending_triggers && audit.pending_triggers.dhl_email_check && audit.pending_triggers.dhl_email_check.active && (
+                              <div style={{ marginTop: 8, padding: 8, borderRadius: 4, background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', fontSize: 10 }}>
+                                <div style={{ fontWeight: 700, color: 'var(--badge-amber-text)', marginBottom: 2 }}>⚡ DHL customs trigger detected</div>
+                                <div style={{ color: 'var(--text-2)' }}>{audit.pending_triggers.dhl_email_check.reason || 'Tracking shows customs activity — checking email automatically'}</div>
+                                {audit.pending_triggers.dhl_email_check.retries > 0 && (
+                                  <div style={{ color: 'var(--text-3)', marginTop: 2 }}>
+                                    Retries: {audit.pending_triggers.dhl_email_check.retries}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                            {(audit.risk_flags || []).includes('dhl_email_missing_after_tracking_trigger') && (
+                              <div style={{ marginTop: 8, padding: 8, borderRadius: 4, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', fontSize: 10 }}>
+                                <div style={{ fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 2 }}>🚨 DHL email missing after customs trigger</div>
+                                <div style={{ color: 'var(--text-2)' }}>Tracking indicates customs process started, but no DHL email found after retries. Manual Zoho check required.</div>
+                              </div>
+                            )}
+
+                            {/* ── Next Expected Action (intelligence layer) ── */}
+                            {td.intelligence && td.intelligence.expected_next && (
+                              <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
+                                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 4 }}>
+                                  Next Expected Action
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 3 }}>
+                                  <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'var(--badge-neutral-bg)', color: 'var(--text-2)', fontWeight: 600 }}>
+                                    Stage: {td.intelligence.stage.replace(/_/g, ' ')}
+                                  </span>
+                                  {td.intelligence.delay_flag && (
+                                    <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', fontWeight: 700 }}>
+                                      ⚠ Overdue {td.intelligence.delay_hours}h
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: 10, color: 'var(--text-2)', marginBottom: 2 }}>
+                                  Expected: <span style={{ fontWeight: 600 }}>{td.intelligence.expected_next}</span>
+                                  {td.intelligence.expected_within_hours != null && (
+                                    <span style={{ marginLeft: 4, color: 'var(--text-3)' }}>
+                                      (within {td.intelligence.expected_within_hours}h)
+                                    </span>
+                                  )}
+                                </div>
+                                {td.intelligence.hours_since_last_event != null && (
+                                  <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 2 }}>
+                                    Time since last event: {td.intelligence.hours_since_last_event}h
+                                  </div>
+                                )}
+                                {td.intelligence.recommended_action && (
+                                  <div style={{ fontSize: 10, color: td.intelligence.delay_flag ? 'var(--badge-amber-text)' : 'var(--text-2)', marginTop: 4, padding: '4px 6px', background: td.intelligence.delay_flag ? 'var(--badge-amber-bg)' : 'var(--card)', borderRadius: 3, border: '1px solid var(--border)' }}>
+                                    💡 {td.intelligence.recommended_action}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            <div style={{ fontSize: 9, color: 'var(--text-3)', marginTop: 6, opacity: 0.7 }}>
+                              via {td.source === 'dhl_unified_api' ? 'DHL Unified API' : td.source === 'dhl_api' ? 'DHL API' : td.source}
+                              {td.cached_at ? ` · cached ${td.cached_at.slice(0,19).replace('T',' ')}` : ''}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* ── NOT YET FETCHED ── */}
+                        {!td && !trackingBusy && (
+                          <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Checking status…</div>
+                        )}
+                        {trackingBusy && (
+                          <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Fetching status…</div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Goods Movement Timeline relocated to the Timeline
+                      tab. Warehouse tab focuses on scan coverage and
+                      per-piece state. */}
+                </div>
+                {(() => {
+                  const it     = audit.invoice_totals || {};
+                  const ver    = audit.verification   || {};
+                  const cd     = audit.customs_declaration || {};
+                  // Use engine-verified CIF as the single source of truth for display;
+                  // fall back to invoice_totals only when verification CIF is absent
+                  const cifUsd = ver.invoice_cif_total_usd || it.total_cif_usd || 0;
+                  const cifZero = !cifUsd || cifUsd === 0;
+                  const fmtUsd = (v) => v ? `USD ${Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'USD 0.00';
+                  // Total Net USD = sum of FOB values across all invoices
+                  const totalFobUsd = it.total_fob_usd;
+                  // Freight PLN = freight USD × SAD/NBP exchange rate
+                  const freightUsd = it.total_freight_usd;
+                  const exchRate   = cd.exchange_rate || cd.sad_customs_rate;
+                  const freightPln = (freightUsd && exchRate) ? freightUsd * exchRate : null;
+                  // Clearance decision from audit
+                  const dec      = audit.clearance_decision || {};
+                  const decPath  = dec.clearance_path || 'routing_pending';
+                  // Accept both canonical (spec) names and legacy aliases so
+                  // the UI keeps working regardless of which writer last
+                  // touched audit.json. Canonical: agency_clearance /
+                  // dhl_self_clearance / routing_pending.
+                  const isAgency  = decPath === 'agency_clearance'   || decPath === 'external_agency_clearance';
+                  const isCarrier = decPath === 'dhl_self_clearance' || decPath === 'carrier_self_clearance';
+                  const decPending = decPath === 'routing_pending';
+                  const pathLabel  = isAgency  ? '🏢 External Agency (>$2500)' :
+                                    isCarrier  ? '🚚 Carrier Self-Clearance (≤$2500)' :
+                                                 '⏳ Routing Pending (no CIF)';
+                  const pathColor  = isAgency  ? 'var(--badge-amber-text)' :
+                                    isCarrier  ? 'var(--badge-green-text)' :
+                                                 'var(--text-3)';
+                  // Resolved CIF authority (same source as clearance routing).
+                  // total_value_usd is the resolved CIF in USD; cif_state is the
+                  // tri-state (resolved / declared_zero / unknown). Used so the
+                  // values panel reads ONE authority, never raw invoice CIF = 0.
+                  const decCifUsd   = dec.total_value_usd;
+                  const decResolved = dec.cif_state === 'resolved' && decCifUsd != null && Number(decCifUsd) > 0;
+                  const cifSourceLabel = (src) => {
+                    if (!src) return 'unresolved (no source)';
+                    if (src === 'awb_customs.value_usd') return 'AWB Custom Val (carrier-declared)';
+                    if (src.indexOf('dhl_precheck') === 0) return 'DHL pre-check / OCR-AI fallback';
+                    if (src.indexOf('verification') === 0 || src.indexOf('invoice_totals') === 0) return 'Invoice';
+                    return src.replace(/_/g, ' ').replace('.', ' ');
+                  };
+                  // dhlAction CTA strings removed in the action-panel
+                  // consolidation — the authoritative next-action button
+                  // now lives in DhlActionCard. The legacy "Send Polish
+                  // Description to DHL" / "Send DSK Transfer to DHL"
+                  // labels duplicated that surface and confused operators
+                  // about which button to click.
+                  return (
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>DHL Clearance Values</div>
+                      <InfoRow label="Invoice CIF (USD)"
+                        value={cifZero && decResolved
+                          ? <span data-testid="invoice-cif-not-parsed" style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>not parsed</span>
+                          : <span style={{ color: cifZero ? 'var(--badge-red-text)' : 'inherit', fontWeight: cifZero ? 700 : 'inherit' }}>{fmtUsd(cifUsd)}</span>} />
+                      {decResolved && (
+                        <InfoRow label="Resolved CIF (USD)"
+                          value={<span data-testid="resolved-cif-value" style={{ color: 'var(--badge-green-text)', fontWeight: 700 }}>
+                            {fmtUsd(decCifUsd)}
+                            <span style={{ color: 'var(--text-3)', fontWeight: 400, fontSize: 10, marginLeft: 6 }}>· Source: {cifSourceLabel(dec.cif_source)}</span>
+                          </span>} />
+                      )}
+                      <InfoRow label="Total Net (USD)" value={totalFobUsd != null ? `USD ${Number(totalFobUsd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'Not parsed — process invoices'} />
+                      <InfoRow label="Freight (PLN)" data-testid="freight-pln-row"
+                        value={(() => {
+                          const fa = audit.freight_authority;
+                          if (!fa) {
+                            // Backward compat: old audit.json without freight_authority
+                            if (freightPln != null) return fmtPLN(freightPln);
+                            if (freightUsd != null && freightUsd > 0)
+                              return `USD ${Number(freightUsd).toLocaleString('en-US', { minimumFractionDigits: 2 })} (rate not available)`;
+                            return 'Not declared';
+                          }
+                          if (fa.freight_status === 'parsed_positive') {
+                            if (fa.freight_pln != null) return fmtPLN(fa.freight_pln);
+                            if (fa.freight_usd != null && fa.freight_usd > 0)
+                              return `USD ${Number(fa.freight_usd).toLocaleString('en-US', { minimumFractionDigits: 2 })} (rate not available)`;
+                            return '0.00 PLN';
+                          }
+                          if (fa.freight_status === 'confidently_absent') return '0.00 PLN';
+                          if (fa.freight_status === 'missing_invoice')    return 'Not declared';
+                          // unparsed — show review state + AI invoice review action
+                          return (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <span data-testid="freight-needs-review"
+                                    style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                                ⚠ Needs review
+                              </span>
+                              <Btn small variant="outline" data-testid="btn-freight-ai-review"
+                                   disabled={!!busy.freightAiReview}
+                                   onClick={() => doAction('freightAiReview', 'Invoice freight review',
+                                     () => apiFetch(
+                                       `/api/v1/ai-bridge/tasks/${encodeURIComponent(batchId)}`,
+                                       { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                         body: JSON.stringify({ task_type: 'invoice_freight_review' }) }))}>
+                                {busy.freightAiReview ? '⟳ Reviewing…' : '🔍 Review invoice fields'}
+                              </Btn>
+                            </span>
+                          );
+                        })()} />
+                      <InfoRow label="DHL Clearance Status" value={dhlClearance ? mapDhlStatus(dhlClearance) : 'Not started'} />
+                      <InfoRow label="Polish Description" value={audit.polish_desc_filename ? 'Generated ✓' : 'Not generated'} />
+                      <InfoRow label="DSK File" value={audit.dsk_filename ? 'Generated ✓' : 'Not generated'} />
+                      {(() => {
+                        const dskMeta = audit.dsk_meta;
+                        const dskVal  = dskMeta ? dskMeta.value_usd
+                                      : (ver.invoice_cif_total_usd || it.total_cif_usd || (decResolved ? decCifUsd : null));
+                        const dskSrc  = dskMeta ? dskMeta.value_source
+                                      : ((ver.invoice_cif_total_usd || it.total_cif_usd) ? 'invoice CIF'
+                                         : decResolved ? cifSourceLabel(dec.cif_source) : 'invoice CIF');
+                        if (!dskVal) return null;
+                        return (
+                          <InfoRow label="DSK Value (USD)"
+                            value={`USD ${Number(dskVal).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${dskSrc.replace(/_/g,' ').replace('audit.','').replace('invoice totals','invoice CIF')})`} />
+                        );
+                      })()}
+
+                      {/* ── DHL Orchestrator card REMOVED ──
+                          The card previously rendered here called
+                          React.useState + React.useEffect inside an
+                          IIFE that ran only when the DHL/Customs tab
+                          was active.  That violated React's Rules of
+                          Hooks (hook call count differed between
+                          renders depending on activeTab) and caused
+                          the entire BatchDetailPage subtree to
+                          unmount during commit, producing the
+                          white-screen on DHL/Customs click.  The
+                          identical orchestrator card on dashboard.html
+                          is unaffected and remains the canonical
+                          surface for orchestrator state. */}
+
+                      {/* ── Clearance Decision ── */}
+                      <div data-testid="clearance-routing-card" style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>Clearance Routing</div>
+                        <InfoRow label="Clearance Path"
+                          value={<span data-testid="clearance-path-label" style={{ color: pathColor, fontWeight: 600 }}>{pathLabel}</span>} />
+                        {/* Decision inputs — what's driving the route, in operator-friendly form. */}
+                        {(() => {
+                          const decCif       = (dec.total_value_usd != null) ? Number(dec.total_value_usd) : null;
+                          const decThreshold = (dec.threshold_usd != null) ? Number(dec.threshold_usd) : 2500;
+                          const decSource    = dec.cif_source || (decCif ? 'invoice CIF' : 'unavailable');
+                          const decReason    = dec.missing_reason || dec.decision_reason || '';
+                          const sourceLabel  = ({
+                            'verification.invoice_cif_total_usd':    'verified invoice CIF',
+                            'invoice_totals.total_cif_usd':          'invoice totals (CIF)',
+                            'invoice_totals.total_fob_usd':          'invoice totals (FOB fallback — freight not allocated)',
+                            'dhl_precheck.invoice_cif_total_usd':    'DHL pre-check CIF',
+                            'dhl_precheck.fob_total_usd':            'DHL pre-check FOB',
+                            'awb_customs.value_usd':                 'AWB Custom Val (carrier-declared)',
+                            'audit.customs_declared_value_zero':     'declared zero (source-confirmed)',
+                            'unavailable':                           'unavailable',
+                          })[decSource] || decSource;
+                          const cifState = dec.cif_state || (decSource === 'unavailable' ? 'unknown' : 'resolved');
+                          const cifGap   = dec.cif_extraction_gap || null;
+                          return (
+                            <>
+                              <InfoRow label="Decision Value (USD)"
+                                value={<span data-testid="clearance-decision-value" style={{ fontWeight: 600 }}>
+                                  {decCif != null && decCif > 0
+                                    ? `USD ${decCif.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                    : 'Not calculated'}
+                                </span>} />
+                              <InfoRow label="Threshold"
+                                value={<span data-testid="clearance-threshold" style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                                  USD {decThreshold.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </span>} />
+                              <InfoRow label="Value Source"
+                                value={<span data-testid="clearance-value-source" style={{ fontSize: 11, color: decSource === 'unavailable' ? 'var(--badge-amber-text)' : 'var(--text-2)' }}>
+                                  {sourceLabel}
+                                </span>} />
+                              {decPending && (
+                                <InfoRow label="Reason"
+                                  value={<span data-testid="clearance-pending-reason" style={{ fontSize: 11, color: 'var(--badge-amber-text)' }}>
+                                    Routing Pending — {dec.missing_reason || 'CIF not calculated yet'}
+                                  </span>} />
+                              )}
+                              {/* CIF extraction gap — value is UNKNOWN (parser/OCR/AWB
+                                  failed), NOT a fake 0. Shows which layer failed first
+                                  and the operator's next action. */}
+                              {cifState === 'unknown' && cifGap && (
+                                <div data-testid="clearance-extraction-gap" style={{ marginTop: 6, padding: '6px 8px', borderRadius: 4, background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)' }}>
+                                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-amber-text)' }}>
+                                    ⚠ CIF unknown — extraction gap
+                                  </div>
+                                  <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>
+                                    First failed layer: <span style={{ fontFamily: 'monospace' }}>{cifGap.first_failed_layer || 'unknown'}</span>
+                                  </div>
+                                  {cifGap.reason && (
+                                    <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>{cifGap.reason}</div>
+                                  )}
+                                  {cifGap.next_action && (
+                                    <div data-testid="clearance-extraction-next-action" style={{ fontSize: 11, color: 'var(--text-1)', marginTop: 2, fontWeight: 600 }}>
+                                      Next: {cifGap.next_action}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              {/* Declared-zero — source explicitly states a zero customs
+                                  value. Distinct from a parser miss. */}
+                              {cifState === 'declared_zero' && (
+                                <InfoRow label="CIF Status"
+                                  value={<span data-testid="clearance-declared-zero" style={{ fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                                    Declared zero — source-confirmed (not a parser miss)
+                                  </span>} />
+                              )}
+                              {/* OCR/AI vision fallback status — authority-honest layer
+                                  visibility (Lesson M). When the AWB/invoice was an
+                                  image-only scan, the deterministic text parsers produce
+                                  nothing; this line shows whether the automatic OCR/AI
+                                  fallback extracted a value, and from where, so the
+                                  operator can verify the source. Reads the persisted
+                                  audit.vision_extraction provenance, never invents state. */}
+                              {(() => {
+                                const ve = audit.vision_extraction || null;
+                                const runs = (ve && Array.isArray(ve.runs)) ? ve.runs : [];
+                                if (!runs.length) return null;
+                                const last = runs[runs.length - 1] || {};
+                                const docs = Array.isArray(last.documents) ? last.documents : [];
+                                // The doc whose extraction was written (resolved CIF/AWB).
+                                const written = docs.find(d => d && d.extraction && d.extraction.ok
+                                  && typeof d.write === 'string'
+                                  && (d.write.indexOf('value_usd') === 0 || d.write.indexOf('dhl_precheck') === 0));
+                                if (last.wrote && written) {
+                                  const ex = written.extraction || {};
+                                  const pg = ex.source_page != null ? ` from page ${ex.source_page}` : '';
+                                  const conf = ex.confidence != null ? ` (confidence ${(ex.confidence * 100).toFixed(0)}%)` : '';
+                                  return (
+                                    <InfoRow label="Extraction Method"
+                                      value={<span data-testid="clearance-extraction-method" style={{ fontSize: 11, color: 'var(--badge-green-text)', fontWeight: 600 }}>
+                                        Extracted by OCR/AI (Claude vision){pg}{conf} — verify source before booking
+                                      </span>} />
+                                  );
+                                }
+                                // Ran but did not write a usable value AND CIF still unknown.
+                                const attempted = docs.some(d => d && d.extraction);
+                                if (attempted && cifState === 'unknown') {
+                                  return (
+                                    <InfoRow label="Extraction Method"
+                                      value={<span data-testid="clearance-extraction-method" style={{ fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                                        OCR/AI extraction attempted — no usable value found, operator review needed
+                                      </span>} />
+                                  );
+                                }
+                                return null;
+                              })()}
+                            </>
+                          );
+                        })()}
+                        {isAgency && (
+                          <InfoRow label="Agency"
+                            value={<span style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>{dec.agency || 'Agencja Celna Spedycja'}</span>} />
+                        )}
+                        {isAgency && audit.agency_reply_package && (
+                          <InfoRow label="Agency Email"
+                            value={
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                <span style={{ color: 'var(--badge-green-text)' }}>
+                                  {audit.agency_reply_package.status === 'queued' ? '✓ Queued' : audit.agency_reply_package.status === 'sent' ? '✓ Sent' : audit.agency_reply_package.status}
+                                </span>
+                                {audit.agency_reply_package.status === 'sent' && audit.agency_reply_package.send_verified === false && (
+                                  <span title="Operator must confirm via Zoho Sent folder. Audit risk_flag is set." style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', border: '1px solid var(--badge-amber-border)', fontWeight: 700, whiteSpace: 'nowrap' }}>⚠ Send unverified</span>
+                                )}
+                                {audit.agency_reply_package.send_verified === true && (
+                                  <span title={`Verified at ${audit.agency_reply_package.verified_at || ''}`} style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)', fontWeight: 700, whiteSpace: 'nowrap' }}>✓ Verified</span>
+                                )}
+                              </span>
+                            } />
+                        )}
+                        {decPending && !cifZero && (
+                          <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', marginTop: 4 }}>
+                            ⚠ Run Recheck to compute clearance path
+                          </div>
+                        )}
+                      </div>
+
+                      {/* ── Email Routing ── */}
+                      <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>Email Routing</div>
+                        <InfoRow label="DHL TO"
+                          value={<span style={{ fontFamily: 'monospace', fontSize: 11 }}>odprawacelna@dhl.com</span>} />
+                        {isAgency && (
+                          <InfoRow label="Agency TO"
+                            value={<span style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--badge-amber-text)' }}>piotr@acspedycja.pl</span>} />
+                        )}
+                        {isAgency && (
+                          <InfoRow label="Agency CC"
+                            value={<span style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)' }}>
+                              biuro@acspedycja.pl, roman@acspedycja.pl, ganther
+                            </span>} />
+                        )}
+                        <InfoRow label="Internal CC"
+                          value={<span style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)' }}>
+                            info / import / account @estrellajewels.eu
+                          </span>} />
+                        {audit.dsk_received && (
+                          <InfoRow label="DSK Source"
+                            value={<span style={{ color: 'var(--badge-green-text)', fontSize: 11 }}>
+                              ✓ {audit.dsk_source || 'administracja_centralna@dhl.com'}
+                            </span>} />
+                        )}
+                        {audit._clearance_drift_warning && (
+                          <div style={{ marginTop: 6, padding: '4px 8px', borderRadius: 4, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', fontSize: 10 }}>
+                            ⚠ Clearance decision may be stale — run Recheck
+                          </div>
+                        )}
+                      </div>
+
+                      {cifZero && !decResolved && (
+                        <div data-testid="cif-unresolved-banner" style={{ marginTop: 10, padding: '10px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 3 }}>⚠ CIF unresolved — no customs value from any authority</div>
+                          <div style={{ fontSize: 10, color: 'var(--badge-red-text)', opacity: 0.9 }}>Generate Description is blocked until the batch is re-processed with valid invoice PDFs, or the AWB customs value is confirmed.</div>
+                        </div>
+                      )}
+                      {cifZero && decResolved && (
+                        <div data-testid="cif-resolved-advisory" style={{ marginTop: 10, padding: '10px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-amber-text)', marginBottom: 3 }}>ℹ Invoice totals not parsed — clearance routing resolved CIF from {cifSourceLabel(dec.cif_source)}</div>
+                          <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', opacity: 0.9 }}>Resolved CIF {fmtUsd(decCifUsd)} is used for routing and Polish Description. Re-process invoices to populate per-invoice CIF rows.</div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+              {/* ── Section 1 actions — stage-aware, deduplicated.
+                  Groups (in render order):
+                    A. DHL API banner (only when API unavailable)
+                    B. Customs package files (Polish Desc, DSK)
+                    C. Reply workflow (single stage chip + primary action)
+                    D. <details>More sending options — SMTP/MCP/Manual collapsed
+              */}
+              {!v2Active && (() => {
+                // ── Derived state — single truth source per workflow ─────────
+                const _it      = audit.invoice_totals || {};
+                const _ver     = audit.verification || {};
+                const _cif     = _ver.invoice_cif_total_usd || _it.total_cif_usd || 0;
+                const _cifZero = !_cif || _cif === 0;
+
+                // Polish Description state machine
+                const _pdFile   = audit.polish_desc_filename;
+                const _pdExists = !!(audit.polish_desc_file_exists !== false && _pdFile);
+                const _pdMissing = _pdFile && !_pdExists;          // audit says generated but file gone
+                const _pdReady   = _pdFile && _pdExists;           // happy path
+
+                // DSK state machine
+                const _dec       = audit.clearance_decision || {};
+                // Polish Description is gated on the RESOLVED CIF authority (same
+                // source as clearance routing), never raw invoice CIF = 0. Block
+                // only when no authority resolved a positive customs value.
+                const _decCifUsd   = _dec.total_value_usd;
+                const _decResolved = _dec.cif_state === 'resolved' && _decCifUsd != null && Number(_decCifUsd) > 0;
+                const _pdBlocked   = !_decResolved;
+                const _decCifLabel = _decResolved
+                  ? `USD ${Number(_decCifUsd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                  : '';
+                const _dskRequired = _dec.require_dsk !== false;   // default true unless explicitly false
+                const _dskFile   = audit.dsk_filename;
+                const _dskExists = !!(audit.dsk_file_exists !== false && _dskFile);
+                const _dskMissing = _dskFile && !_dskExists;
+                const _dskReady   = _dskFile && _dskExists;
+                // DSK carries the customs value on the declaration — gate it on the
+                // SAME resolved-CIF authority as Polish Description so we never send a
+                // value_usd of 0 (a false zero-value customs declaration) when no
+                // authority has resolved a positive customs value. When enabled, the
+                // value_usd payload always falls through to the resolved CIF.
+                const _dskBlocked = !_decResolved;
+
+                // DHL reply state
+                const _drp     = audit.dhl_reply_package || {};
+                const _drpStatus = _drp.status || (
+                  dhlClearance === 'reply_sent' ? 'sent'
+                    : dhlClearance === 'reply_queued' ? 'queued'
+                    : ''
+                );
+                const _drpBuilt   = !!(_drp.email_id || _drp.queue_id || _drpStatus);
+                const _drpQueued  = _drpStatus === 'queued';
+                const _drpSent    = _drpStatus === 'sent';
+                const _drpQid     = _drp.email_id || _drp.queue_id || '';
+
+                // Agency state (only when high-value path)
+                const _isAgency = (_dec.clearance_path || '') === 'external_agency_clearance';
+                const _arp      = audit.agency_reply_package || {};
+                const _arpQueued = _arp.status === 'queued';
+                const _arpSent   = _arp.status === 'sent';
+                const _arpQid    = _arp.queue_id || _arp.email_id || '';
+
+                // DHL API state — read from latest tracking probe.
+                // Modes: disabled (no creds) | failed (call errored) | active | manual.
+                // Banner fires for everything that is NOT active or manual.
+                const _td = trackingData || {};
+                const _apiMode = (_td.api_status || '').toLowerCase();
+                const _dhlApiDown = (
+                  _apiMode === 'disabled' || _apiMode === 'failed' || _apiMode === 'no_credentials' ||
+                  _td.source === 'api_disabled' || _td.source === 'api_failed' ||
+                  _td.source === 'api_pending'  || _td.source === 'no_credentials'
+                ) && _apiMode !== 'manual' && _td.source !== 'manual';
+                const _dhlApiLabel = _apiMode === 'failed'
+                  ? '⚠ DHL API failed — retry or use manual workflow.'
+                  : '⚠ DHL API disabled — using fallback (email/manual workflow).';
+
+                return (
+                  <div style={{ padding: '0 20px 8px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {/* A. DHL API non-active banner (read-only, single line; disabled / failed) */}
+                    {_dhlApiDown && (
+                      <div style={{
+                        padding: '6px 10px', borderRadius: 4,
+                        background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)',
+                        fontSize: 11, color: 'var(--badge-amber-text)',
+                      }}>
+                        {_dhlApiLabel} Live tracking falls back to public link.
+                      </div>
+                    )}
+
+                    {/* B. Customs package files */}
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginRight: 4 }}>Customs Package</span>
+                      {_decResolved && (
+                        <span data-testid="customs-pkg-resolved-cif" style={{ fontSize: 10, color: 'var(--badge-green-text)', fontWeight: 600 }}>
+                          Resolved CIF = {_decCifLabel}
+                        </span>
+                      )}
+
+                      {/* Polish Description — single state, never both Generate+Download */}
+                      {_pdReady ? (
+                        <a href={`/api/v1/dhl/download/${encodeURIComponent(_pdFile)}`} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
+                          <Btn variant="success" title="Download Polish Customs Description">↓ Polish Description</Btn>
+                        </a>
+                      ) : _pdMissing ? (
+                        <>
+                          <span style={{ fontSize: 11, color: 'var(--badge-red-text)', fontWeight: 600 }}>⚠ Marked generated but file missing</span>
+                          <Btn variant="danger" data-testid="btn-repair-polish-desc" disabled={!!busy.genDesc || _pdBlocked}
+                            title={_pdBlocked ? 'Blocked: customs CIF unresolved — re-process invoices or confirm the AWB customs value' : 'Re-generate the missing Polish Customs Description PDF'}
+                            onClick={() => doAction('genDesc', 'Repair Polish Description', () => apiFetch(`/api/v1/dhl/generate-description/${encodeURIComponent(batchId)}`, { method: 'POST' }))}>
+                            {busy.genDesc ? '⟳ Repairing…' : _pdBlocked ? '⚠ Repair (CIF unresolved)' : '⚠ Repair Polish Description'}
+                          </Btn>
+                        </>
+                      ) : (
+                        <>
+                          <Btn variant="outline" data-testid="btn-generate-polish-desc" disabled={!!busy.genDesc || _pdBlocked}
+                            title={_pdBlocked ? 'Blocked: customs CIF unresolved — re-process invoices or confirm the AWB customs value' : `Generate Polish Customs Description PDF (Resolved CIF = ${_decCifLabel})`}
+                            onClick={() => doAction('genDesc', 'Generate Polish Description', () => apiFetch(`/api/v1/dhl/generate-description/${encodeURIComponent(batchId)}`, { method: 'POST' }))}>
+                            {busy.genDesc ? '⟳ Generating…' : _pdBlocked ? '⊞ Polish Desc. (CIF unresolved)' : '⊞ Generate Polish Description'}
+                          </Btn>
+                          <Btn variant="ghost" disabled title="File not generated yet">
+                            ↓ Polish Description
+                          </Btn>
+                        </>
+                      )}
+
+                      {/* DSK PDF — only if required by clearance path */}
+                      {!_dskRequired ? (
+                        <span style={{ fontSize: 11, color: 'var(--text-3)', fontStyle: 'italic' }}>· DSK not required for this shipment</span>
+                      ) : _dskReady ? (
+                        <a href={`/api/v1/dsk/download/${encodeURIComponent(_dskFile)}`} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
+                          <Btn variant="success" title="Download DSK PDF">↓ DSK PDF</Btn>
+                        </a>
+                      ) : _dskMissing ? (
+                        <>
+                          <span style={{ fontSize: 11, color: 'var(--badge-red-text)', fontWeight: 600 }}>⚠ DSK marked generated but file missing</span>
+                          <Btn variant="danger" data-testid="btn-repair-dsk" disabled={!!busy.genDsk || _dskBlocked}
+                            title={_dskBlocked ? 'Blocked: customs CIF unresolved — re-process invoices or confirm the AWB customs value before generating a DSK' : 'Re-generate the missing DSK PDF'}
+                            onClick={() => doAction('genDsk', 'Repair DSK', () => apiFetch('/api/v1/dsk/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batch_id: batchId, awb: trackingNo || batchId, value_usd: ver.invoice_cif_total_usd || (audit.invoice_totals || {}).total_cif_usd || (_decResolved ? _decCifUsd : 0) }) }))}>
+                            {busy.genDsk ? '⟳ Repairing…' : _dskBlocked ? '⚠ Repair DSK (CIF unresolved)' : '⚠ Repair DSK'}
+                          </Btn>
+                        </>
+                      ) : (
+                        <>
+                          <Btn variant="outline" data-testid="btn-generate-dsk" disabled={!!busy.genDsk || _dskBlocked}
+                            title={_dskBlocked ? 'Blocked: customs CIF unresolved — re-process invoices or confirm the AWB customs value before generating a DSK' : `Generate DSK PDF (Resolved CIF = ${_decCifLabel})`}
+                            onClick={() => doAction('genDsk', 'Generate DSK', () => apiFetch('/api/v1/dsk/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batch_id: batchId, awb: trackingNo || batchId, value_usd: ver.invoice_cif_total_usd || (audit.invoice_totals || {}).total_cif_usd || (_decResolved ? _decCifUsd : 0) }) }))}>
+                            {busy.genDsk ? '⟳ Generating…' : _dskBlocked ? '⊟ DSK (CIF unresolved)' : '⊟ Generate DSK'}
+                          </Btn>
+                          <Btn variant="ghost" disabled title="File not generated yet">
+                            ↓ DSK PDF
+                          </Btn>
+                        </>
+                      )}
+                    </div>
+
+                    {/* C. Reply workflow — collapsed under "Advanced /
+                        Manual DHL tools" because DhlActionCard is now the
+                        authoritative next-action surface. The buttons here
+                        (Find DHL Emails, Build DHL Reply Package, queued-
+                        reply SMTP fallback) remain accessible for manual
+                        recovery / debug paths but are no longer the first
+                        thing operator sees. */}
+                    <details data-testid="dhl-advanced-tools" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
+                      <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', userSelect: 'none', marginBottom: 8 }}>
+                        ▸ Advanced / Manual DHL tools
+                      </summary>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginRight: 4 }}>DHL Reply</span>
+
+                      <Btn variant="outline" disabled={!!busy.scan} onClick={async () => {
+                        setBusyKey('scan', true);
+                        try {
+                          const r = await apiFetch(`/api/v1/dhl/scan-inbox?batch_id=${encodeURIComponent(batchId)}`);
+                          setScanResult(r);
+                          onToast(`Inbox scanned — ${r.matched} matched.`, 'success');
+                          await load(); await loadTimeline();
+                        } catch (e) { onToast(`Scan failed: ${e.message}`, 'error'); }
+                        finally { setBusyKey('scan', false); }
+                      }}>
+                        {busy.scan ? '⟳ Searching…' : '⌕ Find DHL Emails'}
+                      </Btn>
+
+                      {_drpSent ? (
+                        <span style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                          background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)',
+                          border: '1px solid var(--badge-green-border)', fontWeight: 600 }}>
+                          ✓ Reply sent
+                        </span>
+                      ) : _drpQueued ? (
+                        <span style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                          background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
+                          border: '1px solid var(--badge-amber-border)', fontWeight: 600 }}>
+                          ⏳ Reply queued
+                        </span>
+                      ) : _drpBuilt ? (
+                        <Btn variant="gold" disabled={!!busy.sendReply}
+                          onClick={async () => {
+                            setBusyKey('sendReply', true); setDhlSendReplyResult(null);
+                            onToast('Running: Queue Reply to DHL…', 'info');
+                            try {
+                              const d = await apiFetch('/api/v1/execute/dhl_send_reply', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ batch_id: batchId, payload: {} }),
+                              });
+                              setDhlSendReplyResult(d);
+                              if (!d.ok) {
+                                const reason = d.reason || d.error || 'blocked';
+                                onToast(`Queue Reply to DHL blocked: ${reason}`, 'error');
+                              } else if (d.status === 'skipped') {
+                                onToast('DHL reply already queued.', 'info');
+                                await Promise.all([loadDhlReadiness(), loadBatchReadiness(), loadDecision()]);
+                              } else {
+                                onToast('Queue Reply to DHL completed.', 'success');
+                                await Promise.all([loadDhlReadiness(), loadBatchReadiness(), loadDecision()]);
+                              }
+                            } catch (e) {
+                              onToast(`Queue Reply to DHL failed: ${e.message}`, 'error');
+                            } finally {
+                              setBusyKey('sendReply', false);
+                            }
+                          }}>
+                          {busy.sendReply ? '⟳ Queuing…' : '↗ Queue Reply'}
+                        </Btn>
+                      ) : (
+                        <Btn variant="outline" disabled={!!busy.buildPkg}
+                          onClick={() => doAction('buildPkg', 'Build Reply Package', () => apiFetch('/api/v1/dsk/email-package', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batch_id: batchId, awb: trackingNo || batchId }) }))}>
+                          {busy.buildPkg ? '⟳ Building…' : '⊡ Build DHL Reply Package'}
+                        </Btn>
+                      )}
+
+                      {/* Agency stage chip — read-only when queued/sent */}
+                      {_isAgency && (
+                        <>
+                          {_arpSent ? (
+                            <span style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                              background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)',
+                              border: '1px solid var(--badge-green-border)', fontWeight: 600 }}>
+                              ✓ Agency sent
+                            </span>
+                          ) : _arpQueued ? (
+                            <span style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                              background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
+                              border: '1px solid var(--badge-amber-border)', fontWeight: 600 }}>
+                              ⏳ Agency queued
+                            </span>
+                          ) : (
+                            <Btn variant={_pdReady ? 'gold' : 'outline'} disabled={!!busy.agencyEmail || !_pdReady}
+                              title={!_pdReady ? 'Generate Polish Description first' : 'Build & queue agency clearance email package'}
+                              onClick={() => doAction('agencyEmail', 'Agency Email Package',
+                                () => apiFetch(`/api/v1/agency/email-package/${encodeURIComponent(batchId)}`, { method: 'POST' }))}>
+                              {busy.agencyEmail ? '⟳ Building…' : '📨 Build Agency Email'}
+                            </Btn>
+                          )}
+                        </>
+                      )}
+                    </div>
+                    {dhlSendReplyResult && dhlSendReplyResult.status === 'skipped' && (dhlSendReplyResult.stage === 'milestone_skip' || (dhlSendReplyResult.reason && dhlSendReplyResult.reason.startsWith('milestone_skip:'))) && (
+                      <div data-testid="dhl-reply-skip-msg" style={{ marginTop: 6, fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                        Skipped: already progressed (SAD/PZ/Completed)
+                      </div>
+                    )}
+                    {dhlSendReplyResult && dhlSendReplyResult.log_write_failed && (
+                      <div data-testid="dhl-reply-log-warn" style={{ marginTop: 4, fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                        ⚠ Action completed but log write failed
+                      </div>
+                    )}
+
+                    {/* D. Manual fallback — collapsed by default */}
+                    {(_drpQueued || (_isAgency && _arpQueued)) && (
+                      <details style={{ fontSize: 11 }}>
+                        <summary style={{ cursor: 'pointer', color: 'var(--text-2)', padding: '4px 0', userSelect: 'none' }}>
+                          ▸ More sending options
+                        </summary>
+                        <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          {/* DHL queued reply send actions */}
+                          {_drpQueued && _drpQid && (
+                            <Btn small variant="gold" disabled={!!busy.sendDhlReply}
+                              title="Send queued DHL reply via SMTP"
+                              onClick={() => doAction('sendDhlReply', 'Send DHL Reply (SMTP)', async () => {
+                                const r = await apiFetch(`/api/v1/admin/email-queue/${encodeURIComponent(_drpQid)}/send`, { method: 'POST' });
+                                if (r.error === 'smtp_not_configured') onToast('SMTP not configured', 'error');
+                                else if (r.ok && r.status === 'sent') onToast('DHL reply sent ✓', 'success');
+                                else if (r.error) onToast(`Send failed: ${r.error_detail || r.error}`, 'error');
+                                return r;
+                              })}>
+                              {busy.sendDhlReply ? '⟳…' : '↗ DHL: SMTP'}
+                            </Btn>
+                          )}
+                          {/* Agency queued reply send actions */}
+                          {_isAgency && _arpQueued && _arpQid && (
+                            <>
+                              <Btn small variant="gold" disabled={!!busy.sendAgency}
+                                title="Send agency email via SMTP (Zoho App Password)"
+                                onClick={() => doAction('sendAgency', 'Send Agency Email (SMTP)', async () => {
+                                  const r = await apiFetch(`/api/v1/admin/email-queue/${encodeURIComponent(_arpQid)}/send`,
+                                    { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ method: 'smtp' }) });
+                                  if (r.error === 'SMTP_NOT_CONFIGURED' || r.error === 'smtp_not_configured') onToast('SMTP not configured', 'error');
+                                  else if (r.ok && r.status === 'sent') onToast(`Agency email sent ✓`, 'success');
+                                  else if (r.error) onToast(`Send failed: ${r.error_detail || r.error}`, 'error');
+                                  return r;
+                                })}>
+                                {busy.sendAgency ? '⟳…' : '↗ Agency: SMTP'}
+                              </Btn>
+                              <Btn small variant="outline" disabled={!!busy.sendAgencyMcp}
+                                title="Fallback: Zoho Mail MCP — requires explicit confirmation"
+                                onClick={async () => {
+                                  if (!confirm('⚠ Zoho MCP send will dispatch a real external email.\n\nProceed?')) return;
+                                  const op = prompt('Approval — enter your name:', 'admin');
+                                  if (!op) return;
+                                  setBusyKey('sendAgencyMcp', true);
+                                  try {
+                                    const r = await apiFetch(`/api/v1/admin/email-queue/${encodeURIComponent(_arpQid)}/send`,
+                                      { method: 'POST', headers: {'Content-Type': 'application/json'},
+                                        body: JSON.stringify({ method: 'zoho_mcp', confirm_mcp_send: true, approved_by: op }) });
+                                    if (r.error === 'mcp_attachments_too_large') onToast('MCP refused: attachments exceed cap', 'error');
+                                    else if (r.ok && r.ready_for_mcp) onToast('MCP handoff ready', 'info');
+                                    else if (r.error) onToast(`MCP send failed: ${r.error_detail || r.error}`, 'error');
+                                    await load();
+                                  } finally { setBusyKey('sendAgencyMcp', false); }
+                                }}>
+                                {busy.sendAgencyMcp ? '⟳ MCP…' : '↗ Agency: MCP'}
+                              </Btn>
+                              <Btn small variant="ghost" disabled={!!busy.sendAgencyManual}
+                                title="Emergency: copy package details for manual send"
+                                onClick={async () => {
+                                  setBusyKey('sendAgencyManual', true);
+                                  try {
+                                    const r = await apiFetch(`/api/v1/admin/email-queue/${encodeURIComponent(_arpQid)}/send`,
+                                      { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ method: 'manual_package' }) });
+                                    if (r.ok && r.package) {
+                                      const lines = [
+                                        'TO: ' + (r.package.to || []).join(', '),
+                                        'CC: ' + (r.package.cc || []).join(', '),
+                                        'Subject: ' + r.package.subject, '',
+                                        'Attachments (' + (r.package.attachments || []).length + '):',
+                                        ...(r.package.attachments || []).map(a => '  ' + a.path),
+                                      ].join('\n');
+                                      await navigator.clipboard.writeText(lines).catch(()=>{});
+                                      onToast('Manual package copied to clipboard', 'success');
+                                    }
+                                  } finally { setBusyKey('sendAgencyManual', false); }
+                                }}>
+                                {busy.sendAgencyManual ? '⟳…' : '⊟ Agency: Manual'}
+                              </Btn>
+                            </>
+                          )}
+                        </div>
+                      </details>
+                    )}
+                    </details>
+                  </div>
+                );
+              })()}
+              {/* ── Manual fallback row — also under collapsed Advanced
+                  tools to keep operator focus on DhlActionCard. */}
+              {!v2Active && (
+              <details data-testid="dhl-manual-mark-received" style={{ padding: '0 20px 16px' }}>
+                <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', userSelect: 'none', padding: '4px 0' }}>
+                  ▸ Advanced / Manual DHL tools — Mark DHL email received
+                </summary>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', borderTop: '1px dashed var(--border)', paddingTop: 8, marginTop: 4 }}>
+                  <Btn variant="ghost" disabled={!!busy.markRec}
+                    title="Use only if Cowork email search returned 0 matches or is unavailable"
+                    onClick={() => { setMarkRecFields(_markRecDefaults); setConfirmingMarkRec(true); }}>
+                    {busy.markRec ? '⟳ Marking…' : '↩ Manual: Mark DHL Received'}
+                  </Btn>
+                </div>
+              </details>
+              )}
+              <div>
+                {/* DHL Reply Lifecycle Tracker — visible once any reply activity begins */}
+                {(() => {
+                  const clr = dhlClearance || '';
+                  const isActive = ['reply_package_prepared','reply_queued','reply_sent','reply_failed'].includes(clr);
+                  if (!isActive) return null;
+
+                  const STEPS = [
+                    { key: 'package',  label: 'Package Ready',     states: ['reply_package_prepared','reply_queued','reply_sent','reply_failed'] },
+                    { key: 'queued',   label: 'Queued',            states: ['reply_queued','reply_sent','reply_failed'] },
+                    { key: 'sent',     label: 'Delivered',         states: ['reply_sent'] },
+                    { key: 'failed',   label: 'Failed',            states: ['reply_failed'] },
+                  ];
+
+                  const isSent   = clr === 'reply_sent';
+                  const isFailed = clr === 'reply_failed';
+                  const isQueued = clr === 'reply_queued';
+
+                  const rs = replyStatus || {};
+
+                  return (
+                    <div style={{ marginTop: 12, padding: '12px 14px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>DHL Reply Delivery Status</div>
+                        <Btn small variant="outline" disabled={!!busy.checkDelivery} onClick={async () => {
+                          setBusyKey('checkDelivery', true);
+                          try {
+                            const r = await apiFetch(`/api/v1/dhl/reply-status/${encodeURIComponent(batchId)}`);
+                            setReplyStatus(r);
+                            if (r.dhl_reply_status !== clr) { await load(); }
+                          } catch(e) { onToast(`Status check failed: ${e.message}`, 'error'); }
+                          finally { setBusyKey('checkDelivery', false); }
+                        }}>{busy.checkDelivery ? '⟳' : '↻ Check'}</Btn>
+                      </div>
+                      {/* Step track */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 12 }}>
+                        {STEPS.filter(s => !(s.key === 'failed' && !isFailed) && !(s.key === 'sent' && isFailed)).map((s, i, arr) => {
+                          const done  = s.states.includes(clr);
+                          const cur   = (s.key === 'queued' && isQueued) || (s.key === 'sent' && isSent) || (s.key === 'failed' && isFailed) || (s.key === 'package' && clr === 'reply_package_prepared');
+                          const fail  = s.key === 'failed' && isFailed;
+                          const bg    = fail ? 'var(--badge-red-text)' : done ? GOLD : 'var(--border)';
+                          return (
+                            <React.Fragment key={s.key}>
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                                <div style={{ width: 22, height: 22, borderRadius: '50%', background: bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: done ? '#fff' : 'var(--text-3)', fontWeight: 700, border: `2px solid ${bg}` }}>
+                                  {fail ? '✗' : done ? '✓' : i + 1}
+                                </div>
+                                <div style={{ fontSize: 9, color: cur ? (fail ? 'var(--badge-red-text)' : 'var(--text)') : done ? 'var(--text-2)' : 'var(--text-3)', fontWeight: cur ? 700 : 400, whiteSpace: 'nowrap' }}>{s.label}</div>
+                              </div>
+                              {i < arr.length - 1 && <div style={{ flex: 1, height: 2, background: s.states.includes(clr) ? GOLD : 'var(--border)', marginBottom: 14 }} />}
+                            </React.Fragment>
+                          );
+                        })}
+                      </div>
+                      {/* Detail row */}
+                      <div style={{ fontSize: 10, color: 'var(--text-2)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                        {audit.dhl_reply_to      && <div><span style={{ color: 'var(--text-3)' }}>To: </span>{audit.dhl_reply_to}</div>}
+                        {audit.dhl_reply_subject && <div><span style={{ color: 'var(--text-3)' }}>Subject: </span>{audit.dhl_reply_subject}</div>}
+                        {audit.dhl_reply_queued_at && <div><span style={{ color: 'var(--text-3)' }}>Queued: </span>{audit.dhl_reply_queued_at.slice(0,19).replace('T',' ')} UTC</div>}
+                        {(rs.sent_at || audit.dhl_reply_sent_at) && <div style={{ color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ Delivered: {(rs.sent_at || audit.dhl_reply_sent_at).slice(0,19).replace('T',' ')} UTC</div>}
+                        {isFailed && (rs.error || audit.dhl_reply_error) && <div style={{ color: 'var(--badge-red-text)', fontWeight: 600 }}>✗ Error: {rs.error || audit.dhl_reply_error}</div>}
+                        {isQueued && !rs.sent_at && <div style={{ color: 'var(--badge-amber-text)' }}>⏳ Pending — email connector pickup required</div>}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+              {/* Mark Email Received — inline form */}
+              {confirmingMarkRec && (
+                <div style={{ margin: '0 20px 16px', padding: 16, background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 14 }}>Mark DHL Email as Received</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>DHL Ticket <span style={{ color: 'var(--badge-amber-text)' }}>★</span></div>
+                      <Inp value={markRecFields.ticket} onChange={e => setMarkRecFields(p => ({...p, ticket: e.target.value}))} placeholder="e.g. T#1WA2604140000123" style={{ width: '100%' }} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>Request Type</div>
+                      <select value={markRecFields.request_type} onChange={e => setMarkRecFields(p => ({...p, request_type: e.target.value}))}
+                        style={{ width: '100%', padding: '6px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12 }}>
+                        <option value="unknown">Unknown</option>
+                        <option value="polish_description">Polish Description (DHL self-clear)</option>
+                        <option value="dsk_broker">DSK — Broker clearance</option>
+                      </select>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>Subject</div>
+                      <Inp value={markRecFields.subject} onChange={e => setMarkRecFields(p => ({...p, subject: e.target.value}))} placeholder="Email subject line" style={{ width: '100%' }} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>Sender</div>
+                      <Inp value={markRecFields.sender} onChange={e => setMarkRecFields(p => ({...p, sender: e.target.value}))} placeholder="odprawacelna@dhl.com" style={{ width: '100%' }} />
+                    </div>
+                  </div>
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>Note <span style={{ fontWeight: 400 }}>(optional — visible in audit)</span></div>
+                    <Inp value={markRecFields.note} onChange={e => setMarkRecFields(p => ({...p, note: e.target.value}))} placeholder="Manual entry reason, operator name, etc." style={{ width: '100%' }} />
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Btn variant="gold" disabled={!!busy.markRec} onClick={async () => {
+                      setBusyKey('markRec', true);
+                      try {
+                        await apiFetch(`/api/v1/dhl/mark-email-received/${encodeURIComponent(batchId)}`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify(markRecFields),
+                        });
+                        onToast('DHL email marked received.', 'success');
+                        setConfirmingMarkRec(false);
+                        await load();
+                      } catch (e) { onToast(`Mark received failed: ${e.message}`, 'error'); }
+                      finally { setBusyKey('markRec', false); }
+                    }}>
+                      {busy.markRec ? '⟳ Saving…' : '✓ Confirm Received'}
+                    </Btn>
+                    <Btn variant="outline" onClick={() => setConfirmingMarkRec(false)}>Cancel</Btn>
+                  </div>
+                </div>
+              )}
+              {/* Scan result panel — shown after Scan DHL Inbox */}
+              {scanResult && (() => {
+                const _isPending = scanResult.scan_method === 'ai_bridge_pending';
+                return (
+                <div style={{ margin: '0 20px 16px', padding: 14, background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: scanResult.matched > 0 || _isPending ? 10 : 6 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                      {_isPending ? 'Scan In Progress' : 'Last Scan Result'}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-2)' }}>
+                      {_isPending
+                        ? <span style={{ color: 'var(--badge-blue-text)', fontWeight: 700 }}>⏳ Cowork search pending — final result not yet available</span>
+                        : <>Scanned {scanResult.scanned} · <span style={{ color: scanResult.matched > 0 ? 'var(--badge-amber-text)' : 'var(--badge-green-text)', fontWeight: 700 }}>{scanResult.matched} matched</span></>
+                      }
+                      {scanResult.scanned_at && <span style={{ marginLeft: 8, color: 'var(--text-3)' }}>{scanResult.scanned_at.slice(0,16).replace('T',' ')} UTC</span>}
+                    </div>
+                  </div>
+                  {/* Diagnostic strip — search mode + query used */}
+                  {(scanResult.search_mode || scanResult.scan_method) && (
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: scanResult.matched > 0 ? 8 : 4, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                      {scanResult.search_mode && <span>Mode: <code style={{ fontSize: 10 }}>{scanResult.search_mode}</code></span>}
+                      {scanResult.awb_used && <span>AWB: <code style={{ fontSize: 10 }}>{scanResult.awb_used}</code></span>}
+                      {scanResult.scan_method && <span>Source: <code style={{ fontSize: 10 }}>{scanResult.scan_method}</code></span>}
+                    </div>
+                  )}
+                  {scanResult.matched === 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                      {scanResult.scan_method === 'ai_bridge_pending'
+                        ? (scanResult.bridge_task?.message || 'Email scan dispatched to AI Bridge.')
+                        : scanResult.scan_method === 'no_credentials'
+                          ? 'Mailbox not connected — set ZOHO_MAIL_API_TOKEN in .env to enable inbox scan.'
+                          : scanResult.awb_used
+                            ? `No match found for AWB ${scanResult.awb_used}. Checked subject, body, attachments, and forwarded content across DHL / agency / Ganther / internal senders.`
+                            : 'No shipment-related emails found. Checked subject, body, attachments, and forwarded content.'}
+                    </div>
+                  )}
+                  {scanResult.bridge_task && (
+                    <div style={{ marginTop: 8, padding: 8, borderRadius: 4, background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)', fontSize: 10 }}>
+                      <div style={{ fontWeight: 700, color: 'var(--badge-blue-text)', marginBottom: 2 }}>⏳ Waiting for Cowork email search</div>
+                      <div style={{ color: 'var(--text-2)' }}>Task ID: <code style={{ fontSize: 10 }}>{scanResult.bridge_task.task_id}</code></div>
+                      <div style={{ color: 'var(--text-3)', marginTop: 2 }}>Cowork searches Zoho via MCP. Once it posts results back, the system auto-applies the DHL detection and advances clearance state.</div>
+                    </div>
+                  )}
+                  {/* Stored email intelligence (cache hit — no Cowork call needed) */}
+                  {scanResult.cached && scanResult.scan_method === 'email_intelligence_cache' && (
+                    <div style={{ marginTop: 8, padding: 8, borderRadius: 4, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', fontSize: 10 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                        <div style={{ fontWeight: 700, color: 'var(--badge-green-text)' }}>✓ Stored email intelligence found</div>
+                        <button
+                          disabled={!!busy.scan}
+                          onClick={async () => {
+                            setBusyKey('scan', true);
+                            try {
+                              const r = await apiFetch(`/api/v1/dhl/scan-inbox?batch_id=${encodeURIComponent(batchId)}&refresh=true`);
+                              setScanResult(r);
+                              onToast(`Re-scan dispatched`, 'info');
+                            } catch (e) { onToast(`Re-scan failed: ${e.message}`, 'error'); }
+                            finally { setBusyKey('scan', false); }
+                          }}
+                          style={{ fontSize: 10, padding: '2px 8px', background: 'none', border: '1px solid var(--badge-green-border)', borderRadius: 3, color: 'var(--badge-green-text)', cursor: busy.scan ? 'default' : 'pointer' }}>
+                          ↻ Re-run Cowork search
+                        </button>
+                      </div>
+                      <div style={{ color: 'var(--text-2)' }}>
+                        Last scan: <code style={{ fontSize: 10 }}>{(scanResult.cached.last_scanned_at || '').slice(0,19).replace('T',' ')}</code>
+                        {scanResult.cached.source && <span style={{ marginLeft: 8 }}>· source: <code style={{ fontSize: 10 }}>{scanResult.cached.source}</code></span>}
+                      </div>
+                      {scanResult.cached.linked_batches && scanResult.cached.linked_batches.length > 1 && (
+                        <div style={{ color: 'var(--text-3)', marginTop: 2 }}>Linked batches: {scanResult.cached.linked_batches.length}</div>
+                      )}
+                    </div>
+                  )}
+                  {/* Search context: what identifiers were dispatched */}
+                  {scanResult.search_context && (
+                    <div style={{ marginTop: 6, padding: 8, borderRadius: 4, background: 'var(--card)', border: '1px solid var(--border)', fontSize: 10 }}>
+                      <div style={{ fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 4 }}>Search context</div>
+                      <div style={{ color: 'var(--text-2)' }}>
+                        AWB searched: <code>{scanResult.search_context.awb || '—'}</code>
+                      </div>
+                      {scanResult.search_context.invoice_numbers && scanResult.search_context.invoice_numbers.length > 0 && (
+                        <div style={{ color: 'var(--text-2)', marginTop: 2 }}>
+                          Invoice numbers searched: <code>{scanResult.search_context.invoice_numbers.slice(0,5).join(', ')}{scanResult.search_context.invoice_numbers.length > 5 ? ` +${scanResult.search_context.invoice_numbers.length - 5} more` : ''}</code>
+                        </div>
+                      )}
+                      {scanResult.search_context.dhl_ticket && (
+                        <div style={{ color: 'var(--text-2)', marginTop: 2 }}>DHL ticket: <code>{scanResult.search_context.dhl_ticket}</code></div>
+                      )}
+                      <div style={{ color: 'var(--text-3)', marginTop: 3 }}>
+                        Search used AWB + invoice numbers · {scanResult.search_context.search_terms_count} search terms total
+                      </div>
+                    </div>
+                  )}
+                  {/* Unreliable-zero warning — strong identifiers but 0 matches */}
+                  {(audit.email_search_risk || (scanResult.email_scan_results && scanResult.email_scan_results.search_unreliable)) && (
+                    <div style={{ marginTop: 6, padding: 8, borderRadius: 4, background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', fontSize: 10 }}>
+                      <div style={{ fontWeight: 700, color: 'var(--badge-amber-text)', marginBottom: 2 }}>⚠ Manual Zoho verification required</div>
+                      <div style={{ color: 'var(--text-2)' }}>
+                        Cowork returned 0 matches, but strong identifiers (AWB/invoice numbers) exist. The search may have missed emails. Open Zoho UI and verify before treating as 'no email'.
+                      </div>
+                      {audit.email_search_risk_reason && (
+                        <div style={{ color: 'var(--text-3)', marginTop: 3 }}>{audit.email_search_risk_reason}</div>
+                      )}
+                    </div>
+                  )}
+                  {/* Cowork-derived workflow events (from email_scan_results.derived_events) */}
+                  {scanResult.derived_events && scanResult.derived_events.length > 0 && (
+                    <div style={{ marginTop: 8, padding: 8, borderRadius: 4, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', fontSize: 10 }}>
+                      <div style={{ fontWeight: 700, color: 'var(--badge-green-text)', marginBottom: 4 }}>✓ Detected workflow events ({scanResult.derived_events.length})</div>
+                      {scanResult.derived_events.slice(0, 5).map((ev, i) => (
+                        <div key={i} style={{ marginBottom: 2, color: 'var(--text-2)' }}>
+                          <code style={{ fontSize: 10, color: 'var(--badge-green-text)' }}>{ev.event}</code>
+                          {ev.source_email_subject && <span style={{ marginLeft: 6, color: 'var(--text-3)' }}>— {ev.source_email_subject}</span>}
+                        </div>
+                      ))}
+                      {scanResult.recommended_next_action && (
+                        <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--badge-green-border)', color: 'var(--badge-green-text)' }}>
+                          <strong>Recommended next:</strong> {scanResult.recommended_next_action.replace(/_/g, ' ')}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {(scanResult.emails || []).slice(0, 5).map((em, i) => (
+                    <div key={i} style={{ padding: '8px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', marginBottom: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{em.subject || em.raw_subject || '—'}</span>
+                        {em.awb && <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'var(--badge-blue-bg)', color: 'var(--badge-blue-text)', fontWeight: 700, whiteSpace: 'nowrap' }}>AWB {em.awb}</span>}
+                        {em.dhl_ticket && <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'var(--badge-neutral-bg)', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{em.dhl_ticket}</span>}
+                        {em.detected_type && em.detected_type !== 'unknown' && <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', whiteSpace: 'nowrap' }}>{em.detected_type.replace(/_/g,' ')}</span>}
+                        {em.sender_role && em.sender_role !== 'unknown' && <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'var(--badge-neutral-bg)', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{em.sender_role}</span>}
+                      </div>
+                      {em.from && <div style={{ fontSize: 10, color: 'var(--text-2)', marginTop: 3 }}>{em.from}</div>}
+                      {em.matched_fields && em.matched_fields.length > 0 && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>Matched: {em.matched_fields.join(', ')}</div>}
+                      {em.attachments && em.attachments.length > 0 && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>Attachments: {em.attachments.map(a => `${a.filename} (${a.type})`).join(', ')}</div>}
+                      {em.body_snippet && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{em.body_snippet.slice(0,120)}</div>}
+                    </div>
+                  ))}
+                  {scanResult.matched > 5 && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 4 }}>+{scanResult.matched - 5} more — see DHL Clearance page for full list</div>}
+                </div>
+                );
+              })()}
+            </Card>
+
+            {/* Section 2: Customs */}
+            {(() => {
+              const cd = audit.customs_declaration || {};
+              const fmtUSD = v => v != null ? '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2}) : null;
+
+              // Currency for exchange-rate labels — read from audit, default USD (all current shipments are USD imports)
+              const invCurrency = (audit.invoice_totals || {}).currency
+                || cd.currency
+                || (audit.inputs || {}).currency
+                || 'USD';
+
+              // SAD display status — derived from what's actually parsed, not from sad_status field
+              // (sad_status field is not stored in audit.json detail; derive it here from customs_declaration)
+              const sadParsed  = !!(cd.mrn || cd.duty_a00_pln != null || cd.sad_customs_rate || cd.exchange_rate);
+              const sadBadge   = sadParsed ? 'Customs Parsed' : hasSad ? 'SAD Uploaded' : 'SAD Pending';
+
+              const criticalKeys = ['cif_match', 'invoice_refs_match', 'blocked_phrases_clean', 'duty_rate_ok'];
+              const complianceKeys = ['importer_match', 'qty_match_by_type'];
+              const isBlocked = criticalKeys.some(k => ver[k] === false);
+              const isReview = !isBlocked && (
+                criticalKeys.some(k => k in ver && ver[k] === null) ||
+                complianceKeys.some(k => k in ver && ver[k] === false)
+              );
+              const customsStatus = !hasSad ? 'pending' : isBlocked ? 'blocked' : isReview ? 'review' : hasSad ? 'safe' : 'pending';
+
+              const VER_GROUPS = [
+                {
+                  label: 'Critical',
+                  color: 'var(--badge-red-text)',
+                  checks: [
+                    { key: 'cif_match',             label: 'CIF value match',        nullHint: 'SAD CIF not parsed — verify manually', falseHint: 'Invoice CIF differs from SAD CIF' },
+                    { key: 'invoice_refs_match',    label: 'Invoice refs in SAD',    nullHint: 'Invoice refs not found in SAD format', falseHint: 'Invoice reference not found in SAD document' },
+                    { key: 'blocked_phrases_clean', label: 'Invoice content clean',  nullHint: null, falseHint: 'Blocked phrases detected in invoice text' },
+                    { key: 'duty_rate_ok',          label: 'Duty rate valid',        nullHint: null, falseHint: 'Duty rate check failed — review A00 calculation' },
+                  ]
+                },
+                {
+                  label: 'Compliance',
+                  color: 'var(--badge-amber-text)',
+                  checks: [
+                    { key: 'importer_match',   label: 'Importer name match',  nullHint: 'Invoice importer not parsed — verify manually', falseHint: 'Importer name differs between invoice and SAD' },
+                    { key: 'exporter_match',   label: 'Exporter in SAD',      nullHint: 'Not in SAD — verify manually', falseHint: 'Exporter name mismatch' },
+                    { key: 'vat_match',        label: 'VAT number match',     nullHint: 'Invoice has no VAT field — expected', falseHint: 'VAT number mismatch' },
+                    { key: 'qty_match_by_type',label: 'Qty by category',      nullHint: 'SAD uses combined description — verify manually', falseHint: 'Quantity by type mismatch' },
+                  ]
+                },
+              ];
+
+              const cifInv = ver.invoice_cif_total_usd;
+              const cifSad = ver.sad_cif_total_usd;
+              const cifDiff = ver.cif_difference_usd;
+              // Resolved customs CIF authority (clearance routing). When invoice
+              // CIF was not parsed, SAD CIF is compared against the resolved CIF
+              // (e.g. AWB Custom Val / OCR-AI) rather than an invoice-only 0.
+              const _cdDec = audit.clearance_decision || {};
+              const cifResolved = (_cdDec.cif_state === 'resolved' && _cdDec.total_value_usd != null && Number(_cdDec.total_value_usd) > 0)
+                ? Number(_cdDec.total_value_usd) : null;
+              const cifInvParsed = cifInv != null && cifInv > 0;
+              const cifCompareIsResolved = !cifInvParsed && cifResolved != null;
+              const showCif = hasSad && (cifInv != null || cifSad != null || cifResolved != null);
+
+              return (
+                <Card>
+                  <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <div style={{ flex: 1 }}>
+                      <SectionHeader icon="⊟" title="Section 2 — Customs Documents"
+                        subtitle="SAD / ZC429 upload, customs values, MRN verification"
+                        status={sadBadge} />
+                    </div>
+                    <div style={{ paddingRight: 20, flexShrink: 0 }}>
+                      <span style={{
+                        background: customsStatus === 'safe' ? 'var(--badge-green-bg)' : customsStatus === 'blocked' ? 'var(--badge-red-bg)' : customsStatus === 'review' ? 'var(--badge-amber-bg)' : 'var(--badge-neutral-bg)',
+                        color: customsStatus === 'safe' ? 'var(--badge-green-text)' : customsStatus === 'blocked' ? 'var(--badge-red-text)' : customsStatus === 'review' ? 'var(--badge-amber-text)' : 'var(--badge-neutral-text)',
+                        border: `1px solid ${customsStatus === 'safe' ? 'var(--badge-green-border)' : customsStatus === 'blocked' ? 'var(--badge-red-border)' : customsStatus === 'review' ? 'var(--badge-amber-border)' : 'var(--badge-neutral-border)'}`,
+                        borderRadius: 4, padding: '2px 10px', fontSize: 11, fontWeight: 700, letterSpacing: '0.04em'
+                      }}>
+                        {customsStatus === 'safe' ? '🟢 SAFE' : customsStatus === 'blocked' ? '🔴 BLOCKED' : customsStatus === 'review' ? '🟡 REVIEW' : '— PENDING'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div style={{ padding: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>Document References</div>
+                      <InfoRow label="SAD / ZC429 Status" value={hasSad ? 'Uploaded ✓' : 'Not uploaded'} />
+                      <InfoRow label="MRN" value={mrn} mono />
+                      <InfoRow label="Clearance Date" value={cd.clearance_date || inp.clearance_date || 'Not available in SAD'} />
+                      <InfoRow label="Customs Agent" value={cd.customs_agent || inp.agent || 'Not parsed from SAD'} />
+                      <InfoRow label="VAT Settlement"
+                        value={(() => {
+                          const mode = inp.settlement_mode || audit.settlement_mode;
+                          const isArt33a = mode === 'art33a' ? true
+                            : mode === 'standard' ? false
+                            : hasSad ? Boolean(cd.art33a) : null;
+                          if (isArt33a === null) return '—';
+                          return isArt33a
+                            ? <span title="Art. 33a — VAT is not paid at customs. It is settled later in the company's periodic VAT return.">Art. 33a — deferred ℹ</span>
+                            : <span title="Standard import — VAT is paid at customs upon clearance, together with duty.">Standard — paid at customs ℹ</span>;
+                        })()} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>Values & Checks</div>
+                      <InfoRow label="SAD Exchange Rate" value={cd.sad_customs_rate ? `${invCurrency}/PLN ${cd.sad_customs_rate}` : hasSad ? 'Not in SAD' : '—'} />
+                      <InfoRow label="NBP Accounting Rate" value={cd.nbp_rate ? `${invCurrency}/PLN ${cd.nbp_rate}` + (cd.nbp_table ? ` (${cd.nbp_table}, ${cd.nbp_date || ''})` : '') : hasSad ? 'Fetched during Run PZ' : '—'} />
+                      <InfoRow label="Rate Delta" value={cd.rate_delta_pct != null ? `${cd.rate_delta_pct > 0 ? '+' : ''}${cd.rate_delta_pct.toFixed(3)}%` + (cd.rate_alert ? ' ⚠' : ' ✓') : hasSad ? 'Calculated during Run PZ' : '—'} />
+                      <InfoRow label="A00 Duty (PLN)" value={fmtPLN(cd.duty_a00_pln ?? t.duty)} />
+                      <InfoRow label="B00 VAT (PLN)" value={cd.vat_b00_pln != null ? fmtPLN(cd.vat_b00_pln) + ' (ref only — not in landed cost)' : hasSad ? 'Not parsed from SAD' : '—'} />
+                    </div>
+                  </div>
+
+                  {/* CIF Comparison panel */}
+                  {showCif && (
+                    <div style={{ margin: '0 20px 16px', padding: 12, background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>CIF Comparison</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '3px 12px', fontSize: 11 }}>
+                        <span style={{ color: 'var(--text-3)' }}>Invoice CIF:</span>
+                        <span style={{ fontWeight: 600, color: 'var(--text)' }}>{cifInvParsed ? fmtUSD(cifInv) : (cifResolved != null ? 'not parsed' : (fmtUSD(cifInv) || '—'))}</span>
+                        {cifResolved != null && (
+                          <>
+                            <span style={{ color: 'var(--text-3)' }}>Resolved CIF:</span>
+                            <span data-testid="cif-compare-resolved" style={{ fontWeight: 600, color: 'var(--badge-green-text)' }}>{fmtUSD(cifResolved)}</span>
+                          </>
+                        )}
+                        <span style={{ color: 'var(--text-3)' }}>SAD CIF:</span>
+                        <span style={{ fontWeight: 600, color: 'var(--text)' }}>{fmtUSD(cifSad) || '—'}</span>
+                        <span style={{ color: 'var(--text-3)' }}>Difference:</span>
+                        <span style={{ fontWeight: 700, color: (cifSad === 0 && (cifInvParsed || cifResolved != null)) ? 'var(--badge-amber-text)' : ((!cifCompareIsResolved && cifDiff === 0) || (cifCompareIsResolved && cifSad != null && Math.abs(cifSad - cifResolved) < 0.01)) ? 'var(--badge-green-text)' : 'var(--badge-amber-text)' }}>
+                          {(cifSad === 0 && (cifInvParsed || cifResolved != null))
+                            ? 'SAD CIF not parsed — [VERIFY-GAP]'
+                            : cifCompareIsResolved
+                              ? (cifSad != null
+                                  ? `${(cifSad - cifResolved) >= 0 ? '+' : ''}${fmtUSD(cifSad - cifResolved)} ${Math.abs(cifSad - cifResolved) < 0.01 ? '✓' : '⚠'} (vs resolved)`
+                                  : '—')
+                              : cifDiff != null
+                                ? `${cifDiff > 0 ? '+' : ''}${fmtUSD(cifDiff)} ${cifDiff === 0 ? '✓' : '⚠'}`
+                                : '—'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Verification checks grouped */}
+                  {hasSad && ver && Object.keys(ver).length > 0 && (
+                    <div style={{ margin: '0 20px 16px', padding: 14, background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>Verification Checks</div>
+                      {/* SAD invoice-reference authority — single structured source.
+                           Reads audit.sad_invoice_authority (injected by batch API on read).
+                           Never shows free-text inferred tokens as invoice references. */}
+                      {audit.sad_invoice_authority && (() => {
+                        const sia = audit.sad_invoice_authority;
+                        const s   = sia.status;
+                        const statusLabel =
+                          s === 'matched_structured_n935'         ? '✓ Verified (N935)'               :
+                          s === 'n935_absent'                     ? 'Structured reference unavailable' :
+                          s === 'n935_present_mismatch'           ? '⚠ Mismatch — verify N935 refs'    :
+                                                                    '⚠ Needs review';
+                        const statusColor =
+                          s === 'matched_structured_n935'         ? 'var(--badge-green-text)' :
+                          s === 'n935_present_mismatch'           ? 'var(--badge-red-text)'   :
+                                                                    'var(--badge-amber-text)';
+                        return (
+                          <div data-testid="sad-invoice-authority-row"
+                               style={{ display: 'flex', alignItems: 'flex-start', gap: 8,
+                                        fontSize: 11, padding: '4px 0 8px',
+                                        borderBottom: '1px solid var(--border-subtle)',
+                                        marginBottom: 8 }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, flexShrink: 0,
+                                           marginTop: 1, color: statusColor }}>
+                              {s === 'matched_structured_n935' ? '✓' :
+                               s === 'n935_present_mismatch'   ? '✗' : '⚠'}
+                            </span>
+                            <div>
+                              <span style={{ fontWeight: 600, color: 'var(--text)' }}>SAD Invoice Refs </span>
+                              <span data-testid="sad-invoice-authority-status"
+                                    style={{ color: statusColor, fontWeight: 600 }}>
+                                {statusLabel}
+                              </span>
+                              {s === 'matched_structured_n935' && sia.references.length > 0 && (
+                                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                                  {sia.references.join(' · ')}
+                                </div>
+                              )}
+                              {sia.review_reason && s !== 'matched_structured_n935' && (
+                                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                                  {sia.review_reason}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      {VER_GROUPS.map((group, groupIdx) => {
+                        const visibleChecks = group.checks.filter(check => check.key in ver);
+                        if (visibleChecks.length === 0) return null;
+                        // compliance_resolution is injected by the backend when
+                        // COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=1. When absent,
+                        // the renderer falls back to the existing three-state logic.
+                        const cr = audit.compliance_resolution || null;
+                        return (
+                          <div key={group.label}>
+                            <div style={{ fontSize: 9, fontWeight: 700, color: group.color, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4, marginTop: groupIdx > 0 ? 12 : 0 }}>{group.label}</div>
+                            {visibleChecks.map(check => {
+                              const v = ver[check.key];
+                              // Four-state renderer:
+                              //   ok       — engine_verified (green ✓)
+                              //   resolved — intelligence_resolved (blue ◉)
+                              //   gap      — null, no/weak intelligence (amber ⚠)
+                              //   error    — failed (red ✗)
+                              let state;
+                              if (v === true) {
+                                state = 'ok';
+                              } else if (v === false) {
+                                state = 'error';
+                              } else if (cr && cr[check.key] && cr[check.key].state === 'intelligence_resolved') {
+                                state = 'resolved';
+                              } else {
+                                state = 'gap';
+                              }
+                              const stateColor =
+                                state === 'ok'       ? 'var(--badge-green-text)' :
+                                state === 'resolved' ? 'var(--badge-blue-text)'  :
+                                state === 'error'    ? 'var(--badge-red-text)'   :
+                                                       'var(--badge-amber-text)';
+                              const stateIcon =
+                                state === 'ok'       ? '✓' :
+                                state === 'resolved' ? '◉' :
+                                state === 'error'    ? '✗' : '⚠';
+                              const resolvedEvidence =
+                                state === 'resolved' && cr && cr[check.key]
+                                  ? cr[check.key].evidence : null;
+                              return (
+                                <div key={check.key} data-testid={`compliance-row-${check.key}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 11, padding: '4px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                                  <span style={{
+                                    fontSize: 12, fontWeight: 700, flexShrink: 0, marginTop: 1,
+                                    color: stateColor
+                                  }}>
+                                    {stateIcon}
+                                  </span>
+                                  <div>
+                                    <span style={{ fontWeight: 600, color: state === 'error' ? 'var(--badge-red-text)' : 'var(--text)' }}>{check.label}</span>
+                                    {state === 'resolved' && (
+                                      <span style={{ color: 'var(--badge-blue-text)', marginLeft: 6, fontSize: 10 }}>— Intelligence resolved</span>
+                                    )}
+                                    {state === 'resolved' && resolvedEvidence && (
+                                      <div style={{ color: 'var(--text-3)', fontSize: 10, marginTop: 2 }}>{resolvedEvidence}</div>
+                                    )}
+                                    {(state === 'gap' && check.nullHint) && (
+                                      <span style={{ color: 'var(--text-3)', marginLeft: 6 }}>— {check.nullHint}</span>
+                                    )}
+                                    {state === 'error' && (
+                                      <span style={{ color: 'var(--badge-red-text)', marginLeft: 6 }}>— {check.falseHint}</span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })}
+                      {ver.rate_note && (
+                        <div style={{ marginTop: 10, padding: '6px 8px', background: 'var(--bg)', borderRadius: 4, border: '1px solid var(--border-subtle)', fontSize: 10, color: 'var(--text-3)' }}>
+                          ℹ {ver.rate_note}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Recheck button */}
+                  {!v2Active && (
+                  <div style={{ padding: '0 20px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Btn small variant="ghost" disabled={recheckBusy}
+                      onClick={async () => {
+                        setRecheckBusy(true); setRecheckPanel(null);
+                        try {
+                          const res = await apiFetch(`/dashboard/batches/${encodeURIComponent(batchId)}/recheck`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ mode: 'sad' })
+                          });
+                          setRecheckPanel(res);
+                          await load(); await loadTimeline();
+                          onToast(res.ok ? 'SAD re-parsed — values updated' : 'Recheck completed with errors', res.ok ? 'success' : 'error');
+                        } catch (e) { onToast('Recheck failed: ' + e.message, 'error'); }
+                        finally { setRecheckBusy(false); }
+                      }}>
+                      {recheckBusy ? '⟳ Re-parsing…' : '⟳ Re-parse SAD & Re-verify'}
+                    </Btn>
+                    <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Re-runs SAD parser against existing uploaded file</span>
+                  </div>
+                  )}
+
+                  <div style={{ padding: '0 20px 16px', display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 6, border: '1px solid var(--badge-neutral-border)', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'transparent' }}>
+                      <input ref={sadRef} type="file" accept=".pdf" style={{ display: 'none' }} onChange={async (e) => {
+                        if (!e.target.files[0]) return;
+                        const fd2 = new FormData();
+                        fd2.append('sad', e.target.files[0]);
+                        await doAction('sadUp', 'Upload SAD', async () => {
+                          const r = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/sad`, { method: 'POST', body: fd2, credentials: 'include' });
+                          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                          return r.json();
+                        });
+                      }} />
+                      ⊞ Upload SAD / ZC429
+                    </label>
+                    {hasSad && <span style={{ fontSize: 11, color: 'var(--badge-green-text)' }}>✓ SAD uploaded — customs values parsed</span>}
+                  </div>
+                </Card>
+              );
+            })()}
+          </>
+        )}
+
+        {activeTab === 'DHL / Customs' && (() => {
+          const dr = dhlReadiness;
+          const isErr = dhlReadinessError && !dr;
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }} data-testid="dhl-readiness-panel">
+              {/* Readiness banner */}
+              <ReadinessBanner
+                data-testid="readiness-banner-dhl"
+                domain="dhl"
+                status={batchReadiness && batchReadiness.dhl ? batchReadiness.dhl.status : null}
+                ready={batchReadiness && batchReadiness.dhl ? batchReadiness.dhl.ready : false}
+                message={batchReadiness && batchReadiness.dhl ? batchReadiness.dhl.message : null}
+                loading={batchReadinessLoading && !batchReadiness}
+                error={batchReadinessError}
+              />
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>✈ DHL Customs Pipeline</div>
+                <Btn small variant="outline" onClick={loadDhlReadiness} disabled={dhlReadinessLoading}>
+                  {dhlReadinessLoading ? 'Loading…' : '↺ Refresh'}
+                </Btn>
+              </div>
+
+              {dhlReadinessLoading && !dr && (
+                <Card style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>Loading DHL pipeline…</Card>
+              )}
+
+              {isErr && (
+                <Card style={{ padding: 16 }}>
+                  <div style={{ fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }}>DHL readiness failed: {dhlReadinessError}</div>
+                </Card>
+              )}
+
+              {!dhlReadinessLoading && !isErr && !dr && (
+                <Card style={{ padding: 16 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No DHL readiness data available.</div>
+                </Card>
+              )}
+
+              {dr && (() => {
+                const STAGES = [
+                  { key: 'awaiting_start',    label: 'Awaiting Start',     icon: '○' },
+                  { key: 'dhl_contacted',     label: 'DHL Contacted',      icon: '📧' },
+                  { key: 'dhl_replied',       label: 'DHL Replied',        icon: '📨' },
+                  { key: 'dsk_received',      label: 'DSK / Cesja Rcvd',   icon: '📄' },
+                  { key: 'agency_forwarded',  label: 'Agency Forwarded',   icon: '📤' },
+                  { key: 'sad_received',      label: 'SAD Received',       icon: '✔' },
+                  { key: 'customs_cleared',   label: 'Customs Cleared',    icon: '✅' },
+                ];
+                const currentStage = dr.dhl_status || 'awaiting_start';
+                const currentIdx = STAGES.findIndex(s => s.key === currentStage);
+                const fmtTs = (ts) => {
+                  if (!ts) return '—';
+                  try { return new Date(ts).toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit', year: 'numeric' }); } catch { return ts; }
+                };
+                return (
+                  <>
+                    {/* SLA breach warning */}
+                    {dr.sla_breach && (
+                      <Card style={{ padding: '12px 16px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)' }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 4 }}>
+                          ⚠ SLA Breach — no DHL response
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--badge-red-text)', opacity: 0.85 }}>
+                          {dr.sla_breach_reason || `No response after ${dr.days_since_last_outbound != null ? dr.days_since_last_outbound.toFixed(1) : '?'} day(s)`}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* Pipeline stages */}
+                    <Card>
+                      <div style={{ padding: '14px 18px' }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 14 }}>Pipeline Stages</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {STAGES.map((s, i) => {
+                            const isCompleted = i < currentIdx;
+                            const isCurrent   = i === currentIdx;
+                            const isPending   = i > currentIdx;
+                            const dotColor = isCompleted ? 'var(--badge-green-text)'
+                              : isCurrent ? (dr.sla_breach ? 'var(--badge-red-text)' : 'var(--badge-blue-text)')
+                              : 'var(--text-3)';
+                            return (
+                              <div key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 10, opacity: isPending ? 0.45 : 1 }}>
+                                <span style={{ fontSize: 16, width: 22, textAlign: 'center', color: dotColor }}>{isCompleted ? '✓' : s.icon}</span>
+                                <span style={{ fontSize: 12, fontWeight: isCurrent ? 700 : 400, color: isCurrent ? 'var(--text)' : 'var(--text-2)' }}>{s.label}</span>
+                                {isCurrent && <span style={{ fontSize: 10, padding: '1px 7px', borderRadius: 4, background: dr.sla_breach ? 'var(--badge-red-bg)' : 'var(--badge-blue-bg)', color: dr.sla_breach ? 'var(--badge-red-text)' : 'var(--badge-blue-text)', fontWeight: 700, border: `1px solid ${dr.sla_breach ? 'var(--badge-red-border)' : 'var(--badge-blue-border)'}` }}>Current</span>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </Card>
+
+                    {/* Detail rows */}
+                    <Card>
+                      <div style={{ padding: '14px 18px' }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 10 }}>Details</div>
+                        {[
+                          ['AWB',                  dr.awb || '—'],
+                          ['Carrier',              dr.carrier || '—'],
+                          ['DHL Initial Sent',     fmtTs(dr.dhl_initial_sent)],
+                          ['DHL Reply Received',   fmtTs(dr.dhl_reply_received)],
+                          ['DSK Docs Received',    fmtTs(dr.dsk_docs_received)],
+                          ['Agency Forwarded',     fmtTs(dr.agency_forwarded)],
+                          ['SAD Received',         fmtTs(dr.sad_received)],
+                          ['Customs Cleared',      fmtTs(dr.customs_cleared)],
+                          ['Days since outbound',  dr.days_since_last_outbound != null ? `${dr.days_since_last_outbound.toFixed(1)} day(s)` : '—'],
+                        ].map(([label, value]) => (
+                          <div key={label} style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+                            <span style={{ fontSize: 11, color: 'var(--text-3)', minWidth: 160 }}>{label}</span>
+                            <span style={{ fontSize: 11, color: 'var(--text)', fontFamily: 'monospace' }}>{value}</span>
+                          </div>
+                        ))}
+                        {(dr.missing_documents || []).length > 0 && (
+                          <div style={{ marginTop: 8 }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', marginBottom: 4 }}>Missing documents</div>
+                            {(dr.missing_documents || []).map(d => (
+                              <div key={d} style={{ fontSize: 11, color: 'var(--badge-amber-text)' }}>• {d}</div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </Card>
+
+                    {/* Next required action — plain text, no buttons */}
+                    {dr.next_required_action && (
+                      <Card style={{ padding: '12px 16px', background: 'var(--bg-subtle)' }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Next required action</div>
+                        <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.5 }} data-testid="dhl-next-required-action">
+                          {dr.next_required_action}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* Agency SLA status — read from audit.agency_sla */}
+                    {(() => {
+                      const sla = audit.agency_sla || {};
+                      if (!sla.started) return null;
+                      const textCol = sla.stopped ? 'var(--badge-green-text)' : 'var(--badge-blue-text)';
+                      const fmtSlaTs = (ts) => {
+                        if (!ts) return '';
+                        try { return new Date(ts).toLocaleString('pl-PL', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return ts; }
+                      };
+                      return (
+                        <Card style={{ padding: '12px 16px', background: sla.stopped ? 'var(--badge-green-bg)' : 'var(--badge-blue-bg)', border: `1px solid ${sla.stopped ? 'var(--badge-green-border)' : 'var(--badge-blue-border)'}` }} data-testid="agency-sla-status">
+                          <div style={{ fontSize: 11, fontWeight: 700, color: textCol }}>
+                            {sla.stopped ? '✅ Agency SLA completed' : '⏳ Agency SLA active'}
+                          </div>
+                          {sla.started_at && (
+                            <div style={{ fontSize: 10, color: textCol, opacity: 0.8, marginTop: 2 }} data-testid="agency-sla-started-at">
+                              Started: {fmtSlaTs(sla.started_at)}
+                            </div>
+                          )}
+                          <div style={{ fontSize: 10, color: textCol, opacity: 0.8, marginTop: 1 }} data-testid="agency-sla-start-trigger">
+                            Trigger: Agency forward sent
+                          </div>
+                          {sla.stopped && sla.stopped_at && (
+                            <div style={{ fontSize: 10, color: textCol, opacity: 0.8, marginTop: 2 }} data-testid="agency-sla-stopped-at">
+                              Stopped: {fmtSlaTs(sla.stopped_at)}
+                            </div>
+                          )}
+                          {sla.stopped && (
+                            <div style={{ fontSize: 10, color: textCol, opacity: 0.8, marginTop: 1 }} data-testid="agency-sla-stop-trigger">
+                              Trigger: SAD received
+                            </div>
+                          )}
+                        </Card>
+                      );
+                    })()}
+                    {/* Agency SAD parse status — read from audit.agency_sad_parse */}
+                    {(() => {
+                      const sadParse = audit.agency_sad_parse || {};
+                      if (!sadParse.status) return null;
+                      const cfg = {
+                        parsed:        { bg: 'var(--badge-green-bg)',  border: 'var(--badge-green-border)',  text: 'var(--badge-green-text)',  label: '📄 Agency SAD parsed' },
+                        partial:       { bg: 'var(--badge-warn-bg)',   border: 'var(--badge-warn-border)',   text: 'var(--badge-warn-text)',   label: '⚠️ SAD partially parsed' },
+                        awaiting_file: { bg: 'var(--badge-blue-bg)',   border: 'var(--badge-blue-border)',   text: 'var(--badge-blue-text)',   label: '⏳ Waiting for file upload' },
+                      }[sadParse.status] || { bg: 'var(--surface-2)', border: 'var(--border)', text: 'var(--text-3)', label: sadParse.status };
+                      return (
+                        <Card style={{ padding: '10px 16px', background: cfg.bg, border: `1px solid ${cfg.border}`, marginTop: 6 }} data-testid="agency-sad-parse-status">
+                          <div style={{ fontSize: 11, fontWeight: 700, color: cfg.text }}>
+                            {cfg.label}
+                          </div>
+                          {sadParse.confidence && sadParse.status !== 'awaiting_file' && (
+                            <div style={{ fontSize: 10, color: cfg.text, opacity: 0.8, marginTop: 2 }} data-testid="agency-sad-parse-confidence">
+                              Confidence: {sadParse.confidence}
+                            </div>
+                          )}
+                        </Card>
+                      );
+                    })()}
+                    {/* Agency SAD decision — read from audit.agency_sad_decision */}
+                    {(() => {
+                      const sadDecision = audit.agency_sad_decision || {};
+                      if (sadDecision.safe_to_run_pz === undefined) return null;
+                      const safe = sadDecision.safe_to_run_pz === true;
+                      const fmtTs = (ts) => {
+                        if (!ts) return '';
+                        try { return new Date(ts).toLocaleString('pl-PL', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return ts; }
+                      };
+                      return (
+                        <Card style={{ padding: '10px 16px', background: safe ? 'var(--badge-green-bg)' : 'var(--badge-red-bg, #fff0f0)', border: `1px solid ${safe ? 'var(--badge-green-border)' : 'var(--badge-red-border, #f5c6c6)'}`, marginTop: 6 }} data-testid="agency-sad-decision">
+                          <div style={{ fontSize: 11, fontWeight: 700, color: safe ? 'var(--badge-green-text)' : 'var(--badge-red-text, #c0392b)' }}>
+                            {safe ? '✅ Safe to run PZ' : '⛔ Not safe to run PZ'}
+                          </div>
+                          <div style={{ fontSize: 10, color: safe ? 'var(--badge-green-text)' : 'var(--badge-red-text, #c0392b)', opacity: 0.85, marginTop: 2 }} data-testid="agency-sad-decision-reason">
+                            Reason: {sadDecision.reason}
+                          </div>
+                          {sadDecision.evaluated_at && (
+                            <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }} data-testid="agency-sad-decision-evaluated-at">
+                              Evaluated: {fmtTs(sadDecision.evaluated_at)}
+                            </div>
+                          )}
+                          {sadDecision.mrn_parsed && sadDecision.mrn_declared && (
+                            <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid rgba(0,0,0,0.08)' }} data-testid="agency-sad-mrn-comparison">
+                              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-2)', marginBottom: 3 }}>MRN Comparison</div>
+                              <div style={{ fontSize: 10, color: sadDecision.mrn_match === false ? 'var(--badge-red-text, #c0392b)' : 'var(--text-2)', fontWeight: sadDecision.mrn_match === false ? 700 : 400 }} data-testid="agency-sad-mrn-parsed">
+                                Parsed:&nbsp;&nbsp;&nbsp;{sadDecision.mrn_parsed}
+                              </div>
+                              <div style={{ fontSize: 10, color: sadDecision.mrn_match === false ? 'var(--badge-red-text, #c0392b)' : 'var(--text-2)', fontWeight: sadDecision.mrn_match === false ? 700 : 400 }} data-testid="agency-sad-mrn-declared">
+                                Declared: {sadDecision.mrn_declared}
+                              </div>
+                              {sadDecision.mrn_match === true && (
+                                <div style={{ fontSize: 10, color: 'var(--badge-green-text)', marginTop: 2 }} data-testid="agency-sad-mrn-match-ok">
+                                  ✓ match
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </Card>
+                      );
+                    })()}
+                  </>
+                );
+              })()}
+
+              {/* ── DHL Documents Received ── */}
+              {(() => {
+                const dr2 = dhlReadiness;
+                const dskReceived = dr2 && dr2.dsk_docs_received;
+                const missingDocs = (dr2 && dr2.missing_documents) || [];
+                const dhlDocs = (audit && audit.dhl_documents_received) || {};
+                return (
+                  <Card data-testid="dhl-docs-received-card">
+                    <div style={{ padding: '14px 18px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📄 DHL Documents Received</div>
+                        {dskReceived && (
+                          <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)', fontWeight: 700 }}>Received</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+                        This confirms documents received from DHL before agency forwarding.
+                      </div>
+                      {dskReceived ? (
+                        <div data-testid="dhl-docs-received-status" style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 11, color: 'var(--text)' }}>
+                            <span style={{ color: 'var(--text-3)', minWidth: 120, display: 'inline-block' }}>Last received: </span>
+                            <span style={{ fontFamily: 'monospace' }}>
+                              {(() => { try { return new Date(dskReceived).toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit', year: 'numeric' }); } catch { return dskReceived; } })()}
+                            </span>
+                          </div>
+                          {dhlDocs.source === 'email_ingestor' && (
+                            <div data-testid="dhl-docs-source-auto" style={{ marginTop: 6, fontSize: 11, color: 'var(--badge-blue-text)' }}>
+                              📥 Auto-detected from email
+                            </div>
+                          )}
+                          {dhlDocs.source === 'operator' && (
+                            <div data-testid="dhl-docs-source-manual" style={{ marginTop: 6, fontSize: 11, color: 'var(--text-3)' }}>
+                              🖐 Manually registered
+                            </div>
+                          )}
+                          {missingDocs.length > 0 && (
+                            <div style={{ marginTop: 6 }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--badge-amber-text)', textTransform: 'uppercase', marginBottom: 3 }}>Still missing</div>
+                              {missingDocs.map(d => <div key={d} style={{ fontSize: 11, color: 'var(--badge-amber-text)' }}>• {d}</div>)}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div data-testid="dhl-docs-not-received-state" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+                          No DHL documents recorded yet.
+                          {missingDocs.length > 0 && (
+                            <div style={{ marginTop: 4 }}>Expected: {missingDocs.join(', ')}</div>
+                          )}
+                        </div>
+                      )}
+                      <details data-testid="dhl-docs-upload-tools" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', userSelect: 'none', marginBottom: 6 }}>
+                          ▸ Advanced / Manual: Upload DHL documents
+                        </summary>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <label data-testid="dhl-docs-upload-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '7px 14px', borderRadius: 6, border: '1px solid var(--badge-neutral-border)', cursor: dhlDocsBusy ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600, color: dhlDocsBusy ? 'var(--text-3)' : 'var(--text)', background: 'transparent', opacity: dhlDocsBusy ? 0.6 : 1, width: 'fit-content' }}>
+                          <input
+                            data-testid="dhl-docs-file-input"
+                            ref={dhlDocsRef}
+                            type="file"
+                            accept=".pdf,.xml,.html,.htm,.jpg,.jpeg,.png"
+                            multiple
+                            disabled={dhlDocsBusy}
+                            style={{ display: 'none' }}
+                            onChange={async (e) => {
+                              const files = Array.from(e.target.files || []);
+                              if (!files.length) return;
+                              setDhlDocsBusy(true); setDhlDocsResult(null); setDhlDocsError('');
+                              try {
+                                const fd = new FormData();
+                                files.forEach(f => fd.append('files', f));
+                                const r = await fetch(`/api/v1/dhl-documents/${encodeURIComponent(batchId)}/upload`, {
+                                  method: 'POST',
+                                  body: fd,
+                                  credentials: 'include',
+                                });
+                                if (!r.ok) {
+                                  const msg = await r.text().catch(() => `HTTP ${r.status}`);
+                                  throw new Error(msg);
+                                }
+                                const result = await r.json();
+                                setDhlDocsResult(result);
+                                await Promise.all([load(), loadDhlReadiness(), loadBatchReadiness()]);
+                              } catch (ex) {
+                                setDhlDocsError(ex.message || 'Upload failed');
+                              } finally {
+                                setDhlDocsBusy(false);
+                                if (dhlDocsRef.current) dhlDocsRef.current.value = '';
+                              }
+                            }}
+                          />
+                          {dhlDocsBusy ? '⟳ Uploading…' : '⊞ Upload DHL documents'}
+                        </label>
+                        <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Accepted: .pdf, .xml, .html, .htm, .jpg, .jpeg, .png</div>
+                        </div>
+                      </details>
+
+                      {dhlDocsResult && (
+                        <div data-testid="dhl-docs-upload-success" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-green-text)' }}>
+                            ✓ {dhlDocsResult.files_count || 0} document(s) registered
+                          </div>
+                        </div>
+                      )}
+
+                      {dhlDocsError && (
+                        <div data-testid="dhl-docs-upload-error" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)' }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-red-text)' }}>Upload failed: {dhlDocsError}</div>
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                );
+              })()}
+
+              {/* ── Agency Documents Received ── */}
+              {(() => {
+                const agencyReceived = audit && audit.agency_documents_received;
+                const agencyDocs = (audit && audit.agency_documents) || [];
+                const missingAgencyDocs = (dhlReadiness && dhlReadiness.missing_documents) || [];
+                return (
+                  <Card data-testid="agency-docs-received-card">
+                    <div style={{ padding: '14px 18px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>🗂 Agency Documents Received</div>
+                        {agencyReceived && (
+                          <span data-testid="agency-docs-received-badge" style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)', fontWeight: 700 }}>Received</span>
+                        )}
+                      </div>
+                      <div data-testid="agency-docs-description" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+                        Upload SAD/PZC or agency documents received from the customs agency.
+                      </div>
+
+                      {agencyDocs.length > 0 && (
+                        <div data-testid="agency-docs-file-list" style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', marginBottom: 4 }}>Received documents</div>
+                          {agencyDocs.map((d, i) => (
+                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                              <span style={{ fontSize: 11, color: 'var(--badge-green-text)' }}>✓</span>
+                              <span style={{ fontSize: 11, color: 'var(--text)', fontFamily: 'monospace' }}>{d.name || d.path || '—'}</span>
+                              {d.type && <span style={{ fontSize: 10, color: 'var(--text-3)' }}>({d.type})</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {missingAgencyDocs.length > 0 && !agencyReceived && (
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--badge-amber-text)', textTransform: 'uppercase', marginBottom: 3 }}>Expected from agency</div>
+                          {missingAgencyDocs.map(d => (
+                            <div key={d} style={{ fontSize: 11, color: 'var(--badge-amber-text)' }}>• {d}</div>
+                          ))}
+                        </div>
+                      )}
+
+                      <details data-testid="agency-docs-upload-tools" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', userSelect: 'none', marginBottom: 6 }}>
+                          ▸ Advanced / Manual: Upload agency documents
+                        </summary>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <label data-testid="agency-docs-upload-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 6, border: '1px solid var(--badge-neutral-border)', cursor: agencyDocsBusy ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600, color: agencyDocsBusy ? 'var(--text-3)' : 'var(--text)', background: 'transparent', opacity: agencyDocsBusy ? 0.6 : 1, width: 'fit-content' }}>
+                          <input
+                            data-testid="agency-docs-file-input"
+                            ref={agencyDocsRef}
+                            type="file"
+                            accept=".pdf,.xml,.html,.htm,.jpg,.jpeg,.png"
+                            multiple
+                            disabled={agencyDocsBusy}
+                            style={{ display: 'none' }}
+                            onChange={async (e) => {
+                              const files = Array.from(e.target.files || []);
+                              if (!files.length) return;
+                              setAgencyDocsBusy(true); setAgencyDocsResult(null); setAgencyDocsError('');
+                              try {
+                                const fd = new FormData();
+                                files.forEach(f => fd.append('files', f));
+                                const r = await fetch(`/api/v1/agency-documents/${encodeURIComponent(batchId)}/upload`, {
+                                  method: 'POST',
+                                  body: fd,
+                                  credentials: 'include',
+                                });
+                                if (!r.ok) {
+                                  const msg = await r.text().catch(() => `HTTP ${r.status}`);
+                                  throw new Error(msg);
+                                }
+                                const result = await r.json();
+                                setAgencyDocsResult(result);
+                                await loadDhlReadiness();
+                                await loadBatchReadiness();
+                              } catch (ex) {
+                                setAgencyDocsError(ex.message || 'Upload failed');
+                              } finally {
+                                setAgencyDocsBusy(false);
+                                if (agencyDocsRef.current) agencyDocsRef.current.value = '';
+                              }
+                            }}
+                          />
+                          {agencyDocsBusy ? '⟳ Uploading…' : '⊞ Upload agency documents'}
+                        </label>
+                        <div data-testid="agency-docs-accepted-extensions" style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                          Accepted: .pdf, .xml, .html, .htm, .jpg, .jpeg, .png
+                        </div>
+                        </div>
+                      </details>
+
+                      {agencyDocsResult && (
+                        <div data-testid="agency-docs-success" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-green-text)', marginBottom: 2 }}>
+                            ✓ {agencyDocsResult.files_total || 0} document(s) registered
+                          </div>
+                          {(agencyDocsResult.skipped || []).length > 0 && (
+                            <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', marginTop: 2 }}>
+                              {agencyDocsResult.skipped.length} skipped — check file types
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {agencyDocsError && (
+                        <div data-testid="agency-docs-error" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)' }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-red-text)' }}>Upload failed: {agencyDocsError}</div>
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                );
+              })()}
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* Phase 3.A — Reservation create confirmation modal */}
+      {createConfirm && (() => {
+        const d = createConfirm.doc || {};
+        const lines = d.rows || [];
+        const total = d.total_value;
+        const ccy = (reservationPreview && reservationPreview.currency) || (lines[0] || {}).currency || 'USD';
+        return (
+          <Modal title="Confirm wFirma Reservation" onClose={() => !createBusy && setCreateConfirm(null)}>
+            <div data-testid="wfirma-confirm-modal">
+            <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 12, lineHeight: 1.5 }}>
+              You are about to submit <b>one</b> reservation to wFirma. This action calls the wFirma API and reserves stock against this client's order.
+            </div>
+            <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 12px', marginBottom: 14, fontSize: 12, lineHeight: 1.6 }}>
+              <div><span style={{ color: 'var(--text-3)' }}>Client:</span> <b style={{ color: 'var(--text)' }}>{createConfirm.client_name}</b></div>
+              <div><span style={{ color: 'var(--text-3)' }}>Document:</span> <b style={{ color: 'var(--text)' }}>{d.sales_doc_no || '—'}</b></div>
+              {d.client_ref && <div><span style={{ color: 'var(--text-3)' }}>Ref:</span> <b style={{ color: 'var(--text)' }}>{d.client_ref}</b></div>}
+              <div><span style={{ color: 'var(--text-3)' }}>Lines:</span> <b style={{ color: 'var(--text)' }}>{lines.length}</b></div>
+              <div><span style={{ color: 'var(--text-3)' }}>Total value:</span> <b style={{ color: 'var(--text)' }}>{total != null ? Number(total).toLocaleString('pl-PL', { minimumFractionDigits: 2 }) + ' ' + ccy : '—'}</b></div>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>
+              The system will re-run the live wFirma diagnostic before submission. If anything has changed since the preview, the request will be blocked.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <Btn small variant="ghost" disabled={createBusy} onClick={() => setCreateConfirm(null)}>Cancel</Btn>
+              <Btn small variant="default" disabled={createBusy}
+                data-testid="wfirma-confirm-submit-btn"
+                onClick={() => submitReservation(createConfirm.client_name)}>
+                {createBusy ? 'Submitting…' : 'Confirm & Create'}
+              </Btn>
+            </div>
+            </div>{/* /wfirma-confirm-modal */}
+          </Modal>
+        );
+      })()}
+
+      {addDocOpen && (
+        <AddDocumentModal
+          batchId={batchId}
+          onClose={() => setAddDocOpen(false)}
+          onUploaded={(info) => {
+            // Centralised refresh — we do not know which downstream
+            // surface (DHL, lane, sales, wFirma, packing) the uploaded
+            // doc affects, so refresh all read-only loaders.
+            refreshAll('add_document');
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+// MODULE PAGES
+// ══════════════════════════════════════════════════════════
+
+// ── Status chip helpers for ShipmentsTable ─────────────────────────────────
+// Map backend hint values to colour kind (ok | warn | info | neutral | err).
+// Keys match the values produced by routes_dashboard.py:_warehouse_hint /
+// _sales_hint / _wfirma_hint, plus mapped dhlStatus strings.
+function StatusChip({ value, testId }) {
+  const v = value == null || value === '' ? 'n/a' : String(value);
+  const def = STATUS_HINT_MAP[v] || { kind: 'neutral', label: v };
+  const palette = {
+    ok:      { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+    warn:    { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+    info:    { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+    err:     { bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+    neutral: { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--border)' },
+  };
+  const c = palette[def.kind] || palette.neutral;
+  return (
+    <span data-testid={testId}
+      style={{ display: 'inline-block', padding: '1px 6px', background: c.bg, color: c.text, border: `1px solid ${c.border}`, borderRadius: 4, fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap' }}>
+      {def.label}
+    </span>
+  );
+}
+
+function ShipmentsTable({ batches, onViewShipment, filterFn, emptyMsg }) {
+  const rows = filterFn ? batches.filter(filterFn) : batches;
+  if (!rows.length) return <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>{emptyMsg || 'No shipments'}</div>;
+  return (
+    <Card style={{ overflow: 'hidden', marginTop: 16 }}>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }} data-testid="shipments-table">
+          <thead>
+            <tr style={{ background: 'var(--bg-subtle)' }}>
+              {['AWB / Tracking', 'Carrier', 'Warehouse', 'Sales', 'wFirma', 'DHL', 'Overall', 'Net', 'Gross', 'Duty A00', 'Actions'].map(h => (
+                <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(row => (
+              <tr key={row.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}
+                data-testid="shipments-row"
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--row-hover)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                <td style={{ padding: '10px 12px' }}>
+                  <button onClick={() => onViewShipment(row)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--badge-blue-text)', fontSize: 12, fontWeight: 600, fontFamily: 'monospace', textDecoration: 'underline', textDecorationStyle: 'dotted' }}>{row.awb}</button>
+                </td>
+                <td style={{ padding: '10px 12px' }}>
+                  <span style={{ display: 'inline-block', padding: '1px 6px', background: row.carrier === 'DHL' ? 'var(--badge-blue-bg)' : 'var(--badge-neutral-bg)', borderRadius: 4, fontSize: 10, fontWeight: 700, color: row.carrier === 'DHL' ? 'var(--badge-blue-text)' : 'var(--badge-neutral-text)' }}>{row.carrier}</span>
+                </td>
+                <td style={{ padding: '10px 12px' }}><StatusChip value={row.warehouseHint} testId="shipments-cell-warehouse" /></td>
+                <td style={{ padding: '10px 12px' }}><StatusChip value={row.salesHint}     testId="shipments-cell-sales" /></td>
+                <td style={{ padding: '10px 12px' }}><StatusChip value={row.wfirmaHint}    testId="shipments-cell-wfirma" /></td>
+                <td style={{ padding: '10px 12px' }} data-testid="shipments-cell-dhl">
+                  <span style={{ fontSize: 10, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{row.dhlStatus || 'Not checked'}</span>
+                </td>
+                <td style={{ padding: '10px 12px' }} data-testid="shipments-cell-overall"><Badge status={row.overall} small title={row.overall === 'Action Required' && row.action_reason ? row.action_reason : undefined} /></td>
+                <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right' }}>{row.net}</td>
+                <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right' }}>{row.gross}</td>
+                <td style={{ padding: '10px 12px', color: 'var(--accent)', fontWeight: 700, textAlign: 'right' }}>{row.duty}</td>
+                <td style={{ padding: '10px 12px' }}><Btn small variant="outline" onClick={() => onViewShipment(row)}>View</Btn></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+function StatRow({ label, value, accent, muted }) {
+  return (
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', padding:'4px 0', borderBottom:'1px solid var(--border-subtle)' }}>
+      <span style={{ fontSize: 12, color: muted ? 'var(--text-3)' : 'var(--text-2)' }}>{label}</span>
+      <span style={{ fontSize: 13, fontWeight: 600, color: accent ? 'var(--accent)' : 'var(--text)', fontVariantNumeric:'tabular-nums' }}>{value}</span>
+    </div>
+  );
+}
+
+const ACTIONS_V2_SECTION_ORDER = [
+  { key: 'shipment',          label: 'Shipment',           icon: '🚚' },
+  { key: 'dhl_clearance',     label: 'DHL Clearance',      icon: '✈' },
+  { key: 'customs_documents', label: 'Customs Documents',  icon: '⊟' },
+  { key: 'pz_accounting',     label: 'PZ / Accounting',    icon: '⊞' },
+  { key: 'wfirma',            label: 'wFirma Export',      icon: '↗' },
+  { key: 'cowork',            label: 'Agency / Cowork',    icon: '📨' },
+  { key: 'system',            label: 'System',             icon: '⚙' },
+];
+
+const ACTIONS_V2_STYLE = {
+  primary:   { bg: 'var(--accent)',          fg: '#fff',                border: 'var(--accent-border)' },
+  secondary: { bg: 'transparent',            fg: 'var(--text)',         border: 'var(--border)' },
+  danger:    { bg: 'transparent',            fg: 'var(--badge-red-text)', border: 'var(--badge-red-border)' },
+  info:      { bg: 'var(--badge-blue-bg)',   fg: 'var(--badge-blue-text)', border: 'var(--badge-blue-border)' },
+};
+
+const ACTIONS_V2_STATE_BADGE = {
+  ready:   { color: 'var(--badge-green-text)', bg: 'var(--badge-green-bg)',   label: 'ready' },
+  done:    { color: 'var(--badge-blue-text)',  bg: 'var(--badge-blue-bg)',    label: 'done' },
+  blocked: { color: 'var(--badge-red-text)',   bg: 'var(--badge-red-bg)',     label: 'blocked' },
+  pending: { color: 'var(--badge-amber-text)', bg: 'var(--badge-amber-bg)',   label: 'pending' },
+  failed:  { color: 'var(--badge-red-text)',   bg: 'var(--badge-red-bg)',     label: 'failed' },
+};
+
+function ActionsV2Button({ action, onClick }) {
+  const style = ACTIONS_V2_STYLE[action.style] || ACTIONS_V2_STYLE.secondary;
+  const enabled = action.enabled;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+      <button
+        disabled={!enabled}
+        onClick={() => enabled && onClick(action)}
+        title={action.reason || ''}
+        style={{
+          padding: '8px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+          fontFamily: 'inherit', cursor: enabled ? 'pointer' : 'not-allowed',
+          opacity: enabled ? 1 : 0.55,
+          background: style.bg, color: style.fg, border: '1px solid ' + style.border,
+          textAlign: 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>
+        {action.label}
+      </button>
+      {!enabled && action.reason && (
+        <div style={{ fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic', lineHeight: 1.3, maxWidth: 240 }}>
+          {action.reason}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActionsV2Section({ sectionKey, label, icon, actions, onActionClick }) {
+  if (!actions || actions.length === 0) {
+    return (
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 18px', opacity: 0.55 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <span style={{ fontSize: 14 }}>{icon}</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-2)', letterSpacing: '0.04em', textTransform: 'uppercase' }}>{label}</span>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-3)', fontStyle: 'italic' }}>No actions in this section.</div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 18px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <span style={{ fontSize: 14 }}>{icon}</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', letterSpacing: '0.04em', textTransform: 'uppercase' }}>{label}</span>
+        <span style={{ fontSize: 10, color: 'var(--text-3)', marginLeft: 'auto' }}>
+          {actions.filter(a => a.enabled).length}/{actions.length} enabled
+        </span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
+        {actions.map(a => (
+          <ActionsV2Button key={a.id} action={a} onClick={onActionClick} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ActionsV2Panel({ batchId }) {
+  const [data,  setData]  = React.useState(null);
+  const [err,   setErr]   = React.useState(null);
+  const [busy,  setBusy]  = React.useState({});
+
+  const reload = React.useCallback(async () => {
+    try {
+      const res = await fetch(`/dashboard/batches/${encodeURIComponent(batchId)}/actions`, { credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const j = await res.json();
+      setData(j); setErr(null);
+    } catch (e) { setErr(e.message); }
+  }, [batchId]);
+
+  React.useEffect(() => { reload(); }, [reload]);
+
+  const handleClick = async (action) => {
+    if (action.requires_confirmation) {
+      if (!window.confirm(`Confirm action: ${action.label}\n\n${action.reason || ''}\n\n${action.method} ${action.endpoint}`)) return;
+    }
+    setBusy(p => ({ ...p, [action.id]: true }));
+    try {
+      // GET-method actions navigate to the endpoint (download/preview)
+      if (action.method === 'GET' && action.endpoint && !action.endpoint.startsWith('/dashboard/batches/')) {
+        window.open(action.endpoint, '_blank', 'noopener');
+      } else {
+        // POST/DELETE/PUT: send action.body (registry-owned payload).
+        // Falls back to {} when the action declares no body. Never relies on
+        // backend defaults — every body field is explicit at the registry layer.
+        const hasBody = action.method !== 'GET';
+        const res = await fetch(action.endpoint, {
+          method: action.method, credentials: 'include',
+          headers: hasBody ? { 'Content-Type': 'application/json' } : {},
+          body:   hasBody ? JSON.stringify(action.body || {}) : undefined,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const ct = res.headers.get('content-type') || '';
+        if (ct.includes('json')) await res.json();
+      }
+      await reload();
+    } catch (e) {
+      window.alert(`Action failed: ${action.label}\n${e.message}`);
+    } finally {
+      setBusy(p => ({ ...p, [action.id]: false }));
+    }
+  };
+
+  if (err) return (
+    <div style={{ background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', border: '1px solid var(--badge-red-border)', borderRadius: 10, padding: 14, fontSize: 12 }}>
+      Actions V2 failed to load: {err}
+    </div>
+  );
+  if (!data) return (
+    <div style={{ padding: 14, fontSize: 12, color: 'var(--text-3)' }}>Loading actions…</div>
+  );
+
+  const ns = data.normalized_state || {};
+  const broken = data.broken_routes || [];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ background: 'var(--accent-subtle)', border: '1px solid var(--accent-border)', borderRadius: 10, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Actions V2 (registry)</span>
+        <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
+          pz_generated={String(ns.pz_generated)} · wfirma_ready={String(ns.wfirma_ready)} · agency_path={String(ns.clearance_path === 'external_agency_clearance')}
+        </span>
+        <span style={{ fontSize: 11, color: broken.length ? 'var(--badge-red-text)' : 'var(--badge-green-text)', marginLeft: 'auto' }}>
+          {broken.length ? `⚠ ${broken.length} broken endpoint(s)` : '✓ all endpoints validated'}
+        </span>
+      </div>
+
+      {ACTIONS_V2_SECTION_ORDER.map(sec => (
+        <ActionsV2Section
+          key={sec.key}
+          sectionKey={sec.key}
+          label={sec.label}
+          icon={sec.icon}
+          actions={(data.sections || {})[sec.key] || []}
+          onActionClick={handleClick}
+        />
+      ))}
+
+      {broken.length > 0 && (
+        <details style={{ background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', border: '1px solid var(--badge-red-border)', borderRadius: 10, padding: '10px 14px' }}>
+          <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>{broken.length} broken endpoint(s) — click to expand</summary>
+          <ul style={{ marginTop: 8, fontSize: 11, fontFamily: 'monospace', listStyle: 'none', padding: 0 }}>
+            {broken.map((b, i) => (
+              <li key={i} style={{ padding: '4px 0' }}>{b.action_id}: {b.method} {b.endpoint} — {b.reason}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+
+// ══════════════════════════════════════════════════════════
+// EMAIL EVIDENCE TIMELINE — local store (Email Evidence V2)
+// ══════════════════════════════════════════════════════════
+const EE_STAGE_ICON = {
+  dhl_request:      '✉',
+  our_dhl_reply:    '↗',
+  dhl_documents:    '📦',
+  agency_forward:   '➡',
+  agency_sad_reply: '⊟',
+  pz_generated:     '⊞',
+  dhl_invoice:      '$',
+  agency_invoice:   '$',
+  shipment_closed:  '✓',
+};
+
+const EE_STATUS_STYLE = {
+  missing:   { color: 'var(--text-3)',           bg: 'transparent',           label: 'missing' },
+  queued:    { color: 'var(--badge-amber-text)', bg: 'var(--badge-amber-bg)', label: 'queued' },
+  received:  { color: 'var(--badge-blue-text)',  bg: 'var(--badge-blue-bg)',  label: 'received' },
+  sent:      { color: 'var(--badge-green-text)', bg: 'var(--badge-green-bg)', label: 'sent' },
+  processed: { color: 'var(--accent)',           bg: 'var(--accent-subtle)',  label: 'processed' },
+};
+
+// ── DHL action card — operator next-action guidance ─────────────────────────
+//
+// Reads the read-only /dhl-action-state endpoint and renders the single
+// primary button operator should click next. Buttons NEVER call queue_email
+// directly — they go through:
+//   * /generate-customs-package    (creates files, no email)
+//   * /proactive-dispatch          (creates proposal, no email queued)
+//   * /action-proposals/{id}/approve / queue   (existing approve+queue lane)
+//
+// On any 200 response from a button, the parent EmailEvidenceTimeline reload
+// callback is invoked so the badges and stages refresh.
+
+const BADGE_TONE = {
+  ok:   { bg: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: 'var(--badge-green-border)' },
+  warn: { bg: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', border: 'var(--badge-amber-border)' },
+  info: { bg: 'var(--badge-blue-bg)',  color: 'var(--badge-blue-text)',  border: 'var(--badge-blue-border)'  },
+};
+
+function DhlActionCard({ batchId, onAfterAction }) {
+  const [state, setState] = React.useState(null);
+  const [err,   setErr]   = React.useState(null);
+  const [busy,  setBusy]  = React.useState(null);
+
+  const reload = React.useCallback(async () => {
+    try {
+      const res = await fetch(`/dashboard/batches/${encodeURIComponent(batchId)}/dhl-action-state`, { credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setState(await res.json()); setErr(null);
+    } catch (e) { setErr(e.message); }
+  }, [batchId]);
+
+  React.useEffect(() => { reload(); }, [reload]);
+
+  const runAction = async (action) => {
+    if (!action || action.disabled) return;
+    // For approve_proactive_proposal we ask the operator for an approver id
+    // (must differ from created_by — server enforces self-approval block).
+    let body = action.body || {};
+    if (action.id === 'approve_proactive_proposal') {
+      const who = window.prompt('Approver (must differ from requester):', '');
+      if (!who) return;
+      body = { approved_by: who };
+    } else if (action.id === 'proactive_dispatch_request') {
+      const op = window.prompt('Your operator id:', '');
+      if (!op) return;
+      body = { operator_id: op };
+    }
+    setBusy(action.id);
+    try {
+      const res = await fetch(action.endpoint, {
+        method: action.method || 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = j.detail?.error || j.detail?.message || j.detail || j.error || `HTTP ${res.status}`;
+        window.alert(`Action failed: ${typeof msg === 'string' ? msg : JSON.stringify(msg)}`);
+      } else {
+        const ok = j.ok !== false;
+        const summary = j.proposal_id ? `proposal_id=${j.proposal_id}` :
+                        j.email_id    ? `email_id=${j.email_id}`       :
+                                        'OK';
+        window.alert(`${action.label}: ${ok ? 'OK' : 'FAILED'} — ${summary}`);
+      }
+      await reload();
+      if (typeof onAfterAction === 'function') await onAfterAction();
+    } finally { setBusy(null); }
+  };
+
+  if (err) return (
+    <div style={{ padding: 10, fontSize: 11, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', borderRadius: 6, border: '1px solid var(--badge-red-border)' }}>
+      DHL action state load failed: {err}
+    </div>
+  );
+  if (!state) return null;
+
+  const a       = state.primary_action;
+  const sec     = state.secondary_actions || [];
+  const badges  = state.badges || [];
+  const infos   = state.info_messages || [];
+
+  return (
+    <div data-testid="dhl-action-card" style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 18px', marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 14 }}>🎯</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Next DHL action</span>
+      </div>
+
+      {/* Detected badges */}
+      {badges.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+          {badges.map((b, i) => {
+            const t = BADGE_TONE[b.tone] || BADGE_TONE.info;
+            return (
+              <span key={i} style={{ padding: '3px 9px', fontSize: 10, fontWeight: 600, borderRadius: 4, background: t.bg, color: t.color, border: `1px solid ${t.border}` }}>
+                {b.label}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Primary action */}
+      {a ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: sec.length > 0 || infos.length > 0 ? 10 : 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              data-action-id={a.id}
+              disabled={a.disabled || busy === a.id}
+              onClick={() => runAction(a)}
+              style={{
+                padding: '8px 16px', fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
+                borderRadius: 6, cursor: (a.disabled || busy === a.id) ? 'not-allowed' : 'pointer',
+                border: '1px solid var(--accent-border)',
+                background: a.disabled ? 'var(--bg-subtle)' : 'var(--accent-subtle)',
+                color: a.disabled ? 'var(--text-3)' : 'var(--accent)',
+                opacity: (a.disabled || busy === a.id) ? 0.6 : 1,
+              }}>
+              {busy === a.id ? '⟳…' : `▶ ${a.label}`}
+            </button>
+            {a.proposal_status && (
+              <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                proposal: {a.proposal_status}{a.proposal_id ? ` (${String(a.proposal_id).slice(0, 8)}…)` : ''}
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-2)', lineHeight: 1.4 }}>
+            {a.reason}
+          </div>
+          {a.disabled && a.disabled_reason && (
+            <div style={{ fontSize: 11, color: 'var(--badge-red-text)' }}>
+              ⚠ {a.disabled_reason}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: infos.length > 0 ? 10 : 0 }}>
+          {state.state_summary}
+        </div>
+      )}
+
+      {/* Secondary actions (e.g. Prepare reply to DHL thread) */}
+      {sec.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: infos.length > 0 ? 10 : 0, borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
+          {sec.map((s, i) => (
+            <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <button
+                data-action-id={s.id}
+                disabled={s.disabled || busy === s.id}
+                onClick={() => runAction(s)}
+                style={{
+                  alignSelf: 'flex-start',
+                  padding: '6px 14px', fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
+                  borderRadius: 5, cursor: (s.disabled || busy === s.id) ? 'not-allowed' : 'pointer',
+                  border: '1px solid var(--border)',
+                  background: 'transparent',
+                  color: 'var(--text)',
+                  opacity: (s.disabled || busy === s.id) ? 0.6 : 1,
+                }}>
+                {busy === s.id ? '⟳…' : s.label}
+              </button>
+              <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{s.reason}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Info messages — shown when an action would otherwise be redundant */}
+      {infos.length > 0 && (
+        <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {infos.map((msg, i) => (
+            <div key={i} style={{ fontSize: 11, color: 'var(--text-3)', fontStyle: 'italic' }}>· {msg}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function EmailEvidenceTimeline({ batchId }) {
+  const [data, setData] = React.useState(null);
+  const [err,  setErr]  = React.useState(null);
+  const [busy, setBusy] = React.useState(null);
+
+  const reload = React.useCallback(async () => {
+    try {
+      const res = await fetch(`/dashboard/batches/${encodeURIComponent(batchId)}/email-evidence`, { credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setData(await res.json()); setErr(null);
+    } catch (e) { setErr(e.message); }
+  }, [batchId]);
+
+  React.useEffect(() => { reload(); }, [reload]);
+
+  const doRescan = async () => {
+    setBusy('rescan');
+    try {
+      const res = await fetch(`/dashboard/batches/${encodeURIComponent(batchId)}/email-evidence/rescan`, { method: 'POST', credentials: 'include' });
+      const j = await res.json();
+      const scanned  = j.total_scanned ?? j.scanned ?? 0;
+      const ingested = j.ingested ?? 0;
+      const query    = j.query_used ? ` (${j.query_used})` : '';
+      window.alert(`Rescan ${j.ok ? 'OK' : 'FAILED'}: scanned=${scanned}, ingested=${ingested}${query}${j.error ? ', err=' + j.error : ''}`);
+      await reload();
+    } finally { setBusy(null); }
+  };
+
+  const doProcess = async () => {
+    setBusy('process');
+    try {
+      const res = await fetch(`/dashboard/batches/${encodeURIComponent(batchId)}/email-evidence/process`, { method: 'POST', credentials: 'include' });
+      const j = await res.json();
+      const acted = (j.result?.actions || []).length;
+      window.alert(`Process ${j.ok ? 'OK' : 'FAILED'}: actions=${acted}, skipped=${j.result?.skipped ?? 0}`);
+      await reload();
+    } finally { setBusy(null); }
+  };
+
+  if (err) return (
+    <div style={{ background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', border: '1px solid var(--badge-red-border)', borderRadius: 10, padding: 14, fontSize: 12 }}>
+      Email evidence load failed: {err}
+    </div>
+  );
+  if (!data) return null;
+  if (!data.awb) return (
+    <div style={{ padding: 12, fontSize: 12, color: 'var(--text-3)', fontStyle: 'italic' }}>
+      Email evidence not available — batch has no AWB.
+    </div>
+  );
+
+  const stages = data.stages || [];
+  const messages = data.messages || [];
+
+  return (
+    <React.Fragment>
+      {/* DHL action card — operator next-action guidance, rendered above the
+          milestone grid so the operator always sees what to do next, not just
+          a row of "missing" badges. The card refreshes the evidence timeline
+          after any successful action. */}
+      <DhlActionCard batchId={batchId} onAfterAction={reload} />
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 18px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <span style={{ fontSize: 14 }}>📧</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Email Evidence Timeline</span>
+        <span style={{ fontSize: 10, color: 'var(--text-3)', marginLeft: 4 }}>AWB {data.awb}</span>
+        <span style={{ fontSize: 10, color: 'var(--text-3)' }}>· {messages.length} messages stored</span>
+        {data.last_scan_at && <span style={{ fontSize: 10, color: 'var(--text-3)' }}>· last scan {data.last_scan_at}</span>}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+          <button onClick={doRescan} disabled={busy === 'rescan'} style={{ padding: '5px 12px', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', borderRadius: 5, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-2)', cursor: 'pointer' }}>
+            {busy === 'rescan' ? '⟳…' : '↻ Rescan'}
+          </button>
+          <button onClick={doProcess} disabled={busy === 'process'} style={{ padding: '5px 12px', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', borderRadius: 5, border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)', color: 'var(--accent)', cursor: 'pointer' }}>
+            {busy === 'process' ? '⟳…' : '▶ Process'}
+          </button>
+        </div>
+      </div>
+
+      {/* 9-stage fixed sequence */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 6, marginBottom: 14 }}>
+        {stages.map((st, i) => {
+          const sty = EE_STATUS_STYLE[st.status] || EE_STATUS_STYLE.missing;
+          return (
+            <div key={st.key} style={{ padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border)', background: sty.bg }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{i+1}</span>
+                <span style={{ fontSize: 13 }}>{EE_STAGE_ICON[st.key] || '·'}</span>
+                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', flex: 1 }}>{st.label}</span>
+              </div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: sty.color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{sty.label}</div>
+              {st.timestamp && <div style={{ fontSize: 9, color: 'var(--text-3)', marginTop: 2 }}>{st.timestamp}</div>}
+              {st.attachment_count > 0 && <div style={{ fontSize: 9, color: 'var(--text-3)', marginTop: 1 }}>📎 {st.attachment_count}</div>}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Messages list */}
+      {messages.length > 0 && (
+        <details style={{ borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, color: 'var(--text-2)' }}>
+            {messages.length} message(s) — click to expand
+          </summary>
+          <div style={{ marginTop: 8, fontSize: 11, fontFamily: 'monospace', maxHeight: 240, overflowY: 'auto' }}>
+            {messages.sort((a,b) => (b.timestamp || '').localeCompare(a.timestamp || '')).map((m, i) => (
+              <div key={i} style={{ padding: '4px 6px', borderBottom: '1px solid var(--border-subtle)', display: 'grid', gridTemplateColumns: '110px 90px 70px 1fr 50px', gap: 8, alignItems: 'center' }}>
+                <span style={{ color: 'var(--text-3)', fontSize: 10 }}>{m.timestamp || '—'}</span>
+                <span style={{ color: 'var(--text-2)', fontSize: 10 }}>{m.event_type || 'other'}</span>
+                <span style={{ color: m.direction === 'outgoing' ? 'var(--badge-green-text)' : 'var(--badge-blue-text)', fontSize: 10, fontWeight: 600 }}>{m.direction || ''}</span>
+                <span style={{ color: 'var(--text)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={m.subject}>{m.subject || ''}</span>
+                <span style={{ color: 'var(--text-3)', fontSize: 10, textAlign: 'right' }}>{m.attachment_count > 0 ? `📎${m.attachment_count}` : ''}</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      </div>
+    </React.Fragment>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// CN ↔ HSN DECISION PANEL  (hierarchical compare, no auto PZ)
+// ════════════════════════════════════════════════════════════════════
+//
+// Uses GET /dashboard/batches/{id}/cn-hsn-classification on mount and
+// renders one of three states:
+//   exact / hs6 / heading_match → green chip + review note (NOT blocking)
+//   chapter_match               → amber chip + 3 decision buttons
+//   different_chapter           → red chip + hard block (no buttons)
+//
+// Decision buttons (POST):
+//   /dashboard/batches/{id}/cn-decision/accept-sad
+//   /dashboard/batches/{id}/cn-decision/correct-internal
+//   /dashboard/batches/{id}/cn-decision/escalate-agent
+//
+// None of these endpoints execute PZ or write to wFirma — every PZ
+// execution remains explicit (see ExecutePZGate).
+
+// ════════════════════════════════════════════════════════════════════
+// OPERATOR WORKFLOW CARD — unified pre-PZ review (read-only by default)
+// ════════════════════════════════════════════════════════════════════
+//
+// One ordered screen with six stages:
+//   1. Evidence       — ZC429 lineage  (GET /zc429-lineage)
+//   2. Classification — CN/HSN result  (GET /cn-hsn-classification)
+//   3. Products       — wFirma mapping (GET /proforma-readiness.products)
+//   4. Customers      — wFirma mapping (GET /proforma-readiness.customers)
+//   5. Preview        — pz_preview     (GET /wfirma/pz_preview)
+//   6. Execute        — wfirma/pz_create gate (operator click only)
+//
+// Hard rules:
+//   • Each endpoint is fetched ONCE on mount and ONCE per explicit
+//     Refresh click. No setInterval, no auto-refresh loops.
+//   • useEffect contains GETs only — never POST.
+//   • Every POST happens inside an onClick handler defined inside the
+//     embedded sub-components (CNHSNDecisionPanel, ExecutePZGate, …).
+//   • The Execute PZ button is enabled iff:
+//       preview.ready && preview.would_create_pz
+//       && wfirma_create_pz_allowed && !preview.already_created
+//       && (no unresolved blockers in any earlier stage)
+//   • Pipeline header colors:
+//       green  = stage complete
+//       amber  = needs operator action
+//       red    = blocking
+//       gray   = not yet evaluated / waiting
+
+function OperatorWorkflowCard({ batchId, onToast }) {
+  const [proforma, setProforma]   = React.useState(null);
+  const [zc429, setZc429]         = React.useState(null);
+  const [cnhsn, setCnhsn]         = React.useState(null);
+  const [preview, setPreview]     = React.useState(null);
+  const [caps, setCaps]           = React.useState(null);
+  const [batchReady, setBatchReady] = React.useState(null); // warehouse + sales blocker source
+  const [batchDet, setBatchDet]     = React.useState(null); // for files (PZ exists)
+  const [cm, setCm]               = React.useState([]);     // C16A: customer master records
+  const [cmEdit, setCmEdit]       = React.useState(null);   // C17A: {contractorId, fields} | null
+  const [cmSaving, setCmSaving]   = React.useState(false);  // C17A
+  const [cmSavedMsg, setCmSavedMsg] = React.useState(null); // C17A: {contractorId, msg} | null
+  // C25A — setup-detail panel state.  Moved here from BatchDetailPage in
+  // fix/c25a-regression-cm-scope after a Safari ReferenceError on `cm`
+  // confirmed the JSX cannot reach variables from a sibling component.
+  // The C25A JSX panel is inserted between sections 4 and 5 of this card,
+  // so all its state + handlers must live inside this component scope.
+  const [setupDetail,                 setSetupDetail]                 = React.useState(null);
+  const [setupDetailLoading,          setSetupDetailLoading]          = React.useState(false);
+  const [setupDetailErr,              setSetupDetailErr]              = React.useState('');
+  const [setupProductPreview,         setSetupProductPreview]         = React.useState(null);
+  const [setupProductPreviewLoading,  setSetupProductPreviewLoading]  = React.useState(false);
+  const [setupProductPreviewErr,      setSetupProductPreviewErr]      = React.useState('');
+  // ── PR 4 of 4 — pending_adoption operator-decision UI ─────────────────
+  // V1-freeze exception per Lesson F: this is the critical-fix completion
+  // of PR #303's authority surface change. Operators have no other UI
+  // path to resolve pending_adoption rows; PZ + Proforma silently block
+  // until each row is explicitly adopted/updated/created. Backend read +
+  // 3 write endpoints already deployed (PR #300 + PR #302). This is an
+  // EXPLICIT, ONE-TIME, NON-PRECEDENT-SETTING exception — do NOT use it
+  // to justify future V1 additions; V2 dashboard owns everything else.
+  const [pendingList,         setPendingList]         = React.useState(null);
+  const [pendingListLoading,  setPendingListLoading]  = React.useState(false);
+  const [pendingListErr,      setPendingListErr]      = React.useState('');
+  const [pendingModalOpen,    setPendingModalOpen]    = React.useState(false);
+  // per-product_code state maps — keep modal scalable for batches with
+  // many pending rows (raised by reviewer-challenge as scale concern)
+  const [pendingActionBusy,   setPendingActionBusy]   = React.useState({});
+  const [pendingActionMsg,    setPendingActionMsg]    = React.useState({});
+  const [pendingCompare,      setPendingCompare]      = React.useState({});
+  const [pendingCompareBusy,  setPendingCompareBusy]  = React.useState({});
+  const [setupCustomerResolve,        setSetupCustomerResolve]        = React.useState(null);
+  const [setupCustomerResolveLoading, setSetupCustomerResolveLoading] = React.useState(false);
+  const [setupCustomerResolveErr,     setSetupCustomerResolveErr]     = React.useState('');
+  const [expanded, setExpanded]   = React.useState({
+    evidence: true, classification: false,
+    products: false, customers: false, warehouse: false,
+    preview: true, execute: true,
+  });
+  const [loading, setLoading]     = React.useState(true);
+  const [error, setError]         = React.useState('');
+
+  // Single read-only refresh — fetches all five endpoints once.
+  const refresh = React.useCallback(async () => {
+    if (!batchId) return;
+    setLoading(true); setError('');
+    const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+    const opts = { headers: hdrs, credentials: 'include' };
+    const safe = async (url) => {
+      try {
+        const r = await fetch(url, opts);
+        return r.ok ? await r.json() : null;
+      } catch { return null; }
+    };
+    const [pf, zc, cn, pv, cp, br, bd, cmResp] = await Promise.all([
+      safe(`/dashboard/batches/${encodeURIComponent(batchId)}/proforma-readiness`),
+      safe(`/dashboard/batches/${encodeURIComponent(batchId)}/zc429-lineage`),
+      safe(`/dashboard/batches/${encodeURIComponent(batchId)}/cn-hsn-classification`),
+      safe(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_preview`),
+      safe(`/api/v1/wfirma/capabilities`),
+      safe(`/api/v1/batch/${encodeURIComponent(batchId)}/readiness`),
+      safe(`/dashboard/batches/${encodeURIComponent(batchId)}`),
+      safe('/api/v1/customer-master/'),
+    ]);
+    setProforma(pf); setZc429(zc); setCnhsn(cn); setPreview(pv); setCaps(cp);
+    setBatchReady(br); setBatchDet(bd);
+    setCm((cmResp && (cmResp.customers || [])) || []);
+    if (!pf && !zc && !cn) setError('All read-only endpoints failed');
+    setLoading(false);
+  }, [batchId]);
+
+  // C17A: save partial CM fields via PUT (explicit operator action only)
+  const saveCmFields = React.useCallback(async (contractorId, fields) => {
+    setCmSaving(true); setCmSavedMsg(null);
+    try {
+      const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+      const r = await fetch(`/api/v1/customer-master/${encodeURIComponent(contractorId)}`, {
+        method: 'PUT',
+        headers: { ...hdrs, 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(fields),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        setCmSavedMsg({ contractorId, msg: 'Saved ✓' });
+        setCmEdit(null);
+        refresh();
+      } else {
+        setCmSavedMsg({ contractorId, msg: j.detail || 'Save failed' });
+      }
+    } catch {
+      setCmSavedMsg({ contractorId, msg: 'Network error' });
+    }
+    setCmSaving(false);
+  }, [refresh]);
+
+  // ── C25A — Setup-detail fetch (read-only) ──────────────────────────
+  // GET /api/v1/wfirma/shipment/{batch}/setup-detail.  Returns null on
+  // 404 (backend pre-restart) or any error — panel renders only when
+  // setupDetail is truthy.
+  const refreshSetupDetail = React.useCallback(async () => {
+    setSetupDetailLoading(true); setSetupDetailErr('');
+    try {
+      const d = await apiFetch(
+        `/api/v1/wfirma/shipment/${encodeURIComponent(batchId)}/setup-detail`,
+      );
+      setSetupDetail(d);
+    } catch (e) {
+      setSetupDetailErr((e && e.message) || 'setup-detail fetch failed');
+      setSetupDetail(null);
+    }
+    setSetupDetailLoading(false);
+  }, [batchId]);
+
+  // ── C25A-handlers — Product preview (dry-run) ──────────────────────
+  // POST /api/v1/wfirma/goods/auto-register-preview/{batch} — dry_run=True.
+  // NEVER calls goods/add.  Result rendered inline below products table.
+  const handleProductPreview = React.useCallback(async () => {
+    setSetupProductPreviewLoading(true); setSetupProductPreviewErr('');
+    try {
+      const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+      const operator = (localStorage.getItem('pz_operator_name') || '').trim();
+      const r = await fetch(
+        `/api/v1/wfirma/goods/auto-register-preview/${encodeURIComponent(batchId)}`,
+        {
+          method: 'POST',
+          headers: { ...hdrs, 'X-Operator': operator || 'operator' },
+          credentials: 'include',
+        },
+      );
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        setSetupProductPreview(j);
+      } else {
+        setSetupProductPreviewErr((j && (j.detail || j.error)) || `HTTP ${r.status}`);
+        setSetupProductPreview(null);
+      }
+    } catch (e) {
+      setSetupProductPreviewErr((e && e.message) || 'product preview failed');
+      setSetupProductPreview(null);
+    }
+    setSetupProductPreviewLoading(false);
+    refreshSetupDetail();
+  }, [batchId, refreshSetupDetail]);
+
+  // ── PR 4 of 4 — pending_adoption resolution handlers ───────────────
+  // All reads + writes go through the already-deployed endpoints:
+  //   GET  /api/v1/wfirma/products?sync_status=pending_adoption   (PR foundation)
+  //   GET  /api/v1/wfirma/goods/search-and-compare?product_code=… (PR #300)
+  //   POST /api/v1/wfirma/goods/adopt/{product_code}              (PR #302)
+  //   POST /api/v1/wfirma/goods/update-and-adopt/{product_code}   (PR #302)
+  //   POST /api/v1/wfirma/goods/create-and-adopt/{product_code}   (PR #302)
+  // This UI is a THIN CALLER — it never re-derives workflow legality,
+  // never silently advances pending→matched, never persists locally.
+  // Backend authority is preserved.
+
+  const refreshPendingList = React.useCallback(async () => {
+    setPendingListLoading(true); setPendingListErr('');
+    try {
+      const d = await apiFetch('/api/v1/wfirma/products?sync_status=pending_adoption');
+      setPendingList((d && d.products) || []);
+    } catch (e) {
+      setPendingListErr((e && e.message) || 'pending list fetch failed');
+      setPendingList(null);
+    }
+    setPendingListLoading(false);
+  }, []);
+
+  const fetchPendingCompare = React.useCallback(async (productCode) => {
+    setPendingCompareBusy(prev => ({ ...prev, [productCode]: true }));
+    try {
+      const d = await apiFetch(
+        `/api/v1/wfirma/goods/search-and-compare?product_code=${encodeURIComponent(productCode)}`
+      );
+      setPendingCompare(prev => ({ ...prev, [productCode]: (d && d.comparison) || null }));
+    } catch (e) {
+      setPendingCompare(prev => ({
+        ...prev, [productCode]: { error: (e && e.message) || 'compare failed' }
+      }));
+    }
+    setPendingCompareBusy(prev => ({ ...prev, [productCode]: false }));
+  }, []);
+
+  const _postPendingAction = React.useCallback(async (productCode, endpoint, actionLabel) => {
+    setPendingActionBusy(prev => ({ ...prev, [productCode]: actionLabel }));
+    setPendingActionMsg(prev => ({ ...prev, [productCode]: '' }));
+    try {
+      const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+      const operator = (localStorage.getItem('pz_operator_name') || '').trim();
+      const r = await fetch(
+        `/api/v1/wfirma/goods/${endpoint}/${encodeURIComponent(productCode)}`,
+        { method:      'POST',
+          headers:     { ...hdrs, 'X-Operator': operator || 'operator' },
+          credentials: 'include' },
+      );
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        setPendingActionMsg(prev => ({ ...prev, [productCode]: `${actionLabel} succeeded` }));
+        // Real-time refresh — addresses reviewer-challenge race concern:
+        // after any operator action, re-fetch list so other open modals
+        // see the row removed on next render.
+        await refreshPendingList();
+      } else {
+        const detail = j && (j.detail || j.error);
+        const msg    = typeof detail === 'string' ? detail
+                     : (detail && detail.error)    ? detail.error
+                     : `HTTP ${r.status}`;
+        setPendingActionMsg(prev => ({ ...prev, [productCode]: `${actionLabel} failed: ${msg}` }));
+      }
+    } catch (e) {
+      setPendingActionMsg(prev => ({ ...prev, [productCode]: `${actionLabel} error: ${e.message || e}` }));
+    }
+    setPendingActionBusy(prev => ({ ...prev, [productCode]: '' }));
+  }, [refreshPendingList]);
+
+  const handlePendingAdopt          = React.useCallback((pc) => _postPendingAction(pc, 'adopt',            'Adopt as-is'),       [_postPendingAction]);
+  const handlePendingUpdateAndAdopt = React.useCallback((pc) => _postPendingAction(pc, 'update-and-adopt', 'Update then adopt'), [_postPendingAction]);
+  const handlePendingCreateAndAdopt = React.useCallback((pc) => _postPendingAction(pc, 'create-and-adopt', 'Create new'),        [_postPendingAction]);
+
+  const openPendingModal  = React.useCallback(() => {
+    setPendingModalOpen(true);
+    refreshPendingList();
+  }, [refreshPendingList]);
+
+  // Cancel-is-noop: ONLY resets local UI state. No backend call. No
+  // mutation. The deployed endpoints are the single source of truth
+  // for whether a pending row advances to matched.
+  const closePendingModal = React.useCallback(() => {
+    setPendingModalOpen(false);
+  }, []);
+
+  // ── C25A-handlers — Customer resolve (dry-run) ─────────────────────
+  // POST /api/v1/wfirma/customers/auto-resolve-preview/{batch}.  NEVER
+  // creates a contractor.  Result rendered inline below customer table.
+  const handleCustomerResolve = React.useCallback(async () => {
+    setSetupCustomerResolveLoading(true); setSetupCustomerResolveErr('');
+    try {
+      const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+      const operator = (localStorage.getItem('pz_operator_name') || '').trim();
+      const r = await fetch(
+        `/api/v1/wfirma/customers/auto-resolve-preview/${encodeURIComponent(batchId)}`,
+        {
+          method: 'POST',
+          headers: { ...hdrs, 'X-Operator': operator || 'operator' },
+          credentials: 'include',
+        },
+      );
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        setSetupCustomerResolve(j);
+      } else {
+        setSetupCustomerResolveErr((j && (j.detail || j.error)) || `HTTP ${r.status}`);
+        setSetupCustomerResolve(null);
+      }
+    } catch (e) {
+      setSetupCustomerResolveErr((e && e.message) || 'customer resolve failed');
+      setSetupCustomerResolve(null);
+    }
+    setSetupCustomerResolveLoading(false);
+    refreshSetupDetail();
+  }, [batchId, refreshSetupDetail]);
+
+  // ── C25A-handlers — Save CM defaults ───────────────────────────────
+  // Opens the existing C17A inline editor via setCmEdit.  saveCmFields
+  // is the single CM write authority; this handler never calls wFirma.
+  const handleSetupSaveCmFor = React.useCallback((cmRow) => {
+    if (!cmRow || !cmRow.wfirma_customer_id) {
+      setSetupDetailErr(
+        `Cannot Save CM for "${(cmRow && cmRow.client_name) || ''}" — no Customer Master record yet. Use Resolve first, then Save CM.`,
+      );
+      return;
+    }
+    const cid = cmRow.wfirma_customer_id;
+    const cmRec = (cm || []).find(r => r && r.bill_to_contractor_id === cid);
+    if (!cmRec) {
+      setSetupDetailErr(
+        `Customer Master row not found for contractor ${cid}. Refreshing list…`,
+      );
+      refresh();
+      return;
+    }
+    setCmEdit({ contractorId: cid, fields: {
+      bill_to_name:                  cmRec.bill_to_name || '',
+      bill_to_nip:                   cmRec.nip || cmRec.bill_to_nip || '',
+      bill_to_street:                cmRec.bill_to_street || '',
+      bill_to_city:                  cmRec.bill_to_city || '',
+      bill_to_postal_code:           cmRec.bill_to_postal_code || '',
+      bill_to_country:               cmRec.bill_to_country || '',
+      ship_to_name:                  cmRec.ship_to_name || '',
+      ship_to_street:                cmRec.ship_to_street || '',
+      ship_to_city:                  cmRec.ship_to_city || '',
+      ship_to_postal_code:           cmRec.ship_to_postal_code || '',
+      preferred_payment_method:      cmRec.preferred_payment_method || '',
+      payment_terms_days:            cmRec.payment_terms_days != null ? String(cmRec.payment_terms_days) : '',
+      default_currency:              cmRec.default_currency || '',
+      preferred_proforma_series_id:  cmRec.preferred_proforma_series_id || '',
+      preferred_invoice_series_id:   cmRec.preferred_invoice_series_id || '',
+    }});
+    setSetupDetailErr('');
+    setTimeout(() => {
+      const el = document.querySelector(`[data-testid="workflow-cm-card-${cid}"]`);
+      if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 50);
+  }, [cm, refresh]);
+
+  React.useEffect(() => { refresh(); refreshSetupDetail(); }, [refresh, refreshSetupDetail]);
+  // ↑ This is a GET-only effect. There is no POST anywhere in this
+  //   component or in `refresh`.
+
+  // ── Compute per-stage state (color + reason) ─────────────────────────
+  const stages = React.useMemo(() => {
+    // Evidence: SAD/MRN can come from legacy parse OR ZC429 intake;
+    // surface BOTH facts independently.
+    const sadPresent  = !!(proforma && proforma.pz && proforma.pz.sad_received)
+                        || !!(cnhsn && cnhsn.sad_cn_code);
+    const zcPresent   = !!(zc429 && zc429.has_zc429);
+    const evWarn      = !!(zc429 && (zc429.warnings || []).length);
+    // Evidence is GREEN only when both SAD and ZC429 lineage are present.
+    // SAD-only with no ZC429 is AMBER (legacy SAD; ZC email not yet ingested).
+    // Neither is AMBER → waiting.
+    const evidenceColor = (sadPresent && zcPresent) ? 'green'
+                          : evWarn ? 'red'
+                          : sadPresent ? 'amber'
+                          : 'amber';
+
+    const cnLevel   = (cnhsn && cnhsn.result && cnhsn.result.worst_level) || '';
+    const cnDecided = !!(cnhsn && cnhsn.decision && cnhsn.decision.approved);
+    const cnBlocked = !!(cnhsn && cnhsn.result && cnhsn.result.is_blocking) && !cnDecided;
+    const classColor = cnBlocked ? 'red'
+                       : cnDecided ? 'green'
+                       : (cnLevel === 'invalid_input' || !cnhsn) ? 'gray'
+                       : (cnLevel === 'chapter_match' || cnLevel === 'different_chapter') ? 'amber'
+                       : 'green';
+
+    const prodMissing = (proforma && proforma.products && proforma.products.missing) || 0;
+    const prodTotal   = (proforma && proforma.products && proforma.products.total)   || 0;
+    const productsColor = prodTotal === 0 ? 'gray'
+                          : prodMissing === 0 ? 'green' : 'amber';
+
+    const custMissing = (proforma && proforma.customers && proforma.customers.missing) || 0;
+    const custAmbig   = (proforma && proforma.customers && proforma.customers.ambiguous) || 0;
+    const custTotal   = (proforma && proforma.customers && proforma.customers.total)   || 0;
+    const customersColor = custTotal === 0 ? 'gray'
+                           : (custMissing === 0 && custAmbig === 0) ? 'green' : 'amber';
+
+    // Warehouse / packing — pull the real blocker from
+    // /api/v1/batch/{id}/readiness (warehouse + sales subblocks).
+    const wh    = batchReady && batchReady.warehouse ? batchReady.warehouse : null;
+    const sales = batchReady && batchReady.sales     ? batchReady.sales     : null;
+    const whReady    = !!(wh && wh.ready);
+    const salesReady = !!(sales && sales.ready);
+    const warehouseColor = !batchReady ? 'gray'
+                           : (whReady && salesReady) ? 'green'
+                           : 'amber';
+
+    // Preview / Execute — distinguish local PZ files vs wFirma PZ.
+    const localPzExists  = !!(batchDet && batchDet.files
+                              && batchDet.files.pdf
+                              && batchDet.files.pdf.exists);
+    // PZ Preview Authority Audit (2026-05-21) — accept either the legacy
+    // `detail` shape (when PZ_PREVIEW_STRUCTURED_BLOCKERS is off) or the
+    // new structured `blockers` list. Either represents the same "preview
+    // is not actionable" condition. Single authority for the PZ panel.
+    const previewBlockers = (preview && Array.isArray(preview.blockers))
+                              ? preview.blockers : [];
+    const previewErr     = !!(preview && (preview.detail || previewBlockers.length > 0));
+    const previewReady   = !!(preview && preview.ready);
+    const wouldCreate    = !!(preview && preview.would_create_pz);
+    const alreadyCreated = !!(preview && preview.already_created);
+    const previewColor   = !preview ? 'gray'
+                           : alreadyCreated ? 'green'
+                           : previewErr ? 'amber'
+                           : previewReady ? 'green'
+                           : 'amber';
+
+    const flagOn = !!(caps && (caps.create_pz_allowed
+                                || caps.wfirma_create_pz_allowed
+                                || (caps.flags
+                                    && (caps.flags.create_pz_allowed
+                                         || caps.flags.wfirma_create_pz_allowed))));
+    const blockersBefore = (cnBlocked ? 1 : 0)
+                           + (prodMissing > 0 ? 1 : 0)
+                           + (custMissing + custAmbig > 0 ? 1 : 0)
+                           + (!whReady ? 1 : 0)
+                           + (!sadPresent ? 1 : 0);
+    const executeEnabled = previewReady && wouldCreate && flagOn
+                           && !alreadyCreated && blockersBefore === 0;
+    const executeColor   = executeEnabled ? 'green'
+                           : alreadyCreated ? 'green' : 'amber';
+
+    return {
+      evidence: {
+        color: evidenceColor,
+        label: (sadPresent && zcPresent) ? 'SAD + ZC429'
+               : sadPresent ? 'legacy SAD only'
+               : 'waiting',
+        count: zc429 ? (zc429.attachments || []).length : 0,
+        sadPresent, zcPresent,
+      },
+      classification: {
+        color: classColor,
+        label: cnDecided ? 'accepted'
+               : cnBlocked ? 'blocked'
+               : cnLevel || 'no data',
+        count: cnBlocked ? 1 : 0,
+        decided: cnDecided,
+      },
+      products: {
+        color: productsColor,
+        label: `${prodTotal - prodMissing}/${prodTotal} mapped`,
+        count: prodMissing,
+        flagOn: !!(proforma && proforma.products && proforma.products.create_flag_on),
+      },
+      customers: {
+        color: customersColor,
+        label: `${custTotal - custMissing - custAmbig}/${custTotal} mapped`,
+        count: custMissing + custAmbig,
+        flagOn: !!(proforma && proforma.customers && proforma.customers.create_flag_on),
+      },
+      warehouse: {
+        color: warehouseColor,
+        label: whReady && salesReady ? 'ready'
+               : !batchReady ? 'unknown' : 'action needed',
+        count: (!whReady ? 1 : 0) + (!salesReady ? 1 : 0),
+        message: (wh && wh.message) || '',
+        sales_message: (sales && sales.message) || '',
+      },
+      preview: {
+        color: previewColor,
+        label: alreadyCreated ? 'wFirma PZ created'
+               : previewReady ? 'wFirma PZ preview ready'
+               : previewErr ? 'wFirma PZ preview blocked'
+               : localPzExists ? 'local PZ generated; wFirma PZ not ready'
+               : 'not ready',
+        count: (preview && (preview.unresolved_product_codes || []).length) || 0,
+        localPzExists,
+        previewErr,
+      },
+      execute: {
+        color: executeColor,
+        label: alreadyCreated ? 'PZ created'
+               : executeEnabled ? 'ready' : 'locked',
+        count: 0,
+        enabled: executeEnabled,
+      },
+    };
+  }, [zc429, cnhsn, proforma, preview, caps, batchReady, batchDet]);
+
+  const STAGE_ORDER = [
+    ['evidence',       'Customs docs'],
+    ['classification', 'Classification'],
+    ['products',       'Products'],
+    ['customers',      'Customers'],
+    ['warehouse',      'Warehouse'],
+    ['preview',        'Review'],
+    ['execute',        'Post'],
+  ];
+
+  // ── Style helpers ────────────────────────────────────────────────────
+  const card  = { background: 'var(--card,#fff)', border: '1px solid var(--border,#e5e7eb)',
+                  borderRadius: 8, padding: 16, marginBottom: 16 };
+  const dot   = (color) => ({
+    width: 12, height: 12, borderRadius: 6, display: 'inline-block',
+    background: color === 'green' ? '#15803d'
+                : color === 'amber' ? '#d97706'
+                : color === 'red'   ? '#dc2626' : '#9ca3af',
+  });
+  const bar   = { display: 'flex', alignItems: 'center', gap: 4,
+                  flexWrap: 'wrap', marginBottom: 12 };
+  const stagePill = (s, key, label) => {
+    const colorBg = s[key].color === 'green' ? '#dcfce7'
+                  : s[key].color === 'amber' ? '#fef3c7'
+                  : s[key].color === 'red'   ? '#fee2e2' : '#f3f4f6';
+    const colorTx = s[key].color === 'green' ? '#15803d'
+                  : s[key].color === 'amber' ? '#b45309'
+                  : s[key].color === 'red'   ? '#991b1b' : '#374151';
+    return (
+      <div key={key} data-testid={`workflow-pill-${key}`}
+           style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+                    padding: '4px 10px', borderRadius: 999, fontSize: 11,
+                    fontWeight: 700, background: colorBg, color: colorTx,
+                    cursor: 'pointer' }}
+           onClick={() => setExpanded(prev => ({ ...prev, [key]: !prev[key] }))}>
+        <span style={dot(s[key].color)} />
+        {label}
+        {(s[key].count > 0) && (
+          <span data-testid={`workflow-pill-count-${key}`}
+                style={{ background: '#fff', color: colorTx,
+                         padding: '0 6px', borderRadius: 8, fontSize: 10 }}>
+            {s[key].count}
+          </span>
+        )}
+      </div>
+    );
+  };
+
+  const sectionShell = (key, title, body) => (
+    <div data-testid={`workflow-section-${key}`}
+         style={{ border: '1px solid var(--border,#e5e7eb)', borderRadius: 6,
+                  marginBottom: 8, background: '#fff' }}>
+      <div data-testid={`workflow-section-header-${key}`}
+           onClick={() => setExpanded(prev => ({ ...prev, [key]: !prev[key] }))}
+           style={{ display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '8px 12px', cursor: 'pointer',
+                    background: 'var(--bg-soft,#f9fafb)' }}>
+        <span style={dot(stages[key].color)} />
+        <span style={{ fontWeight: 700, fontSize: 13 }}>{title}</span>
+        <span style={{ fontSize: 11, color: 'var(--text-2,#6b7280)',
+                       marginLeft: 'auto' }}>
+          {stages[key].label}
+          {stages[key].count > 0 ? ` — ${stages[key].count}` : ''}
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--text-2,#6b7280)' }}>
+          {expanded[key] ? '▾' : '▸'}
+        </span>
+      </div>
+      {expanded[key] && (
+        <div style={{ padding: 12 }}>{body}</div>
+      )}
+    </div>
+  );
+
+  // ── Per-stage bodies (read-only summaries; rich write surfaces stay
+  //    in the embedded sub-components below the summary) ───────────────
+
+  const evidenceBody = (() => {
+    const sadPresent = stages.evidence.sadPresent;
+    const zcPresent  = stages.evidence.zcPresent;
+    const sadCn      = (cnhsn && cnhsn.sad_cn_code) || '';
+    const ev         = (zc429 && zc429.event) || {};
+    const eid        = ((zc429 && zc429.intake_event_id) || '').slice(0, 12);
+    return (
+      <div data-testid="workflow-evidence-body" style={{ fontSize: 12 }}>
+        {/* Two-fact split: SAD/MRN AND ZC429 lineage are independent. */}
+        <div data-testid="workflow-evidence-sad"
+             style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+          <span>{sadPresent ? '✅' : '◻︎'}</span>
+          <strong>SAD / MRN present:</strong>
+          <span>{sadPresent ? 'YES' : 'NO'}</span>
+          {sadPresent && sadCn ? (
+            <span style={{ color: '#6b7280' }}>(CN {sadCn})</span>
+          ) : null}
+        </div>
+        <div data-testid="workflow-evidence-zc"
+             style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+          <span>{zcPresent ? '✅' : '◻︎'}</span>
+          <strong>ZC429 lineage present:</strong>
+          <span>{zcPresent ? 'YES' : 'NO'}</span>
+        </div>
+        {sadPresent && !zcPresent && (
+          <div data-testid="workflow-evidence-amber-note"
+               style={{ marginTop: 6, padding: 6, fontSize: 11,
+                        background: '#fef3c7', color: '#b45309',
+                        borderRadius: 4 }}>
+            ⚠ Legacy SAD/MRN present. DHL ZC429 email attachments not yet ingested.
+          </div>
+        )}
+        {zcPresent && (
+          <div style={{ marginTop: 6 }}>
+            <div><strong>AWB:</strong> {ev.awb || '—'}</div>
+            <div><strong>ZC / MRN:</strong> {ev.zc_number || '—'}</div>
+            <div><strong>Sender:</strong> {ev.sender || '—'}</div>
+            <div><strong>Received:</strong> {ev.received_at || '—'}</div>
+            <div><strong>Intake event:</strong>{' '}
+              <span style={{ fontFamily: 'ui-monospace,Menlo,monospace' }}
+                    title={zc429.intake_event_id}>{eid}…</span>
+            </div>
+            <div><strong>Attachments:</strong>{' '}
+              {(zc429.attachments || []).length}
+              {zc429.classified_counts ? (
+                <span style={{ color: '#6b7280', marginLeft: 6 }}>
+                  ({zc429.classified_counts.zc429 || 0} ZC429,{' '}
+                  {zc429.classified_counts.invoices || 0} inv,{' '}
+                  {zc429.classified_counts.awb || 0} awb,{' '}
+                  {zc429.classified_counts.mail_evidence || 0} mail,{' '}
+                  {zc429.classified_counts.others || 0} other)
+                </span>
+              ) : null}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  })();
+
+  const classificationBody = (() => {
+    const dec = cnhsn && cnhsn.decision;
+    if (dec && dec.approved) {
+      // Compact green summary — no big warning panel.
+      return (
+        <div data-testid="workflow-classification-accepted"
+             style={{ fontSize: 12 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ background: '#dcfce7', color: '#15803d',
+                           padding: '2px 8px', borderRadius: 12,
+                           fontSize: 11, fontWeight: 700 }}>Accepted</span>
+            <span>SAD CN <strong>{dec.sad_cn_code || cnhsn.sad_cn_code || '—'}</strong></span>
+            <span style={{ color: '#6b7280' }}>by {dec.operator || '—'}</span>
+            <span style={{ color: '#6b7280' }}>
+              at {dec.recorded_at ? dec.recorded_at.slice(0, 19).replace('T', ' ') : '—'}
+            </span>
+          </div>
+          {dec.reason && (
+            <div style={{ marginTop: 4, color: '#6b7280', fontSize: 11 }}>
+              <em>{dec.reason}</em>
+            </div>
+          )}
+          <div style={{ marginTop: 4, fontSize: 10, color: '#9ca3af' }}>
+            correction id {(dec.correction_id || '').slice(0, 12)}…
+          </div>
+        </div>
+      );
+    }
+    // Otherwise render the full decision panel (chapter-only review or
+    // hard-block mode requires operator input).
+    return <CNHSNDecisionPanel batchId={batchId}
+                               onToast={onToast || ((m) => alert(m))} />;
+  })();
+
+  const productsBody = (() => {
+    if (!proforma) return <div style={{ fontSize: 11, color: '#6b7280' }}>—</div>;
+    const p = proforma.products || {};
+    // C25A — per-product setup detail from /wfirma/shipment/{batch}/setup-detail
+    const sdProducts  = (setupDetail && setupDetail.products) || null;
+    const flagOn      = !!(sdProducts && sdProducts.create_flag_on);
+    const missingRows = (sdProducts && sdProducts.missing) || [];
+    return (
+      <div data-testid="workflow-products-body" style={{ fontSize: 12 }}>
+        <div>{p.mapped || 0} of {p.total || 0} product codes mapped to wFirma.</div>
+        {p.missing > 0 && (
+          <div style={{ color: '#b45309', marginTop: 4 }}>
+            ⚠ {p.missing} product code(s) missing.{' '}
+            {p.create_flag_on
+              ? 'Operator may run Auto-register from the Proforma Readiness panel below.'
+              : 'Auto-register is not enabled (contact your admin).'}
+          </div>
+        )}
+        {/* C25A — read-only per-product detail table.  Always lists what's
+            missing; write buttons are gated by WFIRMA_CREATE_PRODUCT_ALLOWED. */}
+        {missingRows.length > 0 && (
+          <div data-testid="setup-products-detail-table" style={{ marginTop: 10, border: '1px solid var(--border-subtle)', borderRadius: 4 }}>
+            <div style={{ padding: '6px 8px', background: 'var(--bg-subtle)', fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>
+              Missing wFirma product registrations — {missingRows.length}
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle)', borderTop: '1px solid var(--border-subtle)' }}>
+                  <th style={{ padding: '4px 6px', textAlign: 'left' }}>product_code</th>
+                  <th style={{ padding: '4px 6px', textAlign: 'left' }}>design</th>
+                  <th style={{ padding: '4px 6px', textAlign: 'left' }}>type</th>
+                  <th style={{ padding: '4px 6px', textAlign: 'right' }}>qty</th>
+                  <th style={{ padding: '4px 6px', textAlign: 'right' }}>value</th>
+                  <th style={{ padding: '4px 6px', textAlign: 'left' }}>client</th>
+                  <th style={{ padding: '4px 6px', textAlign: 'left' }}>action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {missingRows.map((row, idx) => (
+                  <tr key={row.product_code || idx}
+                      data-testid={`setup-products-row-${row.product_code}`}
+                      style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                    <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{row.product_code}</td>
+                    <td style={{ padding: '4px 6px' }}>{row.design_no || '—'}</td>
+                    <td style={{ padding: '4px 6px' }}>{row.item_type || '—'}</td>
+                    <td style={{ padding: '4px 6px', textAlign: 'right' }}>{row.qty != null ? Number(row.qty) : '—'}</td>
+                    <td style={{ padding: '4px 6px', textAlign: 'right' }}>{row.total_value != null ? Number(row.total_value).toFixed(2) : '—'}{row.currency ? ' ' + row.currency : ''}</td>
+                    <td style={{ padding: '4px 6px' }}>{row.client_name || '—'}</td>
+                    <td style={{ padding: '4px 6px' }}>
+                      <Btn small
+                           data-testid={`btn-setup-product-preview-${row.product_code}`}
+                           title="Read-only preview of wFirma product registration. No write fires."
+                           onClick={handleProductPreview}
+                           disabled={setupProductPreviewLoading}>
+                        {setupProductPreviewLoading ? 'Loading…' : 'Preview'}
+                      </Btn>
+                      {flagOn && (
+                        <Btn small primary
+                             data-testid={`btn-setup-product-register-${row.product_code}`}
+                             title="Register product in wFirma. Requires WFIRMA_CREATE_PRODUCT_ALLOWED=true. Handler wired in follow-up PR."
+                             disabled
+                             style={{ marginLeft: 6 }}>
+                          Register
+                        </Btn>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!flagOn && (
+              <div data-testid="setup-products-write-disabled-note"
+                   style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-3)', borderTop: '1px solid var(--border-subtle)' }}>
+                ⓘ Register buttons hidden — WFIRMA_CREATE_PRODUCT_ALLOWED=false. Preview is always available (dry-run).
+              </div>
+            )}
+          </div>
+        )}
+        <div style={{ marginTop: 6, color: '#6b7280' }}>
+          Detail panel below provides per-row write actions.
+        </div>
+      </div>
+    );
+  })();
+
+  // C17A: professional proforma builder customer cards
+  // CM is the source of truth for reusable client document defaults.
+  // wFirma mapping (contractor ID, match strategy) is technical detail — collapsed.
+  const customersBody = (() => {
+    if (!proforma) return <div style={{ fontSize: 11, color: '#6b7280' }}>—</div>;
+    const c = proforma.customers || {};
+    const allDetails = c.details || [];
+    // build lookup: lowercased bill_to_name → CM record
+    const cmByName = {};
+    (cm || []).forEach(r => {
+      if (r.bill_to_name) cmByName[r.bill_to_name.toLowerCase().trim()] = r;
+    });
+    const matchedStatuses = new Set(['exact_match','normalized_match','prefix_match','reverse_prefix_match']);
+
+    const CmField = ({ label, val }) => {
+      if (val == null || val === '') return null;
+      return (
+        <div style={{ display: 'contents' }}>
+          <div style={{ color: 'var(--text-3)', fontSize: 11 }}>{label}</div>
+          <div style={{ fontSize: 11, color: 'var(--text)', fontWeight: 500 }}>{String(val)}</div>
+        </div>
+      );
+    };
+
+    const CmEditForm = ({ rec, onSave, onCancel }) => {
+      const cid = rec.bill_to_contractor_id;
+      const editing = cmEdit && cmEdit.contractorId === cid ? cmEdit.fields : null;
+      const savedMsg = cmSavedMsg && cmSavedMsg.contractorId === cid ? cmSavedMsg.msg : null;
+      const startEdit = () => setCmEdit({ contractorId: cid, fields: {
+        bill_to_name:                  rec.bill_to_name || '',
+        bill_to_nip:                   rec.nip || rec.bill_to_nip || '',
+        bill_to_street:                rec.bill_to_street || '',
+        bill_to_city:                  rec.bill_to_city || '',
+        bill_to_postal_code:           rec.bill_to_postal_code || '',
+        bill_to_country:               rec.bill_to_country || '',
+        ship_to_name:                  rec.ship_to_name || '',
+        ship_to_street:                rec.ship_to_street || '',
+        ship_to_city:                  rec.ship_to_city || '',
+        ship_to_postal_code:           rec.ship_to_postal_code || '',
+        preferred_payment_method:      rec.preferred_payment_method || '',
+        payment_terms_days:            rec.payment_terms_days != null ? String(rec.payment_terms_days) : '',
+        default_currency:              rec.default_currency || '',
+        preferred_proforma_series_id:  rec.preferred_proforma_series_id || '',
+        preferred_invoice_series_id:   rec.preferred_invoice_series_id || '',
+      }});
+      const setF = (k, v) => setCmEdit(e => ({ ...e, fields: { ...e.fields, [k]: v } }));
+      const handleSave = () => {
+        if (!editing) return;
+        const payload = { ...editing };
+        if (payload.payment_terms_days !== '') payload.payment_terms_days = Number(payload.payment_terms_days);
+        else delete payload.payment_terms_days;
+        saveCmFields(cid, payload);
+      };
+      if (!editing) {
+        return (
+          <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Btn small onClick={startEdit} data-testid={`btn-cm-edit-${cid}`}
+                 title="Edit document defaults in Customer Master. No wFirma write fires from here.">
+              Edit
+            </Btn>
+            {savedMsg && (
+              <span style={{ fontSize: 11, color: savedMsg.startsWith('Saved') ? 'var(--badge-green-text)' : 'var(--badge-red-text)' }}>
+                {savedMsg}
+              </span>
+            )}
+          </div>
+        );
+      }
+      const inp = (k, placeholder, type) => (
+        <input value={editing[k]} onChange={e => setF(k, e.target.value)}
+               type={type || 'text'} placeholder={placeholder}
+               style={{ width: '100%', fontSize: 11, padding: '2px 4px',
+                         border: '1px solid var(--border)', borderRadius: 3,
+                         background: 'var(--input-bg, #fff)', color: 'var(--text)' }} />
+      );
+      const fgrp = (label, k, placeholder, type) => (
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 1 }}>{label}</div>
+          {inp(k, placeholder, type)}
+        </div>
+      );
+      return (
+        <div data-testid={`cm-edit-form-${cid}`}
+             style={{ marginTop: 8, padding: 8, background: 'var(--card-hover)',
+                       border: '1px solid var(--border)', borderRadius: 4 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                         textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+            Edit Customer Master — {rec.bill_to_name}
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', marginBottom: 8 }}>
+            Saves to Customer Master only. No PZ, no invoice, no wFirma write, no gate bypass.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+            <div style={{ fontWeight: 600, fontSize: 10, color: 'var(--text-3)',
+                           gridColumn: '1/-1', textTransform: 'uppercase', marginTop: 4 }}>Bill-to</div>
+            {fgrp('Name', 'bill_to_name', 'Company name')}
+            {fgrp('VAT / NIP', 'bill_to_nip', 'e.g. PL1234567890')}
+            {fgrp('Street', 'bill_to_street', 'Street and number')}
+            {fgrp('City', 'bill_to_city', 'City')}
+            {fgrp('Postal code', 'bill_to_postal_code', 'e.g. 00-001')}
+            {fgrp('Country', 'bill_to_country', 'e.g. PL')}
+            <div style={{ fontWeight: 600, fontSize: 10, color: 'var(--text-3)',
+                           gridColumn: '1/-1', textTransform: 'uppercase', marginTop: 4 }}>Ship-to (if different)</div>
+            {fgrp('Ship-to name', 'ship_to_name', 'Leave blank to use bill-to')}
+            {fgrp('Ship-to street', 'ship_to_street', 'Street and number')}
+            {fgrp('Ship-to city', 'ship_to_city', 'City')}
+            {fgrp('Ship-to postal', 'ship_to_postal_code', 'e.g. 00-001')}
+            <div style={{ fontWeight: 600, fontSize: 10, color: 'var(--text-3)',
+                           gridColumn: '1/-1', textTransform: 'uppercase', marginTop: 4 }}>Payment &amp; Document</div>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 1 }}>Payment method</div>
+              <select value={editing.preferred_payment_method}
+                      onChange={e => setF('preferred_payment_method', e.target.value)}
+                      style={{ width: '100%', fontSize: 11, padding: '2px 4px',
+                                border: '1px solid var(--border)', borderRadius: 3,
+                                background: 'var(--input-bg, #fff)', color: 'var(--text)' }}>
+                <option value="">— not set —</option>
+                <option value="transfer">Transfer</option>
+                <option value="cash">Cash</option>
+                <option value="card">Card</option>
+                <option value="compensation">Compensation</option>
+              </select>
+            </div>
+            {fgrp('Payment terms (days)', 'payment_terms_days', 'e.g. 14', 'number')}
+            {fgrp('Currency', 'default_currency', 'e.g. EUR')}
+            {fgrp('Proforma series ID', 'preferred_proforma_series_id', 'wFirma series ID')}
+            {fgrp('Invoice series ID', 'preferred_invoice_series_id', 'wFirma series ID')}
+          </div>
+          <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Btn small primary onClick={handleSave} disabled={cmSaving}
+                 data-testid={`btn-cm-save-${cid}`}>
+              {cmSaving ? 'Saving…' : 'Save to Customer Master'}
+            </Btn>
+            <Btn small onClick={() => { setCmEdit(null); setCmSavedMsg(null); }}
+                 data-testid={`btn-cm-cancel-${cid}`}>
+              Cancel
+            </Btn>
+            {cmSavedMsg && cmSavedMsg.contractorId === cid && (
+              <span style={{ fontSize: 11,
+                              color: cmSavedMsg.msg.startsWith('Saved') ? 'var(--badge-green-text)' : 'var(--badge-red-text)' }}>
+                {cmSavedMsg.msg}
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    return (
+      <div data-testid="workflow-customers-body" style={{ fontSize: 12 }}>
+        {/* Summary line */}
+        <div style={{ marginBottom: 6 }}>
+          {c.resolved || 0} of {c.total || 0} clients mapped
+          {(c.missing > 0 || c.ambiguous > 0) && (
+            <span style={{ color: '#b45309', marginLeft: 8 }}>
+              — {c.missing > 0 ? `${c.missing} missing` : ''}
+              {c.missing > 0 && c.ambiguous > 0 ? ', ' : ''}
+              {c.ambiguous > 0 ? `${c.ambiguous} ambiguous` : ''}
+            </span>
+          )}
+        </div>
+        {(c.missing > 0 || c.ambiguous > 0) && (
+          <div style={{ color: '#b45309', marginBottom: 8, fontSize: 11 }}>
+            ⚠{' '}{c.create_flag_on
+              ? 'Auto-resolve available: click "Preview customer auto-resolve" below.'
+              : 'Create contractor in wFirma → Contractors → New contractor, then click Preview customer auto-resolve.'}
+          </div>
+        )}
+        {/* Per-client proforma builder cards */}
+        {allDetails.map((d, i) => {
+          const lookupKey = (d.matched_name || d.client_name || '').toLowerCase().trim();
+          const rec = cmByName[lookupKey];
+          const isResolved = matchedStatuses.has(d.status);
+          const isAmbiguous = d.status === 'ambiguous';
+          const isMissing = d.status === 'missing';
+          const statusColor = isResolved ? 'var(--badge-green-text)' : (isAmbiguous ? 'var(--badge-amber-text)' : 'var(--badge-red-text)');
+          const statusBg = isResolved ? 'var(--badge-green-bg)' : (isAmbiguous ? 'var(--badge-amber-bg)' : 'var(--badge-red-bg)');
+          const shipDiffers = rec && rec.ship_to_name && rec.ship_to_name !== rec.bill_to_name;
+          return (
+            <div key={i} data-testid={`workflow-cm-card-${i}`}
+                 style={{ marginBottom: 10, padding: 10,
+                           background: 'var(--card-hover)',
+                           border: '1px solid var(--card-border)',
+                           borderRadius: 4 }}>
+              {/* Card header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between',
+                             alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text)' }}>
+                  {d.client_name}
+                </div>
+                <span style={{ background: statusBg, color: statusColor,
+                                padding: '1px 7px', borderRadius: 4,
+                                fontSize: 10, fontWeight: 700,
+                                textTransform: 'uppercase', whiteSpace: 'nowrap',
+                                flexShrink: 0 }}>
+                  {isResolved ? 'mapped' : d.status}
+                </span>
+              </div>
+              {/* Business document fields (from CM record) */}
+              {rec ? (
+                <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr',
+                               gap: '3px 12px', marginBottom: 4 }}>
+                  {/* Buyer / Bill-to block */}
+                  {(rec.bill_to_name || rec.bill_to_nip) && (
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                                   textTransform: 'uppercase', letterSpacing: '0.05em',
+                                   gridColumn: '1/-1', marginTop: 4, marginBottom: 2 }}>
+                      Buyer / Bill-to
+                    </div>
+                  )}
+                  <CmField label="Name" val={rec.bill_to_name} />
+                  <CmField label="VAT / NIP" val={rec.bill_to_nip} />
+                  {(rec.bill_to_street || rec.bill_to_city) && (
+                    <CmField label="Address"
+                      val={[rec.bill_to_street, rec.bill_to_city,
+                             rec.bill_to_postal_code, rec.bill_to_country]
+                            .filter(Boolean).join(', ')} />
+                  )}
+                  {/* Ship-to block (only if different) */}
+                  {shipDiffers && (
+                    <>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                                     textTransform: 'uppercase', letterSpacing: '0.05em',
+                                     gridColumn: '1/-1', marginTop: 4, marginBottom: 2 }}>
+                        Receiver / Ship-to
+                      </div>
+                      <CmField label="Name" val={rec.ship_to_name} />
+                      {(rec.ship_to_street || rec.ship_to_city) && (
+                        <CmField label="Address"
+                          val={[rec.ship_to_street, rec.ship_to_city,
+                                 rec.ship_to_postal_code]
+                                .filter(Boolean).join(', ')} />
+                      )}
+                    </>
+                  )}
+                  {/* Payment block */}
+                  {(rec.preferred_payment_method || rec.payment_terms_days != null || rec.default_currency) && (
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                                   textTransform: 'uppercase', letterSpacing: '0.05em',
+                                   gridColumn: '1/-1', marginTop: 4, marginBottom: 2 }}>
+                      Payment
+                    </div>
+                  )}
+                  <CmField label="Method" val={rec.preferred_payment_method} />
+                  {rec.payment_terms_days != null && <CmField label="Terms" val={`${rec.payment_terms_days} days`} />}
+                  <CmField label="Currency" val={rec.default_currency} />
+                  {/* Document series block */}
+                  {(rec.preferred_proforma_series_id || rec.preferred_invoice_series_id) && (
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                                   textTransform: 'uppercase', letterSpacing: '0.05em',
+                                   gridColumn: '1/-1', marginTop: 4, marginBottom: 2 }}>
+                      Document settings
+                    </div>
+                  )}
+                  <CmField label="Proforma series" val={rec.preferred_proforma_series_id} />
+                  <CmField label="Invoice series" val={rec.preferred_invoice_series_id} />
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4 }}>
+                  No Customer Master record — edit to create defaults.
+                </div>
+              )}
+              {/* Edit form (C17A) */}
+              {rec && rec.bill_to_contractor_id && (
+                <CmEditForm rec={rec}
+                            onSave={saveCmFields}
+                            onCancel={() => { setCmEdit(null); setCmSavedMsg(null); }} />
+              )}
+              {/* Technical mapping — collapsed */}
+              <details style={{ marginTop: 6 }}>
+                <summary style={{ fontSize: 10, color: 'var(--text-3)', cursor: 'pointer',
+                                   userSelect: 'none' }}>
+                  wFirma mapping details
+                </summary>
+                <div style={{ marginTop: 4, display: 'grid',
+                               gridTemplateColumns: '120px 1fr', gap: '2px 8px',
+                               fontSize: 10, color: 'var(--text-2)' }}>
+                  <div style={{ color: 'var(--text-3)' }}>Status</div>
+                  <div>{d.status || '—'}</div>
+                  {d.wfirma_customer_id && (
+                    <>
+                      <div style={{ color: 'var(--text-3)' }}>wFirma ID</div>
+                      <div><code>{d.wfirma_customer_id}</code></div>
+                    </>
+                  )}
+                  {d.matched_name && (
+                    <>
+                      <div style={{ color: 'var(--text-3)' }}>Matched name</div>
+                      <div>{d.matched_name}</div>
+                    </>
+                  )}
+                  {d.candidates && d.candidates.length > 0 && (
+                    <>
+                      <div style={{ color: 'var(--text-3)' }}>Candidates</div>
+                      <div>{d.candidates.slice(0, 4).join(', ')}{d.candidates.length > 4 ? ` (+${d.candidates.length - 4})` : ''}</div>
+                    </>
+                  )}
+                  {isMissing && (
+                    <div style={{ gridColumn: '1/-1', color: '#b45309', marginTop: 2 }}>
+                      Not yet mapped. Create contractor in wFirma, then re-run auto-resolve.
+                    </div>
+                  )}
+                </div>
+              </details>
+            </div>
+          );
+        })}
+        {allDetails.length === 0 && (
+          <div style={{ fontSize: 11, color: '#6b7280' }}>No customer details available.</div>
+        )}
+      </div>
+    );
+  })();
+
+  const warehouseBody = (() => {
+    if (!batchReady) return <div style={{ fontSize: 11, color: '#6b7280' }}>—</div>;
+    const wh    = batchReady.warehouse || null;
+    const sales = batchReady.sales     || null;
+    return (
+      <div data-testid="workflow-warehouse-body" style={{ fontSize: 12 }}>
+        <div data-testid="workflow-warehouse-line"
+             style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span>{wh && wh.ready ? '✅' : '⚠'}</span>
+          <strong>Warehouse:</strong>
+          <span>{(wh && wh.message) || '—'}</span>
+        </div>
+        <div data-testid="workflow-sales-line"
+             style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+          <span>{sales && sales.ready ? '✅' : '⚠'}</span>
+          <strong>Sales scan:</strong>
+          <span>{(sales && sales.message) || '—'}</span>
+        </div>
+      </div>
+    );
+  })();
+
+  const previewBody = (() => {
+    const localPzExists = stages.preview.localPzExists;
+    const previewErr    = stages.preview.previewErr;
+    return (
+      <div data-testid="workflow-preview-body" style={{ fontSize: 12 }}>
+        {/* Always surface local PZ status — distinct from wFirma PZ. */}
+        <div data-testid="workflow-preview-local"
+             style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+          <span>{localPzExists ? '✅' : '◻︎'}</span>
+          <strong>Local PZ calculation:</strong>
+          <span>{localPzExists ? 'generated (PDF + XLSX on disk)' : 'not generated'}</span>
+        </div>
+        <div data-testid="workflow-preview-wfirma"
+             style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+          <span>
+            {preview && preview.already_created ? '✅'
+             : preview && preview.ready ? '✅'
+             : '◻︎'}
+          </span>
+          <strong>wFirma PZ export:</strong>
+          <span>
+            {!preview ? '—'
+             : preview.already_created ? `already created (id ${preview.wfirma_pz_doc_id || '—'})`
+             : preview.ready ? 'preview ready'
+             : previewErr ? 'blocked by guard'
+             : 'not ready'}
+          </span>
+        </div>
+        {previewErr && (() => {
+          // PZ Preview Authority Audit (2026-05-21) — render structured
+          // blockers if the new shape is present; fall back to the legacy
+          // single-detail object otherwise. The frontend reads from a
+          // single backend authority (pz_preview.blockers) instead of
+          // inventing its own "Ready for PZ" guess.
+          const structured = Array.isArray(preview && preview.blockers)
+                              ? preview.blockers : [];
+          const engineErr  = (preview && preview.engine_error) || '';
+          if (structured.length > 0) {
+            const hasEngine = structured.some(b => b && b.code === 'ENGINE_ERROR');
+            const isError   = structured.some(b => b && b.severity === 'error');
+            return (
+              <div data-testid="workflow-preview-guard"
+                   style={{ marginTop: 4, padding: 6, fontSize: 11,
+                            background: isError ? '#fee2e2' : '#fef3c7',
+                            color:      isError ? '#991b1b' : '#b45309',
+                            borderRadius: 4 }}>
+                {hasEngine ? '⛔' : '⚠'} {hasEngine ? 'PZ engine failed:' : 'PZ not ready:'}{' '}
+                {structured.map((b, i) => (
+                  <span key={(b && b.code) || i}>
+                    {i > 0 ? ' · ' : ''}
+                    {(b && b.message) || ''}
+                    {b && b.code ? (
+                      <span style={{ marginLeft: 4,
+                                     fontFamily: 'ui-monospace,Menlo,monospace',
+                                     color: '#9ca3af' }}>
+                        ({b.code})
+                      </span>
+                    ) : null}
+                  </span>
+                ))}
+                {engineErr && !hasEngine ? (
+                  <div style={{ marginTop: 2 }}>{engineErr}</div>
+                ) : null}
+              </div>
+            );
+          }
+          return (
+            <div data-testid="workflow-preview-guard"
+                 style={{ marginTop: 4, padding: 6, fontSize: 11,
+                          background: '#fef3c7', color: '#b45309',
+                          borderRadius: 4 }}>
+              ⚠ {(preview.detail && preview.detail.error) || 'pz_preview unavailable'}
+              {preview.detail && preview.detail.code ? (
+                <span style={{ marginLeft: 6, fontFamily: 'ui-monospace,Menlo,monospace',
+                               color: '#9ca3af' }}>
+                  ({preview.detail.code})
+                </span>
+              ) : null}
+            </div>
+          );
+        })()}
+        {!previewErr && preview && (
+          <div style={{ marginTop: 4, color: '#6b7280' }}>
+            MRN {preview.mrn || '—'} · warehouse {preview.warehouse_id || '—'}
+            {(preview.unresolved_product_codes || []).length > 0 && (
+              <span style={{ color: '#b45309', marginLeft: 6 }}>
+                · {preview.unresolved_product_codes.length} unresolved product code(s)
+              </span>
+            )}
+            {(preview.price_conflicts || []).length > 0 && (
+              <span style={{ color: '#b45309', marginLeft: 6 }}>
+                · {preview.price_conflicts.length} price conflict(s)
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  })();
+
+  const executeBody = (
+    <ExecutePZGate batchId={batchId} onToast={onToast} />
+  );
+
+  // ── Render ───────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div style={card} data-testid="workflow-card">
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>
+          🛠 Operator Workflow
+        </div>
+        <div style={{ fontSize: 12, color: '#6b7280' }}>Loading…</div>
+      </div>
+    );
+  }
+
+  // ── Section style helpers ────────────────────────────────────────────
+  const sectionGroupHeader = (label, color) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '6px 10px', marginBottom: 8, marginTop: 4,
+                  background: color === 'a' ? '#eff6ff' : '#f0fdf4',
+                  borderLeft: `3px solid ${color === 'a' ? '#3b82f6' : '#16a34a'}`,
+                  borderRadius: '0 4px 4px 0' }}>
+      <span style={{ fontSize: 12, fontWeight: 700,
+                     color: color === 'a' ? '#1d4ed8' : '#15803d' }}>
+        {label}
+      </span>
+    </div>
+  );
+
+  return (
+    <div style={card} data-testid="workflow-card">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+                    marginBottom: 12 }}>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>
+          🛠 Operator Workflow
+        </div>
+        <Btn data-testid="workflow-refresh"
+             onClick={refresh}
+             variant="outline"
+             small
+             style={{ marginLeft: 'auto' }}>
+          Refresh
+        </Btn>
+      </div>
+      {error && (
+        <div data-testid="workflow-error"
+             style={{ fontSize: 11, color: 'var(--badge-red-text)', marginBottom: 8 }}>
+          {error}
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {/* SECTION B — PZ Generation & Customs                            */}
+      {/* Proforma Invoices (commercial) are managed in the Sales tab.   */}
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      <div data-testid="workflow-section-b">
+        {sectionGroupHeader('B — PZ Generation & Customs', 'b')}
+
+        {/* Completion banner — only when all 7 stages are green */}
+        {(() => {
+          const allStagesDone = stages.evidence.color === 'green'
+            && stages.classification.color === 'green'
+            && stages.products.color === 'green'
+            && stages.customers.color === 'green'
+            && stages.warehouse.color === 'green'
+            && stages.preview.color === 'green'
+            && stages.execute.color === 'green';
+          return allStagesDone ? (
+            <div style={{ background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)',
+                          color: 'var(--badge-green-text)', borderRadius: 8, padding: '12px 16px',
+                          marginBottom: 8, fontSize: 12, fontWeight: 600 }}
+                 data-testid="workflow-completion-banner">
+              ✓ All steps complete — ready to post to accounting
+            </div>
+          ) : null;
+        })()}
+
+        {/* Pipeline header */}
+        <div data-testid="workflow-pipeline" style={bar}>
+          {STAGE_ORDER.map(([k, label], i) => (
+            <React.Fragment key={k}>
+              {stagePill(stages, k, label)}
+              {i < STAGE_ORDER.length - 1 && (
+                <span style={{ color: '#9ca3af' }}>→</span>
+              )}
+            </React.Fragment>
+          ))}
+        </div>
+
+        {/* "Next required actions" — show 1–2 most urgent PZ blockers. */}
+        {(() => {
+          const next = [];
+          if (stages.classification.color === 'red')
+            next.push('Resolve CN/HSN block (different chapter detected).');
+          if (stages.products.count > 0)
+            next.push(`Map ${stages.products.count} product code(s) to wFirma (Auto-register or manual).`);
+          if (stages.customers.count > 0)
+            next.push(`Resolve ${stages.customers.count} customer identity row(s).`);
+          if (stages.warehouse.color === 'amber' && stages.warehouse.message)
+            next.push(stages.warehouse.message);
+          if (stages.evidence.sadPresent && !stages.evidence.zcPresent)
+            next.push('Ingest DHL ZC429 email (operator action).');
+          if (!stages.evidence.sadPresent)
+            next.push('Awaiting customs document (SAD / ZC429) — required before PZ can run.');
+          if (next.length === 0) return null;
+          return (
+            <div data-testid="workflow-next-actions"
+                 style={{ background: '#fffbeb', border: '1px solid #fcd34d',
+                          borderRadius: 6, padding: 8, marginBottom: 12,
+                          fontSize: 12, color: '#92400e' }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                Next required actions
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                {next.slice(0, 2).map((n, i) => <li key={i}>{n}</li>)}
+              </ul>
+            </div>
+          );
+        })()}
+
+        {/* Seven ordered sections */}
+        {sectionShell('evidence',       '1. DHL / ZC429 evidence',                   evidenceBody)}
+        {sectionShell('classification', '2. Tariff classification',                   classificationBody)}
+        {sectionShell('products',       '3. Products registered in accounting',       productsBody)}
+        {sectionShell('customers',      '4. Customers matched to orders',             customersBody)}
+
+        {/* C25A — Setup-detail panel: per-customer action_needed + readiness
+            split (can prepare vs can post).  Read-only; write buttons hidden
+            unless WFIRMA_CREATE_CUSTOMER_ALLOWED=true. */}
+        {setupDetail && (
+          <div data-testid="setup-detail-panel" style={{
+            margin: '8px 0', padding: '10px 12px',
+            border: '1px solid var(--border-subtle)', borderRadius: 4,
+            background: 'var(--bg-subtle)', fontSize: 12,
+          }}>
+            {/* Readiness banner — split prepare vs post */}
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+              <div data-testid="setup-readiness-prepare" style={{
+                padding: '4px 8px', borderRadius: 3, fontSize: 11, fontWeight: 600,
+                background: setupDetail.readiness.can_prepare_proforma ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+                color:      setupDetail.readiness.can_prepare_proforma ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+              }}>
+                Can prepare proforma: {setupDetail.readiness.can_prepare_proforma ? '✓' : '✗'}
+              </div>
+              <div data-testid="setup-readiness-post" style={{
+                padding: '4px 8px', borderRadius: 3, fontSize: 11, fontWeight: 600,
+                background: setupDetail.readiness.can_post_to_wfirma ? 'var(--badge-green-bg)' : 'var(--badge-red-bg)',
+                color:      setupDetail.readiness.can_post_to_wfirma ? 'var(--badge-green-text)' : 'var(--badge-red-text)',
+              }}>
+                Can post to wFirma: {setupDetail.readiness.can_post_to_wfirma ? '✓' : '✗'}
+              </div>
+              <div data-testid="setup-transit-truth" style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                Transit truth: {setupDetail.readiness.purchase_transit_count} pcs PURCHASE_TRANSIT
+                ({setupDetail.readiness.batch_lifecycle})
+              </div>
+            </div>
+
+            {/* Blocker reasons — separated */}
+            {setupDetail.readiness.blockers_for_preparation.length > 0 && (
+              <div data-testid="setup-blockers-prepare" style={{ marginBottom: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-amber-text)' }}>Preparation blockers:</span>
+                <ul style={{ margin: '2px 0 0 18px', padding: 0, fontSize: 11 }}>
+                  {setupDetail.readiness.blockers_for_preparation.map((b, i) => (
+                    <li key={i}>{b}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {setupDetail.readiness.blockers_for_posting.length > 0 && (
+              <div data-testid="setup-blockers-post" style={{ marginBottom: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-red-text)' }}>Posting blockers (preserves fiscal/customs gates):</span>
+                <ul style={{ margin: '2px 0 0 18px', padding: 0, fontSize: 11 }}>
+                  {setupDetail.readiness.blockers_for_posting.map((b, i) => (
+                    <li key={i}>{b}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Per-customer action table */}
+            {(setupDetail.customers.details || []).length > 0 && (
+              <div data-testid="setup-customers-detail-table" style={{ marginTop: 8, border: '1px solid var(--border-subtle)', borderRadius: 3, background: 'var(--bg)' }}>
+                <div style={{ padding: '6px 8px', background: 'var(--bg-subtle)', fontSize: 11, fontWeight: 600 }}>
+                  Customer setup — per-client action
+                </div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-subtle)', borderTop: '1px solid var(--border-subtle)' }}>
+                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>client_name</th>
+                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>status</th>
+                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>wfirma_id</th>
+                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>CM row</th>
+                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>action_needed</th>
+                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>operator actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {setupDetail.customers.details.map((row, idx) => {
+                      const cFlagOn = !!setupDetail.customers.create_flag_on;
+                      const slug = String(row.client_name || '').replace(/[^A-Za-z0-9]+/g, '-').toLowerCase();
+                      const needCreate = row.action_needed === 'create_in_wfirma';
+                      return (
+                        <tr key={row.client_name || idx}
+                            data-testid={`setup-customers-row-${slug}`}
+                            style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                          <td style={{ padding: '4px 6px' }}>{row.client_name || '—'}</td>
+                          <td style={{ padding: '4px 6px' }}>{row.status}</td>
+                          <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{row.wfirma_customer_id || '—'}</td>
+                          <td style={{ padding: '4px 6px' }}>{row.cm_record_present ? (row.cm_bill_to_name || 'present') : '—'}</td>
+                          <td style={{ padding: '4px 6px' }}>{row.action_needed}</td>
+                          <td style={{ padding: '4px 6px' }}>
+                            <Btn small
+                                 data-testid={`btn-setup-customer-save-cm-${slug}`}
+                                 title="Open Customer Master editor for this client. Writes only to local Customer Master; no wFirma call."
+                                 onClick={() => handleSetupSaveCmFor(row)}
+                                 disabled={!row.cm_record_present || cmSaving}>
+                              Save CM
+                            </Btn>
+                            <Btn small
+                                 data-testid={`btn-setup-customer-resolve-${slug}`}
+                                 title="Re-run customer auto-resolve against wFirma cache. Dry-run preview only — no contractor creation."
+                                 onClick={handleCustomerResolve}
+                                 disabled={setupCustomerResolveLoading}
+                                 style={{ marginLeft: 6 }}>
+                              {setupCustomerResolveLoading ? 'Loading…' : 'Resolve'}
+                            </Btn>
+                            {cFlagOn && needCreate && (
+                              <Btn small primary
+                                   data-testid={`btn-setup-customer-create-wfirma-${slug}`}
+                                   title="Create contractor in wFirma. Requires WFIRMA_CREATE_CUSTOMER_ALLOWED=true. Handler wired in follow-up PR."
+                                   disabled
+                                   style={{ marginLeft: 6 }}>
+                                Create in wFirma
+                              </Btn>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {!setupDetail.customers.create_flag_on && (
+                  <div data-testid="setup-customers-write-disabled-note"
+                       style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-3)', borderTop: '1px solid var(--border-subtle)' }}>
+                    ⓘ Create-in-wFirma buttons hidden — WFIRMA_CREATE_CUSTOMER_ALLOWED=false. Save CM and Resolve are dry-run safe.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {setupDetailErr && (
+              <div data-testid="setup-detail-error" style={{ marginTop: 6, fontSize: 11, color: 'var(--badge-red-text)' }}>
+                setup-detail fetch error: {setupDetailErr}
+              </div>
+            )}
+
+            {/* C25A-handlers — inline product preview result */}
+            {(setupProductPreview || setupProductPreviewErr) && (
+              <div data-testid="setup-product-preview-result" style={{ marginTop: 10, padding: '8px 10px', background: 'var(--bg)', border: '1px solid var(--border-subtle)', borderRadius: 3, fontSize: 11 }}>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>Product preview result (dry-run, no writes)</div>
+                {setupProductPreviewErr && (
+                  <div style={{ color: 'var(--badge-red-text)' }}>error: {setupProductPreviewErr}</div>
+                )}
+                {setupProductPreview && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px' }}>
+                    <div style={{ color: 'var(--text-3)' }}>scanned</div>
+                    <div>{setupProductPreview.total_codes != null ? setupProductPreview.total_codes : (setupProductPreview.scanned ?? '—')}</div>
+                    <div style={{ color: 'var(--text-3)' }}>mirrored (mapped)</div>
+                    <div>{setupProductPreview.mirrored_count != null ? setupProductPreview.mirrored_count : (setupProductPreview.matched_count ?? '—')}</div>
+                    <div style={{ color: 'var(--text-3)' }}>missing</div>
+                    <div>{setupProductPreview.missing_count != null ? setupProductPreview.missing_count : (Array.isArray(setupProductPreview.missing) ? setupProductPreview.missing.length : '—')}</div>
+                    {Array.isArray(setupProductPreview.missing) && setupProductPreview.missing.length > 0 && (
+                      <>
+                        <div style={{ color: 'var(--text-3)' }}>missing codes</div>
+                        <div style={{ fontFamily: 'monospace', fontSize: 10 }}>{setupProductPreview.missing.slice(0, 12).join(', ')}{setupProductPreview.missing.length > 12 ? ` … (+${setupProductPreview.missing.length - 12} more)` : ''}</div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── PR 4 of 4 — pending_adoption operator-decision surface ───
+                V1-freeze exception per Lesson F. Each new product_code
+                discovered in wFirma must be explicitly resolved by the
+                operator. NO silent adoption. NO automatic sync_status=
+                "matched". Cancel/close causes zero mutation.
+            */}
+            <div data-testid="pending-adoption-panel"
+                 style={{ marginTop: 10, padding: '8px 10px',
+                          background: 'var(--bg)', border: '1px solid var(--border-subtle)',
+                          borderRadius: 3, fontSize: 11 }}>
+              <div style={{ display: 'flex', alignItems: 'center',
+                            justifyContent: 'space-between', marginBottom: 4 }}>
+                <div style={{ fontWeight: 600 }}>Pending wFirma adoption decisions</div>
+                <Btn variant="outline"
+                     data-testid="pending-adoption-open-modal"
+                     onClick={openPendingModal}>
+                  Resolve pending products
+                </Btn>
+              </div>
+              <div style={{ color: 'var(--text-3)' }}>
+                Each new product_code found in wFirma must be explicitly
+                adopted. PZ + Proforma stay blocked until an operator chooses.
+              </div>
+            </div>
+
+            {pendingModalOpen && (
+              <Modal title="Resolve pending wFirma products"
+                     onClose={closePendingModal} wide>
+                <div data-testid="pending-adoption-modal-body"
+                     style={{ fontSize: 11 }}>
+                  {pendingListLoading && <div>Loading pending rows…</div>}
+                  {pendingListErr && (
+                    <div data-testid="pending-adoption-error"
+                         style={{ color: 'var(--badge-red-text)' }}>
+                      error: {pendingListErr}
+                    </div>
+                  )}
+                  {!pendingListLoading && !pendingListErr &&
+                    Array.isArray(pendingList) && pendingList.length === 0 && (
+                    <div data-testid="pending-adoption-empty"
+                         style={{ color: 'var(--text-3)' }}>
+                      No pending products. All product_codes resolved.
+                    </div>
+                  )}
+                  {!pendingListLoading && Array.isArray(pendingList) &&
+                    pendingList.length > 0 && (
+                    // Scrollable list — handles batches with many pending
+                    // rows (raised by reviewer-challenge as scale concern).
+                    <div data-testid="pending-adoption-list"
+                         style={{ maxHeight: 480, overflowY: 'auto' }}>
+                      {pendingList.map((p) => {
+                        const pc   = p.product_code;
+                        const cmp  = pendingCompare[pc];
+                        const busy = pendingActionBusy[pc];
+                        const msg  = pendingActionMsg[pc];
+                        const isErrMsg = msg && (msg.includes('failed') || msg.includes('error'));
+                        return (
+                          <div key={pc}
+                               data-testid={`pending-row-${pc}`}
+                               style={{ padding: 8, border: '1px solid var(--border-subtle)',
+                                        borderRadius: 3, marginBottom: 6 }}>
+                            <div style={{ display: 'flex',
+                                          justifyContent: 'space-between',
+                                          alignItems: 'center',
+                                          marginBottom: 4 }}>
+                              <div style={{ fontWeight: 600, fontFamily: 'monospace' }}>{pc}</div>
+                              <div style={{ color: 'var(--text-3)', fontSize: 10 }}>
+                                wfid={p.wfirma_product_id || '—'} ·
+                                name={p.product_name_pl || '—'} ·
+                                unit={p.unit || '—'}
+                              </div>
+                            </div>
+                            <div style={{ marginBottom: 4 }}>
+                              <Btn variant="outline"
+                                   data-testid={`pending-compare-${pc}`}
+                                   onClick={() => fetchPendingCompare(pc)}
+                                   disabled={!!pendingCompareBusy[pc]}>
+                                {pendingCompareBusy[pc] ? '⟳ Comparing…' : 'Compare with wFirma'}
+                              </Btn>
+                              {cmp && (
+                                <div data-testid={`pending-comparison-${pc}`}
+                                     style={{ marginTop: 4, padding: 6, fontSize: 10,
+                                              background: 'var(--bg)',
+                                              border: '1px dashed var(--border-subtle)' }}>
+                                  {cmp.error ? (
+                                    <div style={{ color: 'var(--badge-red-text)' }}>{cmp.error}</div>
+                                  ) : (
+                                    <>
+                                      <div><b>recommendation:</b> {cmp.recommendation}</div>
+                                      {cmp.advisory && (
+                                        <div style={{ marginTop: 2 }}>{cmp.advisory}</div>
+                                      )}
+                                      {Array.isArray(cmp.differences) && cmp.differences.length > 0 && (
+                                        <div style={{ marginTop: 2 }}>
+                                          <b>differences:</b>
+                                          {cmp.differences.map((d, i) => (
+                                            <div key={i} style={{ fontFamily: 'monospace' }}>
+                                              · {d.field} [{d.severity}] local={JSON.stringify(d.local)} wfirma={JSON.stringify(d.wfirma)}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                              <Btn data-testid={`pending-action-adopt-${pc}`}
+                                   onClick={() => handlePendingAdopt(pc)}
+                                   disabled={!!busy}>
+                                {busy === 'Adopt as-is' ? '⟳ Adopting…' : 'Adopt as-is'}
+                              </Btn>
+                              <Btn data-testid={`pending-action-update-${pc}`}
+                                   onClick={() => handlePendingUpdateAndAdopt(pc)}
+                                   disabled={!!busy}>
+                                {busy === 'Update then adopt' ? '⟳ Updating…' : 'Update then adopt'}
+                              </Btn>
+                              <Btn data-testid={`pending-action-create-${pc}`}
+                                   onClick={() => handlePendingCreateAndAdopt(pc)}
+                                   disabled={!!busy}>
+                                {busy === 'Create new' ? '⟳ Creating…' : 'Create new'}
+                              </Btn>
+                            </div>
+                            {msg && (
+                              <div data-testid={`pending-message-${pc}`}
+                                   style={{ marginTop: 4, fontSize: 10,
+                                            color: isErrMsg ? 'var(--badge-red-text)' : 'var(--badge-green-text)' }}>
+                                {msg}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div style={{ marginTop: 8, textAlign: 'right' }}>
+                    <Btn data-testid="pending-adoption-close"
+                         onClick={closePendingModal}>Close (no mutation)</Btn>
+                  </div>
+                </div>
+              </Modal>
+            )}
+
+            {/* C25A-handlers — inline customer resolve result */}
+            {(setupCustomerResolve || setupCustomerResolveErr) && (
+              <div data-testid="setup-customer-resolve-result" style={{ marginTop: 10, padding: '8px 10px', background: 'var(--bg)', border: '1px solid var(--border-subtle)', borderRadius: 3, fontSize: 11 }}>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>Customer resolve result (dry-run, no contractor creation)</div>
+                {setupCustomerResolveErr && (
+                  <div style={{ color: 'var(--badge-red-text)' }}>error: {setupCustomerResolveErr}</div>
+                )}
+                {setupCustomerResolve && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px' }}>
+                    <div style={{ color: 'var(--text-3)' }}>processed</div>
+                    <div>{setupCustomerResolve.total_clients != null ? setupCustomerResolve.total_clients : (setupCustomerResolve.processed ?? '—')}</div>
+                    <div style={{ color: 'var(--text-3)' }}>resolved</div>
+                    <div>{setupCustomerResolve.resolved_count != null ? setupCustomerResolve.resolved_count : (setupCustomerResolve.matched_count ?? '—')}</div>
+                    <div style={{ color: 'var(--text-3)' }}>ambiguous</div>
+                    <div>{setupCustomerResolve.ambiguous_count ?? '—'}</div>
+                    <div style={{ color: 'var(--text-3)' }}>still missing</div>
+                    <div>{setupCustomerResolve.missing_count != null ? setupCustomerResolve.missing_count : '—'}</div>
+                    {Array.isArray(setupCustomerResolve.results) && setupCustomerResolve.results.length > 0 && (
+                      <>
+                        <div style={{ color: 'var(--text-3)' }}>details</div>
+                        <div>
+                          {setupCustomerResolve.results.slice(0, 10).map((r, i) => (
+                            <div key={i} style={{ fontSize: 10 }}>
+                              <b>{r.client_name || r.name || '—'}</b> → {r.status || r.result || '—'}
+                              {r.wfirma_customer_id ? ` (wfid=${r.wfirma_customer_id})` : ''}
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {sectionShell('warehouse',      '5. Packing list / Sales linkage',            warehouseBody)}
+        {sectionShell('preview',        '6. Goods receipt ready to post',             previewBody)}
+        {sectionShell('execute',        '7. Create goods receipt in wFirma',          executeBody)}
+      </div>
+    </div>
+  );
+}
+
+
+function CNHSNDecisionPanel({ batchId, onToast }) {
+  const [data, setData]       = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy]       = React.useState('');
+  const [error, setError]     = React.useState('');
+
+  const refresh = React.useCallback(async () => {
+    if (!batchId) return;
+    setLoading(true); setError('');
+    try {
+      const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+      const r = await fetch(
+        `/dashboard/batches/${encodeURIComponent(batchId)}/cn-hsn-classification`,
+        { headers: hdrs, credentials: 'include' });
+      if (!r.ok) { setError(`HTTP ${r.status}`); setData(null); }
+      else        setData(await r.json());
+    } catch (e) { setError(String(e)); setData(null); }
+    finally     { setLoading(false); }
+  }, [batchId]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  // onClick-only — never fires from useEffect / mount.
+  const postDecision = React.useCallback(async (path, label, defaultReason) => {
+    const reason = window.prompt(
+      `${label}\n\nEnter a justification (min 20 characters):`,
+      defaultReason);
+    if (!reason || reason.trim().length < 20) {
+      alert('Reason must be at least 20 characters.'); return;
+    }
+    setBusy(path);
+    try {
+      const r = await fetch(
+        `/dashboard/batches/${encodeURIComponent(batchId)}/cn-decision/${path}`,
+        { method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json',
+                     ...(window.__apiHeaders ? window.__apiHeaders() : {}) },
+          body: JSON.stringify({ reason: reason.trim() }) });
+      const body = await r.json().catch(() => ({}));
+      if (onToast) onToast(r.ok
+          ? `Decision recorded: ${path} (id ${body.correction_id || '—'})`
+          : `Decision failed: ${body.detail || r.status}`);
+      await refresh();
+    } catch (e) {
+      if (onToast) onToast(`Decision error: ${e}`);
+    } finally {
+      setBusy('');
+    }
+  }, [batchId, refresh, onToast]);
+
+  if (loading) {
+    return (
+      <div data-testid="cn-hsn-panel"
+           style={{ marginBottom: 16, padding: 12, border: '1px solid var(--border,#e5e7eb)', borderRadius: 6, fontSize: 12 }}>
+        Loading CN/HSN classification…
+      </div>
+    );
+  }
+  if (error || !data) {
+    return (
+      <div data-testid="cn-hsn-panel"
+           style={{ marginBottom: 16, padding: 12, border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)' }}>
+        CN/HSN classification load failed: {error || 'no data'}
+      </div>
+    );
+  }
+  if (!data.has_data) return null;
+
+  const r = data.result || {};
+  const level = r.worst_level || 'invalid_input';
+  const blocking = !!r.is_blocking;
+
+  // Color/label by outcome
+  const colorMap = {
+    exact_code_match: { bg: '#dcfce7', text: '#15803d', label: 'Exact match' },
+    hs6_match:        { bg: '#dcfce7', text: '#15803d', label: 'HS6 compatible' },
+    heading_match:    { bg: '#dcfce7', text: '#15803d', label: 'Heading compatible' },
+    chapter_match:    { bg: '#fef3c7', text: '#b45309', label: 'Chapter only — review' },
+    different_chapter:{ bg: '#fee2e2', text: '#991b1b', label: 'Different chapter — hard block' },
+    invalid_input:    { bg: '#f3f4f6', text: '#374151', label: 'Cannot compare' },
+  };
+  const c = colorMap[level] || colorMap.invalid_input;
+
+  const decision = data.decision || null;
+  const decided = !!(decision && decision.decision_type);
+
+  return (
+    <div data-testid="cn-hsn-panel"
+         style={{ marginBottom: 16, padding: 16, border: `2px solid ${c.text}33`, borderRadius: 8, background: c.bg }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: c.text,
+                    display: 'flex', alignItems: 'center', gap: 8 }}>
+        🧾 CN ↔ HSN Classification
+        <span data-testid="cn-hsn-status-chip"
+              style={{ padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700,
+                       background: '#fff', color: c.text, border: `1px solid ${c.text}` }}>
+          {c.label}
+        </span>
+      </div>
+
+      <div style={{ fontSize: 12, color: 'var(--text-2,#555)', marginBottom: 8 }}>
+        <div><strong>SAD CN code:</strong>{' '}
+          <span data-testid="cn-hsn-sad" style={{ fontFamily: 'ui-monospace,Menlo,monospace' }}>
+            {data.sad_cn_code || '—'}
+          </span>
+        </div>
+        <div><strong>Invoice HSN codes:</strong>{' '}
+          <span data-testid="cn-hsn-invoice" style={{ fontFamily: 'ui-monospace,Menlo,monospace' }}>
+            {(data.invoice_hsns || []).join(', ') || '—'}
+          </span>
+        </div>
+        {r.aggregation_detected && (
+          <div data-testid="cn-hsn-aggregation"
+               style={{ marginTop: 4 }}>SAD aggregates multiple invoice HSNs.</div>
+        )}
+        {r.mixed_metals_detected && (
+          <div data-testid="cn-hsn-mixed"
+               style={{ marginTop: 4 }}>Invoice contains mixed HSN headings (e.g. silver vs gold).</div>
+        )}
+      </div>
+
+      {(r.notes || []).length > 0 && (
+        <ul data-testid="cn-hsn-notes" style={{ margin: '6px 0 8px 18px', fontSize: 11 }}>
+          {r.notes.map((n, i) => <li key={i}>{n}</li>)}
+        </ul>
+      )}
+
+      {/* Buttons — only when chapter_match (operator decision needed) */}
+      {!decided && level === 'chapter_match' && (
+        <div data-testid="cn-hsn-buttons"
+             style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+          {/* C21A: converted from bare <button> with hardcoded hex → <Btn> with CSS tokens */}
+          <Btn data-testid="cn-accept-sad"
+               disabled={!!busy}
+               variant="primary"
+               onClick={() => postDecision(
+                 'accept-sad',
+                 'Accept SAD CN as authoritative for this shipment',
+                 `SAD CN ${data.sad_cn_code} accepted — invoice HSNs share HS chapter; aggregation acceptable for jewelry classification`)}>
+            ✓ Accept SAD CN
+          </Btn>
+          <Btn data-testid="cn-correct-internal"
+               disabled={!!busy}
+               variant="outline"
+               onClick={() => postDecision(
+                 'correct-internal',
+                 'Record an internal CN/HSN correction (does NOT mutate SAD source)',
+                 `Internal correction: invoice HSN to be reclassified at next intake; SAD CN ${data.sad_cn_code} retained as filed`)}>
+            ✎ Correct internally
+          </Btn>
+          <Btn data-testid="cn-escalate-agent"
+               disabled={!!busy}
+               variant="danger"
+               onClick={() => postDecision(
+                 'escalate-agent',
+                 'Escalate CN/HSN mismatch to the customs agent',
+                 `Escalation: SAD CN ${data.sad_cn_code} vs invoice HSN ${(data.invoice_hsns || []).join(', ')} — request clarification from customs agent`)}>
+            ✉ Send back to agent
+          </Btn>
+        </div>
+      )}
+
+      {!decided && level === 'different_chapter' && (
+        <div data-testid="cn-hsn-hard-block"
+             style={{ fontSize: 12, color: 'var(--badge-red-text)', marginTop: 6 }}>
+          ⛔ Different HS chapters. Contact the clearing agent for a corrected SAD before proceeding. PZ remains blocked.
+        </div>
+      )}
+
+      {decided && (
+        <div data-testid="cn-hsn-decision-recorded"
+             style={{ marginTop: 8, padding: 8, background: '#fff',
+                      border: '1px solid #e5e7eb', borderRadius: 6, fontSize: 11 }}>
+          <strong>Decision recorded:</strong> {decision.decision_type}
+          {' '}— operator: {decision.operator || '—'}
+          {' '}— at {decision.recorded_at}
+          <br />
+          <em>{decision.reason}</em>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// EXECUTE PZ IN WFIRMA — gate card (read-only on load)
+// ════════════════════════════════════════════════════════════════════
+//
+// Reads /api/v1/wfirma/shipment/{batchId}/wfirma/pz_preview on mount
+// and explicit Refresh — never on side-effects. The "Execute PZ in
+// wFirma" button is enabled iff:
+//   pz_preview.ready === true
+//   pz_preview.would_create_pz === true
+//   wfirma_create_pz_allowed === true
+//   not already_created
+// On click — and only on click — it POSTs /wfirma/pz_create. Page load
+// never invokes pz_create.
+
+function ExecutePZGate({ batchId, onToast }) {
+  const [data, setData]       = React.useState(null);
+  const [caps, setCaps]       = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy]       = React.useState(false);
+  const [error, setError]     = React.useState('');
+
+  const refresh = React.useCallback(async () => {
+    if (!batchId) return;
+    setLoading(true); setError('');
+    try {
+      const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+      const [r1, r2] = await Promise.all([
+        fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_preview`, { headers: hdrs }),
+        fetch(`/api/v1/wfirma/capabilities`, { headers: hdrs }),
+      ]);
+      if (!r1.ok) { setError(`pz_preview HTTP ${r1.status}`); setData(null); }
+      else        setData(await r1.json());
+      if (r2.ok)  setCaps(await r2.json());
+    } catch (e) {
+      setError(String(e)); setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [batchId]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  // onClick-ONLY action. Never fires from page load / mount / re-render.
+  const onExecute = React.useCallback(async () => {
+    if (!batchId) return;
+    if (!window.confirm(
+        'Create goods receipt in wFirma?\n\nThis writes a wFirma PZ document. ' +
+        'Proceed only after PZ Preview verification.')) return;
+    setBusy(true);
+    try {
+      // Operator identity for audit timeline (detail.operator).
+      const _op = _resolveOperator();
+      const _hdrs = {
+        ...(window.__apiHeaders ? window.__apiHeaders() : {}),
+        ...(_op ? { 'X-Operator': _op } : {}),
+      };
+      const r = await fetch(
+        `/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_create`,
+        { method: 'POST', headers: _hdrs });
+      const body = await r.json().catch(() => ({}));
+      if (onToast) onToast(r.ok ? 'PZ executed' : `PZ execute failed: ${body.error || r.status}`);
+      await refresh();
+    } catch (e) {
+      if (onToast) onToast(`PZ execute error: ${e}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [batchId, refresh, onToast]);
+
+  const card  = { background: 'var(--card,#fff)', border: '1px solid var(--border,#e5e7eb)',
+                  borderRadius: 8, padding: 16, marginBottom: 16 };
+  const h2    = { fontSize: 14, fontWeight: 700, marginBottom: 12,
+                  display: 'flex', alignItems: 'center', gap: 8 };
+  const chip  = (color) => ({ display: 'inline-block', padding: '2px 8px',
+                              borderRadius: 12, fontSize: 11, fontWeight: 700,
+                              background: color === 'green' ? '#dcfce7' :
+                                          color === 'amber' ? '#fef3c7' :
+                                          color === 'gray'  ? '#f3f4f6' : '#fee2e2',
+                              color:      color === 'green' ? '#15803d' :
+                                          color === 'amber' ? '#b45309' :
+                                          color === 'gray'  ? '#374151' : '#991b1b' });
+  const label = { color: 'var(--text-2,#6b7280)', fontSize: 11, marginBottom: 2 };
+
+  if (loading) {
+    return (
+      <div style={card} data-testid="execute-pz-gate">
+        <div style={h2}>⚡ Create goods receipt in wFirma</div>
+        <div style={{ fontSize: 12, color: 'var(--text-2,#6b7280)' }}>Loading…</div>
+      </div>
+    );
+  }
+
+  // Compute gating
+  const ready          = !!(data && data.ready);
+  const wouldCreate    = !!(data && data.would_create_pz);
+  const alreadyCreated = !!(data && data.already_created);
+  const flagOn         = !!(caps && (caps.create_pz_allowed
+                                      || caps.wfirma_create_pz_allowed
+                                      || (caps.flags && (caps.flags.create_pz_allowed
+                                                          || caps.flags.wfirma_create_pz_allowed))));
+  const enabled = ready && wouldCreate && flagOn && !alreadyCreated && !busy;
+
+  // PR #281: when pz_lifecycle.override_create_disabled_message is true
+  // (e.g. PZ_RECOVERY_REQUIRED / PZ_DUPLICATE_DETECTED / PZ_LOCKED), the
+  // operator must NOT see a generic "PZ creation is disabled" chip — the
+  // lifecycle banner in the wFirma Warehouse card carries the real
+  // primary action (Confirm Existing PZ, etc.). Same logic applies to
+  // generic blocked wording when lifecycle indicates a recovery state.
+  const _lifecycle = data && data.pz_lifecycle;
+  const _lfSuppressCreateDisabled = !!(_lifecycle && _lifecycle.override_create_disabled_message);
+  const _lfRecoveryState = !!(_lifecycle && (
+      _lifecycle.state === 'PZ_RECOVERY_REQUIRED' ||
+      _lifecycle.state === 'PZ_DUPLICATE_DETECTED' ||
+      _lifecycle.state === 'PZ_LOCKED'
+  ));
+
+  // Build disabled-reason chips so the operator sees exactly why.
+  const reasons = [];
+  if (_lfRecoveryState) {
+    // Single, clear, primary directive — no contradictory chips.
+    if (_lifecycle.state === 'PZ_RECOVERY_REQUIRED') {
+      reasons.push('PZ recovery required — use Confirm Existing PZ in the wFirma Warehouse card above');
+    } else if (_lifecycle.state === 'PZ_DUPLICATE_DETECTED') {
+      reasons.push('Duplicate wFirma PZ doc id — resolve cross-batch conflict before creating');
+    } else if (_lifecycle.state === 'PZ_LOCKED') {
+      reasons.push('Batch locked by accounting period close or operator hold');
+    }
+  } else if (!alreadyCreated) {
+    // Only surface creation blockers when the PZ has not yet been created.
+    // When alreadyCreated===true the "Already created" chip below is the
+    // authoritative status signal — showing "creation disabled / preview not
+    // ready" alongside a done PZ contradicts reality and confuses operators.
+    if (!flagOn && !_lfSuppressCreateDisabled) reasons.push('PZ creation is disabled (admin setting)');
+    if (!ready)                       reasons.push('PZ preview not ready — resolve issues in steps 1–6 above');
+    if (!wouldCreate)                 reasons.push('Preview check: no PZ would be created — verify product and customer mapping');
+    if (data && (data.unresolved_product_codes || []).length > 0) {
+      reasons.push(`${data.unresolved_product_codes.length} product code(s) unresolved`);
+    }
+    if (data && (data.price_conflicts || []).length > 0) {
+      reasons.push(`${data.price_conflicts.length} price conflict(s)`);
+    }
+  }
+
+  return (
+    <div style={card} data-testid="execute-pz-gate">
+      <div style={h2}>
+        ⚡ Create goods receipt in wFirma
+      </div>
+
+      {reasons.length > 0 && !enabled && (
+        <div data-testid="execute-pz-reasons"
+             style={{ fontSize: 11, color: '#b45309', marginBottom: 8 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>What's needed:</div>
+          {reasons.map((r, i) => <div key={i}>⚠ {r}</div>)}
+        </div>
+      )}
+
+      <div style={{ marginBottom: 8 }}>
+        <span style={chip(enabled ? 'green' : alreadyCreated ? 'green' : 'amber')}
+              data-testid="execute-pz-status-chip">
+          {alreadyCreated ? '✓ Already created' : enabled ? 'Ready to post' : 'Blocked — resolve items above'}
+        </span>
+      </div>
+
+      <details data-testid="execute-pz-summary"
+               style={{ fontSize: 11, color: 'var(--text-2,#6b7280)', marginBottom: 8 }}>
+        <summary style={{ cursor: 'pointer', fontSize: 11,
+                          color: 'var(--text-2,#6b7280)', padding: '2px 0' }}>
+          Technical diagnostics
+        </summary>
+        <div style={{ marginTop: 4 }}>
+          <div><span style={label}>PZ preview ready: </span>{String(ready)}</div>
+          <div><span style={label}>Would create PZ: </span>{String(wouldCreate)}</div>
+          <div><span style={label}>Already created: </span>{String(alreadyCreated)}</div>
+          <div><span style={label}>Creation enabled: </span>{String(flagOn)}</div>
+          {data && data.wfirma_pz_doc_id ? (
+            <div><span style={label}>wFirma PZ document: </span>{data.wfirma_pz_doc_id}</div>
+          ) : null}
+        </div>
+      </details>
+
+      {/* C21A: converted from bare <button> with hardcoded hex → <Btn> with CSS tokens */}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Btn data-testid="execute-pz-refresh"
+             onClick={refresh}
+             variant="outline"
+             small>
+          Refresh
+        </Btn>
+        <Btn data-testid="execute-pz-button"
+             onClick={onExecute}
+             disabled={!enabled}
+             title={enabled ? '' : reasons.join('; ')}
+             variant="primary">
+          {busy ? '⟳ Creating…' : 'Create goods receipt in wFirma'}
+        </Btn>
+      </div>
+
+      {error && (
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--badge-red-text)' }}>
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// GLOBAL PZ LINEAGE CARD  (read-only invoice→packing→PZ authority)
+// ════════════════════════════════════════════════════════════════════
+//
+// Shows only for Global Jewellery batches (gated by is_global_supplier).
+// Renders null for Estrella / all other suppliers — no panel at all.
+//
+// Status badge contract:
+//   FULL_MATCH    → green
+//   WARNING_MATCH → amber  (NEVER green; operator must see the deviation)
+//   PARTIAL_MATCH → red
+//   UNMATCHED     → red
+//
+// Read-only endpoint:
+//   GET /api/v1/pz/lineage/{batchId}
+// No writes. No PZ mutation. No wFirma calls.
+
+function GlobalPZLineageCard({ batchId, onToast }) {
+  const [data, setData]       = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError]     = React.useState('');
+
+  const refresh = React.useCallback(async () => {
+    if (!batchId) return;
+    setLoading(true); setError('');
+    try {
+      const r = await fetch(
+        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}`,
+        { headers: window.__apiHeaders ? window.__apiHeaders() : {} },
+      );
+      if (!r.ok) { setError(`HTTP ${r.status}`); setData(null); }
+      else        { setData(await r.json()); }
+    } catch (e) { setError(String(e)); setData(null); }
+    finally     { setLoading(false); }
+  }, [batchId]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  // ── Style atoms (inline so component is self-contained) ─────────────
+  const card  = {
+    background: 'var(--card,#fff)', border: '1px solid var(--border,#e5e7eb)',
+    borderRadius: 8, padding: 16, marginBottom: 16,
+  };
+  const h2    = { fontSize: 14, fontWeight: 700, marginBottom: 12,
+                  display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' };
+  const dimRow = { display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 };
+
+  const statusBadge = (status) => {
+    const map = {
+      FULL_MATCH:    { bg: '#dcfce7', color: '#15803d', label: 'FULL MATCH' },
+      WARNING_MATCH: { bg: '#fef3c7', color: '#b45309', label: 'WARNING MATCH' },
+      PARTIAL_MATCH: { bg: '#fee2e2', color: '#991b1b', label: 'PARTIAL MATCH' },
+      UNMATCHED:     { bg: '#fee2e2', color: '#991b1b', label: 'UNMATCHED' },
+    };
+    const s = map[status] || { bg: '#f3f4f6', color: '#374151', label: status || '—' };
+    return { display: 'inline-block', padding: '3px 10px', borderRadius: 12,
+             fontSize: 12, fontWeight: 700, background: s.bg, color: s.color,
+             label: s.label };
+  };
+
+  const dimBadge = (dim) => {
+    const map = {
+      FULL:      { bg: '#dcfce7', color: '#15803d' },
+      WARNING:   { bg: '#fef3c7', color: '#b45309' },
+      PARTIAL:   { bg: '#fee2e2', color: '#991b1b' },
+      UNMATCHED: { bg: '#fee2e2', color: '#991b1b' },
+      'N/A':     { bg: '#f3f4f6', color: '#6b7280' },
+    };
+    const s = map[dim] || { bg: '#f3f4f6', color: '#6b7280' };
+    return { display: 'inline-block', padding: '2px 7px', borderRadius: 8,
+             fontSize: 11, fontWeight: 600, background: s.bg, color: s.color };
+  };
+
+  const linkRowBg = (status) => {
+    if (status === 'OVERFLOW' || status === 'PARTIAL') return '#fffbeb';
+    if (status === 'EMPTY')                             return '#fef2f2';
+    return 'transparent';
+  };
+
+  // ── Loading ──────────────────────────────────────────────────────────
+  if (loading) return (
+    <div style={card} data-testid="global-pz-lineage-card">
+      <div style={h2}>🔗 Global Jewellery PZ Lineage</div>
+      <div style={{ fontSize: 12, color: 'var(--text-2,#6b7280)' }}>Loading lineage…</div>
+    </div>
+  );
+
+  // ── Fetch error ──────────────────────────────────────────────────────
+  if (error) return (
+    <div style={card} data-testid="global-pz-lineage-card">
+      <div style={h2}>🔗 Global Jewellery PZ Lineage</div>
+      <div style={{ fontSize: 12, color: '#991b1b' }}
+           data-testid="global-pz-lineage-error">
+        Could not load lineage: {error}
+      </div>
+    </div>
+  );
+
+  // ── Supplier gate — Estrella + all non-Global suppressed ─────────────
+  if (!data || !data.is_global_supplier) return null;
+
+  // ── Parse error (parsers failed) ─────────────────────────────────────
+  if (data.error) return (
+    <div style={card} data-testid="global-pz-lineage-card">
+      <div style={h2}>🔗 Global Jewellery PZ Lineage</div>
+      <div style={{ fontSize: 12, color: '#991b1b' }}
+           data-testid="global-pz-lineage-parse-error">
+        Lineage unavailable: {data.error}
+      </div>
+    </div>
+  );
+
+  const overall  = data.match_status || 'UNMATCHED';
+  const ovStyle  = statusBadge(overall);
+
+  return (
+    <div style={card} data-testid="global-pz-lineage-card">
+      {/* ── Header ── */}
+      <div style={h2}>
+        🔗 Global Jewellery PZ Lineage
+        <span style={{ display: ovStyle.display, padding: ovStyle.padding,
+                       borderRadius: ovStyle.borderRadius, fontSize: ovStyle.fontSize,
+                       fontWeight: ovStyle.fontWeight, background: ovStyle.bg,
+                       color: ovStyle.color }}
+              data-testid="global-pz-lineage-overall-badge">
+          {ovStyle.label}
+        </span>
+        {overall !== 'FULL_MATCH' && (
+          <span style={{ fontSize: 11, color: '#b45309' }}
+                data-testid="global-pz-lineage-warning-notice">
+            ⚠ Operator review required before finalising PZ
+          </span>
+        )}
+      </div>
+
+      {/* ── 4-Dimension summary ── */}
+      <div style={dimRow} data-testid="global-pz-lineage-dimensions">
+        {[
+          ['Shipment totals',    data.shipment_total_match,          'dim-shipment'],
+          ['Invoice positions',  data.invoice_position_match,        'dim-invoice'],
+          ['Packing row assign', data.packing_row_assignment_match,  'dim-packing'],
+          ['PZ visibility',      data.pz_line_visibility_match,      'dim-pz'],
+        ].map(([label, val, tid]) => {
+          const s = dimBadge(val || 'UNMATCHED');
+          return (
+            <div key={tid} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+              <span style={{ fontSize: 10, color: 'var(--text-2,#6b7280)', marginBottom: 2 }}>
+                {label}
+              </span>
+              <span style={s} data-testid={`global-pz-lineage-${tid}`}>
+                {val || '—'}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Totals reconciliation ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8,
+                    fontSize: 11, marginBottom: 12, padding: 8,
+                    background: 'var(--bg-subtle,#f9fafb)', borderRadius: 4 }}
+           data-testid="global-pz-lineage-totals">
+        <div>Invoice positions: <strong>{data.invoice_position_count || 0}</strong></div>
+        <div>Packing rows: <strong>{data.packing_row_count || 0}</strong></div>
+        <div>Total inv qty: <strong>{data.total_invoice_qty || 0}</strong></div>
+        <div>Total pack qty: <strong>{data.total_packing_qty || 0}</strong></div>
+        <div>Invoice FOB: <strong>${(data.total_invoice_fob_usd || 0).toFixed(2)}</strong></div>
+        <div>Packing FOB: <strong>${(data.total_packing_fob_usd || 0).toFixed(2)}</strong></div>
+      </div>
+
+      {/* ── Position links table ── */}
+      {(data.position_links || []).length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6,
+                        color: 'var(--text-2,#6b7280)' }}>
+            Invoice position links
+          </div>
+          <div style={{ overflowX: 'auto' }} data-testid="global-pz-lineage-links-table">
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle,#f9fafb)',
+                             borderBottom: '1px solid var(--border,#e5e7eb)' }}>
+                  {['Pos', 'Item', 'Unit', 'Metal', 'Stone', 'Inv qty', 'Pack qty', 'Status', 'Reason'].map(h => (
+                    <th key={h} style={{ padding: '4px 6px', textAlign: 'left',
+                                         fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(data.position_links || []).map((lk, i) => {
+                  const st = dimBadge(
+                    lk.match_status === 'FULL'     ? 'FULL'
+                    : lk.match_status === 'OVERFLOW' ? 'WARNING'
+                    : lk.match_status === 'PARTIAL'  ? 'PARTIAL'
+                    : lk.match_status === 'EMPTY'    ? 'UNMATCHED'
+                    : 'UNMATCHED'
+                  );
+                  return (
+                    <tr key={i}
+                        style={{ borderBottom: '1px solid var(--border,#e5e7eb)',
+                                 background: linkRowBg(lk.match_status) }}
+                        data-testid={`global-pz-link-row-${i}`}>
+                      <td style={{ padding: '3px 6px' }}>{lk.position_no}</td>
+                      <td style={{ padding: '3px 6px' }}>{lk.invoice_item_type}</td>
+                      <td style={{ padding: '3px 6px' }}>{lk.unit}</td>
+                      <td style={{ padding: '3px 6px', maxWidth: 90, overflow: 'hidden',
+                                   textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {lk.metal_en}
+                      </td>
+                      <td style={{ padding: '3px 6px', maxWidth: 110, overflow: 'hidden',
+                                   textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {lk.stone_en}
+                      </td>
+                      <td style={{ padding: '3px 6px', textAlign: 'right' }}>
+                        {lk.invoice_qty}
+                      </td>
+                      <td style={{ padding: '3px 6px', textAlign: 'right' }}>
+                        {lk.packing_qty_sum}
+                      </td>
+                      <td style={{ padding: '3px 6px' }}>
+                        <span style={st}>{lk.match_status}</span>
+                      </td>
+                      <td style={{ padding: '3px 6px', color: '#b45309', maxWidth: 200,
+                                   fontSize: 10 }}>
+                        {lk.confidence_reason || ''}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Unmatched / duplicates ── */}
+      {(data.unmatched_packing_serials || []).length > 0 && (
+        <div style={{ padding: '6px 8px', background: '#fef2f2',
+                      borderRadius: 4, fontSize: 11, marginBottom: 8,
+                      color: '#991b1b' }}
+             data-testid="global-pz-lineage-unmatched">
+          ⚠ Unmatched packing serials: {(data.unmatched_packing_serials || []).join(', ')}
+        </div>
+      )}
+      {(data.duplicate_assignments || []).length > 0 && (
+        <div style={{ padding: '6px 8px', background: '#fef2f2',
+                      borderRadius: 4, fontSize: 11, marginBottom: 8,
+                      color: '#991b1b' }}
+             data-testid="global-pz-lineage-duplicates">
+          ⚠ Duplicate packing serials detected: {(data.duplicate_assignments || []).join(', ')}
+        </div>
+      )}
+
+      {/* ── Notes ── */}
+      {(data.notes || []).length > 0 && (
+        <div style={{ fontSize: 10, color: 'var(--text-2,#6b7280)', marginTop: 4 }}
+             data-testid="global-pz-lineage-notes">
+          {(data.notes || []).map((n, i) => <div key={i}>{n}</div>)}
+        </div>
+      )}
+
+      <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button onClick={refresh}
+                style={{ fontSize: 11, padding: '3px 8px', cursor: 'pointer',
+                         border: '1px solid var(--border,#e5e7eb)', borderRadius: 4,
+                         background: 'var(--bg,#fff)' }}
+                data-testid="global-pz-lineage-refresh">
+          Refresh
+        </button>
+        <span style={{ fontSize: 10, color: 'var(--text-2,#6b7280)' }}>
+          Read-only · no PZ mutation
+        </span>
+      </div>
+    </div>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// GLOBAL PZ CORRECTION PROPOSAL CARD  (read-only advisory)
+// ════════════════════════════════════════════════════════════════════
+//
+// Shows only for Global Jewellery batches (gated by is_global_supplier).
+// Renders null for Estrella / all other suppliers — no panel at all.
+//
+// Endpoint (GET only — no mutations):
+//   GET /api/v1/pz/lineage/{batchId}/correction-proposal
+//
+// Option display rules:
+//   KEEP_CURRENT      → green/neutral chip, "Accept recommendation" button disabled
+//                       (acknowledgement endpoint not yet available)
+//   ALIGN_TO_AUTHORITY → amber chip, button disabled "Execution endpoint not available"
+//   SPLIT_TO_STYLE_LEVEL → amber chip, button disabled "Preview only"
+//   CANCEL_AND_RECREATE → hidden unless returned by backend
+//
+// No POST. No wFirma calls. No PZ mutation.
+
+function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
+  // Proposal data (always loaded — no feature flag required)
+  const [proposal, setProposal]       = React.useState(null);
+  const [loading, setLoading]         = React.useState(true);
+  const [error, setError]             = React.useState('');
+
+  // Lifecycle state (null when flag disabled, record object when enabled)
+  const [lcState, setLcState]         = React.useState(null);
+  const [lifecycleEnabled, setLifecycleEnabled] = React.useState(false);
+
+  // Stage UI
+  const [confirmOpt, setConfirmOpt]   = React.useState(null);
+  const [reason, setReason]           = React.useState('');
+  const [executing, setExecuting]     = React.useState(false);
+  const [execResult, setExecResult]   = React.useState(null);
+
+  // Suppress UI
+  const [showSuppress, setShowSuppress]     = React.useState(false);
+  const [suppressReason, setSuppressReason] = React.useState('');
+
+  // Commit UI
+  const [showCommit, setShowCommit]         = React.useState(false);
+  const [commitReason, setCommitReason]     = React.useState('');
+
+  const refresh = React.useCallback(async () => {
+    if (!batchId) return;
+    setLoading(true); setError('');
+    setConfirmOpt(null); setReason(''); setExecResult(null);
+    setShowSuppress(false); setSuppressReason('');
+    setShowCommit(false); setCommitReason('');
+    try {
+      const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+      // Load correction-proposal and correction-state concurrently.
+      // correction-state returns 503 when pz_correction_lifecycle_enabled=false — that is
+      // treated as "lifecycle disabled" and is not an error for the proposal view.
+      const [propResp, lcResp] = await Promise.all([
+        fetch(`/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-proposal`, { headers: hdrs }),
+        fetch(`/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-state`,    { headers: hdrs }),
+      ]);
+      if (!propResp.ok) { setError(`HTTP ${propResp.status}`); setProposal(null); }
+      else              { setProposal(await propResp.json()); }
+
+      if (lcResp.status === 503 || lcResp.status === 403) {
+        // Flag off or non-global — lifecycle unavailable; show read-only proposal
+        setLifecycleEnabled(false); setLcState(null);
+      } else if (lcResp.ok) {
+        setLifecycleEnabled(true); setLcState(await lcResp.json());
+      } else {
+        setLifecycleEnabled(false); setLcState(null);
+      }
+    } catch (e) { setError(String(e)); setProposal(null); }
+    finally     { setLoading(false); }
+  }, [batchId]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  // ── Stage action — POST correction-stage ─────────────────────────
+  const handleStage = React.useCallback(async () => {
+    if (!confirmOpt || !reason.trim()) return;
+    setExecuting(true);
+    try {
+      const r = await fetch(
+        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-stage`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(window.__apiHeaders ? window.__apiHeaders() : {}) },
+          body: JSON.stringify({ option_id: confirmOpt, operator_reason: reason.trim() }),
+        },
+      );
+      const json = await r.json();
+      if (!r.ok) {
+        setExecResult({ ok: false, error: json.detail || `HTTP ${r.status}` });
+        onToast && onToast('error', `Stage failed: ${json.detail || r.status}`);
+      } else {
+        // lifecycle record returned — adapt to execResult shape for result banner
+        setExecResult({ ok: true, option_id: confirmOpt, already_executed: false,
+                        pre_line_count: null, post_line_count: null });
+        setLcState(json);
+        onToast && onToast('success', `Staged: ${confirmOpt}`);
+        setConfirmOpt(null); setReason('');
+      }
+    } catch (e) {
+      setExecResult({ ok: false, error: String(e) });
+      onToast && onToast('error', `Stage error: ${e}`);
+    } finally { setExecuting(false); }
+  }, [batchId, confirmOpt, reason, onToast]);
+
+  // ── Reset stage — DELETE correction-stage ────────────────────────
+  const handleResetStage = React.useCallback(async () => {
+    setExecuting(true);
+    try {
+      const r = await fetch(
+        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-stage`,
+        { method: 'DELETE', headers: { ...(window.__apiHeaders ? window.__apiHeaders() : {}) } },
+      );
+      const json = await r.json();
+      if (!r.ok) { onToast && onToast('error', `Reset failed: ${json.detail || r.status}`); }
+      else        { setLcState(json); onToast && onToast('info', 'Stage reset — choose a different option'); }
+    } catch (e) { onToast && onToast('error', `Reset error: ${e}`); }
+    finally     { setExecuting(false); }
+  }, [batchId, onToast]);
+
+  // ── Suppress — POST correction-suppress ──────────────────────────
+  const handleSuppress = React.useCallback(async () => {
+    if (!suppressReason.trim()) return;
+    setExecuting(true);
+    try {
+      const r = await fetch(
+        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-suppress`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(window.__apiHeaders ? window.__apiHeaders() : {}) },
+          body: JSON.stringify({ reason: suppressReason.trim() }),
+        },
+      );
+      const json = await r.json();
+      if (!r.ok) { onToast && onToast('error', `Suppress failed: ${json.detail || r.status}`); }
+      else {
+        setLcState(json); setShowSuppress(false); setSuppressReason('');
+        onToast && onToast('success', 'Correction workflow closed (suppressed)');
+      }
+    } catch (e) { onToast && onToast('error', `Suppress error: ${e}`); }
+    finally     { setExecuting(false); }
+  }, [batchId, suppressReason, onToast]);
+
+  // ── Commit — POST correction-commit (wFirma push) ────────────────
+  // Sentinel must match global_pz_push._CONFIRM_SENTINEL exactly.
+  const _CONFIRM_SENTINEL = "I confirm this will create a new wFirma PZ document and cannot be undone without manual wFirma intervention";
+  const handleCommit = React.useCallback(async () => {
+    if (!commitReason.trim()) return;
+    setExecuting(true);
+    try {
+      const r = await fetch(
+        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-commit`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(window.__apiHeaders ? window.__apiHeaders() : {}) },
+          body: JSON.stringify({
+            operator_reason:       commitReason.trim(),
+            idempotency_key:       `${batchId}-${Date.now()}`,
+            confirm_understanding: _CONFIRM_SENTINEL,
+          }),
+        },
+      );
+      const json = await r.json();
+      if (!r.ok) {
+        setExecResult({ ok: false, error: json.detail || `HTTP ${r.status}` });
+        onToast && onToast('error', `Commit failed: ${json.detail || r.status}`);
+      } else {
+        setLcState(json); setShowCommit(false); setCommitReason('');
+        onToast && onToast('success', `PZ committed to wFirma (state: ${json.state})`);
+      }
+    } catch (e) { onToast && onToast('error', `Commit error: ${e}`); }
+    finally     { setExecuting(false); }
+  }, [batchId, commitReason, onToast]);
+
+  // ── Style atoms ──────────────────────────────────────────────────
+  const card = {
+    background: 'var(--card,#fff)', border: '1px solid var(--border,#e5e7eb)',
+    borderRadius: 8, padding: 16, marginBottom: 16,
+  };
+  const h2 = {
+    fontSize: 14, fontWeight: 700, marginBottom: 12,
+    display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+  };
+
+  const riskStyle = (level) => {
+    const map = {
+      NONE:   { bg: '#dcfce7', color: '#15803d' },
+      LOW:    { bg: '#fef3c7', color: '#b45309' },
+      MEDIUM: { bg: '#fed7aa', color: '#c2410c' },
+      HIGH:   { bg: '#fee2e2', color: '#991b1b' },
+    };
+    const s = map[level] || { bg: '#f3f4f6', color: '#6b7280' };
+    return {
+      display: 'inline-block', padding: '2px 7px', borderRadius: 8,
+      fontSize: 11, fontWeight: 600, background: s.bg, color: s.color,
+    };
+  };
+
+  const recStyle = (optionId) => {
+    if (optionId === 'KEEP_CURRENT') return { bg: '#dcfce7', color: '#15803d', label: 'KEEP CURRENT' };
+    if (optionId === 'NO_ACTION')    return { bg: '#f3f4f6', color: '#374151', label: 'NO ACTION' };
+    return { bg: '#fef3c7', color: '#b45309', label: optionId };
+  };
+
+  const stateColors = {
+    PROPOSED:            { bg: '#f3f4f6', color: '#374151' },
+    OPERATOR_REVIEWED:   { bg: '#eff6ff', color: '#1d4ed8' },
+    STAGED:              { bg: '#fef3c7', color: '#b45309' },
+    EXECUTING:           { bg: '#fff7ed', color: '#c2410c' },
+    COMPLETED:           { bg: '#dcfce7', color: '#15803d' },
+    FAILED:              { bg: '#fee2e2', color: '#991b1b' },
+    TERMINAL_SUPPRESSED: { bg: '#f3f4f6', color: '#6b7280' },
+  };
+
+  const optionButtonLabel = (opt) => {
+    if (opt.option_id === 'KEEP_CURRENT')         return 'Close (keep current)';
+    if (opt.option_id === 'ALIGN_TO_AUTHORITY')   return 'Align to authority';
+    if (opt.option_id === 'SPLIT_TO_STYLE_LEVEL') return 'Split to style level';
+    if (opt.option_id === 'NO_ACTION')            return 'Close (no action)';
+    return opt.option_id;
+  };
+
+  // ── Loading ───────────────────────────────────────────────────────
+  if (loading) return (
+    <div style={card} data-testid="global-pz-correction-card">
+      <div style={h2}>⚙ PZ Correction Proposal</div>
+      <div style={{ fontSize: 12, color: 'var(--text-2,#6b7280)' }}>Loading proposal…</div>
+    </div>
+  );
+
+  // ── Fetch error — suppress silently for non-global (404/non-supplier) ──
+  if (error) {
+    if (error === 'HTTP 404') return null;
+    return (
+      <div style={card} data-testid="global-pz-correction-card">
+        <div style={h2}>⚙ PZ Correction Proposal</div>
+        <div style={{ fontSize: 12, color: '#991b1b' }}
+             data-testid="global-pz-correction-error">
+          Could not load correction proposal: {error}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Supplier gate — suppress for Estrella + all non-Global ───────
+  if (!proposal || !proposal.is_global_supplier) return null;
+
+  const rec     = proposal.recommended_option || 'KEEP_CURRENT';
+  const recS    = recStyle(rec);
+  const options = (proposal.options || []).filter(o => o.option_id !== 'CANCEL_AND_RECREATE');
+  const lcSt    = lcState ? lcState.state : null;
+  const scol    = lcSt ? (stateColors[lcSt] || stateColors.PROPOSED) : null;
+
+  const isTerminal = lcSt === 'COMPLETED' || lcSt === 'TERMINAL_SUPPRESSED';
+  const isStaged   = lcSt === 'STAGED';
+  const isFailed   = lcSt === 'FAILED';
+
+  return (
+    <div style={card} data-testid="global-pz-correction-card">
+      {/* ── Header ── */}
+      <div style={h2}>
+        ⚙ PZ Correction Proposal
+        <span style={{ display: 'inline-block', padding: '3px 10px', borderRadius: 12,
+                       fontSize: 12, fontWeight: 700,
+                       background: recS.bg, color: recS.color }}
+              data-testid="global-pz-correction-recommended-badge">
+          {recS.label}
+        </span>
+        {lifecycleEnabled && lcSt && (
+          <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 8,
+                         fontSize: 11, fontWeight: 600,
+                         background: scol.bg, color: scol.color }}
+                data-testid="global-pz-correction-lifecycle-state">
+            {lcSt}
+          </span>
+        )}
+        <span style={{ fontSize: 11, color: 'var(--text-2,#6b7280)', fontWeight: 400 }}
+              data-testid="global-pz-correction-readonly-label">
+          No wFirma mutation · local staging only
+        </span>
+      </div>
+
+      {/* ── Lifecycle disabled notice ── */}
+      {!lifecycleEnabled && (
+        <div style={{ padding: '7px 10px', borderRadius: 6, fontSize: 11, marginBottom: 12,
+                      background: '#fff7ed', color: '#c2410c', border: '1px solid #fed7aa' }}
+             data-testid="global-pz-correction-lifecycle-disabled">
+          Lifecycle mode not enabled. Stage/commit actions unavailable.
+          Set <code>pz_correction_lifecycle_enabled=true</code> in .env to enable.
+        </div>
+      )}
+
+      {/* ── Summary stats ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8,
+                    fontSize: 11, marginBottom: 14, padding: 8,
+                    background: 'var(--bg-subtle,#f9fafb)', borderRadius: 4 }}
+           data-testid="global-pz-correction-stats">
+        <div>Current PZ lines: <strong>{proposal.current_pz_line_count ?? '—'}</strong></div>
+        <div>Authority rows: <strong>{proposal.authority_row_count ?? '—'}</strong></div>
+        <div>Lineage links: <strong>{proposal.lineage_link_count ?? '—'}</strong></div>
+      </div>
+
+      {/* ── KEEP_CURRENT affirmative notice ── */}
+      {rec === 'KEEP_CURRENT' && (
+        <div style={{ padding: '8px 12px', background: '#f0fdf4', borderRadius: 6,
+                      fontSize: 12, color: '#15803d', marginBottom: 12,
+                      border: '1px solid #bbf7d0' }}
+             data-testid="global-pz-correction-keep-notice">
+          Existing PZ can remain. Lineage explains the grouped structure.
+        </div>
+      )}
+
+      {/* ── Lifecycle terminal banner ── */}
+      {isTerminal && (
+        <div style={{ padding: '8px 12px', borderRadius: 6, fontSize: 12, marginBottom: 12,
+                      background: lcSt === 'COMPLETED' ? '#f0fdf4' : '#f3f4f6',
+                      color: lcSt === 'COMPLETED' ? '#15803d' : '#6b7280',
+                      border: `1px solid ${lcSt === 'COMPLETED' ? '#bbf7d0' : '#e5e7eb'}` }}
+             data-testid="global-pz-correction-terminal-banner">
+          {lcSt === 'COMPLETED'
+            ? `✓ Correction complete. wFirma PZ created.${lcState.result_summary ? ` (${lcState.result_summary})` : ''}`
+            : `Correction workflow closed (suppressed). Reason: ${lcState.suppression_reason || '—'}`}
+        </div>
+      )}
+
+      {/* ── STAGED banner ── */}
+      {isStaged && (
+        <div style={{ padding: '8px 12px', borderRadius: 6, fontSize: 12, marginBottom: 12,
+                      background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e' }}
+             data-testid="global-pz-correction-staged-banner">
+          Staged option: <strong>{lcState.staged_option_id}</strong> · Ready to commit to wFirma or reset.
+        </div>
+      )}
+
+      {/* ── EXECUTING banner ── */}
+      {lcSt === 'EXECUTING' && (
+        <div style={{ padding: '8px 12px', borderRadius: 6, fontSize: 12, marginBottom: 12,
+                      background: '#fff7ed', border: '1px solid #fed7aa', color: '#c2410c' }}
+             data-testid="global-pz-correction-executing-banner">
+          ⏳ wFirma push in progress… Refresh to check status.
+        </div>
+      )}
+
+      {/* ── FAILED banner ── */}
+      {isFailed && (
+        <div style={{ padding: '8px 12px', borderRadius: 6, fontSize: 12, marginBottom: 12,
+                      background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b' }}
+             data-testid="global-pz-correction-failed-banner">
+          Push failed: {lcState.result_summary || 'unknown error'}.
+          Reset stage to retry with a different option, or suppress to close.
+        </div>
+      )}
+
+      {/* ── Stage result banner ── */}
+      {execResult && (
+        <div style={{ padding: '8px 12px', borderRadius: 6, fontSize: 12, marginBottom: 12,
+                      background: execResult.ok ? '#f0fdf4' : '#fef2f2',
+                      color: execResult.ok ? '#15803d' : '#991b1b',
+                      border: `1px solid ${execResult.ok ? '#bbf7d0' : '#fecaca'}` }}
+             data-testid="global-pz-correction-result">
+          {execResult.ok ? (
+            execResult.already_executed
+              ? 'Already executed — returning existing record.'
+              : `Staged: ${execResult.option_id}. Lines: ${execResult.pre_line_count ?? '—'} → ${execResult.post_line_count ?? '—'}.`
+          ) : (
+            `Stage failed: ${execResult.error}`
+          )}
+        </div>
+      )}
+
+      {/* ── Options list (hidden when terminal, staged, or executing) ── */}
+      {!isTerminal && !isStaged && lcSt !== 'EXECUTING' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+             data-testid="global-pz-correction-options">
+          {options.map((opt) => {
+            const lbl    = optionButtonLabel(opt);
+            const isRec  = opt.option_id === rec;
+            const isPending = confirmOpt === opt.option_id;
+            const isNoOp = opt.option_id === 'KEEP_CURRENT' || opt.option_id === 'NO_ACTION';
+            return (
+              <div key={opt.option_id}
+                   style={{ padding: '8px 10px', borderRadius: 6,
+                            border: `1px solid ${isPending ? '#93c5fd' : 'var(--border,#e5e7eb)'}`,
+                            background: isPending ? '#eff6ff' : (isRec ? 'var(--bg-subtle,#f9fafb)' : 'transparent') }}
+                   data-testid={`global-pz-correction-option-${opt.option_id}`}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700 }}>{opt.label}</span>
+                      {isRec && (
+                        <span style={{ fontSize: 10, background: '#dcfce7', color: '#15803d',
+                                       borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>
+                          Recommended
+                        </span>
+                      )}
+                      <span style={riskStyle(opt.risk_level)}
+                            data-testid={`global-pz-correction-risk-${opt.option_id}`}>
+                        {opt.risk_level || 'NONE'}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-2,#6b7280)' }}>
+                      {opt.description}
+                    </div>
+                    {(opt.notes || []).length > 0 && (
+                      <div style={{ fontSize: 10, color: '#b45309', marginTop: 3 }}>
+                        {opt.notes.map((n, i) => <div key={i}>{n}</div>)}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ flexShrink: 0 }}>
+                    {isNoOp ? (
+                      /* KEEP_CURRENT / NO_ACTION → open suppress panel directly */
+                      <button
+                        onClick={() => { setShowSuppress(true); setSuppressReason(`Operator chose ${opt.option_id} — no wFirma push needed`); }}
+                        disabled={executing || !lifecycleEnabled}
+                        style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                                 cursor: (executing || !lifecycleEnabled) ? 'not-allowed' : 'pointer',
+                                 border: '1px solid var(--border,#e5e7eb)',
+                                 background: 'var(--bg,#fff)', color: 'var(--text,#111)',
+                                 opacity: (executing || !lifecycleEnabled) ? 0.6 : 1 }}
+                        data-testid={`global-pz-correction-btn-${opt.option_id}`}>
+                        {lbl}
+                      </button>
+                    ) : (
+                      /* ALIGN_TO_AUTHORITY / SPLIT_TO_STYLE_LEVEL → open stage confirmation */
+                      <button
+                        onClick={() => setConfirmOpt(isPending ? null : opt.option_id)}
+                        disabled={executing || !lifecycleEnabled}
+                        style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                                 cursor: (executing || !lifecycleEnabled) ? 'not-allowed' : 'pointer',
+                                 border: `1px solid ${isPending ? '#3b82f6' : 'var(--border,#e5e7eb)'}`,
+                                 background: isPending ? '#3b82f6' : 'var(--bg,#fff)',
+                                 color: isPending ? '#fff' : 'var(--text,#111)',
+                                 opacity: (executing || !lifecycleEnabled) ? 0.6 : 1 }}
+                        data-testid={`global-pz-correction-btn-${opt.option_id}`}>
+                        {isPending ? 'Cancel' : lbl}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* ── Inline stage confirmation panel ── */}
+                {isPending && !isNoOp && (
+                  <div style={{ marginTop: 10, padding: '10px 12px', background: '#fff',
+                                borderRadius: 6, border: '1px solid #bfdbfe' }}
+                       data-testid="global-pz-correction-confirm-modal">
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                      Confirm stage: {opt.option_id}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#374151', marginBottom: 8 }}>
+                      This will write to local <code>pz_rows.json</code> only.
+                      No wFirma calls. wFirma push is a separate operator step.
+                      A backup will be created automatically.
+                    </div>
+                    <textarea
+                      placeholder="Operator reason (required)…"
+                      value={reason}
+                      onChange={e => setReason(e.target.value)}
+                      rows={2}
+                      style={{ width: '100%', fontSize: 11, padding: '4px 6px',
+                               borderRadius: 4, border: '1px solid #d1d5db',
+                               resize: 'vertical', boxSizing: 'border-box' }}
+                      data-testid="global-pz-correction-reason-input"
+                    />
+                    <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                      <button
+                        onClick={handleStage}
+                        disabled={executing || !reason.trim()}
+                        style={{ fontSize: 11, padding: '4px 12px', borderRadius: 4,
+                                 cursor: (executing || !reason.trim()) ? 'not-allowed' : 'pointer',
+                                 background: '#2563eb', color: '#fff',
+                                 border: 'none', opacity: (executing || !reason.trim()) ? 0.5 : 1 }}
+                        data-testid="global-pz-correction-confirm-btn">
+                        {executing ? 'Staging…' : 'Confirm stage'}
+                      </button>
+                      <button
+                        onClick={() => { setConfirmOpt(null); setReason(''); }}
+                        disabled={executing}
+                        style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                                 cursor: 'pointer', border: '1px solid var(--border,#e5e7eb)',
+                                 background: 'var(--bg,#fff)' }}
+                        data-testid="global-pz-correction-cancel-btn">
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Staged actions: Reset + Commit ── */}
+      {lifecycleEnabled && isStaged && (
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}
+             data-testid="global-pz-correction-staged-actions">
+
+          {/* Commit to wFirma */}
+          {!showCommit ? (
+            <button
+              onClick={() => setShowCommit(true)}
+              disabled={executing}
+              style={{ fontSize: 11, padding: '6px 14px', borderRadius: 4, cursor: 'pointer',
+                       background: '#15803d', color: '#fff', border: 'none',
+                       opacity: executing ? 0.5 : 1 }}
+              data-testid="global-pz-correction-commit-btn">
+              Commit to wFirma…
+            </button>
+          ) : (
+            <div style={{ padding: '10px 12px', background: '#f0fdf4', borderRadius: 6,
+                          border: '1px solid #bbf7d0' }}
+                 data-testid="global-pz-correction-commit-panel">
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#166534' }}>
+                Commit staged correction to wFirma
+              </div>
+              <div style={{ fontSize: 11, color: '#374151', marginBottom: 6, background: '#fef3c7',
+                            padding: '6px 8px', borderRadius: 4, border: '1px solid #fde68a' }}>
+                ⚠ This will create a new wFirma PZ document. This cannot be undone without manual wFirma intervention.
+              </div>
+              <textarea
+                placeholder="Operator reason (required)…"
+                value={commitReason}
+                onChange={e => setCommitReason(e.target.value)}
+                rows={2}
+                style={{ width: '100%', fontSize: 11, padding: '4px 6px', borderRadius: 4,
+                         border: '1px solid #d1d5db', resize: 'vertical', boxSizing: 'border-box' }}
+                data-testid="global-pz-correction-commit-reason-input"
+              />
+              <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                <button
+                  onClick={handleCommit}
+                  disabled={executing || !commitReason.trim()}
+                  style={{ fontSize: 11, padding: '4px 12px', borderRadius: 4,
+                           cursor: (executing || !commitReason.trim()) ? 'not-allowed' : 'pointer',
+                           background: '#15803d', color: '#fff', border: 'none',
+                           opacity: (executing || !commitReason.trim()) ? 0.5 : 1 }}
+                  data-testid="global-pz-correction-commit-confirm-btn">
+                  {executing ? 'Committing…' : 'Confirm commit to wFirma'}
+                </button>
+                <button
+                  onClick={() => { setShowCommit(false); setCommitReason(''); }}
+                  disabled={executing}
+                  style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4, cursor: 'pointer',
+                           border: '1px solid var(--border,#e5e7eb)', background: 'var(--bg,#fff)' }}
+                  data-testid="global-pz-correction-commit-cancel-btn">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Reset stage */}
+          <button
+            onClick={handleResetStage}
+            disabled={executing}
+            style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4, cursor: 'pointer',
+                     border: '1px solid var(--border,#e5e7eb)', background: 'var(--bg,#fff)',
+                     opacity: executing ? 0.5 : 1 }}
+            data-testid="global-pz-correction-reset-stage-btn">
+            ← Change option (reset stage)
+          </button>
+        </div>
+      )}
+
+      {/* ── Suppress panel — close workflow without wFirma push ── */}
+      {lifecycleEnabled && !isTerminal && (
+        <div style={{ marginTop: 10 }}>
+          {!showSuppress ? (
+            <button
+              onClick={() => setShowSuppress(true)}
+              disabled={executing}
+              style={{ fontSize: 10, padding: '3px 8px', cursor: 'pointer',
+                       border: '1px solid var(--border,#e5e7eb)', borderRadius: 4,
+                       background: 'var(--bg,#fff)', color: 'var(--text-2,#6b7280)',
+                       opacity: executing ? 0.5 : 1 }}
+              data-testid="global-pz-correction-suppress-btn">
+              Close workflow without wFirma push…
+            </button>
+          ) : (
+            <div style={{ padding: '10px 12px', background: '#fef2f2', borderRadius: 6,
+                          border: '1px solid #fecaca' }}
+                 data-testid="global-pz-correction-suppress-panel">
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#991b1b' }}>
+                Close correction workflow (no wFirma push)
+              </div>
+              <textarea
+                placeholder="Reason for closing (required)…"
+                value={suppressReason}
+                onChange={e => setSuppressReason(e.target.value)}
+                rows={2}
+                style={{ width: '100%', fontSize: 11, padding: '4px 6px', borderRadius: 4,
+                         border: '1px solid #fca5a5', resize: 'vertical', boxSizing: 'border-box' }}
+                data-testid="global-pz-correction-suppress-reason-input"
+              />
+              <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                <button
+                  onClick={handleSuppress}
+                  disabled={executing || !suppressReason.trim()}
+                  style={{ fontSize: 11, padding: '4px 12px', borderRadius: 4,
+                           cursor: (executing || !suppressReason.trim()) ? 'not-allowed' : 'pointer',
+                           background: '#dc2626', color: '#fff', border: 'none',
+                           opacity: (executing || !suppressReason.trim()) ? 0.5 : 1 }}
+                  data-testid="global-pz-correction-suppress-confirm-btn">
+                  {executing ? 'Closing…' : 'Confirm close'}
+                </button>
+                <button
+                  onClick={() => { setShowSuppress(false); setSuppressReason(''); }}
+                  disabled={executing}
+                  style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4, cursor: 'pointer',
+                           border: '1px solid var(--border,#e5e7eb)', background: 'var(--bg,#fff)' }}
+                  data-testid="global-pz-correction-suppress-cancel-btn">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Footer ── */}
+      <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button onClick={refresh}
+                style={{ fontSize: 11, padding: '3px 8px', cursor: 'pointer',
+                         border: '1px solid var(--border,#e5e7eb)', borderRadius: 4,
+                         background: 'var(--bg,#fff)' }}
+                data-testid="global-pz-correction-refresh">
+          Refresh
+        </button>
+        <span style={{ fontSize: 10, color: 'var(--text-2,#6b7280)' }}
+              data-testid="global-pz-correction-readonly-label">
+          No wFirma mutation · local staging only
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ZC429EvidenceCard({ batchId, onToast }) {
+  const [data, setData]       = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError]     = React.useState('');
+
+  const refresh = React.useCallback(async () => {
+    if (!batchId) return;
+    setLoading(true);
+    setError('');
+    try {
+      const r = await fetch(`/dashboard/batches/${encodeURIComponent(batchId)}/zc429-lineage`,
+                            { headers: window.__apiHeaders ? window.__apiHeaders() : {} });
+      if (!r.ok) {
+        setError(`HTTP ${r.status}`);
+        setData(null);
+      } else {
+        setData(await r.json());
+      }
+    } catch (e) {
+      setError(String(e));
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [batchId]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  // Style helpers (kept inline so this component stays self-contained).
+  const card  = { background: 'var(--card,#fff)', border: '1px solid var(--border,#e5e7eb)',
+                  borderRadius: 8, padding: 16, marginBottom: 16 };
+  const h2    = { fontSize: 14, fontWeight: 700, marginBottom: 12,
+                  display: 'flex', alignItems: 'center', gap: 8 };
+  const chip  = (color) => ({ display: 'inline-block', padding: '2px 8px',
+                              borderRadius: 12, fontSize: 11, fontWeight: 700,
+                              background: color === 'green' ? '#dcfce7' :
+                                          color === 'amber' ? '#fef3c7' : '#fee2e2',
+                              color:      color === 'green' ? '#15803d' :
+                                          color === 'amber' ? '#b45309' : '#991b1b' });
+  const grid  = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                  gap: 8, marginBottom: 12 };
+  const kv    = { fontSize: 12 };
+  const label = { color: 'var(--text-2,#6b7280)', fontSize: 11, marginBottom: 2 };
+  const mono  = { fontFamily: 'ui-monospace,Menlo,monospace', fontSize: 11 };
+
+  if (loading) {
+    return (
+      <div style={card} data-testid="zc429-evidence-card">
+        <div style={h2}>📜 ZC429 / SAD Evidence</div>
+        <div style={{ fontSize: 12, color: 'var(--text-2,#6b7280)' }}>
+          Loading evidence chain…
+        </div>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div style={card} data-testid="zc429-evidence-card">
+        <div style={h2}>📜 ZC429 / SAD Evidence</div>
+        <div style={{ fontSize: 12, color: '#991b1b' }}
+             data-testid="zc429-evidence-error">
+          Could not load evidence chain: {error}
+        </div>
+      </div>
+    );
+  }
+  if (!data || !data.has_zc429) {
+    // Recovery-state-aware "Not received" view.
+    const rs = (data && data.recovery_state) || 'email_not_found';
+    const rd = (data && data.recovery_detail) || {};
+    const stateLabel = {
+      email_not_found:                          'No plwawecs email yet',
+      email_found_no_attachments:               'Email found · attachments missing',
+      email_found_attachments_pending_intake:   'Attachments stored · intake pending',
+      intake_completed:                         'Complete',
+    }[rs] || 'Not received';
+    const stateColor = (rs === 'email_not_found') ? 'amber'
+                       : (rs === 'email_found_no_attachments'
+                          || rs === 'email_found_attachments_pending_intake') ? 'amber'
+                       : 'amber';
+    return (
+      <div style={card} data-testid="zc429-evidence-card">
+        <div style={h2}>
+          📜 ZC429 / SAD Evidence
+          <span style={chip(stateColor)} data-testid="zc429-status-chip">
+            {stateLabel}
+          </span>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-2,#6b7280)' }}
+             data-testid="zc429-waiting-message">
+          Waiting for DHL ZC429 / SAD email. The legal-evidence chain
+          will appear here as soon as the WAW agency notification is
+          ingested.
+        </div>
+        {/* Recovery diagnostics — operator-grade instruction. */}
+        <div data-testid="zc429-recovery-state"
+             data-recovery-state={rs}
+             style={{ marginTop: 10, padding: 8, fontSize: 11,
+                      background: '#fffbeb', border: '1px solid #fcd34d',
+                      borderRadius: 6, color: '#92400e' }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>
+            Recovery state: <span data-testid="zc429-recovery-state-name">{rs}</span>
+          </div>
+          <div data-testid="zc429-recovery-instruction">
+            {rd.instruction || ''}
+          </div>
+          <div style={{ marginTop: 4, color: '#78350f' }}>
+            plwawecs messages: <strong data-testid="zc429-recovery-msgs">
+              {rd.plwawecs_messages_found || 0}
+            </strong>
+            {' · '}
+            attachments stored: <strong data-testid="zc429-recovery-atts">
+              {rd.attachments_in_evidence || 0}
+            </strong>
+            {' · '}
+            lineage rows: <strong data-testid="zc429-recovery-lineage">
+              {rd.lineage_rows || 0}
+            </strong>
+          </div>
+          <div style={{ marginTop: 6, fontSize: 10, color: '#b91c1c' }}>
+            ⚠ Never use the printed-email PDF as a substitute for real
+            attachment binaries. Backfill must use the original
+            downloaded files.
+          </div>
+        </div>
+        {data && data.warnings && data.warnings.length > 0 && (
+          <div data-testid="zc429-warnings" style={{ marginTop: 10 }}>
+            {data.warnings.map((w, i) => (
+              <div key={i} style={{ fontSize: 11, color: '#b45309' }}>⚠️ {w}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const counts = data.classified_counts || {};
+  const ev     = data.event || {};
+  const sha    = (s) => (s || '').slice(0, 12);
+
+  return (
+    <div style={card} data-testid="zc429-evidence-card">
+      <div style={h2}>
+        📜 ZC429 / SAD Evidence
+        <span style={chip('green')} data-testid="zc429-status-chip">
+          ZC429 received
+        </span>
+      </div>
+
+      {/* Event header */}
+      <div style={grid} data-testid="zc429-event-block">
+        <div style={kv}>
+          <div style={label}>AWB</div>
+          <div style={mono}>{ev.awb || '—'}</div>
+        </div>
+        <div style={kv}>
+          <div style={label}>ZC / MRN</div>
+          <div style={mono}>{ev.zc_number || '—'}</div>
+        </div>
+        <div style={kv}>
+          <div style={label}>Sender</div>
+          <div>{ev.sender || '—'}</div>
+        </div>
+        <div style={kv}>
+          <div style={label}>Received</div>
+          <div>{ev.received_at || '—'}</div>
+        </div>
+        <div style={kv}>
+          <div style={label}>Intake event</div>
+          <div style={mono} title={data.intake_event_id}>
+            {sha(data.intake_event_id)}…
+          </div>
+        </div>
+        <div style={kv}>
+          <div style={label}>Processing version</div>
+          <div style={mono}>{ev.processing_version || '—'}</div>
+        </div>
+      </div>
+
+      {/* Classified counts */}
+      <div data-testid="zc429-classified-counts"
+           style={{ display: 'flex', gap: 12, flexWrap: 'wrap',
+                    marginBottom: 12, fontSize: 12 }}>
+        <div><b>{counts.zc429 || 0}</b> ZC429</div>
+        <div><b>{counts.awb || 0}</b> AWB</div>
+        <div><b>{counts.invoices || 0}</b> invoices</div>
+        <div><b>{counts.mail_evidence || 0}</b> mail evidence</div>
+        <div><b>{counts.others || 0}</b> others</div>
+        <div style={{ marginLeft: 'auto', color: 'var(--text-2,#6b7280)' }}>
+          Total attachments: <b>{(data.attachments || []).length}</b>
+        </div>
+      </div>
+
+      {/* Attachment list */}
+      <div data-testid="zc429-attachments" style={{ marginBottom: 12 }}>
+        <div style={label}>Attachments</div>
+        <div style={{ maxHeight: 220, overflowY: 'auto',
+                      border: '1px solid var(--border,#e5e7eb)',
+                      borderRadius: 6 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-soft,#f9fafb)' }}>
+                <th style={{ textAlign: 'left', padding: '6px 8px' }}>Filename</th>
+                <th style={{ textAlign: 'left', padding: '6px 8px' }}>Type</th>
+                <th style={{ textAlign: 'right', padding: '6px 8px' }}>Size</th>
+                <th style={{ textAlign: 'left', padding: '6px 8px' }}>SHA256</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.attachments || []).map((a, i) => (
+                <tr key={i} data-testid={`zc429-att-${i}`}
+                    style={{ borderTop: '1px solid var(--border,#e5e7eb)' }}>
+                  <td style={{ padding: '6px 8px' }} title={a.stored_path}>
+                    {a.filename}
+                  </td>
+                  <td style={{ padding: '6px 8px' }}>{a.classified_type}</td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right' }}>
+                    {(a.size || 0).toLocaleString()} B
+                  </td>
+                  <td style={{ ...mono, padding: '6px 8px' }}
+                      title={a.sha256}>
+                    {sha(a.sha256)}…
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Processing history */}
+      <div data-testid="zc429-processing-history" style={{ marginBottom: 12 }}>
+        <div style={label}>Processing history</div>
+        {(data.processing_history || []).length === 0 ? (
+          <div style={{ fontSize: 11, color: 'var(--text-2,#6b7280)' }}>
+            (no entries)
+          </div>
+        ) : (
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11 }}>
+            {data.processing_history.map((h, i) => (
+              <li key={i}>
+                <span style={mono}>{h.created_at}</span> — {h.note}
+                {h.actor ? <span style={{ color: 'var(--text-2,#6b7280)' }}> ({h.actor})</span> : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Linked timeline events */}
+      <div data-testid="zc429-linked-timeline">
+        <div style={label}>Linked timeline events</div>
+        {(data.linked_timeline_events || []).length === 0 ? (
+          <div style={{ fontSize: 11, color: 'var(--text-2,#6b7280)' }}>
+            (none)
+          </div>
+        ) : (
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11 }}>
+            {data.linked_timeline_events.map((e, i) => (
+              <li key={i}>
+                <span style={mono}>{e.ts}</span> — <b>{e.event}</b>
+                {e.trigger_source ? <span style={{ color: 'var(--text-2,#6b7280)' }}> via {e.trigger_source}</span> : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Warnings */}
+      {(data.warnings || []).length > 0 && (
+        <div data-testid="zc429-warnings"
+             style={{ marginTop: 12, padding: 8,
+                      background: '#fef3c7', borderRadius: 6 }}>
+          {data.warnings.map((w, i) => (
+            <div key={i} style={{ fontSize: 11, color: '#b45309' }}>⚠️ {w}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// PROFORMA READINESS PANEL
+// ════════════════════════════════════════════════════════════════════
+//
+// One-stop operator view of every Proforma blocker for a single batch:
+// product mapping, customer mapping, design→product bridge, PZ
+// prerequisites, and an overall ready/blocked verdict with a concrete
+// next-action hint.
+//
+// On mount: fetches the read-only aggregator at
+//   GET /dashboard/batches/{batchId}/proforma-readiness
+// — no live wFirma calls, no writes. The Preview / Auto-register / Create
+// buttons trigger the existing capability endpoints when the operator
+// explicitly asks.
+
+function ProformaReadinessCard({ batchId, onToast }) {
+  const [data, setData]       = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy]       = React.useState('');
+  // Per-row VAT/country inputs for missing customers
+  const [custInputs, setCustInputs] = React.useState({});
+
+  const refresh = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const d = await apiFetch(`/dashboard/batches/${encodeURIComponent(batchId)}/proforma-readiness`);
+      setData(d);
+    } catch (e) {
+      onToast && onToast('Failed to load Proforma readiness: ' + e.message, 'error');
+    }
+    setLoading(false);
+  }, [batchId, onToast]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  // Run a write/preview action and refresh on completion.
+  const runAction = async (label, fn) => {
+    setBusy(label);
+    try {
+      const r = await fn();
+      if (r && r.status) {
+        onToast && onToast(`${label}: ${r.status}`, r.status === 'created' || r.status === 'sent' ? 'success' : 'info');
+      } else if (Array.isArray(r) || typeof r === 'object') {
+        onToast && onToast(`${label}: done`, 'success');
+      }
+      await refresh();
+    } catch (e) {
+      onToast && onToast(`${label} failed: ${e.message}`, 'error');
+    }
+    setBusy('');
+  };
+
+  const previewProducts = () => runAction('Preview product auto-register', () =>
+    apiFetch(`/api/v1/wfirma/goods/auto-register-preview/${encodeURIComponent(batchId)}`, {
+      method: 'POST',
+    })
+  );
+  const writeProducts = () => {
+    if (!confirm('Auto-register all missing product codes in wFirma? This calls live goods/add for each missing code.')) return;
+    return runAction('Auto-register products', () =>
+      apiFetch(`/api/v1/wfirma/goods/auto-register/${encodeURIComponent(batchId)}`, {
+        method: 'POST',
+      })
+    );
+  };
+  const previewCustomers = () => runAction('Preview customer auto-resolve', () =>
+    apiFetch(`/api/v1/wfirma/customers/auto-resolve-preview/${encodeURIComponent(batchId)}`, {
+      method: 'POST',
+    })
+  );
+  const createCustomer = (clientName) => {
+    const inp = custInputs[clientName] || {};
+    if (!confirm(`Create wFirma contractor for "${clientName}"? VAT="${inp.vat_id || ''}" Country="${inp.country_code || ''}"`)) return;
+    return runAction(`Create customer "${clientName}"`, () =>
+      apiFetch('/api/v1/wfirma/customers/auto-create-from-name', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_name:  clientName,
+          vat_id:       (inp.vat_id || '').trim(),
+          country_code: (inp.country_code || '').trim(),
+        }),
+      })
+    );
+  };
+
+  const setCustField = (clientName, field, value) => {
+    setCustInputs(prev => ({
+      ...prev,
+      [clientName]: { ...(prev[clientName] || {}), [field]: value },
+    }));
+  };
+
+  if (loading || !data) {
+    return (
+      <Card>
+        <SectionHeader icon="◇" title="Proforma Readiness" subtitle="Identity-resolution checks for this batch" />
+        <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>
+      </Card>
+    );
+  }
+
+  const products  = data.products || {};
+  const customers = data.customers || {};
+  const bridge    = data.bridge || {};
+  const pz        = data.pz || {};
+  const proforma  = data.proforma || {};
+
+  return (
+    <Card style={{ marginBottom: 16 }}>
+      <SectionHeader
+        icon="◇"
+        title="Proforma Readiness"
+        subtitle="Identity-resolution checks for this batch"
+        status={proforma.ready ? 'Ready' : 'Blocked'}
+      />
+
+      {/* ── Verdict banner ───────────────────────────── */}
+      <div data-testid="proforma-verdict" style={{
+        padding: '12px 16px',
+        background: proforma.ready ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+        borderTop: '1px solid var(--card-border)',
+        borderBottom: '1px solid var(--card-border)',
+        fontSize: 12, fontWeight: 600,
+        color: proforma.ready ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+      }}>
+        <div>{proforma.ready ? 'READY for Proforma issuance' : `BLOCKED — ${(proforma.blocking_reasons || []).length} item(s)`}</div>
+        {!proforma.ready && proforma.next_action && (
+          <div style={{ fontWeight: 400, fontSize: 11, marginTop: 4, color: 'var(--text-2)' }}>Next: {proforma.next_action}</div>
+        )}
+      </div>
+
+      <div style={{ padding: 16, display: 'grid', gap: 18 }}>
+
+        {/* ── Section 1: Product Identity ─────────────── */}
+        <section data-testid="readiness-products">
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+            1 · Product Identity
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 12, marginBottom: 8 }}>
+            <InfoRow label="Total codes"   value={products.total ?? 0} />
+            <InfoRow label="Mapped to wFirma" value={products.mapped ?? 0} />
+            <InfoRow label="Missing"        value={products.missing ?? 0} />
+          </div>
+          {!products.create_flag_on && products.missing > 0 && (
+            <div data-testid="product-flag-off" style={{ fontSize: 11, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', padding: '6px 10px', borderRadius: 4, marginBottom: 8 }}>
+              Auto-register is not available (contact your admin)
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Btn onClick={previewProducts} disabled={!!busy} small>Preview product auto-register</Btn>
+            <Btn onClick={writeProducts} disabled={!!busy || !products.create_flag_on || (products.missing ?? 0) === 0} small variant="primary">
+              Register missing items in accounting
+            </Btn>
+          </div>
+        </section>
+
+        {/* ── Section 2: Customer Identity ───────────── */}
+        <section data-testid="readiness-customers">
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+            2 · Customer Identity
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 12, marginBottom: 8 }}>
+            <InfoRow label="Total"     value={customers.total ?? 0} />
+            <InfoRow label="Resolved"  value={customers.resolved ?? 0} />
+            <InfoRow label="Missing"   value={customers.missing ?? 0} />
+            <InfoRow label="Ambiguous" value={customers.ambiguous ?? 0} />
+          </div>
+          {!customers.create_flag_on && customers.missing > 0 && (
+            <div data-testid="customer-flag-off" style={{ fontSize: 11, color: 'var(--badge-amber-text)', background: 'var(--badge-amber-bg)', padding: '8px 10px', borderRadius: 4, marginBottom: 8, lineHeight: 1.5 }}>
+              <b>Action required:</b> The clients listed as "missing" below have no wFirma contractor record.
+              {' '}You must create them manually in <b>wFirma → Contractors → New contractor</b> (using the same name and VAT number as shown),
+              then click <b>Preview customer auto-resolve</b> above to retry the match.
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <Btn onClick={previewCustomers} disabled={!!busy} small>Preview customer auto-resolve</Btn>
+          </div>
+          {(customers.details || []).length > 0 && (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: 'var(--badge-neutral-bg)' }}>
+                    <th style={{ textAlign: 'left',  padding: 6, fontWeight: 700, color: 'var(--text-3)', fontSize: 10, textTransform: 'uppercase' }}>Client</th>
+                    <th style={{ textAlign: 'left',  padding: 6, fontWeight: 700, color: 'var(--text-3)', fontSize: 10, textTransform: 'uppercase' }}>Status</th>
+                    <th style={{ textAlign: 'left',  padding: 6, fontWeight: 700, color: 'var(--text-3)', fontSize: 10, textTransform: 'uppercase' }}>VAT</th>
+                    <th style={{ textAlign: 'left',  padding: 6, fontWeight: 700, color: 'var(--text-3)', fontSize: 10, textTransform: 'uppercase' }}>Country</th>
+                    <th style={{ textAlign: 'right', padding: 6, fontWeight: 700, color: 'var(--text-3)', fontSize: 10, textTransform: 'uppercase' }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {customers.details.map((c, i) => {
+                    const isMissing = c.status === 'missing';
+                    const isResolved = ['exact_match','normalized_match','prefix_match','reverse_prefix_match'].includes(c.status);
+                    return (
+                      <tr key={i} style={{ borderBottom: '1px solid var(--card-border)' }}>
+                        <td style={{ padding: 6 }}>
+                          <div style={{ fontWeight: 600 }}>{c.client_name}</div>
+                          {c.matched_name && (
+                            <div style={{ fontSize: 10, color: 'var(--text-3)' }}>→ {c.matched_name}</div>
+                          )}
+                          {/* Ship-to (Odbiorca) routing surface. Defaults
+                              to "same_as_bill_to" — operator can change via
+                              PUT /api/v1/wfirma/customers/{name}/ship-to.
+                              When mode=separate_contractor without a
+                              receiver id, render a yellow warning chip so
+                              the operator clears it before issuing. */}
+                          {c.ship_to_mode && c.ship_to_mode !== 'same_as_bill_to' && (
+                            <div data-testid="ship-to-row"
+                                 style={{ fontSize: 10, marginTop: 3 }}>
+                              <span style={{ color: 'var(--text-3)' }}>Odbiorca:&nbsp;</span>
+                              <span style={{
+                                display: 'inline-block', padding: '1px 6px',
+                                borderRadius: 3, fontWeight: 600,
+                                background: c.ship_to_warning
+                                  ? 'var(--badge-amber-bg)'
+                                  : 'var(--badge-neutral-bg)',
+                                color: c.ship_to_warning
+                                  ? 'var(--badge-amber-text)'
+                                  : 'var(--text-2)',
+                              }}>{c.ship_to_mode}</span>
+                              {c.ship_to_wfirma_customer_id && (
+                                <span style={{ marginLeft: 6, fontFamily: 'monospace',
+                                                color: 'var(--text-2)' }}>
+                                  id {c.ship_to_wfirma_customer_id}
+                                </span>
+                              )}
+                              {c.ship_to_warning && (
+                                <span style={{ marginLeft: 6,
+                                                color: 'var(--badge-amber-text)' }}>
+                                  ⚠ separate_contractor needs a receiver id
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ padding: 6 }}>
+                          <span style={{ display: 'inline-block', padding: '2px 6px', borderRadius: 3, fontSize: 10, fontWeight: 700,
+                            background: isResolved ? 'var(--badge-green-bg)' : isMissing ? 'var(--badge-red-bg)' : 'var(--badge-amber-bg)',
+                            color: isResolved ? 'var(--badge-green-text)' : isMissing ? 'var(--badge-red-text)' : 'var(--badge-amber-text)' }}>
+                            {c.status}
+                          </span>
+                        </td>
+                        <td style={{ padding: 6 }}>
+                          {isMissing ? (
+                            <Inp
+                              value={(custInputs[c.client_name] || {}).vat_id || ''}
+                              onChange={v => setCustField(c.client_name, 'vat_id', v)}
+                              placeholder="e.g. PL5252812119"
+                              style={{ fontSize: 11, padding: '3px 6px' }}
+                            />
+                          ) : <span style={{ fontSize: 11, color: 'var(--text-3)' }}>—</span>}
+                        </td>
+                        <td style={{ padding: 6 }}>
+                          {isMissing ? (
+                            <Inp
+                              value={(custInputs[c.client_name] || {}).country_code || ''}
+                              onChange={v => setCustField(c.client_name, 'country_code', v)}
+                              placeholder="PL"
+                              style={{ fontSize: 11, padding: '3px 6px', width: 60 }}
+                            />
+                          ) : <span style={{ fontSize: 11, color: 'var(--text-3)' }}>—</span>}
+                        </td>
+                        <td style={{ padding: 6, textAlign: 'right' }}>
+                          {isMissing && (
+                            <Btn onClick={() => createCustomer(c.client_name)} disabled={!!busy} small>
+                              Create
+                            </Btn>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        {/* ── Section 3: Bridge / Mapping ──────────────── */}
+        <section data-testid="readiness-bridge">
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+            3 · Design → Product Bridge
+          </div>
+          <InfoRow label="Mappings" value={bridge.design_product_mappings ?? 0} />
+          {bridge.ambiguous_design_codes && Object.keys(bridge.ambiguous_design_codes).length > 0 && (
+            <div data-testid="bridge-ambiguous" style={{ marginTop: 8, padding: 10, background: 'var(--badge-amber-bg)', borderRadius: 4, color: 'var(--badge-amber-text)', fontSize: 11 }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Ambiguous design codes</div>
+              {Object.entries(bridge.ambiguous_design_codes).map(([d, codes]) => (
+                <div key={d} style={{ fontFamily: 'monospace' }}>{d} → {(codes || []).join(', ')}</div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* ── Section 4: PZ / SAD prerequisites ───────── */}
+        <section data-testid="readiness-pz">
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+            4 · PZ / SAD prerequisites
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 8 }}>
+            <InfoRow label="SAD received"           value={pz.sad_received ? 'YES' : 'NO'} />
+            <InfoRow label="wFirma PZ doc id"       value={pz.wfirma_pz_doc_id || '—'} mono />
+            <InfoRow label="pz_rows.json on disk"   value={pz.pz_rows_json_present ? 'YES' : 'NO'} />
+            <InfoRow label="Ready for PZ create"    value={pz.ready_for_pz_create ? 'YES' : 'NO'} />
+          </div>
+        </section>
+
+        {/* ── Section 5: Proforma verdict + blockers ───── */}
+        <section data-testid="readiness-verdict">
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+            5 · Proforma verdict
+          </div>
+          {(proforma.blocking_reasons || []).length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--badge-green-text)' }}>No blockers — Proforma can be issued.</div>
+          ) : (
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-2)' }}>
+              {proforma.blocking_reasons.map((r, i) => <li key={i}>{r}</li>)}
+            </ul>
+          )}
+        </section>
+
+        {(data.errors || []).length > 0 && (
+          <section data-testid="readiness-errors" style={{ padding: 8, background: 'var(--badge-red-bg)', borderRadius: 4, fontSize: 11, color: 'var(--badge-red-text)' }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>Aggregator errors:</div>
+            {data.errors.map((e, i) => <div key={i}>• {e}</div>)}
+          </section>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════════
+//  ProformaDraftPanel — Phase 6 dashboard wiring for the local editable
+//  Proforma Draft lifecycle (Phases 1–5 backend).
+//
+//  Read endpoints:
+//    GET  /api/v1/proforma/drafts/{batch_id}
+//    GET  /api/v1/proforma/draft/{draft_id}
+//    GET  /api/v1/proforma/draft/{draft_id}/events
+//
+//  Mutation endpoints (every call sends X-Operator + expected_updated_at):
+//    PATCH  /draft/{id}                              — top-level fields
+//    PATCH  /draft/{id}/lines/{line_id}              — per-line edit
+//    POST   /draft/{id}/service-charges              — add charge
+//    DELETE /draft/{id}/service-charges/{charge_id}  — remove charge
+//    POST   /draft/{id}/approve                      — confirm token
+//    POST   /draft/{id}/re-open                      — confirm token
+//    POST   /draft/{id}/cancel                       — reason required
+//    POST   /draft/{id}/reset-from-sales-packing     — replaces lines
+//    POST   /draft/{id}/post                         — confirm token + 2 prompts
+//
+//  Editable states: draft, editing, post_failed.
+//  All other states are read-only here. Posting is the ONLY path that
+//  reaches wFirma — never auto-fired; only via the manual handler below.
+// ════════════════════════════════════════════════════════════════════════
+
+const PROFORMA_DRAFT_TOKENS = {
+  approve: 'YES_APPROVE_LOCAL_PROFORMA_DRAFT',
+  reopen:  'YES_REOPEN_LOCAL_PROFORMA_DRAFT',
+  post:    'YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA',
+};
+
+const PROFORMA_DRAFT_EDITABLE_STATES = ['draft', 'editing', 'post_failed'];
+
+function _draftStateChipColors(state) {
+  const map = {
+    draft:        { bg: 'var(--badge-amber-bg)', tx: 'var(--badge-amber-text)' },
+    editing:      { bg: 'var(--badge-amber-bg)', tx: 'var(--badge-amber-text)' },
+    approved:     { bg: 'var(--badge-blue-bg)',  tx: 'var(--badge-blue-text)'  },
+    posting:      { bg: 'var(--badge-blue-bg)',  tx: 'var(--badge-blue-text)'  },
+    posted:       { bg: 'var(--badge-green-bg)', tx: 'var(--badge-green-text)' },
+    post_failed:  { bg: 'var(--badge-red-bg)',   tx: 'var(--badge-red-text)'   },
+    cancelled:    { bg: 'var(--badge-red-bg)',   tx: 'var(--badge-red-text)'   },
+    superseded:   { bg: 'var(--badge-red-bg)',   tx: 'var(--badge-red-text)'   },
+    // V1 — adopted-from-audit draft represents a wFirma proforma that
+    // already exists; informational (blue), not action-needed.
+    adopted_from_audit: { bg: 'var(--badge-blue-bg)', tx: 'var(--badge-blue-text)' },
+  };
+  return map[state] || { bg: 'var(--badge-amber-bg)', tx: 'var(--badge-amber-text)' };
+}
+
+const _DRAFT_STATE_LABELS = {
+  draft:       'Draft',
+  editing:     'Editing',
+  approved:    'Locked for posting',
+  posting:     'Sending…',
+  posted:      'Sent to accounting',
+  post_failed: 'Send failed',
+  cancelled:   'Cancelled',
+  superseded:  'Replaced',
+  adopted_from_audit: 'Adopted from wFirma',
+};
+
+function ProformaDraftStateChip({ state }) {
+  const c = _draftStateChipColors(state);
+  return (
+    <span data-testid={`draft-state-chip-${state}`}
+          style={{
+            background: c.bg, color: c.tx, padding: '2px 8px',
+            borderRadius: 10, fontSize: 11, fontWeight: 700,
+            textTransform: 'uppercase', letterSpacing: '0.04em',
+          }}>
+      {_DRAFT_STATE_LABELS[state] || state}
+    </span>
+  );
+}
+
+// ── PR 2C.3c — parse CSV bulk-price text (standalone, outside component) ─────
+// Input: "product_code, unit_price\n..." (one pair per line, comma-separated)
+// Returns: { ok: bool, prices: [{product_code, unit_price}], errors: string[] }
+function parseBulkPriceText(text) {
+  const lines  = (text || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const prices = [];
+  const errors = [];
+  const seen   = new Set();
+  for (const line of lines) {
+    const idx = line.indexOf(',');
+    if (idx === -1) { errors.push(`No comma in: ${line}`); continue; }
+    const code     = line.slice(0, idx).trim();
+    const rawPrice = line.slice(idx + 1).trim();
+    if (!code) { errors.push(`Empty product_code in: ${line}`); continue; }
+    const up = parseFloat(rawPrice);
+    if (isNaN(up) || up <= 0) {
+      errors.push(`Invalid price for ${code}: "${rawPrice}" (must be > 0)`);
+      continue;
+    }
+    if (seen.has(code)) { errors.push(`Duplicate product_code: ${code}`); continue; }
+    seen.add(code);
+    prices.push({ product_code: code, unit_price: up });
+  }
+  return { ok: errors.length === 0 && prices.length > 0, prices, errors };
+}
+
+function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
+  const [drafts, setDrafts]       = React.useState([]);
+  const [loading, setLoading]     = React.useState(true);
+  const [openId, setOpenId]       = React.useState(null);
+  const [openDraft, setOpenDraft] = React.useState(null);
+  const [openBusy, setOpenBusy]   = React.useState(false);
+  const [events, setEvents]       = React.useState(null);
+  const [eventsOpen, setEventsOpen] = React.useState(false);
+
+  // ── Link-packing-as-sales state ─────────────────────────────────────────
+  const [showLink, setShowLink]       = React.useState(false);
+  const [packDocs, setPackDocs]       = React.useState([]);
+  const [packDocsLoading, setPackDocsLoading] = React.useState(false);
+  const [clientNames, setClientNames] = React.useState({});  // pdoc_id → name
+  const [ignoredDocs, setIgnoredDocs] = React.useState(new Set()); // pdoc_id → ignored
+  const [linkBusy, setLinkBusy]       = React.useState(false);
+
+  const refreshList = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/proforma/drafts/${encodeURIComponent(batchId)}`);
+      setDrafts((d && d.drafts) || []);
+    } catch (e) {
+      onToast && onToast('Failed to load Proforma drafts: ' + e.message, 'error');
+    }
+    setLoading(false);
+  }, [batchId, onToast]);
+
+  React.useEffect(() => { refreshList(); }, [refreshList]);
+
+  const openOne = React.useCallback(async (draftId) => {
+    setOpenId(draftId);
+    setOpenBusy(true);
+    setEventsOpen(false);
+    setEvents(null);
+    // Reset bulk-price state on open (PR 2C.3c)
+    setBulkPriceText('');
+    setBulkPriceResult(null);
+    setBulkPriceNeedsConfirm(null);
+    // Reset visibility panel on open (Phase 5.5A)
+    setVisibility(null);
+    setVisOpen(false);
+    try {
+      const d = await apiFetch(`/api/v1/proforma/draft/${draftId}`);
+      setOpenDraft(d.draft);
+      // PR 2C.3c: auto-open bulk price panel when pricing refresh is needed
+      setPriceRecoveryOpen(!!(d.draft && d.draft.needs_pricing_refresh));
+    } catch (e) {
+      onToast && onToast('Failed to load draft: ' + e.message, 'error');
+      setOpenDraft(null);
+    }
+    setOpenBusy(false);
+  }, [onToast]);
+
+  const closeOne = () => {
+    setOpenId(null); setOpenDraft(null); setEvents(null); setEventsOpen(false);
+    setVisibility(null); setVisOpen(false);
+  };
+
+  // Phase 5.5A — lazy-load visibility on demand
+  const loadVisibility = React.useCallback(async () => {
+    if (!openId) return;
+    try {
+      const d = await apiFetch(`/api/v1/proforma/draft/${openId}/visibility`);
+      setVisibility(d);
+      setVisOpen(true);
+    } catch (e) {
+      onToast && onToast('Visibility load failed: ' + e.message, 'error');
+    }
+  }, [openId, onToast]);
+
+  const reloadOpen = React.useCallback(async () => {
+    if (!openId) return;
+    try {
+      const d = await apiFetch(`/api/v1/proforma/draft/${openId}`);
+      setOpenDraft(d.draft);
+    } catch (e) {
+      onToast && onToast('Failed to refresh draft: ' + e.message, 'error');
+    }
+  }, [openId, onToast]);
+
+  // ── Master-data lookups for the editor (loaded once per open draft) ──
+  // Both endpoints are local-DB only; no wFirma call, no write.
+  const [productOptions,  setProductOptions]  = React.useState([]);
+  const [customerOptions, setCustomerOptions] = React.useState([]);
+  // PR-203a: status banner for the single Bill-to cascade.
+  // Shape: null | { phase: 'buyer'|'ship_to'|'payment_terms'|'done'|'error',
+  //                 message: string }
+  const [applyingCustomer, setApplyingCustomer] = React.useState(null);
+  React.useEffect(() => {
+    if (!openId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiFetch('/api/v1/proforma/product-options');
+        if (!cancelled) setProductOptions((r && r.options) || []);
+      } catch (_) {
+        if (!cancelled) setProductOptions([]);
+      }
+      try {
+        // PR-202: source rich master data (bill_to_*, ship_to_*,
+        // payment_terms_days, freight/insurance ids) from customer_master.
+        // The legacy /api/v1/wfirma/customers mapping table only carries
+        // client_name/vat_id/country and is unfit for editor pre-fill.
+        const r = await apiFetch('/api/v1/customer-master/');
+        if (!cancelled) setCustomerOptions((r && r.customers) || []);
+      } catch (_) {
+        if (!cancelled) setCustomerOptions([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [openId]);
+
+  const loadEvents = React.useCallback(async () => {
+    if (!openId) return;
+    try {
+      const d = await apiFetch(`/api/v1/proforma/draft/${openId}/events`);
+      setEvents(d.events || []);
+      setEventsOpen(true);
+    } catch (e) {
+      onToast && onToast('Failed to load events: ' + e.message, 'error');
+    }
+  }, [openId, onToast]);
+
+  // ── Link-packing-as-sales callbacks ─────────────────────────────────────
+  const openLinkPanel = React.useCallback(async () => {
+    setShowLink(true);
+    setPackDocsLoading(true);
+    setPackDocs([]);
+    setClientNames({});
+    setIgnoredDocs(new Set());
+    try {
+      const d = await apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/packing-documents`);
+      const docs = (d && d.documents) || [];
+      setPackDocs(docs);
+      // Pre-fill client names from filename suggestions
+      const initial = {};
+      // Auto-ignore ghost duplicate docs (same hash, no lines) so the operator
+      // sees a clean list by default.  They can restore any ignored row manually.
+      const initialIgnored = new Set();
+      docs.forEach(doc => {
+        initial[doc.id] = doc.suggested_client_name || '';
+        if (doc.is_duplicate) initialIgnored.add(doc.id);
+      });
+      setClientNames(initial);
+      setIgnoredDocs(initialIgnored);
+    } catch (e) {
+      onToast && onToast('Failed to load packing documents: ' + e.message, 'error');
+    }
+    setPackDocsLoading(false);
+  }, [batchId, onToast]);
+
+  const submitLinkAsSales = React.useCallback(async () => {
+    // Only active (not ignored, not ghost-duplicate) rows with a non-blank client name are submitted
+    const mappings = packDocs
+      .filter(doc => !ignoredDocs.has(doc.id)
+                     && !(doc.is_duplicate && doc.line_count === 0)
+                     && (clientNames[doc.id] || '').trim())
+      .map(doc => ({ packing_document_id: doc.id, client_name: clientNames[doc.id].trim() }));
+    if (!mappings.length) {
+      onToast && onToast('Enter at least one client name to link (or restore an ignored row).', 'error');
+      return;
+    }
+    setLinkBusy(true);
+    try {
+      const res = await apiFetch(
+        `/api/v1/packing/${encodeURIComponent(batchId)}/link-as-sales`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_mappings: mappings }) },
+      );
+      const linked  = (res && res.linked)  || 0;
+      const skipped = (res && res.failed)   || 0;
+      const created = (res && res.draft_sync && res.draft_sync.created) || 0;
+      const synced  = (res && res.draft_sync && res.draft_sync.synced)  || 0;
+      const parts = [`Linked ${linked} client(s).`];
+      if (skipped) parts.push(`${skipped} skipped.`);
+      parts.push(`Drafts created: ${created}, synced: ${synced}.`);
+      onToast && onToast(parts.join(' '), linked > 0 ? 'success' : 'warning');
+      setShowLink(false);
+      refreshList();
+    } catch (e) {
+      onToast && onToast('Link failed: ' + e.message, 'error');
+    }
+    setLinkBusy(false);
+  }, [batchId, packDocs, clientNames, ignoredDocs, onToast, refreshList]);
+
+  // Wrapped fetch that injects X-Operator + JSON content-type for write calls.
+  const _writeCall = React.useCallback(async (label, url, opts = {}) => {
+    const op = _resolveOperator();
+    if (!op) {
+      onToast && onToast(`${label}: operator name required`, 'error');
+      throw new Error('operator missing');
+    }
+    const headers = {
+      'X-Operator': op,
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    };
+    try {
+      const r = await apiFetch(url, { ...opts, headers });
+      onToast && onToast(`${label} ok`, 'success');
+      await reloadOpen();
+      await refreshList();
+      return r;
+    } catch (e) {
+      onToast && onToast(`${label} failed: ${e.message}`, 'error');
+      throw e;
+    }
+  }, [onToast, reloadOpen, refreshList]);
+
+  // ── PR-203a: single Bill-to cascade ──────────────────────────────────
+  // Selecting ONE customer applies buyer / ship-to / payment-terms in
+  // three sequential PATCHes, each using the freshly-returned updated_at
+  // from the previous call (no 409 race against React state).  No
+  // wFirma / PZ / DHL surface is touched — purely PATCH the editor JSON
+  // columns the operator could already drive manually.
+  const onApplyCustomerDefaults = React.useCallback(async (c) => {
+    if (!openId || !openDraft || !c) return;
+    const op = _resolveOperator();
+    if (!op) {
+      onToast && onToast('Customer apply: operator name required', 'error');
+      return;
+    }
+    const _trim = (v) => (v == null ? '' : String(v).trim());
+    const _put  = (target, key, value) => {
+      const v = _trim(value);
+      if (v) target[key] = v;
+    };
+
+    // Buyer payload — bill_to_* fields from customer_master.
+    const buyer = {};
+    _put(buyer, 'type',    'company');
+    _put(buyer, 'name',    c.bill_to_name || c.client_name);
+    _put(buyer, 'vat_id',  c.nip || c.vat_eu_number || c.vat_id);
+    _put(buyer, 'country', c.country);
+    _put(buyer, 'street',  c.bill_to_street);
+    _put(buyer, 'city',    c.bill_to_city);
+    _put(buyer, 'zip',     c.bill_to_postal_code);
+    _put(buyer, 'email',   c.bill_to_email);
+    _put(buyer, 'phone',   c.bill_to_phone || c.bill_to_mobile);
+
+    // Ship-to payload — ship_to_* with bill_to_* fallback.
+    const ship = {};
+    _put(ship, 'type',    'company');
+    _put(ship, 'name',    c.ship_to_name    || c.bill_to_name || c.client_name);
+    _put(ship, 'street',  c.ship_to_street  || c.bill_to_street);
+    _put(ship, 'city',    c.ship_to_city    || c.bill_to_city);
+    _put(ship, 'zip',     c.ship_to_postal_code || c.bill_to_postal_code); // C18A: was c.ship_to_zip (wrong field name)
+    _put(ship, 'country', c.ship_to_country || c.country);
+    _put(ship, 'email',   c.ship_to_email   || c.bill_to_email);
+    _put(ship, 'phone',   c.ship_to_phone   || c.bill_to_phone || c.bill_to_mobile);
+
+    // Payment terms — days from customer_master.payment_terms_days.
+    const terms = {};
+    if (c.payment_terms_days != null && _trim(c.payment_terms_days) !== '') {
+      _put(terms, 'days', String(c.payment_terms_days));
+    }
+
+    let currentUpdatedAt = openDraft.updated_at;
+    const headers = { 'X-Operator': op, 'Content-Type': 'application/json' };
+
+    const _patch = async (phaseLabel, payload) => {
+      const r = await apiFetch(`/api/v1/proforma/draft/${openId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({
+          expected_updated_at: currentUpdatedAt,
+          patch: payload,
+        }),
+      });
+      // apiFetch returns the JSON body; thread the fresh updated_at
+      // through to the next call so we never race React state.
+      if (r && r.draft && r.draft.updated_at) {
+        currentUpdatedAt = r.draft.updated_at;
+      }
+      return r;
+    };
+
+    setApplyingCustomer({ phase: 'buyer',
+                           message: 'Applying customer defaults…' });
+    try {
+      if (Object.keys(buyer).length) {
+        await _patch('buyer', { buyer_override: buyer });
+      }
+      setApplyingCustomer({ phase: 'ship_to',
+                             message: 'Buyer saved · saving ship-to…' });
+      if (Object.keys(ship).length) {
+        await _patch('ship_to', { ship_to_override: ship });
+      }
+      setApplyingCustomer({ phase: 'payment_terms',
+                             message: 'Ship-to saved · saving payment terms…' });
+      if (Object.keys(terms).length) {
+        await _patch('payment_terms', { payment_terms: terms });
+      }
+      setApplyingCustomer({ phase: 'done',
+                             message: 'Customer defaults applied' });
+      onToast && onToast('Customer defaults applied', 'success');
+      await reloadOpen();
+      await refreshList();
+      // Clear the banner shortly after success so the editor isn't
+      // visually noisy on the next interaction.
+      setTimeout(() => setApplyingCustomer(null), 1500);
+    } catch (e) {
+      setApplyingCustomer({ phase: 'error',
+                             message: 'Failed: ' + (e && e.message || e) });
+      onToast && onToast('Apply customer defaults failed: '
+                          + (e && e.message || e), 'error');
+    }
+  }, [openId, openDraft, onToast, reloadOpen, refreshList]);
+
+  // ── Per-action handlers ───────────────────────────────────────────────
+  const onPatchField = (field, value) =>
+    _writeCall(`PATCH ${field}`, `/api/v1/proforma/draft/${openId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        patch: { [field]: value },
+      }),
+    });
+
+  const onPatchLine = (lineId, patch) =>
+    _writeCall(`PATCH line ${lineId}`,
+               `/api/v1/proforma/draft/${openId}/lines/${lineId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        patch,
+      }),
+    });
+
+  const [chargePrefill, setChargePrefill] = React.useState(null);
+
+  // ── PR 2C.3c — bulk price recovery state ─────────────────────────────────
+  const [priceRecoveryOpen,     setPriceRecoveryOpen]     = React.useState(false);
+  const [bulkPriceText,         setBulkPriceText]         = React.useState('');
+  const [bulkPriceResult,       setBulkPriceResult]       = React.useState(null);
+  const [bulkPriceNeedsConfirm, setBulkPriceNeedsConfirm] = React.useState(null);
+
+  // ── Phase 5.5A — visibility state ────────────────────────────────────────
+  const [visibility,      setVisibility]      = React.useState(null);
+  const [visOpen,         setVisOpen]         = React.useState(false);
+
+  const onApplyBulkPrices = React.useCallback(async (withConfirm) => {
+    const parsed = parseBulkPriceText(bulkPriceText);
+    if (!parsed.ok) {
+      setBulkPriceResult({ ok: false, detail: parsed.errors.join('; ') });
+      return;
+    }
+    const bodyObj = {
+      expected_updated_at: openDraft.updated_at,
+      prices: parsed.prices,
+    };
+    if (withConfirm) bodyObj.confirm_overwrite = 'YES_OVERWRITE_EXISTING_PRICES';
+    try {
+      const r = await _writeCall('Bulk price recovery',
+        `/api/v1/proforma/draft/${openId}/bulk-price-recovery`, {
+        method: 'POST',
+        body: JSON.stringify(bodyObj),
+      });
+      if (r && r.ok) {
+        setBulkPriceResult(r);
+        setBulkPriceNeedsConfirm(null);
+      } else if (r && r.requires_confirm_overwrite) {
+        setBulkPriceNeedsConfirm(r.codes_with_existing_price || []);
+        setBulkPriceResult(null);
+      } else {
+        setBulkPriceResult({ ok: false, detail: (r && r.detail) || 'Unknown error' });
+      }
+    } catch (e) {
+      setBulkPriceResult({ ok: false, detail: e.message });
+    }
+  }, [openId, openDraft, bulkPriceText, _writeCall]);
+
+  const onAddCharge = (charge) =>
+    _writeCall('Add service charge',
+               `/api/v1/proforma/draft/${openId}/service-charges`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        charge,
+      }),
+    });
+
+  // ── Line CRUD (existing backend; UI added) ────────────────────────────
+  const onAddLine = (line) =>
+    _writeCall('Add line', `/api/v1/proforma/draft/${openId}/lines`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        line,
+      }),
+    });
+
+  const onDeleteLine = (lineId) =>
+    _writeCall(`Delete line ${lineId}`,
+               `/api/v1/proforma/draft/${openId}/lines/${lineId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+      }),
+    });
+
+  // ── Pre-post preview ─────────────────────────────────────────────────
+  // Primary (operator-facing): GET /draft/{id}/preview.html — readable
+  // printable HTML, opens in a new tab, browser-printable to PDF.
+  // Debug (developer-facing): POST /preview/{batch}/{client} — raw JSON
+  // shown in the existing modal with a Download JSON button.
+  // Both are read-only; neither calls wFirma writes (verified by tests).
+  const onPreviewHtml = React.useCallback(() => {
+    if (!openDraft) return;
+    try {
+      window.open(`/api/v1/proforma/draft/${openDraft.id}/preview.html`,
+                  '_blank');
+    } catch (_) {
+      // fall through; user can click the JSON debug option
+    }
+  }, [openDraft]);
+
+  const [previewModal, setPreviewModal] = React.useState(null);
+  const onPreviewJsonDebug = React.useCallback(async () => {
+    if (!openDraft) return;
+    setPreviewModal({ loading: true });
+    try {
+      const r = await apiFetch(
+        `/api/v1/proforma/preview/${encodeURIComponent(batchId)}/`
+        + encodeURIComponent(openDraft.client_name),
+        { method: 'POST' });
+      const body = await (r.text ? r.text() : r);
+      let parsed;
+      try { parsed = JSON.parse(body); } catch { parsed = body; }
+      setPreviewModal({ loading: false, ok: r.ok !== false, body: parsed });
+    } catch (e) {
+      setPreviewModal({ loading: false, ok: false,
+                          error: String((e && e.message) || e) });
+    }
+  }, [openDraft, batchId]);
+  const onPreviewDownload = React.useCallback(() => {
+    if (!previewModal || !previewModal.body) return;
+    const blob = new Blob(
+      [JSON.stringify(previewModal.body, null, 2)],
+      { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `proforma-preview-${batchId}-${openDraft.client_name}.json`
+                   .replace(/[^A-Za-z0-9._-]/g, '_');
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }, [previewModal, batchId, openDraft]);
+
+  // ── Customer re-map helper (open the Customer Master tab) ─────────────
+  // Wires a single button on the customer card when the resolution is
+  // unmatched/ambiguous.  Does NOT call /auto-create-from-name from this
+  // surface — that endpoint is gated and operator-controlled elsewhere.
+  const onCustomerRemapOpen = React.useCallback(() => {
+    try {
+      window.open('/dashboard/dashboard.html#customer-master', '_blank');
+    } catch (_) {
+      // no-op: operator can navigate manually
+    }
+  }, []);
+
+  const onRemoveCharge = (chargeId) =>
+    _writeCall('Remove service charge',
+               `/api/v1/proforma/draft/${openId}/service-charges/${chargeId}`
+               + `?expected_updated_at=${encodeURIComponent(openDraft.updated_at)}`,
+               { method: 'DELETE' });
+
+  const onSuggestFreight = React.useCallback(async () => {
+    try {
+      const r = await apiFetch(`/api/v1/proforma/draft/${openId}/suggest-freight`);
+      if (r && r.ok && r.suggestion) {
+        setChargePrefill({
+          charge_type: 'freight',
+          amount:      r.suggestion.amount,
+          currency:    r.draft_currency || openDraft.currency || 'EUR',
+          label:       r.suggestion.label || '',
+        });
+      } else {
+        const reason = (r && r.reason) ? r.reason : 'no freight data configured';
+        onToast && onToast(`Freight suggestion blocked: ${reason}`, 'warn');
+      }
+    } catch (e) {
+      onToast && onToast(`Suggest freight failed: ${e.message}`, 'error');
+    }
+  }, [openId, openDraft, onToast]);
+
+  const onSuggestInsurance = React.useCallback(async () => {
+    try {
+      const r = await apiFetch(`/api/v1/proforma/draft/${openId}/suggest-insurance`);
+      if (r && r.ok && r.suggestion) {
+        setChargePrefill({
+          charge_type: 'insurance',
+          amount:      r.suggestion.amount,
+          currency:    r.draft_currency || openDraft.currency || 'EUR',
+          label:       r.suggestion.label || '',
+        });
+      } else {
+        const reason = (r && r.reason) ? r.reason : 'no insurance data configured';
+        onToast && onToast(`Insurance suggestion blocked: ${reason}`, 'warn');
+      }
+    } catch (e) {
+      onToast && onToast(`Suggest insurance failed: ${e.message}`, 'error');
+    }
+  }, [openId, openDraft, onToast]);
+
+  const onApprove = () => {
+    const token = window.prompt(
+      `Type the approval token to lock this draft as approved:\n\n  ${PROFORMA_DRAFT_TOKENS.approve}`,
+      '');
+    if (token !== PROFORMA_DRAFT_TOKENS.approve) {
+      onToast && onToast('Approve cancelled — token mismatch', 'info');
+      return;
+    }
+    return _writeCall('Approve draft',
+                       `/api/v1/proforma/draft/${openId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        confirm_token: PROFORMA_DRAFT_TOKENS.approve,
+      }),
+    });
+  };
+
+  const onReopen = () => {
+    const token = window.prompt(
+      `Type the re-open token to unlock this draft:\n\n  ${PROFORMA_DRAFT_TOKENS.reopen}`,
+      '');
+    if (token !== PROFORMA_DRAFT_TOKENS.reopen) {
+      onToast && onToast('Re-open cancelled — token mismatch', 'info');
+      return;
+    }
+    return _writeCall('Re-open draft',
+                       `/api/v1/proforma/draft/${openId}/re-open`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        confirm_token: PROFORMA_DRAFT_TOKENS.reopen,
+      }),
+    });
+  };
+
+  const onCancel = () => {
+    const reason = window.prompt('Reason for cancelling this draft (required):', '');
+    if (!reason || !reason.trim()) {
+      onToast && onToast('Cancel aborted — reason required', 'info');
+      return;
+    }
+    if (!window.confirm('Cancel this draft? This is local-only and does NOT delete a wFirma Proforma. Cancelled drafts are read-only.')) return;
+    return _writeCall('Cancel draft',
+                       `/api/v1/proforma/draft/${openId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        reason: reason.trim(),
+      }),
+    });
+  };
+
+  const onReset = () => {
+    if (!window.confirm(
+      'Reset this draft from the latest sales packing? '
+      + 'CURRENT EDITABLE LINES WILL BE REPLACED. Buyer/ship-to/payment-terms/remarks are preserved.'
+    )) return;
+    return _writeCall('Reset from sales packing',
+                       `/api/v1/proforma/draft/${openId}/reset-from-sales-packing`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        reset_all: false,
+      }),
+    });
+  };
+
+  const onResetAll = () => {
+    if (!window.confirm(
+      'RESET ALL: replace lines AND wipe buyer / ship-to / payment-terms / remarks / service-charges. Continue?'
+    )) return;
+    return _writeCall('Reset (full) from sales packing',
+                       `/api/v1/proforma/draft/${openId}/reset-from-sales-packing`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        reset_all: true,
+      }),
+    });
+  };
+
+  const onEnrichProductNames = () => {
+    if (!openDraft || !isEditable) return;
+    if (!(openDraft.editable_lines || []).length) return;
+    _writeCall('Enrich product names',
+               `/api/v1/proforma/draft/${openId}/enrich-from-product-descriptions`, {
+      method: 'POST',
+      body: JSON.stringify({ expected_updated_at: openDraft.updated_at }),
+    }).then(result => {
+      if (result && result.ok) {
+        const n = result.enriched_count || 0;
+        const m = result.missing_count  || 0;
+        onToast && onToast(`Enriched ${n} line${n !== 1 ? 's' : ''} (${m} without description)`, 'success');
+      }
+    });
+  };
+
+  // POST is special: only allowed when state=approved, double-confirmed.
+  // Manual handler ONLY — must NEVER be invoked from any auto-effect.
+  const onPostToWfirma = () => {
+    if (!openDraft || openDraft.draft_state !== 'approved') return;
+    if (!window.confirm(
+      '⚠️ POSTS A REAL PROFORMA TO wFirma.\n\n'
+      + 'This is a live external write. The draft will transition to '
+      + '"posting" before the call. On success it becomes "posted" with the '
+      + 'returned wFirma id. On failure it becomes "post_failed" — you must '
+      + 're-open + edit + approve again to retry.\n\nContinue?'
+    )) return;
+    const token = window.prompt(
+      `Type the post token to authorise the live wFirma write:\n\n  ${PROFORMA_DRAFT_TOKENS.post}`,
+      '');
+    if (token !== PROFORMA_DRAFT_TOKENS.post) {
+      onToast && onToast('Post cancelled — token mismatch', 'info');
+      return;
+    }
+    return _writeCall('Post to wFirma',
+                       `/api/v1/proforma/draft/${openId}/post`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        confirm_token: PROFORMA_DRAFT_TOKENS.post,
+      }),
+    }).then(result => {
+      if (result && result.service_charges_note) {
+        onToast && onToast(
+          '⚠ ' + result.service_charges_note, 'warning'
+        );
+      }
+      return result;
+    });
+  };
+
+  // ── Renderers ─────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <Card data-testid="proforma-draft-panel-loading">
+        <SectionHeader icon="◇" title="Local Proforma Drafts" subtitle="Loading…" />
+        <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>
+      </Card>
+    );
+  }
+
+  if (!drafts.length) {
+    return (
+      <Card data-testid="proforma-draft-panel-empty" style={{ marginBottom: 16 }}>
+        <SectionHeader icon="◇" title="Local Proforma Drafts"
+                       subtitle="No proforma drafts yet. Upload a client sales file, or use the link button below if purchase packing files are already uploaded." />
+
+        {/* Link-packing-as-sales panel — shown when purchase packing files are
+            already uploaded but were never routed through the sales intake path */}
+        {!showLink ? (
+          <div style={{ padding: '0 16px 16px' }}>
+            <button
+              data-testid="btn-link-packing-as-sales"
+              onClick={openLinkPanel}
+              style={{
+                fontSize: 12, padding: '6px 14px', borderRadius: 6,
+                background: '#0B3D2E', color: '#fff', border: 'none', cursor: 'pointer',
+              }}
+            >
+              ⟳ Link packing files as client sales
+            </button>
+            <span style={{ marginLeft: 10, fontSize: 11, color: 'var(--text-3)' }}>
+              Use this if client packing files were uploaded but drafts were not created.
+            </span>
+          </div>
+        ) : (
+          <div data-testid="link-packing-panel" style={{ padding: '0 16px 16px' }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
+              Assign client names to uploaded packing files
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>
+              Names pre-filled from filenames where possible. Leave blank to skip a file.
+            </div>
+
+            {packDocsLoading && (
+              <div style={{ color: 'var(--text-3)', fontSize: 12 }}>Loading packing documents…</div>
+            )}
+
+            {!packDocsLoading && !packDocs.length && (
+              <div data-testid="link-packing-no-docs"
+                   style={{ color: 'var(--text-3)', fontSize: 12 }}>
+                No purchase packing files found for this batch.
+              </div>
+            )}
+
+            {!packDocsLoading && packDocs.length > 0 && (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginBottom: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border-1)', color: 'var(--text-3)' }}>
+                    <th style={{ textAlign: 'left', padding: '4px 8px' }}>Invoice / File</th>
+                    <th style={{ textAlign: 'right', padding: '4px 8px' }}>Lines</th>
+                    <th style={{ textAlign: 'left', padding: '4px 8px' }}>Client name</th>
+                    <th style={{ textAlign: 'left', padding: '4px 8px' }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {packDocs.filter(doc => !(doc.is_duplicate && doc.line_count === 0)).map(doc => {
+                    const isIgnored = ignoredDocs.has(doc.id);
+                    // C15A: highlight rows with no client name yet — these need operator attention
+                    const isUnassigned = !isIgnored && !(clientNames[doc.id] || '').trim();
+                    return (
+                    <tr key={doc.id}
+                        data-testid={isIgnored ? `link-packing-doc-ignored-${doc.id}` : (isUnassigned ? `link-packing-doc-unassigned-${doc.id}` : undefined)}
+                        style={{ borderBottom: '1px solid var(--border-0)',
+                                 opacity: isIgnored ? 0.38 : 1,
+                                 background: isUnassigned ? 'var(--badge-amber-bg)' : 'transparent',
+                                 transition: 'opacity 0.15s' }}>
+                      <td style={{ padding: '4px 8px' }}>
+                        {doc.is_duplicate && (
+                          <span data-testid={`link-packing-doc-dup-badge-${doc.id}`}
+                                style={{ fontSize: 9, fontWeight: 700,
+                                         background: '#7c3aed22', color: '#7c3aed',
+                                         borderRadius: 3, padding: '1px 4px',
+                                         marginRight: 4, verticalAlign: 'middle' }}>
+                            DUP
+                          </span>
+                        )}
+                        {isUnassigned && (
+                          <span data-testid={`link-packing-doc-needs-client-${doc.id}`}
+                                style={{ fontSize: 9, fontWeight: 700,
+                                         background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
+                                         border: '1px solid var(--badge-amber-border)',
+                                         borderRadius: 3, padding: '1px 4px',
+                                         marginRight: 4, verticalAlign: 'middle' }}>
+                            Needs client
+                          </span>
+                        )}
+                        <span data-testid={`link-packing-doc-invoice-${doc.id}`}>
+                          {doc.invoice_no || '—'}
+                        </span>
+                        <div style={{ color: 'var(--text-3)', fontSize: 10, maxWidth: 200,
+                                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {doc.source_file_path ? doc.source_file_path.split(/[/\\]/).pop() : ''}
+                        </div>
+                      </td>
+                      <td style={{ padding: '4px 8px', color: 'var(--text-3)', textAlign: 'right' }}>
+                        <span data-testid={`link-packing-doc-lines-${doc.id}`}>
+                          {doc.line_count != null ? doc.line_count : '—'}
+                        </span>
+                      </td>
+                      <td style={{ padding: '4px 8px' }}>
+                        {clientList.length > 0 && (
+                          <datalist id={`cm-clients-${doc.id}`}>
+                            {clientList.map((c, ci) => <option key={ci} value={c.name} />)}
+                          </datalist>
+                        )}
+                        <input
+                          data-testid={`link-packing-client-input-${doc.id}`}
+                          type="text"
+                          list={clientList.length > 0 ? `cm-clients-${doc.id}` : undefined}
+                          placeholder="Client name (type or pick from Customer Master)"
+                          value={clientNames[doc.id] || ''}
+                          onChange={e => setClientNames(prev => ({ ...prev, [doc.id]: e.target.value }))}
+                          disabled={isIgnored}
+                          style={{
+                            fontSize: 12, padding: '3px 8px', borderRadius: 4, width: 220,
+                            border: '1px solid var(--border-1)', background: 'var(--bg-1)',
+                            color: 'var(--text-1)',
+                          }}
+                        />
+                      </td>
+                      <td style={{ padding: '4px 8px' }}>
+                        {doc.is_duplicate && (
+                          <button
+                            data-testid={`link-packing-doc-ignore-btn-${doc.id}`}
+                            onClick={() => setIgnoredDocs(prev => {
+                              const next = new Set(prev);
+                              if (next.has(doc.id)) next.delete(doc.id);
+                              else next.add(doc.id);
+                              return next;
+                            })}
+                            title={isIgnored
+                              ? 'Restore: include this file in linking'
+                              : 'Ignore: skip this duplicate file'}
+                            style={{
+                              fontSize: 10, padding: '2px 7px', borderRadius: 4, cursor: 'pointer',
+                              border: '1px solid var(--border-1)',
+                              background: isIgnored ? '#0B3D2E22' : '#7c3aed22',
+                              color: isIgnored ? '#0B3D2E' : '#7c3aed',
+                              fontWeight: 600,
+                            }}>
+                            {isIgnored ? '↩ Restore' : '✕ Ignore'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+            {!packDocsLoading && (() => {
+              const ghostCount = packDocs.filter(doc => doc.is_duplicate && doc.line_count === 0).length;
+              return ghostCount > 0 ? (
+                <div data-testid="link-packing-ghost-count"
+                     style={{ fontSize: 11, color: 'var(--text-3)', padding: '6px 8px',
+                              fontStyle: 'italic' }}>
+                  {ghostCount} duplicate upload{ghostCount !== 1 ? 's' : ''} hidden (zero lines)
+                </div>
+              ) : null;
+            })()}
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                data-testid="btn-link-packing-submit"
+                onClick={submitLinkAsSales}
+                disabled={linkBusy || packDocsLoading || !packDocs.length}
+                style={{
+                  fontSize: 12, padding: '6px 14px', borderRadius: 6,
+                  background: linkBusy ? '#555' : '#0B3D2E', color: '#fff',
+                  border: 'none', cursor: linkBusy ? 'default' : 'pointer',
+                }}
+              >
+                {linkBusy ? 'Linking…' : '✓ Link & Create Drafts'}
+              </button>
+              <button
+                data-testid="btn-link-packing-cancel"
+                onClick={() => setShowLink(false)}
+                style={{
+                  fontSize: 12, padding: '6px 14px', borderRadius: 6,
+                  background: 'transparent', color: 'var(--text-2)',
+                  border: '1px solid var(--border-1)', cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </Card>
+    );
+  }
+
+  const isEditable    = openDraft && PROFORMA_DRAFT_EDITABLE_STATES.includes(openDraft.draft_state);
+  const isPosted      = openDraft && openDraft.draft_state === 'posted';
+  const isCancelled   = openDraft && openDraft.draft_state === 'cancelled';
+  const isPostFailed  = openDraft && openDraft.draft_state === 'post_failed';
+  const isPosting     = openDraft && openDraft.draft_state === 'posting';
+
+  return (
+    <Card data-testid="proforma-draft-panel"
+          className="ej-doc-suite"
+          style={{
+            marginBottom: 16,
+            // Phase 7 — adopt Estrella Document Suite brand tokens (scoped to
+            // this panel only via CSS custom properties; no global theme
+            // change). Maps the design's emerald/gold/cream palette onto the
+            // existing structural styles without removing any.
+            ['--ej-brand']: '#0B3D2E',
+            ['--ej-brand-2']: '#0F5A45',
+            ['--ej-brand-3']: '#DCEDE5',
+            ['--ej-gold']: '#C9A24B',
+            ['--ej-gold-2']: '#B0892F',
+            ['--ej-gold-tint']: '#F6EFD9',
+            ['--ej-cream']: '#FBF8F1',
+          }}>
+        {/* Branded masthead — mirrors the Document Suite letterhead.
+            Renders ABOVE the structural SectionHeader so existing tests
+            keep finding the title/subtitle pair unchanged. */}
+        <div data-testid="proforma-draft-masthead"
+             style={{
+               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+               padding: '14px 18px',
+               background: 'linear-gradient(90deg, var(--ej-brand) 0 65%, var(--ej-gold) 65% 100%)',
+               color: '#fff',
+             }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span aria-hidden="true"
+                  style={{
+                    width: 28, height: 28, borderRadius: '50%',
+                    background: 'linear-gradient(135deg,#0B3D2E 0%,#0F5A45 100%)',
+                    color: 'var(--ej-gold)',
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    fontWeight: 700, fontSize: 14, letterSpacing: '-0.05em',
+                    boxShadow: '0 0 0 2px var(--ej-gold-tint)',
+                  }}>EJ</span>
+            <div style={{ lineHeight: 1.1 }}>
+              <div style={{ fontSize: 9, letterSpacing: '0.2em',
+                              textTransform: 'uppercase',
+                              color: 'var(--ej-gold-tint)', fontWeight: 600 }}>
+                Estrella Jewels · Document Suite
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 700, marginTop: 2 }}>
+                Pro Forma · Faktura proforma
+              </div>
+            </div>
+          </div>
+          <div style={{ fontSize: 9, letterSpacing: '0.18em',
+                          textTransform: 'uppercase',
+                          color: 'var(--ej-gold-tint)', fontWeight: 600 }}>
+            {drafts.length} draft{drafts.length === 1 ? '' : 's'}
+          </div>
+        </div>
+
+      <SectionHeader icon="◇" title="Local Proforma Drafts"
+                     subtitle={`${drafts.length} draft(s) — edit locally before posting to wFirma`} />
+
+      <div data-testid="proforma-draft-list" style={{ padding: 12 }}>
+        {drafts.map(d => (
+          <div key={d.id}
+               data-testid={`proforma-draft-row-${d.id}`}
+               style={{
+                 display: 'flex', alignItems: 'center', gap: 10,
+                 padding: '10px 12px', borderBottom: '1px solid var(--card-border)',
+                 background: openId === d.id ? 'var(--card-hover)' : 'transparent',
+                 cursor: 'pointer',
+               }}
+               onClick={() => openId === d.id ? closeOne() : openOne(d.id)}>
+            <ProformaDraftStateChip state={d.draft_state} />
+            <div style={{ flex: 1, fontSize: 13 }}>
+              <strong>{d.client_name}</strong>
+              {' · '}
+              <span style={{ color: 'var(--text-3)' }}>v{d.draft_version}</span>
+              {d.wfirma_proforma_id && (
+                <span data-testid={`draft-wfirma-id-${d.id}`}
+                      style={{ marginLeft: 10, fontSize: 11,
+                                color: 'var(--text-3)', fontFamily: 'monospace' }}>
+                  wFirma id: {d.wfirma_proforma_id}
+                  {d.wfirma_proforma_fullnumber && (
+                    <span style={{ marginLeft: 6 }}>
+                      ({d.wfirma_proforma_fullnumber})
+                    </span>
+                  )}
+                </span>
+              )}
+              {d.draft_state === 'post_failed' && d.error_hint && (
+                <span data-testid={`draft-error-hint-${d.id}`}
+                      style={{ marginLeft: 8, fontSize: 10,
+                                color: 'var(--badge-red-text)',
+                                fontFamily: 'monospace',
+                                background: 'var(--badge-red-bg)',
+                                padding: '1px 5px', borderRadius: 3,
+                                maxWidth: 260, display: 'inline-block',
+                                overflow: 'hidden', textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap', verticalAlign: 'middle' }}
+                      title={d.error_hint}>
+                  ✗ {d.error_hint}
+                </span>
+              )}
+              {d.reservation_status && d.reservation_status !== 'created' && (
+                <span data-testid={`draft-reservation-status-${d.id}`}
+                      style={{ marginLeft: 8, fontSize: 9.5, fontWeight: 700,
+                                letterSpacing: '0.06em', textTransform: 'uppercase',
+                                color: d.reservation_status === 'failed'
+                                  ? 'var(--badge-red-text)' : 'var(--text-3)',
+                                background: d.reservation_status === 'failed'
+                                  ? 'var(--badge-red-bg)' : 'var(--bg-subtle)',
+                                padding: '1px 5px', borderRadius: 3 }}>
+                  res: {d.reservation_status}
+                </span>
+              )}
+              {d.last_packing_sync_at && !d.packing_sync_warning && (
+                <span data-testid={`draft-sync-chip-${d.id}`}
+                      style={{ marginLeft: 8, fontSize: 9.5,
+                                color: 'var(--text-3)',
+                                background: 'var(--bg-subtle)',
+                                padding: '1px 5px', borderRadius: 3 }}
+                      title={`Lines synced from packing upload: ${d.last_packing_sync_at.slice(0,19).replace('T',' ')}`}>
+                  ↻ packing synced
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+              {d.draft_state === 'posting' && d.posting_started_at
+                ? <span style={{ color: 'var(--badge-blue-text)' }}>
+                    posting since {d.posting_started_at.slice(0, 19).replace('T', ' ')}
+                  </span>
+                : <>updated {(d.updated_at || '').slice(0, 19).replace('T', ' ')}</>
+              }
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {openId && (
+        <div data-testid="proforma-draft-detail"
+             style={{ borderTop: '2px solid var(--card-border)', padding: 16 }}>
+          {openBusy && <div style={{ fontSize: 12 }}>Loading draft…</div>}
+          {openDraft && (
+            <React.Fragment>
+              <div style={{ display: 'flex', alignItems: 'center',
+                              justifyContent: 'space-between', marginBottom: 12 }}>
+                <div>
+                  <ProformaDraftStateChip state={openDraft.draft_state} />
+                  {(() => {
+                    // V2 — read-only invoice-eligibility badge.
+                    // Pure derived render; no API call, no mutation,
+                    // no workflow action.  Reflects existing backend
+                    // gate at routes_proforma._gather_conversion_inputs
+                    // and proforma_invoice_links UNIQUE constraint.
+                    const linkExists = !!(openDraft.invoice_link_id ||
+                                          openDraft.has_invoice_link);
+                    const eligible   = openDraft.status === 'issued' &&
+                                       openDraft.draft_state === 'posted' &&
+                                       !linkExists;
+                    const blockers = [];
+                    if (openDraft.status !== 'issued')
+                      blockers.push("draft.status must be 'issued'");
+                    if (openDraft.draft_state !== 'posted')
+                      blockers.push("draft_state must be 'posted'");
+                    if (linkExists)
+                      blockers.push("invoice link already exists");
+                    return (
+                      <span data-testid="draft-invoice-eligibility-badge"
+                            title={eligible ? 'Invoice conversion eligible' : blockers.join('; ')}
+                            style={{
+                              marginLeft: 8, padding: '2px 8px',
+                              borderRadius: 10, fontSize: 11, fontWeight: 700,
+                              textTransform: 'uppercase', letterSpacing: '0.04em',
+                              background: eligible ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+                              color:      eligible ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+                            }}>
+                        {eligible ? 'Invoice eligible' : 'Invoice blocked'}
+                      </span>
+                    );
+                  })()}
+                  <strong style={{ marginLeft: 10, fontSize: 14 }}>
+                    {openDraft.client_name}
+                  </strong>
+                  <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-3)' }}>
+                    draft #{openDraft.id} · v{openDraft.draft_version}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <Btn small onClick={loadEvents} data-testid="btn-draft-events">
+                    {eventsOpen ? '▲ Hide history' : '▼ History'}
+                  </Btn>
+                  <Btn small onClick={() => { if (visOpen) { setVisOpen(false); } else { loadVisibility(); } }}
+                       data-testid="btn-draft-visibility">
+                    {visOpen ? '▲ Visibility' : '▼ Visibility'}
+                  </Btn>
+                  <Btn small onClick={closeOne}>Close</Btn>
+                </div>
+              </div>
+
+              {/* Customer mapping card — read-only summary from
+                  customer_resolution (added to GET /draft/{id}).
+                  Surfaces wfirma_customer_id and match strategy so the
+                  operator can see at a glance whether the post will
+                  resolve.  Never hides unresolved state. */}
+              <ProformaCustomerCard
+                  resolution={openDraft.customer_resolution}
+                  clientName={openDraft.client_name}
+                  onRemapOpen={onCustomerRemapOpen} />
+
+              {/* Posted-state panel — branded "Total due" treatment from
+                  the Estrella Document Suite (emerald block + gold accent).
+                  Same single wired endpoint, no fake buttons.
+                  V3 — also renders for adopted_from_audit drafts so the
+                  wFirma proforma id/fullnumber is operator-visible on
+                  drafts adopted from existing wFirma records. */}
+              {(isPosted || openDraft.draft_state === 'adopted_from_audit') && (
+                <div data-testid="draft-posted-banner"
+                     className="ej-doc-toolbar"
+                     style={{ borderRadius: 4, marginBottom: 12, overflow: 'hidden',
+                                border: '1px solid var(--ej-gold)' }}>
+                  <div style={{ padding: '10px 14px',
+                                  background: 'var(--ej-brand)', color: '#fff',
+                                  display: 'flex', alignItems: 'center',
+                                  justifyContent: 'space-between', gap: 12,
+                                  fontSize: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span aria-hidden="true"
+                            style={{ fontSize: 9, letterSpacing: '0.18em',
+                                      textTransform: 'uppercase',
+                                      color: 'var(--ej-gold)', fontWeight: 700 }}>
+                        Pro Forma · Issued
+                      </span>
+                      <strong style={{ fontWeight: 700 }}>POSTED to wFirma</strong>
+                    </div>
+                    <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+                      <a data-testid="draft-view-proforma-link"
+                         href={`/api/v1/proforma/${encodeURIComponent(openDraft.batch_id)}/${encodeURIComponent(openDraft.client_name)}/document`}
+                         target="_blank" rel="noreferrer"
+                         style={{ color: 'var(--ej-gold)', fontWeight: 700,
+                                    textDecoration: 'underline', fontSize: 11 }}>
+                        View Proforma →
+                      </a>
+                      {/* Phase 8 — real wFirma PDF download. Wired to
+                          GET /api/v1/proforma/{batch}/{client}/document.pdf
+                          which calls wfirma_client.fetch_invoice_pdf
+                          (read-only invoices/download endpoint). */}
+                      <a data-testid="draft-download-proforma-pdf"
+                         href={`/api/v1/proforma/${encodeURIComponent(openDraft.batch_id)}/${encodeURIComponent(openDraft.client_name)}/document.pdf`}
+                         target="_blank" rel="noreferrer"
+                         style={{ color: 'var(--ej-gold)', fontWeight: 700,
+                                    textDecoration: 'underline', fontSize: 11 }}>
+                        ↓ Download PDF
+                      </a>
+                    </div>
+                  </div>
+                  <div style={{ padding: '8px 14px',
+                                  background: 'var(--ej-cream)',
+                                  color: 'var(--ej-gold-2)', fontSize: 10.5,
+                                  display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                    <span>id <code data-testid="draft-posted-wfirma-id"
+                                    style={{ color: 'var(--ej-brand)',
+                                              fontWeight: 600 }}>
+                      {openDraft.wfirma_proforma_id || '—'}
+                    </code></span>
+                    {openDraft.wfirma_proforma_fullnumber && (
+                      <span>
+                        nr <code data-testid="draft-posted-fullnumber"
+                                  style={{ color: 'var(--ej-brand)',
+                                            fontWeight: 600 }}>
+                          {openDraft.wfirma_proforma_fullnumber}
+                        </code>
+                      </span>
+                    )}
+                    <span>currency <strong style={{ color: 'var(--ej-brand)' }}>
+                      {openDraft.currency || '—'}
+                    </strong></span>
+                  </div>
+                </div>
+              )}
+
+              {/* Posting in-progress banner */}
+              {isPosting && (
+                <div data-testid="draft-posting-banner"
+                     style={{ padding: '10px 14px', marginBottom: 12,
+                                background: 'var(--badge-blue-bg)',
+                                border: '1px solid var(--badge-blue-border)',
+                                borderRadius: 4, fontSize: 12,
+                                color: 'var(--badge-blue-text)',
+                                display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <span style={{ fontWeight: 700 }}>⏳ Posting to wFirma…</span>
+                  {openDraft.posting_started_at && (
+                    <span style={{ fontSize: 10 }}>
+                      started {openDraft.posting_started_at.slice(0, 19).replace('T', ' ')}
+                      {openDraft.posting_started_by && ` by ${openDraft.posting_started_by}`}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Post-failed error banner */}
+              {isPostFailed && (
+                <div data-testid="draft-post-failed-banner"
+                     style={{ padding: '10px 14px', marginBottom: 12,
+                                background: 'var(--badge-red-bg)',
+                                border: '1px solid var(--badge-red-border)',
+                                borderRadius: 4, fontSize: 12 }}>
+                  <div style={{ fontWeight: 700, color: 'var(--badge-red-text)',
+                                  marginBottom: 4 }}>
+                    ✗ Posting failed
+                  </div>
+                  {openDraft.post_failed_at && (
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>
+                      {openDraft.post_failed_at.slice(0, 19).replace('T', ' ')}
+                    </div>
+                  )}
+                  {openDraft.error_hint && (
+                    <pre data-testid="draft-post-failed-error"
+                         style={{ margin: 0, fontSize: 10.5, fontFamily: 'monospace',
+                                    color: 'var(--badge-red-text)',
+                                    whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                      {openDraft.error_hint}
+                    </pre>
+                  )}
+                  <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-3)' }}>
+                    Re-open the draft to edit, then re-approve and re-post.
+                  </div>
+                </div>
+              )}
+
+              {/* Posted — attribution line */}
+              {isPosted && openDraft.posted_by && (
+                <div data-testid="draft-posted-attribution"
+                     style={{ marginBottom: 8, fontSize: 10,
+                                color: 'var(--text-3)', textAlign: 'right' }}>
+                  Posted by <strong>{openDraft.posted_by}</strong>
+                  {openDraft.posted_at && (
+                    <span style={{ marginLeft: 6 }}>
+                      {openDraft.posted_at.slice(0, 19).replace('T', ' ')}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Auto-sync badge — shown when lines were synced from packing upload */}
+              {openDraft.last_packing_sync_at && (
+                <div data-testid="draft-packing-sync-badge"
+                     style={{ marginBottom: 8, display: 'flex', alignItems: 'center',
+                                gap: 6, fontSize: 10,
+                                color: openDraft.packing_sync_warning
+                                  ? 'var(--badge-amber-text, #92400e)'
+                                  : 'var(--text-3)' }}>
+                  <span style={{ fontWeight: 600 }}>
+                    {openDraft.packing_sync_warning ? '⚠ Auto-synced (blocked)' : '↻ Auto-synced from packing list'}
+                  </span>
+                  <span>{openDraft.last_packing_sync_at.slice(0, 19).replace('T', ' ')}</span>
+                  {openDraft.packing_sync_warning && (
+                    <span style={{ fontSize: 9, opacity: 0.75 }}>
+                      ({openDraft.packing_sync_warning})
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* PR 2C.3c — pricing-refresh banner + bulk price entry panel */}
+              {openDraft.needs_pricing_refresh && isEditable && (
+                <div data-testid="draft-pricing-refresh-banner"
+                     style={{ padding: '10px 14px', marginBottom: 12,
+                              background: 'var(--badge-amber-bg, #fffbeb)',
+                              border: '1px solid var(--badge-amber-border, #fbbf24)',
+                              borderRadius: 4, fontSize: 12 }}>
+                  <div style={{ fontWeight: 700,
+                                color: 'var(--badge-amber-text, #92400e)',
+                                marginBottom: 4 }}>
+                    ⚠ Pricing refresh required
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+                    {(openDraft.editable_lines || []).filter(l => !(l.unit_price > 0)).length} line(s)
+                    have unit_price ≤ 0. This draft cannot be approved until all prices are filled.
+                  </div>
+                  <Btn small
+                       data-testid="btn-toggle-bulk-price-recovery"
+                       onClick={() => setPriceRecoveryOpen(v => !v)}>
+                    {priceRecoveryOpen ? '▲ Hide bulk price entry' : '▼ Bulk price entry'}
+                  </Btn>
+                </div>
+              )}
+
+              {priceRecoveryOpen && isEditable && (
+                <div data-testid="draft-bulk-price-panel"
+                     style={{ padding: '10px 14px', marginBottom: 12,
+                              background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border-1)',
+                              borderRadius: 4, fontSize: 12 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Bulk price entry</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+                    One <code>product_code, unit_price</code> per line.
+                    Currency: {openDraft.currency || 'EUR'}. Prices must be &gt; 0.
+                  </div>
+                  <textarea
+                    data-testid="bulk-price-textarea"
+                    placeholder={"EJL/26-27/148-1, 61.00\nEJL/26-27/148-2, 45.50"}
+                    value={bulkPriceText}
+                    onChange={e => setBulkPriceText(e.target.value)}
+                    rows={8}
+                    style={{ width: '100%', fontFamily: 'monospace', fontSize: 12,
+                             padding: '6px 8px', borderRadius: 4, boxSizing: 'border-box',
+                             border: '1px solid var(--border-1)',
+                             background: 'var(--bg-1)', color: 'var(--text-1)' }}
+                  />
+                  {bulkPriceResult && (
+                    <div data-testid="bulk-price-result"
+                         style={{ marginTop: 8, padding: '6px 10px',
+                                  background: bulkPriceResult.ok
+                                    ? 'var(--badge-green-bg, #f0fdf4)'
+                                    : 'var(--badge-red-bg)',
+                                  border: `1px solid ${bulkPriceResult.ok
+                                    ? 'var(--badge-green-border, #86efac)'
+                                    : 'var(--badge-red-border)'}`,
+                                  borderRadius: 4, fontSize: 11 }}>
+                      {bulkPriceResult.ok ? (
+                        <React.Fragment>
+                          <span data-testid="bulk-price-updated-count"
+                                style={{ fontWeight: 700 }}>
+                            ✓ Updated {bulkPriceResult.updated_count} line(s).
+                          </span>
+                          {bulkPriceResult.still_zero_count > 0 && (
+                            <span data-testid="bulk-price-still-zero"
+                                  style={{ marginLeft: 8,
+                                           color: 'var(--badge-amber-text, #92400e)' }}>
+                              {bulkPriceResult.still_zero_count} still zero.
+                            </span>
+                          )}
+                          {(bulkPriceResult.unmatched_codes || []).length > 0 && (
+                            <div data-testid="bulk-price-unmatched"
+                                 style={{ marginTop: 4, color: 'var(--text-3)' }}>
+                              Unmatched: {bulkPriceResult.unmatched_codes.join(', ')}
+                            </div>
+                          )}
+                        </React.Fragment>
+                      ) : (
+                        <span style={{ color: 'var(--badge-red-text)' }}>
+                          {bulkPriceResult.detail}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {bulkPriceNeedsConfirm && (
+                    <div data-testid="bulk-price-confirm-overwrite"
+                         style={{ marginTop: 8, padding: '8px 10px',
+                                  background: 'var(--badge-amber-bg, #fffbeb)',
+                                  border: '1px solid var(--badge-amber-border, #fbbf24)',
+                                  borderRadius: 4, fontSize: 11 }}>
+                      <div style={{ fontWeight: 700,
+                                    color: 'var(--badge-amber-text, #92400e)',
+                                    marginBottom: 4 }}>
+                        ⚠ Overwrite warning
+                      </div>
+                      <div style={{ marginBottom: 6 }}>
+                        These codes already have prices and will be overwritten:
+                        {' '}<strong data-testid="bulk-price-overwrite-codes">
+                          {bulkPriceNeedsConfirm.join(', ')}
+                        </strong>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <Btn small
+                             data-testid="btn-bulk-price-confirm-overwrite"
+                             onClick={() => onApplyBulkPrices(true)}>
+                          Confirm overwrite
+                        </Btn>
+                        <Btn small onClick={() => setBulkPriceNeedsConfirm(null)}>
+                          Cancel
+                        </Btn>
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                    <Btn small variant="primary"
+                         data-testid="btn-apply-bulk-prices"
+                         onClick={() => onApplyBulkPrices(false)}
+                         disabled={!bulkPriceText.trim()}>
+                      Apply bulk prices
+                    </Btn>
+                    <Btn small onClick={() => {
+                      setBulkPriceText('');
+                      setBulkPriceResult(null);
+                      setBulkPriceNeedsConfirm(null);
+                    }}>
+                      Clear
+                    </Btn>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Phase 5.5A — Visibility panel ──────────────────────────────── */}
+              {visOpen && visibility && (
+                <div data-testid="draft-visibility-panel"
+                     style={{ marginBottom: 14, borderRadius: 6, overflow: 'hidden',
+                                border: '1px solid var(--card-border)',
+                                fontSize: 12 }}>
+                  {/* Readiness section */}
+                  <div style={{ padding: '8px 12px',
+                                  background: visibility.readiness && visibility.readiness.blockers && visibility.readiness.blockers.length > 0
+                                    ? 'var(--badge-red-bg, #fef2f2)'
+                                    : visibility.readiness && visibility.readiness.warnings && visibility.readiness.warnings.length > 0
+                                      ? 'var(--badge-amber-bg, #fffbeb)'
+                                      : '#f0fdf4',
+                                  borderBottom: '1px solid var(--card-border)' }}>
+                    <div style={{ fontWeight: 700, fontSize: 11, textTransform: 'uppercase',
+                                    letterSpacing: '0.06em', marginBottom: 4,
+                                    color: 'var(--text-3)' }}>
+                      Readiness
+                      <span data-testid="draft-commercial-state"
+                            style={{ marginLeft: 8, fontWeight: 600, fontSize: 10,
+                                       textTransform: 'none', letterSpacing: 0,
+                                       color: (visibility.readiness && visibility.readiness.ready_for_posting)
+                                         ? '#166534' : 'var(--text-2)' }}>
+                        · {(visibility.readiness && visibility.readiness.commercial_state) || '—'}
+                      </span>
+                    </div>
+                    {visibility.readiness && (visibility.readiness.blockers || []).map((b, i) => (
+                      <div key={i} data-testid="draft-readiness-blocker"
+                           style={{ color: 'var(--badge-red-text, #991b1b)',
+                                      marginBottom: 2, display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+                        <span>✗</span><span>{b}</span>
+                      </div>
+                    ))}
+                    {visibility.readiness && (visibility.readiness.warnings || []).map((w, i) => (
+                      <div key={i} data-testid="draft-readiness-warning"
+                           style={{ color: 'var(--badge-amber-text, #92400e)',
+                                      marginBottom: 2, display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+                        <span>⚠</span><span>{w}</span>
+                      </div>
+                    ))}
+                    {visibility.readiness && (visibility.readiness.safe_to_defer || []).map((s, i) => (
+                      <div key={i} style={{ color: 'var(--text-3)', marginBottom: 2,
+                                              display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+                        <span>ℹ</span><span>{s}</span>
+                      </div>
+                    ))}
+                    {visibility.readiness
+                      && !(visibility.readiness.blockers || []).length
+                      && !(visibility.readiness.warnings || []).length && (
+                      <div style={{ color: '#166534', fontSize: 11 }}>✓ No issues detected</div>
+                    )}
+                  </div>
+                  {/* Shipment + company + document row */}
+                  <div style={{ display: 'flex', gap: 0, flexWrap: 'wrap' }}>
+                    {/* Shipment panel */}
+                    <div data-testid="draft-shipment-panel"
+                         style={{ padding: '8px 12px', flex: '1 1 180px',
+                                    borderRight: '1px solid var(--card-border)',
+                                    borderBottom: '1px solid var(--card-border)' }}>
+                      <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
+                                      letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 }}>
+                        Shipment
+                      </div>
+                      {visibility.shipment_panel && (
+                        <>
+                          <div><span style={{ color: 'var(--text-3)' }}>AWB </span>
+                            <strong data-testid="draft-shipment-awb">
+                              {visibility.shipment_panel.awb || '—'}
+                            </strong>
+                          </div>
+                          <div><span style={{ color: 'var(--text-3)' }}>Carrier </span>
+                            {visibility.shipment_panel.carrier || '—'}
+                          </div>
+                          {visibility.shipment_panel.service_product && (
+                            <div><span style={{ color: 'var(--text-3)' }}>Service </span>
+                              {visibility.shipment_panel.service_product}
+                            </div>
+                          )}
+                          {visibility.shipment_panel.clearance_path && (
+                            <div><span style={{ color: 'var(--text-3)' }}>Clearance </span>
+                              {visibility.shipment_panel.clearance_path}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                    {/* Company completeness */}
+                    <div data-testid="draft-company-completeness"
+                         style={{ padding: '8px 12px', flex: '1 1 180px',
+                                    borderRight: '1px solid var(--card-border)',
+                                    borderBottom: '1px solid var(--card-border)' }}>
+                      <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
+                                      letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 }}>
+                        Company profile
+                        {visibility.company_completeness && (
+                          <span style={{ marginLeft: 6, fontWeight: 600, fontSize: 10,
+                                           textTransform: 'none', letterSpacing: 0,
+                                           color: visibility.company_completeness.score >= 0.8 ? '#166534'
+                                             : visibility.company_completeness.score >= 0.5 ? '#92400e'
+                                             : '#991b1b' }}>
+                            {Math.round((visibility.company_completeness.score || 0) * 100)}%
+                          </span>
+                        )}
+                      </div>
+                      {visibility.company_completeness && !visibility.company_completeness.present && (
+                        <div style={{ color: 'var(--badge-red-text, #991b1b)', fontWeight: 600 }}>
+                          Not configured
+                        </div>
+                      )}
+                      {visibility.company_completeness && (visibility.company_completeness.missing_mandatory || []).map((f, i) => (
+                        <div key={i} style={{ color: 'var(--badge-red-text, #991b1b)' }}>✗ {f}</div>
+                      ))}
+                      {visibility.company_completeness && (visibility.company_completeness.missing_recommended || []).slice(0, 3).map((f, i) => (
+                        <div key={i} style={{ color: 'var(--badge-amber-text, #92400e)' }}>⚠ {f}</div>
+                      ))}
+                    </div>
+                    {/* Document status */}
+                    <div data-testid="draft-document-status"
+                         style={{ padding: '8px 12px', flex: '1 1 180px',
+                                    borderBottom: '1px solid var(--card-border)' }}>
+                      <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
+                                      letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 }}>
+                        Document
+                      </div>
+                      {visibility.document_status && (
+                        <>
+                          <div>
+                            <span style={{ color: 'var(--text-3)' }}>Preview </span>
+                            <span style={{ color: '#166534' }}>✓ ready</span>
+                          </div>
+                          <div>
+                            <span style={{ color: 'var(--text-3)' }}>wFirma </span>
+                            {visibility.document_status.wfirma_issued
+                              ? <span style={{ color: '#166534' }}>
+                                  ✓ {visibility.document_status.wfirma_proforma_fullnumber || visibility.document_status.wfirma_proforma_id}
+                                </span>
+                              : <span style={{ color: 'var(--text-3)' }}>not issued</span>
+                            }
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  {/* Product lines enrichment preview */}
+                  {visibility.product_lines_panel && visibility.product_lines_panel.length > 0 && (
+                    <div style={{ padding: '8px 12px' }}>
+                      <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
+                                      letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 }}>
+                        Product lines · names &amp; HS codes
+                      </div>
+                      <table data-testid="draft-product-lines-panel"
+                             style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr style={{ color: 'var(--text-3)', textAlign: 'left' }}>
+                            <th style={{ paddingBottom: 3 }}>code</th>
+                            <th>name_pl</th>
+                            <th>name_en</th>
+                            <th>hs_code</th>
+                            <th>origin</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {visibility.product_lines_panel.map((row, i) => (
+                            <tr key={i} style={{ borderTop: '1px solid var(--card-border)' }}>
+                              <td style={{ padding: '2px 4px 2px 0', fontFamily: 'monospace',
+                                             fontWeight: 600 }}>
+                                {row.product_code || '—'}
+                              </td>
+                              <td style={{ padding: '2px 4px' }}>
+                                {row.name_pl || <span style={{ color: 'var(--badge-red-text, #991b1b)' }}>missing</span>}
+                                {row.name_pl_source === 'product_descriptions' && (
+                                  <span style={{ color: 'var(--text-3)', fontSize: 9, marginLeft: 3 }}>(db)</span>
+                                )}
+                              </td>
+                              <td style={{ padding: '2px 4px' }}>
+                                {row.name_en || <span style={{ color: 'var(--text-3)', fontSize: 10 }}>—</span>}
+                                {row.name_en_source === 'product_descriptions' && (
+                                  <span style={{ color: 'var(--text-3)', fontSize: 9, marginLeft: 3 }}>(db)</span>
+                                )}
+                              </td>
+                              <td style={{ padding: '2px 4px', fontFamily: 'monospace' }}>
+                                {row.hs_code || <span style={{ color: 'var(--badge-amber-text, #92400e)' }}>—</span>}
+                                {row.hs_source === 'product_local' && (
+                                  <span style={{ color: 'var(--text-3)', fontSize: 9, marginLeft: 3 }}>(db)</span>
+                                )}
+                              </td>
+                              <td style={{ padding: '2px 4px', fontFamily: 'monospace' }}>
+                                {row.origin_country || '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Lines */}
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                                letterSpacing: '0.06em', textTransform: 'uppercase',
+                                marginBottom: 6 }}>
+                  Lines · currency {openDraft.currency || '—'}
+                </div>
+                <table data-testid="draft-lines-table"
+                       style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ color: 'var(--text-3)', textAlign: 'left' }}>
+                      <th>#</th>
+                      <th>product_code</th>
+                      <th>item_type</th>
+                      <th>name_pl</th>
+                      <th>design_no</th>
+                      <th>qty</th>
+                      <th>unit_price</th>
+                      <th>currency</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(openDraft.editable_lines || []).map(ln => (
+                      <ProformaDraftLineRow
+                          key={ln.line_id}
+                          line={ln}
+                          editable={isEditable}
+                          onPatch={(patch) => onPatchLine(ln.line_id, patch)}
+                          onDelete={onDeleteLine}
+                          sourceLines={openDraft.source_lines || []} />
+                    ))}
+                  </tbody>
+                </table>
+                {!(openDraft.editable_lines || []).length && (
+                  <div data-testid="draft-lines-empty-hint"
+                       style={{ padding: '10px 12px', fontSize: 12,
+                                borderRadius: 4, marginTop: 4,
+                                background: 'var(--badge-amber-bg, #fffbeb)',
+                                border: '1px solid var(--badge-amber-border, #fbbf24)',
+                                color: 'var(--badge-amber-text, #92400e)' }}>
+                    {/* C18A: actionable hint replaces the silent placeholder */}
+                    <strong>No product lines yet.</strong>
+                    {isEditable && (
+                      <span>
+                        {' '}Click <strong>Reload items from warehouse data</strong> to populate from the uploaded packing list.
+                        If no packing list has been linked yet, use <strong>Link packing as sales</strong> above first.
+                      </span>
+                    )}
+                    {!isEditable && ' This draft has no lines.'}
+                  </div>
+                )}
+                {isEditable && (
+                  <ProformaAddLineForm
+                      draftCurrency={openDraft.currency}
+                      onAdd={onAddLine}
+                      productOptions={productOptions} />
+                )}
+              </div>
+
+              {/* Service charges */}
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                                letterSpacing: '0.06em', textTransform: 'uppercase',
+                                marginBottom: 6 }}>
+                  Service charges
+                </div>
+                <table data-testid="draft-charges-table"
+                       style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                  <tbody>
+                    {(openDraft.service_charges || []).map(c => (
+                      <tr key={c.charge_id}>
+                        <td>{c.charge_type}</td>
+                        <td>{c.amount}</td>
+                        <td>{c.currency}</td>
+                        <td>{c.label || ''}</td>
+                        <td>{isEditable && (
+                          <Btn small onClick={() => onRemoveCharge(c.charge_id)}>Remove</Btn>
+                        )}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {isEditable && (
+                  <div>
+                    <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+                      <Btn small onClick={onSuggestFreight}
+                           data-testid="btn-suggest-freight">
+                        Suggest freight from master
+                      </Btn>
+                      <Btn small onClick={onSuggestInsurance}
+                           data-testid="btn-suggest-insurance">
+                        Calculate insurance
+                      </Btn>
+                    </div>
+                    <ProformaDraftAddChargeForm onAdd={onAddCharge}
+                                               draftCurrency={openDraft.currency}
+                                               lineCurrencies={Array.from(new Set(
+                                                 ((openDraft.editable_lines || [])
+                                                   .map(l => (l.currency || '').toUpperCase())
+                                                   .filter(c => c))))}
+                                               prefill={chargePrefill} />
+                  </div>
+                )}
+              </div>
+
+              {/* Top-level fields */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr',
+                              gap: 12, marginBottom: 14, fontSize: 12 }}>
+                {/* PR-203a: single Bill-to customer picker that cascades
+                    buyer / ship-to / payment-terms onto the draft so the
+                    operator no longer has to click three separate Save
+                    buttons. */}
+                {isEditable && (
+                  <ProformaBillToPicker
+                      customers={customerOptions}
+                      status={applyingCustomer}
+                      onApply={onApplyCustomerDefaults}
+                      testid="draft-bill-to-picker-top" />
+                )}
+                <ProformaDraftRemarksEditor
+                    value={openDraft.remarks || ''}
+                    editable={isEditable}
+                    onSave={(v) => onPatchField('remarks', v)} />
+                <div data-testid="draft-overrides-summary"
+                     style={{ display: 'grid',
+                                gridTemplateColumns: 'repeat(3, 1fr)',
+                                gap: 8, fontSize: 12 }}>
+                  <ProformaJsonObjectEditor
+                      label="Buyer override"
+                      testidPrefix="draft-buyer"
+                      pickerMode="buyer"
+                      fields={[
+                        { key: 'type',    label: 'Type',     placeholder: 'company / individual' },
+                        { key: 'name',    label: 'Name',     placeholder: 'Company or individual name' },
+                        { key: 'vat_id',  label: 'VAT ID',   placeholder: 'Tax ID (companies)' },
+                        { key: 'street',  label: 'Street',   placeholder: 'Street + No.' },
+                        { key: 'city',    label: 'City',     placeholder: 'City' },
+                        { key: 'zip',     label: 'ZIP',      placeholder: 'Postal code' },
+                        { key: 'country', label: 'Country',  placeholder: 'ISO country' },
+                        { key: 'email',   label: 'Email',    placeholder: 'name@…' },
+                        { key: 'phone',   label: 'Phone',    placeholder: '+...' },
+                      ]}
+                      value={openDraft.buyer_override}
+                      editable={isEditable}
+                      onSave={(v) => onPatchField('buyer_override', v)}
+                      extras={({ pickFromCustomer }) => (
+                        <ProformaCustomerPicker
+                            customers={customerOptions}
+                            onPick={pickFromCustomer}
+                            testid="draft-buyer-customer-picker" />
+                      )} />
+                  <ProformaJsonObjectEditor
+                      label="Ship-to override"
+                      testidPrefix="draft-ship-to"
+                      pickerMode="ship_to"
+                      fields={[
+                        { key: 'type',    label: 'Type',     placeholder: 'company / individual' },
+                        { key: 'name',    label: 'Name',     placeholder: 'Recipient name' },
+                        { key: 'street',  label: 'Street',   placeholder: 'Street + No.' },
+                        { key: 'city',    label: 'City',     placeholder: 'City' },
+                        { key: 'zip',     label: 'ZIP',      placeholder: 'Postal code' },
+                        { key: 'country', label: 'Country',  placeholder: 'ISO country' },
+                        { key: 'phone',   label: 'Phone',    placeholder: '+...' },
+                        { key: 'email',   label: 'Email',    placeholder: 'name@…' },
+                      ]}
+                      value={openDraft.ship_to_override}
+                      editable={isEditable}
+                      onSave={(v) => onPatchField('ship_to_override', v)}
+                      extras={({ pickFromCustomer }) => (
+                        <ProformaCustomerPicker
+                            customers={customerOptions}
+                            onPick={pickFromCustomer}
+                            testid="draft-ship-to-customer-picker" />
+                      )} />
+                  <ProformaJsonObjectEditor
+                      label="Payment terms"
+                      testidPrefix="draft-payment-terms"
+                      pickerMode="payment_terms"
+                      fields={[
+                        { key: 'days',   label: 'Days',     placeholder: 'e.g. 30' },
+                        { key: 'method', label: 'Method',   placeholder: 'transfer / cash / …' },
+                        { key: 'note',   label: 'Note',     placeholder: 'Free text' },
+                      ]}
+                      value={openDraft.payment_terms}
+                      editable={isEditable}
+                      onSave={(v) => onPatchField('payment_terms', v)}
+                      extras={({ pickFromCustomer }) => (
+                        <ProformaCustomerPicker
+                            customers={customerOptions}
+                            onPick={pickFromCustomer}
+                            testid="draft-payment-terms-customer-picker" />
+                      )} />
+                </div>
+              </div>
+
+              {/* Action row — gated by current draft_state */}
+              <div data-testid="draft-action-row"
+                   style={{ display: 'flex', gap: 8, flexWrap: 'wrap',
+                              borderTop: '1px solid var(--card-border)',
+                              paddingTop: 12 }}>
+                {isEditable && (
+                  <React.Fragment>
+                    <Btn small variant="primary" onClick={onApprove}
+                         data-testid="btn-draft-approve">Approve</Btn>
+                    <Btn small onClick={onPreviewHtml}
+                         data-testid="btn-draft-preview-html"
+                         title="Open a human-readable proforma draft preview in a new tab. Browser-printable to PDF. Read-only — does not post.">
+                      Preview / print draft
+                    </Btn>
+                    {/* C18A: JSON debug button hidden from operator view */}
+                    {false && <Btn small onClick={onPreviewJsonDebug}
+                         data-testid="btn-draft-preview-json"
+                         title="Developer-only: show the raw JSON payload that would be sent to wFirma. Read-only.">
+                      JSON (debug)
+                    </Btn>}
+                    {(openDraft.editable_lines || []).length > 0 && (
+                      <Btn small variant="outline" onClick={onEnrichProductNames}
+                           data-testid="btn-enrich-product-names"
+                           title="Copy item_type, name_pl, description from product_descriptions. Overwrites prior values — use after sales packing changes.">
+                        Enrich product names
+                      </Btn>
+                    )}
+                    <Btn small onClick={onReset}
+                         data-testid="btn-draft-reset">Reload items from warehouse data</Btn>
+                    <Btn small onClick={onResetAll}
+                         data-testid="btn-draft-reset-all">Reset ALL</Btn>
+                  </React.Fragment>
+                )}
+                {!isEditable && openDraft.draft_state === 'approved' && (
+                  <React.Fragment>
+                    <Btn small onClick={onPreviewHtml}
+                         data-testid="btn-draft-preview-html-approved"
+                         title="Open a human-readable proforma draft preview in a new tab. Read-only — does not post.">
+                      Preview / print draft
+                    </Btn>
+                    {/* C18A: JSON debug hidden from operator view */}
+                  </React.Fragment>
+                )}
+                {openDraft.draft_state === 'approved' && (
+                  <React.Fragment>
+                    <Btn small onClick={onReopen}
+                         data-testid="btn-draft-reopen">Re-open for edit</Btn>
+                    <Btn small variant="primary" onClick={onPostToWfirma}
+                         data-testid="btn-draft-post"
+                         style={{ background: 'var(--badge-red-bg)',
+                                    color: 'var(--badge-red-text)' }}>
+                      Send to accounting (wFirma)
+                    </Btn>
+                  </React.Fragment>
+                )}
+                {isPostFailed && (
+                  <React.Fragment>
+                    <Btn small onClick={onReopen}
+                         data-testid="btn-draft-reopen-after-fail">Re-open for edit</Btn>
+                    <span data-testid="draft-post-failed-note"
+                          style={{ fontSize: 11, color: 'var(--badge-red-text)',
+                                    alignSelf: 'center' }}>
+                      Post failed — re-open to fix, then re-approve and re-post.
+                    </span>
+                  </React.Fragment>
+                )}
+                {!isPosted && !isCancelled && !isPosting && (
+                  <Btn small onClick={onCancel}
+                       data-testid="btn-draft-cancel">Cancel draft</Btn>
+                )}
+                {(isPosted || isCancelled) && (
+                  <span data-testid="draft-readonly-note"
+                        style={{ fontSize: 11, color: 'var(--text-3)',
+                                  alignSelf: 'center' }}>
+                    {isPosted ? 'Posted — read-only.' : 'Cancelled — read-only.'}
+                  </span>
+                )}
+              </div>
+
+              {/* Events drawer */}
+              {eventsOpen && events && (
+                <div data-testid="draft-events-drawer"
+                     style={{ marginTop: 14, padding: 12,
+                                background: 'var(--card-hover)',
+                                borderRadius: 4, fontSize: 11 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                    Event history ({events.length})
+                  </div>
+                  {events.map(e => (
+                    <div key={e.id} style={{ marginBottom: 4,
+                                                fontFamily: 'monospace' }}>
+                      <code>{(e.occurred_at || '').slice(0, 19).replace('T', ' ')}</code>
+                      {' · '}<strong>{e.event}</strong>
+                      {' · '}<span style={{ color: 'var(--text-3)' }}>
+                        {e.operator || '—'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </React.Fragment>
+          )}
+        </div>
+      )}
+
+      {/* ── Preview modal — read-only payload audit, never posts ─────────── */}
+      {previewModal && (
+        <div data-testid="draft-preview-modal"
+             style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                        background: 'rgba(0,0,0,0.4)', zIndex: 9000,
+                        display: 'flex', alignItems: 'center',
+                        justifyContent: 'center' }}
+             onClick={() => setPreviewModal(null)}>
+          <div onClick={e => e.stopPropagation()}
+               style={{ background: 'var(--card)', borderRadius: 6,
+                          width: '80%', maxWidth: 920, maxHeight: '80vh',
+                          display: 'flex', flexDirection: 'column',
+                          border: '1px solid var(--card-border)' }}>
+            <div style={{ padding: 12,
+                            borderBottom: '1px solid var(--card-border)',
+                            display: 'flex', justifyContent: 'space-between',
+                            alignItems: 'center' }}>
+              <strong>Proforma preview (read-only — does not post)</strong>
+              <div>
+                {previewModal.body && (
+                  <Btn small variant="primary"
+                       onClick={onPreviewDownload}
+                       data-testid="btn-draft-preview-download">
+                    Download JSON
+                  </Btn>
+                )}
+                <Btn small onClick={() => setPreviewModal(null)}
+                     style={{ marginLeft: 6 }}
+                     data-testid="btn-draft-preview-close">Close</Btn>
+              </div>
+            </div>
+            <div style={{ padding: 12, overflow: 'auto',
+                            fontFamily: 'monospace', fontSize: 11,
+                            whiteSpace: 'pre-wrap' }}>
+              {previewModal.loading
+                ? 'Loading preview…'
+                : (previewModal.error
+                   ? `Error: ${previewModal.error}`
+                   : JSON.stringify(previewModal.body, null, 2))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* C27.1: Link / re-link packing files (legacy pre-draft repair flow)
+          removed from the post-draft surface. The flow only makes sense
+          before drafts exist; once drafts are created, sales linkage is
+          draft-scoped (handled inside ProformaDraftPanels empty state
+          at line 12655 which still surfaces the button when drafts.length === 0). */}
+    </Card>
+  );
+}
+
+function ProformaDraftLineRow({ line, editable, onPatch, onDelete, sourceLines }) {
+  // PR-fix: store plain strings; handlers below extract e.target.value.
+  // Earlier code passed setX directly to <Inp onChange={...}/>, which
+  // stored the React SyntheticEvent — JSON-stringifying it produced
+  // "[object Object]" on save.
+  const [qty,    setQty]    = React.useState(String(line.qty));
+  const [price,  setPrice]  = React.useState(String(line.unit_price));
+  const [pc,     setPc]     = React.useState(line.product_code || '');
+  const [design, setDesign] = React.useState(line.design_no || '');
+  const [ccy,    setCcy]    = React.useState(line.currency || '');
+  const [itype,  setItype]  = React.useState(line.item_type || '');
+  const [namePl, setNamePl] = React.useState(line.name_pl || '');
+  const _h = (setter) => (e) => setter(e.target.value);
+  React.useEffect(() => {
+    setQty(String(line.qty));
+    setPrice(String(line.unit_price));
+    setPc(line.product_code || '');
+    setDesign(line.design_no || '');
+    setCcy(line.currency || '');
+    setItype(line.item_type || '');
+    setNamePl(line.name_pl || '');
+  }, [line.qty, line.unit_price, line.product_code, line.design_no,
+      line.currency, line.item_type, line.name_pl, line.line_id]);
+
+  const dirty = (parseFloat(qty)   !== Number(line.qty)) ||
+                (parseFloat(price) !== Number(line.unit_price)) ||
+                (pc.trim()     !== (line.product_code || '').trim()) ||
+                (design.trim() !== (line.design_no    || '').trim()) ||
+                (ccy.trim().toUpperCase() !==
+                   (line.currency || '').toUpperCase()) ||
+                (itype.trim()  !== (line.item_type || '').trim()) ||
+                (namePl !== (line.name_pl || ''));
+
+  // Manual override marker — product_code differs from any value
+  // present in source_lines for the same line_id (or a canonical
+  // EJL/.../-N source mint). If the operator changed pc, show a
+  // visible "OVERRIDE" badge so the audit story is obvious.
+  const sourceMatch = (sourceLines || []).find(
+    s => Number(s.line_id) === Number(line.line_id),
+  );
+  const sourcePc = (sourceMatch && sourceMatch.product_code) || '';
+  const pcManualOverride = !!(line.product_code && sourcePc &&
+                              line.product_code !== sourcePc);
+
+  const namePlFull = line.name_pl || '';
+  const namePlShort = namePlFull.length > 35 ? namePlFull.slice(0, 35) + '…' : namePlFull;
+
+  const save = () => {
+    const patch = {};
+    if (parseFloat(qty)   !== Number(line.qty))         patch.qty        = parseFloat(qty);
+    if (parseFloat(price) !== Number(line.unit_price))  patch.unit_price = parseFloat(price);
+    if (pc.trim()     !== (line.product_code || '').trim()) patch.product_code = pc.trim();
+    if (design.trim() !== (line.design_no    || '').trim()) patch.design_no    = design.trim();
+    if (ccy.trim().toUpperCase() !== (line.currency || '').toUpperCase()) {
+      patch.currency = ccy.trim().toUpperCase();
+    }
+    if (itype.trim() !== (line.item_type || '').trim()) patch.item_type = itype.trim();
+    if (namePl !== (line.name_pl || ''))                patch.name_pl   = namePl;
+    if (Object.keys(patch).length) onPatch(patch);
+  };
+
+  return (
+    <tr data-testid={`draft-line-${line.line_id}`}>
+      <td>{line.line_id}</td>
+      <td>
+        {editable ? (
+          <Inp value={pc} onChange={_h(setPc)}
+               data-testid={`draft-line-pc-input-${line.line_id}`}
+               style={{ width: 130, fontFamily: 'monospace', fontSize: 11 }} />
+        ) : (
+          <code>{line.product_code}</code>
+        )}
+        {pcManualOverride && (
+          <div data-testid={`draft-line-pc-override-${line.line_id}`}
+               title={`Original source product_code: ${sourcePc}`}
+               style={{ marginTop: 2, fontSize: 10, fontWeight: 700,
+                          color: 'var(--badge-amber-text)',
+                          background: 'var(--badge-amber-bg)',
+                          display: 'inline-block', padding: '1px 4px',
+                          borderRadius: 3 }}>
+            MANUAL OVERRIDE
+          </div>
+        )}
+      </td>
+      <td style={{ fontSize: 11 }}
+          title="item_type — Enrich copies from product_descriptions; operator may override here">
+        {editable ? (
+          <Inp value={itype} onChange={_h(setItype)}
+               data-testid={`draft-line-item-type-input-${line.line_id}`}
+               style={{ width: 110, fontSize: 11 }} />
+        ) : (
+          <span style={{ color: line.item_type ? 'var(--text-2)' : 'var(--text-3)' }}>
+            {line.item_type || '—'}
+          </span>
+        )}
+      </td>
+      <td style={{ maxWidth: 220 }}
+          title={namePlFull || 'name_pl — Enrich copies from product_descriptions; operator may override here'}
+          data-testid={`draft-line-name-pl-${line.line_id}`}>
+        {editable ? (
+          <Inp value={namePl} onChange={_h(setNamePl)}
+               data-testid={`draft-line-name-pl-input-${line.line_id}`}
+               style={{ width: 200, fontSize: 11 }} />
+        ) : (
+          <span style={{ display: 'inline-block', maxWidth: 200,
+                            overflow: 'hidden', textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            color: line.name_pl ? 'var(--text)' : 'var(--text-3)' }}>
+            {namePlShort || '—'}
+          </span>
+        )}
+      </td>
+      <td>
+        {editable ? (
+          <Inp value={design} onChange={_h(setDesign)}
+               data-testid={`draft-line-design-input-${line.line_id}`}
+               style={{ width: 110, fontSize: 11 }} />
+        ) : (
+          line.design_no || '—'
+        )}
+      </td>
+      <td style={{ width: 90 }}>
+        {editable
+          ? <Inp value={qty} onChange={_h(setQty)}
+                 data-testid={`draft-line-qty-input-${line.line_id}`} />
+          : line.qty}
+      </td>
+      <td style={{ width: 110 }}>
+        {editable
+          ? <Inp value={price} onChange={_h(setPrice)}
+                 data-testid={`draft-line-price-input-${line.line_id}`} />
+          : line.unit_price}
+      </td>
+      <td>
+        {editable
+          ? <Inp value={ccy} onChange={_h(setCcy)}
+                 data-testid={`draft-line-ccy-input-${line.line_id}`}
+                 style={{ width: 60 }} />
+          : line.currency}
+      </td>
+      <td>
+        {editable && dirty && (
+          <Btn small variant="primary"
+               onClick={save}
+               data-testid={`btn-line-save-${line.line_id}`}>Save</Btn>
+        )}
+        {editable && onDelete && (
+          <Btn small
+               onClick={() => {
+                 if (window.confirm(
+                   `Delete line ${line.product_code || line.line_id}?`)) {
+                   onDelete(line.line_id);
+                 }
+               }}
+               data-testid={`btn-line-delete-${line.line_id}`}
+               style={{ marginLeft: 4 }}>Delete</Btn>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+
+// ── Customer-resolution card (C17A: business-first layout;
+//    technical mapping in collapsed details) ──
+function ProformaCustomerCard({ resolution, clientName, onRemapOpen }) {
+  if (!resolution) return null;
+  const r = resolution;
+  const matched = !!r.wfirma_customer_id;
+  const status = r.match_strategy || r.status || 'none';
+  const badgeBg = matched
+    ? 'var(--badge-green-bg)'
+    : (r.ambiguous ? 'var(--badge-amber-bg)' : 'var(--badge-red-bg)');
+  const badgeFg = matched
+    ? 'var(--badge-green-text)'
+    : (r.ambiguous ? 'var(--badge-amber-text)' : 'var(--badge-red-text)');
+  const badgeLabel = matched ? 'mapped' : (r.ambiguous ? 'ambiguous' : 'unmatched');
+  return (
+    <div data-testid="draft-customer-card"
+         style={{ marginBottom: 14, padding: 10,
+                    background: 'var(--card-hover)',
+                    border: '1px solid var(--card-border)',
+                    borderRadius: 4, fontSize: 12 }}>
+      {/* Business header: client name + status badge */}
+      <div style={{ display: 'flex', justifyContent: 'space-between',
+                     alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Buyer</div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>
+            {clientName || '—'}
+          </div>
+        </div>
+        <span style={{ background: badgeBg, color: badgeFg,
+                        padding: '2px 8px', borderRadius: 4,
+                        fontSize: 10, fontWeight: 700,
+                        textTransform: 'uppercase', whiteSpace: 'nowrap',
+                        flexShrink: 0 }}>
+          {badgeLabel}
+        </span>
+      </div>
+      {/* Unmatched action (shown prominently, not as a footnote) */}
+      {!matched && (
+        <div style={{ marginBottom: 8, padding: '6px 8px', borderRadius: 3,
+                        background: r.ambiguous ? 'var(--badge-amber-bg)' : 'var(--badge-red-bg)',
+                        fontSize: 11, color: r.ambiguous ? 'var(--badge-amber-text)' : 'var(--badge-red-text)' }}>
+          {r.ambiguous
+            ? 'Multiple wFirma contractors match this name — use Customer Master to set the correct one.'
+            : 'No wFirma contractor found. Create the contractor in wFirma, then re-run auto-resolve.'}
+          {onRemapOpen && (
+            <span style={{ marginLeft: 8 }}>
+              <Btn small onClick={onRemapOpen}
+                   data-testid="btn-draft-customer-remap"
+                   title="Opens the Customer Master tab — no write fires from this screen.">
+                Open Customer Master
+              </Btn>
+            </span>
+          )}
+        </div>
+      )}
+      {/* Technical mapping — collapsed */}
+      <details>
+        <summary style={{ fontSize: 10, color: 'var(--text-3)', cursor: 'pointer', userSelect: 'none' }}>
+          wFirma mapping details
+        </summary>
+        <div style={{ marginTop: 6, display: 'grid',
+                       gridTemplateColumns: '160px 1fr', gap: '3px 8px',
+                       fontSize: 11 }}>
+          <div style={{ color: 'var(--text-3)' }}>wFirma customer ID</div>
+          <div data-testid="draft-customer-wfirma-id">
+            {matched ? <code>{r.wfirma_customer_id}</code>
+                      : <span style={{ color: 'var(--text-3)' }}>— unmatched —</span>}
+          </div>
+          {r.resolved_wfirma_name && (
+            <>
+              <div style={{ color: 'var(--text-3)' }}>wFirma stored name</div>
+              <div>{r.resolved_wfirma_name}</div>
+            </>
+          )}
+          <div style={{ color: 'var(--text-3)' }}>Match strategy</div>
+          <div>
+            <span style={{ background: badgeBg, color: badgeFg,
+                              padding: '1px 6px', borderRadius: 4,
+                              fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}
+                  data-testid="draft-customer-match-strategy">
+              {status}
+            </span>
+            {r.ambiguous && r.candidates && r.candidates.length > 0 && (
+              <span style={{ marginLeft: 8, color: 'var(--text-3)', fontSize: 11 }}>
+                candidates: {r.candidates.slice(0, 4).join(', ')}
+                {r.candidates.length > 4 ? ` (+${r.candidates.length - 4})` : ''}
+              </span>
+            )}
+          </div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+
+// ── Customer picker — populates buyer/ship-to/payment fields from
+// customer_master (NOT the legacy wfirma_customers mapping table).
+// Rows carry bill_to_*, ship_to_*, freight_*, insurance_* and
+// payment_terms_days.  The picker shows a `bill_to_name · country · nip`
+// summary in the dropdown and emits the full row to `onPick`.
+// ── PR-203a: top-level Bill-to picker ───────────────────────────────────
+// Renders ONE dropdown.  Selecting a customer fires `onApply(row)` which
+// the panel converts into three sequential PATCHes (buyer / ship-to /
+// payment-terms).  Shows a small status banner (`status` prop) so the
+// operator can see each phase complete.  No wFirma / PZ / DHL touched.
+function ProformaBillToPicker({ customers, status, onApply, testid }) {
+  if (!customers || !customers.length) {
+    return (
+      <div data-testid={testid}
+           style={{ padding: 8, border: '1px dashed var(--card-border)',
+                      borderRadius: 4, fontSize: 11,
+                      color: 'var(--text-3)' }}>
+        Bill-to: customer master is empty — register a customer first.
+      </div>
+    );
+  }
+  const _id = (c) => String(c.bill_to_contractor_id || c.bill_to_name
+                              || c.client_name || '');
+  const _label = (c) => {
+    const name = c.bill_to_name || c.client_name || '?';
+    const country = c.country || '';
+    const nip = c.nip || c.vat_eu_number || c.vat_id || '';
+    return name
+         + (country ? ' · ' + country : '')
+         + (nip     ? ' · VAT ' + nip : '');
+  };
+  const banner = (() => {
+    if (!status) return null;
+    const colour = status.phase === 'error' ? '#b45309'
+                 : status.phase === 'done'  ? '#065f46'
+                                            : 'var(--text-2)';
+    return (
+      <div data-testid={`${testid}-status`}
+           style={{ fontSize: 11, marginTop: 4, color: colour }}>
+        {status.message}
+      </div>
+    );
+  })();
+  return (
+    <div data-testid={testid}
+         style={{ padding: 8, border: '1px solid var(--card-border)',
+                    borderRadius: 4 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                      letterSpacing: '0.06em', textTransform: 'uppercase',
+                      marginBottom: 4 }}>
+        Bill-to customer
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>
+        One pick fills buyer, ship-to, and payment terms from the
+        customer master and saves them onto the draft.
+      </div>
+      <select onChange={(e) => {
+                const id = e.target.value;
+                const c = customers.find(x => _id(x) === id);
+                e.target.value = '';
+                if (c) onApply(c);
+              }}
+              data-testid={`${testid}-select`}
+              disabled={status && status.phase !== 'done'
+                                && status.phase !== 'error'}
+              style={{ fontSize: 12, padding: '4px 6px', minWidth: 280 }}>
+        <option value="">— select bill-to customer —</option>
+        {customers.map(c => (
+          <option key={_id(c)} value={_id(c)}>{_label(c)}</option>
+        ))}
+      </select>
+      {banner}
+    </div>
+  );
+}
+
+
+function ProformaCustomerPicker({ customers, onPick, testid }) {
+  if (!customers || !customers.length) return null;
+  // bill_to_contractor_id is the customer_master PK we can key by; fall
+  // back to bill_to_name when present for backwards compatibility.
+  const _id = (c) => String(c.bill_to_contractor_id || c.bill_to_name
+                              || c.client_name || '');
+  const _label = (c) => {
+    const name = c.bill_to_name || c.client_name || '?';
+    const country = c.country || '';
+    const nip = c.nip || c.vat_eu_number || c.vat_id || '';
+    return name
+         + (country ? ' · ' + country : '')
+         + (nip     ? ' · VAT ' + nip : '');
+  };
+  return (
+    <div style={{ marginBottom: 6, fontSize: 11 }}>
+      <label style={{ color: 'var(--text-3)', marginRight: 6 }}>
+        Pick from master:
+      </label>
+      <select onChange={(e) => {
+                const id = e.target.value;
+                const c = customers.find(x => _id(x) === id);
+                if (c) onPick(c);
+                e.target.value = '';
+              }}
+              data-testid={testid}
+              style={{ fontSize: 12, padding: '4px 6px',
+                         minWidth: 240 }}>
+        <option value="">— select customer —</option>
+        {customers.map(c => (
+          <option key={_id(c)} value={_id(c)}>
+            {_label(c)}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+
+// ── Editable JSON-blob form (buyer / ship-to / payment terms) ─────────────
+// `extras` (optional): React node rendered above the field list — used
+//                       to inject the customer picker + type radio.
+// `seedFrom` (optional): callback receiving an object whose keys we copy
+//                         into the local draft when the picker fires.
+function ProformaJsonObjectEditor({ label, fields, value, editable, onSave,
+                                     testidPrefix, extras, onTypeChange,
+                                     pickerMode }) {
+  // value: dict {key: str} from the draft's *_override or payment_terms.
+  // fields: ordered list of {key, label, placeholder, type?}
+  const [draft, setDraft] = React.useState({ ...(value || {}) });
+  React.useEffect(() => { setDraft({ ...(value || {}) }); }, [value]);
+  const set = (k, v) => setDraft(d => ({ ...d, [k]: v }));
+  const stripped = React.useMemo(() => {
+    // Drop empty keys so we don't store '' fields.
+    const out = {};
+    Object.keys(draft || {}).forEach(k => {
+      const v = (draft[k] == null ? '' : String(draft[k])).trim();
+      if (v !== '') out[k] = v;
+    });
+    return out;
+  }, [draft]);
+  const dirty = React.useMemo(() => {
+    const a = JSON.stringify(stripped);
+    const b = JSON.stringify(value || {});
+    return a !== b;
+  }, [stripped, value]);
+  const isEmpty = Object.keys(value || {}).length === 0;
+  // Picker drop-in: extras may include a customer picker that fires
+  // pickFromCustomer(customer_master-row).  Fields are sourced from
+  // customer_master (bill_to_*, ship_to_*, payment_terms_days).
+  // Behaviour is gated by `pickerMode` ('buyer' default, 'ship_to',
+  // 'payment_terms').  Operator-supplied values are NEVER overwritten —
+  // we fill only blank keys.
+  const pickFromCustomer = (c) => {
+    const next = { ...draft };
+    const set_if_blank = (k, v) => {
+      const cur = (next[k] == null ? '' : String(next[k])).trim();
+      const inc = (v == null ? '' : String(v)).trim();
+      if (!cur && inc) next[k] = inc;
+    };
+    const mode = pickerMode || 'buyer';
+    if (mode === 'payment_terms') {
+      set_if_blank('days', c.payment_terms_days);
+    } else if (mode === 'ship_to') {
+      // Ship-to: prefer ship_to_* fields, fall back to bill_to_*.
+      set_if_blank('name',    c.ship_to_name    || c.bill_to_name || c.client_name);
+      set_if_blank('street',  c.ship_to_street  || c.bill_to_street);
+      set_if_blank('city',    c.ship_to_city    || c.bill_to_city);
+      set_if_blank('zip',     c.ship_to_postal_code || c.bill_to_postal_code); // C18A: fix — CM field is ship_to_postal_code
+      set_if_blank('country', c.ship_to_country || c.country);
+      set_if_blank('email',   c.ship_to_email   || c.bill_to_email);
+      set_if_blank('phone',   c.ship_to_phone   || c.bill_to_phone || c.bill_to_mobile);
+      // VAT id is bill-to only by definition; do not auto-copy.
+      if (!next.type) next.type = 'company';
+    } else {
+      // Buyer
+      set_if_blank('name',    c.bill_to_name || c.client_name);
+      set_if_blank('vat_id',  c.nip || c.vat_eu_number || c.vat_id);
+      set_if_blank('country', c.country);
+      set_if_blank('street',  c.bill_to_street);
+      set_if_blank('city',    c.bill_to_city);
+      set_if_blank('zip',     c.bill_to_postal_code);
+      set_if_blank('email',   c.bill_to_email);
+      set_if_blank('phone',   c.bill_to_phone || c.bill_to_mobile);
+      if (!next.type) next.type = 'company';
+    }
+    setDraft(next);
+  };
+
+  // Render the type radio when the field list includes a "type" entry.
+  const hasTypeField = !!fields.find(f => f.key === 'type');
+  return (
+    <div data-testid={`${testidPrefix}-editor`}
+         style={{ padding: 8, border: '1px solid var(--card-border)',
+                    borderRadius: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between',
+                      alignItems: 'baseline', marginBottom: 6 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                        letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+          {label}
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--text-3)' }}>
+          {isEmpty ? '— default —' : 'override active'}
+        </div>
+      </div>
+      {editable && extras && (typeof extras === 'function'
+          ? extras({ pickFromCustomer })
+          : extras)}
+      {editable && hasTypeField && (
+        <div data-testid={`${testidPrefix}-type-row`}
+             style={{ display: 'flex', gap: 10, marginBottom: 6,
+                        fontSize: 11 }}>
+          <label style={{ color: 'var(--text-3)' }}>Type:</label>
+          {['company', 'individual'].map(t => (
+            <label key={t} style={{ display: 'inline-flex',
+                                      gap: 4, cursor: 'pointer' }}>
+              <input type="radio" name={`${testidPrefix}-type`}
+                     value={t}
+                     checked={(draft.type || 'company') === t}
+                     onChange={(e) => set('type', e.target.value)}
+                     data-testid={`${testidPrefix}-type-${t}`} />
+              {t}
+            </label>
+          ))}
+        </div>
+      )}
+      {fields.filter(f => f.key !== 'type').map(f => (
+        <div key={f.key} style={{ display: 'flex', gap: 6, marginBottom: 4,
+                                     alignItems: 'baseline' }}>
+          <label style={{ width: 120, fontSize: 11, color: 'var(--text-3)' }}>
+            {f.label}
+          </label>
+          {editable ? (
+            <Inp value={draft[f.key] || ''}
+                 onChange={(e) => set(f.key, e.target.value)}
+                 placeholder={f.placeholder || ''}
+                 data-testid={`${testidPrefix}-${f.key}`} />
+          ) : (
+            <div style={{ fontSize: 12 }}>
+              {draft[f.key] || <span style={{ color: 'var(--text-3)' }}>—</span>}
+            </div>
+          )}
+        </div>
+      ))}
+      {editable && dirty && (
+        <div style={{ marginTop: 6 }}>
+          <Btn small variant="primary"
+               onClick={() => onSave(stripped)}
+               data-testid={`btn-${testidPrefix}-save`}>Save</Btn>
+          <Btn small
+               onClick={() => setDraft({ ...(value || {}) })}
+               style={{ marginLeft: 6 }}
+               data-testid={`btn-${testidPrefix}-reset`}>Revert</Btn>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ── Add-line form (with product selector from local product master) ───────
+// Loads the canonical product_code list once (via the new local-only
+// GET /api/v1/proforma/product-options endpoint).  Operator can either
+// pick from the datalist OR type a code manually.  No invention; the
+// PATCH-line backend already validates non-blank product_code.
+function ProformaAddLineForm({ draftCurrency, onAdd, productOptions }) {
+  const [pc, setPc]       = React.useState('');
+  const [design, setDes]  = React.useState('');
+  const [qty, setQty]     = React.useState('1');
+  const [price, setPrice] = React.useState('0');
+  const [ccy, setCcy]     = React.useState(draftCurrency || 'USD');
+  const canAdd = pc.trim() !== '' && parseFloat(qty) > 0;
+
+  // When operator picks a code from the datalist, auto-fill design_no
+  // from the local product master if a default is known.
+  const handlePcChange = (v) => {
+    setPc(v);
+    const opt = (productOptions || []).find(o => o.product_code === v.trim());
+    if (opt && !design.trim() && opt.design_no) setDes(opt.design_no);
+  };
+  const submit = () => {
+    // PR-202: reset the form ONLY on a successful POST.  The previous
+    // implementation reset unconditionally, so a failed add looked
+    // identical to a successful one to the operator (form blank, no
+    // line added — error visible only via the toast).
+    const payload = {
+      product_code: pc.trim(),
+      design_no:    design.trim(),
+      qty:          parseFloat(qty),
+      unit_price:   parseFloat(price),
+      currency:     (ccy || draftCurrency || 'USD').toUpperCase(),
+    };
+    const p = onAdd(payload);
+    if (p && typeof p.then === 'function') {
+      p.then(() => {
+        setPc(''); setDes(''); setQty('1'); setPrice('0');
+      }).catch(() => {
+        // Keep the operator's input so they can correct and re-submit.
+      });
+    } else {
+      // Synchronous onAdd (defensive) — assume success.
+      setPc(''); setDes(''); setQty('1'); setPrice('0');
+    }
+  };
+  return (
+    <div data-testid="draft-add-line-form"
+         style={{ display: 'flex', gap: 6, marginTop: 6,
+                    alignItems: 'baseline', flexWrap: 'wrap',
+                    fontSize: 12 }}>
+      <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Add line:</span>
+      <input list="proforma-add-line-product-codes"
+             value={pc}
+             onChange={(e) => handlePcChange(e.target.value)}
+             placeholder="product_code (canonical) — type or pick"
+             data-testid="add-line-pc"
+             style={{ width: 220, padding: '8px 10px', borderRadius: 6,
+                        border: '1px solid var(--border)', fontSize: 12 }} />
+      <datalist id="proforma-add-line-product-codes">
+        {(productOptions || []).map(o => (
+          <option key={o.product_code} value={o.product_code}>
+            {o.item_type ? `${o.item_type} · ` : ''}{o.name_pl || ''}
+          </option>
+        ))}
+      </datalist>
+      <Inp value={design} onChange={(e) => setDes(e.target.value)}
+           placeholder="design_no"
+           data-testid="add-line-design" style={{ width: 120 }} />
+      <Inp value={qty} onChange={(e) => setQty(e.target.value)}
+           placeholder="qty"
+           data-testid="add-line-qty" style={{ width: 60 }} />
+      <Inp value={price} onChange={(e) => setPrice(e.target.value)}
+           placeholder="unit_price"
+           data-testid="add-line-price" style={{ width: 80 }} />
+      <Inp value={ccy} onChange={(e) => setCcy(e.target.value)}
+           placeholder="currency"
+           data-testid="add-line-ccy" style={{ width: 60 }} />
+      <Btn small variant="primary"
+           onClick={submit}
+           disabled={!canAdd}
+           data-testid="btn-add-line">Add</Btn>
+    </div>
+  );
+}
+
+
+function ProformaDraftRemarksEditor({ value, editable, onSave }) {
+  const [v, setV] = React.useState(value || '');
+  React.useEffect(() => { setV(value || ''); }, [value]);
+  return (
+    <div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                      letterSpacing: '0.06em', textTransform: 'uppercase',
+                      marginBottom: 4 }}>
+        Remarks
+      </div>
+      {editable ? (
+        <React.Fragment>
+          <textarea data-testid="draft-remarks-input"
+                    value={v}
+                    onChange={(e) => setV(e.target.value)}
+                    style={{ width: '100%', minHeight: 60, fontSize: 12,
+                              padding: 6, border: '1px solid var(--card-border)' }} />
+          {v !== (value || '') && (
+            <Btn small variant="primary" onClick={() => onSave(v)}
+                 data-testid="btn-remarks-save">Save remarks</Btn>
+          )}
+        </React.Fragment>
+      ) : (
+        <div style={{ whiteSpace: 'pre-wrap', minHeight: 60 }}>
+          {value || <span style={{ color: 'var(--text-3)' }}>— none —</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProformaDraftAddChargeForm({ onAdd, draftCurrency, lineCurrencies,
+                                       prefill }) {
+  // PR-202: default currency comes from the first line of the draft when
+  // present; falls back to the draft-level currency, then USD.  This
+  // matches the backend's currency-match guard (add_draft_service_charge
+  // rejects when the charge currency is not one of the line currencies).
+  const _firstLineCcy = Array.isArray(lineCurrencies) && lineCurrencies.length
+                         ? String(lineCurrencies[0] || '').toUpperCase()
+                         : '';
+  const _defaultCcy = (_firstLineCcy
+                       || String(draftCurrency || '').toUpperCase()
+                       || 'USD');
+  const [type,   setType]   = React.useState('freight');
+  const [amount, setAmount] = React.useState('');
+  const [ccy,    setCcy]    = React.useState(_defaultCcy);
+  const [label,  setLabel]  = React.useState('');
+
+  // Keep ccy in sync if the draft's first-line currency changes (e.g.
+  // operator edits the line currency).  Only updates while ccy still
+  // matches a previous default — never overwrites a value the operator
+  // typed manually.
+  React.useEffect(() => {
+    if (!_firstLineCcy) return;
+    setCcy((cur) => (!cur || cur === _defaultCcy) ? _firstLineCcy : cur);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [_firstLineCcy]);
+
+  // When a suggestion arrives via `prefill`, populate the form fields.
+  React.useEffect(() => {
+    if (!prefill) return;
+    if (prefill.charge_type) setType(prefill.charge_type);
+    if (prefill.amount != null) setAmount(String(prefill.amount));
+    if (prefill.currency) setCcy(String(prefill.currency).toUpperCase());
+    if (prefill.label != null) setLabel(prefill.label);
+  }, [prefill]);
+
+  // Currency-mismatch detection.  If any draft line carries a currency
+  // and the operator's input does not match, block submit client-side
+  // and surface a visible hint — saves a 400 round-trip and explains the
+  // reason directly under the form.
+  const ccyMismatch = (() => {
+    if (!Array.isArray(lineCurrencies) || !lineCurrencies.length) return false;
+    return !lineCurrencies.includes(String(ccy || '').toUpperCase());
+  })();
+
+  const submit = () => {
+    const a = parseFloat(amount);
+    if (!isFinite(a) || a < 0) return;
+    if (ccyMismatch) return;
+    onAdd({ charge_type: type, amount: a,
+            currency: String(ccy || '').toUpperCase(),
+            label });
+    setAmount(''); setLabel('');
+  };
+  return (
+    <div data-testid="draft-add-charge-form"
+         style={{ display: 'flex', gap: 6, marginTop: 6,
+                    flexWrap: 'wrap', alignItems: 'baseline' }}>
+      <Sel value={type} onChange={(e) => setType(e.target.value)}
+           data-testid="add-charge-type">
+        <option value="freight">freight</option>
+        <option value="insurance">insurance</option>
+      </Sel>
+      <Inp value={amount} onChange={(e) => setAmount(e.target.value)}
+           placeholder="amount" data-testid="add-charge-amount" />
+      <Inp value={ccy}
+           onChange={(e) => setCcy(String(e.target.value || '').toUpperCase())}
+           placeholder="ccy" data-testid="add-charge-ccy" />
+      <Inp value={label} onChange={(e) => setLabel(e.target.value)}
+           placeholder="label (optional)" data-testid="add-charge-label" />
+      <Btn small variant="primary" onClick={submit} disabled={ccyMismatch}
+           data-testid="btn-add-charge">Add</Btn>
+      {ccyMismatch && (
+        <div data-testid="add-charge-ccy-mismatch"
+             style={{ flexBasis: '100%', fontSize: 11, color: '#b45309' }}>
+          Currency {String(ccy || '').toUpperCase() || '—'} does not match
+          this draft's line currencies ({lineCurrencies.join(', ')}). Update
+          the charge currency to match before adding.
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function PlaceholderPage({ title, icon, desc }) {
+  return (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12, color: 'var(--text-3)' }}>
+      <div style={{ fontSize: 48, opacity: 0.3 }}>{icon}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-2)', fontFamily: '"DM Serif Display",serif' }}>{title}</div>
+      <div style={{ fontSize: 13, color: 'var(--text-3)' }}>{desc || 'Coming soon'}</div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+// LEARNING PAGE
+// ══════════════════════════════════════════════════════════
+
+const CONF_META = {
+  unconfirmed: { label: 'Unconfirmed', color: 'var(--badge-neutral-text)',  bg: 'var(--badge-neutral-bg)',  border: 'var(--badge-neutral-border)',  bar: '#9AABB8', tip: '0–2 parses — stored but not applied as hints yet' },
+  emerging:    { label: 'Emerging',    color: 'var(--badge-amber-text)',    bg: 'var(--badge-amber-bg)',    border: 'var(--badge-amber-border)',    bar: '#E8C040', tip: '3–9 confirmed — used as secondary fallback' },
+  stable:      { label: 'Stable',      color: 'var(--badge-blue-text)',     bg: 'var(--badge-blue-bg)',     border: 'var(--badge-blue-border)',     bar: '#4A90D9', tip: '10–24 confirmed — primary extraction hint' },
+  trusted:     { label: 'Trusted',     color: 'var(--badge-green-text)',    bg: 'var(--badge-green-bg)',    border: 'var(--badge-green-border)',    bar: '#48C878', tip: '25+ confirmed — fully reliable, used without fallback' },
+};
+const CONF_THRESHOLDS = [{ n: 25, k: 'trusted' }, { n: 10, k: 'stable' }, { n: 3, k: 'emerging' }, { n: 0, k: 'unconfirmed' }];
+function nextThreshold(count) {
+  for (const { n, k } of CONF_THRESHOLDS) { if (count >= n) { const next = CONF_THRESHOLDS[CONF_THRESHOLDS.findIndex(t => t.k === k) - 1]; return next ? next.n : null; } }
+  return 3;
+}
+
+function ConfBadge({ level }) {
+  const m = CONF_META[level] || CONF_META.unconfirmed;
+  return <span title={m.tip} style={{ display:'inline-flex', alignItems:'center', padding:'2px 8px', borderRadius:4, fontSize:11, fontWeight:700, background:m.bg, color:m.color, border:`1px solid ${m.border}`, letterSpacing:'0.03em', cursor:'default' }}>{m.label}</span>;
+}
+
+function ConfBar({ count, level }) {
+  const m = CONF_META[level] || CONF_META.unconfirmed;
+  const next = nextThreshold(count);
+  const pct = next ? Math.min(100, Math.round((count / next) * 100)) : 100;
+  return (
+    <div title={next ? `${count} / ${next} confirmations to next level` : 'Maximum confidence reached'} style={{ display:'flex', alignItems:'center', gap:8 }}>
+      <div style={{ flex:1, height:5, background:'var(--border)', borderRadius:3, overflow:'hidden' }}>
+        <div style={{ height:'100%', width:`${pct}%`, background:m.bar, borderRadius:3, transition:'width 0.4s' }} />
+      </div>
+      <span style={{ fontSize:10, color:'var(--text-3)', whiteSpace:'nowrap', minWidth:48 }}>
+        {next ? `${count} / ${next}` : `${count} ✓`}
+      </span>
+    </div>
+  );
+}
+
+// ── Intelligence Insights Page ────────────────────────────────────────────────
+
+function SeverityBadge({ severity }) {
+  const cfg = {
+    HIGH:   { bg: 'var(--badge-red-bg)',    text: 'var(--badge-red-text)',    border: 'var(--badge-red-border)' },
+    MEDIUM: { bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  border: 'var(--badge-amber-border)' },
+    LOW:    { bg: 'var(--badge-neutral-bg)',text: 'var(--badge-neutral-text)',border: 'var(--badge-neutral-border)' },
+  }[severity] || { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
+  return (
+    <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 10, background: cfg.bg, color: cfg.text, border: `1px solid ${cfg.border}`, letterSpacing: '0.04em' }}>
+      {severity}
+    </span>
+  );
+}
+
+const NAV_TREE_INLINE = NAV_TREE;
+
+// ══════════════════════════════════════════════════════════
+// ERROR BOUNDARY — narrow render-crash guard for DHL/Customs tab
+// ══════════════════════════════════════════════════════════
+// Catches uncaught render exceptions in the wrapped subtree and
+// displays a static fallback panel.  No remote logging, no fetch,
+// no auto-retry, no mutation.  Wrap ONLY the DHL/Customs tab
+// render branch; other tabs stay unwrapped so unrelated runtime
+// is unchanged.  Mirrors dashboard.html TabErrorBoundary exactly.
+class TabErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, message: '' };
+  }
+  static getDerivedStateFromError(error) {
+    return {
+      hasError: true,
+      message: (error && (error.message || String(error))) || 'unknown error',
+    };
+  }
+  componentDidCatch(error, info) {
+    try {
+      console.error('[TabErrorBoundary] caught render error:', error, info);
+    } catch (_e) { /* never let logging itself throw */ }
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          data-testid="tab-error-boundary-fallback"
+          style={{
+            padding: '40px 32px', maxWidth: 720, margin: '24px auto',
+            background: 'var(--card)', border: '1px solid var(--badge-red-border)',
+            borderRadius: 8, color: 'var(--text)', fontFamily: 'inherit',
+          }}>
+          <div style={{
+            fontSize: 11, fontWeight: 700, color: 'var(--badge-red-text)',
+            letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8,
+          }}>
+            Render error
+          </div>
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
+            DHL / Customs tab failed to render
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 14, lineHeight: 1.5 }}>
+            Refresh the page or contact support with the browser console error.
+          </div>
+          <div style={{
+            fontSize: 11, fontFamily: 'monospace', color: 'var(--text-3)',
+            background: 'var(--bg-subtle)', padding: '8px 10px', borderRadius: 4,
+            wordBreak: 'break-all',
+          }}
+            data-testid="tab-error-boundary-message">
+            {this.state.message}
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function ShipmentDetailApp() {
+  const [user, setUser]                       = React.useState(null);
+  const [isDark, setIsDark]                   = React.useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
+  const [toast, setToast]                     = React.useState(null);
+  const [sessionError, setSessionError]       = React.useState(null);
+
+  const params  = new URLSearchParams(window.location.search);
+  const batchId = (params.get('id') || '').trim();
+
+  const notify = (msg, type = 'info') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
+  };
+
+  React.useEffect(() => {
+    if (!batchId) {
+      // Missing id query — bounce to dashboard.
+      window.location.replace('/dashboard/dashboard.html');
+      return;
+    }
+    fetch('/auth/me', { credentials: 'include' })
+      .then(r => {
+        if (r.status === 401 || r.status === 403) { setSessionError('auth'); return null; }
+        return r.ok ? r.json() : null;
+      })
+      .then(u => { if (u) setUser(u); })
+      .catch(() => setSessionError('network'));
+  }, []);
+
+  React.useEffect(() => {
+    document.documentElement.setAttribute('data-theme', isDark ? 'dark' : '');
+  }, [isDark]);
+
+  const handleLogout = async () => {
+    await fetch('/auth/logout', { method: 'POST', credentials: 'include' });
+    window.location.href = '/login';
+  };
+
+  const goBack = () => {
+    window.location.href = '/dashboard/dashboard.html';
+  };
+
+  const handleNav = (navId) => {
+    // Cross-page nav — bounce to dashboard.html. The legacy/alias
+    // canonicalisation lives in dashboard.html's ROUTE_REDIRECTS; we
+    // pass the raw nav id and let dashboard.html resolve it.
+    window.location.href = '/dashboard/dashboard.html#' + encodeURIComponent(navId);
+  };
+
+  if (!batchId) return null;  // useEffect redirects; render nothing meanwhile.
+
+  return (
+    <>
+      {sessionError && <SessionBanner type={sessionError} onDismiss={() => setSessionError(null)} />}
+      <div style={{ display: 'flex', height: '100vh' }}>
+        <Sidebar
+          active="shipments"
+          onNav={handleNav}
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed(v => !v)}
+          navTree={NAV_TREE_INLINE}
+        />
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <TopBar
+            onNewShipment={() => window.location.href = '/dashboard/dashboard.html'}
+            onToggleDark={() => setIsDark(v => !v)}
+            isDark={isDark}
+            user={user}
+            onLogout={handleLogout}
+          />
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            <BatchDetailPage batchId={batchId} onBack={goBack} onToast={notify} />
+          </div>
+        </div>
+      </div>
+      {toast && <Toast msg={toast.msg} type={toast.type} />}
+    </>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<ShipmentDetailApp />);
+

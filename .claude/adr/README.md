@@ -78,6 +78,16 @@ What does this decision lock in for future work? What does it enable?
 | [ADR-017](ADR-017-carrier-label-store-retention.md) | Carrier label store — retention policy (immutable evidence) | Accepted |
 | [ADR-018](ADR-018-shadow-mode-flag-defaults.md) | Shadow-mode flag defaults — Category B observation flags default True; live-enabled flags remain Category A default False. Amends ADR-010 with two-category model and forbidden state semantics. | Accepted |
 | [ADR-019](ADR-019-p2-ignition-pattern.md) | DHL self-clearance — proactive dispatch trigger surfaces and dedup contract (P2 ignition switch). Sweep primary + admin HTTP override route; `force` parameter contract; truth table for `triggered_by`. Extends ADR-013 caller pattern. | Accepted |
+| [ADR-020](ADR-020-anthropic-api-sole-provider.md) | Anthropic Claude API as sole runtime AI provider | Accepted |
+| [ADR-021](ADR-021-detect-before-gate.md) | Detect convert dead-ends before the write-enable gate | Rejected — superseded by ADR-022 |
+| [ADR-022](ADR-022-cache-proforma-snapshot-for-pre-gate-detection.md) | Cache proforma snapshot in the draft row for pre-gate dead-end detection | Proposed (Dormant) |
+| [ADR-023](ADR-023-master-data-ssot.md) | Master Data as Single Source of Truth (umbrella) | Proposed |
+| [ADR-024](ADR-024-product-master-authority.md) | Product Master authority — per-line `product_code` model | Accepted |
+| [ADR-025](ADR-025-end-to-end-workflow.md) | End-to-end Document→PZ→Invoice workflow (master-driven, soft validation) | Proposed |
+| [ADR-026](ADR-026-outbound-dhl-label.md) | Outbound DHL label — extend carrier scaffold (Phase D); Path-LIVE + Path-DOC | Proposed |
+| [ADR-027](ADR-027-proforma-vat-from-master.md) | Proforma VAT + document defaults from `customer_master` (SSOT) | Proposed |
+| [ADR-028](ADR-028-v2-shell-no-dashboard-shared.md) | Atlas-V2 `/v2/` shell must not load `dashboard-shared.js`; inline apiFetch shim | Proposed |
+| [ADR-029](ADR-029-proforma-workspace-orchestration-shell.md) | Proforma Workspace as an orchestration shell — bounded amendment to V2 domain isolation | Accepted |
 
 ## When to write a new ADR
 

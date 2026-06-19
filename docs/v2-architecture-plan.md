@@ -431,6 +431,8 @@ PHASE 5 — Keep backend stable throughout
 
 ## 9. First V2 PR Review Gate
 
+> **Amended by [ADR-029](../.claude/adr/ADR-029-proforma-workspace-orchestration-shell.md) (2026-06-16):** the domain-isolation blocker in this section (a proforma component calling `/api/v1/dhl/` or `/api/v1/warehouse/`) is granted a **bounded exception** for the single designated Proforma Workspace *orchestration surface*, gated by `consolidated_workflow` (default off), under the delegation + layer rules in ADR-029. The exception does **not** generalize to other domain pages, which remain strictly single-authority.
+
 **The first Proforma V2 implementation PR is the critical moment.** That is where delivery pressure first appears to shortcut the layer rules. That PR review determines whether V2 succeeds or becomes V1.5.
 
 **The first Proforma V2 PR must prove six things. If any one fails, reject the PR entire — do not merge with a plan to fix later:**

@@ -1,0 +1,30 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "proforma-v3-proto",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "47990", "--directory", "C:\\Users\\Super Fashion\\proforma-v3-proto\\service\\app\\static"],
+      "port": 47990
+    },
+    {
+      "name": "v2-static-harness",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "47999", "--directory", "C:\\PZ-verify\\service\\app\\static\\v2"],
+      "port": 47999
+    },
+    {
+      "name": "c1-harness",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "47998", "--directory", "C:\\Users\\SUPERF~1\\AppData\\Local\\Temp\\c1-harness"],
+      "port": 47998
+    },
+    {
+      "name": "readiness-wt-app",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "C:\\Users\\Super Fashion\\PZ APP\\tmp_run_readiness.bat"],
+      "port": 47997,
+      "autoPort": false
+    }
+  ]
+}

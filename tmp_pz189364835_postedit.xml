@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<api>
+    <warehouse_documents>
+        <warehouse_document>
+            <id>189364835</id>
+            <fullnumber>PZ 4/6/2026</fullnumber>
+            <semitemplatenumber>PZ [numer]/6/2026</semitemplatenumber>
+            <number>4</number>
+            <day>17</day>
+            <month>6</month>
+            <year>2026</year>
+            <day_year>168</day_year>
+            <date>2026-06-17</date>
+            <realization_date></realization_date>
+            <final_date></final_date>
+            <netto>2736.94</netto>
+            <brutto>3366.44</brutto>
+            <purchase_expense>2736.94</purchase_expense>
+            <production_expense>2736.94</production_expense>
+            <currency>PLN</currency>
+            <price_currency_exchange>1.000000</price_currency_exchange>
+            <type>PZ</type>
+            <vat_payer>1</vat_payer>
+            <status>pending</status>
+            <type_of_sale></type_of_sale>
+            <description>INV:122/2026-2027&#13;
+AWB:2315714531&#13;
+MRN:26PL44302D00EH52R3&#13;
+SAD:26S62X5P0C&#13;
+NBP:115/A/NBP/2026 USD=3.6542&#13;
+SUP:Global Jewellery&#13;
+CA:DHL Express PL</description>
+            <tags></tags>
+            <notes>0</notes>
+            <documents>0</documents>
+            <created>2026-06-18 08:09:17</created>
+            <modified>2026-06-19 00:40:12</modified>
+            <price_type>netto</price_type>
+            <warehouse>
+                <id>347088</id>
+            </warehouse>
+            <warehouse2>
+                <id>0</id>
+            </warehouse2>
+            <parent>
+                <id>0</id>
+            </parent>
+            <series>
+                <id>15827163</id>
+            </series>
+            <contractor>
+                <id>71554001</id>
+                <altname>Global Jewellery Pvt. Ltd.</altname>
+                <phone></phone>
+                <email></email>
+            </contractor>
+            <contractor_detail>
+                <id>832581283</id>
+                <tax_id_type>none</tax_id_type>
+                <name>Global Jewellery Pvt. Ltd.</name>
+                <nip></nip>
+                <role></role>
+                <role_description></role_description>
+                <street>G-49, Gems &amp; Jeweller Complex-1, Seepz, Andheri(East)</street>
+                <zip>400 096</zip>
+                <city>Mumbai</city>
+                <country>IN</country>
+                <phone></phone>
+                <email></email>
+                <account_number></account_number>
+                <affiliated_entity>0</affiliated_entity>
+                <discount_percent>0.00</discount_percent>
+                <empty>0</empty>
+                <simple>0</simple>
+                <created>2022-03-13 10:28:25</created>
+                <modified>2026-06-19 00:40:12</modified>
+            </contractor_detail>
+            <contractor_receiver>
+                <id>0</id>
+            </contractor_receiver>
+            <contractor_detail_receiver>
+                <id>0</id>
+            </contractor_detail_receiver>
+            <company_detail>
+                <id>676928739</id>
+                <name>ESTRELLA JEWELS Sp. z o. o. SPÓŁKA KOMANDYTOWA</name>
+                <altname>ESTRELLA JEWELS</altname>
+                <nip>5252812119</nip>
+                <bdo></bdo>
+                <street>ul. Wybrzeże Kościuszkowskie</street>
+                <building_number>31/33</building_number>
+                <flat_number></flat_number>
+                <zip>00-379</zip>
+                <post>Warszawa</post>
+                <city>Warszawa</city>
+                <country>Polska</country>
+                <phone></phone>
+                <email></email>
+                <bank_name></bank_name>
+                <bank_account></bank_account>
+                <bank_swift></bank_swift>
+                <bank_address></bank_address>
+                <created>2026-06-18 08:09:17</created>
+                <modified>2026-06-19 00:40:12</modified>
+            </company_detail>
+            <email>
+                <id>0</id>
+            </email>
+            <invoice>
+                <id>0</id>
+            </invoice>
+            <expense>
+                <id>0</id>
+            </expense>
+            <good_price_group>
+                <id>0</id>
+            </good_price_group>
+            <warehouse_document_contents>
+                <warehouse_document_content>
+                    <id>680023971</id>
+                    <name>SL925 925 Silver Jewellery Studded with CZ (Ring-66 PCS) / SL925 925 Silver Jewellery Studded with CZ (Ring-66 PCS)</name>
+                    <classification></classification>
+                    <count>66.0000</count>
+                    <unit_count>66.0000</unit_count>
+                    <price>36.55</price>
+                    <price_modified>1</price_modified>
+                    <discount>0</discount>
+                    <discount_percent>0.00</discount_percent>
+                    <netto>2412.30</netto>
+                    <brutto>2967.13</brutto>
+                    <purchase_expense>2412.30</purchase_expense>
+                    <production_expense>2412.30</production_expense>
+                    <created>2026-06-18 08:09:17</created>
+                    <modified>2026-06-19 00:40:12</modified>
+                    <warehouse_good_parcels>
+                        <warehouse_good_parcel>
+                            <id>111746275</id>
+                            <count>66.0000</count>
+                            <purchase_price>36.55</purchase_price>
+                            <production_price>36.55</production_price>
+                            <warehouse>
+                                <id>347088</id>
+                            </warehouse>
+                        </warehouse_good_parcel>
+                    </warehouse_good_parcels>
+                    <warehouse_document>
+                        <id>189364835</id>
+                    </warehouse_document>
+                    <parent>
+                        <id>0</id>
+                    </parent>
+                    <good>
+                        <id>50555747</id>
+                    </good>
+                    <vat_code>
+                        <id>222</id>
+                    </vat_code>
+                    <unit>
+                        <id>17456790</id>
+                    </unit>
+                    <invoicecontent>
+                        <id>0</id>
+                    </invoicecontent>
+                </warehouse_document_content>
+                <warehouse_document_content>
+                    <id>680024035</id>
+                    <name>SL925 Silver Jewellery Studded with Diamond &amp; Colour Stone (Ring-4 PCS) / SL925 Silver Jewellery Studded with Diamond &amp; Colour Stone (Ring-4 PCS)</name>
+                    <classification></classification>
+                    <count>4.0000</count>
+                    <unit_count>4.0000</unit_count>
+                    <price>81.16</price>
+                    <price_modified>1</price_modified>
+                    <discount>0</discount>
+                    <discount_percent>0.00</discount_percent>
+                    <netto>324.64</netto>
+                    <brutto>399.31</brutto>
+                    <purchase_expense>324.64</purchase_expense>
+                    <production_expense>324.64</production_expense>
+                    <created>2026-06-18 08:09:17</created>
+                    <modified>2026-06-19 00:40:12</modified>
+                    <warehouse_good_parcels>
+                        <warehouse_good_parcel>
+                            <id>111746339</id>
+                            <count>4.0000</count>
+                            <purchase_price>81.16</purchase_price>
+                            <production_price>81.16</production_price>
+                            <warehouse>
+                                <id>347088</id>
+                            </warehouse>
+                        </warehouse_good_parcel>
+                    </warehouse_good_parcels>
+                    <warehouse_document>
+                        <id>189364835</id>
+                    </warehouse_document>
+                    <parent>
+                        <id>0</id>
+                    </parent>
+                    <good>
+                        <id>50555811</id>
+                    </good>
+                    <vat_code>
+                        <id>222</id>
+                    </vat_code>
+                    <unit>
+                        <id>17456790</id>
+                    </unit>
+                    <invoicecontent>
+                        <id>0</id>
+                    </invoicecontent>
+                </warehouse_document_content>
+            </warehouse_document_contents>
+        </warehouse_document>
+        <parameters>
+            <limit>20</limit>
+            <page>1</page>
+            <total>1</total>
+        </parameters>
+    </warehouse_documents>
+    <status>
+        <code>OK</code>
+    </status>
+</api>
