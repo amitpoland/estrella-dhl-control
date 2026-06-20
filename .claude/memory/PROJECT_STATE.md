@@ -5444,6 +5444,20 @@ Group D — Tests (3 new files):
 - **GATE 2 after deploy**: **0/3 open implementation PRs** — clean board. Sprint 03.3 Scope C fully delivered (E3a + E3b both live in production).
 - **OQ-E3b-GATE4-1** and **OQ-E3b-GATE4-2**: remain OPEN — carried for the next SOLO V2 frontend PR session (unchanged by this deploy).
 
+## DEPLOY — PR #631 + PR #632 bundle → C:\PZ (2026-06-17, DEPLOYED + VERIFIED) — AWB customs-value e2e regression + merge-not-downgrade gap fix + OCR/AI vision fallback
+
+- **Production deploy date**: 2026-06-17. Prior production SHA (pre-deploy authority): origin/main was at `92fe65b` for the E3b deploy; main advanced to `c284902` (PR #632) then `a421fe9` (PR #631 squash, which also pulled #629 test). New origin/main HEAD at time of deploy confirmation: **`a421fe9`** (PRs #629 + #631 squash) — NOTE: main continued to advance to `4652292` (#633) post-deploy.
+- **7-agent deploy gate**: All 6 reviewers returned CLEAR; lead-coordinator returned **READY-TO-DEPLOY**. Gate was run against the gated single-file scope (#629-only / #631 only). Operator-executed deploy.
+- **Deployed file**: `service/app/api/routes_upload.py` — single-file robocopy sync to production.
+- **IMPORTANT — wider-than-gated delta**: origin/main advanced between gate and deploy. The robocopy carried `routes_upload.py` at commit `c284902` (which includes BOTH PR #631 AND PR #632 content), not only the #629/#631 content the gate reviewed. The deployed delta was therefore wider than the #629/#631-only gate scope. This is recorded as a disclosure (not a reversal of the gate outcome — reviewers were CLEAR on all #631 changes; #632 is an additive extraction fallback in the same file).
+- **Stale hash disclosure**: The hash `baa2e432…` staged in the deploy block (LF-SHA256 of `routes_upload.py` at `a421fe9` / #629-only) was STALE after main advanced to `c284902`. Do NOT treat `baa2e432` as the current prod-authority hash for this file.
+- **Production-authority hash** (verified 2026-06-17, LF-normalized SHA256): `routes_upload.py` prod on-disk == `C:\PZ-verify` source at `c284902` = **`ac8fb040…`** (full: `ac8fb040` — operator-verified prod-vs-source match). This is the current prod-authority hash for `routes_upload.py`.
+- **What PR #631 fixed** (`a421fe9` content, also present at `c284902`): `_run_dhl_precheck` — failed AWB re-read no longer poisons `awb_customs.gap` with a downgrade. A preserved positive customs value stays `RESOLVED` in `cif_resolver`. The gap is now recorded under non-gating `last_reread_gap`, isolated from the authority ladder. Regression test suite included in the PR (#629 e2e CIF tri-state regression).
+- **What PR #632 added** (`c284902` content, also deployed): automatic OCR/AI vision fallback for image-only customs docs — extraction path now falls back to AI vision when standard parser returns empty. Additive; no authority-ladder change.
+- **Current origin/main HEAD** (post-deploy): **`4652292`** — `fix(customs): UI + Polish-desc gate read resolved CIF authority, not raw invoice 0 (#633)`. Production does NOT yet include PR #633; that is the next deploy candidate.
+- **GATE 2 after deploy**: open PRs: **1/3** — PR #630 (`feat/pr1a-conflict-foundation-remediation`) is the only open implementation PR. Queue is within limit.
+- **Lesson J**: N/A — `routes_upload.py` is under `service/app/api/` (standard robocopy path). No root-level engine files touched.
+
 ---
 
 # DECISIONS

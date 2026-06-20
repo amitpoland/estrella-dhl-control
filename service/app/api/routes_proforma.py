@@ -8477,7 +8477,7 @@ def get_dual_valuation(batch_id: str, client_name: str) -> JSONResponse:
 #
 # Advisory drift/eligibility detection (ADR-029 §3, a typed extension of ADR-025
 # soft validation). All three routes are gated by ``conflict_detection_enabled``
-# (default OFF) and return 404 when the flag is off so the surface is inert until
+# (default OFF) and return a 200 no-op when the flag is off so the surface is inert until
 # the workspace opt-in. Detection is pure / local-only / wFirma-free (ADR-021
 # Invariant 7): the customer is resolved from local masters and passed into the
 # pure detector; persistence + audit live in proforma_conflict_db.
@@ -8542,12 +8542,12 @@ def scan_draft_conflicts(
     """Run the PR-1 conflict detectors against a draft and upsert findings.
 
     Advisory only — never blocks. Gated by ``conflict_detection_enabled``;
-    returns 404 when off. Pure/local detection; the detector does no wFirma I/O.
+    returns a 200 no-op when off. Pure/local detection; the detector does no wFirma I/O.
     Returns the full current conflict list for the draft (including any prior
     operator-resolved rows) so the UI sees the complete picture.
     """
     if not _conflicts_enabled():
-        raise HTTPException(status_code=404, detail="conflict detection is disabled")
+        return JSONResponse({"enabled": False, "draft_id": draft_id, "conflicts": []})
 
     draft = pildb.get_draft_by_id(_proforma_db_path(), draft_id)
     if draft is None:
@@ -8578,6 +8578,7 @@ def scan_draft_conflicts(
             current_value   = d.current_value,
             master_value    = d.master_value,
             reason          = d.reason,
+            evidence        = d.evidence,
             actor           = operator,
         )
 
@@ -8600,7 +8601,8 @@ def list_draft_conflicts(
     """List stored conflicts for a draft. ``statuses`` is an optional CSV filter
     (e.g. ``open,acknowledged``). Gated by ``conflict_detection_enabled``."""
     if not _conflicts_enabled():
-        raise HTTPException(status_code=404, detail="conflict detection is disabled")
+        return JSONResponse({"draft_id": draft_id, "proforma_id": str(draft_id),
+                             "count": 0, "conflicts": []})
 
     pid = str(draft_id)
     status_filter: Optional[List[str]] = None
@@ -8633,7 +8635,7 @@ def resolve_draft_conflict(
     The ``X-Operator`` header supplies ``resolved_by`` and is required for
     attribution. Gated by ``conflict_detection_enabled``."""
     if not _conflicts_enabled():
-        raise HTTPException(status_code=404, detail="conflict detection is disabled")
+        return JSONResponse({"enabled": False, "draft_id": draft_id})
 
     operator = (x_operator or "").strip()
     if not operator:

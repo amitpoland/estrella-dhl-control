@@ -8,8 +8,8 @@ Drives the three conflict routes through the REAL FastAPI app (TestClient):
   POST /api/v1/proforma/draft/{id}/conflicts/{conflict_id}/resolve
 
 Contract pinned here:
-  • All three return 404 when ``conflict_detection_enabled`` is OFF (the surface
-    is inert by default — flags ship OFF per ADR-029 §7).
+  • Flag OFF (default, ADR-029 §7) → inert 200 no-op: scan {"enabled": false,
+    "conflicts": []}, list {"conflicts": []}, resolve {"enabled": false} (no mutation).
   • With the flag ON, scan detects + persists, list reads back, resolve mutates.
   • resolve requires the X-Operator header (400 without it).
   • A conflict that belongs to another draft → 404 (cross-draft isolation).
@@ -122,29 +122,53 @@ def _seed_customer_master(storage: Path, *, name: str, contractor_id: str,
     )
 
 
-# ── flag OFF → inert surface (404 everywhere) ─────────────────────────────────
+# ── flag OFF → inert surface (200 no-op everywhere; approved contract) ────────
 
-def test_scan_404_when_flag_off(client):
+def test_scan_flag_off_returns_200_enabled_false(client):
     c, storage = client
     draft_id = _seed_draft(storage)
     r = c.post(f"/api/v1/proforma/draft/{draft_id}/conflicts/scan",
                headers=_op_headers())
-    assert r.status_code == 404, r.text
+    assert r.status_code == 200, r.text
+    assert r.json() == {"enabled": False, "draft_id": draft_id, "conflicts": []}
 
 
-def test_list_404_when_flag_off(client):
+def test_list_flag_off_returns_200_empty(client):
     c, storage = client
     draft_id = _seed_draft(storage)
     r = c.get(f"/api/v1/proforma/draft/{draft_id}/conflicts", headers=_auth())
-    assert r.status_code == 404, r.text
+    assert r.status_code == 200, r.text
+    assert r.json()["conflicts"] == []
 
 
-def test_resolve_404_when_flag_off(client):
+def test_resolve_flag_off_no_mutation(client):
     c, storage = client
     draft_id = _seed_draft(storage)
     r = c.post(f"/api/v1/proforma/draft/{draft_id}/conflicts/1/resolve",
                json={"resolution_type": "revert"}, headers=_op_headers())
-    assert r.status_code == 404, r.text
+    assert r.status_code == 200, r.text
+    assert r.json() == {"enabled": False, "draft_id": draft_id}
+    with _enabled():   # nothing was written while disabled
+        lst = c.get(f"/api/v1/proforma/draft/{draft_id}/conflicts", headers=_auth())
+    assert lst.json()["conflicts"] == []
+
+
+def test_routes_require_api_key_hermetic(storage, monkeypatch):
+    """Auth rejection, robust against leaked global app.dependency_overrides
+    (e.g. test_inventory_* set app.dependency_overrides[require_api_key] at
+    import time). Clear overrides, fresh client, wrong key → rejected."""
+    from app.core.config import settings
+    from app.main import app
+    monkeypatch.setattr(app, "dependency_overrides", {})
+    monkeypatch.setattr(settings, "storage_root", storage)
+    monkeypatch.setattr(settings, "api_key", "secret-key")
+    monkeypatch.setattr(settings, "conflict_detection_enabled", True)
+    fresh = TestClient(app)
+    bad = {"X-API-KEY": "WRONG"}
+    assert fresh.post("/api/v1/proforma/draft/1/conflicts/scan", headers=bad).status_code in (401, 403)
+    assert fresh.get("/api/v1/proforma/draft/1/conflicts", headers=bad).status_code in (401, 403)
+    assert fresh.post("/api/v1/proforma/draft/1/conflicts/1/resolve", headers=bad,
+                      json={"resolution_type": "revert"}).status_code in (401, 403)
 
 
 # ── flag ON → scan / list / resolve happy path ────────────────────────────────

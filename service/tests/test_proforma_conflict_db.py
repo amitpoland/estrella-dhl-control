@@ -95,6 +95,30 @@ def test_upsert_refreshes_open_conflict_in_place(tmp_path):
     assert len(pcdb.list_conflicts(db, "42")) == 1
 
 
+# ── upsert: evidence_json immutability (B3 — written once at INSERT) ───────────
+
+def test_evidence_json_immutable_on_redetect(tmp_path):
+    """evidence_json is captured at INSERT and must NOT be overwritten when an
+    open conflict is re-detected. Immutability is enforced *by omission* — the
+    column is absent from the UPDATE SET clause — so this test pins the contract
+    against a future edit silently starting to mutate frozen evidence."""
+    db = _db(tmp_path)
+    evidence_a = {"semantic": "divergence_not_temporal_drift", "snapshot": "A"}
+    first = _seed(db, current_value="USD", evidence=evidence_a)
+    assert pcdb.get_conflict(db, first.conflict_id).evidence == evidence_a
+
+    # Re-detect the SAME idempotency key (still open) with refreshed facts AND a
+    # different evidence payload — the UPDATE path must leave evidence untouched.
+    evidence_b = {"semantic": "divergence_not_temporal_drift", "snapshot": "B"}
+    second = _seed(db, current_value="GBP", reason="now GBP", evidence=evidence_b)
+
+    assert second.conflict_id == first.conflict_id        # in-place update, no new row
+    stored = pcdb.get_conflict(db, first.conflict_id)
+    assert stored.current_value == "GBP"                  # detection facts DID refresh
+    assert stored.evidence == evidence_a                  # evidence did NOT change
+    assert stored.evidence != evidence_b
+
+
 # ── upsert: terminal rows are not resurrected ─────────────────────────────────
 
 def test_upsert_does_not_resurrect_resolved(tmp_path):
