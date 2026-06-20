@@ -4728,14 +4728,19 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           // lines_count + lines_preview so we can show
                           // "N lines" instead of misleading "Fields: 0".
                           const isInvoice = d.document_type === 'purchase_invoice' || d.document_type === 'sales_invoice';
+                          // Sales packing extraction writes to sales_packing_lines
+                          // (surfaced via lines_count), not document_extracted_fields —
+                          // treat sales_packing_list as a "lines" doc so the registry
+                          // shows the real count instead of a misleading "0 fields".
+                          const isLinesDoc = isInvoice || d.document_type === 'sales_packing_list';
                           const linesCount = d.lines_count;
                           const linesPreview = d.lines_preview || [];
-                          // Count column: invoices show "N lines"; everything
+                          // Count column: line-docs show "N lines"; everything
                           // else keeps "N fields" semantics. Honest "—"
                           // when the relevant store is empty for the row's
                           // doc type (avoids the misleading "0").
                           let countCell;
-                          if (isInvoice) {
+                          if (isLinesDoc) {
                             if (typeof linesCount === 'number') {
                               countCell = linesCount > 0
                                 ? <span data-testid="doc-registry-lines-count">{linesCount}{d.lines_truncated ? '+' : ''} lines</span>
@@ -4770,7 +4775,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                               {isOpen && (
                                 <tr>
                                   <td colSpan={9} style={{ padding: '0 8px 12px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border-subtle)' }}>
-                                    {isInvoice && linesPreview.length > 0 ? (
+                                    {isLinesDoc && linesPreview.length > 0 ? (
                                       <div data-testid="doc-registry-invoice-preview">
                                         <table style={{ ...tblStyle, marginTop: 8, marginBottom: 4, marginLeft: 16 }}>
                                           <thead><tr>
@@ -4802,13 +4807,13 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                           <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '4px 16px 8px' }}>Showing first {linesPreview.length} of {linesCount} lines.</div>
                                         )}
                                       </div>
-                                    ) : isInvoice ? (
+                                    ) : isLinesDoc ? (
                                       <div data-testid="doc-registry-invoice-empty" style={{ fontSize: 11, color: 'var(--text-3)', padding: '12px 4px' }}>
                                         {d.extraction_status === 'extraction_failed'
-                                          ? 'Invoice extraction failed. Re-upload or run Recheck after fixing the source PDF.'
+                                          ? 'Extraction failed. Re-upload or run Recheck after fixing the source file.'
                                           : (d.parser_status === 'pending' || d.extraction_status === 'pending')
-                                            ? 'Invoice extraction pending — run Recheck to parse.'
-                                            : 'No invoice lines extracted for this document.'}
+                                            ? 'Extraction pending — run Recheck to parse.'
+                                            : 'No lines extracted for this document.'}
                                       </div>
                                     ) : fields.length === 0 ? (
                                       <div style={{ fontSize: 11, color: 'var(--text-3)', padding: '12px 4px' }}>No extracted fields for this document.</div>
@@ -4836,7 +4841,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                         </tbody>
                                       </table>
                                     )}
-                                    {!isInvoice && d.fields_truncated && (
+                                    {!isLinesDoc && d.fields_truncated && (
                                       <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '4px 16px 8px' }}>Showing first 50 of {fieldsTotal} fields.</div>
                                     )}
                                   </td>
