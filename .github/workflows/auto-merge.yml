@@ -1,0 +1,52 @@
+name: auto-merge-approved
+
+# Automatically integrate a PR the moment it is APPROVED + MERGEABLE.
+# The merge is performed by GitHub Actions (server-side GITHUB_TOKEN),
+# never by Claude Code. The local .claude/hooks/pz-deploy-guard.py is
+# unaffected (it gates the local agent only).
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, labeled]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to evaluate (manual validation)"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number || github.event.review.pull_request.number || github.event.inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Arm squash auto-merge when APPROVED + MERGEABLE
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || github.event.review.pull_request.number || github.event.inputs.pr }}
+        run: |
+          set -euo pipefail
+          info=$(gh pr view "$PR" --repo "$REPO" --json isDraft,state,mergeable,latestReviews)
+          draft=$(jq -r .isDraft       <<<"$info")
+          state=$(jq -r .state         <<<"$info")
+          mergeable=$(jq -r .mergeable  <<<"$info")
+          approved=$(jq '[.latestReviews[]|select(.state=="APPROVED")]|length'          <<<"$info")
+          changes=$(jq  '[.latestReviews[]|select(.state=="CHANGES_REQUESTED")]|length'  <<<"$info")
+          echo "PR=$PR state=$state draft=$draft mergeable=$mergeable approved=$approved changes=$changes"
+          # Required conditions (this job is the only merge gate — main has no branch protection):
+          [ "$state" = "OPEN" ]          || { echo "skip: not open";           exit 0; }
+          [ "$draft" = "false" ]         || { echo "skip: draft";              exit 0; }
+          [ "$changes" -eq 0 ]           || { echo "skip: changes requested";  exit 0; }
+          [ "$approved" -ge 1 ]          || { echo "skip: not approved";       exit 0; }
+          [ "$mergeable" = "MERGEABLE" ] || { echo "skip: mergeable=$mergeable"; exit 0; }
+          gh pr merge "$PR" --repo "$REPO" --squash --auto
+          echo "auto-merge armed (squash) for #$PR"
