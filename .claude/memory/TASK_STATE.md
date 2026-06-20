@@ -17,32 +17,33 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
-- **Task:** PR-2 Contractor-at-Birth Projection — carry `shipment_documents.client_contractor_id` through sales → proforma draft → reservation; visible blocked draft-birth records; idempotent backfill
+- **Task:** PR-3 Dropdown selection wins — Customer-Master pick (client_contractor_id) OVERRIDES a parsed draft client_name; safe migration of existing drafts + freight/insurance + reservation (canonical-wins, money-safe, disclosed)
 - **Started:** 2026-06-20
 - **Status:** COMPLETE
 - **HOLD reason (if BLOCKED-HOLD):** —
-- **Merge:** PR #673 squash-merged to main at `f652de0`. Docs/state on branch `chore/state-pr2-contractor-merge`.
+- **Merge:** PR #675 squash-merged to main at `7b94a73`. Docs/state on branch `chore/state-pr3-dropdown-authority`.
 
-### Completion criteria
+### Completion criteria (PR-3)
 
-- [x] Additive idempotent ALTERs: `client_contractor_id` on sales_documents, sales_packing_lines, proforma_drafts, wfirma_reservation_drafts
-- [x] Projection at birth (store_sales_document, store_sales_packing_lines, proforma draft, reservation draft) — centralised derive in document_db, merge-not-replace
-- [x] Idempotent backfill from `shipment_documents.client_contractor_id` (admin endpoint `POST /api/v1/admin/contractor-projection/backfill/{batch_id}`)
-- [x] Contractor = grouping AUTHORITY (recovers missing client_name via Customer Master); client_name stays storage key; silent loss removed; draft count never decreases
-- [x] Visible blocked draft-birth records (`proforma_draft_birth_blocks`; blocked_state / reason / code; open/resolved lifecycle)
-- [x] Reservation readiness carries contractor reference chain (readiness only; no wFirma writes)
-- [x] Real-builder tests — 26 (schema / projection / grouping / blocked / backfill / reservation / regression / HTTP route)
-- [x] No valuation / CIF / customs / PZ / accounting / booking change (three-authority freeze)
-- [x] GATE 1 satisfied (9 subagents, all verdicts; HIGH path-traversal fixed); FEATURE_SCORECARD Observation Row #1 written
-- [ ] Deploy to production (C:\PZ) via 7-agent gate + operator backfill of SHIPMENT_9158478722 — PENDING (operator-run; not part of this code PR)
+- [x] Forward: grouping uses canonical CM bill_to_name (overrides parsed); sales chain canonicalized (no split-brain); re-upload no dup
+- [x] Resolver contractor-id-first (`derive_customer_authority_for_draft`); routes_proforma threads it
+- [x] Migration (operator-triggered backfill, EDITABLE only): rename/supersede per clone_generation; charges money-safe (frozen canonical never drops); reservation canonical-wins; full disclosure (dropped/orphan/ambiguous)
+- [x] Fixed latent NameError (`log` unbound in proforma_invoice_link_db.py — also affected PR-2 block helpers)
+- [x] 16 real-builder tests; 208-test regression + smoke 63; full reviewer battery (3 implementation bugs + 1 latent NameError caught & fixed)
+- [x] No valuation / CIF / PZ / accounting / booking / wFirma-API change
+- [ ] Deploy PR-2 + PR-3 to production (C:\PZ) via 7-agent gate + operator backfill of SHIPMENT_9158478722 — PENDING (operator-run)
 
-### Prior task (COMPLETE)
+### Prior task (COMPLETE) — PR-2 Contractor-at-Birth Projection
 
-- Build automatic skill routing for /feature — `.claude/SKILL_ROUTING.md` + `.claude/commands/feature.md`; merged.
+- PR #673 squash-merged at `f652de0`. Carried `shipment_documents.client_contractor_id` through sales → draft → reservation; visible blocked draft-birth records; idempotent backfill. FEATURE_SCORECARD Row #1.
 
 ---
 
 ## History (most recent first)
+
+- 2026-06-21 — PR #675 squash-merged at `7b94a73`: PR-3 Dropdown selection wins.
+  Scorecard `2026-06-21-pr3-dropdown-selection-authority.md` (6 agents, 5 EXEMPLARY / 1 ACCEPTABLE).
+  Battery caught 3 implementation bugs + 1 latent NameError, all fixed pre-merge. BACKLOG B-009..B-011 filed.
 
 - 2026-06-20 — PR #673 squash-merged at `f652de0`: PR-2 Contractor-at-Birth Projection.
   Scorecard `2026-06-20-pr2-contractor-at-birth-projection.md` (9 agents, 6 EXEMPLARY / 3 ACCEPTABLE).
