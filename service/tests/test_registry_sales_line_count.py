@@ -157,6 +157,25 @@ def test_registry_resolves_intake_keyed_sales_lines(client, storage):
     assert by_type["sales_packing_list"].get("lines_count") == 2
 
 
+def test_registry_counts_are_per_document_not_batch_total(client, storage):
+    """No mis-attribution: each sales_packing_list row reports ITS OWN line
+    count (across both FK shapes), never the batch total — the document_id
+    back-ref resolver must not bleed doc B's lines into doc A."""
+    B = "B-REG-ISO"
+    a = ddb.register_document(batch_id=B, document_type="sales_packing_list",
+                              file_name="a.xlsx", awb="X", source="intake")
+    b = ddb.register_document(batch_id=B, document_type="sales_packing_list",
+                              file_name="b.xlsx", awb="X", source="intake")
+    # doc A: reprocess shape (sales_document_id == doc_id), 1 line
+    ddb.store_sales_packing_lines(a, B, [_spl("A1", "DA1")])
+    # doc B: intake shape (random sales_documents.id, document_id == b), 2 lines
+    sd_b = ddb.store_sales_document(batch_id=B, document_id=b,
+                                    data={"document_type": "sales_packing_list"})
+    ddb.store_sales_packing_lines(sd_b, B, [_spl("B1", "DB1"), _spl("B2", "DB2")])
+    assert ddb.count_sales_packing_lines_for_document(a) == 1
+    assert ddb.count_sales_packing_lines_for_document(b) == 2
+
+
 # ── Frontend: the registry UI must render the count for sales rows ──────────
 
 def test_frontend_registry_treats_sales_packing_as_lines_doc():
