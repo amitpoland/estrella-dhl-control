@@ -1069,6 +1069,34 @@ async def reprocess_packing_documents(
                     result_entry["diagnostic_artifact"] = str(art) if art else None
                 sum_purchase += result_entry["rows_extracted"]
 
+                # Reprocess-parity (RC-1): mirror the sales-side flip below.
+                # Purchase packing extraction writes packing.db; the Document
+                # Registry reads the shipment_documents column, which stays
+                # 'pending' unless flipped here. Success = any rows stored
+                # (matches the intake gate). Read-before-write on the downgrade
+                # so a transient re-parse failure cannot overwrite a good row.
+                try:
+                    if line_records:
+                        _ddb.update_document_status(
+                            doc_id,
+                            extraction_status="extracted",
+                            parser_status="complete",
+                        )
+                    else:
+                        _cur = (_ddb.get_document(doc_id) or {})
+                        if (_cur.get("extraction_status") or "") not in ("extracted", "complete"):
+                            _ddb.update_document_status(
+                                doc_id,
+                                extraction_status="extraction_failed",
+                                parser_status="failed",
+                                requires_manual_review=True,
+                            )
+                except Exception as _exc:
+                    log.warning(
+                        "[%s] reprocess purchase status flip failed (non-fatal): %s",
+                        batch_id, _exc,
+                    )
+
             # ── Sales-side: extract_packing + store_sales_packing_lines ─
             elif document_type == "sales_packing_list":
                 sp_rows, _, _, sp_diag = extract_packing(file_path)

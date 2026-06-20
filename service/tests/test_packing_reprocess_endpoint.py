@@ -155,6 +155,35 @@ def test_reprocess_empty_batch_returns_empty_results(client):
     assert body["summary"] == {"files": 0, "rows": 0, "purchase": 0, "sales": 0}
 
 
+def test_reprocess_purchase_xls_writes_back_shipment_documents_status(client):
+    """RC-1 behavioral: after reprocessing a purchase packing .xls, the
+    shipment_documents row must flip from the default 'pending' to
+    extraction_status='extracted' / parser_status='complete', and the Document
+    Registry must report review_state 'ready'."""
+    cli, tmp = client
+    bid = "B-PPL-WB"
+    out = _seed_batch(tmp, bid)
+    pp = out / "source" / "packing" / "purchase_ejl.xls"
+    _build_ejl_purchase_xls(pp)  # SKIPs if xlwt missing
+    doc_id = _register_doc(bid, "purchase_packing_list", pp)
+
+    from app.services import document_db as ddb
+    pre = ddb.get_document(doc_id)
+    assert pre["extraction_status"] == "pending"  # default before reprocess
+
+    r = cli.post(f"/api/v1/packing/{bid}/reprocess")
+    assert r.status_code == 200, r.text
+
+    post = ddb.get_document(doc_id)
+    assert post["extraction_status"] == "extracted"
+    assert post["parser_status"] == "complete"
+
+    rr = cli.get(f"/api/v1/upload/shipment/{bid}/documents", headers={"X-API-KEY": ""})
+    assert rr.status_code == 200, rr.text
+    rows = {d["document_type"]: d for d in rr.json()["documents"]}
+    assert rows["purchase_packing_list"]["review_state"] == "ready"
+
+
 def test_reprocess_sales_xlsx_produces_sales_packing_lines(client):
     cli, tmp = client
     bid = "B-SALES-1"

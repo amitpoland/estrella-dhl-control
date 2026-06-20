@@ -1183,6 +1183,23 @@ def get_documents_for_batch(
     return [dict(r) for r in rows]
 
 
+def get_document(document_id: str) -> Optional[Dict[str, Any]]:
+    """Return a single shipment_documents row by id, or None. Read-only.
+
+    Used by the status write-back paths to read the current extraction_status
+    BEFORE downgrading it, so a transient re-parse failure cannot overwrite a
+    previously-good 'extracted'/'complete' row with 'extraction_failed'.
+    """
+    if _db_path is None or not document_id:
+        return None
+    with _connect() as con:
+        row = con.execute(
+            "SELECT * FROM shipment_documents WHERE id=? LIMIT 1",
+            (document_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def get_documents_by_awb(
     awb:           str,
     document_type: Optional[str] = "purchase_invoice",

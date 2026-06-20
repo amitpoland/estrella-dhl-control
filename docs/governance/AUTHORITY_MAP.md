@@ -30,6 +30,7 @@ through the authority chain (see §10 for worked examples).
 | 7 | [Inventory](#7-inventory) | `routes_inventory_writes.py` | `warehouse.db` |
 | 8 | [Audit / Evidence](#8-audit--evidence) | `routes_correction_registry.py` | `audit.json` · `correction_registry.db` |
 | 9 | [wFirma](#9-wfirma) | `routes_wfirma.py` · `routes_wfirma_reservation.py` | `wfirma.db` |
+| 12 | [Document / Packing Readiness](#12-document--packing-readiness-review-state-authority) | `routes_upload.py` (registry read) | `document_readiness.py` (pure, no DB) |
 
 ---
 
@@ -493,6 +494,41 @@ Domain: Customer Master (deletion) + PZ (has audit.json referencing customer_id)
 | `routes_pz.py` legacy process endpoint marked deprecated | New PZ triggers go through `routes_upload.py` | No new work targeting `routes_pz.py` |
 | wFirma customer sync direction | One-directional: wFirma → customer master. Reverse sync (customer master → wFirma) is not implemented | PLANNED |
 | Product Master hard-delete flag | `master_hard_delete_enabled` feature flag existence not verified in this audit | Confirm in `service/app/core/config.py` before implementing hard-delete |
+
+---
+
+## 12. Document / Packing Readiness (review-state authority)
+
+**Lifecycle**: Document registered → extracted → review-state derived (read-time) → rendered in Document Registry
+
+### Authority owner
+`service/app/services/document_readiness.py` — pure function `derive_document_review(row, line_count, contractor_context, effective_extraction_status)` returns the per-document review verdict: `ready | needs_review | blocked | not_applicable` + a human `reason` + a stable machine `code`. No DB or network I/O — callers pass already-resolved facts.
+
+`service/app/api/routes_upload.py` (`GET /shipment/{batch_id}/documents`) is the read surface: it enriches each `shipment_documents` row with `lines_count`, reconciles the authoritative extraction status, and attaches `review_state` / `review_reason` / `review_code` / `extraction_status_effective`.
+
+### Read sources
+| Source | Purpose |
+|--------|---------|
+| `document_db.shipment_documents` | Registry rows + raw parser/extraction status |
+| `packing_db.packing_documents` | **Authoritative** purchase-packing extraction status (bridged by `get_packing_status_for_shipment_document`) |
+| `packing_db.packing_lines` / `document_db.sales_packing_lines` / `invoice_lines` | Effective line counts |
+
+### Write targets
+| Target | What is written |
+|--------|----------------|
+| `shipment_documents.{parser,extraction}_status`, `requires_manual_review` | Status **write-back** at extraction time — purchase packing (intake `routes_intake.py`, reprocess `routes_packing.py`) now mirrors the sales path; purchase invoice sets `parser_status='complete'` when really extracted |
+
+The readiness derivation itself is **read-only** — `derive_document_review` writes nothing.
+
+### Forbidden write locations
+- Financial values, customs/CIF math, wFirma records, product-code matcher state — readiness never mutates any of these (it only reads/labels)
+- The frontend must not compute or invent a review state — it renders `review_state` verbatim (Lesson F rule 5: frontend reflects truth, does not produce it)
+
+### Authority rule
+The authoritative completion signal for a purchase packing list is `packing_documents.extraction_status` (packing.db), **not** the historically-stale `shipment_documents.extraction_status`. A positive effective `lines_count` is itself proof of completion. A registry row is never blank and never falsely "pending".
+
+### Verification authority
+`service/tests/test_document_readiness.py` (pure-function matrix + "never blank" invariant) and `service/tests/test_registry_review_state.py` (endpoint attaches review fields; complete-in-packing-db-but-pending-in-shipment_documents resolves to ready/needs_review).
 
 ---
 

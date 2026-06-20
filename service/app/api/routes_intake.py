@@ -521,10 +521,15 @@ async def shipment_intake(
             # Write related_invoice_no on the document row for back-reference
             if doc_id and inv_no_parsed:
                 try:
+                    _inv_real = method != "filename_only"
                     ddb.update_document_status(
                         document_id=doc_id,
                         related_invoice_no=inv_no_parsed,
-                        extraction_status="extracted" if method != "filename_only" else "placeholder",
+                        extraction_status="extracted" if _inv_real else "placeholder",
+                        # parser_status must not stay 'pending' once a real
+                        # extraction ran; leave it untouched for filename-only
+                        # placeholders (genuinely not parsed yet).
+                        parser_status="complete" if _inv_real else None,
                     )
                 except Exception:
                     pass
@@ -701,6 +706,39 @@ async def shipment_intake(
         except Exception as exc:
             log.warning("[%s] Packing list extraction failed (non-fatal): %s — %s", batch_id, name, exc)
             pack_summary = {"file": name, "status": "extraction_failed", "rows": 0, "error": str(exc)}
+
+        # ── Project packing extraction status back onto the registry row ──
+        # RC-1: purchase packing extraction writes packing.db; the Document
+        # Registry reads shipment_documents. Without this write-back the row
+        # stays parser_status/extraction_status='pending' forever even though
+        # the parse completed. Mirrors the sales-packing write-back. Non-fatal.
+        try:
+            if pack_doc_id:
+                _pk_ok = pack_summary.get("status") == "extracted" and int(pack_summary.get("rows") or 0) > 0
+                if _pk_ok:
+                    ddb.update_document_status(
+                        pack_doc_id,
+                        extraction_status="extracted",
+                        parser_status="complete",
+                        requires_manual_review=int(pack_summary.get("unmatched") or 0) > 0,
+                    )
+                else:
+                    # Read-before-write: never downgrade a previously-good row to
+                    # 'extraction_failed' on a transient parse failure. The
+                    # authoritative lines live in packing.db (untouched by a
+                    # failed parse); only flip to failed if the row was not
+                    # already extracted/complete.
+                    _cur = (ddb.get_document(pack_doc_id) or {})
+                    if (_cur.get("extraction_status") or "") not in ("extracted", "complete"):
+                        ddb.update_document_status(
+                            pack_doc_id,
+                            extraction_status="extraction_failed",
+                            parser_status="failed",
+                            requires_manual_review=True,
+                        )
+        except Exception as _wb_exc:
+            log.warning("[%s] purchase packing status write-back failed (non-fatal): %s",
+                        batch_id, _wb_exc)
 
         packing_results.append(pack_summary)
 
@@ -1803,6 +1841,16 @@ async def add_document_to_batch(
                 "unmatched": result.get("unmatched_count", 0),
                 "rows":      lines_count,
             }
+            # RC-1: project the parse outcome back onto the registry row so the
+            # add-document path matches intake/reprocess (no stale 'pending').
+            try:
+                if doc_id and lines_count > 0:
+                    ddb.update_document_status(
+                        doc_id, extraction_status="extracted", parser_status="complete",
+                    )
+            except Exception as _wb_exc:
+                log.warning("[%s] add-document packing status write-back failed "
+                            "(non-fatal): %s", batch_id, _wb_exc)
         except Exception as exc:
             log.warning("[%s] packing parse failed (non-fatal): %s — %s",
                         batch_id, name, exc)
