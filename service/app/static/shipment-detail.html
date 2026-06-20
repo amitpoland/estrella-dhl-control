@@ -4841,7 +4841,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                         </tbody>
                                       </table>
                                     )}
-                                    {!isInvoice && d.fields_truncated && (
+                                    {!isLinesDoc && d.fields_truncated && (
                                       <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '4px 16px 8px' }}>Showing first 50 of {fieldsTotal} fields.</div>
                                     )}
                                   </td>

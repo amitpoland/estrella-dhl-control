@@ -133,6 +133,30 @@ def test_registry_invoice_branch_untouched(client, storage):
     assert payload["count"] == 2
 
 
+def test_registry_resolves_intake_keyed_sales_lines(client, storage):
+    """Robustness: the intake path keys sales_packing_lines to a freshly-minted
+    sales_documents.id (whose document_id back-references the
+    shipment_documents.id), NOT to doc_id directly. The registry must resolve
+    the count via that back-ref — not only the reprocess shape
+    (sales_document_id == doc_id)."""
+    B = "B-REG-INTAKE"
+    doc_id = ddb.register_document(
+        batch_id=B, document_type="sales_packing_list",
+        file_name="intake.xlsx", awb="X", source="intake",
+    )
+    sd_id = ddb.store_sales_document(
+        batch_id=B, document_id=doc_id,
+        data={"document_type": "sales_packing_list", "extraction_status": "pending"},
+    )
+    assert sd_id and sd_id != doc_id, "intake mints a random sales_documents.id"
+    ddb.store_sales_packing_lines(sd_id, B, [_spl("P1", "D1"), _spl("P2", "D2")])
+    # Direct helper resolves via the document_id back-ref:
+    assert ddb.count_sales_packing_lines_for_document(doc_id) == 2
+    # And the registry endpoint surfaces it:
+    by_type, _ = _registry(client, B)
+    assert by_type["sales_packing_list"].get("lines_count") == 2
+
+
 # ── Frontend: the registry UI must render the count for sales rows ──────────
 
 def test_frontend_registry_treats_sales_packing_as_lines_doc():
