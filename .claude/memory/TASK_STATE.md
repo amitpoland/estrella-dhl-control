@@ -19,7 +19,7 @@ Rules and boundary vs PROJECT_STATE.md:
 
 - **Task:** Governance Sprint – Authority Ownership Framework (AUTHORITY_MAP.md)
 - **Started:** 2026-06-20
-- **Status:** IN_PROGRESS
+- **Status:** COMPLETE
 - **HOLD reason (if BLOCKED-HOLD):** —
 
 ### Completion criteria
@@ -28,9 +28,9 @@ Rules and boundary vs PROJECT_STATE.md:
 - [x] Cross-domain authority rules documented (§10)
 - [x] Worked examples showing how Claude decides where changes belong (§10)
 - [x] Gaps and open questions recorded (§11)
-- [ ] Committed to `claude/authority-map`, pushed, draft PR opened
-- [ ] Both #659 (Anti-HOLD) and the authority-map PR reviewed together (operator gate)
-- [ ] TASK_STATE.md → COMPLETE on merge; flow-context-keeper records FACT
+- [x] Committed to `claude/authority-map`, pushed, draft PR opened (PR #660)
+- [x] PR #660 verified (docs-only, 0 CI failures, 0 review comments), marked ready, merged as squash `8241abd`
+- [x] TASK_STATE.md → COMPLETE
 
 ---
 
