@@ -17,25 +17,29 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
-- **Task:** Create TASK_EXECUTION_PROTOCOL.md — canonical five-phase execution protocol
+- **Task:** Build /feature command — canonical feature implementation entry point
 - **Started:** 2026-06-20
 - **Status:** COMPLETE
 - **HOLD reason (if BLOCKED-HOLD):** —
 
 ### Completion criteria
 
-- [x] `.claude/TASK_EXECUTION_PROTOCOL.md` created (299 lines, five-phase protocol)
-- [x] `BACKLOG.md` created at repo root (empty placeholder)
-- [x] TASK_STATE.md updated to IN_PROGRESS → COMPLETE
+- [x] `.claude/commands/feature.md` created — five-phase command, all mandatory checkpoints
+- [x] `COMMAND_REGISTRY.md` updated — /feature in matrix and detail section
+- [x] `BACKLOG.md` updated — B-001 recorded with SCHEDULED disposition
+- [x] `TASK_STATE.md` → COMPLETE
+- [x] Docs-only — no runtime code changed
+- [x] GATE 1 satisfied (reviewer-challenge CLEAR, final-consistency CLEAR)
 - [x] Committed to `claude/new-session-fetvj6`
 - [x] Pushed to remote
 - [x] Draft PR opened
-- [x] Final report returned
 
 ---
 
 ## History (most recent first)
 
+- 2026-06-20 — /feature command created at .claude/commands/feature.md.
+  COMMAND_REGISTRY.md updated. BACKLOG B-001 (PR #661 review) filed.
 - 2026-06-20 — TASK_EXECUTION_PROTOCOL.md created and merged via draft PR.
   Canonical DISCOVERY→PLAN→IMPLEMENT→VERIFY→CLOSE protocol. BACKLOG.md seeded.
 - 2026-06-20 — PR #630 squash-merged at a40c7c5. PR-1A closes B1–B5 governance

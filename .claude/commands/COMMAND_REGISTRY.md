@@ -1,7 +1,7 @@
 # COMMAND_REGISTRY.md — Atlas V2 Slash Commands
 
 **Source of truth for slash commands version-controlled in `.claude/commands/`.**
-Generated 2026-06-06 by direct inspection. 8 project commands.
+Updated 2026-06-20. 9 project commands.
 
 > **Capability legend:**
 > - **READ-ONLY** — inspects/reports; edits nothing.
@@ -15,6 +15,7 @@ Generated 2026-06-06 by direct inspection. 8 project commands.
 
 | Command | Capability | Purpose (1-line) | Operator approval |
 |---|---|---|---|
+| `/feature` | WRITE-CAPABLE | Canonical DISCOVERY→PLAN→IMPLEMENT→VERIFY→CLOSE entry point for all feature work | required before merge |
 | `/inspect-route` | READ-ONLY | Inspect an endpoint's payload/validation/UI-safety | not required (read-only) |
 | `/pz-audit-roadmap` | READ-ONLY | Full read-only codebase audit → decision-ready roadmap | not required (read-only) |
 | `/cowork-integration` | READ-ONLY (reference) | Cowork architecture + draft-validation reference | not required |
@@ -27,6 +28,14 @@ Generated 2026-06-06 by direct inspection. 8 project commands.
 ---
 
 ## Per-command detail
+
+### `/feature` — WRITE-CAPABLE ⚠️
+- **Purpose:** Canonical entry point for all new feature work. Executes the mandatory five-phase protocol (DISCOVERY → PLAN → IMPLEMENT → VERIFY → CLOSE) defined in `.claude/TASK_EXECUTION_PROTOCOL.md`.
+- **Mandatory subagents:** `gap-detection` (DISCOVERY), `reviewer-challenge` (PLAN, mandatory), `final-consistency-review` (VERIFY), `flow-context-keeper` (CLOSE). Substitution requires GATE 5 disclosure.
+- **Safe usage:** Every new feature, regardless of size. Pass the task as `$ARGUMENTS` (one line or paragraph).
+- **Forbidden usage:** Skipping `reviewer-challenge`; skipping GATE 1 checklist; opening a PR before GATE 1 is satisfied; editing files not on the plan list.
+- **Capability:** WRITE-CAPABLE (edits files during IMPLEMENT, opens PRs, commits). **Operator approval required before merge.**
+- **Invocation examples:** `/feature Add proforma snapshot columns` · `/feature Wire DHL lane-readiness to V2` · `/feature Add email idempotency guard`
 
 ### `/inspect-route` — READ-ONLY
 - **Purpose:** Inspect an endpoint — identify payload/validation, check if safe for UI.

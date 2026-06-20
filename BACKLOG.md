@@ -8,7 +8,9 @@ next task closes.
 
 ## Entries
 
-_No entries yet._
+| # | Discovery | Found during | Disposition | Notes |
+|---|---|---|---|---|
+| B-001 | PR #661 (`ci/auto-merge-approved`) is non-draft and unreviewed — appears stale since 2026-06-20 | /feature DISCOVERY | SCHEDULED — review before next merge sprint | Verify it doesn't conflict with governance gates before approving |
 
 ---
 
