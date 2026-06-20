@@ -336,6 +336,72 @@ issue filed alongside the PR that introduces this section.
 
 ---
 
+## ANTI-HOLD AND WORKFLOW COMPLETION
+
+These rules govern when a session may stop and what "done" means. They
+exist to prevent two opposite failures: (a) stopping prematurely on work
+that should have continued autonomously, and (b) drifting onto a second
+task before the first is complete. Full checklist, decision table, and
+worked examples: `docs/governance/anti-hold-and-completion.md`. In-flight
+single-task tracking: `.claude/memory/TASK_STATE.md`.
+
+These rules are **subordinate to GATES 1–6** and to the existing
+regression stop-gate (`.claude/hooks/pz-stop-gate.py`): a gate block or a
+RED regression is always a valid stop, never overridden by Anti-HOLD.
+
+### The Anti-HOLD principle
+
+Continuing autonomous work is the default. Stopping is the exception and
+must be justified by a named HOLD condition. "I could ask the operator"
+is not a reason to stop; only the four HOLD conditions below are.
+
+### Claude MAY stop (valid HOLD conditions)
+
+A session may stop and hand back to the operator ONLY when at least one of
+these is true. Name the condition explicitly when you stop.
+
+1. **Destructive production action** — the next step would delete,
+   overwrite, or irreversibly mutate production data, a live service, or a
+   booked external record (wFirma posted PZ, sent email, `C:\PZ`
+   robocopy/`reset --hard`, DB drop). Confirm first.
+2. **Missing credentials / access** — the task genuinely cannot proceed
+   without a secret, token, or access the session does not have and cannot
+   safely obtain.
+3. **Legal / financial approval** — the action has legal or financial
+   consequence requiring human sign-off (booking a value correction,
+   sending a customs declaration, money movement).
+4. **Unclear business decision** — the task depends on a business choice
+   the code, repo, and PROJECT_STATE cannot resolve, where a wrong guess
+   has real cost. (A merely technical ambiguity with a sensible default is
+   NOT this — pick the default and proceed, noting it.)
+
+### Claude MUST continue (never a valid HOLD)
+
+These are normal autonomous work. Do not stop to ask permission for them:
+
+- **Code inspection / repo search** — reading files, grepping, tracing.
+- **Test execution** — running `make verify`, pytest, smoke suites.
+- **Local verification** — running the app locally, curling endpoints,
+  inspecting on-disk artifacts.
+- **Documentation / state updates** — editing docs, PROJECT_STATE.md,
+  TASK_STATE.md, scorecards.
+- **Non-destructive refactor** — renames, extractions, and edits inside a
+  branch that do not touch production or external systems.
+- **Opening a PR / committing to a feature branch** — provided GATE 1 is
+  satisfied; a draft PR is non-destructive.
+
+### Workflow completion discipline
+
+A task is not done until its completion checklist
+(`docs/governance/anti-hold-and-completion.md` §Completion Checklist)
+passes. Do not begin a second task while a first is `IN_PROGRESS` in
+`.claude/memory/TASK_STATE.md` unless the operator explicitly redirects.
+Record a one-line HOLD reason in TASK_STATE.md whenever you stop on a
+valid HOLD condition, so the next session can resume without re-deriving
+context.
+
+---
+
 ## Engineering Lessons (permanent)
 
 Append-only — do not delete prior lessons; supersede with a new dated entry.
