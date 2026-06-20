@@ -1628,8 +1628,14 @@ def ensure_sales_document_id(
                 if sib:
                     client_name = sib[0] or ""
                     client_ref = sib[1] or ""
+            # OR IGNORE: a concurrent reprocess of the same document may have
+            # inserted the id==document_id row between the SELECT above and here
+            # (the threading lock only serialises within this process). The
+            # no-op-on-conflict keeps the helper safe under multi-worker /
+            # concurrent-tab reprocess instead of raising a swallowed
+            # UNIQUE-constraint error that would leave the lines orphaned.
             con.execute(
-                """INSERT INTO sales_documents
+                """INSERT OR IGNORE INTO sales_documents
                    (id, batch_id, document_id, client_name, client_ref,
                     document_type, sales_doc_no, sales_doc_date,
                     source_file_path, extraction_status, created_at, updated_at)

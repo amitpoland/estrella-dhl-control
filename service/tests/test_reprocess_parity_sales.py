@@ -175,6 +175,28 @@ def test_reprocess_fk_invariant_for_id_joining_readers(docdb):
     assert spl_by_doc.get(doc_id), "id-join lookup must find the document's lines"
 
 
+def test_reprocess_twice_converges_to_one_canonical_row(docdb):
+    """Re-reprocess (ensure + replace lines, twice) converges: exactly one
+    canonical sales_documents row (id==doc_id), lines re-written under it, and
+    the FK invariant still holds. Guards the idempotency / concurrent-INSERT
+    hardening (INSERT OR IGNORE)."""
+    B = "BATCH_TWICE"
+    doc_id = "shipdoc-eee"
+    for _ in range(2):
+        sales_doc_id = ddb.ensure_sales_document_id(B, doc_id, document_type="sales_packing_list")
+        assert sales_doc_id == doc_id
+        ddb.replace_sales_packing_lines(sales_doc_id, B, [
+            _row("P1", "D1", 10.0, "excel_symbol"),
+            _row("P2", "D2", 20.0, "excel_symbol"),
+        ])
+    canon = [d for d in ddb.get_sales_documents(B) if d["id"] == doc_id]
+    assert len(canon) == 1, "re-reprocess must converge to one canonical row"
+    spls = ddb.get_sales_packing_lines(B)
+    assert len(spls) == 2, "replace (not append) on the second run"
+    sd_ids = {d["id"] for d in ddb.get_sales_documents(B)}
+    assert all(r["sales_document_id"] in sd_ids for r in spls), "FK invariant holds after re-reprocess"
+
+
 def test_ensure_sales_document_id_purges_lineless_phantom(docdb):
     """A pre-fix phantom (random-UUID id, same document_id, no lines) is removed
     once the canonical id==doc_id row is ensured; a phantom that owns lines is
