@@ -28,6 +28,33 @@ Every subagent dispatched with write-capable tools (Bash, Write, Edit, gh, MCP w
 
 ---
 
+## Observation Period Policy
+
+Observation is **passive measurement, not a release gate.**
+
+While observation is active:
+
+- New feature development continues normally.
+- Existing roadmap items continue normally.
+- Bug fixes continue normally unless separately restricted.
+- Deployments continue normally.
+- Approved project phases continue normally.
+
+Observation does **not** require waiting for calendar time.
+Observation does **not** require waiting for a minimum number of days.
+Observation does **not** pause the roadmap.
+Observation does **not** create a HOLD state.
+
+The only purpose of observation is to record completed `/feature` executions in
+`FEATURE_SCORECARD.md` and evaluate the collected evidence later. The absence of
+scorecard entries must never prevent development work.
+
+See `docs/governance/OBSERVATION_IS_NOT_A_GATE.md` for the binding rule and
+acceptance criteria. This policy is subordinate to the four HOLD conditions in
+`docs/governance/anti-hold-and-completion.md` §2 — observation adds no new HOLD.
+
+---
+
 ## Phase 1 — DISCOVERY
 
 **Purpose:** Understand scope before any code is written. Identify authority, select skill and subagent roster.
@@ -295,5 +322,6 @@ Merge SHA: <sha>
 | 7-agent deploy gate | `CLAUDE.md` §Production deployment rule |
 | Engineering Lessons A–M | `CLAUDE.md` §Engineering Lessons |
 | Observation RULES 1–6 | `CLAUDE.md` §MANDATORY OBSERVATION LAYER |
+| Observation is not a gate | `docs/governance/OBSERVATION_IS_NOT_A_GATE.md` · §Observation Period Policy above |
 | Agent substitution disclosure | `CLAUDE.md` §GATE 5 |
 | Lesson K (agent prompt scope) | `CLAUDE.md` §Lesson K |
