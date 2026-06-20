@@ -1096,29 +1096,30 @@ async def reprocess_packing_documents(
                 # the dashboard can render resolved/ambiguous/unresolved
                 # without re-deriving from logs.
                 result_entry["sales_matcher_summary"] = _matcher_summary
-                # Resolve a sales_documents id for this batch so sales
-                # lines are properly linked. If none exists yet, register
-                # a sales_invoice placeholder so the FK is satisfiable.
-                sales_docs = _ddb.get_documents_for_batch(batch_id, document_type="sales_invoice") or []
-                sales_doc_id = sales_docs[0]["id"] if sales_docs else ""
-                if not sales_doc_id:
-                    # Soft-register a sales_documents row keyed off the
-                    # packing file so downstream proforma readiness has
-                    # a join target. NEVER triggers external flows.
-                    try:
-                        _ddb.store_sales_document(
-                            batch_id=batch_id, document_id=doc_id,
-                            data={
-                                "client_name":      "",
-                                "client_ref":       "",
-                                "document_type":    "sales_packing_list",
-                                "source_file_path": str(file_path),
-                                "extraction_status": "pending",
-                            },
-                        )
-                        sales_doc_id = doc_id
-                    except Exception:
-                        sales_doc_id = doc_id
+                # Ensure a sales_documents row whose PRIMARY KEY id == doc_id
+                # (the sales packing list's shipment_documents.id). The lines
+                # below are keyed to doc_id; wfirma_reservation and the
+                # v_sales_to_wfirma view join sales_packing_lines on
+                # sales_documents.id, so the sales_documents row MUST carry that
+                # same id or every persisted line is orphaned from those
+                # readers. The old store_sales_document path minted a divergent
+                # random UUID — the root of that orphaning.
+                # ensure_sales_document_id is idempotent (re-reprocess reuses the
+                # row) and removes pre-fix phantom rows. NEVER triggers external
+                # flows. sales_doc_id stays == doc_id so all downstream linkage
+                # (client_name backfill, diagnostic write) is unchanged.
+                sales_doc_id = doc_id
+                try:
+                    _ddb.ensure_sales_document_id(
+                        batch_id, doc_id,
+                        document_type="sales_packing_list",
+                        source_file_path=str(file_path),
+                    )
+                except Exception as _exc:
+                    log.warning(
+                        "[%s] ensure_sales_document_id failed (non-fatal): %s",
+                        batch_id, _exc,
+                    )
 
                 # ── Preserve operator-supplied identity across reprocess ──
                 # The parser does not know client_name / client_ref — the
@@ -1376,6 +1377,31 @@ async def reprocess_packing_documents(
                     except AttributeError:
                         # Helper name varies between writers; fall back.
                         _ddb.store_sales_packing_lines(sales_doc_id, batch_id, line_records)
+                    # Reprocess-parity: the sales branch persists rows but the
+                    # intake-time shipment_documents.extraction_status stays
+                    # 'pending' unless flipped here. The packing card infers
+                    # 'extracted' from row count, but the Document Registry
+                    # reads the raw column — flip it so both agree. Gate on real
+                    # content (a product_code OR design_no on at least one row)
+                    # so a parse that yielded only blank rows is not mislabelled
+                    # 'extracted/complete'. Non-fatal.
+                    _has_content = any(
+                        (r.get("product_code") or "").strip()
+                        or (r.get("design_no") or "").strip()
+                        for r in line_records
+                    )
+                    if _has_content:
+                        try:
+                            _ddb.update_document_status(
+                                doc_id,
+                                extraction_status="extracted",
+                                parser_status="complete",
+                            )
+                        except Exception as _exc:
+                            log.warning(
+                                "[%s] reprocess sales status flip failed (non-fatal): %s",
+                                batch_id, _exc,
+                            )
 
                 # Fix 3: write rich Polish/English descriptions to product_descriptions
                 # from sales packing row fields (ctg/kt/col/quality) so that future
