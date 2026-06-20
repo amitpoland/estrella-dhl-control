@@ -1293,6 +1293,22 @@ def list_batch_documents(batch_id: str) -> JSONResponse:
             except Exception as exc:
                 log.warning("[%s] invoice lines enrichment failed (non-fatal) doc=%s: %s",
                             batch_id, doc_id, exc)
+        # ── Sales-packing enrichment ──────────────────────────────────
+        # sales_packing_list extraction writes to sales_packing_lines
+        # (keyed by sales_document_id == this shipment_documents.id), not
+        # to document_extracted_fields — so without this branch the registry
+        # rendered "Lines/Fields: 0" for sales rows even when 84 lines exist.
+        # Mirror the invoice enrichment so the UI shows the real count.
+        elif (d.get("document_type") or "") == "sales_packing_list":
+            try:
+                lines_preview = ddb.get_sales_packing_lines_for_document(doc_id, limit=20)
+                lines_total   = ddb.count_sales_packing_lines_for_document(doc_id)
+                row["lines_preview"]   = lines_preview
+                row["lines_count"]     = lines_total
+                row["lines_truncated"] = lines_total > len(lines_preview)
+            except Exception as exc:
+                log.warning("[%s] sales packing lines enrichment failed (non-fatal) doc=%s: %s",
+                            batch_id, doc_id, exc)
         enriched.append(row)
     return JSONResponse({
         "batch_id": batch_id,

@@ -1387,6 +1387,42 @@ def count_invoice_lines_for_document(document_id: str) -> int:
     return int(row["n"] if row else 0)
 
 
+def get_sales_packing_lines_for_document(
+    document_id: str,
+    limit:       int = 50,
+) -> List[Dict[str, Any]]:
+    """Return sales_packing_lines belonging to a single shipment_documents row.
+
+    Sales packing extraction writes to sales_packing_lines (keyed by
+    ``sales_document_id``, which the reprocess path sets to this
+    shipment_documents.id), NOT to document_extracted_fields. The Document
+    Registry therefore rendered "Lines/Fields: 0" for sales_packing_list rows.
+    This mirrors ``get_invoice_lines_for_document`` so the registry can surface
+    the real count + a small preview. Read-only; capped at ``limit``.
+    """
+    if _db_path is None or not document_id:
+        return []
+    with _connect() as con:
+        rows = con.execute(
+            "SELECT * FROM sales_packing_lines "
+            "WHERE sales_document_id=? ORDER BY created_at LIMIT ?",
+            (document_id, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_sales_packing_lines_for_document(document_id: str) -> int:
+    """Count sales_packing_lines for a single document row (no preview)."""
+    if _db_path is None or not document_id:
+        return 0
+    with _connect() as con:
+        row = con.execute(
+            "SELECT COUNT(*) AS n FROM sales_packing_lines WHERE sales_document_id=?",
+            (document_id,),
+        ).fetchone()
+    return int(row["n"] if row else 0)
+
+
 # ── Sales documents ────────────────────────────────────────────────────────────
 
 def store_sales_document(
