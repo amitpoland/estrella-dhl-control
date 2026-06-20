@@ -775,7 +775,24 @@ async def shipment_intake(
         # If no sales_documents block was uploaded, create a sales_documents
         # record from the packing-list metadata so the client/ref still gets
         # tracked in the registry.
-        if not sales_doc_id and (client or client_ref):
+        #
+        # PR-1 (sales-intake determinism): when the block carried no
+        # client_name/client_ref but DOES carry a client_contractor_id,
+        # backfill the client name from Customer Master so the sales_doc_id
+        # can be created from the contractor id. Previously such rows were
+        # silently dropped at the ``sales_doc_id`` gate below.
+        if not sales_doc_id and not client and client_cid:
+            try:
+                from ..services.customer_master_db import get_customer as _cm_get
+                _cm_rec = _cm_get(
+                    settings.storage_root / "customer_master.sqlite", client_cid,
+                )
+                if _cm_rec is not None:
+                    client = (getattr(_cm_rec, "bill_to_name", "") or "").strip()
+            except Exception as exc:
+                log.warning("[%s] client-name lookup by contractor_id=%s failed: %s",
+                            batch_id, client_cid, exc)
+        if not sales_doc_id and (client or client_ref or client_cid):
             try:
                 sales_doc_id = ddb.store_sales_document(
                     batch_id=batch_id, document_id=sp_doc_id,
@@ -802,6 +819,10 @@ async def shipment_intake(
             "applied": False, "reason": "no PND rows",
             "pairs": [], "warnings": [],
         }
+        # PR-1: sentinel so the summary append below never raises
+        # UnboundLocalError when extract_packing (or any pre-matcher step)
+        # raises and the except branch fires before the matcher assigns it.
+        sales_matcher_summary: Dict[str, Any] = {}
         try:
             from ..services.invoice_packing_extractor import extract_packing
             sp_rows, _, _, _sp_diag = extract_packing(path)
@@ -976,6 +997,19 @@ async def shipment_intake(
                     })
                 ddb.store_sales_packing_lines(sales_doc_id, batch_id, line_records)
                 n_rows = len(line_records)
+                # PR-1: persist parse status so a successfully parsed+stored
+                # sales packing document is never left silently 'pending'.
+                if sp_doc_id:
+                    ddb.update_document_status(
+                        sp_doc_id,
+                        extraction_status="extracted",
+                        parser_status="complete",
+                        # Rows are stored; flag for review only when the client
+                        # name could not be resolved (contractor id present but
+                        # no Customer Master match) so an owner is assigned
+                        # before proforma grouping.
+                        requires_manual_review=not bool((client or "").strip()),
+                    )
                 # Phase 2 — auto-create local editable Proforma Draft.
                 # Idempotent; never blocks intake on failure.
                 _auto_create_draft_for_client(
@@ -986,9 +1020,78 @@ async def shipment_intake(
                     line_records = line_records,
                     operator     = "intake",
                 )
+            elif sp_rows and not sales_doc_id:
+                # PR-1: rows parsed but no client identity could be resolved
+                # (no block name/ref and no usable client_contractor_id).
+                # Never silent-drop — surface a diagnostic and flag the doc
+                # so it is no longer silently 'pending'.
+                log.warning(
+                    "[%s] sales packing parsed %d rows but sales_doc_id "
+                    "unresolved (client_contractor_id=%r) — flagged for review",
+                    batch_id, len(sp_rows), client_cid,
+                )
+                try:
+                    from ..services.parser_diagnostic_writer import write_packing_diagnostic_artifact
+                    write_packing_diagnostic_artifact(
+                        storage_root=settings.storage_root,
+                        batch_id=batch_id,
+                        document_id=sp_doc_id,
+                        filename=name,
+                        document_type="sales_packing_list",
+                        source_path=path,
+                        parser_diagnostic={
+                            "failure_reason": "sales_doc_id_unresolved",
+                            "rows_parsed": len(sp_rows),
+                            "client_contractor_id": client_cid,
+                        },
+                    )
+                except Exception as _exc:
+                    log.warning("[%s] sales unresolved-doc diagnostic failed: %s",
+                                batch_id, _exc)
+                if sp_doc_id:
+                    ddb.update_document_status(
+                        sp_doc_id,
+                        extraction_status="extraction_failed",
+                        parser_status="failed",
+                        requires_manual_review=True,
+                    )
+            elif not sp_rows:
+                # PR-1: zero-row parse — a diagnostic artifact was already
+                # written above; ensure the doc is not left silently 'pending'.
+                if sp_doc_id:
+                    ddb.update_document_status(
+                        sp_doc_id,
+                        extraction_status="extraction_failed",
+                        parser_status="failed",
+                        requires_manual_review=True,
+                    )
         except Exception as exc:
             log.warning("[%s] sales packing parse failed (non-fatal): %s — %s",
                         batch_id, name, exc)
+            # PR-1: a parse attempt that errored must not leave the doc
+            # silently 'pending' — write a diagnostic and flag for review.
+            try:
+                from ..services.parser_diagnostic_writer import write_packing_diagnostic_artifact
+                write_packing_diagnostic_artifact(
+                    storage_root=settings.storage_root, batch_id=batch_id,
+                    document_id=sp_doc_id, filename=name,
+                    document_type="sales_packing_list", source_path=path,
+                    parser_diagnostic={
+                        "failure_reason": "parser_exception",
+                        "exception_class": type(exc).__name__,
+                        "exception_message": str(exc)[:500],
+                    },
+                )
+            except Exception:
+                pass
+            if sp_doc_id:
+                try:
+                    ddb.update_document_status(
+                        sp_doc_id, extraction_status="extraction_failed",
+                        parser_status="failed", requires_manual_review=True,
+                    )
+                except Exception:
+                    pass
 
         sales_pack_summaries.append({
             "file":              name,
