@@ -379,6 +379,37 @@ def init_document_db(db_path: Path) -> None:
             except sqlite3.OperationalError:
                 pass  # column already exists
 
+        # ── Contractor-at-birth projection (PR-2) ────────────────────────
+        # Carry the Customer-Master contractor authority resolved at intake
+        # (shipment_documents.client_contractor_id) onto the sales chain so
+        # downstream grouping/reservation can use the authoritative identity
+        # instead of fragile client_name string equality. Additive, idempotent,
+        # default '' = unprojected (legacy / pre-fix rows; repaired by backfill).
+        try:
+            con.execute(
+                "ALTER TABLE sales_documents ADD COLUMN "
+                "client_contractor_id TEXT NOT NULL DEFAULT ''"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        try:
+            con.execute(
+                "ALTER TABLE sales_packing_lines ADD COLUMN "
+                "client_contractor_id TEXT NOT NULL DEFAULT ''"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        for idx_name, table, col in (
+            ("idx_sales_docs_client_cid",  "sales_documents",     "client_contractor_id"),
+            ("idx_sales_lines_client_cid", "sales_packing_lines", "client_contractor_id"),
+        ):
+            try:
+                con.execute(
+                    f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table} ({col})"
+                )
+            except sqlite3.OperationalError:
+                pass
+
         # ── Product identity fields (PR: product-identity-engine-foundation)
         # Extends product_descriptions with packing-derived identity fields:
         #   karat / metal_color / quality_string / stone_type — from packing XLSX
@@ -1459,26 +1490,78 @@ def count_sales_packing_lines_for_document(document_id: str) -> int:
 
 # ── Sales documents ────────────────────────────────────────────────────────────
 
+def _shipment_doc_contractor_id(con: sqlite3.Connection, document_id: str) -> str:
+    """Read ``shipment_documents.client_contractor_id`` for *document_id*.
+
+    This is the authoritative Customer-Master contractor identity bound at
+    intake (``register_document``). Returns '' when the row or column is
+    absent. Never raises — projection is best-effort.
+    """
+    if not (document_id or "").strip():
+        return ""
+    try:
+        row = con.execute(
+            "SELECT client_contractor_id FROM shipment_documents WHERE id=?",
+            (str(document_id),),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return ""
+    if not row:
+        return ""
+    return (row["client_contractor_id"] or "").strip()
+
+
+def _sales_doc_contractor_id(con: sqlite3.Connection, sales_document_id: str) -> str:
+    """Read ``sales_documents.client_contractor_id`` for a sales_documents.id.
+
+    Used to project the parent document's contractor authority onto its
+    packing lines. Returns '' when absent. Never raises.
+    """
+    if not (sales_document_id or "").strip():
+        return ""
+    try:
+        row = con.execute(
+            "SELECT client_contractor_id FROM sales_documents WHERE id=?",
+            (str(sales_document_id),),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return ""
+    if not row:
+        return ""
+    return (row["client_contractor_id"] or "").strip()
+
+
 def store_sales_document(
     batch_id:    str,
     document_id: str,
     data:        Dict[str, Any],
 ) -> str:
     """
-    Insert or update a sales document record.
-    Returns the sales_document id.
+    Insert a sales document record. Returns the sales_document id.
+
+    PR-2 (contractor-at-birth): ``client_contractor_id`` is projected onto the
+    row. Precedence: explicit ``data["client_contractor_id"]`` → derived from
+    the authoritative ``shipment_documents.client_contractor_id`` for
+    *document_id*. This keeps the Customer-Master contractor authority resolved
+    at intake from being dropped at the sales boundary (the silent-drop root
+    cause). ``client_name`` is unchanged — contractor is an additive reference,
+    never the identity key.
     """
     if _db_path is None:
         return ""
     now = _now()
     row_id = str(uuid.uuid4())
     with _lock, _connect() as con:
+        cid = str(data.get("client_contractor_id", "") or "").strip()
+        if not cid:
+            cid = _shipment_doc_contractor_id(con, document_id)
         con.execute(
             """INSERT OR REPLACE INTO sales_documents
                (id, batch_id, document_id, client_name, client_ref,
                 document_type, sales_doc_no, sales_doc_date,
-                source_file_path, extraction_status, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                source_file_path, extraction_status,
+                client_contractor_id, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 row_id, batch_id, document_id,
                 str(data.get("client_name", "")),
@@ -1488,6 +1571,7 @@ def store_sales_document(
                 str(data.get("sales_doc_date", "")),
                 str(data.get("source_file_path", "")),
                 str(data.get("extraction_status", "pending")),
+                cid,
                 now, now,
             ),
         )
@@ -1612,29 +1696,47 @@ def get_or_create_sales_document_for_packing(
     synthetic_doc_id = f"packing:{packing_document_id}"
     now = _now()
     with _lock, _connect() as con:
+        # PR-2: project contractor authority from the REAL packing
+        # shipment_documents row (id == packing_document_id), not the synthetic
+        # back-ref. Best-effort; '' when unbound.
+        cid = _shipment_doc_contractor_id(con, packing_document_id)
         existing = con.execute(
-            "SELECT id FROM sales_documents WHERE batch_id=? AND document_id=?",
+            "SELECT id, client_contractor_id FROM sales_documents "
+            "WHERE batch_id=? AND document_id=?",
             (batch_id, synthetic_doc_id),
         ).fetchone()
         if existing:
+            existing_cid = (existing["client_contractor_id"] or "").strip()
+            # Merge-not-replace: only fill the contractor reference when it is
+            # currently empty (never clobber a resolved authority — #570 class).
+            cid_to_write = existing_cid or cid
             if client_name:
                 con.execute(
-                    "UPDATE sales_documents SET client_name=?, updated_at=? WHERE id=?",
-                    (client_name, now, existing[0]),
+                    "UPDATE sales_documents "
+                    "SET client_name=?, client_contractor_id=?, updated_at=? WHERE id=?",
+                    (client_name, cid_to_write, now, existing["id"]),
                 )
-            return existing[0]
+            elif cid_to_write != existing_cid:
+                con.execute(
+                    "UPDATE sales_documents "
+                    "SET client_contractor_id=?, updated_at=? WHERE id=?",
+                    (cid_to_write, now, existing["id"]),
+                )
+            return existing["id"]
         row_id = str(uuid.uuid4())
         con.execute(
             """INSERT INTO sales_documents
                (id, batch_id, document_id, client_name, client_ref,
                 document_type, sales_doc_no, sales_doc_date,
-                source_file_path, extraction_status, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                source_file_path, extraction_status,
+                client_contractor_id, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 row_id, batch_id, synthetic_doc_id,
                 client_name, "",
                 "packing_list_promote", "", "",
                 "", "extracted",
+                cid,
                 now, now,
             ),
         )
@@ -1642,12 +1744,13 @@ def get_or_create_sales_document_for_packing(
 
 
 def ensure_sales_document_id(
-    batch_id:         str,
-    document_id:      str,
+    batch_id:             str,
+    document_id:          str,
     *,
-    client_name:      str = "",
-    document_type:    str = "sales_packing_list",
-    source_file_path: str = "",
+    client_name:          str = "",
+    document_type:        str = "sales_packing_list",
+    source_file_path:     str = "",
+    client_contractor_id: str = "",
 ) -> str:
     """Idempotent: ensure a ``sales_documents`` row whose PRIMARY KEY ``id``
     equals *document_id*, and return that id.
@@ -1670,14 +1773,35 @@ def ensure_sales_document_id(
         return ""
     now = _now()
     with _lock, _connect() as con:
+        # PR-2: project contractor authority. Explicit arg wins; else derive
+        # from the authoritative shipment_documents row (id == document_id on
+        # the reprocess path). Best-effort '' when unbound.
+        cid = (client_contractor_id or "").strip() or \
+            _shipment_doc_contractor_id(con, document_id)
         existing = con.execute(
-            "SELECT id FROM sales_documents WHERE id=?", (document_id,),
+            "SELECT id, client_contractor_id FROM sales_documents WHERE id=?",
+            (document_id,),
         ).fetchone()
         if existing:
-            if client_name:
+            existing_cid = (existing["client_contractor_id"] or "").strip()
+            # Merge-not-replace: fill the contractor reference only when empty.
+            cid_to_write = existing_cid or cid
+            if client_name and cid_to_write != existing_cid:
+                con.execute(
+                    "UPDATE sales_documents "
+                    "SET client_name=?, client_contractor_id=?, updated_at=? WHERE id=?",
+                    (client_name, cid_to_write, now, document_id),
+                )
+            elif client_name:
                 con.execute(
                     "UPDATE sales_documents SET client_name=?, updated_at=? WHERE id=?",
                     (client_name, now, document_id),
+                )
+            elif cid_to_write != existing_cid:
+                con.execute(
+                    "UPDATE sales_documents "
+                    "SET client_contractor_id=?, updated_at=? WHERE id=?",
+                    (cid_to_write, now, document_id),
                 )
         else:
             # Carry over operator-supplied identity from a pre-fix sibling
@@ -1708,13 +1832,15 @@ def ensure_sales_document_id(
                 """INSERT OR IGNORE INTO sales_documents
                    (id, batch_id, document_id, client_name, client_ref,
                     document_type, sales_doc_no, sales_doc_date,
-                    source_file_path, extraction_status, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    source_file_path, extraction_status,
+                    client_contractor_id, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     document_id, batch_id, document_id,
                     client_name, client_ref,
                     document_type, "", "",
                     source_file_path, "extracted",
+                    cid,
                     now, now,
                 ),
             )
@@ -1738,21 +1864,29 @@ def store_sales_packing_lines(
     batch_id:          str,
     lines:             List[Dict[str, Any]],
 ) -> int:
-    """Insert sales packing lines. Returns inserted count."""
+    """Insert sales packing lines. Returns inserted count.
+
+    PR-2: each line carries ``client_contractor_id`` projected from the parent
+    sales_document (which itself derives from the authoritative
+    shipment_documents row). Per-line explicit value wins; else the parent's.
+    """
     if _db_path is None or not lines:
         return 0
     now = _now()
     inserted = 0
     with _lock, _connect() as con:
+        parent_cid = _sales_doc_contractor_id(con, sales_document_id)
         for ln in lines:
             try:
+                line_cid = str(ln.get("client_contractor_id", "") or "").strip() \
+                    or parent_cid
                 con.execute(
                     """INSERT INTO sales_packing_lines
                        (id, batch_id, sales_document_id, client_name, client_ref,
                         product_code, design_no, bag_id, quantity, remarks,
                         unit_price, currency, total_value, price_source,
-                        created_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        client_contractor_id, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         str(uuid.uuid4()), batch_id, sales_document_id,
                         str(ln.get("client_name", "")),
@@ -1766,6 +1900,7 @@ def store_sales_packing_lines(
                         str(ln.get("currency", "") or "").upper(),
                         float(ln.get("total_value", 0) or 0),
                         str(ln.get("price_source", "") or ""),
+                        line_cid,
                         now,
                     ),
                 )
@@ -1813,15 +1948,18 @@ def replace_sales_packing_lines(
             "WHERE sales_document_id=? AND batch_id=?",
             (sales_document_id, batch_id),
         )
+        parent_cid = _sales_doc_contractor_id(con, sales_document_id)
         for ln in (lines or []):
             try:
+                line_cid = str(ln.get("client_contractor_id", "") or "").strip() \
+                    or parent_cid
                 con.execute(
                     """INSERT INTO sales_packing_lines
                        (id, batch_id, sales_document_id, client_name, client_ref,
                         product_code, design_no, bag_id, quantity, remarks,
                         unit_price, currency, total_value, price_source,
-                        created_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        client_contractor_id, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         str(uuid.uuid4()), batch_id, sales_document_id,
                         str(ln.get("client_name", "")),
@@ -1835,6 +1973,7 @@ def replace_sales_packing_lines(
                         str(ln.get("currency", "") or "").upper(),
                         float(ln.get("total_value", 0) or 0),
                         str(ln.get("price_source", "") or ""),
+                        line_cid,
                         now,
                     ),
                 )
@@ -1843,6 +1982,68 @@ def replace_sales_packing_lines(
                 log.warning("replace_sales_packing_lines insert failed: %s",
                              exc)
     return {"deleted": int(deleted), "inserted": int(inserted)}
+
+
+def backfill_contractor_ids(batch_id: str) -> Dict[str, int]:
+    """PR-2 reconciliation: project ``client_contractor_id`` from the
+    authoritative ``shipment_documents`` rows onto ``sales_documents`` and
+    ``sales_packing_lines`` for *batch_id*.
+
+    Pure projection — idempotent and additive:
+      * only fills rows whose ``client_contractor_id`` is currently empty
+        (never clobbers a resolved authority — #570 class),
+      * never changes ``client_name`` (the draft identity key),
+      * never creates drafts or blocked records (that is the sync layer's job).
+
+    Repairs historical batches whose sales rows were born before PR-2 dropped
+    the contractor authority. Safe to re-run. Returns update counts.
+    """
+    if _db_path is None or not (batch_id or "").strip():
+        return {"sales_documents_updated": 0, "sales_lines_updated": 0}
+    now = _now()
+    sd_updated = 0
+    sl_updated = 0
+    with _lock, _connect() as con:
+        sd_rows = con.execute(
+            "SELECT id, document_id, client_contractor_id FROM sales_documents "
+            "WHERE batch_id=?",
+            (batch_id,),
+        ).fetchall()
+        for r in sd_rows:
+            if (r["client_contractor_id"] or "").strip():
+                continue  # already projected — idempotent skip
+            ship_doc_id = str(r["document_id"] or "")
+            # Synthetic link-as-sales rows back-reference the packing doc as
+            # "packing:<real_shipment_documents.id>".
+            if ship_doc_id.startswith("packing:"):
+                ship_doc_id = ship_doc_id.split(":", 1)[1]
+            cid = _shipment_doc_contractor_id(con, ship_doc_id)
+            if not cid:
+                continue
+            con.execute(
+                "UPDATE sales_documents "
+                "SET client_contractor_id=?, updated_at=? WHERE id=?",
+                (cid, now, r["id"]),
+            )
+            sd_updated += 1
+
+        # Project parent → lines for any line still empty.
+        line_rows = con.execute(
+            "SELECT spl.id AS lid, sd.client_contractor_id AS cid "
+            "FROM sales_packing_lines spl "
+            "JOIN sales_documents sd ON sd.id = spl.sales_document_id "
+            "WHERE spl.batch_id=? "
+            "AND TRIM(COALESCE(spl.client_contractor_id,''))='' "
+            "AND TRIM(COALESCE(sd.client_contractor_id,''))<>''",
+            (batch_id,),
+        ).fetchall()
+        for lr in line_rows:
+            con.execute(
+                "UPDATE sales_packing_lines SET client_contractor_id=? WHERE id=?",
+                (lr["cid"], lr["lid"]),
+            )
+            sl_updated += 1
+    return {"sales_documents_updated": sd_updated, "sales_lines_updated": sl_updated}
 
 
 def get_sales_packing_lines(

@@ -264,6 +264,9 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         client     = sdoc.get("client_name") or ""
         client_ref = sdoc.get("client_ref") or ""
         doc_no     = sdoc.get("sales_doc_no") or client_ref
+        # PR-2: authoritative contractor reference carried into reservation
+        # readiness (reference only — does not change ready_to_create gating).
+        client_cid = str(sdoc.get("client_contractor_id") or "").strip()
 
         # Filter: skip stub rows — empty client_name with no doc_number.
         # Uses the named helper so the filter logic is unit-testable.
@@ -385,6 +388,7 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
                     currency=batch_currency,
                     warehouse_id=settings.wfirma_warehouse_id,
                     ready_to_create=doc_ready,
+                    client_contractor_id=client_cid,
                 )
                 for row in rows:
                     wfdb.upsert_reservation_line(
@@ -403,6 +407,11 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
             "sales_doc_no":    doc_no,
             "client_name":     client,
             "client_ref":      client_ref,
+            # PR-2: contractor reference chain — the authoritative Customer
+            # Master identity bound at intake, carried through to reservation
+            # readiness. Reference only; readiness gating is unchanged.
+            "client_contractor_id": client_cid,
+            "contractor_resolved":  bool(client_cid),
             "customer_ok":     customer_ok,
             "customer_match":  customer_match,
             "ready":           doc_ready,
