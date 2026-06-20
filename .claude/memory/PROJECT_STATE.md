@@ -78,10 +78,24 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **CAMPAIGN-IDENTITY LOCK:** **Rule 3 Global PZ ↔ wFirma Reconciliation Authority is a NEW future architecture campaign** — new campaign ID, new ADR, new authority owner, new governance gates, new rollout plan, new success + closure criteria. It is **NOT** a continuation of AWB-2315714531. The incident is **historical evidence only** and inherits nothing to Rule 3. Do NOT open new engineering work under AWB-2315714531-2026-06 unless a genuinely new production signal appears. See memory `project_awb2315714531_closed_rule3_new_campaign`.
 - **origin/main HEAD now = `fb70e15`** (PR #653 squash-merge). Supersedes the `03ffce9` HEAD block below (append-only — prior entry retained).
 
-## Current origin/main HEAD (2026-06-20, updated): `47251a3`
+## Current origin/main HEAD (2026-06-20, updated): `f652de0`
 
-- **origin/main HEAD = `47251a3`** — `feat(governance): TASK_EXECUTION_PROTOCOL + /feature command + skill routing + scorecard (#669)` (merged 2026-06-20). Squash-merge of PR #669 (`governance/feature-command-and-routing`). Supersedes the `a40c7c5` block below (append-only — prior entry retained).
-- Also on main at this date: `a40c7c5` (#630 proforma conflict remediation), `c8b9637` (#668 Document Readiness authority), `d55316d` (#665 sales-matcher fix), `b2f8eaa` (#664 registry purchase line counts), `ffe075b` (#663 registry sales line counts). Confirmed via `git log origin/main --oneline -5`, 2026-06-20.
+- **origin/main HEAD = `f652de0`** — `feat(packing-readiness): PR-2 Contractor-at-Birth Projection (#673)` (merged 2026-06-20). Squash-merge of PR #673. Supersedes the `47251a3` block below (append-only — prior entry retained).
+- Confirmed landing: `c8b9637` (#668 Document Readiness authority) also on main at this date.
+
+## ~~Current origin/main HEAD (2026-06-20, prior): `47251a3`~~ — superseded by `f652de0`
+
+- **~~origin/main HEAD = `47251a3`~~** — `feat(governance): TASK_EXECUTION_PROTOCOL + /feature command + skill routing + scorecard (#669)` (merged 2026-06-20). Squash-merge of PR #669 (`governance/feature-command-and-routing`). Superseded by `f652de0` (PR #673). Append-only — prior entry retained.
+- Also on main at that point: `a40c7c5` (#630 proforma conflict remediation), `c8b9637` (#668 Document Readiness authority), `d55316d` (#665 sales-matcher fix), `b2f8eaa` (#664 registry purchase line counts), `ffe075b` (#663 registry sales line counts). Confirmed via `git log origin/main --oneline -5`, 2026-06-20.
+
+## PR #673 — Packing Readiness PR-2: Contractor-at-Birth Projection (2026-06-20, MERGED as `f652de0` — NOT DEPLOYED)
+
+- **PR #673 SQUASH-MERGED** (2026-06-20): Branch `feat/packing-readiness-pr2-contractor-at-birth`. SHA `f652de0`. Title: `feat(packing-readiness): PR-2 Contractor-at-Birth Projection (#673)`. Base: `main`.
+- **Scope — backend only; no valuation/CIF/customs/PZ/accounting/booking change**: Carries `shipment_documents.client_contractor_id` forward onto `sales_documents`, `sales_packing_lines`, and `proforma_drafts` / `wfirma_reservation_drafts` at creation time (contractor-at-birth). Recovers missing `client_name` via Customer Master `bill_to_name` lookup. Surfaces visible `proforma_draft_birth_blocks` (open/resolved; block codes: `contractor_missing` / `client_unresolved` / `contractor_conflict`). Idempotent backfill admin route: `POST /api/v1/admin/contractor-projection/backfill` + `GET /api/v1/admin/contractor-projection/status`. wFirma reservation = readiness reference only; no wFirma write performed by this PR.
+- **Tests**: 26 real-builder tests; pre-commit smoke 63 passing; at-risk regression suite 111 passing.
+- **RULE 6 (scorecard — Lesson C verification result)**: scorecard file `.claude/memory/scorecards/2026-06-20-pr2-contractor-at-birth-projection.md` — **PRESENT on disk (orchestrator-verified post-write 2026-06-20, 44KB)**. 9 agents scored; 6 EXEMPLARY / 3 ACCEPTABLE / 0 NEEDS-TUNING / 0 UNRELIABLE; no GATE-4 observer disposition required.
+- **NOT deployed to production (`C:\PZ`)**: code change only. Deploy requires the full 7-agent gate + operator robocopy. Backfill of `SHIPMENT_9158478722_2026-06_924c4e59` runs operator-side post-deploy.
+- **GATE 2**: PR #647 (Stage B vision-invoice confirm) remains open — 1/3 slots used. Queue has 2 slots available post-#673 merge.
 
 ## PR #669 — governance/feature-command-and-routing: TASK_EXECUTION_PROTOCOL + /feature + SKILL_ROUTING + scorecard (2026-06-20, MERGED as `47251a3`)
 
@@ -5501,10 +5515,17 @@ Group D — Tests (3 new files):
 - **`logistics` role permitted to attest vision-invoice confirmation** (2026-06-17): mirrors existing `routes_action_proposals` resolve-action role set (admin/logistics/accounts). OPEN QUESTION OQ-PR647-ROLE-POLICY tracks this for operator ratification.
 - **reviewer-challenge and security-write-action-reviewer must supply structured verdict blocks on next write-action endpoint PR** (2026-06-17, GATE-4 SCHEDULED per scorecard): this run both scored ACCEPTABLE (27/35) with narrative-only Evidence 3/5. Structured verdict blocks (claim → evidence line reference → severity → disposition) are required at GATE 1 for write-action endpoints. Target: enforce at next write-action PR pre-flight checklist. Also tracked under Issue #597 (systemic Environment disclosure gap).
 
-## Next 3 actions in queue (refreshed 2026-06-20 — PR #669 MERGED: TASK_EXECUTION_PROTOCOL + /feature command + SKILL_ROUTING at `47251a3`)
+## Packing Readiness — Contractor-at-Birth Authority Model (2026-06-20)
 
-1. **Use `/feature` for first real task** — observation period begins; record the run in `FEATURE_SCORECARD.md`. Target outcome: first scorecard entry written; `/feature` command exercised end-to-end. Gating: PR #669 merged to main (DONE — `47251a3`).
-2. **Record 5–10 `/feature` runs in `FEATURE_SCORECARD.md`** then review failure patterns before building `/bug` or domain skills. Target outcome: observation baseline established. Gating: action 1 complete; `/feature` invoked on real tasks.
+- **`client_contractor_id` is an ADDITIVE AUTHORITATIVE REFERENCE** (2026-06-20, PR #673): `shipment_documents.client_contractor_id` is propagated onto `sales_documents`, `sales_packing_lines`, `proforma_drafts`, and `wfirma_reservation_drafts` at creation time. It provides a stable contractor handle for Customer Master lookups and wFirma reservation identity.
+- **`client_name` remains the draft/reservation/service-charge identity key and is never re-keyed** (2026-06-20): contractor authority resolves a MISSING `client_name` (via Customer Master `bill_to_name`); it does NOT overwrite a `client_name` that is already present. Grouping and reservation keying are based on `client_name`, not on `client_contractor_id`. (Supersedes any assumption that grouping would re-key by contractor.)
+- **wFirma reservation = readiness reference only** (2026-06-20): the PR-2 backfill route and projection logic do not perform wFirma writes. Contractor-at-birth is a local authority projection; any wFirma interaction remains gated on separate existing policies.
+- **PR-2 deploy requires 7-agent gate + operator backfill** (2026-06-20): `SHIPMENT_9158478722_2026-06_924c4e59` backfill runs via `POST /api/v1/admin/contractor-projection/backfill` operator-side after production deploy is confirmed.
+
+## Next 3 actions in queue (refreshed 2026-06-20 — PR #673 MERGED: Contractor-at-Birth Projection at `f652de0`)
+
+1. **Deploy PR #673 (Contractor-at-Birth Projection) to production** — target: 7-agent gate pass + operator robocopy + post-deploy `GET /api/v1/admin/contractor-projection/status` confirms backfill complete for `SHIPMENT_9158478722_2026-06_924c4e59`. Gating: OQ-PR673-DEPLOY open; operator must initiate 7-agent gate.
+2. **Define scope of Packing Readiness PR-3 and PR-4** — memory notes RC-3 contractor-at-birth = PR-2/3/4; PR-2 done; PR-3/PR-4 scope (V2 rendering of blocked records, `name_pl` enrich guard B-007, and related) still open. Target: operator declares next PR scope or files BACKLOG entries. Gating: OQ-PR673-PR34-SCOPE open; no code before scope is named.
 3. **Review B-001 (PR #661 `ci/auto-merge-approved`)** — review whether this CI auto-merge PR conflicts with governance gates before next merge sprint. Currently SCHEDULED in `BACKLOG.md`; convert to ISSUE if tracking beyond next session is needed. Gating: none — operator can action independently.
 
 ## /feature Command and BACKLOG.md Governance (2026-06-20)
@@ -6139,6 +6160,20 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ---
 
 # OPEN QUESTIONS
+
+## OQ-PR673-DEPLOY: PR #673 (Contractor-at-Birth Projection) deploy to production + operator backfill pending (2026-06-20)
+
+- **Question**: PR #673 (`f652de0`) is merged to `origin/main` but NOT yet deployed to `C:\PZ`. Has the 7-agent deploy gate been executed and has the operator completed the robocopy + backfill?
+- **Who can answer**: Operator — initiate the 7-agent deploy gate, execute robocopy, restart PZService, then run `GET /api/v1/admin/contractor-projection/status` and confirm backfill of `SHIPMENT_9158478722_2026-06_924c4e59`. Paste the status response to close.
+- **Impact if unanswered**: `client_contractor_id` projection is not live in production; `SHIPMENT_9158478722_2026-06_924c4e59` backfill is unexecuted; proforma birth blocks (`contractor_missing` / `client_unresolved`) remain unresolved for that shipment.
+- **Candidate path to closure**: 7-agent gate GO → operator robocopy → PZService restart → `GET /api/v1/admin/contractor-projection/status` shows backfill complete → orchestrator records SHA flip in FACTS and closes this OQ.
+
+## OQ-PR673-PR34-SCOPE: Packing Readiness PR-3 and PR-4 scope undefined — operator scheduling decision needed (2026-06-20)
+
+- **Question**: Memory index notes "RC-3 contractor-at-birth = PR-2/3/4 still to build"; PR-2 is now done (`f652de0`). What is the scope of PR-3 and PR-4? Candidate scope includes: V2 page rendering of `proforma_draft_birth_blocks` (blocked records visible + disabled with reason per Lesson M), `name_pl` enrich guard B-007, and any remaining contractor-at-birth gaps.
+- **Who can answer**: Operator — declare scope for PR-3 and PR-4, or file BACKLOG entries (SCHEDULED / ISSUE / REJECTED per GATE 4). "Recommendation noted" is not a valid disposition.
+- **Impact if unanswered**: Packing readiness campaign RC-3 remains partially implemented; V2 pages may not surface birth-block states to the operator (Lesson M risk); `name_pl` enrich guard B-007 stays unaddressed.
+- **Candidate path to closure**: Operator names PR-3 scope (target: V2 birth-block rendering) and PR-4 scope (target: `name_pl` / B-007 guard), or explicitly descopes with reasoning recorded here.
 
 ## OQ-PR656-SHA: production validation of PR #656 SHA pending — operator must paste PowerShell output (2026-06-20)
 
