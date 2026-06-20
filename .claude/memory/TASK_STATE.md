@@ -17,22 +17,20 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
-- **Task:** Build /feature command — canonical feature implementation entry point
+- **Task:** Build automatic skill routing for /feature
 - **Started:** 2026-06-20
 - **Status:** COMPLETE
 - **HOLD reason (if BLOCKED-HOLD):** —
 
 ### Completion criteria
 
-- [x] `.claude/commands/feature.md` created — five-phase command, all mandatory checkpoints
-- [x] `COMMAND_REGISTRY.md` updated — /feature in matrix and detail section
-- [x] `BACKLOG.md` updated — B-001 recorded with SCHEDULED disposition
+- [x] `.claude/SKILL_ROUTING.md` created — 13-domain routing table, algorithm, sample resolutions
+- [x] `.claude/commands/feature.md` updated — Step 0 skill-routing block added to Phase 1
 - [x] `TASK_STATE.md` → COMPLETE
 - [x] Docs-only — no runtime code changed
 - [x] GATE 1 satisfied (reviewer-challenge CLEAR, final-consistency CLEAR)
 - [x] Committed to `claude/new-session-fetvj6`
 - [x] Pushed to remote
-- [x] Draft PR opened
 
 ---
 

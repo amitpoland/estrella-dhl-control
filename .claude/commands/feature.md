@@ -16,16 +16,35 @@ Authority sources (load before any action):
 
 ## Phase 1 — DISCOVERY
 
+**Step 0 — Skill routing (runs first, before any file read):**
+Read `.claude/SKILL_ROUTING.md` and emit the routing block for `$ARGUMENTS`:
+
+```
+SKILL_ROUTING
+─────────────────────────────────────────
+TASK_TYPE:      <from routing table>
+SELECTED_SKILL: <primary skill(s)>
+SECONDARY:      <secondary skill or "none">
+REASON:         <matched keywords>
+CONFIDENCE:     HIGH | MEDIUM | LOW
+─────────────────────────────────────────
+```
+
+Rules:
+- **LOW confidence** → continue DISCOVERY with safest available skill. Do not HOLD.
+- **MISSING_SKILL** → add to `BACKLOG.md` (if not already present) with disposition SCHEDULED; use fallback `backend-route-and-service-builder`.
+- Full algorithm and sample resolutions: `.claude/SKILL_ROUTING.md`.
+
 1. Read `.claude/memory/PROJECT_STATE.md` and `TASK_STATE.md`.
 2. If `TASK_STATE.md` shows `IN_PROGRESS` for a different task → HOLD (one-task rule).
 3. Update `TASK_STATE.md` → `IN_PROGRESS` for this task.
 4. **GATE 2 check:** Count open implementation PRs. If ≥ 3 → switch to merge-and-review mode; do not open another PR until count drops below 3.
 5. Read `AUTHORITY_MAP.md` — identify domain authority owner and forbidden write locations for this task.
-6. Select skill from checkpoint table (`TASK_EXECUTION_PROTOCOL.md` §Phase 1). If no domain skill exists, document the substitute.
+6. Load the `SELECTED_SKILL` from the routing block above. Invoke it now per its usage instructions.
 7. Spawn `gap-detection` subagent: `"Read the task description and inspect relevant files. Report missing context, missing backend endpoints, missing business rules, missing test coverage. DO NOT edit any files — read and report only."`
 8. Record any out-of-scope findings in `BACKLOG.md`.
 
-**Exit:** domain authority named · skill selected · GATE 2 confirmed · gap-detection returned · TASK_STATE.md = IN_PROGRESS.
+**Exit:** skill-routing block emitted · domain authority named · selected skill loaded · GATE 2 confirmed · gap-detection returned · TASK_STATE.md = IN_PROGRESS.
 
 ---
 
@@ -159,6 +178,7 @@ Merge SHA: <sha>
 
 | Integration | Detail |
 |---|---|
+| **Skill routing** | `.claude/SKILL_ROUTING.md` — keyword → skill map, algorithm, sample resolutions |
 | Protocol authority | `.claude/TASK_EXECUTION_PROTOCOL.md` — full phase rules |
 | Write authority | `docs/governance/AUTHORITY_MAP.md` |
 | Anti-HOLD rules | `docs/governance/anti-hold-and-completion.md` §2 |
