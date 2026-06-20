@@ -440,6 +440,46 @@ def count_packing_lines_for_shipment_document(
     return int(row["n"] if row else 0)
 
 
+def get_packing_status_for_shipment_document(
+    batch_id:         str,
+    source_file_hash: str = "",
+    file_name:        str = "",
+) -> str:
+    """Return the authoritative packing extraction_status for a registry row.
+
+    The Document Registry row is a ``shipment_documents`` row (documents.db),
+    whose ``extraction_status`` for purchase packing lists was historically
+    never written back from the packing pipeline. The real status lives here in
+    packing.db / ``packing_documents``. This bridges the same way as
+    ``count_packing_lines_for_shipment_document`` (via
+    ``_resolve_packing_document_ids``) and returns the packing-side status so
+    the registry can stop showing a stale 'pending'.
+
+    Aggregation across re-uploaded duplicates: 'complete' if ANY resolved
+    packing_documents row is complete; else 'empty' if all are empty; else the
+    first non-empty status; '' when no packing_documents row exists. Read-only.
+    """
+    pdoc_ids = _resolve_packing_document_ids(batch_id, source_file_hash, file_name)
+    if not pdoc_ids:
+        return ""
+    placeholders = ",".join("?" * len(pdoc_ids))
+    with _connect() as con:
+        rows = con.execute(
+            f"SELECT extraction_status FROM packing_documents "
+            f"WHERE id IN ({placeholders})",
+            tuple(pdoc_ids),
+        ).fetchall()
+    statuses = [str((r["extraction_status"] or "")).strip().lower() for r in rows]
+    if not statuses:
+        return ""
+    if "complete" in statuses:
+        return "complete"
+    non_empty = [s for s in statuses if s and s != "empty"]
+    if non_empty:
+        return non_empty[0]
+    return "empty"
+
+
 def update_packing_document_diagnostic(document_id: str, diagnostic: Dict[str, Any]) -> bool:
     """Update ONLY parser_diagnostic_json for one packing document.
 

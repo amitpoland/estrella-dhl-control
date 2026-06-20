@@ -4679,6 +4679,22 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
             };
             const statusBadge = (s) => <span style={pillStyle(statusKind(s))}>{s || '—'}</span>;
 
+            // Review column: render the backend review-state authority verbatim
+            // (review_state / review_reason from /documents). Never invent a
+            // state — if the backend did not supply one, say so honestly.
+            const reviewKindMap = { ready: 'ok', needs_review: 'warn', blocked: 'err', not_applicable: 'neutral' };
+            const reviewLabelMap = { ready: 'Ready', needs_review: 'Needs review', blocked: 'Blocked', not_applicable: 'N/A' };
+            const reviewBadge = (d) => {
+              const st = (d.review_state || '').toLowerCase();
+              const tid = `doc-registry-review-${d.id || 'x'}`;
+              if (!st) {
+                // Backend supplied no state — show the absent-value convention
+                // ('—'), never invent a verdict.
+                return <span data-testid={tid} data-review-state="" style={{ fontSize: 10, color: 'var(--text-3)' }} title="Backend review state unavailable">—</span>;
+              }
+              return <span data-testid={tid} data-review-state={st} style={pillStyle(reviewKindMap[st] || 'neutral')} title={d.review_reason || ''}>{reviewLabelMap[st] || st}</span>;
+            };
+
             return (
               <Card style={sectionStyle}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
@@ -4765,11 +4781,9 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                 </td>
                                 <td style={tdStyle}>{d.document_type || '—'}</td>
                                 <td style={tdStyle}>{statusBadge(d.parser_status)}</td>
-                                <td style={tdStyle}>{statusBadge(d.extraction_status)}</td>
-                                <td style={tdStyle}>
-                                  {d.requires_manual_review
-                                    ? <span style={pillStyle('err')}>Review</span>
-                                    : <span style={{ fontSize: 10, color: 'var(--text-3)' }}>—</span>}
+                                <td style={tdStyle}>{statusBadge(d.extraction_status_effective || d.extraction_status)}</td>
+                                <td style={tdStyle} data-testid="doc-registry-review-cell">
+                                  {reviewBadge(d)}
                                 </td>
                                 <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace', fontSize: 10 }} title={d.file_hash}>{(d.file_hash || '').slice(0, 8) || '—'}</td>
                                 <td style={tdStyle}>{d.created_at ? d.created_at.slice(0,16).replace('T',' ') : '—'}</td>
