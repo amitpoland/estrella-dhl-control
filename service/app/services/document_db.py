@@ -1724,6 +1724,19 @@ def get_sales_packing_lines(
                 "ORDER BY created_at",
                 (batch_id,),
             ).fetchall()
+            # Fallback: a batch that was (re)parsed without an
+            # import-sales-prices pass has NO 'packing_xlsx_value' authority
+            # rows — only 'excel_symbol' / '' rows, one per physical item.
+            # Returning [] there hides legitimately-persisted lines from
+            # sales_linkage / lane-readiness. When the batch has zero canonical
+            # rows, fall back to all rows for the batch — which in that case is
+            # already one-per-item, so no double-count is possible.
+            if not rows:
+                rows = con.execute(
+                    "SELECT * FROM sales_packing_lines "
+                    "WHERE batch_id=? ORDER BY created_at",
+                    (batch_id,),
+                ).fetchall()
     else:
         with _connect() as con:
             rows = con.execute(

@@ -1376,6 +1376,22 @@ async def reprocess_packing_documents(
                     except AttributeError:
                         # Helper name varies between writers; fall back.
                         _ddb.store_sales_packing_lines(sales_doc_id, batch_id, line_records)
+                    # Reprocess-parity: the sales branch persists rows but the
+                    # intake-time shipment_documents.extraction_status stays
+                    # 'pending' unless flipped here. The packing card infers
+                    # 'extracted' from row count, but the Document Registry
+                    # reads the raw column — flip it so both agree. Non-fatal.
+                    try:
+                        _ddb.update_document_status(
+                            doc_id,
+                            extraction_status="extracted",
+                            parser_status="complete",
+                        )
+                    except Exception as _exc:
+                        log.warning(
+                            "[%s] reprocess sales status flip failed (non-fatal): %s",
+                            batch_id, _exc,
+                        )
 
                 # Fix 3: write rich Polish/English descriptions to product_descriptions
                 # from sales packing row fields (ctg/kt/col/quality) so that future
