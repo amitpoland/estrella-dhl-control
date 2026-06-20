@@ -375,6 +375,7 @@ def _resolve_customer_via_master(
 def _resolve_customer(
     client_name: str,
     batch_id: Optional[str] = None,
+    client_contractor_id: str = "",
 ) -> Dict[str, Any]:
     """Resolve a sales-list client name to a customer identity.
 
@@ -457,11 +458,13 @@ def _resolve_customer(
                 client_name=raw,
                 documents_db_path=settings.storage_root / "documents.db",
                 customer_master_db_path=_customer_master_db_path(),
+                client_contractor_id=client_contractor_id,
             )
             if per_doc is not None:
                 out.update({
                     "found":                True,
-                    "match_strategy":       "per_document_upload",
+                    "match_strategy":       per_doc.get("match_strategy",
+                                                        "per_document_upload"),
                     "wfirma_customer_id":   per_doc["wfirma_customer_id"],
                     "resolved_wfirma_name": per_doc["resolved_master_name"],
                     "advisory":             per_doc["advisory"],
@@ -631,7 +634,8 @@ def _validate_args(batch_id: str, client_name: str) -> str:
     return cn
 
 
-def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
+def _build_preview(batch_id: str, client_name: str,
+                   client_contractor_id: str = "") -> Dict[str, Any]:
     """
     Canonical preview resolution. Returns the canonical preview dict.
     Identical body shape to what /preview emits over HTTP — used directly
@@ -709,7 +713,10 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     # Pass batch_id so the packing-upload Customer Master selection (set when
     # the operator picked a client during sales packing intake) outranks
     # any name-based fallback. See _resolve_customer docstring authority chain.
-    customer_resolution = _resolve_customer(client_name, batch_id=batch_id)
+    customer_resolution = _resolve_customer(
+        client_name, batch_id=batch_id,
+        client_contractor_id=client_contractor_id,
+    )
 
     # ── 1. Resolution rows (sales → wFirma product_code) ────────────────────
     resolution_rows = [
@@ -5224,7 +5231,10 @@ def _derive_draft_readiness(
     # ── 1. Comprehensive preview authority (ambiguity / warehouse / customer)
     preview: Dict[str, Any] = {}
     try:
-        preview = _build_preview(draft.batch_id or "", draft.client_name or "")
+        preview = _build_preview(
+            draft.batch_id or "", draft.client_name or "",
+            client_contractor_id=getattr(draft, "client_contractor_id", "") or "",
+        )
     except HTTPException as exc:
         _add(f"readiness preview failed: {exc.detail}",
              "Fix the batch_id/client_name identifiers on the draft.")

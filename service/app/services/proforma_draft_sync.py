@@ -587,12 +587,24 @@ def sync_draft_from_packing_upload(
     group_docs: Dict[str, set] = {}            # repr_name -> {sales_document_id}
     contributing_docs: set = set()             # docs that produced a grouped line
     blocked_docs: Dict[str, Dict[str, Any]] = {}  # sales_document_id -> info
+    # PR-3: docs whose stored client_name must be canonicalized to the
+    # Customer-Master bill_to_name (operator's upload pick wins over parsed name).
+    # Keyed by (sales_document_id, old_client_name) so a multi-client document
+    # never has unrelated lines clobbered.
+    docs_to_canonicalize: Dict[tuple, str] = {}   # (sales_document_id, old_cn) -> canonical
 
     for ln in resolved_lines:
         cn    = str(ln.get("client_name") or "").strip()
         cid   = str(ln.get("client_contractor_id") or "").strip()
         sd_id = str(ln.get("sales_document_id") or "")
-        repr_name = cn or _cm_name_for_cid(cid)
+        # PR-3 "dropdown wins": when the line carries a contractor that resolves
+        # to a Customer-Master name, that canonical name is the AUTHORITY and
+        # OVERRIDES the parsed client_name. Fall back to the parsed name only
+        # when there is no contractor / no CM match (PR-2 behaviour preserved).
+        canonical = _cm_name_for_cid(cid)
+        repr_name = canonical or cn
+        if canonical and sd_id and cn != canonical:
+            docs_to_canonicalize[(sd_id, cn)] = canonical
         if repr_name:
             by_client.setdefault(repr_name, []).append(ln)
             g = group_cids.setdefault(repr_name, set())
@@ -616,6 +628,18 @@ def sync_draft_from_packing_upload(
                 info["currency"] = str(ln.get("currency") or "")
             if cid and not info["client_contractor_id"]:
                 info["client_contractor_id"] = cid
+
+    # ── 2.4 PR-3: canonicalize the sales chain (dropdown wins) ─────────────────
+    # Write the Customer-Master canonical name onto sales_documents + their
+    # sales_packing_lines so the stored client_name matches the draft, the
+    # v_sales_to_wfirma view, the reservation preview, and the NEXT sync — no
+    # split-brain, and re-uploads can never spawn a duplicate parsed-name draft.
+    for (_sd_id, _old_cn), _canon in docs_to_canonicalize.items():
+        try:
+            ddb.set_sales_client_name(batch_id, _sd_id, _canon, old_client_name=_old_cn)
+        except Exception as _canon_exc:
+            log.warning("[%s] set_sales_client_name failed (non-fatal) sd=%s: %s",
+                        batch_id, _sd_id, _canon_exc)
 
     # ── 2.5 Skip-visibility emit (PR 1 audit) — reconciled with PR-2 grouping ──
     # Emit ONE timeline event per sales_document that produced NO grouped line

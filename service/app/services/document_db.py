@@ -1590,6 +1590,56 @@ def get_sales_documents(batch_id: str) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def set_sales_client_name(
+    batch_id: str, sales_document_id: str, client_name: str,
+    *, old_client_name: Optional[str] = None,
+) -> int:
+    """PR-3: canonicalize the client_name on a sales_documents row AND its
+    sales_packing_lines.
+
+    Used when the operator's Customer-Master selection (client_contractor_id)
+    is the authority and the display/grouping name must become the canonical
+    ``bill_to_name`` consistently across the sales chain — so the draft, the
+    v_sales_to_wfirma view, the reservation preview, and the next draft-sync all
+    agree on one name (no split-brain).
+
+    When *old_client_name* is supplied, the line update is SCOPED to lines that
+    currently carry that name — so a multi-client packing document (distinct
+    client_name values on different lines) never has unrelated lines clobbered.
+    Returns the count of packing lines updated. Never raises beyond DB init.
+    """
+    if _db_path is None or not sales_document_id or not (client_name or "").strip():
+        return 0
+    now = _now()
+    # Scope by old name whenever it is supplied (including "" for the
+    # empty-name recovery case) so unrelated lines are never clobbered.
+    old = old_client_name
+    with _lock, _connect() as con:
+        if old is not None:
+            con.execute(
+                "UPDATE sales_documents SET client_name=?, updated_at=? "
+                "WHERE id=? AND batch_id=? AND client_name=?",
+                (client_name, now, sales_document_id, batch_id, old),
+            )
+            cur = con.execute(
+                "UPDATE sales_packing_lines SET client_name=? "
+                "WHERE sales_document_id=? AND batch_id=? AND client_name=?",
+                (client_name, sales_document_id, batch_id, old),
+            )
+        else:
+            con.execute(
+                "UPDATE sales_documents SET client_name=?, updated_at=? "
+                "WHERE id=? AND batch_id=?",
+                (client_name, now, sales_document_id, batch_id),
+            )
+            cur = con.execute(
+                "UPDATE sales_packing_lines SET client_name=? "
+                "WHERE sales_document_id=? AND batch_id=?",
+                (client_name, sales_document_id, batch_id),
+            )
+        return cur.rowcount or 0
+
+
 def get_sales_documents_for_shipment_doc(
     document_id: str,
 ) -> List[Dict[str, Any]]:

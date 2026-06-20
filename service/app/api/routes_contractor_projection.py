@@ -106,6 +106,108 @@ def backfill_contractor_projection(
             detail=f"contractor projection failed: {exc}",
         )
 
+    # ── 1b. PR-3: canonicalize draft identity to the Customer-Master pick ─────
+    # The operator's dropdown selection (client_contractor_id) WINS over a
+    # parsed client_name. Rename/supersede existing EDITABLE drafts to the
+    # canonical bill_to_name and migrate freight/insurance + reservation.
+    # Canonical wins on collision; any dropped non-zero charge is DISCLOSED in
+    # the response + log (never silent). Runs BEFORE the sync so the sync finds
+    # the canonical draft and cannot spawn a duplicate parsed-name draft.
+    from ..services import customer_master_db as _cmdb
+    from ..services import proforma_service_charges_db as _psc
+    from ..services import wfirma_db as _wfdb
+    pf_db = _proforma_db_path()
+    cm_path = settings.storage_root / "customer_master.sqlite"
+    try:
+        _psc.init(pf_db)  # shares proforma_links.db; idempotent
+    except Exception:
+        pass
+    _canon_cache: Dict[str, str] = {}
+
+    def _canonical(cid: str) -> str:
+        cid = (cid or "").strip()
+        if not cid or not cm_path.is_file():
+            return ""
+        if cid in _canon_cache:
+            return _canon_cache[cid]
+        nm = ""
+        try:
+            rec = _cmdb.get_customer(cm_path, cid)
+            if rec is not None:
+                nm = (getattr(rec, "bill_to_name", "") or "").strip()
+        except Exception:
+            nm = ""
+        _canon_cache[cid] = nm
+        return nm
+
+    # Build old_name → {canonical} sets so an ambiguous name (the SAME parsed
+    # client_name resolving to TWO different contractors/canonicals) is detected
+    # and SKIPPED rather than silently last-writer-wins wrong-routed.
+    name_to_canon: Dict[str, set] = {}
+    try:
+        for sd in (ddb.get_sales_documents(batch_id) or []):
+            old_nm = str(sd.get("client_name") or "").strip()
+            canon = _canonical(str(sd.get("client_contractor_id") or ""))
+            if canon and old_nm and canon != old_nm:
+                name_to_canon.setdefault(old_nm, set()).add(canon)
+    except Exception as _rm_exc:
+        log.warning("[%s] canonical rename-map build failed (non-fatal): %s",
+                    batch_id, _rm_exc)
+
+    rename_map: Dict[str, str] = {}
+    ambiguous_renames: List[Dict[str, Any]] = []
+    for old_nm, canon_set in name_to_canon.items():
+        if len(canon_set) == 1:
+            rename_map[old_nm] = next(iter(canon_set))
+        else:
+            ambiguous_renames.append({"old": old_nm, "canonicals": sorted(canon_set)})
+            log.warning(
+                "[%s] canonical migration SKIPPED ambiguous name %r → %s "
+                "(same parsed name maps to >1 contractor) — operator must reconcile",
+                batch_id, old_nm, sorted(canon_set),
+            )
+
+    migrations: List[Dict[str, Any]] = []
+    dropped_charges: List[Dict[str, Any]] = []
+    for old_nm, canon in rename_map.items():
+        try:
+            rep = pildb.migrate_draft_to_canonical_name(
+                pf_db, batch_id, old_nm, canon,
+                charge_move=_psc.move_charges_client_name,
+                charge_drop=_psc.drop_charges_client_name,
+                reservation_migrate=_wfdb.rename_reservation_draft_client,
+                operator=actor,
+            )
+            migrations.append(rep)
+            dropped_charges.extend(rep.get("dropped_charges") or [])
+        except Exception as _mig_exc:
+            log.warning("[%s] draft canonical migration failed (non-fatal) %s→%s: %s",
+                        batch_id, old_nm, canon, _mig_exc)
+    # Orphan disclosure: if a charge-migration callable failed mid-run, charges
+    # can remain under an old (now superseded/renamed-away) name. Surface them so
+    # "canonical wins" can never silently strand operator freight.
+    orphan_charges: List[Dict[str, Any]] = []
+    for old_nm in rename_map:
+        try:
+            residual = _psc.list_charges(batch_id, old_nm)
+        except Exception:
+            residual = []
+        for c in residual:
+            if float(c.get("amount") or 0) > 0:
+                orphan_charges.append({**c, "old_client_name": old_nm,
+                                       "reason": "migration_incomplete_residual"})
+    if orphan_charges:
+        log.warning("[%s] contractor backfill: %d residual non-zero charge(s) "
+                    "still under old names after migration: %s",
+                    batch_id, len(orphan_charges), orphan_charges)
+
+    if dropped_charges:
+        log.warning(
+            "[%s] contractor backfill DROPPED %d non-zero charge(s) under old "
+            "names (canonical-wins, operator-chosen): %s",
+            batch_id, len(dropped_charges), dropped_charges,
+        )
+
     # Resolve the batch output dir once. When it does not exist (historical
     # batch with no outputs written), audit-timeline events cannot be recorded —
     # surfaced honestly via ``audit_skipped`` rather than a silent gap.
@@ -146,6 +248,15 @@ def backfill_contractor_projection(
                 detail={
                     "batch_id":   batch_id,
                     "projection": projection,
+                    "canonical_renames": [
+                        {"old": m.get("old_client_name"),
+                         "canonical": m.get("canonical_name"),
+                         "action": m.get("action"),
+                         "renamed": m.get("renamed"),
+                         "superseded": m.get("superseded")}
+                        for m in migrations
+                    ],
+                    "dropped_charges": dropped_charges,
                     "sync": {
                         "created":       sync_summary.get("created"),
                         "synced":        sync_summary.get("synced"),
@@ -175,6 +286,10 @@ def backfill_contractor_projection(
         "batch_id":   batch_id,
         "projection": projection,
         "projection_empty": projection_empty,
+        "canonical_renames": migrations,
+        "ambiguous_renames": ambiguous_renames,
+        "dropped_charges": dropped_charges,
+        "orphan_charges": orphan_charges,
         "audit_skipped": not audit_available,
         "note":       note,
         "sync":       sync_summary,
