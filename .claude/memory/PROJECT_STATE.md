@@ -64,14 +64,38 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **CAMPAIGN-IDENTITY LOCK:** **Rule 3 Global PZ ↔ wFirma Reconciliation Authority is a NEW future architecture campaign** — new campaign ID, new ADR, new authority owner, new governance gates, new rollout plan, new success + closure criteria. It is **NOT** a continuation of AWB-2315714531. The incident is **historical evidence only** and inherits nothing to Rule 3. Do NOT open new engineering work under AWB-2315714531-2026-06 unless a genuinely new production signal appears. See memory `project_awb2315714531_closed_rule3_new_campaign`.
 - **origin/main HEAD now = `fb70e15`** (PR #653 squash-merge). Supersedes the `03ffce9` HEAD block below (append-only — prior entry retained).
 
-## Current origin/main HEAD (2026-06-20, updated): `a40c7c5`
+## Current origin/main HEAD (2026-06-20, updated): `47251a3`
 
-- **origin/main HEAD = `a40c7c5`** — `fix(proforma): remediate PR-1 conflict foundation governance gaps (PR-1A) (#630)` (merged 2026-06-20). Full SHA: `a40c7c5edd921769f2d83b33fb99262dbf9933c6`. Supersedes the `fb70e15` block above (append-only — prior entry retained).
-- Also on main at this date: `b737fdc` (#659 Anti-HOLD governance), `8241abd` (#660 AUTHORITY_MAP.md), `1c3c211` (#658 PROJECT_STATE update), `0574270` (#657 Claude Code enforcement hooks), `80b2e08` (fix v2 JSX MIME), `d3909ca` (#637 docs), `94b95bb` (#655 archive flip), `34662a6` (#654 archive record), `fb70e15` (#653 wFirma governance). Linear merge series. (Confirmed via `git log origin/main --oneline -8`, 2026-06-20.)
+- **origin/main HEAD = `47251a3`** — `feat(governance): TASK_EXECUTION_PROTOCOL + /feature command + skill routing + scorecard (#669)` (merged 2026-06-20). Squash-merge of PR #669 (`governance/feature-command-and-routing`). Supersedes the `a40c7c5` block below (append-only — prior entry retained).
+- Also on main at this date: `a40c7c5` (#630 proforma conflict remediation), `c8b9637` (#668 Document Readiness authority), `d55316d` (#665 sales-matcher fix), `b2f8eaa` (#664 registry purchase line counts), `ffe075b` (#663 registry sales line counts). Confirmed via `git log origin/main --oneline -5`, 2026-06-20.
 
-## PR #667 — TASK_EXECUTION_PROTOCOL + BACKLOG + /feature command + SKILL_ROUTING (2026-06-20, OPEN DRAFT on `claude/new-session-fetvj6`)
+## PR #669 — governance/feature-command-and-routing: TASK_EXECUTION_PROTOCOL + /feature + SKILL_ROUTING + scorecard (2026-06-20, MERGED as `47251a3`)
 
-- **Branch**: `claude/new-session-fetvj6`. PR #667 DRAFT — NOT merged, NOT deployed. Base: `main`.
+- **PR #669 SQUASH-MERGED** (2026-06-20): Branch `governance/feature-command-and-routing`. SHA `47251a3`. Title: `feat(governance): TASK_EXECUTION_PROTOCOL + /feature command + skill routing + scorecard (#669)`. Base: `main`. NOT deployed — all changes are `.claude/**` and repo root files; no `service/app/**` runtime files; no 7-agent deploy gate required. Lesson J N/A.
+- **Files landed on main**:
+  - `.claude/TASK_EXECUTION_PROTOCOL.md` (new) — canonical 5-phase execution protocol (DISCOVERY → PLAN → IMPLEMENT → VERIFY → CLOSE); Anti-HOLD rules, one-task-at-a-time enforcement, BACKLOG rule, authority-map check, skill selection checkpoint, subagent dispatch table, GATE 1 checklist, deploy boundary.
+  - `.claude/commands/feature.md` (new) — `/feature` command with Step 0 skill routing; mandatory subagents: gap-detection, reviewer-challenge, final-consistency-review, flow-context-keeper.
+  - `.claude/SKILL_ROUTING.md` (new) — 13-domain keyword→skill routing table with HIGH/MEDIUM/LOW confidence model; single-keyword overrides for `dhl`, `deploy`, `proforma`, `wfirma`, `cowork`; MISSING_SKILL fallback to `backend-route-and-service-builder`.
+  - `BACKLOG.md` (new, repo root) — side-discovery capture point; B-001 entry: PR #661 (`ci/auto-merge-approved`) review SCHEDULED before next merge sprint.
+  - `FEATURE_SCORECARD.md` (new, repo root) — `/feature` run instrumentation template for recording each real task run during the observation period.
+  - `.claude/commands/COMMAND_REGISTRY.md` (updated) — now 9 commands total; `/feature` added as WRITE-CAPABLE tier.
+  - `.claude/memory/TASK_STATE.md` (updated) — skill routing task marked COMPLETE.
+  - `.claude/memory/PROJECT_STATE.md` (updated) — flow-context-keeper state at prior session.
+- **GATE 2**: PR #667 DRAFT consumed the docs-exception slot and is now cleared (superseded by #669). Current open impl PRs: #647 (Stage B vision-invoice confirm, NOT deployed) — 1/3 slots used. Queue has 2 slots available.
+- **Observation period begins** (2026-06-20): Use `/feature` for 5–10 real tasks, record each in `FEATURE_SCORECARD.md` before building `/bug` or domain skills (proforma-engine, dhl-customs, wfirma).
+
+## ~~PR #667 — TASK_EXECUTION_PROTOCOL + BACKLOG + /feature command + SKILL_ROUTING (2026-06-20, OPEN DRAFT on `claude/new-session-fetvj6`)~~ SUPERSEDED by PR #669
+
+- **SUPERSEDED 2026-06-20**: PR #667 was a DRAFT that was superseded and merged as PR #669 (`governance/feature-command-and-routing`, squash SHA `47251a3`). All content from the draft is now on `main`. Original DRAFT details below preserved per append-only rule.
+
+## Current origin/main HEAD (2026-06-20, prior): `a40c7c5`
+
+- **~~origin/main HEAD = `a40c7c5`~~** — superseded by `47251a3` (PR #669) above. Append-only: `a40c7c5` = `fix(proforma): remediate PR-1 conflict foundation governance gaps (PR-1A) (#630)` (merged 2026-06-20). Full SHA: `a40c7c5edd921769f2d83b33fb99262dbf9933c6`.
+- Also on main at that point: `b737fdc` (#659 Anti-HOLD governance), `8241abd` (#660 AUTHORITY_MAP.md), `1c3c211` (#658 PROJECT_STATE update), `0574270` (#657 Claude Code enforcement hooks), `80b2e08` (fix v2 JSX MIME), `d3909ca` (#637 docs), `94b95bb` (#655 archive flip), `34662a6` (#654 archive record), `fb70e15` (#653 wFirma governance). Linear merge series.
+
+## PR #667 DRAFT (archive record — superseded by PR #669 at `47251a3`)
+
+- **Branch**: `claude/new-session-fetvj6`. PR #667 DRAFT — SUPERSEDED by PR #669. Content merged to main as `47251a3` on 2026-06-20. Original draft details preserved per append-only rule below.
 - **Commit `8766adb`** (2026-06-20): Created `.claude/TASK_EXECUTION_PROTOCOL.md` — canonical five-phase execution protocol (DISCOVERY → PLAN → IMPLEMENT → VERIFY → CLOSE). Defines Anti-HOLD rules, one-task-at-a-time enforcement, BACKLOG rule, authority-map check, skill selection checkpoint, subagent dispatch table, GATE 1 checklist, and deploy boundary.
 - **Commit `5422404`** (2026-06-20): Created `.claude/commands/feature.md` — canonical operator entry point for feature work. Wires to `TASK_EXECUTION_PROTOCOL.md`. Mandatory subagents: gap-detection, reviewer-challenge, final-consistency-review, flow-context-keeper. Updated `COMMAND_REGISTRY.md` to 9 total commands; `/feature` added as WRITE-CAPABLE tier.
 - **`BACKLOG.md` created** (repo root, 2026-06-20, commit `5422404`): side-discovery capture point per the BACKLOG rule. Entry B-001 filed: PR #661 (`ci/auto-merge-approved`) stale review, disposition SCHEDULED (review before next merge sprint; verify no conflict with governance gates).
@@ -5463,21 +5487,22 @@ Group D — Tests (3 new files):
 - **`logistics` role permitted to attest vision-invoice confirmation** (2026-06-17): mirrors existing `routes_action_proposals` resolve-action role set (admin/logistics/accounts). OPEN QUESTION OQ-PR647-ROLE-POLICY tracks this for operator ratification.
 - **reviewer-challenge and security-write-action-reviewer must supply structured verdict blocks on next write-action endpoint PR** (2026-06-17, GATE-4 SCHEDULED per scorecard): this run both scored ACCEPTABLE (27/35) with narrative-only Evidence 3/5. Structured verdict blocks (claim → evidence line reference → severity → disposition) are required at GATE 1 for write-action endpoints. Target: enforce at next write-action PR pre-flight checklist. Also tracked under Issue #597 (systemic Environment disclosure gap).
 
-## Next 3 actions in queue (refreshed 2026-06-20 — PR #667 DRAFT: TASK_EXECUTION_PROTOCOL + /feature command + SKILL_ROUTING)
+## Next 3 actions in queue (refreshed 2026-06-20 — PR #669 MERGED: TASK_EXECUTION_PROTOCOL + /feature command + SKILL_ROUTING at `47251a3`)
 
-1. **Operator: review + approve PR #667** (branch `claude/new-session-fetvj6`; DRAFT — `.claude/TASK_EXECUTION_PROTOCOL.md` + `.claude/commands/feature.md` + `BACKLOG.md` + `.claude/SKILL_ROUTING.md`; WRITE-CAPABLE tier; reviewer-challenge required before merge per `/feature` command policy). Target outcome: governance protocol merged to main. Gating: operator approval + reviewer-challenge pass; docs/governance PR occupies docs-exception slot (GATE 2 compliant).
-2. **Operator: review + merge PR #647** (branch `feat/pr2-vision-invoice-confirm-workflow` @ `4429e04`; Stage B vision-invoice confirm workflow; GATE 1 satisfied; 21 tests). Gating: GATE 2 — PR #630 MERGED (slot freed); PR #667 is DRAFT (not counted); slot available. After deploy, AWB 2315714531 operator can confirm via `POST /dashboard/batches/{id}/vision-invoice/confirm`.
-3. **File Issue for B-001 (PR #661 `ci/auto-merge-approved`)** — review whether this CI auto-merge PR conflicts with governance gates before next merge sprint. Currently SCHEDULED in `BACKLOG.md`; convert to ISSUE if tracking beyond next session is needed. Gating: none — operator can action independently.
+1. **Use `/feature` for first real task** — observation period begins; record the run in `FEATURE_SCORECARD.md`. Target outcome: first scorecard entry written; `/feature` command exercised end-to-end. Gating: PR #669 merged to main (DONE — `47251a3`).
+2. **Record 5–10 `/feature` runs in `FEATURE_SCORECARD.md`** then review failure patterns before building `/bug` or domain skills. Target outcome: observation baseline established. Gating: action 1 complete; `/feature` invoked on real tasks.
+3. **Review B-001 (PR #661 `ci/auto-merge-approved`)** — review whether this CI auto-merge PR conflicts with governance gates before next merge sprint. Currently SCHEDULED in `BACKLOG.md`; convert to ISSUE if tracking beyond next session is needed. Gating: none — operator can action independently.
 
 ## /feature Command and BACKLOG.md Governance (2026-06-20)
 
-- **`/feature` command tier: WRITE-CAPABLE** (2026-06-20) — every invocation of `/feature` must fire reviewer-challenge. Operator approval required before any `/feature`-produced PR merges to main. Source: `.claude/commands/feature.md` (commit `5422404`, branch `claude/new-session-fetvj6`, PR #667 DRAFT).
-- **`BACKLOG.md` is the canonical side-discovery capture point** (2026-06-20) — all side-discoveries encountered during task execution go into `BACKLOG.md` (repo root) with a GATE 4 disposition (SCHEDULED / ISSUE / REJECTED). "Recommendation noted" is not a valid disposition. Current open entry: B-001 (PR #661 stale CI review, SCHEDULED). Source: `TASK_EXECUTION_PROTOCOL.md` §Standing Rules — BACKLOG rule; `BACKLOG.md` created commit `5422404`.
-- **`TASK_EXECUTION_PROTOCOL.md` is the canonical execution protocol** (2026-06-20) — DISCOVERY → PLAN → IMPLEMENT → VERIFY → CLOSE. All `/feature` and `/bug` invocations must follow this protocol. Anti-HOLD rules and one-task-at-a-time enforcement are binding. Source: `.claude/TASK_EXECUTION_PROTOCOL.md` (commit `8766adb`, PR #667 DRAFT).
+- **`/feature` command tier: WRITE-CAPABLE** (2026-06-20) — every invocation of `/feature` must fire reviewer-challenge. Operator approval required before any `/feature`-produced PR merges to main. Source: `.claude/commands/feature.md` (landed on main via PR #669 squash `47251a3`).
+- **`BACKLOG.md` is the canonical side-discovery capture point** (2026-06-20) — all side-discoveries encountered during task execution go into `BACKLOG.md` (repo root) with a GATE 4 disposition (SCHEDULED / ISSUE / REJECTED). "Recommendation noted" is not a valid disposition. Current open entry: B-001 (PR #661 stale CI review, SCHEDULED). Source: `TASK_EXECUTION_PROTOCOL.md` §Standing Rules — BACKLOG rule; `BACKLOG.md` on main via PR #669 `47251a3`.
+- **`TASK_EXECUTION_PROTOCOL.md` is the canonical execution protocol** (2026-06-20) — DISCOVERY → PLAN → IMPLEMENT → VERIFY → CLOSE. All `/feature` and `/bug` invocations must follow this protocol. Anti-HOLD rules and one-task-at-a-time enforcement are binding. Source: `.claude/TASK_EXECUTION_PROTOCOL.md` on main via PR #669 `47251a3`.
+- **Observation period (2026-06-20)**: Use `/feature` for 5–10 real tasks, record each in `FEATURE_SCORECARD.md` before building `/bug` or domain skills. `/bug` command deferred until observation period reveals actual failure patterns. Domain skills deferred: `proforma-engine`, `dhl-customs`, `wfirma` — build after observation period. Source: operator directive, PR #669 merge.
 
 ## Skill Routing Architecture Decisions (2026-06-20)
 
-- **`SKILL_ROUTING.md` is the single source of truth for keyword→skill mapping** (2026-06-20): `.claude/SKILL_ROUTING.md` owns the 13-domain routing table. `feature.md` references it; no duplication of the table in other files. Source: commit `a2a84d3`, branch `claude/new-session-fetvj6`, PR #667 DRAFT.
+- **`SKILL_ROUTING.md` is the single source of truth for keyword→skill mapping** (2026-06-20): `.claude/SKILL_ROUTING.md` owns the 13-domain routing table. `feature.md` references it; no duplication of the table in other files. Source: commit `a2a84d3`, now on main via PR #669 squash `47251a3`.
 - **LOW confidence = continue DISCOVERY, never HOLD** (2026-06-20): when the skill-routing block emits CONFIDENCE: LOW, the `/feature` command continues into DISCOVERY without pausing for operator input. A HOLD is never triggered solely by low routing confidence. MEDIUM and HIGH confidence proceed identically. This rule is binding on all `/feature` invocations.
 - **MISSING_SKILL fallback = backend-route-and-service-builder + BACKLOG entry** (2026-06-20): when a TASK_TYPE maps to no installed skill, the session falls back to `backend-route-and-service-builder`, logs the missing skill to `BACKLOG.md` with disposition SCHEDULED, and continues. 'Recommendation noted' is not a valid BACKLOG disposition. Planned skills currently missing: `proforma-engine`, `dhl-customs`, `wfirma` — each has a BACKLOG entry due when B2–B9 types are scheduled (proforma) or the respective domain sprint begins.
 
