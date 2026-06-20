@@ -117,6 +117,7 @@ def _auto_create_draft_for_client(
     currency:    str,
     line_records: List[Dict[str, Any]],
     operator:    str = "intake",
+    client_contractor_id: str = "",
 ) -> None:
     """Best-effort: auto-create a Phase-2 editable Proforma Draft from
     sales_packing line_records. Idempotent. Failure is logged and
@@ -162,6 +163,8 @@ def _auto_create_draft_for_client(
             currency      = (currency or "").upper(),
             lines         = editable_input,
             operator      = operator,
+            # PR-2: project contractor authority onto the draft at birth.
+            client_contractor_id = client_contractor_id,
             # Fill blank name_pl from the product_descriptions authority at
             # birth so drafts are not born with a missing commercial
             # description. Never fabricates; never touches price.
@@ -776,6 +779,8 @@ async def shipment_intake(
                         "document_type":    "sales_invoice",
                         "source_file_path": str(path),
                         "extraction_status": "pending",
+                        # PR-2: project contractor authority at birth.
+                        "client_contractor_id": client_cid,
                     },
                 )
             except Exception as exc:
@@ -840,6 +845,8 @@ async def shipment_intake(
                         "document_type":    "sales_packing_list",
                         "source_file_path": str(path),
                         "extraction_status": "pending",
+                        # PR-2: project contractor authority at birth.
+                        "client_contractor_id": client_cid,
                     },
                 )
             except Exception as exc:
@@ -1057,6 +1064,7 @@ async def shipment_intake(
                     currency     = currency_for_doc,
                     line_records = line_records,
                     operator     = "intake",
+                    client_contractor_id = client_cid,
                 )
             elif sp_rows and not sales_doc_id:
                 # PR-1: rows parsed but no client identity could be resolved

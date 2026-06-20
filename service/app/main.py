@@ -48,6 +48,7 @@ from .api.routes_system import router as system_router
 from .api.routes_agents import router as agents_router
 from .api.routes_packing import router as packing_router, dev_router as packing_dev_router
 from .api.routes_packing_resolution import router as packing_resolution_router
+from .api.routes_contractor_projection import router as contractor_projection_router
 from .api.routes_sales import router as sales_router
 from .api.routes_proforma import router as proforma_router
 from .api.routes_proforma_adopt import router as proforma_adopt_router
@@ -466,6 +467,7 @@ app.include_router(agents_router)
 app.include_router(packing_router)
 app.include_router(packing_dev_router)
 app.include_router(packing_resolution_router)
+app.include_router(contractor_projection_router)  # PR-2: contractor-at-birth backfill + blocks
 app.include_router(sales_router)
 app.include_router(proforma_router)
 app.include_router(proforma_adopt_router)

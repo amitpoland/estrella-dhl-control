@@ -457,6 +457,8 @@ class ProformaDraft:
     sales_price_authority_total_eur: Optional[float] = None
     sales_price_imported_at:         Optional[str]   = None
     sales_price_invoice_ref:         Optional[str]   = None
+    # ── Contractor-at-birth projection (PR-2) — additive reference only ───
+    client_contractor_id:            str             = ""
 
 
 def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
@@ -528,6 +530,12 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         ("sales_price_authority_total_eur", "REAL"),
         ("sales_price_imported_at",         "TEXT"),
         ("sales_price_invoice_ref",         "TEXT"),
+        # ── Contractor-at-birth projection (PR-2) ─────────────────────────────
+        # Authoritative Customer-Master contractor identity carried as an
+        # additive REFERENCE. The draft identity key remains client_name; this
+        # column never becomes the unique key (avoids re-keying service charges
+        # / authority joins). Default '' = unprojected (repaired by backfill).
+        ("client_contractor_id", "TEXT NOT NULL DEFAULT ''"),
     )
     for _col, _ddl in _ADDITIVE_DRAFT_COLUMNS:
         try:
@@ -651,6 +659,148 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_pde_draft "
         "ON proforma_draft_events(draft_id, occurred_at)"
     )
+
+    # ── PR-2: visible draft-birth blocked records ─────────────────────────
+    # When a sales packing document resolves to NEITHER a usable client_name
+    # NOR a Customer-Master-resolvable client_contractor_id, the draft cannot
+    # be born. Instead of the historic silent drop, sync records a visible,
+    # operator-readable block here. blocked_state lifecycle: 'open' while the
+    # condition holds; flipped to 'resolved' once a draft is later created for
+    # that sales_document (no stale red flags — Lesson M). Keyed by
+    # (batch_id, sales_document_id) so re-sync is idempotent.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS proforma_draft_birth_blocks (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id             TEXT NOT NULL,
+            sales_document_id    TEXT NOT NULL,
+            client_contractor_id TEXT NOT NULL DEFAULT '',
+            client_name          TEXT NOT NULL DEFAULT '',
+            blocked_state        TEXT NOT NULL DEFAULT 'open',
+            reason               TEXT NOT NULL DEFAULT '',
+            code                 TEXT NOT NULL DEFAULT '',
+            lines_count          INTEGER NOT NULL DEFAULT 0,
+            value                REAL NOT NULL DEFAULT 0,
+            currency             TEXT NOT NULL DEFAULT '',
+            created_at           TEXT NOT NULL,
+            updated_at           TEXT NOT NULL,
+            UNIQUE(batch_id, sales_document_id)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pdbb_batch "
+        "ON proforma_draft_birth_blocks(batch_id, blocked_state)"
+    )
+
+
+# ── PR-2: draft-birth blocked-record lifecycle ────────────────────────────────
+
+# Stable machine codes for why a draft could not be born. Operators read these
+# to know what to fix. ``contractor_conflict`` is advisory (a draft IS still
+# created by name) — the others are true non-creation blocks.
+DRAFT_BIRTH_BLOCK_CODES = (
+    "contractor_missing",   # no client_name AND no client_contractor_id
+    "client_unresolved",    # client_contractor_id present but no Customer Master match
+    "contractor_conflict",  # one client_name group carries >1 distinct contractor_id
+)
+
+
+def record_draft_birth_block(
+    db_path:              Path,
+    batch_id:             str,
+    sales_document_id:    str,
+    *,
+    code:                 str,
+    reason:               str,
+    client_contractor_id: str = "",
+    client_name:          str = "",
+    lines_count:          int = 0,
+    value:                float = 0.0,
+    currency:             str = "",
+) -> None:
+    """Idempotent upsert of an OPEN draft-birth block keyed by
+    (batch_id, sales_document_id). Never raises — visibility must not break
+    the non-blocking sync path."""
+    if not (batch_id or "").strip() or not (sales_document_id or "").strip():
+        return
+    now = _now_utc_iso()
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            _ensure_drafts_table(conn)
+            conn.execute(
+                """
+                INSERT INTO proforma_draft_birth_blocks
+                    (batch_id, sales_document_id, client_contractor_id,
+                     client_name, blocked_state, reason, code,
+                     lines_count, value, currency, created_at, updated_at)
+                VALUES (?,?,?,?, 'open', ?,?,?,?,?,?,?)
+                ON CONFLICT(batch_id, sales_document_id) DO UPDATE SET
+                    client_contractor_id = excluded.client_contractor_id,
+                    client_name          = excluded.client_name,
+                    blocked_state        = 'open',
+                    reason               = excluded.reason,
+                    code                 = excluded.code,
+                    lines_count          = excluded.lines_count,
+                    value                = excluded.value,
+                    currency             = excluded.currency,
+                    updated_at           = excluded.updated_at
+                """,
+                (batch_id, sales_document_id, client_contractor_id,
+                 client_name, reason, code,
+                 int(lines_count), float(value or 0), currency, now, now),
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("record_draft_birth_block failed (non-fatal): %s", exc)
+
+
+def resolve_draft_birth_block(
+    db_path:           Path,
+    batch_id:          str,
+    sales_document_id: str,
+) -> None:
+    """Flip any OPEN block for (batch_id, sales_document_id) to 'resolved'.
+    Called when a draft IS subsequently created for that document, so a stale
+    block never lingers. Never raises."""
+    if not (batch_id or "").strip() or not (sales_document_id or "").strip():
+        return
+    now = _now_utc_iso()
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            _ensure_drafts_table(conn)
+            conn.execute(
+                "UPDATE proforma_draft_birth_blocks "
+                "SET blocked_state='resolved', updated_at=? "
+                "WHERE batch_id=? AND sales_document_id=? AND blocked_state='open'",
+                (now, batch_id, sales_document_id),
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("resolve_draft_birth_block failed (non-fatal): %s", exc)
+
+
+def list_draft_birth_blocks(
+    db_path:          Path,
+    batch_id:         str,
+    *,
+    include_resolved: bool = False,
+) -> List[Dict[str, Any]]:
+    """Return draft-birth block records for *batch_id*. Open-only by default."""
+    if not (batch_id or "").strip():
+        return []
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            _ensure_drafts_table(conn)
+            conn.row_factory = sqlite3.Row
+            sql = (
+                "SELECT * FROM proforma_draft_birth_blocks WHERE batch_id=?"
+            )
+            params: tuple = (batch_id,)
+            if not include_resolved:
+                sql += " AND blocked_state='open'"
+            sql += " ORDER BY updated_at DESC"
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("list_draft_birth_blocks failed (non-fatal): %s", exc)
+        return []
 
 
 # ── Phase 1 read shim: legacy status → new draft_state mapping ────────────
@@ -805,6 +955,8 @@ def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
         sales_price_authority_total_eur = _opt("sales_price_authority_total_eur"),
         sales_price_imported_at         = _opt("sales_price_imported_at"),
         sales_price_invoice_ref         = _opt("sales_price_invoice_ref"),
+        # ── Contractor-at-birth projection (PR-2) ─────────────────────────
+        client_contractor_id            = (_opt("client_contractor_id") or ""),
     )
 
 
@@ -1665,6 +1817,7 @@ def auto_create_draft_from_sales_packing(
     currency:      str,
     lines:         List[Dict[str, Any]],
     operator:      str = "",
+    client_contractor_id: str = "",
     name_pl_lookup: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
     desc_generate:  Optional[Callable[..., Optional[str]]] = None,
     product_mapping_lookup: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
@@ -1768,12 +1921,31 @@ def auto_create_draft_from_sales_packing(
             (str(batch_id), str(client_name)),
         ).fetchone()
 
+        cid = str(client_contractor_id or "").strip()
         if existing is not None:
             existing_state = (existing["draft_state"] or "").strip()
             # Only treat cancelled/superseded as "gone" for idempotency
             # — every other state means "draft already exists, do not
             # touch it". Phase 2 never replaces lines on a live draft.
             if existing_state not in ("cancelled", "superseded"):
+                # PR-2 merge-not-replace: backfill the contractor reference on
+                # a live draft only when currently empty. Never changes
+                # client_name (the identity key) and never touches lines/price.
+                try:
+                    existing_cid = (existing["client_contractor_id"] or "").strip()
+                except (KeyError, IndexError):
+                    existing_cid = ""
+                if cid and not existing_cid:
+                    conn.execute(
+                        "UPDATE proforma_drafts SET client_contractor_id=? "
+                        "WHERE id=?",
+                        (cid, existing["id"]),
+                    )
+                    conn.commit()
+                    existing = conn.execute(
+                        "SELECT * FROM proforma_drafts WHERE id=? LIMIT 1",
+                        (existing["id"],),
+                    ).fetchone()
                 return (_row_to_draft(existing), False)
 
         # Either no row, or the existing row was cancelled/superseded. The
@@ -1813,15 +1985,15 @@ def auto_create_draft_from_sales_packing(
                  draft_state, draft_version, editable_lines_json,
                  service_charges_json, buyer_override_json,
                  ship_to_override_json, payment_terms_json, remarks,
-                 wfirma_proforma_fullnumber)
+                 wfirma_proforma_fullnumber, client_contractor_id)
             VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?,
                     ?, 1, ?,
-                    '[]', '{}', '{}', '{}', '', '')
+                    '[]', '{}', '{}', '{}', '', '', ?)
             """,
             (str(batch_id), str(client_name), legacy_status,
              str(currency or "").upper(),
              source_json, now, now,
-             initial_state, editable_json),
+             initial_state, editable_json, cid),
         )
         conn.commit()
         new_id = int(cur.lastrowid or 0)

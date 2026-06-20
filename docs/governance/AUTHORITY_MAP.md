@@ -532,5 +532,39 @@ The authoritative completion signal for a purchase packing list is `packing_docu
 
 ---
 
+## 13. Contractor-at-birth projection (PR-2, 2026-06-20)
+
+**Authority owner**: Customer Master — `shipment_documents.client_contractor_id` is the
+authoritative contractor identity, chosen by the operator at intake. No downstream system
+may replace it with free-text authority.
+
+**Projection rule**: that contractor id is carried as an **additive reference column** onto
+`sales_documents`, `sales_packing_lines`, `proforma_drafts`, and `wfirma_reservation_drafts`.
+It is **never** the unique/identity key — `client_name` remains the storage key on every one of
+those tables (re-keying would orphan `proforma_service_charges` and break
+`derive_customer_authority_for_draft`'s `client_name` join). Contractor authority is used to
+*resolve a missing client_name* (via Customer Master `bill_to_name`), never to overwrite a
+present one.
+
+**Write path**: projection is centralised in `document_db.py`
+(`store_sales_document` / `store_sales_packing_lines` / `replace_sales_packing_lines` /
+`ensure_sales_document_id` / `get_or_create_sales_document_for_packing` derive the contractor
+from the authoritative `shipment_documents` row when not explicitly supplied — merge-not-replace,
+never clears a resolved value). Grouping authority lives in
+`proforma_draft_sync.sync_draft_from_packing_upload`.
+
+**Blocked draft-birth records**: `proforma_invoice_link_db.proforma_draft_birth_blocks`
+(open/resolved lifecycle) — written when a sales document resolves to neither a usable
+client_name nor a Customer-Master-resolvable contractor. Codes: `contractor_missing`,
+`client_unresolved`, `contractor_conflict`. Read/repair surface:
+`routes_contractor_projection.py` (`POST .../backfill/{batch_id}` — operator-only, local-DB
+only, no wFirma/booking; `GET .../blocks/{batch_id}`).
+
+**Forbidden**: no change to valuation / CIF / customs / PZ pricing / accounting / booking; the
+reservation projection is **readiness reference only** — `ready_to_create` gating and the wFirma
+API write path are unchanged (P2/P4 preserved).
+
+---
+
 _This map is append-only for new domains. To add a domain: follow the section template above.
 To update an existing domain: amend the relevant section inline; do not remove verified facts._

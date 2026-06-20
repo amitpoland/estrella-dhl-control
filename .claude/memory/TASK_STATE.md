@@ -17,20 +17,27 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
-- **Task:** Build automatic skill routing for /feature
+- **Task:** PR-2 Contractor-at-Birth Projection — carry `shipment_documents.client_contractor_id` through sales → proforma draft → reservation; visible blocked draft-birth records; idempotent backfill
 - **Started:** 2026-06-20
-- **Status:** COMPLETE
+- **Status:** IN_PROGRESS
 - **HOLD reason (if BLOCKED-HOLD):** —
+- **Branch / worktree:** `feat/contractor-at-birth-projection` @ `C:\PZ-pr2` (base origin/main `5242417`)
 
 ### Completion criteria
 
-- [x] `.claude/SKILL_ROUTING.md` created — 13-domain routing table, algorithm, sample resolutions
-- [x] `.claude/commands/feature.md` updated — Step 0 skill-routing block added to Phase 1
-- [x] `TASK_STATE.md` → COMPLETE
-- [x] Docs-only — no runtime code changed
-- [x] GATE 1 satisfied (reviewer-challenge CLEAR, final-consistency CLEAR)
-- [x] Committed to `claude/new-session-fetvj6`
-- [x] Pushed to remote
+- [ ] Additive idempotent ALTERs: `client_contractor_id` on sales_documents, sales_packing_lines, proforma_drafts, wfirma_reservation_drafts
+- [ ] Projection at birth (store_sales_document, store_sales_packing_lines, proforma draft, reservation draft)
+- [ ] Idempotent backfill from `shipment_documents.client_contractor_id` (operator-triggered endpoint)
+- [ ] Draft grouping key = `client_contractor_id` (fallback `client_name`); silent loss removed
+- [ ] Visible blocked draft-birth records (blocked_state / reason / code)
+- [ ] Reservation readiness carries contractor reference chain (readiness only; no wFirma writes)
+- [ ] Real-builder tests (schema / projection / grouping / blocked / backfill / reservation / regression)
+- [ ] No valuation / CIF / customs / PZ / accounting / booking change (three-authority freeze)
+- [ ] GATE 1 satisfied; FEATURE_SCORECARD Observation Row #1 written
+
+### Prior task (COMPLETE)
+
+- Build automatic skill routing for /feature — `.claude/SKILL_ROUTING.md` + `.claude/commands/feature.md`; merged.
 
 ---
 
