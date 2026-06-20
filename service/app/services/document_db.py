@@ -1571,6 +1571,92 @@ def get_or_create_sales_document_for_packing(
     return row_id
 
 
+def ensure_sales_document_id(
+    batch_id:         str,
+    document_id:      str,
+    *,
+    client_name:      str = "",
+    document_type:    str = "sales_packing_list",
+    source_file_path: str = "",
+) -> str:
+    """Idempotent: ensure a ``sales_documents`` row whose PRIMARY KEY ``id``
+    equals *document_id*, and return that id.
+
+    The reprocess sales path keys ``sales_packing_lines.sales_document_id`` to
+    the sales packing list's ``shipment_documents.id`` (*document_id* here).
+    ``wfirma_reservation`` and the ``v_sales_to_wfirma`` view join those lines
+    on ``sales_documents.id`` — so the ``sales_documents`` row MUST carry that
+    same id, otherwise every line is orphaned from those readers. The earlier
+    ``store_sales_document`` behaviour minted a divergent random UUID, which is
+    the root of that orphaning. Making ``id == document_id`` keeps the id-join
+    aligned without rewiring the reprocess branch (``sales_doc_id`` stays
+    ``document_id`` everywhere downstream).
+
+    Idempotent on the id, so re-reprocess reuses the same row. Also removes
+    line-less phantom siblings (same ``document_id`` under a stale random UUID)
+    left by the pre-fix path. Returns *document_id* (== the row id).
+    """
+    if _db_path is None or not document_id:
+        return ""
+    now = _now()
+    with _lock, _connect() as con:
+        existing = con.execute(
+            "SELECT id FROM sales_documents WHERE id=?", (document_id,),
+        ).fetchone()
+        if existing:
+            if client_name:
+                con.execute(
+                    "UPDATE sales_documents SET client_name=?, updated_at=? WHERE id=?",
+                    (client_name, now, document_id),
+                )
+        else:
+            # Carry over operator-supplied identity from a pre-fix sibling
+            # (same document_id under a stale random-UUID id) BEFORE it is
+            # purged below — otherwise a prior backfill / operator edit of
+            # client_name would be lost, and the reprocess client_name resolver
+            # (Pass 2a, which reads sales_documents by document_id) would fall
+            # through to the wFirma reverse-lookup.
+            client_ref = ""
+            if not client_name:
+                sib = con.execute(
+                    "SELECT client_name, client_ref FROM sales_documents "
+                    "WHERE batch_id=? AND document_id=? AND id<>? "
+                    "AND TRIM(COALESCE(client_name,''))<>'' "
+                    "ORDER BY updated_at DESC LIMIT 1",
+                    (batch_id, document_id, document_id),
+                ).fetchone()
+                if sib:
+                    client_name = sib[0] or ""
+                    client_ref = sib[1] or ""
+            con.execute(
+                """INSERT INTO sales_documents
+                   (id, batch_id, document_id, client_name, client_ref,
+                    document_type, sales_doc_no, sales_doc_date,
+                    source_file_path, extraction_status, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    document_id, batch_id, document_id,
+                    client_name, client_ref,
+                    document_type, "", "",
+                    source_file_path, "extracted",
+                    now, now,
+                ),
+            )
+        # Drop pre-fix phantom rows: older runs created a sales_documents row
+        # with a random-UUID id + the same document_id. Once the canonical
+        # id==document_id row exists, those siblings are empty phantoms — delete
+        # only the ones that own NO sales_packing_lines, so real data is never
+        # touched.
+        con.execute(
+            "DELETE FROM sales_documents "
+            "WHERE batch_id=? AND document_id=? AND id<>? "
+            "AND id NOT IN (SELECT DISTINCT sales_document_id "
+            "               FROM sales_packing_lines WHERE batch_id=?)",
+            (batch_id, document_id, document_id, batch_id),
+        )
+    return document_id
+
+
 def store_sales_packing_lines(
     sales_document_id: str,
     batch_id:          str,
@@ -1694,15 +1780,23 @@ def get_sales_packing_lines(
     ----------
     batch_id : str
     physical_only : bool (default False)
-        When True, returns only ``price_source='packing_xlsx_value'`` rows
-        (the purchase/cost authority rows — one per physical item, from the
-        packing list extraction).
+        When True, returns one row per physical item, scoped per
+        ``sales_document``. Within a document, if any
+        ``price_source='packing_xlsx_value'`` rows exist — the cost-authority
+        rows written by the link-as-sales promotion path
+        (``routes_packing.py`` ``_build_matched_sales_lines``) — only those are
+        returned for that document; they are the de-duped one-per-item set. A
+        document with no such row (a sales packing list parsed at intake or
+        reprocess, whose rows carry ``price_source='excel_symbol'`` or ``''``)
+        returns all of its rows, which are already one per item. Per-document
+        scoping means a batch that mixes a promoted document and a parsed
+        document never under-counts the parsed one nor double-counts the
+        promoted one.
 
-        Background: the sales-price import (``import-sales-prices`` endpoint)
-        inserts a second authority row per line with
-        ``price_source='excel_symbol'`` alongside the original
-        ``price_source='packing_xlsx_value'`` row.  Both rows represent the
-        SAME physical item at different valuations (cost USD vs. sales EUR).
+        (Note: the ``import-sales-prices`` endpoint does NOT insert rows here —
+        it patches the proforma draft's ``editable_lines_json``. The
+        ``excel_symbol`` label is applied by the sales packing parser at
+        intake/reprocess time, not by import-sales-prices.)
 
         Leave ``physical_only=False`` (the default) when the caller needs all
         price-authority rows for pricing decisions — proforma draft sync,
@@ -1716,35 +1810,30 @@ def get_sales_packing_lines(
     if _db_path is None:
         return []
 
-    if physical_only:
-        with _connect() as con:
-            rows = con.execute(
-                "SELECT * FROM sales_packing_lines "
-                "WHERE batch_id=? AND price_source='packing_xlsx_value' "
-                "ORDER BY created_at",
-                (batch_id,),
-            ).fetchall()
-            # Fallback: a batch that was (re)parsed without an
-            # import-sales-prices pass has NO 'packing_xlsx_value' authority
-            # rows — only 'excel_symbol' / '' rows, one per physical item.
-            # Returning [] there hides legitimately-persisted lines from
-            # sales_linkage / lane-readiness. When the batch has zero canonical
-            # rows, fall back to all rows for the batch — which in that case is
-            # already one-per-item, so no double-count is possible.
-            if not rows:
-                rows = con.execute(
-                    "SELECT * FROM sales_packing_lines "
-                    "WHERE batch_id=? ORDER BY created_at",
-                    (batch_id,),
-                ).fetchall()
-    else:
-        with _connect() as con:
-            rows = con.execute(
-                "SELECT * FROM sales_packing_lines WHERE batch_id=? ORDER BY created_at",
-                (batch_id,),
-            ).fetchall()
+    with _connect() as con:
+        all_rows = [dict(r) for r in con.execute(
+            "SELECT * FROM sales_packing_lines WHERE batch_id=? ORDER BY created_at",
+            (batch_id,),
+        ).fetchall()]
 
-    return [dict(r) for r in rows]
+    if not physical_only:
+        return all_rows
+
+    # One row per physical item, scoped per sales_document. A document that has
+    # any canonical cost row (price_source='packing_xlsx_value') is de-duped to
+    # just those; a document parsed without that pass (only 'excel_symbol' / ''
+    # rows — already one per item) keeps all of its rows. Per-document scoping
+    # so a mixed batch neither under-counts the parsed documents nor
+    # double-counts the promoted ones.
+    docs_with_canonical = {
+        r["sales_document_id"] for r in all_rows
+        if r.get("price_source") == "packing_xlsx_value"
+    }
+    return [
+        r for r in all_rows
+        if r.get("sales_document_id") not in docs_with_canonical
+        or r.get("price_source") == "packing_xlsx_value"
+    ]
 
 
 def query_sales_to_wfirma(batch_id: str) -> List[Dict[str, Any]]:
