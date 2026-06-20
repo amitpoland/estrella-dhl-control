@@ -533,3 +533,116 @@ def test_metal_disambiguation_still_skips_when_triple_also_ambiguous(fresh):
         "Ambiguous triple should leave product_code empty"
     )
     assert summary["rows_skipped"] == 1
+
+
+# ── 16. case / whitespace normalisation (defensive) ───────────────────────────
+
+def test_resolves_case_and_space_mismatch(fresh):
+    """A trivial case/spacing difference in the design number must not cause a
+    false miss — both sides are normalised (upper/trim/collapse-ws)."""
+    tmp = fresh
+    bid = "B-NORM"
+    _seed_packing_pairs(tmp, bid, [("JR04929", "EJL/26-27/299-9")])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    rows = [{"product_code": "", "design_no": "  jr04929 ", "quantity": 1}]
+    matched, summary = match_sales_lines_to_packing(bid, rows)
+    assert matched[0]["product_code"] == "EJL/26-27/299-9"
+    assert matched[0]["resolution_source"] == "batch_packing_lines"
+    assert summary["rows_resolved"] == 1
+
+
+# ── 17. combined-metal key aligns purchase(combined) vs sales(split) ──────────
+
+def test_combined_metal_key_resolves_split_sales_metal(fresh):
+    """The real production gap: purchase stores metal='14KT/W' (combined,
+    color empty); the sales parser splits Excel Kt='14KT' + Col='W'.  The
+    metal-key must fold both to '14KT/W' so a design with two metal variants
+    disambiguates to the correct product_code."""
+    tmp = fresh
+    bid = "B-COMBINE"
+    _seed_packing_with_metal(tmp, bid, [
+        {"design_no": "JR04929", "metal": "14KT/W",  "metal_color": "", "product_code": "EJL/26-27/299-2"},
+        {"design_no": "JR04929", "metal": "SL925/-", "metal_color": "", "product_code": "EJL/26-27/299-9"},
+    ])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    sales = [
+        {"product_code": "", "design_no": "JR04929", "metal": "14KT",  "metal_color": "W", "quantity": 1},
+        {"product_code": "", "design_no": "JR04929", "metal": "SL925", "metal_color": "-", "quantity": 1},
+    ]
+    matched, summary = match_sales_lines_to_packing(bid, sales)
+    assert matched[0]["product_code"] == "EJL/26-27/299-2", "14KT/W → 299-2"
+    assert matched[1]["product_code"] == "EJL/26-27/299-9", "SL925/- → 299-9"
+    assert matched[0]["resolution_source"] == "batch_packing_lines_metal"
+    assert summary["rows_resolved"] == 2
+    assert summary["rows_skipped"] == 0
+
+
+# ── 18. PND left unresolved AND classified supplementary ──────────────────────
+
+def test_pnd_left_unresolved_as_supplementary(fresh):
+    """A category-token design (no real design number) is kept unresolved and
+    classified LEGITIMATE_SUPPLEMENTARY_ROW — never force-matched."""
+    tmp = fresh
+    bid = "B-SUPP"
+    _seed_packing_pairs(tmp, bid, [("PND", "PC-A"), ("PND", "PC-B")])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    rows = [{"product_code": "", "design_no": "PND", "quantity": 1}]
+    matched, summary = match_sales_lines_to_packing(bid, rows)
+    assert matched[0].get("product_code", "") == ""
+    assert "PND" in summary["designs_supplementary"]
+    assert summary["unresolved_reasons"]["PND"] == "LEGITIMATE_SUPPLEMENTARY_ROW"
+
+
+# ── 19. genuinely ambiguous (same metal, two pc) blocked with reason ──────────
+
+def test_ambiguous_same_metal_blocked_with_reason(fresh):
+    """A real design whose (design, metal) maps to TWO product_codes stays
+    unresolved with reason AMBIGUOUS_MATCH — never guessed."""
+    tmp = fresh
+    bid = "B-AMB2"
+    _seed_packing_with_metal(tmp, bid, [
+        {"design_no": "J4006R01513", "metal": "SL925/-", "metal_color": "", "product_code": "EJL/26-27/298-1"},
+        {"design_no": "J4006R01513", "metal": "SL925/-", "metal_color": "", "product_code": "EJL/26-27/298-2"},
+    ])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    sales = [{"product_code": "", "design_no": "J4006R01513", "metal": "SL925", "metal_color": "-", "quantity": 1}]
+    matched, summary = match_sales_lines_to_packing(bid, sales)
+    assert matched[0].get("product_code", "") == ""
+    assert summary["unresolved_reasons"]["J4006R01513"] == "AMBIGUOUS_MATCH"
+    assert "J4006R01513" not in summary["designs_supplementary"]
+
+
+# ── 20. missing purchase authority carries an explicit reason ─────────────────
+
+def test_missing_purchase_authority_reason(fresh):
+    """A real design with zero purchase candidates is unresolved with reason
+    MISSING_PURCHASE_AUTHORITY (e.g. design belongs to a different invoice)."""
+    tmp = fresh
+    bid = "B-MISS"
+    _seed_packing_pairs(tmp, bid, [("OTHER", "PC-O")])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    rows = [{"product_code": "", "design_no": "CSTR07966", "quantity": 1}]
+    matched, summary = match_sales_lines_to_packing(bid, rows)
+    assert matched[0].get("product_code", "") == ""
+    assert summary["designs_unresolved"] == ["CSTR07966"]
+    assert summary["unresolved_reasons"]["CSTR07966"] == "MISSING_PURCHASE_AUTHORITY"
+
+
+# ── 21. existing correct product_code never overwritten (no reason) ────────────
+
+def test_existing_pc_not_overwritten_and_no_reason(fresh):
+    tmp = fresh
+    bid = "B-KEEP2"
+    _seed_packing_pairs(tmp, bid, [("D-K", "PC-WRONG")])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    rows = [{"product_code": "PC-RIGHT", "design_no": "D-K", "quantity": 1}]
+    matched, summary = match_sales_lines_to_packing(bid, rows)
+    assert matched[0]["product_code"] == "PC-RIGHT"
+    assert summary["rows_kept_pc"] == 1
+    assert "D-K" not in summary["unresolved_reasons"]

@@ -16,10 +16,27 @@ Resolution order, per sales row:
     1. existing non-empty product_code wins (never overwritten).
     2. design_no with exactly ONE candidate in same-batch
        packing_lines  → inject + mark resolution_source.
-    3. multiple candidates within same batch → ambiguous, leave
+    3. multiple candidates within same batch → try the secondary
+       (design_no, metal-key) disambiguation; if that resolves to
+       exactly one product_code → inject; otherwise ambiguous, leave
        product_code='' and record under designs_ambiguous.
     4. zero candidates → unresolved, leave product_code='' and
        record under designs_unresolved.
+
+Matching keys are NORMALISED on both sides (uppercase, trimmed,
+internal whitespace collapsed) so trivial case/spacing differences
+between the purchase and sales spellings of the same design do not
+cause a false miss.
+
+Metal-key alignment: purchase packing_lines store the metal combined as
+``metal='14KT/W'`` with ``metal_color=''`` empty, while the sales packing
+parser splits the Excel ``Kt``/``Col`` columns into ``metal='14KT'`` +
+``metal_color='W'``.  ``_metal_key`` folds both shapes to one canonical
+form (``'14KT/W'``) so the secondary disambiguation actually lines up.
+
+Reasons: every row that is left unresolved is recorded with an explicit
+reason (``unresolved_reasons``) — AMBIGUOUS_MATCH, MISSING_PURCHASE_AUTHORITY,
+or LEGITIMATE_SUPPLEMENTARY_ROW — so nothing is silently dropped.
 
 Hard rules:
     * NEVER use design_no as a product_code fallback.
@@ -33,6 +50,7 @@ Hard rules:
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -40,19 +58,60 @@ from . import packing_db as _pdb
 
 log = logging.getLogger(__name__)
 
+# Category tokens that appear in the Excel "Design" column when the client
+# packing list gave no real design number (e.g. a plain "PND" pendant row).
+# Such rows are genuine supplementary rows: they CANNOT carry an authoritative
+# product_code and are classified LEGITIMATE_SUPPLEMENTARY_ROW rather than a
+# matcher failure.  This list is advisory (classification only) — it does not
+# change which bucket the row falls into, so existing behaviour is preserved.
+_CATEGORY_TOKENS = {
+    "PND", "NCK", "BRC", "RNG", "EAR", "BNG", "BRA", "PEN", "CHN",
+    "SET", "ANK", "NOSE", "TOE", "CUFF", "BCL", "CL", "MN", "PDT",
+}
 
-# ── Batch-scoped lookup ─────────────────────────────────────────────────────
 
-def _design_to_product_codes_for_batch(
-    batch_id: str,
-) -> Dict[str, List[str]]:
-    """Return ``{design_no: sorted([product_code, ...])}`` for *batch_id*.
+# ── Normalisation helpers ────────────────────────────────────────────────────
+
+def _norm(s: Any) -> str:
+    """Uppercase, trim, collapse internal whitespace runs to a single space.
+
+    Used as the design-match key on BOTH the purchase and sales sides so a
+    trivial case/spacing difference in the same design number does not cause a
+    false miss.  Deliberately does NOT merge slash/dash variants — design
+    numbers like ``JBR00254-1.50`` must stay distinct.
+    """
+    return re.sub(r"\s+", " ", str(s or "").strip().upper())
+
+
+def _metal_key(metal: Any, color: Any) -> str:
+    """Fold the two metal spellings to one canonical key.
+
+    Purchase packing_lines: ``metal='14KT/W'``, ``metal_color=''`` (combined).
+    Sales parser:           ``metal='14KT'``,   ``metal_color='W'`` (split).
+    Both must produce ``'14KT/W'``.  Whitespace removed, uppercased.  When the
+    metal already contains '/', it is treated as already-combined and the
+    separate color is ignored.  An empty metal yields '' (no key).
+    """
+    m = re.sub(r"\s+", "", str(metal or "").strip().upper())
+    c = re.sub(r"\s+", "", str(color or "").strip().upper())
+    if not m:
+        return ""
+    if "/" in m:
+        return m
+    if c:
+        return m + "/" + c
+    return m
+
+
+# ── Batch-scoped lookups ─────────────────────────────────────────────────────
+
+def _design_to_product_codes_for_batch(batch_id: str) -> Dict[str, List[str]]:
+    """Return ``{_norm(design_no): sorted([product_code, ...])}`` for *batch_id*.
 
     Local SELECT against ``packing_db.packing_lines``.  Batch-scoped by
-    construction — design collisions across batches cannot leak.
-    Empty ``{}`` when packing_db is uninitialised, the batch has no
-    purchase packing_lines, or all candidate rows have NULL/empty
-    product_code.
+    construction.  Empty ``{}`` when packing_db is uninitialised, the batch has
+    no purchase packing_lines, or all candidate rows have NULL/empty
+    product_code.  Keys are normalised (uppercase/trim/collapse-ws).
     """
     out: Dict[str, set] = {}
     if not (batch_id or "").strip():
@@ -77,7 +136,7 @@ def _design_to_product_codes_for_batch(
         )
         return {}
     for r in rows:
-        d = (r["design_no"] or "").strip()
+        d = _norm(r["design_no"])
         p = (r["product_code"] or "").strip()
         if not d or not p:
             continue
@@ -87,18 +146,17 @@ def _design_to_product_codes_for_batch(
 
 def _design_metal_to_product_code_for_batch(
     batch_id: str,
-) -> Dict[Tuple[str, str, str], str]:
-    """Return ``{(design_no, metal, metal_color): product_code}`` for *batch_id*.
+) -> Dict[Tuple[str, str], str]:
+    """Return ``{(_norm(design_no), _metal_key(metal, color)): product_code}``.
 
-    Used as a secondary disambiguation key when the same design_no appears
-    multiple times in the batch (e.g. same ring model in yellow and white
-    gold → two different product_codes).  The extract_packing generic parser
-    maps Excel column "Kt" → field "metal" and "Col" → field "metal_color",
-    which aligns with the packing_lines columns of the same names.
+    Secondary disambiguation when the same design_no appears multiple times in
+    the batch in different metal variants (e.g. the same ring in white vs
+    yellow gold → two product_codes).  Only triples that resolve to exactly ONE
+    product_code are kept — ambiguous triples are omitted so the caller falls
+    back to the unresolved path rather than guessing.
 
-    Only populates entries where the (design_no, metal, metal_color) triple
-    is unique within the batch — ambiguous triples are omitted so the caller
-    falls back to the unresolved path rather than guessing.
+    ``_metal_key`` folds the purchase (combined ``'14KT/W'``) and sales (split
+    ``'14KT'`` + ``'W'``) spellings to the same canonical key.
     """
     if not (batch_id or "").strip():
         return {}
@@ -122,23 +180,16 @@ def _design_metal_to_product_code_for_batch(
         )
         return {}
 
-    # Build (design_no, metal, metal_color) → set of product_codes.
-    by_triple: Dict[Tuple[str, str, str], set] = {}
+    by_key: Dict[Tuple[str, str], set] = {}
     for r in rows:
-        d  = (r["design_no"]    or "").strip().upper()
-        m  = (r["metal"]        or "").strip().upper()
-        mc = (r["metal_color"]  or "").strip().upper()
-        p  = (r["product_code"] or "").strip()
+        d = _norm(r["design_no"])
+        p = (r["product_code"] or "").strip()
         if not d or not p:
             continue
-        by_triple.setdefault((d, m, mc), set()).add(p)
+        k = (d, _metal_key(r["metal"], r["metal_color"]))
+        by_key.setdefault(k, set()).add(p)
 
-    # Only keep triples that resolve to exactly one product_code.
-    return {
-        k: next(iter(v))
-        for k, v in by_triple.items()
-        if len(v) == 1
-    }
+    return {k: next(iter(v)) for k, v in by_key.items() if len(v) == 1}
 
 
 # ── Public matcher ──────────────────────────────────────────────────────────
@@ -147,31 +198,33 @@ def match_sales_lines_to_packing(
     batch_id:   str,
     sales_rows: List[Dict[str, Any]],
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Resolve missing ``product_code`` on parsed sales rows using same-
-    batch purchase packing_lines evidence ONLY.
+    """Resolve missing ``product_code`` on parsed sales rows using same-batch
+    purchase packing_lines evidence ONLY.
 
-    Returns ``(matched_rows, summary)`` where matched_rows preserve the
-    input order and length.  Rows whose product_code could not be
-    resolved are returned unchanged (still empty); the DB layer's
-    skip-empty-pc invariant continues to apply downstream.
+    Returns ``(matched_rows, summary)`` where matched_rows preserve the input
+    order and length.  Rows whose product_code could not be resolved are
+    returned unchanged (still empty); the DB layer's skip-empty-pc invariant
+    continues to apply downstream.
 
-    summary shape::
+    summary shape (backward-compatible keys + additive classification)::
 
         {
-          "designs_resolved":   {design_no: product_code, ...},
-          "designs_ambiguous":  {design_no: [product_code, ...], ...},
-          "designs_unresolved": [design_no, ...],
+          "designs_resolved":     {design_no: product_code, ...},
+          "designs_ambiguous":    {design_no: [product_code, ...], ...},
+          "designs_unresolved":   [design_no, ...],   # zero candidates
+          "designs_supplementary":[design_no, ...],   # category-token rows
+          "unresolved_reasons":   {design_no: reason},# per-design reason
           "rows_total":   int,
-          "rows_kept_pc": int,   # existing pc preserved
+          "rows_kept_pc": int,
           "rows_resolved":int,
-          "rows_skipped": int,   # ambiguous + unresolved + missing design_no
+          "rows_skipped": int,
         }
+
+    reason ∈ {AMBIGUOUS_MATCH, MISSING_PURCHASE_AUTHORITY,
+              LEGITIMATE_SUPPLEMENTARY_ROW}.
     """
-    lookup        = _design_to_product_codes_for_batch(batch_id)
-    # Secondary: (design_no, metal, metal_color) → product_code — used only
-    # when the primary design_no lookup is ambiguous (same design in multiple
-    # metal/color variants within one batch).
-    metal_lookup  = _design_metal_to_product_code_for_batch(batch_id)
+    lookup       = _design_to_product_codes_for_batch(batch_id)
+    metal_lookup = _design_metal_to_product_code_for_batch(batch_id)
 
     matched: List[Dict[str, Any]] = []
     designs_resolved:   Dict[str, str]       = {}
@@ -186,7 +239,8 @@ def match_sales_lines_to_packing(
             matched.append(r)
             rows_kept_pc += 1
             continue
-        dn = str(r.get("design_no") or "").strip()
+        dn_raw = str(r.get("design_no") or "").strip()
+        dn = _norm(dn_raw)
         if not dn:
             matched.append(r)
             rows_skipped += 1
@@ -197,55 +251,70 @@ def match_sales_lines_to_packing(
             clone["product_code"]      = cands[0]
             clone["resolution_source"] = "batch_packing_lines"
             matched.append(clone)
-            designs_resolved[dn] = cands[0]
+            designs_resolved[dn_raw] = cands[0]
             rows_resolved += 1
         elif len(cands) > 1:
-            # Secondary disambiguation: try (design_no, metal, metal_color).
-            # The generic extractor maps Excel "Kt" → field "metal" and
-            # "Col" → field "metal_color", aligning with packing_lines columns.
-            metal  = (r.get("metal")        or "").strip().upper()
-            mcol   = (r.get("metal_color")  or "").strip().upper()
-            triple = (dn.upper(), metal, mcol)
-            resolved_pc: Optional[str] = metal_lookup.get(triple)
+            mk = _metal_key(r.get("metal"), r.get("metal_color"))
+            resolved_pc: Optional[str] = metal_lookup.get((dn, mk))
             if resolved_pc:
                 clone = dict(r)
                 clone["product_code"]      = resolved_pc
                 clone["resolution_source"] = "batch_packing_lines_metal"
                 matched.append(clone)
-                designs_resolved[dn] = resolved_pc
+                designs_resolved[dn_raw] = resolved_pc
                 rows_resolved += 1
                 log.info(
                     "[%s] sales matcher: design %r disambiguated via "
-                    "metal=%r color=%r -> %s",
-                    batch_id, dn, metal, mcol, resolved_pc,
+                    "metal-key %r -> %s", batch_id, dn_raw, mk, resolved_pc,
                 )
             else:
-                designs_ambiguous[dn] = list(cands)
+                designs_ambiguous[dn_raw] = list(cands)
                 matched.append(r)
                 rows_skipped += 1
                 log.warning(
                     "[%s] sales matcher: design %r ambiguous in batch "
-                    "packing_lines -> %s (metal=%r color=%r) — "
-                    "leaving product_code empty",
-                    batch_id, dn, cands, metal, mcol,
+                    "packing_lines -> %s (metal-key=%r) — leaving "
+                    "product_code empty", batch_id, dn_raw, cands, mk,
                 )
         else:
-            designs_unresolved.add(dn)
+            designs_unresolved.add(dn_raw)
             matched.append(r)
             rows_skipped += 1
             log.info(
                 "[%s] sales matcher: design %r unresolvable in batch "
                 "packing_lines — leaving product_code empty",
-                batch_id, dn,
+                batch_id, dn_raw,
             )
 
+    # ── Additive classification: reason per unresolved design ────────────────
+    # Never leave a row unresolved without a recorded reason.  Category-token
+    # designs (e.g. "PND" with no real design number) are LEGITIMATE
+    # supplementary rows, not matcher failures.
+    designs_supplementary = sorted(
+        {d for d in list(designs_ambiguous.keys()) + list(designs_unresolved)
+         if _norm(d) in _CATEGORY_TOKENS}
+    )
+    unresolved_reasons: Dict[str, str] = {}
+    for d in designs_ambiguous:
+        unresolved_reasons[d] = (
+            "LEGITIMATE_SUPPLEMENTARY_ROW" if _norm(d) in _CATEGORY_TOKENS
+            else "AMBIGUOUS_MATCH"
+        )
+    for d in designs_unresolved:
+        unresolved_reasons[d] = (
+            "LEGITIMATE_SUPPLEMENTARY_ROW" if _norm(d) in _CATEGORY_TOKENS
+            else "MISSING_PURCHASE_AUTHORITY"
+        )
+
     summary = {
-        "designs_resolved":   designs_resolved,
-        "designs_ambiguous":  designs_ambiguous,
-        "designs_unresolved": sorted(designs_unresolved),
-        "rows_total":         rows_total,
-        "rows_kept_pc":       rows_kept_pc,
-        "rows_resolved":      rows_resolved,
-        "rows_skipped":       rows_skipped,
+        "designs_resolved":      designs_resolved,
+        "designs_ambiguous":     designs_ambiguous,
+        "designs_unresolved":    sorted(designs_unresolved),
+        "designs_supplementary": designs_supplementary,
+        "unresolved_reasons":    unresolved_reasons,
+        "rows_total":            rows_total,
+        "rows_kept_pc":          rows_kept_pc,
+        "rows_resolved":         rows_resolved,
+        "rows_skipped":          rows_skipped,
     }
     return matched, summary
