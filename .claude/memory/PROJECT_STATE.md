@@ -64,6 +64,20 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **CAMPAIGN-IDENTITY LOCK:** **Rule 3 Global PZ ↔ wFirma Reconciliation Authority is a NEW future architecture campaign** — new campaign ID, new ADR, new authority owner, new governance gates, new rollout plan, new success + closure criteria. It is **NOT** a continuation of AWB-2315714531. The incident is **historical evidence only** and inherits nothing to Rule 3. Do NOT open new engineering work under AWB-2315714531-2026-06 unless a genuinely new production signal appears. See memory `project_awb2315714531_closed_rule3_new_campaign`.
 - **origin/main HEAD now = `fb70e15`** (PR #653 squash-merge). Supersedes the `03ffce9` HEAD block below (append-only — prior entry retained).
 
+## Current origin/main HEAD (2026-06-20, updated): `a40c7c5`
+
+- **origin/main HEAD = `a40c7c5`** — `fix(proforma): remediate PR-1 conflict foundation governance gaps (PR-1A) (#630)` (merged 2026-06-20). Full SHA: `a40c7c5edd921769f2d83b33fb99262dbf9933c6`. Supersedes the `fb70e15` block above (append-only — prior entry retained).
+- Also on main at this date: `b737fdc` (#659 Anti-HOLD governance), `8241abd` (#660 AUTHORITY_MAP.md), `1c3c211` (#658 PROJECT_STATE update), `0574270` (#657 Claude Code enforcement hooks), `80b2e08` (fix v2 JSX MIME), `d3909ca` (#637 docs), `94b95bb` (#655 archive flip), `34662a6` (#654 archive record), `fb70e15` (#653 wFirma governance). Linear merge series. (Confirmed via `git log origin/main --oneline -8`, 2026-06-20.)
+
+## PR #667 — TASK_EXECUTION_PROTOCOL + BACKLOG + /feature command (2026-06-20, OPEN DRAFT on `claude/new-session-fetvj6`)
+
+- **Branch**: `claude/new-session-fetvj6`. PR #667 DRAFT — NOT merged, NOT deployed. Base: `main`.
+- **Commit `8766adb`** (2026-06-20): Created `.claude/TASK_EXECUTION_PROTOCOL.md` — canonical five-phase execution protocol (DISCOVERY → PLAN → IMPLEMENT → VERIFY → CLOSE). Defines Anti-HOLD rules, one-task-at-a-time enforcement, BACKLOG rule, authority-map check, skill selection checkpoint, subagent dispatch table, GATE 1 checklist, and deploy boundary.
+- **Commit `5422404`** (2026-06-20): Created `.claude/commands/feature.md` — canonical operator entry point for feature work. Wires to `TASK_EXECUTION_PROTOCOL.md`. Mandatory subagents: gap-detection, reviewer-challenge, final-consistency-review, flow-context-keeper. Updated `COMMAND_REGISTRY.md` to 9 total commands; `/feature` added as WRITE-CAPABLE tier.
+- **`BACKLOG.md` created** (repo root, 2026-06-20, commit `5422404`): side-discovery capture point per the BACKLOG rule. Entry B-001 filed: PR #661 (`ci/auto-merge-approved`) stale review, disposition SCHEDULED (review before next merge sprint; verify no conflict with governance gates).
+- **GATE 2 state**: PR #667 is DRAFT — not counted against the 3/3 impl-PR limit until converted to ready-for-review. Operator approval required before merge.
+- **Deployment gate**: NOT deployed. All changes are `.claude/**` and repo root `BACKLOG.md` — no `service/app/**` runtime files; no 7-agent deploy gate required. Lesson J N/A.
+
 ## Current origin/main HEAD (2026-06-18, updated): `03ffce9`
 
 - **origin/main HEAD = `03ffce9`** — `fix(audit): preserve wfirma_export PZ pointer across Run PZ regeneration (#570-class) (#652)` (merged 2026-06-18). This is the current HEAD; the dedicated "Current origin/main HEAD (2026-06-17, updated): `b45dda7`" block below is **superseded** (append-only — prior entry retained).
@@ -5448,11 +5462,17 @@ Group D — Tests (3 new files):
 - **`logistics` role permitted to attest vision-invoice confirmation** (2026-06-17): mirrors existing `routes_action_proposals` resolve-action role set (admin/logistics/accounts). OPEN QUESTION OQ-PR647-ROLE-POLICY tracks this for operator ratification.
 - **reviewer-challenge and security-write-action-reviewer must supply structured verdict blocks on next write-action endpoint PR** (2026-06-17, GATE-4 SCHEDULED per scorecard): this run both scored ACCEPTABLE (27/35) with narrative-only Evidence 3/5. Structured verdict blocks (claim → evidence line reference → severity → disposition) are required at GATE 1 for write-action endpoints. Target: enforce at next write-action PR pre-flight checklist. Also tracked under Issue #597 (systemic Environment disclosure gap).
 
-## Next 3 actions in queue (refreshed 2026-06-17 — PR #647 PR-2 vision-invoice-confirm OPENED)
+## Next 3 actions in queue (refreshed 2026-06-20 — PR #667 DRAFT: TASK_EXECUTION_PROTOCOL + /feature command)
 
-1. **Operator: review + merge PR #647** (branch `feat/pr2-vision-invoice-confirm-workflow` @ `4429e04`; GATE 1 satisfied; backend-safety-reviewer EXEMPLARY + test-coverage-reviewer EXEMPLARY; 21 new tests; 68 vision tests pass; zero new baseline failures). Standard service/app robocopy (no Lesson J engine files). Gating: GATE 2 at 3/3 impl slots — merge #630 (proforma governance) or #645 (docs CLAUDE.md) to free a slot first, OR operator invokes the docs-only exemption to count #645 out-of-band. After #647 deploys, AWB 2315714531 operator can confirm via `POST /dashboard/batches/{id}/vision-invoice/confirm`.
-2. **Operator: review + merge PR #630** (branch `feat/pr1a-conflict-foundation-remediation`; proforma governance gaps from PR-1; GATE 1 record pending). Clearing #630 frees the remaining impl slot for downstream work. Gating: GATE 2 (1 of the 3/3 impl slots is #630 itself — merging it clears the slot).
-3. **Ratify Issue #646 fix scope** (recheck_batch whole-audit write can revert `operator_confirmed=true`, #570 lost-update class): operator decides whether to treat as BLOCKING for PR-2 deploy or as a POST-DEPLOY ISSUE tracked separately. If blocking, a targeted `batch_write_lock` guard around the `operator_confirmed` field in `recheck_batch` must be added before PR-2 deploys to production. Gating: operator decision; Issue #646 is already filed.
+1. **Operator: review + approve PR #667** (branch `claude/new-session-fetvj6`; DRAFT — `.claude/TASK_EXECUTION_PROTOCOL.md` + `.claude/commands/feature.md` + `BACKLOG.md`; WRITE-CAPABLE tier; reviewer-challenge required before merge per `/feature` command policy). Target outcome: governance protocol merged to main. Gating: operator approval + reviewer-challenge pass; docs/governance PR occupies docs-exception slot (GATE 2 compliant).
+2. **Operator: review + merge PR #647** (branch `feat/pr2-vision-invoice-confirm-workflow` @ `4429e04`; Stage B vision-invoice confirm workflow; GATE 1 satisfied; 21 tests). Gating: GATE 2 — PR #630 MERGED (slot freed); PR #667 is DRAFT (not counted); slot available. After deploy, AWB 2315714531 operator can confirm via `POST /dashboard/batches/{id}/vision-invoice/confirm`.
+3. **File Issue for B-001 (PR #661 `ci/auto-merge-approved`)** — review whether this CI auto-merge PR conflicts with governance gates before next merge sprint. Currently SCHEDULED in `BACKLOG.md`; convert to ISSUE if tracking beyond next session is needed. Gating: none — operator can action independently.
+
+## /feature Command and BACKLOG.md Governance (2026-06-20)
+
+- **`/feature` command tier: WRITE-CAPABLE** (2026-06-20) — every invocation of `/feature` must fire reviewer-challenge. Operator approval required before any `/feature`-produced PR merges to main. Source: `.claude/commands/feature.md` (commit `5422404`, branch `claude/new-session-fetvj6`, PR #667 DRAFT).
+- **`BACKLOG.md` is the canonical side-discovery capture point** (2026-06-20) — all side-discoveries encountered during task execution go into `BACKLOG.md` (repo root) with a GATE 4 disposition (SCHEDULED / ISSUE / REJECTED). "Recommendation noted" is not a valid disposition. Current open entry: B-001 (PR #661 stale CI review, SCHEDULED). Source: `TASK_EXECUTION_PROTOCOL.md` §Standing Rules — BACKLOG rule; `BACKLOG.md` created commit `5422404`.
+- **`TASK_EXECUTION_PROTOCOL.md` is the canonical execution protocol** (2026-06-20) — DISCOVERY → PLAN → IMPLEMENT → VERIFY → CLOSE. All `/feature` and `/bug` invocations must follow this protocol. Anti-HOLD rules and one-task-at-a-time enforcement are binding. Source: `.claude/TASK_EXECUTION_PROTOCOL.md` (commit `8766adb`, PR #667 DRAFT).
 
 ## OCR/AI Vision Fallback — Technology + Architecture Decisions (2026-06-17)
 
@@ -6073,6 +6093,20 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ---
 
 # OPEN QUESTIONS
+
+## OQ-PR656-SHA: production validation of PR #656 SHA pending — operator must paste PowerShell output (2026-06-20)
+
+- **Question**: Has PR #656 been deployed and verified in production (`C:\PZ`)? The SHA_656 production validation verdict is currently PENDING — operator has not yet pasted the PowerShell file-hash / `Select-String` output confirming the files are live.
+- **Who can answer**: Operator — run `Select-String` / sha256 check on the deployed files in `C:\PZ` and paste results. The orchestrator will then confirm MATCH or MISMATCH.
+- **Impact if unanswered**: PR #656 is counted as a queued deploy but production state is unverified; any subsequent deploy plan must assume this gap and include PR #656 scope in the hash-flip check.
+- **Candidate path to closure**: Operator pastes PowerShell output of deployed file hashes for the files changed in PR #656; orchestrator confirms against origin/main SHA.
+
+## OQ-ADR022-PR2: ADR-022 Snapshot Layer PR-2 — UNBLOCKED structurally; B2–B9 dead-end types need operator scheduling decision (2026-06-20)
+
+- **Question**: PR-2 of the ADR-022 Snapshot Layer implementation is structurally unblocked (PR-1 dependencies met), but B2–B9 dead-end snapshot types require an explicit operator scheduling decision before work begins: (a) proceed in current sprint, (b) defer to a future campaign, or (c) descope permanently.
+- **Who can answer**: Operator — scheduling / prioritization decision on B2–B9 dead-end types relative to current queue (PR #647, PR #667, B-001).
+- **Impact if unanswered**: ADR-022 PR-2 remains in limbo; the snapshot layer is partially implemented; any shipment-level state rebuild may encounter unhandled dead-end type cases.
+- **Candidate path to closure**: Operator declares one of: SCHEDULED (target sprint/date), ISSUE (file GitHub issue with label), or REJECTED (permanently descoped, record reason here).
 
 ## OQ-PR647-ROLE-POLICY: logistics role permitted for vision-invoice confirm — operator ratification pending (2026-06-17)
 
