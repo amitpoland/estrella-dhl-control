@@ -8,6 +8,20 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 
 ---
 
+## OBSERVATION PERIOD (2026-06-20) — informational only, NOT a gate
+
+Observation is running **in parallel with development**.
+Feature work may continue immediately. Observation is **informational only**.
+
+The `/feature` observation period is ACTIVE and collects one `FEATURE_SCORECARD.md`
+row per completed `/feature` run. It does **not** authorize, delay, block, freeze,
+pause, or restrict feature development, roadmap items, bug fixes, or deployments.
+The absence of scorecard rows must never prevent development. Binding rule:
+`docs/governance/OBSERVATION_IS_NOT_A_GATE.md`. (Any prior PR-2/`/bug`/domain-skill
+holds are separate business decisions, NOT consequences of observation.)
+
+---
+
 # TRACK DEFINITIONS (READ THIS BEFORE STARTING ANY "PHASE 2" WORK)
 
 Two initiatives contain the words "Phase 2" or "correction." They are completely different. Conflating them causes wrong code to be written.
