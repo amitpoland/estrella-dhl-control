@@ -7,10 +7,23 @@ Do not aggregate — raw rows are more useful than summaries during the observat
 
 ## Scorecard rows
 
-| Date | Task | Selected Skill | Confidence | Authority | Protocol Completed | Unnecessary HOLD | Scope Drift | Backlog Items | Outcome | Lessons |
-|---|---|---|---|---|---|---|---|---|---|---|
-| | | | HIGH/MEDIUM/LOW | | Y/N | Y/N | Y/N | | SUCCESS/PARTIAL/FAILED | |
+| Date | Task | Selected Skill | Confidence | Authority Correct | Protocol Completed | Unexpected HOLD | Scope Drift | Drift Started At | Session Length | Backlog Items | Outcome | Lessons |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| | | | HIGH/MEDIUM/LOW | Y/N | Y/N | Y/N | Y/N | None/Discovery/Plan/Implement/Verify | <30m/30-60m/1-2h/2-4h/4h+ | | SUCCESS/PARTIAL/FAILED | |
 
 ---
 
-*First run populates row 1. After 10 rows, review failure patterns before building /bug or domain skills.*
+## Success thresholds (review after 10 runs)
+
+| Metric | Target |
+|---|---|
+| Correct skill selection | > 80% |
+| Protocol completion | > 80% |
+| Unexpected HOLD | < 10% |
+| Scope drift | < 20% |
+
+If targets are met → build `/bug`. If domain failures cluster (proforma, DHL, wFirma) → build that domain skill first.
+
+---
+
+*First run populates row 1. After 10 rows, review failure patterns before next engineering investment.*
