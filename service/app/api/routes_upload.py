@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from ..services import document_db as ddb
+from ..services import packing_db as pdb
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
@@ -1308,6 +1309,27 @@ def list_batch_documents(batch_id: str) -> JSONResponse:
                 row["lines_truncated"] = lines_total > len(lines_preview)
             except Exception as exc:
                 log.warning("[%s] sales packing lines enrichment failed (non-fatal) doc=%s: %s",
+                            batch_id, doc_id, exc)
+        # ── Purchase-packing enrichment ───────────────────────────────
+        # purchase_packing_list extraction writes to packing.db
+        # (packing_lines, keyed by packing_document_id → packing_documents),
+        # NOT to documents.db — so without this branch the registry rendered
+        # "Lines/Fields: 0" for purchase rows even when lines existed. The
+        # registry row is a shipment_documents row; bridge to its packing
+        # document by (batch_id, file_hash) — equivalently (batch_id,
+        # file_name) when a hash is absent. Mirror the invoice/sales branches.
+        elif (d.get("document_type") or "") == "purchase_packing_list":
+            try:
+                _bid = d.get("batch_id") or batch_id
+                _fh  = d.get("file_hash") or ""
+                _fn  = d.get("file_name") or ""
+                lines_preview = pdb.get_packing_lines_for_shipment_document(_bid, _fh, _fn, limit=20)
+                lines_total   = pdb.count_packing_lines_for_shipment_document(_bid, _fh, _fn)
+                row["lines_preview"]   = lines_preview
+                row["lines_count"]     = lines_total
+                row["lines_truncated"] = lines_total > len(lines_preview)
+            except Exception as exc:
+                log.warning("[%s] purchase packing lines enrichment failed (non-fatal) doc=%s: %s",
                             batch_id, doc_id, exc)
         enriched.append(row)
     return JSONResponse({

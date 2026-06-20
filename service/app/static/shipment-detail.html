@@ -4728,11 +4728,14 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           // lines_count + lines_preview so we can show
                           // "N lines" instead of misleading "Fields: 0".
                           const isInvoice = d.document_type === 'purchase_invoice' || d.document_type === 'sales_invoice';
-                          // Sales packing extraction writes to sales_packing_lines
-                          // (surfaced via lines_count), not document_extracted_fields —
-                          // treat sales_packing_list as a "lines" doc so the registry
-                          // shows the real count instead of a misleading "0 fields".
-                          const isLinesDoc = isInvoice || d.document_type === 'sales_packing_list';
+                          // Sales packing extraction writes to sales_packing_lines and
+                          // purchase packing extraction writes to packing.db packing_lines
+                          // (both surfaced via lines_count), not document_extracted_fields —
+                          // treat them as "lines" docs so the registry shows the real count
+                          // instead of a misleading "0 fields".
+                          const isLinesDoc = isInvoice
+                            || d.document_type === 'sales_packing_list'
+                            || d.document_type === 'purchase_packing_list';
                           const linesCount = d.lines_count;
                           const linesPreview = d.lines_preview || [];
                           // Count column: line-docs show "N lines"; everything
@@ -4794,7 +4797,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                                 <td style={tdStyle}>{ln.line_position ?? li + 1}</td>
                                                 <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace' }}>{ln.invoice_no || '—'}</td>
                                                 <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace' }}>{ln.product_code || '—'}</td>
-                                                <td style={{ ...tdStyle, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ln.description}>{ln.description || '—'}</td>
+                                                <td style={{ ...tdStyle, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ln.description || ln.design_no || ln.remarks}>{ln.description || ln.design_no || ln.remarks || '—'}</td>
                                                 <td style={tdStyle}>{ln.quantity ?? 0}</td>
                                                 <td style={tdStyle}>{typeof ln.unit_price === 'number' ? ln.unit_price.toFixed(2) : (ln.unit_price || 0)}</td>
                                                 <td style={tdStyle}>{typeof ln.total_value === 'number' ? ln.total_value.toFixed(2) : (ln.total_value || 0)}</td>

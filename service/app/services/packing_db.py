@@ -336,6 +336,110 @@ def get_packing_documents_for_batch(batch_id: str) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def _resolve_packing_document_ids(
+    batch_id:         str,
+    source_file_hash: str = "",
+    file_name:        str = "",
+) -> List[str]:
+    """Resolve the packing_documents.id(s) for a shipment_documents row.
+
+    A Document Registry row is a ``shipment_documents`` row (documents.db) — its
+    packing list lines live in this DB (packing.db), keyed by
+    ``packing_lines.packing_document_id`` → ``packing_documents.id``, a DIFFERENT
+    id space. The bridge is the source file: a ``packing_documents`` row carries
+    the same ``source_file_hash`` (== ``shipment_documents.file_hash``) and the
+    same basename (== ``shipment_documents.file_name``) as its registry row.
+
+    Resolution order (read-only):
+      1. (batch_id, source_file_hash) — the canonical, content-addressed join.
+      2. (batch_id, basename(source_file_path) == file_name) — fallback for any
+         legacy row whose hash is absent or did not match.
+
+    Returns every matching id (a re-upload can mint a second packing_documents
+    row for the same file within a batch), so callers union their lines.
+    """
+    if _db_path is None or not batch_id:
+        return []
+    with _connect() as con:
+        ids: List[str] = []
+        if source_file_hash:
+            ids = [
+                r["id"] for r in con.execute(
+                    "SELECT id FROM packing_documents "
+                    "WHERE batch_id=? AND source_file_hash=?",
+                    (batch_id, source_file_hash),
+                ).fetchall()
+            ]
+        if not ids and file_name:
+            rows = con.execute(
+                "SELECT id, source_file_path FROM packing_documents WHERE batch_id=?",
+                (batch_id,),
+            ).fetchall()
+            ids = [
+                r["id"] for r in rows
+                if Path(r["source_file_path"] or "").name == file_name
+            ]
+    return ids
+
+
+def get_packing_lines_for_shipment_document(
+    batch_id:         str,
+    source_file_hash: str = "",
+    file_name:        str = "",
+    limit:            int = 50,
+) -> List[Dict[str, Any]]:
+    """Return packing_lines belonging to a single shipment_documents (registry) row.
+
+    Distinct from ``get_packing_lines_for_document(packing_document_id)`` above:
+    that one is keyed by a packing_documents.id (this DB's own id space); this one
+    is keyed by a shipment_documents row's identity (batch_id + file_hash/file_name)
+    and bridges documents.db → packing.db via ``_resolve_packing_document_ids``.
+
+    purchase_packing_list extraction writes to packing_lines (packing.db, keyed
+    by packing_document_id → packing_documents), NOT to documents.db
+    invoice_lines / document_extracted_fields — so the Document Registry rendered
+    "Lines/Fields: 0" for purchase_packing_list rows even when lines existed.
+    Mirrors ``document_db.get_invoice_lines_for_document`` / the sales helper.
+
+    Read-only; capped at ``limit`` rows for payload safety.
+    """
+    pdoc_ids = _resolve_packing_document_ids(batch_id, source_file_hash, file_name)
+    if not pdoc_ids:
+        return []
+    placeholders = ",".join("?" * len(pdoc_ids))
+    with _connect() as con:
+        rows = con.execute(
+            f"SELECT * FROM packing_lines "
+            f"WHERE packing_document_id IN ({placeholders}) "
+            f"ORDER BY invoice_line_position, created_at, id LIMIT ?",
+            (*pdoc_ids, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_packing_lines_for_shipment_document(
+    batch_id:         str,
+    source_file_hash: str = "",
+    file_name:        str = "",
+) -> int:
+    """Count packing_lines for a single shipment_documents (registry) row (no preview).
+
+    Same two-DB bridge as ``get_packing_lines_for_shipment_document`` — see
+    ``_resolve_packing_document_ids``. Read-only.
+    """
+    pdoc_ids = _resolve_packing_document_ids(batch_id, source_file_hash, file_name)
+    if not pdoc_ids:
+        return 0
+    placeholders = ",".join("?" * len(pdoc_ids))
+    with _connect() as con:
+        row = con.execute(
+            f"SELECT COUNT(*) AS n FROM packing_lines "
+            f"WHERE packing_document_id IN ({placeholders})",
+            tuple(pdoc_ids),
+        ).fetchone()
+    return int(row["n"] if row else 0)
+
+
 def update_packing_document_diagnostic(document_id: str, diagnostic: Dict[str, Any]) -> bool:
     """Update ONLY parser_diagnostic_json for one packing document.
 
