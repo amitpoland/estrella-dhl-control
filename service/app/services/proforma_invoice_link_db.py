@@ -31,12 +31,18 @@ caller turns into a ProformaAlreadyConverted exception.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+# Module logger. Several defensive ``except`` branches (draft-birth block
+# lifecycle, canonical-name migration) call ``log.warning`` — without this
+# binding those branches would raise NameError instead of logging.
+log = logging.getLogger(__name__)
 
 
 # ── Public types ──────────────────────────────────────────────────────────────
@@ -801,6 +807,143 @@ def list_draft_birth_blocks(
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("list_draft_birth_blocks failed (non-fatal): %s", exc)
         return []
+
+
+def migrate_draft_to_canonical_name(
+    db_path:          Path,
+    batch_id:         str,
+    old_client_name:  str,
+    canonical_name:   str,
+    *,
+    charge_move:         Optional[Callable[[str, str, str], List[Dict[str, Any]]]] = None,
+    charge_drop:         Optional[Callable[[str, str], List[Dict[str, Any]]]] = None,
+    reservation_migrate: Optional[Callable[[str, str, str], Dict[str, Any]]] = None,
+    operator:            str = "",
+) -> Dict[str, Any]:
+    """PR-3: migrate EDITABLE proforma drafts for (batch_id, old_client_name) to
+    *canonical_name* (the operator's Customer-Master selection wins over a parsed
+    name). EDITABLE drafts only — posted/approved/posting/cancelled/superseded
+    identity is FROZEN and never renamed.
+
+    Per draft row (across ALL clone_generations):
+      * a canonical-named draft already exists at the SAME clone_generation →
+        the old row is SUPERSEDED (canonical wins; superseded_by points at it),
+      * otherwise the old row is RENAMED in place to canonical_name.
+
+    Charges (per name, via injected callables — keeps this module dependency-free):
+      * canonical draft pre-existed (collision) → ``charge_drop`` (canonical wins;
+        dropped non-zero amounts returned for operator disclosure),
+      * else → ``charge_move`` (the renamed draft keeps its charges).
+    Reservation draft migrated via ``reservation_migrate`` (canonical-wins inside).
+
+    Idempotent: when ``old_client_name == canonical_name`` or no old rows exist,
+    returns a no-op. Returns a report dict (renamed / superseded / skipped_frozen
+    ids + dropped_charges + reservation summary).
+    """
+    report: Dict[str, Any] = {
+        "old_client_name": old_client_name,
+        "canonical_name":  canonical_name,
+        "renamed":         [],
+        "superseded":      [],
+        "skipped_frozen":  [],
+        "dropped_charges": [],
+        "reservation":     {"action": "noop"},
+        "action":          "noop",
+    }
+    if not (batch_id or "").strip() or not (old_client_name or "").strip() \
+            or not (canonical_name or "").strip():
+        return report
+    if old_client_name == canonical_name:
+        return report
+
+    now = _now_utc_iso()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_drafts_table(conn)
+
+        old_rows = conn.execute(
+            "SELECT id, draft_state, clone_generation FROM proforma_drafts "
+            "WHERE batch_id=? AND client_name=?",
+            (batch_id, old_client_name),
+        ).fetchall()
+        if not old_rows:
+            return report
+
+        # Whether an EDITABLE canonical draft exists — decides whether
+        # "canonical wins" can safely DROP old charges (only onto a live
+        # editable canonical), vs must PRESERVE them (frozen/posted canonical
+        # can never receive them — dropping would be unrecoverable money loss).
+        _editable_ph = ",".join("?" * len(EDITABLE_STATES))
+        canonical_editable = conn.execute(
+            f"SELECT 1 FROM proforma_drafts WHERE batch_id=? AND client_name=? "
+            f"AND draft_state IN ({_editable_ph}) LIMIT 1",
+            (batch_id, canonical_name, *EDITABLE_STATES),
+        ).fetchone() is not None
+
+        for r in old_rows:
+            state = (r["draft_state"] or "").strip()
+            if state not in EDITABLE_STATES:
+                report["skipped_frozen"].append({"id": r["id"], "state": state})
+                continue
+            gen = r["clone_generation"] if "clone_generation" in r.keys() else 0
+            canon_at_gen = conn.execute(
+                "SELECT id FROM proforma_drafts "
+                "WHERE batch_id=? AND client_name=? AND clone_generation=? LIMIT 1",
+                (batch_id, canonical_name, gen),
+            ).fetchone()
+            if canon_at_gen is not None:
+                conn.execute(
+                    "UPDATE proforma_drafts SET draft_state='superseded', "
+                    "superseded_by_draft_id=?, updated_at=? WHERE id=?",
+                    (canon_at_gen["id"], now, r["id"]),
+                )
+                report["superseded"].append(r["id"])
+            else:
+                conn.execute(
+                    "UPDATE proforma_drafts SET client_name=?, updated_at=? WHERE id=?",
+                    (canonical_name, now, r["id"]),
+                )
+                report["renamed"].append(r["id"])
+        conn.commit()
+
+    # ── Charges migration — OUTCOME-aware + money-safe ────────────────────────
+    # The charges must follow the LIVE editable canonical draft:
+    #   * renamed (the old draft BECAME canonical)        → MOVE (keep its charges)
+    #   * superseded into an EDITABLE canonical (collision)→ DROP old (operator's
+    #     "canonical wins"; dropped non-zero amounts are DISCLOSED)
+    #   * superseded into a FROZEN canonical              → MOVE (NEVER drop onto a
+    #     posted/unrecoverable draft — preserve the money, disclosed)
+    #   * nothing migrated (all frozen old)              → leave charges untouched
+    charge_mode = "none"
+    if report["renamed"]:
+        charge_mode = "move"
+    elif report["superseded"]:
+        charge_mode = "drop" if canonical_editable else "move"
+    report["charge_mode"] = charge_mode
+    try:
+        if charge_mode == "drop" and charge_drop is not None:
+            report["dropped_charges"] = charge_drop(batch_id, old_client_name) or []
+        elif charge_mode == "move" and charge_move is not None:
+            report["dropped_charges"] = \
+                charge_move(batch_id, old_client_name, canonical_name) or []
+    except Exception as _chg_exc:  # pragma: no cover - defensive
+        log.warning("draft charge migration failed (non-fatal) %s→%s: %s",
+                    old_client_name, canonical_name, _chg_exc)
+    try:
+        if reservation_migrate is not None:
+            report["reservation"] = \
+                reservation_migrate(batch_id, old_client_name, canonical_name) or {"action": "noop"}
+    except Exception as _res_exc:  # pragma: no cover - defensive
+        log.warning("reservation migration failed (non-fatal) %s→%s: %s",
+                    old_client_name, canonical_name, _res_exc)
+
+    report["action"] = (
+        "renamed" if report["renamed"] and not report["superseded"]
+        else "superseded" if report["superseded"] and not report["renamed"]
+        else "mixed" if (report["renamed"] or report["superseded"])
+        else "skipped"
+    )
+    return report
 
 
 # ── Phase 1 read shim: legacy status → new draft_state mapping ────────────

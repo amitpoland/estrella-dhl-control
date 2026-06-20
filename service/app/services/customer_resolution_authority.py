@@ -212,6 +212,7 @@ def derive_customer_authority_for_draft(
     client_name: Optional[str],
     documents_db_path: Path,
     customer_master_db_path: Path,
+    client_contractor_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Resolve a proforma draft via its originating sales-packing-list
     document's upload-time client selection. Per-DOCUMENT authority —
@@ -249,11 +250,58 @@ def derive_customer_authority_for_draft(
         through to name-based resolver, which will likely produce a
         meaningful blocker for the operator)
     """
-    if not (batch_id or "").strip() or not (client_name or "").strip():
+    cid_direct = (client_contractor_id or "").strip()
+    if not (batch_id or "").strip() or (
+        not (client_name or "").strip() and not cid_direct
+    ):
         return None
     docs_path = Path(documents_db_path)
     cm_path   = Path(customer_master_db_path)
-    if not docs_path.is_file() or not cm_path.is_file():
+    if not cm_path.is_file():
+        return None
+
+    # 0. PR-3 contractor-id-first: when the draft carries a projected
+    #    client_contractor_id (the operator's upload-time Customer-Master pick),
+    #    resolve Customer Master DIRECTLY by it — independent of the client_name
+    #    string. This is robust to name canonicalization (a renamed draft still
+    #    resolves) and removes the fragile (batch_id, client_name) join as the
+    #    sole authority. Falls through to the name chain on a CM miss.
+    if cid_direct:
+        with sqlite3.connect(str(cm_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            cm_row = conn.execute(
+                "SELECT id, bill_to_contractor_id, bill_to_name, country, nip "
+                "FROM customer_master WHERE bill_to_contractor_id = ?",
+                (cid_direct,),
+            ).fetchone()
+        if cm_row is not None:
+            master_name = (cm_row["bill_to_name"] or "").strip()
+            proforma_norm = _normalize_name(client_name or master_name)
+            master_norm   = _normalize_name(master_name)
+            advisory = ""
+            if proforma_norm and master_norm and proforma_norm != master_norm:
+                advisory = (
+                    f"Proforma client name {client_name!r} differs from Customer "
+                    f"Master {master_name!r} (wFirma contractor {cid_direct}, "
+                    f"NIP {cm_row['nip']!r}). Resolved via draft contractor-id "
+                    f"selection — VAT/contractor_id outrank display name."
+                )
+            return {
+                "wfirma_customer_id":     cid_direct,
+                "resolved_master_name":   master_name,
+                "customer_master_id":     int(cm_row["id"]),
+                "parsed_packing_name":    (client_name or "").strip(),
+                "parsed_packing_nip":     "",
+                "parsed_packing_country": (cm_row["country"] or "").strip(),
+                "matched_master_id":      cid_direct,
+                "match_strategy":         "draft_contractor_id",
+                "advisory":               advisory,
+                "source_document_id":     "",
+                "source_file_name":       "",
+            }
+        # CM miss on the direct id → fall through to the name-based chain.
+
+    if not (client_name or "").strip() or not docs_path.is_file():
         return None
 
     # 1. Find the per-client sales_packing_list document.

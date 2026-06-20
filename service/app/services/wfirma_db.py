@@ -611,6 +611,53 @@ def upsert_reservation_draft(
         return draft_id
 
 
+def rename_reservation_draft_client(
+    batch_id: str, old_client_name: str, new_client_name: str,
+) -> Dict[str, Any]:
+    """PR-3: move a reservation draft from old_client_name → new_client_name.
+
+    Canonical-wins on collision: if a reservation draft already exists under
+    new_client_name, the OLD draft (and its lines) is removed and the canonical
+    one kept; otherwise the old draft is renamed in place (keeping its lines).
+    Lines are deleted explicitly (not relying on the per-connection CASCADE
+    pragma). Never raises on a missing old draft. Returns an action summary.
+    """
+    if _db_path is None or not batch_id or not old_client_name:
+        return {"action": "noop"}
+    if old_client_name == new_client_name:
+        return {"action": "noop"}
+    now = _now()
+    with _lock, _connect() as con:
+        old_row = con.execute(
+            "SELECT id FROM wfirma_reservation_drafts "
+            "WHERE batch_id=? AND client_name=?",
+            (batch_id, old_client_name),
+        ).fetchone()
+        if not old_row:
+            return {"action": "noop"}
+        new_row = con.execute(
+            "SELECT id FROM wfirma_reservation_drafts "
+            "WHERE batch_id=? AND client_name=?",
+            (batch_id, new_client_name),
+        ).fetchone()
+        if new_row:
+            line_n = con.execute(
+                "SELECT COUNT(*) FROM wfirma_reservation_lines WHERE draft_id=?",
+                (old_row["id"],),
+            ).fetchone()[0]
+            con.execute("DELETE FROM wfirma_reservation_lines WHERE draft_id=?",
+                        (old_row["id"],))
+            con.execute("DELETE FROM wfirma_reservation_drafts WHERE id=?",
+                        (old_row["id"],))
+            return {"action": "dropped_old", "old_id": old_row["id"],
+                    "dropped_lines": int(line_n)}
+        con.execute(
+            "UPDATE wfirma_reservation_drafts SET client_name=?, updated_at=? WHERE id=?",
+            (new_client_name, now, old_row["id"]),
+        )
+        return {"action": "renamed", "id": old_row["id"]}
+
+
 def get_reservation_draft(batch_id: str, client_name: str) -> Optional[Dict[str, Any]]:
     if _db_path is None:
         return None
