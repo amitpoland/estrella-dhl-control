@@ -17,31 +17,30 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
-- **Task:** Build Anti-HOLD and Workflow Completion Governance
-- **Started:** 2026-06-19
+- **Task:** Build automatic skill routing for /feature
+- **Started:** 2026-06-20
 - **Status:** COMPLETE
 - **HOLD reason (if BLOCKED-HOLD):** —
 
 ### Completion criteria
 
-- [x] Anti-HOLD rule added to `CLAUDE.md` (§ANTI-HOLD AND WORKFLOW COMPLETION)
-- [x] Full governance doc created (`docs/governance/anti-hold-and-completion.md`):
-      principle, decision table, four HOLD conditions, must-continue list,
-      worked examples, completion checklist
-- [x] Task-state tracker created (`.claude/memory/TASK_STATE.md`)
-- [x] Stop/continue conditions defined (4 stop, 6 continue)
-- [x] Verified: sample HOLD decisions shown; normal dev not blocked;
-      destructive actions still require operator approval
-- [x] Only intended files changed (docs/state only; no `service/app`, no runtime)
-- [x] Committed to `claude/anti-hold-governance`, pushed, draft PR opened (PR #659)
-- [x] TASK_STATE.md → COMPLETE on merge (PR #659 merged)
+- [x] `.claude/SKILL_ROUTING.md` created — 13-domain routing table, algorithm, sample resolutions
+- [x] `.claude/commands/feature.md` updated — Step 0 skill-routing block added to Phase 1
+- [x] `TASK_STATE.md` → COMPLETE
+- [x] Docs-only — no runtime code changed
+- [x] GATE 1 satisfied (reviewer-challenge CLEAR, final-consistency CLEAR)
+- [x] Committed to `claude/new-session-fetvj6`
+- [x] Pushed to remote
 
 ---
 
 ## History (most recent first)
 
-- 2026-06-20 — PR #659 merged. First complete governance package landed:
-  Anti-HOLD + TASK_STATE + AUTHORITY_MAP (PR #660, merged 2026-06-20).
-- 2026-06-19 — Task opened: Anti-HOLD and Workflow Completion Governance.
-  Docs-only by decision (no blocking hook — would contradict ANTI-HOLD
-  fail-open principle and risk wedging the session).
+- 2026-06-20 — /feature command created at .claude/commands/feature.md.
+  COMMAND_REGISTRY.md updated. BACKLOG B-001 (PR #661 review) filed.
+- 2026-06-20 — TASK_EXECUTION_PROTOCOL.md created and merged via draft PR.
+  Canonical DISCOVERY→PLAN→IMPLEMENT→VERIFY→CLOSE protocol. BACKLOG.md seeded.
+- 2026-06-20 — PR #630 squash-merged at a40c7c5. PR-1A closes B1–B5 governance
+  gaps post PR-1 (#626). PR-2 (ADR-022 Snapshot Layer) now unblocked.
+- 2026-06-20 — PR #659 + PR #660 merged (governance package). GATE 2 back to 0/3.
+- 2026-06-20 — Task opened: Finalize PR #630.
