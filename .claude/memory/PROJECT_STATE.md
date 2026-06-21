@@ -5433,6 +5433,19 @@ Group D — Tests (3 new files):
 - **GATE 2 after deploy**: **0/3 open implementation PRs** — clean board. Sprint 03.3 Scope C fully delivered (E3a + E3b both live in production).
 - **OQ-E3b-GATE4-1** and **OQ-E3b-GATE4-2**: remain OPEN — carried for the next SOLO V2 frontend PR session (unchanged by this deploy).
 
+## Current origin/main HEAD (2026-06-21, updated): `47251a3`
+
+- **origin/main HEAD = `47251a3`** — `feat(governance): TASK_EXECUTION_PROTOCOL + /feature command + skill routing + scorecard (#669)` (merged 2026-06-21). Supersedes the `a40c7c5` block above (append-only — prior entry retained).
+- Also on main at this date (confirmed via `git log origin/main --oneline -5`, 2026-06-21): `c8b9637` (#668 Document Readiness authority), `d55316d` (#665 sales-matcher), `b2f8eaa` (#664 registry purchase packing), `ffe075b` (#663 registry sales packing). Linear merge series.
+
+## Task #4 COMPLETE — Intake Diagnostics (2026-06-21, on branch `claude/new-session-fetvj6`)
+
+- **Task #4 COMPLETE** (2026-06-21): "Improve shipment intake diagnostics and operator troubleshooting visibility". Commit `51af164` on branch `claude/new-session-fetvj6` (PR #687 — NOT yet merged, NOT deployed). Base: `main`.
+- **Files changed**: `service/app/static/v2/shipment-detail-page.jsx` (new `IntakeDiagnosticsCard` component — lifecycle stage indicator, artifact checklist, blocking reason display, operator CTA); `service/app/static/v2/pz-api.js` (new `getBatchDetail` method); `service/tests/test_sprint35b_shipment_detail_documents.py` (tests T12–T15, new Section G).
+- **Test baseline**: 15/15 tests pass (includes T12–T15 added by this task). No backend changes, no schema changes, no deployment changes required.
+- **Deployment gate**: NOT deployed. All changes are `service/app/static/v2/**` (static frontend) and `service/tests/**` — no `service/app/**` runtime Python files changed; standard robocopy will carry the JSX/JS assets. No root-level engine files touched → Lesson J N/A.
+- **FEATURE_SCORECARD.md Row #4 filled** (2026-06-21): Task #4 row recorded in FEATURE_SCORECARD.md on branch `claude/new-session-fetvj6`.
+
 ---
 
 # DECISIONS
@@ -5474,11 +5487,11 @@ Group D — Tests (3 new files):
 - **FEATURE_SCORECARD.md Row #1 filled**: TASK_TYPE=PROFORMA, SELECTED_SKILL=backend-route-and-service-builder (fallback), CONFIDENCE=MEDIUM, outcome=PARTIAL (GATE 6 pending).
 - **agent-performance-observer NOT fired**: fewer than 3 formal scorecard-producing subagents. See OQ-PR687-SCORECARD.
 
-## Next 3 actions in queue (refreshed 2026-06-21 — PR #687 DRAFT: proforma readiness display; GATE 6 pending operator)
+## Next 3 actions in queue (refreshed 2026-06-21 — Task #4 intake diagnostics COMPLETE @ `51af164`; PR #687 DRAFT; GATE 6 pending operator)
 
-1. **Operator: complete GATE 6 browser verification for PR #687** — open V2 shipment detail → Pro Forma tab → confirm `DraftReadinessCard` renders, readiness loads, no console errors, network 200 on `/readiness`. Then convert PR #687 from DRAFT → ready-for-review → merge.
-2. **Operator: review + approve PR #667** (branch `claude/new-session-fetvj6`; DRAFT — `.claude/TASK_EXECUTION_PROTOCOL.md` + `.claude/commands/feature.md` + `BACKLOG.md` + `.claude/SKILL_ROUTING.md`; docs-exception slot). Target outcome: governance protocol merged to main.
-3. **Operator: review + merge PR #647** (branch `feat/pr2-vision-invoice-confirm-workflow` @ `4429e04`; Stage B vision-invoice confirm workflow; GATE 1 satisfied; 21 tests). After deploy, AWB 2315714531 operator can confirm via `POST /dashboard/batches/{id}/vision-invoice/confirm`.
+1. **Operator: complete GATE 6 browser verification for PR #687** — open V2 shipment detail → Pro Forma tab → confirm `DraftReadinessCard` renders, readiness loads, no console errors, network 200 on `/readiness`; also confirm new `IntakeDiagnosticsCard` (Task #4) appears in Intake tab. Then convert PR #687 from DRAFT → ready-for-review → merge. Gating: operator browser access to running PZ service.
+2. **Operator: review + approve PR #667** (branch `claude/new-session-fetvj6`; `.claude/TASK_EXECUTION_PROTOCOL.md` + `.claude/commands/feature.md` + `BACKLOG.md` + `.claude/SKILL_ROUTING.md`; docs-exception slot). Target outcome: governance protocol merged to main. Gating: none (docs-only, zero blast radius).
+3. **Operator: review + merge PR #647** (branch `feat/pr2-vision-invoice-confirm-workflow` @ `4429e04`; Stage B vision-invoice confirm workflow; GATE 1 satisfied; 21 tests). After deploy, AWB 2315714531 operator can confirm via `POST /dashboard/batches/{id}/vision-invoice/confirm`. Gating: GATE 2 slot available (currently 2/3 open).
 
 ## /feature Command and BACKLOG.md Governance (2026-06-20)
 
