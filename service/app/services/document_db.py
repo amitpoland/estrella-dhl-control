@@ -1640,6 +1640,49 @@ def set_sales_client_name(
         return cur.rowcount or 0
 
 
+def set_sales_document_contractor(
+    batch_id: str, sales_document_id: str, contractor_id: str,
+) -> Dict[str, int]:
+    """Operator-driven direct assignment of the contractor authority onto ONE
+    sales_documents row AND its sales_packing_lines.
+
+    Used by the Sales-page blocked-record repair (Phase A — direct customer
+    resolution). When a draft could not be born because no contractor was
+    selected at intake (``contractor_missing``), the operator picks a
+    Customer-Master customer and this writes its ``bill_to_contractor_id``
+    (== sales chain ``client_contractor_id``) onto the blocked document's chain.
+    The subsequent draft sync then reads the contractor, resolves the canonical
+    name, births the draft, and resolves the open block — no re-intake.
+
+    Scoped strictly to the one document (id + batch). Additive: it only SETS the
+    operator-chosen authority. It never changes ``client_name`` (the sync's
+    canonical-rename step owns that) and never touches another document's rows.
+    Returns ``{"sales_documents_updated", "sales_lines_updated"}``. Local-DB
+    only; never raises beyond DB init.
+    """
+    if (_db_path is None
+            or not (batch_id or "").strip()
+            or not (sales_document_id or "").strip()
+            or not (contractor_id or "").strip()):
+        return {"sales_documents_updated": 0, "sales_lines_updated": 0}
+    now = _now()
+    with _lock, _connect() as con:
+        cur_doc = con.execute(
+            "UPDATE sales_documents SET client_contractor_id=?, updated_at=? "
+            "WHERE id=? AND batch_id=?",
+            (contractor_id, now, sales_document_id, batch_id),
+        )
+        cur_lines = con.execute(
+            "UPDATE sales_packing_lines SET client_contractor_id=? "
+            "WHERE sales_document_id=? AND batch_id=?",
+            (contractor_id, sales_document_id, batch_id),
+        )
+    return {
+        "sales_documents_updated": cur_doc.rowcount or 0,
+        "sales_lines_updated":     cur_lines.rowcount or 0,
+    }
+
+
 def get_sales_documents_for_shipment_doc(
     document_id: str,
 ) -> List[Dict[str, Any]]:

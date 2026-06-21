@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from ..core.config import settings
 from ..core.logging import get_logger
@@ -294,6 +295,94 @@ def backfill_contractor_projection(
         "note":       note,
         "sync":       sync_summary,
         "open_blocks": blocks,
+    }
+
+
+class AssignContractorRequest(BaseModel):
+    """Body for POST /assign/{batch_id} — Phase A direct customer resolution."""
+    sales_document_id: str
+    contractor_id:     str  # Customer-Master bill_to_contractor_id (wFirma id)
+
+
+@router.post("/assign/{batch_id}")
+def assign_contractor_to_blocked_record(
+    batch_id: str,
+    body:     AssignContractorRequest,
+    _admin:   dict = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Phase A — Direct customer resolution from the Sales page.
+
+    Assign a Customer-Master contractor to ONE blocked sales document and
+    immediately re-run the contractor-projection pipeline so the draft is born
+    and the open block resolves — WITHOUT a re-intake. This is the in-page
+    repair the operator needs: pick customer → assign → draft generated.
+
+    Local-DB only. No wFirma API call, no booking, no SMTP, no external write.
+    The operator-chosen ``contractor_id`` must already exist in Customer Master
+    (its ``bill_to_name`` is the canonical name authority); a contractor with no
+    CM record is rejected rather than silently re-blocking as
+    ``client_unresolved``.
+    """
+    batch_id          = _safe_batch_id(batch_id)
+    sales_document_id = (body.sales_document_id or "").strip()
+    contractor_id     = (body.contractor_id or "").strip()
+    if not sales_document_id:
+        raise HTTPException(status_code=400, detail="sales_document_id is required")
+    if not contractor_id:
+        raise HTTPException(status_code=400, detail="contractor_id is required")
+
+    # The target document must belong to this batch (no cross-batch writes).
+    sd_ids = {
+        str(sd.get("id") or "")
+        for sd in (ddb.get_sales_documents(batch_id) or [])
+    }
+    if sales_document_id not in sd_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"sales_document_id {sales_document_id!r} not found in "
+                f"batch {batch_id!r}"
+            ),
+        )
+
+    # Authority guard: only assign a contractor that already has a Customer
+    # Master record — otherwise the sync would just re-block 'client_unresolved'.
+    from ..services import customer_master_db as _cmdb
+    cm_path = settings.storage_root / "customer_master.sqlite"
+    cm_rec = None
+    try:
+        cm_rec = _cmdb.get_customer(cm_path, contractor_id)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("[%s] customer-master lookup failed: %s", batch_id, exc)
+    if cm_rec is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"contractor_id {contractor_id!r} has no Customer Master record. "
+                "Add the customer to Customer Master first, then assign."
+            ),
+        )
+    canonical_name = (getattr(cm_rec, "bill_to_name", "") or "").strip()
+
+    # 1. Write the contractor authority onto the sales chain (doc + lines).
+    assigned = ddb.set_sales_document_contractor(
+        batch_id, sales_document_id, contractor_id,
+    )
+
+    # 2. Re-run the full projection / canonical-rename / draft sync so the draft
+    #    is born and the open block resolves. Reuses the backfill pipeline so the
+    #    same disclosure (dropped / ambiguous / orphan charges) applies.
+    backfill = backfill_contractor_projection(batch_id, _admin=_admin)
+
+    return {
+        "ok":                True,
+        "batch_id":          batch_id,
+        "sales_document_id": sales_document_id,
+        "contractor_id":     contractor_id,
+        "canonical_name":    canonical_name,
+        "assigned":          assigned,
+        "backfill":          backfill,
+        "open_blocks":       backfill.get("open_blocks", []),
     }
 
 

@@ -3928,6 +3928,55 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
     }
 
 
+def _enrich_invoice_line_names(lines: List[Dict[str, Any]]) -> None:
+    """Phase C — annotate each editable line with the customer-facing INVOICE
+    line-name authority: the wFirma goods-registry name that actually prints on
+    the proforma/invoice the customer receives.
+
+    The generated wFirma proforma references each good by id, so the line name
+    printed on the customer document is whatever ``<name>`` is stored in the
+    wFirma goods registry (mirrored locally as ``wfirma_products.product_name``)
+    — NOT the live ``description_engine`` canonical text and NOT ``name_pl``.
+    Surfacing this single authority lets the Sales editor, the printable
+    preview, and the generated invoice all render the SAME description (one
+    authority, one renderer).
+
+    Read-only projection. Never registers a product, never edits wFirma, never
+    changes the stored name. Mutates each line dict in place, adding:
+
+      ``invoice_line_name``        — the registered goods name (what prints), or
+                                     '' when the product is not yet registered.
+      ``invoice_line_name_source`` — 'wfirma_goods'        (registered → this is
+                                     authoritative) or 'pending_registration'
+                                     (no goods record yet — the name shown is the
+                                     pending value that will be registered).
+    """
+    if not lines:
+        return
+    prod_index: Dict[str, Dict[str, Any]] = {}
+    try:
+        from ..services import wfirma_db as _wfdb_inv
+        codes = sorted({
+            str(ln.get("product_code") or "").strip()
+            for ln in lines
+            if str(ln.get("product_code") or "").strip()
+        })
+        if codes:
+            prod_index = _wfdb_inv.get_products_batch(codes) or {}
+    except Exception as exc:  # pragma: no cover - enrichment is best-effort
+        log.warning("invoice line-name enrichment unavailable (non-fatal): %s", exc)
+        prod_index = {}
+    for ln in lines:
+        pc = str(ln.get("product_code") or "").strip()
+        inv_name = (str((prod_index.get(pc) or {}).get("product_name") or "")).strip()
+        if inv_name:
+            ln["invoice_line_name"] = inv_name
+            ln["invoice_line_name_source"] = "wfirma_goods"
+        else:
+            ln["invoice_line_name"] = ""
+            ln["invoice_line_name_source"] = "pending_registration"
+
+
 # ── M6 — Cross-batch proforma search (read-only) ─────────────────────────────
 # Authority: proforma_drafts table ONLY. No wFirma, no invoice ledger,
 # no email, no mutation. Purely read-only index.
@@ -4129,6 +4178,10 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
     except Exception as exc:
         log.warning("draft %s read-time enrichment failed (non-fatal): %s",
                     draft_id, exc)
+    # Phase C — annotate each line with the customer-facing invoice line-name
+    # authority (wFirma goods name) so the editor shows what will actually
+    # print, matching the preview and the generated invoice.
+    _enrich_invoice_line_names(full.get("editable_lines") or [])
     return JSONResponse({
         "ok":    True,
         "draft": full,
@@ -4447,6 +4500,10 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
         lines = _json.loads(d.editable_lines_json or "[]") or []
     except Exception:
         lines = []
+    # Phase C — annotate with the customer-facing invoice line-name authority
+    # (wFirma goods name) so this printable preview matches the editor and the
+    # generated invoice. Read-only.
+    _enrich_invoice_line_names(lines)
     try:
         charges = _json.loads(d.service_charges_json or "[]") or []
     except Exception:
@@ -4526,11 +4583,20 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
             )
 
     def _bilingual_desc(ln) -> str:
-        """Combine PL + EN descriptions in wFirma bilingual format.
+        """Resolve the line description for the printable preview.
 
-        Priority: description_pl (full customs sentence) over name_pl (short label).
-        Format: "{Polish}. / {English}"  — mirrors the wFirma proforma PDF layout.
+        Phase C — single authority: the customer-facing invoice prints the
+        wFirma goods-registry name, so prefer ``invoice_line_name`` when the
+        product is registered. This keeps the preview identical to the generated
+        invoice. Fall back to the customs bilingual sentence only when the
+        product is not yet registered (pending — no goods name exists yet), so
+        the operator still sees a meaningful pending value.
+
+        Format (fallback): "{Polish}. / {English}" — mirrors the wFirma layout.
         """
+        inv = (ln.get("invoice_line_name") or "").strip()
+        if inv and ln.get("invoice_line_name_source") == "wfirma_goods":
+            return inv
         pl = (ln.get("description_pl") or ln.get("name_pl") or "").strip()
         en = (ln.get("description_en") or "").strip()
         if pl and en:
