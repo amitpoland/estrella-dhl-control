@@ -61,34 +61,20 @@ def _resolve_product_codes_for_batch(
     sales draft resolution.  Returns ``{}`` when packing_db is not
     initialised or the batch has no purchase packing_lines.
     """
-    out: Dict[str, set] = {}
     if not (batch_id or "").strip():
         return {}
-    db_path = getattr(_pdb, "_db_path", None)
-    if db_path is None:
-        return {}
+    # Canonical authority (packing_lines) — single resolver. Returns the same
+    # stripped-key, sorted, null-filtered map this function used to derive with
+    # its own SELECT DISTINCT. See product_authority_resolver / ADR-product-authority.
+    from .product_authority_resolver import design_to_product_codes  # noqa: PLC0415
     try:
-        with sqlite3.connect(str(db_path)) as con:
-            con.row_factory = sqlite3.Row
-            rows = con.execute(
-                "SELECT DISTINCT design_no, product_code FROM packing_lines "
-                "WHERE batch_id=? "
-                "AND product_code IS NOT NULL AND product_code<>''",
-                (str(batch_id),),
-            ).fetchall()
+        return design_to_product_codes(batch_id)
     except Exception as exc:
         log.warning(
             "[%s] batch-scoped design lookup failed (non-fatal): %s",
             batch_id, exc,
         )
         return {}
-    for r in rows:
-        d = (r["design_no"] or "").strip()
-        p = (r["product_code"] or "").strip()
-        if not d or not p:
-            continue
-        out.setdefault(d, set()).add(p)
-    return {d: sorted(ps) for d, ps in out.items()}
 
 
 def resolve_sales_lines_for_batch(
