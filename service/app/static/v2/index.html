@@ -12,13 +12,21 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <!-- Vendor-first loading: tries local copies in /v2/vendor/ first; falls back to CDN.
      Operator: run service/scripts/download-v2-vendor.ps1 on the Windows server to
-     populate vendor/ with local copies (eliminates CDN dependency in production). -->
+     populate vendor/ with local copies (eliminates CDN dependency in production).
+     PIN DISCIPLINE: every CDN dependency below MUST be version-pinned. @babel/standalone
+     is pinned to 7.x ON PURPOSE — Babel 8 changed @babel/preset-react's default JSX
+     runtime from "classic" to "automatic", which emits `import { jsx } from
+     "react/jsx-runtime"` at the top of every compiled file. This in-browser pipeline
+     appends compiled output as a CLASSIC <script>, so an injected ESM import throws
+     "Cannot use import statement outside a module" and the whole shell fails to boot.
+     Do NOT bump to @8 without first switching every text/babel tag to runtime:classic.
+     Regression guard: service/tests/test_v2_babel_pin.py. -->
 <script src="/v2/vendor/react.production.min.js" crossorigin onerror="window.__vnd_react=1"></script>
 <script>if(window.__vnd_react)document.write('\x3Cscript src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin\x3E\x3C\/script\x3E');</script>
 <script src="/v2/vendor/react-dom.production.min.js" crossorigin onerror="window.__vnd_rdom=1"></script>
 <script>if(window.__vnd_rdom)document.write('\x3Cscript src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin\x3E\x3C\/script\x3E');</script>
 <script src="/v2/vendor/babel.min.js" onerror="window.__vnd_babel=1"></script>
-<script>if(window.__vnd_babel)document.write('\x3Cscript src="https://unpkg.com/@babel/standalone/babel.min.js"\x3E\x3C\/script\x3E');</script>
+<script>if(window.__vnd_babel)document.write('\x3Cscript src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"\x3E\x3C\/script\x3E');</script>
 <!-- Boot guard: if either vendor files AND CDN both failed to load, show a visible
      message instead of a silent blank screen. -->
 <script>
