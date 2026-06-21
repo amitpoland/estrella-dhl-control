@@ -78,9 +78,20 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **CAMPAIGN-IDENTITY LOCK:** **Rule 3 Global PZ ↔ wFirma Reconciliation Authority is a NEW future architecture campaign** — new campaign ID, new ADR, new authority owner, new governance gates, new rollout plan, new success + closure criteria. It is **NOT** a continuation of AWB-2315714531. The incident is **historical evidence only** and inherits nothing to Rule 3. Do NOT open new engineering work under AWB-2315714531-2026-06 unless a genuinely new production signal appears. See memory `project_awb2315714531_closed_rule3_new_campaign`.
 - **origin/main HEAD now = `fb70e15`** (PR #653 squash-merge). Supersedes the `03ffce9` HEAD block below (append-only — prior entry retained).
 
-## Current origin/main HEAD (2026-06-21, updated): `8d118b8`
+## Current origin/main HEAD (2026-06-21, updated): `7da3555`
 
-- **origin/main HEAD = `8d118b8`** — `fix(proforma): duplicate/over-bill product_code billing guard (rules 1-5) (#686)` (merged 2026-06-21). Chain since `5dd6100` (PR #682): `6a5da0e` (PR #683 Sales Draft Workflow Completion) → `edd5192` (PR #684 billed-ambiguity) → `2c02cee` (PR #685 docs) → `8d118b8` (PR #686 over-bill guard). Supersedes the `5dd6100` block below (append-only — prior entries retained). This docs-only update records PR #683 deployment specifically (FACTS block immediately below); #684/#686 detail lives in memory `project_billed_line_product_authority` / `project_duplicate_product_code_guard`.
+- **origin/main HEAD = `7da3555`** — `feat(proforma): V2 display panel for over-bill product_code evidence (#686 UI) (#689)` (merged 2026-06-21). Supersedes `8d118b8` block below (append-only — prior entries retained).
+
+## PR #689 — Proforma V2 Over-Bill Evidence Panel (2026-06-21, MERGED `7da3555` — NOT YET DEPLOYED)
+
+- **PR #689 SQUASH-MERGED** `7da3555` (2026-06-21). Title: `feat(proforma): V2 display panel for over-bill product_code evidence (#686 UI)`. Base: `main`. Scope: display-only V2 panel in `service/app/static/v2/proforma-detail.jsx` (`data-testid="overbill-evidence-panel"`). Renders #686's backend `duplicate_product_codes` readiness field — per purchase lot (`product_code`): billed qty vs available packing qty, `over_billed` flag, invoice, design list. Over-billed lots flagged red; mixed lots (billed ≤ available) shown neutral for transparency. **NO write path, NO override, NO approval bypass** — pure reflection of the backend gate already raised by #686 (Lesson F rule 5).
+- **Tests**: 14 tests in `service/tests/test_proforma_overbill_evidence_panel.py`. JSX compiles under pinned Babel 7.26.4. frontend-flow-reviewer CLEAR; reviewer-challenge CONCERNS resolved inline before merge.
+- **Browser verification**: full live FastAPI service smoke DEFERRED (operator-gated per Lesson E + live wFirma write-flags). Evidence accepted in lieu: (1) component-render browser smoke with Draft-#34-shaped data PASSED (panel renders, over-bill red vs mixed-lot neutral, design overflow, slug testids, console clean); (2) #686's own live-data proof on real Draft #34 (5 mixed lots, 0 over-billed); (3) backend contract pinned by tests across approve/post/convert. Operator explicitly accepted this evidence and authorized the merge.
+- **NOT deployed to production** (`C:\PZ`): merged to main only. #686 backend (over-bill guard) is already deployed; this PR adds the V2 UI panel. Deploy requires the full 7-agent gate + operator robocopy into `service/app/static/v2/` (static assets — no PZService restart required).
+
+## ~~Current origin/main HEAD (2026-06-21, updated): `8d118b8`~~ — superseded by `7da3555`
+
+- **origin/main HEAD = `8d118b8`** — `fix(proforma): duplicate/over-bill product_code billing guard (rules 1-5) (#686)` (merged 2026-06-21). Chain since `5dd6100` (PR #682): `6a5da0e` (PR #683 Sales Draft Workflow Completion) → `edd5192` (PR #684 billed-ambiguity) → `2c02cee` (PR #685 docs) → `8d118b8` (PR #686 over-bill guard). Superseded by `7da3555` (PR #689). Append-only — prior entries retained. This docs-only update records PR #683 deployment specifically (FACTS block immediately below); #684/#686 detail lives in memory `project_billed_line_product_authority` / `project_duplicate_product_code_guard`.
 
 ## PR #683 — Sales Draft Workflow Completion (Phases A–E) (2026-06-21, MERGED `6a5da0e` — DEPLOYED + LIVE-VERIFIED on shipment 9158478722)
 
@@ -5592,11 +5603,11 @@ Group D — Tests (3 new files):
 - **Display-only; wFirma line-name posting is NOT affected** (2026-06-21): the wFirma posted line name originates from `design_no`/`product_code` (`routes_proforma.py:1553/7254`). Whether the posted line name should ADOPT the canonical description is a separate accounting/legal decision tracked as BACKLOG B-013. No code may alter the posted-line source without an explicit operator decision here.
 - **V1 remains the active proforma surface; V2 cutover is Atlas-V2 scope** (2026-06-21): PR #677 patches V1 minimally (Lesson F). V2 cutover (`proforma-v2.html` / `v2/proforma-detail.jsx`) is the operator-approved Atlas-V2 work tracked as BACKLOG B-014. No V2 cutover may occur without an explicit operator decision.
 
-## Next 3 actions in queue (refreshed 2026-06-21 — PR #677 MERGED: Proforma Authority UI at `308145d`)
+## Next 3 actions in queue (refreshed 2026-06-21 — PR #689 MERGED: Proforma V2 Over-Bill Evidence Panel at `7da3555`)
 
-1. **Deploy PR #673 + PR #675 + PR #677 to production** — target: 7-agent gate pass + operator robocopy + GATE-6 live browser verify of proforma authority panel (customer-authority summary, per-line canonical description, blocked-birth panel) + post-deploy `GET /api/v1/admin/contractor-projection/status` confirms backfill complete for `SHIPMENT_9158478722`. Gating: OQ-PR675-DEPLOY and OQ-PR677-DEPLOY both open; operator must initiate 7-agent gate covering combined `f652de0` + `7b94a73` + `308145d` delta.
-2. **Scorecard `2026-06-21-proforma-authority-ui.md`** — DONE: orchestrator-verified PRESENT on disk (32KB); FACTS citation flipped to PRESENT; OQ-PR677-SCORECARD CLOSED. (RULE 6 / Lesson C satisfied.)
-3. **Define scope of Packing Readiness PR-4** — PR-3 done (`7b94a73`); memory notes PR-4 scope (`name_pl` enrich guard B-007 and any remaining contractor-at-birth gaps) still open. Target: operator declares PR-4 scope or files BACKLOG entries (SCHEDULED / ISSUE / REJECTED). Gating: OQ-PR673-PR34-SCOPE still open for PR-4 portion; no code before scope is named.
+1. **Deploy PRs #673 + #675 + #677 + #689 to production** — target: 7-agent gate pass + operator robocopy + GATE-6 live browser verify (proforma authority panel + V2 overbill evidence panel) + `GET /api/v1/admin/contractor-projection/status` confirms backfill for `SHIPMENT_9158478722`. Gating: OQ-PR675-DEPLOY + OQ-PR677-DEPLOY + OQ-PR689-DEPLOY all open; combined `f652de0` + `7b94a73` + `308145d` + `7da3555` delta must deploy together.
+2. **Resolve OQ-PR689-OVERBILL-FAILCLOSED** — target: make `_derive_draft_readiness` fail-CLOSED when `packing_db.get_packing_lines_for_batch` throws (add blocker + regression test). Gating: operator approval; file as SCHEDULED or ISSUE before next proforma-readiness touch.
+3. **Define scope of Packing Readiness PR-4** — PR-3 done (`7b94a73`); memory notes PR-4 scope (`name_pl` enrich guard B-007 and any remaining contractor-at-birth gaps) still open. Target: operator declares PR-4 scope or files BACKLOG entries (SCHEDULED / ISSUE / REJECTED). Gating: OQ-PR673-PR34-SCOPE still open; no code before scope is named.
 
 ## /feature Command and BACKLOG.md Governance (2026-06-20)
 
@@ -6230,6 +6241,14 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ---
 
 # OPEN QUESTIONS
+
+## OQ-PR689-OVERBILL-FAILCLOSED: over-bill guard fails OPEN on packing-read exception — fail-CLOSED fix needed (2026-06-21, OPEN — GATE-4 SCHEDULED)
+
+- **Source**: background chip task filed alongside PR #689 merge. In `_derive_draft_readiness` (PR #686), if `packing_db.get_packing_lines_for_batch` raises an exception, the handler appends a warning message but does NOT add a blocker — so `ready=true` can be returned on a packing-read failure even when over-billed lots exist.
+- **Risk**: an over-billed draft could pass `ready=true` (and proceed to approve/post/convert) on a transient packing DB read failure, silently bypassing the guard that #686 was designed to enforce.
+- **Required fix**: (1) catch the exception in `_derive_draft_readiness` and add an explicit `DRAFT_BLOCK_OVERBILL_PACKING_READ_FAILURE` blocker so the draft is blocked, not approved; (2) add a regression test asserting that a packing-read exception results in `ready=false` / blocker present (not `ready=true`).
+- **Disposition (GATE 4)**: SCHEDULED — next proforma-readiness or #686-class touch. Non-blocking for the PR #689 merge (the display panel is display-only and cannot introduce new over-billing); the backend risk pre-exists #689 and was filed as background context.
+- **Who can answer**: operator or engineer in the next proforma-readiness session. File as ISSUE if a standalone fix PR is preferred over inline.
 
 ## OQ-PR683-CONTRACTOR-ASSIGN-AUDIT: per-document `contractor_assign` timeline event (2026-06-21, OPEN — GATE-4 SCHEDULED)
 
