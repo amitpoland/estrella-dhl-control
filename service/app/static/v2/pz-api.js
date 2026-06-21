@@ -482,6 +482,14 @@
     getPzHealth: () =>
       _get(`${BASE}/pz/health`),
 
+    // GET /api/v1/dashboard/batches/{batch_id}
+    // Full batch detail: status, clearance_status, action_reason, failed_checks,
+    // sales_status_hint, has_sad, files_detail.source_files (invoices/awb/sad),
+    // net, gross, duty, mrn, and enriched audit fields.
+    // Authority: routes_dashboard.py:batch_detail — read-only, no side effects.
+    getBatchDetail: (batchId) =>
+      _get(`${BASE}/dashboard/batches/${encodeURIComponent(batchId)}`),
+
     // GET /api/v1/dhl/readiness/{batch_id}
     // DHL customs pipeline state: dhl_status (7-state pipeline), next_required_action,
     // sla_breach (bool), sla_breach_reason, missing_documents[], awb, timestamps.

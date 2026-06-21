@@ -399,15 +399,9 @@ function OverviewTab({ shipment, sadUploaded, pzGenerated, pzExported, replySent
 
       <SectionLabel style={{ marginTop: 8 }}>Workflow areas</SectionLabel>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        {/* Shipment */}
-        <PanelCard title="Shipment" subtitle="Tracking, invoices, AWB" status="DHL In Transit">
-          <InfoBlock rows={[
-            { label: 'AWB / Tracking', value: shipment.awb, mono: true },
-            { label: 'Carrier',        value: shipment.carrier },
-            { label: 'Tracking',       value: 'In Transit' },
-            { label: 'Invoices',       value: '3 uploaded' },
-            { label: 'AWB PDF',        value: 'Uploaded ✓' },
-          ]} />
+        {/* Shipment intake diagnostics — authority: batch_detail via IntakeDiagnosticsCard */}
+        <PanelCard title="Shipment intake" subtitle="Lifecycle, artifacts &amp; blocking reason" status={shipment.carrier || 'Intake'}>
+          <IntakeDiagnosticsCard batchId={shipment.batch_id} />
           <div style={{ padding: '0 20px 16px' }}>
             <button onClick={() => setActiveTab('dhl')} data-testid="ov-shipment-open-dhl" style={navLinkStyle()}>Open DHL / Customs →</button>
           </div>
@@ -464,6 +458,175 @@ function navLinkStyle() {
     textDecoration: 'underline', textUnderlineOffset: 4, textDecorationColor: 'var(--accent)',
     textDecorationThickness: 2,
   };
+}
+
+// ── INTAKE DIAGNOSTICS
+
+// Intake diagnostics panel — renders lifecycle stage, artifact checklist, blocking reason,
+// and operator action CTA from batch_detail authority.
+// Authority: GET /api/v1/dashboard/batches/{batch_id} (routes_dashboard.py:batch_detail).
+// Read-only — display-only; no local readiness computation per Lesson F rule 5.
+// Stale-mount guard via cancelled flag (same pattern as DhlReadinessCard).
+// 404 response → batch still in working state; shows honest "intake in progress" message.
+function IntakeDiagnosticsCard({ batchId }) {
+  const [detail, setDetail]           = React.useState(null);
+  const [loading, setLoading]         = React.useState(true);
+  const [isProcessing, setIsProcessing] = React.useState(false);
+  const [errType, setErrType]         = React.useState(null);
+
+  React.useEffect(() => {
+    if (!batchId) { setLoading(false); return; }
+    let cancelled = false;
+    window.PzApi.getBatchDetail(batchId)
+      .then(r => {
+        if (cancelled) return;
+        if (!r.ok && r.status === 404) {
+          setIsProcessing(true);
+        } else if (r.ok && r.data) {
+          setDetail(r.data);
+        } else {
+          setErrType(r.type === 'auth' ? 'auth' : 'error');
+        }
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) { setErrType('error'); setLoading(false); }
+      });
+    return () => { cancelled = true; };
+  }, [batchId]);
+
+  if (!batchId) {
+    return (
+      <div style={{ padding: '12px 20px', color: 'var(--text-2)', fontSize: 12 }}>
+        No batch context — intake diagnostics unavailable.
+      </div>
+    );
+  }
+  if (loading) {
+    return (
+      <div style={{ padding: '12px 20px', color: 'var(--text-2)', fontSize: 12 }}>
+        Loading intake diagnostics…
+      </div>
+    );
+  }
+  if (isProcessing) {
+    return (
+      <div data-testid="intake-processing-state" style={{ padding: '12px 20px', color: 'var(--text-2)', fontSize: 12 }}>
+        Intake in progress — diagnostics available after batch is finalised.
+      </div>
+    );
+  }
+  if (!detail) {
+    const msg = errType === 'auth'
+      ? 'Session expired — please refresh the page.'
+      : 'Cannot load intake diagnostics. Check V1 Shipment Detail for current status.';
+    return (
+      <div data-testid="intake-diagnostics-error" style={{ padding: '12px 20px', color: 'var(--badge-red-text)', fontSize: 12 }}>
+        {msg}
+      </div>
+    );
+  }
+
+  const src        = (detail.files_detail && detail.files_detail.source_files) || {};
+  const invoices   = src.invoices || [];
+  const awbFiles   = src.awb     || [];
+  const sadFiles   = src.sad     || [];
+  const salesHint  = detail.sales_status_hint;
+  const hasSales   = salesHint === 'present';
+  const salesUnknown = salesHint === 'n/a' || salesHint == null;
+
+  const artifacts = [
+    { label: 'Invoices',      present: invoices.length > 0, count: invoices.length, unknown: false },
+    { label: 'AWB PDF',       present: awbFiles.length > 0,  count: awbFiles.length, unknown: false },
+    { label: 'Sales packing', present: hasSales,             count: null,            unknown: salesUnknown },
+    { label: 'SAD / ZC429',   present: sadFiles.length > 0,   count: sadFiles.length, unknown: false },
+  ];
+
+  const actionReason  = detail.action_reason;
+  const failedChecks  = detail.failed_checks || [];
+  const clearanceSt   = detail.clearance_status || '';
+  const overallSt     = detail.status || '';
+  const stageDisplay  = clearanceSt || overallSt || 'unknown';
+
+  const missing = artifacts.filter(a => !a.present && !a.unknown);
+
+  return (
+    <div data-testid="intake-diagnostics-card" style={{ padding: '12px 20px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+
+      {/* Lifecycle stage — verbatim from backend; labelled authority to satisfy Lesson F rule 5 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, color: 'var(--text-2)', flexShrink: 0 }}>Lifecycle stage</span>
+        <code data-testid="intake-clearance-status" style={{ fontSize: 12, padding: '2px 7px', background: 'var(--bg-2)', borderRadius: 4, color: 'var(--text-1)' }}>
+          {stageDisplay}
+        </code>
+        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+          Source: <code style={{ fontSize: 11 }}>batch_detail · clearance_status</code>
+        </span>
+      </div>
+
+      {/* Artifact checklist */}
+      <div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>
+          Intake Artifacts
+        </div>
+        <div data-testid="intake-artifact-checklist" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {artifacts.map(a => {
+            const color = a.unknown
+              ? 'var(--text-3)'
+              : a.present
+                ? 'var(--badge-green-text)'
+                : 'var(--badge-red-text)';
+            const icon = a.unknown ? '?' : a.present ? '✓' : '✗';
+            return (
+              <div key={a.label} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13 }}>
+                <span aria-hidden="true" style={{ color, fontWeight: 700, width: 14, flexShrink: 0 }}>{icon}</span>
+                <span style={{ color: a.unknown ? 'var(--text-3)' : 'var(--text-1)' }}>
+                  {a.label}
+                  {a.count != null && a.present ? ` (${a.count})` : ''}
+                  {a.unknown ? ' — status unavailable' : ''}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Blocking reason — shown only when backend reports a reason or failed checks */}
+      {(actionReason || failedChecks.length > 0) && (
+        <div data-testid="intake-blocking-reason" style={{
+          padding: '8px 10px',
+          background: 'var(--badge-red-bg)',
+          border: '1px solid var(--badge-red-border)',
+          borderRadius: 6,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-red-text)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4 }}>
+            Blocking reason
+          </div>
+          {actionReason && (
+            <div style={{ fontSize: 13, color: 'var(--text-1)', marginBottom: failedChecks.length > 0 ? 6 : 0 }}>
+              {actionReason}
+            </div>
+          )}
+          {failedChecks.length > 0 && (
+            <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-2)' }}>
+              {failedChecks.map((c, i) => <li key={i}>{c}</li>)}
+            </ol>
+          )}
+        </div>
+      )}
+
+      {/* Operator action CTA — upload missing artifacts */}
+      {missing.length > 0 && (
+        <div data-testid="intake-operator-action" style={{
+          fontSize: 13, color: 'var(--text-2)', padding: '6px 10px',
+          background: 'var(--bg-2)', borderRadius: 4,
+        }}>
+          <span style={{ fontWeight: 600 }}>Action required: </span>
+          Upload missing — {missing.map(a => a.label).join(', ')}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── DHL / CUSTOMS
