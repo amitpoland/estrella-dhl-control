@@ -17,11 +17,16 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
-- **Task:** PR-3 Dropdown selection wins — Customer-Master pick (client_contractor_id) OVERRIDES a parsed draft client_name; safe migration of existing drafts + freight/insurance + reservation (canonical-wins, money-safe, disclosed)
-- **Started:** 2026-06-20
-- **Status:** COMPLETE
+- **Task:** Proforma draft authority UI (V1) — customer-authority summary above lines (A), canonical product-description display + provenance (B), blocked draft-birth records surfaced (C), V2 inspected/reported not switched (D)
+- **Started:** 2026-06-21
+- **Status:** IN_PROGRESS → CLOSE (PR open)
 - **HOLD reason (if BLOCKED-HOLD):** —
-- **Merge:** PR #675 squash-merged to main at `7b94a73`. Docs/state on branch `chore/state-pr3-dropdown-authority`.
+- **Branch / worktree:** `feat/proforma-authority-ui` @ `C:\PZ-pf-ui` (base origin/main `dc58ad4`)
+- **Notes:** V1 frozen — minimal critical operator-readiness only. Display-only (no wFirma post / valuation change). GATE-6 = JSX compiles (offline Babel, 0 fail) + 46 structural tests; live browser behavioural verify deferred to deploy. reviewer-challenge CLEAR-WITH-CONDITIONS (resolved), frontend-flow findings fixed (testid §8 + token), final-consistency CLEAR. BACKLOG B-012..B-014.
+
+### Prior task (COMPLETE) — PR-3 Dropdown selection wins
+
+- PR #675 squash-merged at `7b94a73`; backfill verified in prod on SHIPMENT_9158478722. PR-2+PR-3 DEPLOYED to C:\PZ @ 7b94a73, hashes match.
 
 ### Completion criteria (PR-3)
 

@@ -13422,6 +13422,10 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
   const [openBusy, setOpenBusy]   = React.useState(false);
   const [events, setEvents]       = React.useState(null);
   const [eventsOpen, setEventsOpen] = React.useState(false);
+  // Contractor-projection blocked draft-birth records (operator-visible).
+  // Backend truth from GET /api/v1/admin/contractor-projection/blocks/{batch}.
+  // The UI only renders what the endpoint returns — no readiness logic here.
+  const [birthBlocks, setBirthBlocks] = React.useState([]);
 
   // ── Link-packing-as-sales state ─────────────────────────────────────────
   const [showLink, setShowLink]       = React.useState(false);
@@ -13438,6 +13442,15 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
       setDrafts((d && d.drafts) || []);
     } catch (e) {
       onToast && onToast('Failed to load Proforma drafts: ' + e.message, 'error');
+    }
+    // Blocked draft-birth records — separate, non-fatal: a failure here must
+    // not hide the drafts. Renders why a sales packing doc produced no draft.
+    try {
+      const b = await apiFetch(
+        `/api/v1/admin/contractor-projection/blocks/${encodeURIComponent(batchId)}`);
+      setBirthBlocks((b && b.blocks) || []);
+    } catch (e) {
+      setBirthBlocks([]);
     }
     setLoading(false);
   }, [batchId, onToast]);
@@ -14319,6 +14332,50 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
       <SectionHeader icon="◇" title="Local Proforma Drafts"
                      subtitle={`${drafts.length} draft(s) — edit locally before posting to wFirma`} />
 
+      {/* Blocked draft-birth records — operator-visible "why no draft was born".
+          Backend truth (contractor-projection blocks); never hidden (Lesson M). */}
+      {birthBlocks.length > 0 && (
+        <div data-testid="proforma-blocked-records-panel"
+             style={{ margin: '0 12px 12px', padding: '10px 12px', borderRadius: 6,
+                        background: 'var(--badge-amber-bg, #fffbeb)',
+                        border: '1px solid var(--badge-amber-border, #fbbf24)',
+                        color: 'var(--badge-amber-text, #92400e)', fontSize: 12 }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>
+            ⚠ {birthBlocks.length} sales document(s) could not produce a Proforma draft
+          </div>
+          {birthBlocks.map((b, i) => {
+            const cid = (b.client_contractor_id || '').trim();
+            const action = b.code === 'contractor_missing'
+              ? 'Re-run intake and select the client from Customer Master for this sales document.'
+              : b.code === 'client_unresolved'
+              ? 'Add a Customer Master record for this contractor, then re-run the contractor backfill.'
+              : b.code === 'contractor_conflict'
+              ? 'Reconcile the contractor — this client name maps to more than one contractor.'
+              : 'Resolve the client identity for this sales document.';
+            return (
+              <div key={b.sales_document_id || i}
+                   data-testid={`proforma-blocked-record-${b.sales_document_id || i}`}
+                   style={{ padding: '6px 0', borderTop: i ? '1px dashed var(--badge-amber-border, #fbbf24)' : 'none' }}>
+                <div><strong>Source:</strong> {b.source_file_name || b.sales_document_id || '—'}
+                  {' · '}<strong>Parsed name:</strong> {b.client_name || '— none —'}
+                  {' · '}<strong>Contractor id:</strong> {cid || '— none —'}</div>
+                <div><strong>Code:</strong> <code>{b.code || '—'}</code>
+                  {' · '}{b.lines_count || 0} line(s){b.value ? ` · ${b.value} ${b.currency || ''}` : ''}</div>
+                <div><strong>Reason:</strong> {b.reason || '—'}</div>
+                <div><strong>Action:</strong> {action}</div>
+                {cid && (
+                  <a data-testid={`proforma-blocked-cm-link-${b.sales_document_id || i}`}
+                     href={`/dashboard/customer-master-v2.html?contractor_id=${encodeURIComponent(cid)}`}
+                     style={{ color: 'var(--accent)', fontWeight: 600 }}>
+                    Open in Customer Master →
+                  </a>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div data-testid="proforma-draft-list" style={{ padding: 12 }}>
         {drafts.map(d => (
           <div key={d.id}
@@ -14949,6 +15006,49 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
                 </div>
               )}
 
+              {/* Customer authority summary (read-only) — rendered BEFORE the
+                  product lines so the operator confirms WHO the customer is
+                  before editing lines. Mirrors backend draft fields; the
+                  editable Bill-to / Buyer / Ship-to / Payment forms remain
+                  below. Duplicate-not-move keeps the V1 editor intact. */}
+              {(() => {
+                const bo = openDraft.buyer_override || {};
+                const so = openDraft.ship_to_override || {};
+                const pt = openDraft.payment_terms || {};
+                const buyerName = (bo.name || openDraft.client_name || '').trim();
+                const overrideActive = !!(bo && Object.keys(bo).length)
+                  || !!(so && Object.keys(so).length) || !!(pt && Object.keys(pt).length);
+                const item = (label, val) => (
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{val || '—'}</div>
+                  </div>
+                );
+                return (
+                  <div data-testid="draft-customer-authority-summary"
+                       style={{ marginBottom: 14, padding: '10px 12px', borderRadius: 6,
+                                  background: 'var(--bg-subtle)',
+                                  border: '1px solid var(--card-border)' }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                                    letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 8 }}>
+                      Customer authority
+                      {' '}<span style={{ fontWeight: 600, color: overrideActive ? 'var(--badge-amber-text)' : 'var(--text-3)' }}>
+                        {overrideActive ? '· override active' : '· from customer master'}
+                      </span>
+                      {openDraft.last_packing_sync_at && (
+                        <span style={{ fontWeight: 600, color: 'var(--text-3)' }}> · packing synced</span>
+                      )}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+                      {item('Buyer', buyerName)}
+                      {item('VAT ID', bo.vat_id)}
+                      {item('Ship-to', (so.name || buyerName))}
+                      {item('Payment', pt.days ? `${pt.days} days${pt.method ? ' · ' + pt.method : ''}` : '')}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Lines */}
               <div style={{ marginBottom: 14 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
@@ -15414,6 +15514,34 @@ function ProformaDraftLineRow({ line, editable, onPatch, onDelete, sourceLines }
             {namePlShort || '—'}
           </span>
         )}
+        {/* Canonical product description (one authority: product_descriptions /
+            description_engine, the SAME source PZ/customs uses). DISPLAY ONLY —
+            the wFirma line name posts from design_no / product_code, not this. */}
+        {(() => {
+          const canon = (line.description_bilingual || '').trim()
+            || [ (line.description_pl || '').trim(), (line.description_en || '').trim() ]
+                 .filter(Boolean).join(' / ');
+          const src = line.name_pl_source || '';
+          const label = canon ? 'canonical'
+            : src === 'generated' ? 'generated fallback'
+            : src === 'operator' ? 'operator'
+            : 'no canonical source';
+          return (
+            <div data-testid={`draft-line-canon-desc-${line.line_id}`}
+                 title="Canonical product description (product_descriptions / description_engine — the same authority used for PZ/customs). Display only: the wFirma line name uses design_no / product_code."
+                 style={{ marginTop: 3, fontSize: 10, lineHeight: 1.3,
+                            color: 'var(--text-3)' }}>
+              <span style={{ color: canon ? 'var(--text-2)' : 'var(--text-3)' }}>
+                {canon || '— no canonical description —'}
+              </span>
+              <span data-testid={`draft-line-desc-source-${line.line_id}`}
+                    style={{ marginLeft: 4, fontWeight: 700,
+                               color: canon ? 'var(--badge-green-text, #166534)' : 'var(--badge-amber-text)' }}>
+                · {label}
+              </span>
+            </div>
+          );
+        })()}
       </td>
       <td>
         {editable ? (
