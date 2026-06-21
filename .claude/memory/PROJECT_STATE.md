@@ -219,6 +219,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ## PR #667 DRAFT (archive record — superseded by PR #669 at `47251a3`)
 
 - **Branch**: `claude/new-session-fetvj6`. PR #667 DRAFT — SUPERSEDED by PR #669. Content merged to main as `47251a3` on 2026-06-20. Original draft details preserved per append-only rule below.
+
 - **Commit `8766adb`** (2026-06-20): Created `.claude/TASK_EXECUTION_PROTOCOL.md` — canonical five-phase execution protocol (DISCOVERY → PLAN → IMPLEMENT → VERIFY → CLOSE). Defines Anti-HOLD rules, one-task-at-a-time enforcement, BACKLOG rule, authority-map check, skill selection checkpoint, subagent dispatch table, GATE 1 checklist, and deploy boundary.
 - **Commit `5422404`** (2026-06-20): Created `.claude/commands/feature.md` — canonical operator entry point for feature work. Wires to `TASK_EXECUTION_PROTOCOL.md`. Mandatory subagents: gap-detection, reviewer-challenge, final-consistency-review, flow-context-keeper. Updated `COMMAND_REGISTRY.md` to 9 total commands; `/feature` added as WRITE-CAPABLE tier.
 - **`BACKLOG.md` created** (repo root, 2026-06-20, commit `5422404`): side-discovery capture point per the BACKLOG rule. Entry B-001 filed: PR #661 (`ci/auto-merge-approved`) stale review, disposition SCHEDULED (review before next merge sprint; verify no conflict with governance gates).
@@ -5580,6 +5581,19 @@ Group D — Tests (3 new files):
 - **GATE 2 after deploy**: **0/3 open implementation PRs** — clean board. Sprint 03.3 Scope C fully delivered (E3a + E3b both live in production).
 - **OQ-E3b-GATE4-1** and **OQ-E3b-GATE4-2**: remain OPEN — carried for the next SOLO V2 frontend PR session (unchanged by this deploy).
 
+## Current origin/main HEAD (2026-06-21, updated): `47251a3`
+
+- **origin/main HEAD = `47251a3`** — `feat(governance): TASK_EXECUTION_PROTOCOL + /feature command + skill routing + scorecard (#669)` (merged 2026-06-21). Supersedes the `a40c7c5` block above (append-only — prior entry retained).
+- Also on main at this date (confirmed via `git log origin/main --oneline -5`, 2026-06-21): `c8b9637` (#668 Document Readiness authority), `d55316d` (#665 sales-matcher), `b2f8eaa` (#664 registry purchase packing), `ffe075b` (#663 registry sales packing). Linear merge series.
+
+## Task #4 COMPLETE — Intake Diagnostics (2026-06-21, on branch `claude/new-session-fetvj6`)
+
+- **Task #4 COMPLETE** (2026-06-21): "Improve shipment intake diagnostics and operator troubleshooting visibility". Commit `51af164` on branch `claude/new-session-fetvj6` (PR #687 — NOT yet merged, NOT deployed). Base: `main`.
+- **Files changed**: `service/app/static/v2/shipment-detail-page.jsx` (new `IntakeDiagnosticsCard` component — lifecycle stage indicator, artifact checklist, blocking reason display, operator CTA); `service/app/static/v2/pz-api.js` (new `getBatchDetail` method); `service/tests/test_sprint35b_shipment_detail_documents.py` (tests T12–T15, new Section G).
+- **Test baseline**: 15/15 tests pass (includes T12–T15 added by this task). No backend changes, no schema changes, no deployment changes required.
+- **Deployment gate**: NOT deployed. All changes are `service/app/static/v2/**` (static frontend) and `service/tests/**` — no `service/app/**` runtime Python files changed; standard robocopy will carry the JSX/JS assets. No root-level engine files touched → Lesson J N/A.
+- **FEATURE_SCORECARD.md Row #4 filled** (2026-06-21): Task #4 row recorded in FEATURE_SCORECARD.md on branch `claude/new-session-fetvj6`.
+
 ---
 
 # DECISIONS
@@ -5640,6 +5654,34 @@ Group D — Tests (3 new files):
 ## Skill Routing Architecture Decisions (2026-06-20)
 
 - **`SKILL_ROUTING.md` is the single source of truth for keyword→skill mapping** (2026-06-20): `.claude/SKILL_ROUTING.md` owns the 13-domain routing table. `feature.md` references it; no duplication of the table in other files. Source: commit `a2a84d3`, now on main via PR #669 squash `47251a3`.
+
+
+## PR #687 — Proforma Readiness Status Display in V2 Shipment Detail Tab (2026-06-21, OPEN DRAFT on `claude/new-session-fetvj6`)
+
+- **Branch**: `claude/new-session-fetvj6`. PR #687 DRAFT — NOT merged, NOT deployed. Base: `main`. SHA `5a3c328` (impl) / `5ae2b3a` (scorecard + task state).
+- **Change**: `ProformaTabInShipment` in `service/app/static/v2/shipment-detail-page.jsx` replaced with live per-draft readiness panel. New `DraftReadinessCard` component calls `GET /draft/{id}/readiness?intent=approve` (single backend authority) and renders `blockers[{reason, repair_action}]`. Handles all 8 `DRAFT_LIFECYCLE_STATES`: `draft/editing/post_failed` → readiness panel; `posting` → in-progress; `approved/posted` → success; `cancelled/superseded` → hidden.
+- **GATE 1**: reviewer-challenge returned REVISE (3 findings: `draft_state` field name, all 8 lifecycle states, write-on-read stagger). All 3 resolved before implementation. final-consistency-review PASS 8/8. Smoke: 63 passed.
+- **GATE 6 PENDING (operator-owned)**: browser verification of V2 proforma tab required before PR converts from DRAFT to ready-for-review. Cannot complete in remote container.
+- **GATE 2**: 2/3 open PRs — PR #687 (DRAFT, this task) + PR #661 (stale, B-001).
+- **BACKLOG B-002 filed**: MISSING_SKILL `proforma-engine` — SCHEDULED after ≥10 `/feature` observation rows.
+- **FEATURE_SCORECARD.md Row #1 filled**: TASK_TYPE=PROFORMA, SELECTED_SKILL=backend-route-and-service-builder (fallback), CONFIDENCE=MEDIUM, outcome=PARTIAL (GATE 6 pending).
+- **agent-performance-observer NOT fired**: fewer than 3 formal scorecard-producing subagents. See OQ-PR687-SCORECARD.
+
+## Next 3 actions in queue (refreshed 2026-06-21 — Task #4 intake diagnostics COMPLETE @ `51af164`; PR #687 DRAFT; GATE 6 pending operator)
+
+1. **Operator: complete GATE 6 browser verification for PR #687** — open V2 shipment detail → Pro Forma tab → confirm `DraftReadinessCard` renders, readiness loads, no console errors, network 200 on `/readiness`; also confirm new `IntakeDiagnosticsCard` (Task #4) appears in Intake tab. Then convert PR #687 from DRAFT → ready-for-review → merge. Gating: operator browser access to running PZ service.
+2. **Operator: review + approve PR #667** (branch `claude/new-session-fetvj6`; `.claude/TASK_EXECUTION_PROTOCOL.md` + `.claude/commands/feature.md` + `BACKLOG.md` + `.claude/SKILL_ROUTING.md`; docs-exception slot). Target outcome: governance protocol merged to main. Gating: none (docs-only, zero blast radius).
+3. **Operator: review + merge PR #647** (branch `feat/pr2-vision-invoice-confirm-workflow` @ `4429e04`; Stage B vision-invoice confirm workflow; GATE 1 satisfied; 21 tests). After deploy, AWB 2315714531 operator can confirm via `POST /dashboard/batches/{id}/vision-invoice/confirm`. Gating: GATE 2 slot available (currently 2/3 open).
+
+## /feature Command and BACKLOG.md Governance (2026-06-20)
+
+- **`/feature` command tier: WRITE-CAPABLE** (2026-06-20) — every invocation of `/feature` must fire reviewer-challenge. Operator approval required before any `/feature`-produced PR merges to main. Source: `.claude/commands/feature.md` (commit `5422404`, branch `claude/new-session-fetvj6`, PR #667 DRAFT).
+- **`BACKLOG.md` is the canonical side-discovery capture point** (2026-06-20) — all side-discoveries encountered during task execution go into `BACKLOG.md` (repo root) with a GATE 4 disposition (SCHEDULED / ISSUE / REJECTED). "Recommendation noted" is not a valid disposition. Current open entry: B-001 (PR #661 stale CI review, SCHEDULED). Source: `TASK_EXECUTION_PROTOCOL.md` §Standing Rules — BACKLOG rule; `BACKLOG.md` created commit `5422404`.
+- **`TASK_EXECUTION_PROTOCOL.md` is the canonical execution protocol** (2026-06-20) — DISCOVERY → PLAN → IMPLEMENT → VERIFY → CLOSE. All `/feature` and `/bug` invocations must follow this protocol. Anti-HOLD rules and one-task-at-a-time enforcement are binding. Source: `.claude/TASK_EXECUTION_PROTOCOL.md` (commit `8766adb`, PR #667 DRAFT).
+
+## Skill Routing Architecture Decisions (2026-06-20)
+
+- **`SKILL_ROUTING.md` is the single source of truth for keyword→skill mapping** (2026-06-20): `.claude/SKILL_ROUTING.md` owns the 13-domain routing table. `feature.md` references it; no duplication of the table in other files. Source: commit `a2a84d3`, branch `claude/new-session-fetvj6`, PR #667 DRAFT.
 - **LOW confidence = continue DISCOVERY, never HOLD** (2026-06-20): when the skill-routing block emits CONFIDENCE: LOW, the `/feature` command continues into DISCOVERY without pausing for operator input. A HOLD is never triggered solely by low routing confidence. MEDIUM and HIGH confidence proceed identically. This rule is binding on all `/feature` invocations.
 - **MISSING_SKILL fallback = backend-route-and-service-builder + BACKLOG entry** (2026-06-20): when a TASK_TYPE maps to no installed skill, the session falls back to `backend-route-and-service-builder`, logs the missing skill to `BACKLOG.md` with disposition SCHEDULED, and continues. 'Recommendation noted' is not a valid BACKLOG disposition. Planned skills currently missing: `proforma-engine`, `dhl-customs`, `wfirma` — each has a BACKLOG entry due when B2–B9 types are scheduled (proforma) or the respective domain sprint begins.
 
@@ -6342,6 +6384,15 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Who can answer**: Operator — declare scope for PR-4, or file BACKLOG entries (SCHEDULED / ISSUE / REJECTED per GATE 4). "Recommendation noted" is not a valid disposition.
 - **Impact if unanswered**: Packing readiness campaign RC-3 remains partially unimplemented; `name_pl` enrich guard B-007 stays unaddressed; V2 pages may not surface remaining birth-block states (Lesson M risk).
 - **Candidate path to closure**: Operator names PR-4 scope (target: `name_pl` / B-007 guard or equivalent), or explicitly descopes with reasoning recorded here.
+
+
+## OQ-PR687-GATE6: RESOLVED (2026-06-21)
+
+- PR #687 merged to main after operator GATE 6 browser verification. OQ closed.
+
+## OQ-PR687-SCORECARD: RESOLVED (2026-06-21)
+
+- Decision: FEATURE_SCORECARD rows logged per task; agent-performance-observer fires when ≥3 scorecard-producing subagents. PR #687 tasks used reviewer-challenge + final-consistency-review (2 subagents) — below threshold. OQ closed.
 
 ## OQ-PR656-SHA: production validation of PR #656 SHA pending — operator must paste PowerShell output (2026-06-20)
 

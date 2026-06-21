@@ -42,9 +42,17 @@ Rules and boundary vs PROJECT_STATE.md:
 
 - PR #673 squash-merged at `f652de0`. Carried `shipment_documents.client_contractor_id` through sales → draft → reservation; visible blocked draft-birth records; idempotent backfill. FEATURE_SCORECARD Row #1.
 
+
 ---
 
 ## History (most recent first)
+
+- 2026-06-21 — Task #4 COMPLETE: PR #687 updated (intake diagnostics, IntakeDiagnosticsCard, T12–T15)
+- 2026-06-21 — Task #3 COMPLETE: PR #687 updated (proforma draft blocker visibility in V2 proforma tab)
+- 2026-06-21 — Task #2 COMPLETE: PR #687 updated (DHL clearance pipeline diagnostics in V2 DHL tab)
+- 2026-06-21 — Task #1 COMPLETE: PR #687 draft (proforma readiness display in V2 proforma tab)
+
+- 2026-06-20 — /feature command created at .claude/commands/feature.md.
 
 - 2026-06-21 — PR #675 squash-merged at `7b94a73`: PR-3 Dropdown selection wins.
   Scorecard `2026-06-21-pr3-dropdown-selection-authority.md` (6 agents, 5 EXEMPLARY / 1 ACCEPTABLE).
@@ -55,6 +63,7 @@ Rules and boundary vs PROJECT_STATE.md:
   BACKLOG B-002..B-008 filed (all SCHEDULED). PROJECT_STATE updated.
 
 - 2026-06-20 — /feature command created at .claude/commands/feature.md.
+
   COMMAND_REGISTRY.md updated. BACKLOG B-001 (PR #661 review) filed.
 - 2026-06-20 — TASK_EXECUTION_PROTOCOL.md created and merged via draft PR.
   Canonical DISCOVERY→PLAN→IMPLEMENT→VERIFY→CLOSE protocol. BACKLOG.md seeded.

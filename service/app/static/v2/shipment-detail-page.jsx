@@ -590,15 +590,9 @@ function OverviewTab({ d, shipment, sadUploaded, pzGenerated, pzExported, replyS
 
       <SectionLabel style={{ marginTop: 8 }}>Workflow areas</SectionLabel>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        {/* Shipment */}
-        <PanelCard title="Shipment" subtitle="Tracking, invoices, AWB" status={_dash(d.trackingStatus) === '—' ? (shipment.carrier || 'Shipment') : d.trackingStatus}>
-          <InfoBlock rows={[
-            { label: 'AWB / Tracking', value: _dash(shipment.awb), mono: true },
-            { label: 'Carrier',        value: _dash(shipment.carrier) },
-            { label: 'Tracking',       value: _dash(d.trackingStatus) },
-            { label: 'Invoices',       value: d.invoiceCount != null ? (d.invoiceCount + ' uploaded') : '—' },
-            { label: 'AWB PDF',        value: d.awbUploaded ? 'Uploaded ✓' : '—' },
-          ]} />
+        {/* Shipment intake diagnostics — authority: batch_detail via IntakeDiagnosticsCard */}
+        <PanelCard title="Shipment intake" subtitle="Lifecycle, artifacts &amp; blocking reason" status={shipment.carrier || 'Intake'}>
+          <IntakeDiagnosticsCard batchId={shipment.batch_id} />
           <div style={{ padding: '0 20px 16px' }}>
             <button onClick={() => setActiveTab('dhl')} data-testid="ov-shipment-open-dhl" style={navLinkStyle()}>Open DHL / Customs →</button>
           </div>
@@ -657,12 +651,315 @@ function navLinkStyle() {
   };
 }
 
+// ── INTAKE DIAGNOSTICS
+
+// Intake diagnostics panel — renders lifecycle stage, artifact checklist, blocking reason,
+// and operator action CTA from batch_detail authority.
+// Authority: GET /api/v1/dashboard/batches/{batch_id} (routes_dashboard.py:batch_detail).
+// Read-only — display-only; no local readiness computation per Lesson F rule 5.
+// Stale-mount guard via cancelled flag (same pattern as DhlReadinessCard).
+// 404 response → batch still in working state; shows honest "intake in progress" message.
+function IntakeDiagnosticsCard({ batchId }) {
+  const [detail, setDetail]           = React.useState(null);
+  const [loading, setLoading]         = React.useState(true);
+  const [isProcessing, setIsProcessing] = React.useState(false);
+  const [errType, setErrType]         = React.useState(null);
+
+  React.useEffect(() => {
+    if (!batchId) { setLoading(false); return; }
+    let cancelled = false;
+    window.PzApi.getBatchDetail(batchId)
+      .then(r => {
+        if (cancelled) return;
+        if (!r.ok && r.status === 404) {
+          setIsProcessing(true);
+        } else if (r.ok && r.data) {
+          setDetail(r.data);
+        } else {
+          setErrType(r.type === 'auth' ? 'auth' : 'error');
+        }
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) { setErrType('error'); setLoading(false); }
+      });
+    return () => { cancelled = true; };
+  }, [batchId]);
+
+  if (!batchId) {
+    return (
+      <div style={{ padding: '12px 20px', color: 'var(--text-2)', fontSize: 12 }}>
+        No batch context — intake diagnostics unavailable.
+      </div>
+    );
+  }
+  if (loading) {
+    return (
+      <div style={{ padding: '12px 20px', color: 'var(--text-2)', fontSize: 12 }}>
+        Loading intake diagnostics…
+      </div>
+    );
+  }
+  if (isProcessing) {
+    return (
+      <div data-testid="intake-processing-state" style={{ padding: '12px 20px', color: 'var(--text-2)', fontSize: 12 }}>
+        Intake in progress — diagnostics available after batch is finalised.
+      </div>
+    );
+  }
+  if (!detail) {
+    const msg = errType === 'auth'
+      ? 'Session expired — please refresh the page.'
+      : 'Cannot load intake diagnostics. Check V1 Shipment Detail for current status.';
+    return (
+      <div data-testid="intake-diagnostics-error" style={{ padding: '12px 20px', color: 'var(--badge-red-text)', fontSize: 12 }}>
+        {msg}
+      </div>
+    );
+  }
+
+  const src        = (detail.files_detail && detail.files_detail.source_files) || {};
+  const invoices   = src.invoices || [];
+  const awbFiles   = src.awb     || [];
+  const sadFiles   = src.sad     || [];
+  const salesHint  = detail.sales_status_hint;
+  const hasSales   = salesHint === 'present';
+  const salesUnknown = salesHint === 'n/a' || salesHint == null;
+
+  const artifacts = [
+    { label: 'Invoices',      present: invoices.length > 0, count: invoices.length, unknown: false },
+    { label: 'AWB PDF',       present: awbFiles.length > 0,  count: awbFiles.length, unknown: false },
+    { label: 'Sales packing', present: hasSales,             count: null,            unknown: salesUnknown },
+    { label: 'SAD / ZC429',   present: sadFiles.length > 0,   count: sadFiles.length, unknown: false },
+  ];
+
+  const actionReason  = detail.action_reason;
+  const failedChecks  = detail.failed_checks || [];
+  const clearanceSt   = detail.clearance_status || '';
+  const overallSt     = detail.status || '';
+  const stageDisplay  = clearanceSt || overallSt || 'unknown';
+
+  const missing = artifacts.filter(a => !a.present && !a.unknown);
+
+  return (
+    <div data-testid="intake-diagnostics-card" style={{ padding: '12px 20px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+
+      {/* Lifecycle stage — verbatim from backend; labelled authority to satisfy Lesson F rule 5 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, color: 'var(--text-2)', flexShrink: 0 }}>Lifecycle stage</span>
+        <code data-testid="intake-clearance-status" style={{ fontSize: 12, padding: '2px 7px', background: 'var(--bg-2)', borderRadius: 4, color: 'var(--text-1)' }}>
+          {stageDisplay}
+        </code>
+        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+          Source: <code style={{ fontSize: 11 }}>batch_detail · clearance_status</code>
+        </span>
+      </div>
+
+      {/* Artifact checklist */}
+      <div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>
+          Intake Artifacts
+        </div>
+        <div data-testid="intake-artifact-checklist" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {artifacts.map(a => {
+            const color = a.unknown
+              ? 'var(--text-3)'
+              : a.present
+                ? 'var(--badge-green-text)'
+                : 'var(--badge-red-text)';
+            const icon = a.unknown ? '?' : a.present ? '✓' : '✗';
+            return (
+              <div key={a.label} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13 }}>
+                <span aria-hidden="true" style={{ color, fontWeight: 700, width: 14, flexShrink: 0 }}>{icon}</span>
+                <span style={{ color: a.unknown ? 'var(--text-3)' : 'var(--text-1)' }}>
+                  {a.label}
+                  {a.count != null && a.present ? ` (${a.count})` : ''}
+                  {a.unknown ? ' — status unavailable' : ''}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Blocking reason — shown only when backend reports a reason or failed checks */}
+      {(actionReason || failedChecks.length > 0) && (
+        <div data-testid="intake-blocking-reason" style={{
+          padding: '8px 10px',
+          background: 'var(--badge-red-bg)',
+          border: '1px solid var(--badge-red-border)',
+          borderRadius: 6,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-red-text)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4 }}>
+            Blocking reason
+          </div>
+          {actionReason && (
+            <div style={{ fontSize: 13, color: 'var(--text-1)', marginBottom: failedChecks.length > 0 ? 6 : 0 }}>
+              {actionReason}
+            </div>
+          )}
+          {failedChecks.length > 0 && (
+            <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-2)' }}>
+              {failedChecks.map((c, i) => <li key={i}>{c}</li>)}
+            </ol>
+          )}
+        </div>
+      )}
+
+      {/* Operator action CTA — upload missing artifacts */}
+      {missing.length > 0 && (
+        <div data-testid="intake-operator-action" style={{
+          fontSize: 13, color: 'var(--text-2)', padding: '6px 10px',
+          background: 'var(--bg-2)', borderRadius: 4,
+        }}>
+          <span style={{ fontWeight: 600 }}>Action required: </span>
+          Upload missing — {missing.map(a => a.label).join(', ')}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── DHL / CUSTOMS
+
+// 7-state DHL pipeline labels — matches V1 shipment-detail.html:8631-8637 and dhl_readiness.py:31-39.
+const DHL_PIPELINE_STATES = [
+  { key: 'awaiting_start',   label: 'Awaiting Start' },
+  { key: 'dhl_contacted',    label: 'DHL Contacted' },
+  { key: 'dhl_replied',      label: 'DHL Replied' },
+  { key: 'dsk_received',     label: 'DSK / Cesja Rcvd' },
+  { key: 'agency_forwarded', label: 'Agency Forwarded' },
+  { key: 'sad_received',     label: 'SAD Received' },
+  { key: 'customs_cleared',  label: 'Customs Cleared' },
+];
+
+// DHL customs pipeline diagnostics panel.
+// Authority: GET /api/v1/dhl/readiness/{batch_id} (dhl_readiness.py:get_dhl_readiness).
+// Read-only — no write-on-read side effects; no mountDelayMs stagger needed.
+// Re-fetches on each tab activation (intentional: operator sees fresh pipeline state on return).
+// Stale-mount guard via cancelled flag prevents setState after unmount.
+// NOTE: the 7-state pipeline state (from audit timeline) is a SEPARATE authority from the
+// coarse shipment.dhlStatus field (from batch summary). They should agree directionally;
+// the pipeline card clearly labels its source to avoid confusion if they diverge.
+function DhlReadinessCard({ batchId }) {
+  const [readiness, setReadiness] = React.useState(null);
+  const [loading, setLoading]     = React.useState(true);
+  const [errType, setErrType]     = React.useState(null);
+
+  React.useEffect(() => {
+    if (!batchId) { setLoading(false); return; }
+    let cancelled = false;
+    window.PzApi.getDhlReadiness(batchId)
+      .then(r => {
+        if (cancelled) return;
+        if (r.ok && r.data) {
+          setReadiness(r.data);
+        } else {
+          setErrType(r.type === 'auth' ? 'auth' : 'error');
+        }
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) { setErrType('error'); setLoading(false); }
+      });
+    return () => { cancelled = true; };
+  }, [batchId]);
+
+  if (!batchId) {
+    return (
+      <div data-testid="dhl-readiness-no-batch" style={{ padding: '14px 20px', color: 'var(--text-2)', fontSize: 12 }}>
+        No batch context — DHL clearance pipeline state unavailable.
+      </div>
+    );
+  }
+  if (loading) {
+    return (
+      <div data-testid="dhl-readiness-loading" style={{ padding: '14px 20px', color: 'var(--text-2)', fontSize: 12 }}>
+        Loading DHL clearance pipeline…
+      </div>
+    );
+  }
+  if (!readiness) {
+    const msg = errType === 'auth'
+      ? 'Session expired — please refresh the page.'
+      : 'Cannot load DHL clearance pipeline state. Check V1 Shipment Detail for current status.';
+    return (
+      <div data-testid="dhl-readiness-error" style={{ padding: '14px 20px', color: 'var(--badge-red-text)', fontSize: 12 }}>
+        {msg}
+      </div>
+    );
+  }
+
+  const currentIdx = DHL_PIPELINE_STATES.findIndex(s => s.key === readiness.dhl_status);
+
+  return (
+    <div data-testid="dhl-readiness-card" style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-subtle)' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 8 }}>Clearance Pipeline</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 10 }}>
+        {DHL_PIPELINE_STATES.map((s, i) => {
+          const isCurrent = i === currentIdx;
+          const isPast    = i < currentIdx;
+          return (
+            <span
+              key={s.key}
+              data-testid={isCurrent ? 'dhl-stage-current' : undefined}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 3,
+                padding: '3px 8px', borderRadius: 4, fontSize: 11,
+                fontWeight: isCurrent ? 700 : 500,
+                background: isCurrent ? 'var(--accent)' : (isPast ? 'var(--badge-green-bg)' : 'var(--badge-neutral-bg)'),
+                color: isCurrent ? '#fff' : (isPast ? 'var(--badge-green-text)' : 'var(--text-3)'),
+                border: `1px solid ${isCurrent ? 'var(--accent)' : (isPast ? 'var(--badge-green-border)' : 'var(--border-subtle)')}`,
+              }}
+            >
+              {isPast && <span aria-hidden="true">✓</span>}
+              {isCurrent && <span aria-hidden="true">▶</span>}
+              {s.label}
+            </span>
+          );
+        })}
+      </div>
+
+      {readiness.next_required_action && (
+        <div style={{ fontSize: 12, color: 'var(--text)', background: 'var(--bg-subtle)', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border-subtle)', marginBottom: 8 }}>
+          <span style={{ fontWeight: 700 }}>Next: </span>{readiness.next_required_action}
+        </div>
+      )}
+
+      {/* SLA breach banner — gated strictly on sla_breach === true.
+          sla_breach_reason may be truthy even when breach is suppressed (e.g. "suppressed: SAD received").
+          Never show the red banner on sla_breach_reason truthiness alone (V1 precedent: shipment-detail.html:8648). */}
+      {readiness.sla_breach === true && (
+        <div data-testid="dhl-sla-breach" style={{
+          display: 'flex', alignItems: 'flex-start', gap: 8,
+          padding: '7px 10px', borderRadius: 6, marginBottom: 8,
+          background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+          color: 'var(--badge-red-text)', fontSize: 12,
+        }}>
+          <span aria-hidden="true" style={{ fontWeight: 800, flexShrink: 0 }}>⚠</span>
+          <span>SLA breach: {readiness.sla_breach_reason}</span>
+        </div>
+      )}
+
+      {readiness.missing_documents && readiness.missing_documents.length > 0 && (
+        <div style={{ fontSize: 12, marginBottom: 8 }}>
+          <span style={{ fontWeight: 700, color: 'var(--text-3)' }}>Awaiting: </span>
+          <span style={{ color: 'var(--badge-amber-text)' }}>{readiness.missing_documents.join(' · ')}</span>
+        </div>
+      )}
+
+      <div style={{ fontSize: 10, color: 'var(--text-3)', borderTop: '1px solid var(--border-subtle)', paddingTop: 5, marginTop: 4 }}>
+        Source: DHL clearance pipeline (audit timeline) · state: <code style={{ fontFamily: 'monospace' }}>{readiness.dhl_status}</code> · GET /api/v1/dhl/readiness/&#123;batch_id&#125;
+      </div>
+    </div>
+  );
+}
 
 function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId }) {
   const bid = batchId || '{batch_id}';
   return (
     <>
+      <DhlReadinessCard batchId={batchId} />
       <SectionLabel>Step 1 · DHL clearance email & reply</SectionLabel>
       <PanelCard
         title="DHL Clearance"
@@ -679,6 +976,7 @@ function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId
             <InfoRow label="DHL Threshold"      value={d.thresholdUsd != null ? (_fmtUsd(d.thresholdUsd) + (d.dskRequiredHint ? ' — Reply Required' : '')) : '—'} />
             <InfoRow label="DSK Recommendation" value={_dash(d.clearanceHint)} />
             <InfoRow label="CN Code"            value={_dash(d.cnCode)} />
+
           </div>
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>Reply package status</div>
@@ -1019,11 +1317,132 @@ function TimelineTab({ d, detailLoading }) {
   );
 }
 
-// Pro Forma tab inside shipment detail — navigates to real Pro Forma hub with batch context.
-// Authority: proforma-list.jsx → GET /api/v1/proforma/drafts/{batch_id}
-// No mock drafts. batch_id flows from parent shipment prop.
+// Per-draft readiness panel for active (non-terminal) draft states.
+// Authority: GET /api/v1/proforma/draft/{id}/readiness?intent=approve
+// Known write-on-read: idempotent bridge-write (packing_lines → design_product_mapping).
+// Calls staggered by mountDelayMs to prevent concurrent SQLite lock contention.
+function DraftReadinessCard({ draft, mountDelayMs }) {
+  const [readiness, setReadiness] = React.useState(null);
+  const [readinessLoading, setReadinessLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      window.PzApi.getDraftReadiness(draft.id, 'approve')
+        .then(r => {
+          if (!cancelled) {
+            setReadiness((r && r.ok && r.data) ? r.data : null);
+            setReadinessLoading(false);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) { setReadiness(null); setReadinessLoading(false); }
+        });
+    }, mountDelayMs || 0);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [draft.id]);
+
+  const STATE_BADGE = { draft: 'Draft', editing: 'In Preparation', post_failed: 'Action Required' };
+  const draftTitle  = draft.wfirma_proforma_fullnumber || ('#' + draft.id);
+  const badgeStatus = STATE_BADGE[draft.draft_state] || 'Draft';
+  const isPostFailed = draft.draft_state === 'post_failed';
+
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <PanelCard>
+        <div style={{ padding: '16px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', flex: 1 }}>
+              {draft.client_name || '(no client)'}
+            </div>
+            <Badge status={badgeStatus} small />
+            <div style={{ fontSize: 11, color: 'var(--text-2)' }} data-testid="proforma-draft-id">
+              Draft {draftTitle}
+            </div>
+          </div>
+
+          {/* post_failed error box — always visible for post_failed; error_hint from
+              _draft_to_summary (routes_proforma.py:3838) may contain raw wFirma error text.
+              Static retry guidance is always shown so the operator knows the next step. */}
+          {isPostFailed && (
+            <div data-testid="proforma-post-failed-error" style={{
+              background: 'var(--badge-red-bg, #FBE8E6)',
+              border: '1px solid var(--badge-red-border, #E0A8A0)',
+              borderRadius: 6, padding: '10px 14px', marginBottom: 12,
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-red-text, #902018)',
+                            textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+                wFirma post failed
+              </div>
+              {draft.error_hint ? (
+                <div style={{ fontSize: 11, color: 'var(--badge-red-text, #902018)',
+                              fontFamily: 'monospace', wordBreak: 'break-word', marginBottom: 6 }}>
+                  {draft.error_hint}
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: 'var(--badge-red-text, #902018)', marginBottom: 6 }}>
+                  Failure reason not recorded.
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: 'var(--text-2)' }}>
+                Re-open Pro Forma hub to retry posting.
+              </div>
+            </div>
+          )}
+
+          {readinessLoading ? (
+            <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Checking readiness…</div>
+          ) : readiness === null ? (
+            <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+              Readiness unavailable — open Pro Forma hub to retry.
+            </div>
+          ) : readiness.ready ? (
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--badge-green-text, #166534)' }}
+                 data-testid="proforma-ready-chip">
+              ✓ Ready to approve
+            </div>
+          ) : (
+            <div data-testid="proforma-blockers">
+              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>
+                {(readiness.blockers || []).length} blocker(s) preventing approval:
+              </div>
+              <ol style={{ margin: 0, paddingLeft: 22 }}>
+                {(readiness.blockers || []).map((b, i) => (
+                  <li key={i} style={{ fontSize: 12, color: 'var(--text)', marginBottom: 10 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 3 }}>{b.reason}</div>
+                    {b.repair_action && (
+                      <div style={{
+                        background: 'var(--bg-subtle, var(--card))',
+                        border: '1px solid var(--border)',
+                        borderRadius: 4, padding: '6px 10px',
+                        fontSize: 11, color: 'var(--text)',
+                      }}>
+                        Fix: {b.repair_action}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+        </div>
+      </PanelCard>
+    </div>
+  );
+}
+
+// Pro Forma tab inside shipment detail — shows per-draft readiness so operators
+// can see exactly why a draft is not ready without navigating away from the page.
+// Authority: GET /api/v1/proforma/drafts/{batch_id} + GET /draft/{id}/readiness
 function ProformaTabInShipment({ shipment }) {
   const batchId = shipment && shipment.batch_id;
+  // Hook called unconditionally (React rules); null batchId returns empty list.
+  const draftsState = window.PzState.useProformaDrafts(batchId || null);
+
+  const goToProforma = () => {
+    if (!batchId) return;
+    window.location.href = '/v2/proforma?batch_id=' + encodeURIComponent(batchId);
+  };
 
   if (!batchId) {
     return (
@@ -1033,28 +1452,125 @@ function ProformaTabInShipment({ shipment }) {
     );
   }
 
-  const goToProforma = () => {
-    window.location.href = '/v2/proforma?batch_id=' + encodeURIComponent(batchId);
-  };
+  const allDrafts = (draftsState.data && draftsState.data.drafts) || [];
+
+  // Partition by draft_state (API field is draft_state, confirmed from _draft_to_summary)
+  // Full 8-state lifecycle: draft|editing|approved|posting|posted|post_failed|cancelled|superseded
+  const READINESS_STATES = new Set(['draft', 'editing', 'post_failed']);
+  const SUCCESS_STATES   = new Set(['approved', 'posted']);
+  // cancelled and superseded are hidden; posting shown separately
+
+  const activeDrafts  = allDrafts.filter(d => READINESS_STATES.has(d.draft_state));
+  const postingDrafts = allDrafts.filter(d => d.draft_state === 'posting');
+  const successDrafts = allDrafts.filter(d => SUCCESS_STATES.has(d.draft_state));
 
   return (
     <>
       <SectionLabel>Pro Forma drafts for this shipment</SectionLabel>
-      <PanelCard>
-        <div style={{ padding: '24px 28px', display: 'flex', alignItems: 'center', gap: 20 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
-              Pro Forma drafts for batch {batchId}
+
+      {/* Navigation — always visible per Lesson M */}
+      <div style={{ marginBottom: 16 }}>
+        <PanelCard>
+          <div style={{ padding: '20px 24px', display: 'flex', alignItems: 'center', gap: 20 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                Pro Forma hub — batch {batchId}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                Create, edit, post to wFirma, and convert drafts to invoices in the Pro Forma hub.
+              </div>
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
-              Create, edit, post to wFirma, and convert drafts to invoices in the Pro Forma hub.
-            </div>
+            <Btn variant="outline" small onClick={goToProforma} data-testid="proforma-tab-open">
+              Open Pro Forma →
+            </Btn>
           </div>
-          <Btn variant="outline" small onClick={goToProforma} data-testid="proforma-tab-open">
-            Open Pro Forma →
-          </Btn>
+        </PanelCard>
+      </div>
+
+      {draftsState.loading && (
+        <div style={{ fontSize: 13, color: 'var(--text-2)', padding: '8px 0' }}>Loading drafts…</div>
+      )}
+      {draftsState.error && (
+        <div style={{ fontSize: 13, color: 'var(--badge-red-text, #991b1b)', padding: '8px 0' }}>
+          Could not load drafts. Open Pro Forma hub to retry.
         </div>
-      </PanelCard>
+      )}
+      {!draftsState.loading && !draftsState.error && allDrafts.length === 0 && (
+        <div style={{ fontSize: 13, color: 'var(--text-2)', padding: '8px 0' }}>
+          No proforma drafts yet for this batch.
+        </div>
+      )}
+
+      {activeDrafts.length > 0 && (
+        <>
+          <SectionLabel style={{ marginTop: 12 }}>Readiness</SectionLabel>
+          {activeDrafts.map((d, idx) => (
+            <DraftReadinessCard key={d.id} draft={d} mountDelayMs={idx * 150} />
+          ))}
+        </>
+      )}
+
+      {postingDrafts.length > 0 && (
+        <>
+          <SectionLabel style={{ marginTop: 12 }}>Posting to wFirma</SectionLabel>
+          {postingDrafts.map(d => (
+            <div key={d.id} style={{ marginBottom: 8 }}>
+              <PanelCard>
+                <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', flex: 1 }}>
+                    {d.client_name || '(no client)'}
+                  </div>
+                  <Badge status="Processing" small />
+                  <div style={{ fontSize: 12, color: 'var(--text-2)' }}>wFirma submission in progress</div>
+                </div>
+              </PanelCard>
+            </div>
+          ))}
+        </>
+      )}
+
+      {!draftsState.loading && !draftsState.error
+        && allDrafts.length > 0 && activeDrafts.length === 0 && postingDrafts.length === 0
+        && successDrafts.length > 0 && (
+        <div data-testid="proforma-all-complete-banner" style={{
+          background: 'var(--badge-green-bg, #E8F5EE)',
+          border: '1px solid var(--badge-green-border, #96CCA8)',
+          borderRadius: 6, padding: '12px 16px', marginBottom: 12,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--badge-green-text, #186838)' }}>
+            ✓ All active Pro Forma drafts complete
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--badge-green-text, #186838)', opacity: 0.85, marginTop: 3 }}>
+            {successDrafts.length} draft(s) approved or posted to wFirma. No action required.
+          </div>
+        </div>
+      )}
+
+      {successDrafts.length > 0 && (
+        <>
+          <SectionLabel style={{ marginTop: 12 }}>Completed</SectionLabel>
+          {successDrafts.map(d => {
+            const isPosted = d.draft_state === 'posted';
+            const draftTitle = d.wfirma_proforma_fullnumber || ('#' + d.id);
+            return (
+              <div key={d.id} style={{ marginBottom: 8 }}>
+                <PanelCard>
+                  <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', flex: 1 }}>
+                      {d.client_name || '(no client)'}
+                    </div>
+                    <Badge status={isPosted ? 'Exported' : 'Generated'} small />
+                    <div style={{ fontSize: 12, fontWeight: 600,
+                                  color: 'var(--badge-green-text, #166534)' }}>
+                      ✓ {draftTitle}
+                    </div>
+                  </div>
+                </PanelCard>
+              </div>
+            );
+          })}
+        </>
+      )}
     </>
   );
 }
