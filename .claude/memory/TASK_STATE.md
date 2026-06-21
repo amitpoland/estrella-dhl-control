@@ -17,26 +17,30 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
-- **Task:** Improve shipment intake diagnostics and operator troubleshooting visibility
+- **Task:** Add observation-only performance metrics to FEATURE_SCORECARD
 - **Started:** 2026-06-21
 - **Status:** COMPLETE
 - **HOLD reason (if BLOCKED-HOLD):** —
 
 ### Completion criteria
 
-- [x] `IntakeDiagnosticsCard` — lifecycle stage rendered with human-readable label and authority footnote
-- [x] `IntakeDiagnosticsCard` — artifact checklist (invoices, AWB PDF, sales packing, SAD) present vs missing
-- [x] `IntakeDiagnosticsCard` — blocking reason surfaced from `action_reason`/`failed_checks` in callout
-- [x] `IntakeDiagnosticsCard` — operator action CTA based on missing artifacts
-- [x] `OverviewTab` — Shipment card uses real data from batch detail fetch (no hardcoded counts)
-- [x] `pz-api.js` — `getBatchDetail(batchId)` method added
-- [x] reviewer-challenge mitigations resolved
-- [x] `test_sprint35b_shipment_detail_documents.py` — T12/T13/T14/T15 added (section G)
-- [x] GATE 1 satisfied
-- [x] GATE 6 documented (browser verification deferred to operator — in-container; same as Tasks #1–3)
-- [x] PR updated on `claude/new-session-fetvj6`
+- [x] 8 new measurement columns added to `FEATURE_SCORECARD.md` header
+- [x] Existing rows #1–#4 get `—` for new columns (no reinterpretation)
+- [x] Row #5 filled for this task
+- [x] No changes to `/feature`, `SKILL_ROUTING.md`, `TASK_EXECUTION_PROTOCOL.md`, `CLAUDE.md`
+- [x] reviewer-challenge: SHIP (3 mitigations resolved inline)
+- [x] final-consistency-review: PASS 6/6 + 8/8
+- [x] Committed and pushed on `claude/new-session-fetvj6`
 - [x] `TASK_STATE.md` → COMPLETE
-- [x] FEATURE_SCORECARD Row #4 filled
+- [x] FEATURE_SCORECARD Row #5 self-referential fill
+
+## Previous task (COMPLETE)
+
+- **Task:** Improve shipment intake diagnostics and operator troubleshooting visibility
+- **Started:** 2026-06-21
+- **Status:** COMPLETE
+
+---
 
 ## Previous task (COMPLETE)
 
