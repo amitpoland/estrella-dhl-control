@@ -5340,6 +5340,75 @@ def _reconcile_billed_ambiguity(
     }
 
 
+def _analyze_product_code_billing(
+    draft_lines:      List[Dict[str, Any]],
+    available_by_pc:  Dict[str, float],
+    invoice_by_pc:    Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    """Aggregate billed quantity per product_code vs available purchase quantity.
+
+    Authority: a ``product_code`` (invoice_no + line position) identifies one
+    PURCHASE INVOICE LINE — a lot that may legitimately contain several pieces /
+    design_no values. The available quantity for a product_code is the sum of
+    ``packing_lines.quantity`` for it (``available_by_pc``). Therefore a
+    product_code MAY appear on several draft lines (different pieces of the lot) —
+    that is legal as long as the TOTAL billed quantity does not exceed the
+    available quantity (rule 2: the packing-line quantity is the split authority).
+    An OVER-bill — total billed > available — is the only billing-integrity
+    failure (rule 4 / the double-bill risk) and is a hard blocker.
+
+    This NEVER auto-corrects, auto-merges, or picks a line (rule 5). It only
+    classifies. Pure function (no I/O).
+
+    Returns one entry per product_code that is billed on >1 line OR over-billed::
+
+        {product_code, invoice_no, billed_qty, available_qty, over_billed: bool,
+         line_count, design_nos:[...], lines:[{idx, line_id, design_no, qty}]}
+
+    Over-billed entries are listed first.
+    """
+    invoice_by_pc = invoice_by_pc or {}
+
+    def _q(v: Any) -> float:
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    agg: Dict[str, Dict[str, Any]] = {}
+    for i, ln in enumerate(draft_lines or []):
+        pc = str(ln.get("product_code") or "").strip()
+        if not pc:                       # blank code handled by other gates
+            continue
+        d = str(ln.get("design_no") or "").strip()
+        e = agg.setdefault(pc, {"billed": 0.0, "lines": [], "designs": set()})
+        qty = _q(ln.get("qty"))
+        e["billed"] += qty
+        e["lines"].append({"idx": i, "line_id": ln.get("line_id"),
+                           "design_no": d, "qty": qty})
+        if d:
+            e["designs"].add(d)
+
+    out: List[Dict[str, Any]] = []
+    for pc, e in agg.items():
+        avail = _q(available_by_pc.get(pc))
+        over = e["billed"] > avail + 1e-9
+        if len(e["lines"]) > 1 or over:
+            out.append({
+                "product_code":  pc,
+                "invoice_no":    invoice_by_pc.get(pc, ""),
+                "billed_qty":    round(e["billed"], 4),
+                "available_qty": round(avail, 4),
+                "over_billed":   over,
+                "line_count":    len(e["lines"]),
+                "design_nos":    sorted(e["designs"]),
+                "lines":         e["lines"],
+            })
+    # over-billed first, then alphabetical
+    out.sort(key=lambda x: (not x["over_billed"], x["product_code"]))
+    return out
+
+
 def _derive_draft_readiness(
     draft: "pildb.ProformaDraft", *, intent: str,
 ) -> Dict[str, Any]:
@@ -5562,6 +5631,51 @@ def _derive_draft_readiness(
         _add(f"VAT readiness check failed: {type(exc).__name__}: {exc}",
              "Inspect customer master data for this client.")
 
+    # ── 5. Duplicate / over-bill product_code guard (billing integrity) ────
+    # product_code = one purchase invoice line (a lot that may hold several
+    # designs/pieces). A product_code MAY be billed on multiple draft lines, but
+    # only up to the available packing quantity (rule 2 — the packing-line
+    # quantity is the split authority). Billing MORE than available is a
+    # double-bill of a physical line → hard blocker (rule 4). Mere duplication
+    # within the available quantity is legitimate (mixed lots) and does NOT
+    # block; it is surfaced in the structured field for transparency. Never
+    # auto-corrects or merges (rule 5).
+    duplicate_product_codes: List[Dict[str, Any]] = []
+    try:
+        from ..services import packing_db as _pkdb  # noqa: PLC0415
+        _avail_by_pc: Dict[str, float] = {}
+        _inv_by_pc:   Dict[str, str]   = {}
+        for _pr in (_pkdb.get_packing_lines_for_batch(draft.batch_id or "") or []):
+            _pcc = str(_pr.get("product_code") or "").strip()
+            if not _pcc:
+                continue
+            try:
+                _pq = float(_pr.get("quantity") or 0)
+            except (TypeError, ValueError):
+                _pq = 0.0
+            _avail_by_pc[_pcc] = _avail_by_pc.get(_pcc, 0.0) + _pq
+            _inv_by_pc.setdefault(_pcc, str(_pr.get("invoice_no") or ""))
+        duplicate_product_codes = _analyze_product_code_billing(
+            _r_lines, _avail_by_pc, _inv_by_pc)
+    except Exception as exc:
+        warnings.append(
+            f"duplicate product_code guard unavailable: "
+            f"{type(exc).__name__}: {exc}")
+    for _dp in duplicate_product_codes:
+        if _dp["over_billed"]:
+            _designs = ", ".join(_dp["design_nos"][:6]) + (
+                "…" if len(_dp["design_nos"]) > 6 else "")
+            _add(
+                f"product_code {_dp['product_code']!r} is billed "
+                f"{_dp['billed_qty']:g} but only {_dp['available_qty']:g} "
+                f"available in packing (invoice {_dp['invoice_no']}) — "
+                f"over-billed across {_dp['line_count']} draft lines "
+                f"[{_designs}]: confirm split-quantity or correct the sales lines",
+                "Reduce the billed quantity to the available packing quantity, "
+                "or fix the product_code on the duplicated sales lines. Do NOT "
+                "auto-merge lines or silently pick one.",
+            )
+
     # Structured ambiguity data so the frontend renders an exact product_code
     # selector — ONLY for designs a billed line cannot resolve (rule 6). Designs
     # already pinned by a billed line's product_code, or not billed at all, are
@@ -5587,6 +5701,7 @@ def _derive_draft_readiness(
         "ambiguous_designs": ambiguous_designs,
         "resolved_designs":  resolved_designs,
         "vat_resolution":    _vat_resolution,
+        "duplicate_product_codes": duplicate_product_codes,
     }
 
 
