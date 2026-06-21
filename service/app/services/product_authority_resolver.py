@@ -312,6 +312,15 @@ def analyze_product_code_billing(
     out: List[Dict[str, Any]] = []
     for pc, e in agg.items():
         avail = _q(available_by_pc.get(pc))
+        # 1e-9 absolute tolerance. ``quantity`` is a PIECE COUNT: only the
+        # piece-count column aliases (qty / quantity / pcs / pcs_qty / qty_pcs
+        # / nos) feed it; weight is captured separately in gross/net_weight.
+        # It is integer-valued in practice (REAL column only for schema
+        # flexibility), and a sum of integer-valued float64s is exact (integers
+        # below 2**53 have no representation error), so the epsilon never masks
+        # a real 1-piece over-bill — it only absorbs the tiny decimal→binary
+        # representation error if a supplier ever ships a fractional quantity
+        # (~1e-14 at these magnitudes, well under 1e-9).
         over = e["billed"] > avail + 1e-9
         if len(e["lines"]) > 1 or over:
             out.append({
