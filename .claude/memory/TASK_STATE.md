@@ -17,27 +17,33 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
-- **Task:** Add proforma readiness status display to V2 shipment detail page
+- **Task:** Improve DHL shipment detail diagnostics and operator visibility
 - **Started:** 2026-06-21
-- **Status:** COMPLETE
+- **Status:** IN_PROGRESS
 - **HOLD reason (if BLOCKED-HOLD):** —
 
 ### Completion criteria
 
-- [x] `service/app/static/v2/shipment-detail-page.jsx` updated — `ProformaTabInShipment` replaced with two-component readiness display
-- [x] reviewer-challenge findings resolved (REVISE → implementation corrects `draft_state` field, 8 lifecycle states, write-on-read stagger)
-- [x] `pytest service/tests/ -m smoke -q` → 63 passed
-- [x] GATE 1 satisfied (final-consistency PASS 8/8)
-- [x] GATE 6 documented as requiring operator browser verification (deferred to operator per PR #687 body)
-- [x] PR #687 opened as draft on `claude/new-session-fetvj6`
-- [x] `TASK_STATE.md` → COMPLETE
-- [x] `BACKLOG.md` updated (B-002 added)
+- [ ] `pz-api.js` — `getDhlReadiness(batchId)` added
+- [ ] `service/app/static/v2/shipment-detail-page.jsx` — `DhlReadinessCard` component added
+- [ ] `DhlTab` wired to `DhlReadinessCard` (lifecycle state, blocking reason, authority, next action)
+- [ ] Hardcoded mock customs values marked BACKEND_PENDING
+- [ ] reviewer-challenge CLEAR (REVISE findings resolved before implementation)
+- [ ] `pytest service/tests/ -m smoke -q` passes
+- [ ] GATE 1 satisfied
+- [ ] GATE 6 documented (browser verification deferred to operator)
+- [ ] PR opened as draft on `claude/new-session-fetvj6`
+- [ ] `TASK_STATE.md` → COMPLETE
+- [ ] FEATURE_SCORECARD Row #2 filled
 
 ---
 
 ## History (most recent first)
 
+- 2026-06-21 — Task #1 COMPLETE: PR #687 draft (proforma readiness display in V2 DHL tab)
+
 - 2026-06-20 — /feature command created at .claude/commands/feature.md.
+
   COMMAND_REGISTRY.md updated. BACKLOG B-001 (PR #661 review) filed.
 - 2026-06-20 — TASK_EXECUTION_PROTOCOL.md created and merged via draft PR.
   Canonical DISCOVERY→PLAN→IMPLEMENT→VERIFY→CLOSE protocol. BACKLOG.md seeded.
