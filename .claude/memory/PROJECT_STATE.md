@@ -69,6 +69,31 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
+## Current origin/main HEAD (2026-06-21, updated): `53a3cc7`
+
+- **origin/main HEAD = `53a3cc7`** — `fix(v2): wire Create Reservation button (reservation readiness gate + confirmed wFirma create) — Lesson M (#702)` (merged 2026-06-21). Chain since `3b14825` (PR #693): `db98a63` (#696 link-as-sales captures operator contractor_id) → `6a8641e` (#697 V2 link-as-sales contractor picker) → `b47ca02` (#698 proforma-list Retry → shared Btn) → `0de180f` (#699 proforma-v2 draft-scoped documents + readiness gate) → `53a3cc7` (#702 Create Reservation button). Supersedes the `3b14825` HEAD block below (append-only — prior entries retained).
+
+## PR #702 — V2 Create Reservation button wired (reservation-preview readiness gate) (2026-06-21, MERGED `53a3cc7` — DEPLOYED + LIVE-VERIFIED on Draft #38)
+
+- **PR #702 SQUASH-MERGED `53a3cc7` and DEPLOYED to production** (2 V2 static files: `proforma-detail.jsx`, `pz-api.js`; scoped per-file Copy-Item, hashes match source, backup `C:\PZ-backup\pre-pr702-20260621-210509`; NO PZService restart — static assets). 7-agent gate: 6 deploy reviewers + frontend-flow CLEAR; coordinator READY-TO-DEPLOY (QA's only blocker was the pre-existing `#680` users.db storage-leak ERROR → operator-acknowledged override, same as #679/#697/#699).
+- **AUTHORITY: Create Reservation now uses the RESERVATION-preview readiness, NOT the proforma post readiness.** Gated on `GET /api/v1/wfirma/reservation-preview/{batch}` (`ready_to_create` + per-client `documents[].ready`/`blocking_reasons`) — the same gate the reservation-create endpoint (`POST /api/v1/wfirma/reservations/create`, a LIVE wFirma write, hard-gated by `check_wfirma_config` + `GATE_*`) enforces. Operator chose "wire + explicit confirm" (via AskUserQuestion, because the create is a wFirma write vs off-limits "wFirma posting"): disabled-with-exact-backend-reason when blocked; confirm modal → create when clear; no write when blocked (dual gate: button + confirm-modal create button); success refreshes reservation preview + readiness + draft; failure shows backend `{code,error}`. Folds in & supersedes #700 (closed) nits.
+- **Draft #38 browser smoke PASSED (live):** the Create Reservation button is present + **disabled** (Draft #38 reservation-blocked) with an `onClick` wired, showing the **exact backend reservation blockers** — "84 packing line(s) not yet scanned into warehouse" + "2 SKU(s) not linked to packing lines" (reservation-specific, `ui_reason_matches_backend=true`). **Clicking the disabled button fired NO write** (no modal, no request). Console clean. guard `test_v2_create_reservation_wiring.py` (12); esbuild parses both files clean.
+- **PR #703 is SUPERSEDED/CONFLICTING — must NOT be used or deployed.** A parallel session's `fix/v2-reservation-create-wire` wired the same button on the WRONG gate (`readinessPost.ready` = proforma post, not the reservation's own readiness); it became CONFLICTING/DIRTY once #702 merged. **#703 CLOSED** (2026-06-21, operator decision) as superseded by the deployed #702. No code from #703 merged. Cross-session-collision lesson (cf. #686): check open PRs for a parallel implementation of the same task. Memory: `project_v2_create_reservation_button`.
+
+## Draft #38 (Diamond Point) workflow closure — VERIFIED on deployed prod (2026-06-21)
+
+- **DECISION (binding): Draft #38 is engineering-CLOSED for the document/readiness/button defect class. Do NOT reopen Draft #38 as a software defect unless NEW browser evidence contradicts this verification.** The PRs that fixed it are merged + deployed (#699 `0de180f` draft-scoped documents + readiness gate; #702 `53a3cc7` Create Reservation wiring). Anything remaining on Draft #38 is an operator / warehouse / wFirma action, not a UI bug.
+- **All 8 closure items VERIFIED live (deployed prod, batch SHIPMENT_9158478722_2026-06_924c4e59, console clean):**
+  1. **Documents draft-scoped** — render only the draft's 11 billed editable_lines (enriched by batch packing via design_no/product_code, never adding unrelated lines).
+  2. **Packing List = 11 lines / USD 4,201.00** (NOT the full-shipment 84 / 89.5 / 23,655.50); 18 columns incl. Product Code / Gross Wt / Net Wt / HSN / Origin, missing optional values render "—".
+  3. **CMR draft-scoped** — rendered with no full-shipment 84/89.5 totals (Diamond-Point-only).
+  4. **Print / Send use draft/client-scoped payload** — Preview + Print(modal) use the draft-scoped client-side payloads (verified 11-line/$4,201); Print(toolbar) + Send use the backend client-scoped PDF route `/{batch}/{client}/document.pdf`.
+  5. **Generate menu** visible + **disabled** with reason "Document generation not yet available from this view" (Lesson M).
+  6. **AWB Generate** visible + **disabled** with the exact carrier-gate reason (`CARRIER_API_STATUS must be "shadow"/"live"`); draft recipient/shipping authority applies when the carrier gate activates (Lesson M).
+  7. **Freight / insurance** — none on this draft; the UI shows a clear **missing-state** (service-charges section + "Suggest from Customer Master") — not fabricated values.
+  8. **All remaining blockers are real** (no stale UI): `ready=false`, `product_authority_available=true`, no inflated "61", no stale ambiguity.
+- **Remaining Draft #38 blockers = operator/warehouse/wFirma ONLY** (not software): post readiness — (a) register `EJL/26-27/292-1` + `EJL/26-27/292-2` in wFirma + add `wfirma_product_id`; (b) receive those 2 codes into warehouse stock (still `PURCHASE_TRANSIT`); (c) create the batch wFirma PZ (operator-authorized write). Reservation readiness — 84 packing lines not yet scanned + 2 SKUs not linked to packing lines. VAT is NOT a blocker (NL EU VAT present). Memory: `project_proforma_v2_draft_document_authority` + `project_v2_create_reservation_button`.
+
 ## ARCHIVE RECORD — Incident AWB-2315714531-2026-06 FULLY ARCHIVED (2026-06-18)
 
 - **Status: COMPLETE — incident FULLY ARCHIVED.** Engineering CLOSED and governance COMPLETE on `main` via PR #653 (`fb70e15`). Archive record is **canonical on `main` via PR #654 (merge `34662a6`)**. **Tracking CLOSED.** Business remains separately OPEN for the accounting decision on wFirma doc 189364835. Rule 3 Reconciliation Authority is a separate future campaign, not started.
