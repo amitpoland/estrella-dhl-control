@@ -113,34 +113,27 @@ def _design_to_product_codes_for_batch(batch_id: str) -> Dict[str, List[str]]:
     no purchase packing_lines, or all candidate rows have NULL/empty
     product_code.  Keys are normalised (uppercase/trim/collapse-ws).
     """
-    out: Dict[str, set] = {}
     if not (batch_id or "").strip():
         return {}
-    db_path = getattr(_pdb, "_db_path", None)
-    if db_path is None:
-        return {}
+    # Canonical authority (packing_lines) — single resolver. It returns a
+    # stripped-key (case-preserved) map; this matcher keys by the NORMALISED
+    # design_no, so re-key and merge codes for designs that normalise to the same
+    # key — preserving the historical behaviour exactly. See ADR-product-authority.
+    from .product_authority_resolver import design_to_product_codes  # noqa: PLC0415
     try:
-        with sqlite3.connect(str(db_path)) as con:
-            con.row_factory = sqlite3.Row
-            rows = con.execute(
-                "SELECT DISTINCT design_no, product_code "
-                "FROM packing_lines "
-                "WHERE batch_id=? "
-                "AND product_code IS NOT NULL AND product_code<>''",
-                (str(batch_id),),
-            ).fetchall()
+        raw = design_to_product_codes(batch_id)
     except Exception as exc:
         log.warning(
             "[%s] sales matcher: batch-scoped lookup failed "
             "(non-fatal): %s", batch_id, exc,
         )
         return {}
-    for r in rows:
-        d = _norm(r["design_no"])
-        p = (r["product_code"] or "").strip()
-        if not d or not p:
+    out: Dict[str, set] = {}
+    for d, codes in raw.items():
+        nd = _norm(d)
+        if not nd:
             continue
-        out.setdefault(d, set()).add(p)
+        out.setdefault(nd, set()).update(codes)
     return {d: sorted(ps) for d, ps in out.items()}
 
 

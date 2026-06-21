@@ -223,66 +223,63 @@ def populate_from_packing(
         out["errors"].append("reservation_db path could not be resolved")
         return out
 
-    # ── Scan packing_lines for this batch ──────────────────────────────────
+    # ── Resolve design→product_code via the canonical authority ────────────
+    # packing_lines is the per-piece authority; the design→product_code
+    # derivation (and the NULL/blank exclusion + scanned/skipped accounting)
+    # now lives in the single resolver. The design_product_mapping registry
+    # WRITE below (the bridge's own responsibility) is unchanged.
+    from .product_authority_resolver import (  # noqa: PLC0415
+        resolve_batch_product_authority,
+    )
     try:
-        with sqlite3.connect(str(pdb_path)) as con:
-            con.row_factory = sqlite3.Row
-            rows = con.execute(
-                "SELECT DISTINCT design_no, product_code "
-                "FROM packing_lines WHERE batch_id=?",
-                (batch_id,),
-            ).fetchall()
+        _snap = resolve_batch_product_authority(
+            batch_id, packing_db_path=pdb_path)
     except Exception as exc:
         out["errors"].append(f"packing_db read failed: {exc}")
         return out
 
-    # Build accurate (design_no → product_codes) ambiguity map for this batch
-    # alongside the upsert loop. Any design that maps to >1 product_code
-    # within the same batch is flagged. (PND → 123-2 + 123-3 is the
-    # canonical case from AWB 6049349806.)
-    pairs_seen: Dict[str, set] = {}
-    for r in rows:
-        design = (r["design_no"]    or "").strip()
-        prod   = (r["product_code"] or "").strip()
-        if not design or not prod:
-            out["skipped"] += 1
-            continue
-        out["scanned"] += 1
-        pairs_seen.setdefault(design, set()).add(prod)
+    # design_no → product_codes ambiguity map for this batch. Any design that
+    # maps to >1 product_code within the same batch is flagged. (PND → 123-2 +
+    # 123-3 is the canonical case from AWB 6049349806.)
+    pairs_seen: Dict[str, set] = {
+        d: set(codes) for d, codes in _snap["design_to_product_codes"].items()
+    }
+    out["scanned"] = _snap["rows_scanned"]
+    out["skipped"] = _snap["rows_skipped"]
 
-        # Idempotent upsert via the existing reservation_db helper.
-        try:
-            existing = reservation_db.get_product_code_by_design_no(
-                rdb_path, design,
-            )
-            # Note: get_product_code_by_design_no returns the most recent
-            # mapping, but uniqueness is on (design_no, product_code) so
-            # we still call upsert which checks the precise pair.
-            row_id = reservation_db.upsert_design_mapping(
-                rdb_path,
-                design_no=design,
-                product_code=prod,
-                confidence="locked",
-                source="packing_bridge",
-            )
-            # Re-query to determine if this was insert vs update by
-            # checking whether the pair existed BEFORE this upsert.
-            with sqlite3.connect(str(rdb_path)) as con:
-                con.row_factory = sqlite3.Row
-                # Whether a row existed BEFORE the upsert: we can't know
-                # post-hoc with strict accuracy, so use created_at vs
-                # updated_at proximity as a heuristic.
-                row = con.execute(
-                    "SELECT created_at, updated_at FROM design_product_mapping "
-                    "WHERE design_no=? AND product_code=?",
-                    (design, prod),
-                ).fetchone()
-                if row and row["created_at"] == row["updated_at"]:
-                    out["inserted"] += 1
-                else:
-                    out["updated"] += 1
-        except Exception as exc:
-            out["errors"].append(f"upsert failed for {design}->{prod}: {exc}")
+    # Idempotent upsert of every (design_no, product_code) pair into the
+    # design_product_mapping registry (unchanged write behaviour).
+    for design, prods in pairs_seen.items():
+        for prod in sorted(prods):
+            try:
+                existing = reservation_db.get_product_code_by_design_no(
+                    rdb_path, design,
+                )
+                # Note: get_product_code_by_design_no returns the most recent
+                # mapping, but uniqueness is on (design_no, product_code) so
+                # we still call upsert which checks the precise pair.
+                row_id = reservation_db.upsert_design_mapping(
+                    rdb_path,
+                    design_no=design,
+                    product_code=prod,
+                    confidence="locked",
+                    source="packing_bridge",
+                )
+                # Re-query to determine if this was insert vs update by
+                # checking whether the pair existed BEFORE this upsert.
+                with sqlite3.connect(str(rdb_path)) as con:
+                    con.row_factory = sqlite3.Row
+                    row = con.execute(
+                        "SELECT created_at, updated_at FROM design_product_mapping "
+                        "WHERE design_no=? AND product_code=?",
+                        (design, prod),
+                    ).fetchone()
+                    if row and row["created_at"] == row["updated_at"]:
+                        out["inserted"] += 1
+                    else:
+                        out["updated"] += 1
+            except Exception as exc:
+                out["errors"].append(f"upsert failed for {design}->{prod}: {exc}")
 
     # Surface ambiguity (design with >1 product_code in same batch).
     # An explicit operator resolution clears the ambiguity — but ONLY when

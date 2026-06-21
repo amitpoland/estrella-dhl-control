@@ -5279,134 +5279,14 @@ def _eu_vat_candidate_from_master(cm: Any) -> Optional[Dict[str, str]]:
     return None
 
 
-def _reconcile_billed_ambiguity(
-    ambiguous_design_codes: Dict[str, Any],
-    draft_lines: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Reconcile batch-level design_no ambiguity against what is ACTUALLY billed.
-
-    Authority (rules 5/6): ``product_code`` (invoice_no + line position) is the
-    product-identity authority; ``design_no`` is descriptive only. The batch
-    bridge (``design_product_bridge.populate_from_packing``) flags any design_no
-    that maps to >1 product_code across the WHOLE batch — collapsing it globally
-    and discarding the invoice context. But that is a *billing* blocker only when
-    a line being billed on THIS draft cannot be pinned to a single product_code.
-
-    For each ambiguous design this classifies it as:
-      * ``resolved``        — every billed line for it already carries a
-                              product_code that is one of the batch's valid
-                              candidates for that design (the sales-packing /
-                              intake matcher already chose it). The code is only
-                              VALIDATED against the candidate set, never guessed.
-      * ``genuinely_ambiguous`` — a billed line for it has no product_code, or a
-                              product_code that is NOT a valid candidate. Still
-                              blocks (no auto-pick — operator must choose).
-      * ``not_billed``      — no line on this draft bills the design. A batch
-                              artifact (design present in packing but not on this
-                              proforma). Downgraded to a non-blocking note.
-
-    Pure function (no I/O). Returns ``{genuinely_ambiguous, resolved, not_billed}``.
-    """
-    def _norm(s: Any) -> str:
-        return str(s or "").strip().upper()
-
-    billed_by_design: Dict[str, List[str]] = {}
-    for ln in (draft_lines or []):
-        billed_by_design.setdefault(_norm(ln.get("design_no")), []).append(
-            _norm(ln.get("product_code")))
-
-    genuinely_ambiguous: Dict[str, List[str]] = {}
-    resolved:            Dict[str, List[str]] = {}
-    not_billed:          List[str] = []
-
-    for design, codes in (ambiguous_design_codes or {}).items():
-        candidates = {_norm(c) for c in (codes or [])}
-        billed_pcs = billed_by_design.get(_norm(design))
-        if not billed_pcs:
-            not_billed.append(design)
-            continue
-        # Every billed line for this design must already carry a product_code
-        # that is one of the batch's valid candidates. A blank or off-candidate
-        # code keeps the design blocking — never resolved by guessing.
-        if all(pc and pc in candidates for pc in billed_pcs):
-            resolved[design] = sorted({pc for pc in billed_pcs})
-        else:
-            genuinely_ambiguous[design] = sorted(codes)
-
-    return {
-        "genuinely_ambiguous": genuinely_ambiguous,
-        "resolved":            resolved,
-        "not_billed":          not_billed,
-    }
-
-
-def _analyze_product_code_billing(
-    draft_lines:      List[Dict[str, Any]],
-    available_by_pc:  Dict[str, float],
-    invoice_by_pc:    Optional[Dict[str, str]] = None,
-) -> List[Dict[str, Any]]:
-    """Aggregate billed quantity per product_code vs available purchase quantity.
-
-    Authority: a ``product_code`` (invoice_no + line position) identifies one
-    PURCHASE INVOICE LINE — a lot that may legitimately contain several pieces /
-    design_no values. The available quantity for a product_code is the sum of
-    ``packing_lines.quantity`` for it (``available_by_pc``). Therefore a
-    product_code MAY appear on several draft lines (different pieces of the lot) —
-    that is legal as long as the TOTAL billed quantity does not exceed the
-    available quantity (rule 2: the packing-line quantity is the split authority).
-    An OVER-bill — total billed > available — is the only billing-integrity
-    failure (rule 4 / the double-bill risk) and is a hard blocker.
-
-    This NEVER auto-corrects, auto-merges, or picks a line (rule 5). It only
-    classifies. Pure function (no I/O).
-
-    Returns one entry per product_code that is billed on >1 line OR over-billed::
-
-        {product_code, invoice_no, billed_qty, available_qty, over_billed: bool,
-         line_count, design_nos:[...], lines:[{idx, line_id, design_no, qty}]}
-
-    Over-billed entries are listed first.
-    """
-    invoice_by_pc = invoice_by_pc or {}
-
-    def _q(v: Any) -> float:
-        try:
-            return float(v or 0)
-        except (TypeError, ValueError):
-            return 0.0
-
-    agg: Dict[str, Dict[str, Any]] = {}
-    for i, ln in enumerate(draft_lines or []):
-        pc = str(ln.get("product_code") or "").strip()
-        if not pc:                       # blank code handled by other gates
-            continue
-        d = str(ln.get("design_no") or "").strip()
-        e = agg.setdefault(pc, {"billed": 0.0, "lines": [], "designs": set()})
-        qty = _q(ln.get("qty"))
-        e["billed"] += qty
-        e["lines"].append({"idx": i, "line_id": ln.get("line_id"),
-                           "design_no": d, "qty": qty})
-        if d:
-            e["designs"].add(d)
-
-    out: List[Dict[str, Any]] = []
-    for pc, e in agg.items():
-        avail = _q(available_by_pc.get(pc))
-        over = e["billed"] > avail + 1e-9
-        if len(e["lines"]) > 1 or over:
-            out.append({
-                "product_code":  pc,
-                "invoice_no":    invoice_by_pc.get(pc, ""),
-                "billed_qty":    round(e["billed"], 4),
-                "available_qty": round(avail, 4),
-                "over_billed":   over,
-                "line_count":    len(e["lines"]),
-                "design_nos":    sorted(e["designs"]),
-                "lines":         e["lines"],
-            })
-    # over-billed first, then alphabetical
-    out.sort(key=lambda x: (not x["over_billed"], x["product_code"]))
-    return out
+# #684 billed-line ambiguity reconciliation and #686 over-bill analysis now live
+# in the single canonical resolver (product_authority_resolver). They are
+# re-exported here under their historical private names so the readiness gate
+# and the existing tests are unchanged. See service/docs/adr/ADR-product-authority.md.
+from ..services.product_authority_resolver import (  # noqa: E402
+    reconcile_billed_ambiguity as _reconcile_billed_ambiguity,
+    analyze_product_code_billing as _analyze_product_code_billing,
+)
 
 
 def _derive_draft_readiness(
@@ -5642,21 +5522,14 @@ def _derive_draft_readiness(
     # auto-corrects or merges (rule 5).
     duplicate_product_codes: List[Dict[str, Any]] = []
     try:
-        from ..services import packing_db as _pkdb  # noqa: PLC0415
-        _avail_by_pc: Dict[str, float] = {}
-        _inv_by_pc:   Dict[str, str]   = {}
-        for _pr in (_pkdb.get_packing_lines_for_batch(draft.batch_id or "") or []):
-            _pcc = str(_pr.get("product_code") or "").strip()
-            if not _pcc:
-                continue
-            try:
-                _pq = float(_pr.get("quantity") or 0)
-            except (TypeError, ValueError):
-                _pq = 0.0
-            _avail_by_pc[_pcc] = _avail_by_pc.get(_pcc, 0.0) + _pq
-            _inv_by_pc.setdefault(_pcc, str(_pr.get("invoice_no") or ""))
+        from ..services.product_authority_resolver import (  # noqa: PLC0415
+            resolve_batch_product_authority as _resolve_authority,
+        )
+        _auth = _resolve_authority(draft.batch_id or "")
         duplicate_product_codes = _analyze_product_code_billing(
-            _r_lines, _avail_by_pc, _inv_by_pc)
+            _r_lines,
+            _auth["available_by_product_code"],
+            _auth["invoice_by_product_code"])
     except Exception as exc:
         warnings.append(
             f"duplicate product_code guard unavailable: "
