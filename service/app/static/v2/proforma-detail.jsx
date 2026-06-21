@@ -1684,7 +1684,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           {approving ? '⏳ Approving…' : '✓ Approve'}
         </TbBtn>
         {approveError && (
-          <span style={{ color: '#F44', fontSize: 11, maxWidth: 180 }}>{approveError}</span>
+          <span style={{ color: 'var(--badge-red-text)', fontSize: 11, maxWidth: 180 }}>{approveError}</span>
         )}
 
         <TbSep />
@@ -2930,7 +2930,7 @@ function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canC
 
       {/* Footer actions */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
-        <Btn variant="outline" disabled={isBlocked}>Create Reservation</Btn>
+        <Btn variant="outline" disabled={isBlocked} data-testid="reservation-create-btn">Create Reservation</Btn>
         <Btn
           variant="danger"
           disabled={!canConvert}
