@@ -14074,10 +14074,18 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
         // and name the field/source the operator must fill — Phase D: a freight
         // suggestion either works or clearly identifies the missing authority.
         const reason = (r && r.reason) ? r.reason : 'no freight data configured';
+        // freight_authority (when the customer master record WAS resolved) names
+        // the exact record + missing field so the blocker can deep-link straight
+        // to it. Absent when resolution itself failed (then only `reason` guides).
+        const fa = (r && r.freight_authority) || {};
         setFreightBlock({
           reason,
           currency: (r && r.draft_currency) || (openDraft && openDraft.currency) || '',
           client: (openDraft && openDraft.client_name) || '',
+          cm_contractor_id: fa.resolved ? (fa.contractor_id || '') : '',
+          cm_name:          fa.resolved ? (fa.bill_to_name || '') : '',
+          cm_edit_url:      fa.resolved ? (fa.edit_url || '') : '',
+          missing_field:    fa.missing_field || '',
         });
         onToast && onToast(`Freight suggestion blocked: ${reason}`, 'warn');
       }
@@ -15427,18 +15435,40 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
                                       color: 'var(--badge-amber-text, #92400e)' }}>
                         <div style={{ fontWeight: 700 }}>Freight authority missing</div>
                         <div>{freightBlock.reason}</div>
-                        <div style={{ marginTop: 4 }}>
-                          Set <code>freight_fixed_amount_{(freightBlock.currency || 'eur').toLowerCase()}</code>
-                          {' '}(and <code>freight_service_id</code>) on the Customer Master record
-                          {freightBlock.client ? <> for <strong>{freightBlock.client}</strong></> : null}, then click
-                          {' '}<strong>Suggest freight from master</strong> again.
-                          {' '}
-                          <a data-testid="freight-block-cm-link"
-                             href="/dashboard/customer-master-v2.html" target="_blank" rel="noopener"
-                             style={{ color: 'var(--accent)', fontWeight: 600 }}>
-                            Open Customer Master →
-                          </a>
-                        </div>
+                        {freightBlock.cm_contractor_id ? (
+                          // Customer Master record WAS resolved — name the exact
+                          // record + missing field and deep-link straight to it.
+                          <div style={{ marginTop: 4 }}>
+                            Set <code>{freightBlock.missing_field
+                                  || ('freight_fixed_amount_' + (freightBlock.currency || 'eur').toLowerCase())}</code>
+                            {' '}on the Customer Master record
+                            {freightBlock.cm_name ? <> for <strong>{freightBlock.cm_name}</strong></> : null}
+                            {' '}(<code>{freightBlock.cm_contractor_id}</code>, Freight section), then click
+                            {' '}<strong>Suggest freight from master</strong> again.
+                            {' '}
+                            <a data-testid="freight-block-cm-link"
+                               href={freightBlock.cm_edit_url
+                                  || ('/dashboard/customer-master-v2.html?contractor_id=' + encodeURIComponent(freightBlock.cm_contractor_id))}
+                               target="_blank" rel="noopener"
+                               style={{ color: 'var(--accent)', fontWeight: 600 }}>
+                              Edit this Customer Master record →
+                            </a>
+                          </div>
+                        ) : (
+                          // No record resolved (not found / ambiguous) — do NOT
+                          // imply a record exists; the reason above explains why.
+                          <div style={{ marginTop: 4 }}>
+                            Resolve this customer in Customer Master first (see the reason above),
+                            {' '}then click <strong>Suggest freight from master</strong> again.
+                            {' '}
+                            <a data-testid="freight-block-cm-link"
+                               href="/dashboard/customer-master-v2.html"
+                               target="_blank" rel="noopener"
+                               style={{ color: 'var(--accent)', fontWeight: 600 }}>
+                              Open Customer Master →
+                            </a>
+                          </div>
+                        )}
                       </div>
                     )}
                     <ProformaDraftAddChargeForm onAdd={onAddCharge}

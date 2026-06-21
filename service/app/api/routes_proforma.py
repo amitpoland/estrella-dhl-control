@@ -19,6 +19,7 @@ import sqlite3
 import xml.etree.ElementTree as ET
 from collections import Counter
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse, Response, HTMLResponse
@@ -6916,6 +6917,9 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
             "blocked_reason":  None,
         }
     else:
+        # cm is resolved here (resolution-blocked path returned above): expose
+        # the exact record + missing field + deep-link so the operator repairs
+        # the freight authority IN Customer Master, then retries.
         freight_entry = {
             "available":       False,
             "already_applied": "freight" in applied_types,
@@ -6924,6 +6928,7 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
             "label":           None,
             "wfirma_service_id": None,
             "blocked_reason":  freight_result.get("reason", "no freight data"),
+            "freight_authority": _freight_authority_block(cm, freight_result),
         }
 
     # Insurance suggestion (needs sales total for formula mode)
@@ -7088,6 +7093,48 @@ def apply_service_charges(
 
 # ── PR 2C.3b — customer-master suggestions ────────────────────────────────────
 
+def _cm_freight_edit_url(contractor_id: str) -> Optional[str]:
+    """Deep-link to the exact Customer Master record's edit view.
+
+    customer-master-v2.html reads ``?contractor_id=`` and opens that record, so
+    the freight blocker can route the operator straight to the record whose
+    freight authority is missing — no manual hunt through the customer list.
+    """
+    cid = (contractor_id or "").strip()
+    # safe="" mirrors the frontend's encodeURIComponent (encodes '/' too) so the
+    # backend-built deep-link matches customer-master-v2.html's own link format.
+    return (f"/dashboard/customer-master-v2.html?contractor_id={quote(cid, safe='')}"
+            if cid else None)
+
+
+def _freight_authority_block(cm: Optional["CustomerMaster"],
+                             pick_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Structured repair context for a BLOCKED freight suggestion.
+
+    Customer Master is the single freight authority. When ``pick_freight`` blocks
+    because the resolved record is missing a freight field, surface WHICH record
+    (contractor_id + name) and WHICH field, plus a deep-link to edit that exact
+    record — so the operator fixes the authority in Customer Master and retries,
+    with no draft-level override or guessed fallback.
+
+    ``resolved`` is True only when a Customer Master record was actually resolved;
+    callers must NOT synthesise an identity when resolution itself failed.
+    """
+    if cm is None:
+        return {"resolved": False}
+    missing = pick_result.get("field")
+    return {
+        "resolved":      True,
+        "contractor_id": cm.bill_to_contractor_id,
+        "bill_to_name":  cm.bill_to_name,
+        "missing_field": missing,
+        # Deep-link only when a Customer Master field is what's missing. A block
+        # with no CM field to repair (e.g. unsupported draft currency) gets no
+        # edit link — there is nothing on the record to fix.
+        "edit_url":      _cm_freight_edit_url(cm.bill_to_contractor_id) if missing else None,
+    }
+
+
 def _suggest_lookup(draft_id: int):
     """Shared setup for suggest-freight / suggest-insurance.
 
@@ -7210,8 +7257,11 @@ def suggest_freight_endpoint(draft_id: int) -> JSONResponse:
 
     result = pick_freight(cm, draft_currency)
     if not result.get("ok"):
+        # cm is resolved here (resolution-blocked path returned above), so
+        # surface the exact record + missing field + deep-link for repair.
         return JSONResponse({**base, "ok": False, "blocked": True,
-                             "reason": result.get("reason", "unknown")})
+                             "reason": result.get("reason", "unknown"),
+                             "freight_authority": _freight_authority_block(cm, result)})
 
     from decimal import Decimal as _Dec
     return JSONResponse({
