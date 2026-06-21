@@ -59,10 +59,32 @@ GATE_VAT_CODE_NOT_FOUND       = "VAT_CODE_NOT_FOUND"
 SUBMIT_RACE_LOST              = "SUBMIT_RACE_LOST"
 SUBMIT_UPSTREAM_ERROR         = "UPSTREAM_ERROR"
 
+# Attribution sentinel — recorded as submitted_by when the caller supplies no
+# operator identity (e.g. a blank X-Operator header). A deliberately distinct
+# value so an un-attributed reservation is *visible* in the audit trail rather
+# than masquerading as a plausible operator name.
+UNKNOWN_OPERATOR              = "unknown-operator"
 
-def create_one_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
+
+def _normalise_operator(operator: "str | None") -> str:
+    """Resolve an operator label, falling back to the attribution sentinel."""
+    return (operator or "").strip() or UNKNOWN_OPERATOR
+
+
+def create_one_reservation(
+    batch_id: str,
+    client_name: str,
+    *,
+    operator: str = "",
+) -> Dict[str, Any]:
     """
     Run all gates and (if all pass) submit a single reservation to wFirma.
+
+    ``operator`` is the identity that triggered this live create (forwarded
+    from the route's X-Operator header). It is normalised — a blank value
+    becomes ``UNKNOWN_OPERATOR`` — and recorded as submitted_by on the draft
+    plus the success/failure log lines, so a warehouse_document_r (an
+    accounting-adjacent write) always carries a durable record of who fired it.
 
     Returns a dict with at minimum:
       ok            : bool
@@ -70,8 +92,10 @@ def create_one_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
       error         : human-readable message (empty on success)
       draft_id      : str (if a draft was located, even on gate failure)
       wfirma_reservation_id : str (only on success)
+      submitted_by  : str (resolved operator; present on success)
       details       : dict with extra context for the caller / UI
     """
+    op = _normalise_operator(operator)
     # ── Gate 1: capability ───────────────────────────────────────────────────
     caps = wfc.get_capabilities()
     if not caps.get("ready_to_reserve"):
@@ -204,7 +228,9 @@ def create_one_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
         )
 
     # ── All gates passed — atomic transition pending|failed → submitting ────
-    if not wfdb.mark_draft_submitting(draft_id):
+    # submitted_by is persisted here, before the live POST, so attribution is
+    # durable across a mid-submit crash (created/failed both preserve it).
+    if not wfdb.mark_draft_submitting(draft_id, submitted_by=op):
         # Race: another worker just took it
         return _fail(
             SUBMIT_RACE_LOST,
@@ -240,8 +266,8 @@ def create_one_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
     if result.ok and result.wfirma_reservation_id:
         wfdb.mark_draft_created(draft_id, result.wfirma_reservation_id)
         log.info(
-            "wfirma reservation created: batch=%s client=%s wfirma_id=%s",
-            batch_id, client_name, result.wfirma_reservation_id,
+            "wfirma reservation created: batch=%s client=%s operator=%s wfirma_id=%s",
+            batch_id, client_name, op, result.wfirma_reservation_id,
         )
         return {
             "ok": True,
@@ -249,6 +275,7 @@ def create_one_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
             "error": "",
             "draft_id": draft_id,
             "wfirma_reservation_id": result.wfirma_reservation_id,
+            "submitted_by": op,
             "details": {},
         }
 
@@ -256,8 +283,8 @@ def create_one_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
     err = result.error or "wFirma create_reservation returned ok=False"
     wfdb.mark_draft_failed(draft_id, err)
     log.warning(
-        "wfirma reservation failed: batch=%s client=%s error=%s",
-        batch_id, client_name, err,
+        "wfirma reservation failed: batch=%s client=%s operator=%s error=%s",
+        batch_id, client_name, op, err,
     )
     return _fail(
         SUBMIT_UPSTREAM_ERROR,

@@ -197,10 +197,33 @@ def test_wfirma_create_calls_create_when_ready(engine, tmp_storage):
     ):
         result = engine.execute_action("wfirma_create", batch_id, {"client_name": "Acme"})
 
-    mock_create.assert_called_once_with(batch_id, "Acme")
+    # No operator in the payload → forwarded as '' (the service resolves the
+    # blank to its attribution sentinel).
+    mock_create.assert_called_once_with(batch_id, "Acme", operator="")
     assert result["ok"] is True
     assert result["status"] == "executed"
     assert result["wfirma_reservation_id"] == "WR-999"
+
+
+def test_wfirma_create_forwards_operator_from_payload(engine, tmp_storage):
+    """approved_by (operator attribution) in the action payload must be threaded
+    into the live reservation create for the automation path."""
+    batch_id = "B_READY_OP"
+    fake_result = {"ok": True, "wfirma_reservation_id": "WR-1000", "code": "CREATED"}
+
+    with (
+        patch("app.services.batch_readiness.get_batch_readiness", return_value=_make_batch_ready()),
+        patch("app.services.dhl_readiness.get_dhl_readiness", return_value=_make_dhl_other()),
+        patch("app.services.wfirma_reservation.get_reservation_preview", return_value=_make_wfirma_ready()),
+        patch("app.services.execution_engine._call_wfirma_create", return_value=fake_result) as mock_create,
+    ):
+        result = engine.execute_action(
+            "wfirma_create", batch_id,
+            {"client_name": "Acme", "approved_by": "alice@estrella"},
+        )
+
+    mock_create.assert_called_once_with(batch_id, "Acme", operator="alice@estrella")
+    assert result["ok"] is True
 
 
 # ── 3. missing client_name ────────────────────────────────────────────────────

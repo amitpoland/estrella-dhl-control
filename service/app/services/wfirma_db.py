@@ -146,6 +146,12 @@ def init_wfirma_db(db_path: Path) -> None:
             # carried into reservation readiness. Reference only — the unique
             # key stays (batch_id, client_name); no gating/booking change.
             ("client_contractor_id",  "TEXT NOT NULL DEFAULT ''"),
+            # Operator attribution: who triggered the live reservation create
+            # (warehouse_document_r — an accounting-adjacent write). Written by
+            # mark_draft_submitting at the moment the submission is initiated,
+            # from the X-Operator header (or a clear sentinel when blank).
+            # Default '' on pre-existing rows that predate this column.
+            ("submitted_by",           "TEXT NOT NULL DEFAULT ''"),
         ],
     )
     _add_columns_if_missing(
@@ -758,21 +764,30 @@ def get_reservation_draft_by_id(draft_id: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
-def mark_draft_submitting(draft_id: str) -> bool:
+def mark_draft_submitting(draft_id: str, submitted_by: str = "") -> bool:
     """
     Atomic transition pending|failed → submitting. Returns True if the
     transition happened (caller may proceed to POST), False if another
     worker already moved the draft (caller must NOT submit).
+
+    ``submitted_by`` records the operator who initiated this submission and
+    is written here — before the live wFirma POST is issued — so the
+    attribution is durable even if the process crashes mid-submit (the
+    created/failed transitions preserve it). The caller is responsible for
+    resolving a blank value to its attribution sentinel; this helper stores
+    exactly what it is given.
     """
     if _db_path is None or not draft_id:
         return False
     now = _now()
+    op  = (submitted_by or "").strip()
     with _lock, _connect() as con:
         cur = con.execute(
             """UPDATE wfirma_reservation_drafts
-               SET status='submitting', submitted_at=?, last_error='', updated_at=?
+               SET status='submitting', submitted_at=?, submitted_by=?,
+                   last_error='', updated_at=?
                WHERE id=? AND status IN ('pending', 'failed')""",
-            (now, now, draft_id),
+            (now, op, now, draft_id),
         )
         return cur.rowcount > 0
 

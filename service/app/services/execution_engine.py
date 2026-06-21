@@ -237,13 +237,18 @@ def block(reason: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
 
 # ── Action handlers ───────────────────────────────────────────────────────────
 
-def _call_wfirma_create(batch_id: str, client_name: str) -> Dict[str, Any]:
+def _call_wfirma_create(
+    batch_id: str, client_name: str, operator: str = "",
+) -> Dict[str, Any]:
     """
     Invoke wfirma_reservation_create.create_one_reservation.
     Returns the raw result dict (ok / code / wfirma_reservation_id / error).
+
+    ``operator`` attributes this automation-triggered live create; the service
+    resolves a blank value to its attribution sentinel.
     """
     from .wfirma_reservation_create import create_one_reservation
-    return create_one_reservation(batch_id, client_name)
+    return create_one_reservation(batch_id, client_name, operator=operator)
 
 
 def _call_closure_apply(batch_id: str, approved_by: str = "operator") -> Dict[str, Any]:
@@ -484,7 +489,9 @@ def execute_action(
             reason = blocking[0] if blocking else "wfirma preview not ready"
             return block(reason, batch)
 
-        result = _call_wfirma_create(batch_id, client_name)
+        operator = ((payload or {}).get("approved_by")
+                    or (payload or {}).get("operator") or "").strip()
+        result = _call_wfirma_create(batch_id, client_name, operator=operator)
 
     elif action_type == "closure_confirm":
         # Gate 1: batch-readiness (warehouse / sales / wFirma / DHL domains)

@@ -17,7 +17,9 @@ Endpoints
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Header, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -72,16 +74,26 @@ _GATE_CODES_409 = frozenset({
 
 
 @router.post("/reservations/create", dependencies=[_auth])
-def create_reservation(req: CreateReservationRequest) -> JSONResponse:
+def create_reservation(
+    req:        CreateReservationRequest,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
     """
     Create ONE wFirma reservation for the (batch_id, client_name) pair.
+
+    The X-Operator header attributes this live write (warehouse_document_r —
+    accounting-adjacent) to the operator who triggered it; the service records
+    it as submitted_by on the draft. A blank header is resolved to a clear
+    attribution sentinel rather than dropped, so the audit record is never empty.
 
     Status codes:
       200 — reservation created; body contains wfirma_reservation_id
       409 — pre-flight gate failed; body.code identifies which gate
       502 — upstream wFirma returned an error; body.error has details
     """
-    result = wrc.create_one_reservation(req.batch_id, req.client_name)
+    result = wrc.create_one_reservation(
+        req.batch_id, req.client_name, operator=(x_operator or ""),
+    )
     if result["ok"]:
         return JSONResponse(result, status_code=200)
 
