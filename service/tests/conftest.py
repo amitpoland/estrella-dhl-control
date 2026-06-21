@@ -55,10 +55,20 @@ def _isolate_ai_gateway():
             mod_val  = sys.modules.pop(full, None)       # sys.modules entry
             saved[name] = (attr_val, mod_val)
 
-    # Reset both circuit breakers
+    # Reset both ai_gateway circuit breakers
     if gw is not None:
         gw.reset_circuit_breaker()
         gw.reset_cowork_circuit_breaker()
+
+    # Reset every registry-backed circuit breaker (e.g. "wfirma") so a breaker
+    # tripped OPEN by an earlier test cannot reject a later test's live re-probe.
+    # ai_gateway's own resets above only touch the gateway breakers; the shared
+    # app.core.circuit_breaker registry (wfirma, etc.) is otherwise never reset
+    # between tests.  Guarded on prior import to keep this fixture a no-op for the
+    # 10,000+ tests that never touch app.core.circuit_breaker.
+    _cb = sys.modules.get('app.core.circuit_breaker')
+    if _cb is not None:
+        _cb.reset_all()
 
     yield
 
@@ -79,6 +89,11 @@ def _isolate_ai_gateway():
     if gw is not None:
         gw.reset_circuit_breaker()
         gw.reset_cowork_circuit_breaker()
+
+    # Symmetric teardown reset of registry-backed breakers (see setup note above)
+    _cb = sys.modules.get('app.core.circuit_breaker')
+    if _cb is not None:
+        _cb.reset_all()
 
 
 # ── Safety fixture: prevent tests from writing to live storage ───────────────
