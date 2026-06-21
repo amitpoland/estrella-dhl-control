@@ -5463,11 +5463,22 @@ Group D — Tests (3 new files):
 - **`logistics` role permitted to attest vision-invoice confirmation** (2026-06-17): mirrors existing `routes_action_proposals` resolve-action role set (admin/logistics/accounts). OPEN QUESTION OQ-PR647-ROLE-POLICY tracks this for operator ratification.
 - **reviewer-challenge and security-write-action-reviewer must supply structured verdict blocks on next write-action endpoint PR** (2026-06-17, GATE-4 SCHEDULED per scorecard): this run both scored ACCEPTABLE (27/35) with narrative-only Evidence 3/5. Structured verdict blocks (claim → evidence line reference → severity → disposition) are required at GATE 1 for write-action endpoints. Target: enforce at next write-action PR pre-flight checklist. Also tracked under Issue #597 (systemic Environment disclosure gap).
 
-## Next 3 actions in queue (refreshed 2026-06-20 — PR #667 DRAFT: TASK_EXECUTION_PROTOCOL + /feature command + SKILL_ROUTING)
+## PR #687 — Proforma Readiness Status Display in V2 Shipment Detail Tab (2026-06-21, OPEN DRAFT on `claude/new-session-fetvj6`)
 
-1. **Operator: review + approve PR #667** (branch `claude/new-session-fetvj6`; DRAFT — `.claude/TASK_EXECUTION_PROTOCOL.md` + `.claude/commands/feature.md` + `BACKLOG.md` + `.claude/SKILL_ROUTING.md`; WRITE-CAPABLE tier; reviewer-challenge required before merge per `/feature` command policy). Target outcome: governance protocol merged to main. Gating: operator approval + reviewer-challenge pass; docs/governance PR occupies docs-exception slot (GATE 2 compliant).
-2. **Operator: review + merge PR #647** (branch `feat/pr2-vision-invoice-confirm-workflow` @ `4429e04`; Stage B vision-invoice confirm workflow; GATE 1 satisfied; 21 tests). Gating: GATE 2 — PR #630 MERGED (slot freed); PR #667 is DRAFT (not counted); slot available. After deploy, AWB 2315714531 operator can confirm via `POST /dashboard/batches/{id}/vision-invoice/confirm`.
-3. **File Issue for B-001 (PR #661 `ci/auto-merge-approved`)** — review whether this CI auto-merge PR conflicts with governance gates before next merge sprint. Currently SCHEDULED in `BACKLOG.md`; convert to ISSUE if tracking beyond next session is needed. Gating: none — operator can action independently.
+- **Branch**: `claude/new-session-fetvj6`. PR #687 DRAFT — NOT merged, NOT deployed. Base: `main`. SHA `5a3c328` (impl) / `5ae2b3a` (scorecard + task state).
+- **Change**: `ProformaTabInShipment` in `service/app/static/v2/shipment-detail-page.jsx` replaced with live per-draft readiness panel. New `DraftReadinessCard` component calls `GET /draft/{id}/readiness?intent=approve` (single backend authority) and renders `blockers[{reason, repair_action}]`. Handles all 8 `DRAFT_LIFECYCLE_STATES`: `draft/editing/post_failed` → readiness panel; `posting` → in-progress; `approved/posted` → success; `cancelled/superseded` → hidden.
+- **GATE 1**: reviewer-challenge returned REVISE (3 findings: `draft_state` field name, all 8 lifecycle states, write-on-read stagger). All 3 resolved before implementation. final-consistency-review PASS 8/8. Smoke: 63 passed.
+- **GATE 6 PENDING (operator-owned)**: browser verification of V2 proforma tab required before PR converts from DRAFT to ready-for-review. Cannot complete in remote container.
+- **GATE 2**: 2/3 open PRs — PR #687 (DRAFT, this task) + PR #661 (stale, B-001).
+- **BACKLOG B-002 filed**: MISSING_SKILL `proforma-engine` — SCHEDULED after ≥10 `/feature` observation rows.
+- **FEATURE_SCORECARD.md Row #1 filled**: TASK_TYPE=PROFORMA, SELECTED_SKILL=backend-route-and-service-builder (fallback), CONFIDENCE=MEDIUM, outcome=PARTIAL (GATE 6 pending).
+- **agent-performance-observer NOT fired**: fewer than 3 formal scorecard-producing subagents. See OQ-PR687-SCORECARD.
+
+## Next 3 actions in queue (refreshed 2026-06-21 — PR #687 DRAFT: proforma readiness display; GATE 6 pending operator)
+
+1. **Operator: complete GATE 6 browser verification for PR #687** — open V2 shipment detail → Pro Forma tab → confirm `DraftReadinessCard` renders, readiness loads, no console errors, network 200 on `/readiness`. Then convert PR #687 from DRAFT → ready-for-review → merge.
+2. **Operator: review + approve PR #667** (branch `claude/new-session-fetvj6`; DRAFT — `.claude/TASK_EXECUTION_PROTOCOL.md` + `.claude/commands/feature.md` + `BACKLOG.md` + `.claude/SKILL_ROUTING.md`; docs-exception slot). Target outcome: governance protocol merged to main.
+3. **Operator: review + merge PR #647** (branch `feat/pr2-vision-invoice-confirm-workflow` @ `4429e04`; Stage B vision-invoice confirm workflow; GATE 1 satisfied; 21 tests). After deploy, AWB 2315714531 operator can confirm via `POST /dashboard/batches/{id}/vision-invoice/confirm`.
 
 ## /feature Command and BACKLOG.md Governance (2026-06-20)
 
@@ -6100,6 +6111,21 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ---
 
 # OPEN QUESTIONS
+
+## OQ-PR687-GATE6: GATE 6 browser verification for PR #687 pending operator (2026-06-21)
+
+- **Question**: Has the operator completed GATE 6 browser verification for PR #687 (`DraftReadinessCard` proforma readiness display in V2 shipment detail tab)?
+- **Required steps**: (1) Load shipment detail V2; (2) Click Pro Forma tab; (3) Confirm `DraftReadinessCard` renders per draft with correct state label; (4) Check console — no red errors; (5) Network — `getDraftReadiness` returns 200; (6) Blockers render with `reason` + `repair_action` text for non-ready drafts.
+- **Who can answer**: Operator (needs browser + running PZ service). Cannot complete in remote container.
+- **Impact if unanswered**: PR #687 stays DRAFT; cannot merge. GATE 1 requires GATE 6 before PR is marked ready.
+- **Path to closure**: Operator pastes console/network result; orchestrator records GATE 6 PASS in FACTS and removes DRAFT status.
+
+## OQ-PR687-SCORECARD: agent-performance-observer not fired for PR #687 task (2026-06-21)
+
+- **Question**: Should `agent-performance-observer` fire for a `/feature` run that dispatched reviewer-challenge + final-consistency-review + flow-context-keeper (3 subagents) but none produced a formal `.md` scorecard file on disk — i.e., no "FINAL REPORT" section header?
+- **Who can answer**: Operator — declare whether `/feature` CLOSE phase must always fire the observer, or whether RULE 2 threshold requires a formal FINAL REPORT section.
+- **Impact if unanswered**: quality signals from reviewer-challenge REVISE cycles go unscored across observation period.
+- **Path to closure**: Operator records decision in DECISIONS (option A: always fire on `/feature` CLOSE; option B: RULE 2 threshold as written).
 
 ## OQ-PR656-SHA: production validation of PR #656 SHA pending — operator must paste PowerShell output (2026-06-20)
 
