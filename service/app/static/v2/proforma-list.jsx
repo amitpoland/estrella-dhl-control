@@ -82,7 +82,7 @@ function ProformaListPage({ onDrill }) {
       {draftsHook.error && !draftsHook.loading && (
         <div style={{ padding: 32, textAlign: 'center', color: 'var(--badge-red-text)' }}>
           Failed to load drafts: {draftsHook.error}
-          <br /><button onClick={draftsHook.reload} style={{ marginTop: 12, cursor: 'pointer' }}>Retry</button>
+          <br /><Btn variant="ghost" small data-testid="btn-proforma-list-retry" onClick={draftsHook.reload}>Retry</Btn>
         </div>
       )}
       {!draftsHook.loading && !draftsHook.error && drafts.length === 0 && (
