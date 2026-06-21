@@ -119,9 +119,11 @@ def test_no_auto_fetch_on_mount_and_explicit_write(backfill_src):
     # operator opens the panel — no fetch at mount (no useEffect auto-load)
     assert "useEffect" not in backfill_src
     assert "btn-open-link-as-sales-backfill" in backfill_src
-    # explicit submit button labelled with what it does
+    # explicit submit button labelled with what it WRITES (incl. the draft sync)
     assert "btn-link-as-sales-submit" in backfill_src
-    assert "to sales`" in backfill_src
+    assert "to sales & sync drafts" in backfill_src
+    # a disabled-reason is shown when nothing is selectable (not only on click)
+    assert "las-submit-disabled-reason" in backfill_src
     # no forbidden write surfaces (no wFirma/PZ/invoice creation from this UI)
     for forbidden in ("wfirma_create", "create-pz", "to-invoice", "/post`"):
         assert forbidden not in backfill_src

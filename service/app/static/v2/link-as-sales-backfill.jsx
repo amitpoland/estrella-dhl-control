@@ -96,24 +96,28 @@
         {results && results.length > 0 && (
           <div style={{ marginTop: 6, maxHeight: 180, overflow: 'auto', border: '1px solid var(--border-subtle)', borderRadius: 6 }}>
             {results.map(c => (
-              <button
+              <Btn
                 key={c.bill_to_contractor_id}
+                variant="ghost"
+                small
                 onClick={() => onPick(c)}
                 data-testid={`${tid}-opt-${c.bill_to_contractor_id}`}
                 style={{
-                  display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
-                  padding: '7px 10px', background: 'var(--card)', border: 'none',
-                  borderBottom: '1px solid var(--border-subtle)', fontSize: 12, color: 'var(--text)',
+                  display: 'block', width: '100%', textAlign: 'left', borderRadius: 0,
+                  whiteSpace: 'normal', fontWeight: 400, color: 'var(--text)',
+                  borderBottom: '1px solid var(--border-subtle)',
                 }}
                 onMouseEnter={e => e.currentTarget.style.background = 'var(--row-hover)'}
-                onMouseLeave={e => e.currentTarget.style.background = 'var(--card)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
               >
-                <strong>{c.bill_to_name || '—'}</strong>
-                <span style={{ color: 'var(--text-2)' }}>
-                  {' · '}<code style={{ fontSize: 11 }}>{c.bill_to_contractor_id}</code>
-                  {c.country ? ` · ${c.country}` : ''}{_vat(c) ? ` · VAT ${_vat(c)}` : ''}
+                <span>
+                  <strong>{c.bill_to_name || '—'}</strong>
+                  <span style={{ color: 'var(--text-2)' }}>
+                    {' · '}<code style={{ fontSize: 11 }}>{c.bill_to_contractor_id}</code>
+                    {c.country ? ` · ${c.country}` : ''}{_vat(c) ? ` · VAT ${_vat(c)}` : ''}
+                  </span>
                 </span>
-              </button>
+              </Btn>
             ))}
           </div>
         )}
@@ -286,14 +290,21 @@
                     </span>
                   )}
                 </div>
-                <Btn
-                  variant="primary"
-                  disabled={submitting || mappings.length === 0}
-                  onClick={submit}
-                  data-testid="btn-link-as-sales-submit"
-                >
-                  {submitting ? 'Linking…' : `Link ${mappings.length} to sales`}
-                </Btn>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+                  <Btn
+                    variant="primary"
+                    disabled={submitting || mappings.length === 0}
+                    onClick={submit}
+                    data-testid="btn-link-as-sales-submit"
+                  >
+                    {submitting ? 'Linking…' : `Link ${mappings.length} to sales & sync drafts`}
+                  </Btn>
+                  {mappings.length === 0 && (
+                    <span data-testid="las-submit-disabled-reason" style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
+                      Select a contractor or enter a client name for at least one document to enable.
+                    </span>
+                  )}
+                </div>
               </div>
               {fallbackCount > 0 && (
                 <div data-testid="las-fallback-banner" style={{
@@ -320,8 +331,8 @@
                   </span>
                 )}
               </div>
-              {(result.results || []).map((r, i) => (
-                <div key={i} data-testid={`las-result-row-${r.packing_document_id || i}`} style={{ fontSize: 11, color: 'var(--text-2)', padding: '3px 0' }}>
+              {(result.results || []).map(r => (
+                <div key={r.packing_document_id} data-testid={`las-result-row-${r.packing_document_id}`} style={{ fontSize: 11, color: 'var(--text-2)', padding: '3px 0' }}>
                   <code style={{ fontSize: 10 }}>{r.packing_document_id}</code> →{' '}
                   {r.ok ? (
                     <span>
