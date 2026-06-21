@@ -331,8 +331,11 @@
     // POST /api/v1/wfirma/reservations/create  { batch_id, client_name }
     // LIVE wFirma write — hard-gated by check_wfirma_config + per-draft GATE_* checks.
     // 200 → { ok:true, wfirma_reservation_id }; 409 → gate code; 502 → wFirma error.
-    // Operator-confirmed action only (the UI gates on getReservationPreview readiness
-    // and requires explicit confirmation before calling this).
+    // NOTE: the backend CreateReservationRequest model is exactly {batch_id,
+    // client_name} — it does NOT define a confirm_token (unlike the proforma
+    // post/convert endpoints). The anti-accident gates are the UI confirm modal
+    // (operator-approved) + the server-side hard gates; do NOT add a token the
+    // backend would reject as an unexpected field.
     createReservation: (batchId, clientName) =>
       _postM(`${BASE}/wfirma/reservations/create`,
         { batch_id: batchId, client_name: clientName }),

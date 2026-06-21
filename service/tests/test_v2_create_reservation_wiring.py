@@ -123,6 +123,15 @@ def test_preview_fetch_is_operator_action_not_mount(detail):
 
 # ── incorporates the #700 frontend-design nits (token + testid) ──────────────
 
+def test_convert_button_has_disabled_reason_title(detail):
+    # the Convert button in the reservation tab footer must show why it is
+    # disabled (frontend-design §5.2/§6.1) — convertDisabledReason is passed through.
+    assert "convertDisabledReason={convertDisabledReason}" in detail
+    idx = detail.index('data-testid="reservation-convert-btn"')
+    blk = detail[idx - 260:idx]
+    assert "title=" in blk and "convertDisabledReason" in blk
+
+
 def test_includes_700_nits(detail):
     assert "'#F44'" not in detail                  # the hardcoded red is gone
     # approveError span now uses the token

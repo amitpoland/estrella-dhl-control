@@ -853,7 +853,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
   const reservationDoc = (reservationPreview &&
     (reservationPreview.documents || []).find(
-      d => (d.client_name || '') === clientName)) || null;
+      // trim both sides so whitespace drift can't silently false-block the draft
+      d => (d.client_name || '').trim() === (clientName || '').trim())) || null;
   const reservationExists = !!(reservationPreview && reservationPreview.reservation_exists);
   const reservationId      = (reservationPreview && reservationPreview.reservation_id) || null;
   // Ready only when the batch full-gate AND this draft's client document are ready.
@@ -2388,6 +2389,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             exportBlockers={exportBlockers}
             preview={preview}
             canConvert={canConvert}
+            convertDisabledReason={convertDisabledReason}
             onConvert={() => canConvert && setShowConvertModal(true)}
             reservationLoading={reservationLoading}
             reservationReady={reservationReady}
@@ -2989,7 +2991,8 @@ function ProformaCustomerMappingTab({ customer }) {
 
 // ── Reservation tab ───────────────────────────────────────────────────────────
 // WIRED: blocking_reasons and export_blockers from POST /api/v1/proforma/preview/{batch_id}/{client_name}
-function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canConvert, onConvert,
+function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canConvert,
+                                  convertDisabledReason, onConvert,
                                   reservationLoading, reservationReady, reservationReasons,
                                   reservationExists, reservationId, reservationBusy,
                                   reservationResult, onCreateReservation }) {
@@ -3099,6 +3102,7 @@ function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canC
           variant="danger"
           disabled={!canConvert}
           onClick={onConvert}
+          title={canConvert ? 'Convert this proforma to a wFirma invoice' : (convertDisabledReason || 'Post to wFirma first, then convert')}
           data-testid="reservation-convert-btn"
         >
           ⚠ Convert Proforma to Invoice
