@@ -5379,10 +5379,34 @@ def _derive_draft_readiness(
     _ambig_recon = _reconcile_billed_ambiguity(
         preview.get("ambiguous_design_codes") or {}, _r_lines)
 
+    # The draft's billed product_codes — the billing authority (rule 6). Warehouse
+    # / stock and wfirma_products blockers must be scoped to THESE codes, not the
+    # client's whole sales packing list for the batch. The preview's blocking_reasons
+    # count *design-lines* across the client's entire sales packing (e.g. 61 lines
+    # for only 2 distinct billed product_codes), which inflates and mis-attributes
+    # the gate to other drafts'/clients' pieces on the same shipment. So we SKIP the
+    # client-wide design-ambiguity, wfirma_products, and per-state stock blockers
+    # here and RE-DERIVE them draft-scoped: ambiguity below (billed-line product_code
+    # authority), wfirma_products in section 3, and stock state in section 3b.
+    _billed_pcs = {
+        (str(ln.get("product_code") or "")).strip()
+        for ln in _r_lines
+        if (str(ln.get("product_code") or "")).strip()
+    }
+    _STOCK_STATE_MARKERS = (
+        "still in PURCHASE_TRANSIT", "already in SALES_TRANSIT",
+        "in CLOSED state", "no inventory_state row",
+        "no scan_codes in packing_lines", "in unexpected state",
+    )
     for reason in (preview.get("blocking_reasons") or []):
-        if "maps to multiple product_codes" in str(reason):
+        _rs = str(reason)
+        if "maps to multiple product_codes" in _rs:
             continue   # re-derived below with billed-line product_code authority
-        _add(str(reason))
+        if "not matched in wfirma_products" in _rs:
+            continue   # section 3 re-derives this draft-scoped (distinct billed codes)
+        if any(_m in _rs for _m in _STOCK_STATE_MARKERS):
+            continue   # section 3b re-derives this draft-scoped (distinct billed codes)
+        _add(_rs)
     for _amb_design, _amb_codes in _ambig_recon["genuinely_ambiguous"].items():
         _add(
             f"design_no {_amb_design!r} maps to multiple product_codes in this "
@@ -5431,6 +5455,44 @@ def _derive_draft_readiness(
             "Register the listed products in wFirma and add the "
             "wfirma_product_id mapping to wfirma_products, then re-check "
             "readiness.",
+        )
+
+    # ── 3b. Warehouse / stock state, scoped to the draft's billed codes ───
+    # The preview reports per-state stock counts over the client's ENTIRE sales
+    # packing list (design-line granularity → inflated counts like "61" for only
+    # 2 distinct billed product_codes). A draft's POST is gated only by the stock
+    # state of the product_codes it actually bills (rule 6 — editable_lines are
+    # the billing authority). Re-derive from the preview's per-line stock_status,
+    # deduped to DISTINCT billed product_codes — never the whole batch/client.
+    # This NEVER bypasses the warehouse gate: each billed code still must be in an
+    # eligible (received) state; it only stops other drafts'/clients' transit
+    # pieces from blocking THIS draft.
+    _DRAFT_STOCK_BLURB = {
+        "purchase_transit": "still in PURCHASE_TRANSIT (not yet received in warehouse)",
+        "sales_transit":    "already in SALES_TRANSIT (committed to another proforma/invoice)",
+        "closed":           "in CLOSED state (already delivered)",
+        "missing_state":    "have packing_lines scan_codes but no inventory_state row "
+                            "— inventory_state_engine has not seeded this batch",
+        "no_scan_codes":    "have no scan_codes in packing_lines for the resolved product_code",
+    }
+    _pc_stock: Dict[str, Any] = {}   # product_code -> (stock_ok, stock_status)
+    for _pl in (preview.get("lines") or []):
+        _plpc = (str(_pl.get("product_code") or "")).strip()
+        if _plpc and _plpc not in _pc_stock:
+            _pc_stock[_plpc] = (bool(_pl.get("stock_ok")),
+                                str(_pl.get("stock_status") or ""))
+    _stock_blocked_draft: Dict[str, int] = {}
+    for _pc in sorted(_billed_pcs):
+        _ok, _st = _pc_stock.get(_pc, (True, ""))
+        if not _ok and _st:
+            _stock_blocked_draft[_st] = _stock_blocked_draft.get(_st, 0) + 1
+    for _st, _cnt in sorted(_stock_blocked_draft.items()):
+        _blurb = _DRAFT_STOCK_BLURB.get(_st, f"in stock state {_st!r}")
+        _add(
+            f"{_cnt} product(s) {_blurb}",
+            "Receive the listed product_code(s) into warehouse stock (warehouse "
+            "scan / DHL delivery confirmation), then re-check readiness. Only the "
+            "products THIS draft bills gate it — other drafts' pieces do not.",
         )
 
     # ── 4. WDT EU-VAT requirement (requirement 6) ─────────────────────────
