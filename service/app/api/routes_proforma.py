@@ -5521,19 +5521,44 @@ def _derive_draft_readiness(
     # block; it is surfaced in the structured field for transparency. Never
     # auto-corrects or merges (rule 5).
     duplicate_product_codes: List[Dict[str, Any]] = []
+    product_authority_available = True
     try:
         from ..services.product_authority_resolver import (  # noqa: PLC0415
             resolve_batch_product_authority as _resolve_authority,
         )
         _auth = _resolve_authority(draft.batch_id or "")
-        duplicate_product_codes = _analyze_product_code_billing(
-            _r_lines,
-            _auth["available_by_product_code"],
-            _auth["invoice_by_product_code"])
+        if not _auth.get("authority_available", True):
+            # FAIL CLOSED (OQ-PR689-OVERBILL-FAILCLOSED): packing_lines authority
+            # could not be READ — we cannot prove product_code validity, available
+            # quantity, or over-bill status. Block approve/post/convert rather than
+            # silently pass on an unprovable billing state. No fallback to
+            # product_master (advisory only); no auto-correction.
+            product_authority_available = False
+            _add(
+                "packing authority unavailable — cannot validate product "
+                "identity or billed quantity ("
+                + str(_auth.get("authority_error") or "packing_lines read failed")
+                + ")",
+                "Restore packing_lines read access for this batch (packing_db), "
+                "then re-check readiness. Approve/post/convert stay blocked until "
+                "product identity and billed quantity can be validated.",
+            )
+        else:
+            duplicate_product_codes = _analyze_product_code_billing(
+                _r_lines,
+                _auth["available_by_product_code"],
+                _auth["invoice_by_product_code"])
     except Exception as exc:
-        warnings.append(
-            f"duplicate product_code guard unavailable: "
-            f"{type(exc).__name__}: {exc}")
+        # FAIL CLOSED: an unexpected failure evaluating the over-bill guard is a
+        # HARD BLOCKER, not a warning — never approve/post/convert when the
+        # billing-integrity check could not run.
+        product_authority_available = False
+        _add(
+            "packing authority guard failed — cannot validate billed quantity "
+            f"({type(exc).__name__}: {exc})",
+            "Inspect the packing_lines read path; readiness stays blocked until "
+            "the over-bill guard can run.",
+        )
     for _dp in duplicate_product_codes:
         if _dp["over_billed"]:
             _designs = ", ".join(_dp["design_nos"][:6]) + (
@@ -5575,6 +5600,7 @@ def _derive_draft_readiness(
         "resolved_designs":  resolved_designs,
         "vat_resolution":    _vat_resolution,
         "duplicate_product_codes": duplicate_product_codes,
+        "product_authority_available": product_authority_available,
     }
 
 
