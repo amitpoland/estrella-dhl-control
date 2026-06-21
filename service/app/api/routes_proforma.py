@@ -5522,18 +5522,45 @@ def _derive_draft_readiness(
     # auto-corrects or merges (rule 5).
     duplicate_product_codes: List[Dict[str, Any]] = []
     try:
+        # Read packing EXPLICITLY here so a packing-DB failure (locked /
+        # unavailable / transient) raises into the except branch below and
+        # fails CLOSED with a clear precautionary blocker.
+        # resolve_batch_product_authority() otherwise reads packing through a
+        # helper that SWALLOWS read errors and returns [] (it documents
+        # "callers fail safe/closed at their own layer"). Passing rows we read
+        # ourselves makes this billing-integrity gate that caller, and stops an
+        # unreadable DB from masquerading as an empty authority snapshot — which
+        # would mislabel every billed line as "0 available → over-billed"
+        # instead of surfacing the real cause. The rows are reused below (no
+        # double read), so the happy path is unchanged.
+        from ..services import packing_db as _pkdb  # noqa: PLC0415
+        _pk_rows = _pkdb.get_packing_lines_for_batch(draft.batch_id or "") or []
         from ..services.product_authority_resolver import (  # noqa: PLC0415
             resolve_batch_product_authority as _resolve_authority,
         )
-        _auth = _resolve_authority(draft.batch_id or "")
+        _auth = _resolve_authority(draft.batch_id or "", packing_rows=_pk_rows)
         duplicate_product_codes = _analyze_product_code_billing(
             _r_lines,
             _auth["available_by_product_code"],
             _auth["invoice_by_product_code"])
     except Exception as exc:
+        # Fail-CLOSED. This is a billing-integrity guard: if the over-bill
+        # check cannot evaluate we CANNOT rule out an over-bill, so
+        # approve/post/convert must block. A warning alone is fail-OPEN —
+        # warnings render in the UI only when !ready, so the operator would
+        # never see the degradation and a genuinely over-billed draft could be
+        # approved. Mirror the preview / VAT derivation failures in this
+        # function, which also _add(...) on exception rather than silently
+        # passing.
         warnings.append(
             f"duplicate product_code guard unavailable: "
             f"{type(exc).__name__}: {exc}")
+        _add(
+            "product_code over-bill guard could not evaluate (packing data "
+            "unavailable) — blocked as a precaution",
+            "Retry once packing data is readable; do not approve/post/convert "
+            "until the over-bill check runs.",
+        )
     for _dp in duplicate_product_codes:
         if _dp["over_billed"]:
             _designs = ", ".join(_dp["design_nos"][:6]) + (
