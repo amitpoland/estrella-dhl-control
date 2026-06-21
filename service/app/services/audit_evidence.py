@@ -7,8 +7,8 @@ Why
 Examples we hit in production:
 
   • ``status="failed"`` from a verification block, but the operator later
-    cleared the failure via /cn-decision/accept-sad (existing
-    ``routes_wfirma._compute_effective_pz_status`` already handles this).
+    cleared the failure via /cn-decision/accept-sad (the canonical
+    ``operational_authority.compute_effective_pz_status`` already handles this).
   • wFirma PZ created live (doc id known), but ``wfirma_export``
     write back never landed in audit.json — only the timeline event
     ``wfirma_pz_created`` carries the proof.
@@ -97,10 +97,14 @@ def _wfirma_pz_doc_id_from_timeline(audit: Dict[str, Any]) -> str:
 
 
 def _effective_pz_status_done(audit: Dict[str, Any]) -> bool:
-    """Re-use the existing operator-cleared normalization. Imported lazily
-    to avoid a circular import (routes_wfirma imports services modules)."""
+    """Re-use the canonical effective-PZ-status authority. A1 Stage 2: imports the
+    single source ``operational_authority.compute_effective_pz_status`` (leaf
+    module — no import cycle), not the former routes_wfirma fork."""
     try:
-        from ..api.routes_wfirma import _compute_effective_pz_status, _PZ_DONE
+        from .operational_authority import (
+            compute_effective_pz_status as _compute_effective_pz_status,
+            PZ_DONE as _PZ_DONE,
+        )
     except Exception:
         return False
     try:
