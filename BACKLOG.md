@@ -11,6 +11,7 @@ next task closes.
 | # | Discovery | Found during | Disposition | Notes |
 |---|---|---|---|---|
 | B-001 | PR #661 (`ci/auto-merge-approved`) is non-draft and unreviewed — appears stale since 2026-06-20 | /feature DISCOVERY | SCHEDULED — review before next merge sprint | Verify it doesn't conflict with governance gates before approving |
+| B-002 | MISSING_SKILL: `proforma-engine` — planned but not installed; `backend-route-and-service-builder` used as fallback for PROFORMA domain | /feature DISCOVERY (proforma readiness task) | SCHEDULED — build after 10-run observation period reveals proforma domain bottleneck | Routing table already has the placeholder entry; SKILL_ROUTING.md §Missing skills |
 
 ---
 

@@ -17,20 +17,21 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
-- **Task:** Build automatic skill routing for /feature
-- **Started:** 2026-06-20
-- **Status:** COMPLETE
+- **Task:** Add proforma readiness status display to V2 shipment detail page
+- **Started:** 2026-06-21
+- **Status:** IN_PROGRESS
 - **HOLD reason (if BLOCKED-HOLD):** —
 
 ### Completion criteria
 
-- [x] `.claude/SKILL_ROUTING.md` created — 13-domain routing table, algorithm, sample resolutions
-- [x] `.claude/commands/feature.md` updated — Step 0 skill-routing block added to Phase 1
-- [x] `TASK_STATE.md` → COMPLETE
-- [x] Docs-only — no runtime code changed
-- [x] GATE 1 satisfied (reviewer-challenge CLEAR, final-consistency CLEAR)
-- [x] Committed to `claude/new-session-fetvj6`
-- [x] Pushed to remote
+- [ ] `service/app/static/v2/shipment-detail-page.jsx` updated — `ProformaTabInShipment` replaced with two-component readiness display
+- [ ] reviewer-challenge findings resolved (REVISE → implementation corrects `draft_state` field, 8 lifecycle states, write-on-read stagger)
+- [ ] `pytest service/tests/ -m smoke -q` passes (no backend changes; sanity gate)
+- [ ] GATE 1 satisfied (final-consistency CLEAR)
+- [ ] GATE 6 documented as requiring operator browser verification (remote container cannot complete)
+- [ ] PR opened as draft, marked ready for review
+- [ ] `TASK_STATE.md` → COMPLETE
+- [ ] `BACKLOG.md` updated (B-002 added)
 
 ---
 

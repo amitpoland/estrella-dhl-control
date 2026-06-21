@@ -828,11 +828,94 @@ function TimelineTab({ shipment, sadUploaded, pzGenerated, replySent, dhlEmailRe
   );
 }
 
-// Pro Forma tab inside shipment detail — navigates to real Pro Forma hub with batch context.
-// Authority: proforma-list.jsx → GET /api/v1/proforma/drafts/{batch_id}
-// No mock drafts. batch_id flows from parent shipment prop.
+// Per-draft readiness panel for active (non-terminal) draft states.
+// Authority: GET /api/v1/proforma/draft/{id}/readiness?intent=approve
+// Known write-on-read: idempotent bridge-write (packing_lines → design_product_mapping).
+// Calls staggered by mountDelayMs to prevent concurrent SQLite lock contention.
+function DraftReadinessCard({ draft, mountDelayMs }) {
+  const [readiness, setReadiness] = React.useState(null);
+  const [readinessLoading, setReadinessLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      window.PzApi.getDraftReadiness(draft.id, 'approve')
+        .then(r => {
+          if (!cancelled) {
+            setReadiness((r && r.ok && r.data) ? r.data : null);
+            setReadinessLoading(false);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) { setReadiness(null); setReadinessLoading(false); }
+        });
+    }, mountDelayMs || 0);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [draft.id]);
+
+  const STATE_BADGE = { draft: 'Draft', editing: 'In Preparation', post_failed: 'Action Required' };
+  const draftTitle  = draft.wfirma_proforma_fullnumber || ('#' + draft.id);
+  const badgeStatus = STATE_BADGE[draft.draft_state] || 'Draft';
+
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <PanelCard>
+        <div style={{ padding: '16px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', flex: 1 }}>
+              {draft.client_name || '(no client)'}
+            </div>
+            <Badge status={badgeStatus} small />
+            <div style={{ fontSize: 11, color: 'var(--text-2)' }} data-testid="proforma-draft-id">
+              Draft {draftTitle}
+            </div>
+          </div>
+          {readinessLoading ? (
+            <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Checking readiness…</div>
+          ) : readiness === null ? (
+            <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+              Readiness unavailable — open Pro Forma hub to retry.
+            </div>
+          ) : readiness.ready ? (
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--badge-green-text, #166534)' }}
+                 data-testid="proforma-ready-chip">
+              ✓ Ready to approve
+            </div>
+          ) : (
+            <div data-testid="proforma-blockers">
+              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 6 }}>
+                {(readiness.blockers || []).length} blocker(s) preventing approval:
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                {(readiness.blockers || []).map((b, i) => (
+                  <li key={i} style={{ fontSize: 12, color: 'var(--text)', marginBottom: 3 }}>
+                    <span style={{ fontWeight: 500 }}>{b.reason}</span>
+                    {b.repair_action && (
+                      <span style={{ color: 'var(--text-2)' }}> — {b.repair_action}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </PanelCard>
+    </div>
+  );
+}
+
+// Pro Forma tab inside shipment detail — shows per-draft readiness so operators
+// can see exactly why a draft is not ready without navigating away from the page.
+// Authority: GET /api/v1/proforma/drafts/{batch_id} + GET /draft/{id}/readiness
 function ProformaTabInShipment({ shipment }) {
   const batchId = shipment && shipment.batch_id;
+  // Hook called unconditionally (React rules); null batchId returns empty list.
+  const draftsState = window.PzState.useProformaDrafts(batchId || null);
+
+  const goToProforma = () => {
+    if (!batchId) return;
+    window.location.href = '/v2/proforma?batch_id=' + encodeURIComponent(batchId);
+  };
 
   if (!batchId) {
     return (
@@ -842,28 +925,108 @@ function ProformaTabInShipment({ shipment }) {
     );
   }
 
-  const goToProforma = () => {
-    window.location.href = '/v2/proforma?batch_id=' + encodeURIComponent(batchId);
-  };
+  const allDrafts = (draftsState.data && draftsState.data.drafts) || [];
+
+  // Partition by draft_state (API field is draft_state, confirmed from _draft_to_summary)
+  // Full 8-state lifecycle: draft|editing|approved|posting|posted|post_failed|cancelled|superseded
+  const READINESS_STATES = new Set(['draft', 'editing', 'post_failed']);
+  const SUCCESS_STATES   = new Set(['approved', 'posted']);
+  // cancelled and superseded are hidden; posting shown separately
+
+  const activeDrafts  = allDrafts.filter(d => READINESS_STATES.has(d.draft_state));
+  const postingDrafts = allDrafts.filter(d => d.draft_state === 'posting');
+  const successDrafts = allDrafts.filter(d => SUCCESS_STATES.has(d.draft_state));
 
   return (
     <>
       <SectionLabel>Pro Forma drafts for this shipment</SectionLabel>
-      <PanelCard>
-        <div style={{ padding: '24px 28px', display: 'flex', alignItems: 'center', gap: 20 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
-              Pro Forma drafts for batch {batchId}
+
+      {/* Navigation — always visible per Lesson M */}
+      <div style={{ marginBottom: 16 }}>
+        <PanelCard>
+          <div style={{ padding: '20px 24px', display: 'flex', alignItems: 'center', gap: 20 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                Pro Forma hub — batch {batchId}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                Create, edit, post to wFirma, and convert drafts to invoices in the Pro Forma hub.
+              </div>
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
-              Create, edit, post to wFirma, and convert drafts to invoices in the Pro Forma hub.
-            </div>
+            <Btn variant="outline" small onClick={goToProforma} data-testid="proforma-tab-open">
+              Open Pro Forma →
+            </Btn>
           </div>
-          <Btn variant="outline" small onClick={goToProforma} data-testid="proforma-tab-open">
-            Open Pro Forma →
-          </Btn>
+        </PanelCard>
+      </div>
+
+      {draftsState.loading && (
+        <div style={{ fontSize: 13, color: 'var(--text-2)', padding: '8px 0' }}>Loading drafts…</div>
+      )}
+      {draftsState.error && (
+        <div style={{ fontSize: 13, color: 'var(--badge-red-text, #991b1b)', padding: '8px 0' }}>
+          Could not load drafts. Open Pro Forma hub to retry.
         </div>
-      </PanelCard>
+      )}
+      {!draftsState.loading && !draftsState.error && allDrafts.length === 0 && (
+        <div style={{ fontSize: 13, color: 'var(--text-2)', padding: '8px 0' }}>
+          No proforma drafts yet for this batch.
+        </div>
+      )}
+
+      {activeDrafts.length > 0 && (
+        <>
+          <SectionLabel style={{ marginTop: 12 }}>Readiness</SectionLabel>
+          {activeDrafts.map((d, idx) => (
+            <DraftReadinessCard key={d.id} draft={d} mountDelayMs={idx * 150} />
+          ))}
+        </>
+      )}
+
+      {postingDrafts.length > 0 && (
+        <>
+          <SectionLabel style={{ marginTop: 12 }}>Posting to wFirma</SectionLabel>
+          {postingDrafts.map(d => (
+            <div key={d.id} style={{ marginBottom: 8 }}>
+              <PanelCard>
+                <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', flex: 1 }}>
+                    {d.client_name || '(no client)'}
+                  </div>
+                  <Badge status="Processing" small />
+                  <div style={{ fontSize: 12, color: 'var(--text-2)' }}>wFirma submission in progress</div>
+                </div>
+              </PanelCard>
+            </div>
+          ))}
+        </>
+      )}
+
+      {successDrafts.length > 0 && (
+        <>
+          <SectionLabel style={{ marginTop: 12 }}>Completed</SectionLabel>
+          {successDrafts.map(d => {
+            const isPosted = d.draft_state === 'posted';
+            const draftTitle = d.wfirma_proforma_fullnumber || ('#' + d.id);
+            return (
+              <div key={d.id} style={{ marginBottom: 8 }}>
+                <PanelCard>
+                  <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', flex: 1 }}>
+                      {d.client_name || '(no client)'}
+                    </div>
+                    <Badge status={isPosted ? 'Exported' : 'Generated'} small />
+                    <div style={{ fontSize: 12, fontWeight: 600,
+                                  color: 'var(--badge-green-text, #166534)' }}>
+                      ✓ {draftTitle}
+                    </div>
+                  </div>
+                </PanelCard>
+              </div>
+            );
+          })}
+        </>
+      )}
     </>
   );
 }
