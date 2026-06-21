@@ -2615,9 +2615,44 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
                   {type.charAt(0).toUpperCase() + type.slice(1)}
                 </span>
                 {blocked ? (
-                  <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
-                    {s.blocked_reason || 'Not available'}
-                  </span>
+                  (() => {
+                    // Customer Master is the single freight authority. When the
+                    // record WAS resolved but is missing a freight field, deep-link
+                    // straight to that exact record's edit view + offer Retry —
+                    // no draft-level override, no guessed fallback. (freight_authority
+                    // is freight-only; absent/unresolved → reason text only.)
+                    const fa = s.freight_authority;
+                    const canRepair = fa && fa.resolved && fa.edit_url;
+                    return (
+                      <span data-testid={`suggestion-blocked-${type}`}
+                            style={{ fontSize: 12, color: 'var(--text-2)', display: 'flex',
+                                     flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                        <span>{s.blocked_reason || 'Not available'}</span>
+                        {canRepair && (
+                          <React.Fragment>
+                            <a data-testid={`freight-authority-edit-${type}`}
+                               href={fa.edit_url} target="_blank" rel="noopener"
+                               title={`Edit freight authority on Customer Master record ${fa.contractor_id}`}
+                               style={{ color: 'var(--accent)', fontWeight: 600 }}>
+                              Edit {fa.bill_to_name || 'Customer Master'} ({fa.contractor_id}) →
+                            </a>
+                            {canEdit && (
+                              <button data-testid={`freight-authority-retry-${type}`}
+                                      disabled={chargesLoading}
+                                      title="Re-check Customer Master after setting the freight amount"
+                                      onClick={onFetchSuggestions}
+                                      style={{ fontSize: 11, padding: '1px 8px', background: 'none',
+                                               border: '1px solid var(--border)', borderRadius: 4,
+                                               cursor: chargesLoading ? 'wait' : 'pointer',
+                                               color: 'var(--text-2)' }}>
+                                ↻ Retry
+                              </button>
+                            )}
+                          </React.Fragment>
+                        )}
+                      </span>
+                    );
+                  })()
                 ) : alreadyApplied ? (
                   <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
                     Already applied ({fmtAmt(s.amount, s.currency)})
