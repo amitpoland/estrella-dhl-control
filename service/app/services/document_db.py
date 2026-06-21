@@ -1642,7 +1642,7 @@ def set_sales_client_name(
 
 def set_sales_document_contractor(
     batch_id: str, sales_document_id: str, contractor_id: str,
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     """Operator-driven direct assignment of the contractor authority onto ONE
     sales_documents row AND its sales_packing_lines.
 
@@ -1654,19 +1654,30 @@ def set_sales_document_contractor(
     The subsequent draft sync then reads the contractor, resolves the canonical
     name, births the draft, and resolves the open block — no re-intake.
 
-    Scoped strictly to the one document (id + batch). Additive: it only SETS the
-    operator-chosen authority. It never changes ``client_name`` (the sync's
-    canonical-rename step owns that) and never touches another document's rows.
-    Returns ``{"sales_documents_updated", "sales_lines_updated"}``. Local-DB
-    only; never raises beyond DB init.
+    Scoped strictly to the one document (id + batch). This is a deliberate
+    operator OVERRIDE: unlike ``backfill_contractor_ids`` (which only fills
+    empties), it overwrites any existing ``client_contractor_id`` on the target
+    document — so the prior value is read first and surfaced as
+    ``previous_contractor_id`` for audit/disclosure (the caller can warn on an
+    overwrite). It never changes ``client_name`` (the sync's canonical-rename
+    step owns that) and never touches another document's rows. Returns
+    ``{"sales_documents_updated", "sales_lines_updated", "previous_contractor_id"}``.
+    Local-DB only; never raises beyond DB init.
     """
     if (_db_path is None
             or not (batch_id or "").strip()
             or not (sales_document_id or "").strip()
             or not (contractor_id or "").strip()):
-        return {"sales_documents_updated": 0, "sales_lines_updated": 0}
+        return {"sales_documents_updated": 0, "sales_lines_updated": 0,
+                "previous_contractor_id": ""}
     now = _now()
     with _lock, _connect() as con:
+        prev_row = con.execute(
+            "SELECT client_contractor_id FROM sales_documents "
+            "WHERE id=? AND batch_id=?",
+            (sales_document_id, batch_id),
+        ).fetchone()
+        previous = (prev_row["client_contractor_id"] if prev_row else "") or ""
         cur_doc = con.execute(
             "UPDATE sales_documents SET client_contractor_id=?, updated_at=? "
             "WHERE id=? AND batch_id=?",
@@ -1680,6 +1691,7 @@ def set_sales_document_contractor(
     return {
         "sales_documents_updated": cur_doc.rowcount or 0,
         "sales_lines_updated":     cur_lines.rowcount or 0,
+        "previous_contractor_id":  previous,
     }
 
 

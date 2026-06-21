@@ -365,9 +365,14 @@ def assign_contractor_to_blocked_record(
     canonical_name = (getattr(cm_rec, "bill_to_name", "") or "").strip()
 
     # 1. Write the contractor authority onto the sales chain (doc + lines).
+    #    This is an operator override — it overwrites any prior contractor. The
+    #    prior value is disclosed so the operator can see an overwrite happened
+    #    (e.g. re-binding a client_unresolved / contractor_conflict block).
     assigned = ddb.set_sales_document_contractor(
         batch_id, sales_document_id, contractor_id,
     )
+    previous_cid = (assigned.get("previous_contractor_id") or "").strip()
+    overwrote_existing = bool(previous_cid and previous_cid != contractor_id)
 
     # 2. Re-run the full projection / canonical-rename / draft sync so the draft
     #    is born and the open block resolves. Reuses the backfill pipeline so the
@@ -381,6 +386,8 @@ def assign_contractor_to_blocked_record(
         "contractor_id":     contractor_id,
         "canonical_name":    canonical_name,
         "assigned":          assigned,
+        "previous_contractor_id": previous_cid,
+        "overwrote_existing":     overwrote_existing,
         "backfill":          backfill,
         "open_blocks":       backfill.get("open_blocks", []),
     }

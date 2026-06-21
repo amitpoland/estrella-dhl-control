@@ -132,10 +132,20 @@ class TestPhaseADataLayer:
         res = ddb.set_sales_document_contractor(b, sd_id, CID_ACME)
         assert res["sales_documents_updated"] == 1
         assert res["sales_lines_updated"] == 1
+        assert res["previous_contractor_id"] == ""   # was a contractor_missing doc
         row = next(r for r in ddb.get_sales_documents(b) if r["id"] == sd_id)
         assert row["client_contractor_id"] == CID_ACME
         assert all(ln["client_contractor_id"] == CID_ACME
                    for ln in ddb.get_sales_packing_lines(b))
+
+    def test_set_contractor_discloses_previous_on_overwrite(self, storage):
+        b = "B-SETC-OW"
+        sd_id = _seed_blocked_doc(b)
+        ddb.set_sales_document_contractor(b, sd_id, "OLD-CID")
+        res = ddb.set_sales_document_contractor(b, sd_id, CID_ACME)
+        assert res["previous_contractor_id"] == "OLD-CID"  # overwrite disclosed
+        row = next(r for r in ddb.get_sales_documents(b) if r["id"] == sd_id)
+        assert row["client_contractor_id"] == CID_ACME
 
     def test_set_contractor_scoped_to_one_document(self, storage):
         b = "B-SETC-2"
@@ -151,6 +161,7 @@ class TestPhaseADataLayer:
         sd_id = _seed_blocked_doc(b)
         assert ddb.set_sales_document_contractor(b, sd_id, "") == {
             "sales_documents_updated": 0, "sales_lines_updated": 0,
+            "previous_contractor_id": "",
         }
 
 
@@ -187,6 +198,38 @@ class TestPhaseAAssignRoute:
         assert len(drafts) == 1
         assert drafts[0].client_name == "ACME CORP"
         assert drafts[0].client_contractor_id == CID_ACME
+
+    def test_assign_overwrite_discloses_previous(self, client, storage, proforma_db):
+        cli, _ = client
+        b = "B-ASSIGN-OW"
+        # client_unresolved: a contractor is set at intake but has no CM record.
+        ship = _register_sales_packing_doc(b, cid="OLD-CID")
+        sd_id = _store_sales_doc(b, ship, client_name="", cid="OLD-CID")
+        ddb.store_sales_packing_lines(sd_id, b, [_line(client_name="")])
+        _add_customer(storage, CID_ACME, "ACME CORP")
+        r = cli.post(
+            f"/api/v1/admin/contractor-projection/assign/{b}",
+            json={"sales_document_id": sd_id, "contractor_id": CID_ACME},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["overwrote_existing"] is True
+        assert body["previous_contractor_id"] == "OLD-CID"
+        assert body["open_blocks"] == []
+
+    def test_assign_idempotent_double_call(self, client, storage, proforma_db):
+        cli, _ = client
+        b = "B-ASSIGN-IDEM"
+        sd_id = _seed_blocked_doc(b)
+        _add_customer(storage, CID_ACME, "ACME CORP")
+        payload = {"sales_document_id": sd_id, "contractor_id": CID_ACME}
+        r1 = cli.post(f"/api/v1/admin/contractor-projection/assign/{b}", json=payload)
+        r2 = cli.post(f"/api/v1/admin/contractor-projection/assign/{b}", json=payload)
+        assert r1.status_code == 200 and r2.status_code == 200, (r1.text, r2.text)
+        # Re-assigning the same contractor must not spawn a second draft.
+        drafts = pildb.list_drafts_for_batch(proforma_db, b)
+        assert len(drafts) == 1
+        assert pildb.list_draft_birth_blocks(proforma_db, b) == []
 
     def test_assign_rejects_contractor_without_cm_record(self, client, storage):
         cli, _ = client

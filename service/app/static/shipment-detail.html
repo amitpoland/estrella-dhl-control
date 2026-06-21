@@ -2324,7 +2324,7 @@ function ReservationSavePanel({ preview, loading, results, onLoad, onSave }) {
                      data-testid={`reservation-save-btn-${cn}`}
                      title={doc.ready ? 'Open the confirmation modal and submit this reservation to wFirma'
                                       : 'Resolve the blockers below before saving'}>
-                  Save reservation
+                  Save reservation to wFirma
                 </Btn>
               )}
             </div>
@@ -13624,6 +13624,9 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
     // Reset visibility panel on open (Phase 5.5A)
     setVisibility(null);
     setVisOpen(false);
+    // Phase D — clear any freight block from the previously-open draft so its
+    // (now stale) client/currency fix-it text never bleeds onto another draft.
+    setFreightBlock(null);
     try {
       const d = await apiFetch(`/api/v1/proforma/draft/${draftId}`);
       setOpenDraft(d.draft);
@@ -13638,7 +13641,7 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
 
   const closeOne = () => {
     setOpenId(null); setOpenDraft(null); setEvents(null); setEventsOpen(false);
-    setVisibility(null); setVisOpen(false);
+    setVisibility(null); setVisOpen(false); setFreightBlock(null);
   };
 
   // Phase 5.5A — lazy-load visibility on demand
@@ -15965,7 +15968,8 @@ function ProformaBlockedRecordResolver({ batchId, block, onToast, onResolved }) 
         setOpen(false);
         onResolved && onResolved();   // refresh blocks + drafts
       } else {
-        onToast && onToast('Assign failed — see server response', 'error');
+        const why = (r && (r.detail || r.reason || r.error)) || 'see server logs';
+        onToast && onToast('Assign failed: ' + why, 'error');
       }
     } catch (e) {
       onToast && onToast('Assign failed: ' + e.message, 'error');
@@ -15986,7 +15990,7 @@ function ProformaBlockedRecordResolver({ batchId, block, onToast, onResolved }) 
       ) : (
         <div data-testid={`proforma-blocked-resolver-${sdId}`}
              style={{ marginTop: 4, padding: '8px 10px', borderRadius: 4,
-                        background: 'var(--card-bg, #fff)',
+                        background: 'var(--card)',
                         border: '1px solid var(--badge-amber-border, #fbbf24)' }}>
           <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
             <input value={q} onChange={(e) => setQ(e.target.value)}
@@ -16020,8 +16024,8 @@ function ProformaBlockedRecordResolver({ batchId, block, onToast, onResolved }) 
                      data-testid={`proforma-blocked-result-${sdId}-${cid}`}
                      onClick={() => setSelected(c)}
                      style={{ padding: '5px 8px', fontSize: 11.5, cursor: 'pointer',
-                                borderBottom: '1px solid var(--card-border)',
-                                background: isSel ? 'var(--card-hover, #eef)' : 'transparent' }}>
+                                borderBottom: '1px solid var(--badge-amber-border, #fbbf24)',
+                                background: isSel ? 'var(--row-hover)' : 'transparent' }}>
                   <strong>{c.bill_to_name || '—'}</strong>
                   {c.country ? <span style={{ color: 'var(--text-3)' }}> · {c.country}</span> : null}
                   {(c.nip || c.vat_eu_number)
