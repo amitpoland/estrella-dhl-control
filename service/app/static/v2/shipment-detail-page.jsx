@@ -993,6 +993,7 @@ function DraftReadinessCard({ draft, mountDelayMs }) {
   const STATE_BADGE = { draft: 'Draft', editing: 'In Preparation', post_failed: 'Action Required' };
   const draftTitle  = draft.wfirma_proforma_fullnumber || ('#' + draft.id);
   const badgeStatus = STATE_BADGE[draft.draft_state] || 'Draft';
+  const isPostFailed = draft.draft_state === 'post_failed';
 
   return (
     <div style={{ marginBottom: 8 }}>
@@ -1007,6 +1008,36 @@ function DraftReadinessCard({ draft, mountDelayMs }) {
               Draft {draftTitle}
             </div>
           </div>
+
+          {/* post_failed error box — always visible for post_failed; error_hint from
+              _draft_to_summary (routes_proforma.py:3838) may contain raw wFirma error text.
+              Static retry guidance is always shown so the operator knows the next step. */}
+          {isPostFailed && (
+            <div data-testid="proforma-post-failed-error" style={{
+              background: 'var(--badge-red-bg, #FBE8E6)',
+              border: '1px solid var(--badge-red-border, #E0A8A0)',
+              borderRadius: 6, padding: '10px 14px', marginBottom: 12,
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-red-text, #902018)',
+                            textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+                wFirma post failed
+              </div>
+              {draft.error_hint ? (
+                <div style={{ fontSize: 11, color: 'var(--badge-red-text, #902018)',
+                              fontFamily: 'monospace', wordBreak: 'break-word', marginBottom: 6 }}>
+                  {draft.error_hint}
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: 'var(--badge-red-text, #902018)', marginBottom: 6 }}>
+                  Failure reason not recorded.
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: 'var(--text-2)' }}>
+                Re-open Pro Forma hub to retry posting.
+              </div>
+            </div>
+          )}
+
           {readinessLoading ? (
             <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Checking readiness…</div>
           ) : readiness === null ? (
@@ -1020,19 +1051,26 @@ function DraftReadinessCard({ draft, mountDelayMs }) {
             </div>
           ) : (
             <div data-testid="proforma-blockers">
-              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 6 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>
                 {(readiness.blockers || []).length} blocker(s) preventing approval:
               </div>
-              <ul style={{ margin: 0, paddingLeft: 18 }}>
+              <ol style={{ margin: 0, paddingLeft: 22 }}>
                 {(readiness.blockers || []).map((b, i) => (
-                  <li key={i} style={{ fontSize: 12, color: 'var(--text)', marginBottom: 3 }}>
-                    <span style={{ fontWeight: 500 }}>{b.reason}</span>
+                  <li key={i} style={{ fontSize: 12, color: 'var(--text)', marginBottom: 10 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 3 }}>{b.reason}</div>
                     {b.repair_action && (
-                      <span style={{ color: 'var(--text-2)' }}> — {b.repair_action}</span>
+                      <div style={{
+                        background: 'var(--bg-subtle, var(--card))',
+                        border: '1px solid var(--border)',
+                        borderRadius: 4, padding: '6px 10px',
+                        fontSize: 11, color: 'var(--text)',
+                      }}>
+                        Fix: {b.repair_action}
+                      </div>
                     )}
                   </li>
                 ))}
-              </ul>
+              </ol>
             </div>
           )}
         </div>
@@ -1137,6 +1175,23 @@ function ProformaTabInShipment({ shipment }) {
             </div>
           ))}
         </>
+      )}
+
+      {!draftsState.loading && !draftsState.error
+        && allDrafts.length > 0 && activeDrafts.length === 0 && postingDrafts.length === 0
+        && successDrafts.length > 0 && (
+        <div data-testid="proforma-all-complete-banner" style={{
+          background: 'var(--badge-green-bg, #E8F5EE)',
+          border: '1px solid var(--badge-green-border, #96CCA8)',
+          borderRadius: 6, padding: '12px 16px', marginBottom: 12,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--badge-green-text, #186838)' }}>
+            ✓ All active Pro Forma drafts complete
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--badge-green-text, #186838)', opacity: 0.85, marginTop: 3 }}>
+            {successDrafts.length} draft(s) approved or posted to wFirma. No action required.
+          </div>
+        </div>
       )}
 
       {successDrafts.length > 0 && (

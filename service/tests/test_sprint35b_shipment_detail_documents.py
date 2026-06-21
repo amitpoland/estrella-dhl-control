@@ -20,6 +20,11 @@ Asserts (static source-grep; no server required):
 
   E. Empty-state guard (T8)
      T8. DocumentsTab guards on missing batchId before fetching.
+
+  F. Proforma blocker visibility (T9–T11) — Sprint 35c
+     T9.  DraftReadinessCard renders blockers as numbered ordered list (<ol>), not <ul>.
+     T10. DraftReadinessCard surfaces post_failed error via data-testid proforma-post-failed-error.
+     T11. ProformaTabInShipment renders all-complete banner when all active drafts done.
 """
 
 import re
@@ -120,4 +125,47 @@ def test_T8_documents_tab_guards_on_missing_batch_id():
     # The guard pattern: if (!batchId) return ...
     assert "if (!batchId)" in src, (
         "DocumentsTab missing !batchId guard — will attempt fetch with undefined batch_id"
+    )
+
+
+# ── F. Proforma blocker visibility (Sprint 35c) ────────────────────────────────
+
+def test_T9_draft_readiness_card_uses_ordered_list():
+    """DraftReadinessCard must render blockers as a numbered <ol>, not <ul>."""
+    src = _src(_DETAIL)
+    card_slice = src.split("DraftReadinessCard")[1].split("ProformaTabInShipment")[0] if "DraftReadinessCard" in src else ""
+    assert "<ol" in card_slice, (
+        "DraftReadinessCard does not render an <ol> — blockers must be a numbered ordered list"
+    )
+    # Old inline-span pattern must be gone (replaced by callout box)
+    assert 'span style={{ color: \'var(--text-2)\' }}> — {b.repair_action}' not in src, (
+        "Old inline em-dash repair_action span still present — replace with callout box"
+    )
+
+
+def test_T10_draft_readiness_card_shows_post_failed_error():
+    """DraftReadinessCard must surface post_failed error via proforma-post-failed-error testid."""
+    src = _src(_DETAIL)
+    assert 'data-testid="proforma-post-failed-error"' in src, (
+        "DraftReadinessCard missing proforma-post-failed-error testid — "
+        "post_failed error box not rendered"
+    )
+    assert "isPostFailed" in src, (
+        "DraftReadinessCard missing isPostFailed flag — post_failed state not detected"
+    )
+    assert "error_hint" in src, (
+        "DraftReadinessCard does not reference draft.error_hint — "
+        "wFirma failure reason not surfaced"
+    )
+
+
+def test_T11_proforma_tab_shows_all_complete_banner():
+    """ProformaTabInShipment must render an all-complete banner when all active drafts are done."""
+    src = _src(_DETAIL)
+    assert 'data-testid="proforma-all-complete-banner"' in src, (
+        "ProformaTabInShipment missing proforma-all-complete-banner testid — "
+        "all-approved positive confirmation not rendered"
+    )
+    assert "All active Pro Forma drafts complete" in src, (
+        "All-complete banner missing expected text — operator cannot confirm all drafts done"
     )
