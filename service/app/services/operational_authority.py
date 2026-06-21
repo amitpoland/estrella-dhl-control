@@ -147,7 +147,68 @@ def is_pz_done(a: Dict[str, Any]) -> bool:
     return derive_pz_status(a) == "complete"
 
 
+def compute_effective_pz_status(a: Dict[str, Any]) -> tuple:
+    """Return ``(effective_status, normalized_flag)`` — the EFFECTIVE / creatability
+    PZ-status authority.
+
+    Campaign A1, Stage 1: an ADDITIVE, behaviour-identical extraction of
+    ``routes_wfirma._compute_effective_pz_status`` into its canonical leaf home.
+    Pinned byte-for-byte against the live fork by
+    ``test_compute_effective_pz_status_extraction_parity.py``. Stage 1 is additive
+    only — no caller is repointed and the fork is NOT retired (that happens later,
+    behind a default-OFF flag, after shadow validation).
+
+    This is a SEPARATE concern from ``derive_pz_status`` (the DISPLAY authority —
+    the ``complete|ready|locked|failed`` enum). ``is_pz_done`` / ``derive_pz_status``
+    MUST NOT call this, and Path B (below) MUST NOT be folded into them: the
+    effective-status authority and the display authority are intentionally
+    different (Path B has no display equivalent). Reuses the shared ``PZ_DONE`` set.
+
+    Normalizes a stale ``status`` back to ``'partial'`` when the shipment is in fact
+    PZ-complete but the persisted status string lags operator decisions:
+
+    Path A — MRN present: ``failed_checks`` empty, ``customs_declaration.mrn``
+      populated, ``verification.cn_match`` True OR ``cn_decision.approved`` True.
+    Path B — PZ output exists (MRN unparseable but engine ran successfully):
+      ``failed_checks`` empty, ``pz_output.pdf`` set, ``pz_output.generated_at`` set,
+      and CN ok.
+
+    Hard blocks (returns the stored status unchanged): ``failed_checks`` non-empty,
+    MRN missing AND no ``pz_output`` evidence, or CN unresolved. Like the fork it
+    checks only ``failed_checks`` (NOT ``engine_error``) and NEVER mutates the audit.
+    """
+    stored = (a.get("status") or "").strip()
+    if stored in PZ_DONE:
+        return stored, False
+
+    failed = a.get("failed_checks") or []
+    if failed:
+        return stored, False
+
+    # CN check is shared by both paths — resolve it once here.
+    ver    = a.get("verification") or {}
+    cn_dec = a.get("cn_decision")  or {}
+    cn_ok  = bool(ver.get("cn_match")) or bool(cn_dec.get("approved"))
+    if not cn_ok:
+        return stored, False
+
+    # ── Path A: MRN present ────────────────────────────────────────────────────
+    cd  = a.get("customs_declaration") or {}
+    mrn = (cd.get("mrn") or "").strip()
+    if mrn:
+        return "partial", True
+
+    # ── Path B: PZ output exists (MRN not parsed but engine ran successfully) ──
+    pz_output = a.get("pz_output") or {}
+    pz_pdf_set  = bool((pz_output.get("pdf") or "").strip())
+    pz_ts_set   = bool((pz_output.get("generated_at") or "").strip())
+    if pz_pdf_set and pz_ts_set:
+        return "partial", True
+
+    return stored, False
+
+
 __all__ = [
     "derive_status", "derive_sad_status", "derive_pz_status", "is_pz_done",
-    "PZ_DONE", "_OUTPUTS",
+    "compute_effective_pz_status", "PZ_DONE", "_OUTPUTS",
 ]
