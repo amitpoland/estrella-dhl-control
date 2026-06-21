@@ -387,6 +387,27 @@
     searchWfirmaGoods: (q) =>
       _get(`${BASE}/wfirma/goods/search?q=${encodeURIComponent(q || '')}`),
 
+    // ── wFirma Reservation — live create (write) ────────────────────
+
+    // POST /api/v1/wfirma/reservations/create   body: { batch_id, client_name }
+    // Creates ONE live wFirma reservation (warehouse_document_r/add) for the
+    // (batch_id, client_name) pair. The backend (wfirma_reservation_create.py)
+    // is the SOLE authority: it re-runs 10 pre-flight gates and performs an
+    // atomic pending|failed → submitting transition, so this call is idempotent
+    // and safe to retry — an already-created draft short-circuits with code
+    // DRAFT_ALREADY_PROCESSED, a concurrent submitter with SUBMIT_RACE_LOST.
+    // The frontend MUST gate the button on the preview blocking_reasons /
+    // export_blockers (backend authority); it never decides reservation legality
+    // locally (Lesson F rule 5). Mutation → _postM carries X-Operator for the
+    // audit timeline.
+    // Returns { ok, data: { ok, code, wfirma_reservation_id, draft_id, error, details } }
+    //   on a gate failure apiFetch throws → { ok:false, error:'HTTP 409: {…}' }; surface .error.
+    createWfirmaReservation: (batchId, clientName) =>
+      _postM(`${BASE}/wfirma/reservations/create`, {
+        batch_id:    batchId    || '',
+        client_name: clientName || '',
+      }),
+
     // ── Master Data — read (Sprint 38) ─────────────────────────────
 
     // GET /api/v1/suppliers/[?country=&active=&limit=]

@@ -758,6 +758,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // M2 — Send Proforma Email modal state
   const [showSendModal, setShowSendModal] = React.useState(false);
 
+  // Reservation — Create wFirma reservation (live write) confirm modal state
+  const [showReservationModal, setShowReservationModal] = React.useState(false);
+
   // M5 — Inline Edit mode state
   const [editMode,         setEditMode]          = React.useState(false);
   const [editFields,       setEditFields]        = React.useState({});
@@ -2325,6 +2328,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             preview={preview}
             canConvert={canConvert}
             onConvert={() => canConvert && setShowConvertModal(true)}
+            onCreateReservation={() => setShowReservationModal(true)}
           />
         )}
         {activeTab === 'history' && (
@@ -2352,6 +2356,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           onSuccess={() => {
             setShowConvertModal(false);
             onConvert && onConvert(draft);
+          }}
+        />
+      )}
+      {showReservationModal && (
+        <CreateReservationModal
+          batchId={batchId}
+          clientName={clientName}
+          preview={preview}
+          liveDraft={liveDraft}
+          onClose={() => setShowReservationModal(false)}
+          onSuccess={() => {
+            setShowReservationModal(false);
+            previewHook && previewHook.reload && previewHook.reload();
           }}
         />
       )}
@@ -2888,10 +2905,23 @@ function ProformaCustomerMappingTab({ customer }) {
 
 // ── Reservation tab ───────────────────────────────────────────────────────────
 // WIRED: blocking_reasons and export_blockers from POST /api/v1/proforma/preview/{batch_id}/{client_name}
-function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canConvert, onConvert }) {
+function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canConvert, onConvert, onCreateReservation }) {
   const allReasons = [...blockingReasons, ...exportBlockers];
   const isBlocked  = allReasons.length > 0;
   const auditClean = exportBlockers.length === 0;
+
+  // Lesson M five-state truth model — the Create Reservation control is
+  // `available` (enabled + wired) ONLY when the backend preview has loaded AND
+  // reports no blocking_reasons / export_blockers. Otherwise it stays VISIBLE
+  // but `disabled` with the exact reason — never enabled-and-inert. Readiness is
+  // reflected from backend authority here, never re-derived (Lesson F rule 5);
+  // the backend re-runs all 10 gates on submit regardless.
+  const canCreate      = !!preview && !isBlocked && !!onCreateReservation;
+  const disabledReason = isBlocked
+    ? 'Resolve the blocking reasons above before creating a reservation.'
+    : (!preview
+        ? 'wFirma reservation preview has not loaded yet — cannot confirm readiness.'
+        : '');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -2930,7 +2960,15 @@ function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canC
 
       {/* Footer actions */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
-        <Btn variant="outline" disabled={isBlocked}>Create Reservation</Btn>
+        <Btn
+          variant="outline"
+          disabled={!canCreate}
+          onClick={canCreate ? onCreateReservation : undefined}
+          title={canCreate ? 'Create a live wFirma reservation for this client' : disabledReason}
+          data-testid="reservation-create-btn"
+        >
+          Create Reservation
+        </Btn>
         <Btn
           variant="danger"
           disabled={!canConvert}
@@ -3223,4 +3261,115 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
   );
 }
 
-Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal, CancelDraftModal, PurgeDraftModal, PriorInvoiceHistoryModal, SendProformaModal });
+// ── Create Reservation Modal ──────────────────────────────────────────────────
+// WIRED: POST /api/v1/wfirma/reservations/create  body: { batch_id, client_name }
+// Confirmation + idempotency + audit:
+//   • Confirmation — explicit operator checkbox before the live wFirma write.
+//   • Idempotency  — enforced by the backend (wfirma_reservation_create.py): the
+//     draft must be in {pending, failed}; an already-created draft returns
+//     DRAFT_ALREADY_PROCESSED, a concurrent submitter SUBMIT_RACE_LOST. Re-clicks
+//     never create a duplicate reservation.
+//   • Audit        — backend records the draft status transitions
+//     (mark_draft_submitting → mark_draft_created / mark_draft_failed) + logs;
+//     PzApi._postM rides the X-Operator identity header.
+function CreateReservationModal({ batchId, clientName, preview, liveDraft, onClose, onSuccess }) {
+  const [confirmed, setConfirmed] = React.useState(false);
+  const [loading,   setLoading]   = React.useState(false);
+  const [apiError,  setApiError]  = React.useState(null);
+
+  const handleCreate = () => {
+    if (!confirmed || loading) return;
+    setLoading(true);
+    setApiError(null);
+    // PzApi resolves (never throws): { ok:true, data } on success,
+    // { ok:false, error } on any gate / upstream / network failure.
+    window.PzApi.createWfirmaReservation(batchId, clientName)
+      .then(res => {
+        if (res && res.ok) {
+          onSuccess && onSuccess();
+        } else {
+          setApiError((res && res.error) ? res.error : 'Reservation failed — check backend logs.');
+          setLoading(false);
+        }
+      })
+      .catch(e => {
+        setApiError((e && e.message) ? e.message : 'Reservation failed — check backend logs.');
+        setLoading(false);
+      });
+  };
+
+  const displayClient = clientName || (liveDraft && liveDraft.client_name) || '—';
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px', overflowY: 'auto',
+    }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} data-testid="reservation-create-modal" style={{
+        background: 'var(--card)', borderRadius: 12, width: 600, maxWidth: '92vw',
+        maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px var(--shadow-heavy)',
+      }}>
+        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>⊛ Live wFirma write</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>Create wFirma Reservation</div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={{ padding: 24 }}>
+          <div style={{ padding: '12px 14px', background: 'var(--badge-amber-bg)', borderLeft: '3px solid var(--badge-amber-text)', borderRadius: '0 6px 6px 0', marginBottom: 20, fontSize: 13, color: 'var(--text-2)' }}>
+            This creates a <strong>live warehouse reservation document</strong> in wFirma for this client.
+            The backend re-runs every readiness gate and is <strong>idempotent</strong> — if a reservation already
+            exists for this draft it is <strong>not duplicated</strong>.
+          </div>
+
+          {/* Payload section */}
+          <div style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-3)', fontWeight: 700, marginBottom: 10, borderTop: '1px solid var(--border)', paddingTop: 14 }}>PAYLOAD</div>
+          <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)', marginBottom: 20 }}>
+            <div style={{ color: 'var(--accent)', fontWeight: 600, marginBottom: 8 }}>POST /api/v1/wfirma/reservations/create</div>
+            <div><span style={{ color: 'var(--text-3)' }}>batch_id:</span> <strong>{batchId || '—'}</strong></div>
+            <div><span style={{ color: 'var(--text-3)' }}>client_name:</span> <strong>{displayClient}</strong></div>
+          </div>
+
+          {apiError && (
+            <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }} data-testid="reservation-create-modal-error">
+              ⚠ {apiError}
+            </div>
+          )}
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', marginBottom: 20 }}>
+            <input
+              type="checkbox"
+              checked={confirmed}
+              onChange={e => setConfirmed(e.target.checked)}
+              style={{ width: 18, height: 18, cursor: 'pointer' }}
+              data-testid="reservation-create-modal-confirm"
+            />
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>
+              I confirm this will create a live reservation in wFirma
+            </span>
+          </label>
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <Btn variant="outline" onClick={onClose} disabled={loading}>Cancel</Btn>
+            <Btn
+              variant="default"
+              disabled={!confirmed || loading}
+              onClick={handleCreate}
+              data-testid="reservation-create-modal-submit"
+              style={{
+                opacity: (confirmed && !loading) ? 1 : 0.5,
+                cursor:  (confirmed && !loading) ? 'pointer' : 'not-allowed',
+              }}
+            >
+              {loading ? '⏳ Creating…' : '⊛ Create Reservation'}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal, CreateReservationModal, CancelDraftModal, PurgeDraftModal, PriorInvoiceHistoryModal, SendProformaModal });
