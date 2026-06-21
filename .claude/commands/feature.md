@@ -44,6 +44,20 @@ VERIFICATION PLAN:
 
 **If any affected requirement would be VIOLATED by the plan as designed: stop here, explain the violation, and do not proceed to Phase 1 until the violation is resolved.**
 
+**Promotion rule:** If during DISCOVERY or PLAN you identify a business rule that is expected to remain valid across more than one task or PR — and it is not already in `PERSISTENT_REQUIREMENTS.md` — propose promoting it. The path is:
+
+```
+Conversation / TASK_STATE
+    ↓  (repeated across tasks)
+Repeated Rule
+    ↓  (promotion decision)
+PERSISTENT_REQUIREMENTS.md  (ACTIVE entry)
+    ↓  (loaded every /feature run)
+Verified before every close
+```
+
+Do not store cross-task invariants only in `TASK_STATE.md`. `TASK_STATE.md` is ephemeral; `PERSISTENT_REQUIREMENTS.md` is permanent.
+
 ---
 
 ## Phase 1 — DISCOVERY

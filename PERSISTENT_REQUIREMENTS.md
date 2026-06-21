@@ -47,6 +47,24 @@ For every requirement marked affected at planning time:
 
 Append-only. Do not delete entries; change status to RETIRED with explanation.
 
+## Promotion path
+
+A business rule becomes a persistent requirement when it is expected to remain valid across more than one task or PR. The promotion path is:
+
+```
+Conversation / TASK_STATE.md
+    ↓  (rule reappears across tasks)
+Repeated Rule identified
+    ↓  (decision: promote)
+PERSISTENT_REQUIREMENTS.md  ← add ACTIVE entry here
+    ↓  (loaded by /feature pre-planning check)
+Verified before every close
+```
+
+Do not store cross-task invariants only in `TASK_STATE.md`. `TASK_STATE.md` is ephemeral. If a rule needs to survive across sessions and PRs, it belongs here.
+
+**Cadence:** After every 10–20 `/feature` runs, review `BACKLOG.md` and `FEATURE_SCORECARD.md` Lessons column for repeated patterns. Promote any rule that appears more than twice.
+
 ---
 
 ## Change log
