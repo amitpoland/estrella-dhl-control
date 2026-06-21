@@ -32,6 +32,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+class PackingAuthorityUnavailable(RuntimeError):
+    """Raised internally when packing_lines (the per-piece product authority)
+    cannot be READ — packing_db not initialised, locked, missing table, or a
+    query error. This is DISTINCT from a successful read that returns zero rows.
+
+    The resolver converts it into a structured ``authority_available=False``
+    snapshot so the proforma readiness gate can FAIL CLOSED (billing safety): the
+    system must never let an over-bill pass ``ready=true`` merely because it could
+    not read the authority to prove product_code validity / available quantity /
+    over-bill status (OQ-PR689-OVERBILL-FAILCLOSED).
+    """
+
+
 # ── packing_lines read (the one authority read) ──────────────────────────────
 
 def _packing_rows(
@@ -41,10 +54,15 @@ def _packing_rows(
 ) -> List[Dict[str, Any]]:
     """Return all packing_lines rows for the batch (per-piece grain).
 
-    Uses the standard ``packing_db.get_packing_lines_for_batch`` in production;
-    a ``packing_db_path`` override (tests / batch-isolation callers) reads that
-    db directly with the identical projection. Never raises — returns ``[]`` on
-    any failure so callers fail safe/closed at their own layer.
+    Uses the standard ``packing_db.get_packing_lines_for_batch`` in production; a
+    ``packing_db_path`` override (tests / batch-isolation callers) reads that db
+    directly with the identical projection.
+
+    RAISES ``PackingAuthorityUnavailable`` when the read itself FAILS (packing_db
+    not initialised, locked, missing table, or query error) so the caller can
+    fail CLOSED. Returns ``[]`` ONLY for a genuinely empty result — no batch_id,
+    or a SUCCESSFUL read of a batch that has zero packing rows — never to mask a
+    read failure.
     """
     bid = (batch_id or "").strip()
     if not bid:
@@ -59,13 +77,20 @@ def _packing_rows(
                     (bid,),
                 ).fetchall()
             return [dict(r) for r in rows]
-        except Exception:
-            return []
+        except Exception as exc:
+            raise PackingAuthorityUnavailable(
+                f"packing read failed for {bid!r}: {type(exc).__name__}: {exc}"
+            ) from exc
+    from . import packing_db as _pdb  # noqa: PLC0415
+    if getattr(_pdb, "_db_path", None) is None:
+        raise PackingAuthorityUnavailable(
+            "packing_db is not initialised — cannot read product authority")
     try:
-        from . import packing_db as _pdb  # noqa: PLC0415
         return list(_pdb.get_packing_lines_for_batch(bid) or [])
-    except Exception:
-        return []
+    except Exception as exc:
+        raise PackingAuthorityUnavailable(
+            f"packing read failed for {bid!r}: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def resolve_batch_product_authority(
@@ -93,8 +118,20 @@ def resolve_batch_product_authority(
     to match the historical bridge / proforma_draft_sync behaviour; callers that
     need normalised keys (sales_packing_matcher) re-key the returned map.
     """
-    rows = packing_rows if packing_rows is not None else _packing_rows(
-        batch_id, packing_db_path=packing_db_path)
+    # Authority availability: an injected ``packing_rows`` (incl. empty) is a
+    # successful read. Otherwise read packing_lines; a read FAILURE fails CLOSED
+    # (authority_available=False) — never silently treated as an empty batch.
+    authority_available = True
+    authority_error = ""
+    if packing_rows is not None:
+        rows = packing_rows
+    else:
+        try:
+            rows = _packing_rows(batch_id, packing_db_path=packing_db_path)
+        except PackingAuthorityUnavailable as exc:
+            authority_available = False
+            authority_error = str(exc)
+            rows = []
 
     design_to_codes: Dict[str, set] = {}
     available: Dict[str, float] = {}
@@ -132,6 +169,8 @@ def resolve_batch_product_authority(
         "product_codes":             product_codes,
         "rows_scanned":              len(seen_pairs),
         "rows_skipped":              len(skipped_pairs),
+        "authority_available":       authority_available,  # False → fail closed
+        "authority_error":           authority_error,
     }
 
 
@@ -320,6 +359,7 @@ def reconcile_billed_lines(
 
 
 __all__ = [
+    "PackingAuthorityUnavailable",
     "resolve_batch_product_authority",
     "design_to_product_codes",
     "available_quantity_by_product_code",

@@ -51,7 +51,10 @@ def test_snapshot_shape_and_keys():
     assert set(snap) == {
         "batch_id", "design_to_product_codes", "available_by_product_code",
         "invoice_by_product_code", "product_codes", "rows_scanned", "rows_skipped",
+        "authority_available", "authority_error",
     }
+    # an injected-rows snapshot is a successful read
+    assert snap["authority_available"] is True
 
 
 def test_design_to_codes_strips_sorts_and_excludes_null_blank():
