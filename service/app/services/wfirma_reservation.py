@@ -429,6 +429,14 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         and reservation_supported
     )
 
+    # Batch-level (warehouse + wFirma config) blockers — these block EVERY client
+    # in the batch and are NOT specific to any one draft (e.g. "84 packing line(s)
+    # not yet scanned" counts the whole batch's packing, not one draft's billed
+    # lines). Captured BEFORE the per-document roll-ups are folded into
+    # blocking_reasons below, so the frontend can render batch-scope vs
+    # draft-scope distinctly. Display-only — does NOT affect ready_to_create.
+    batch_blocking_reasons = list(blocking_reasons)
+
     if not all_docs_ready and audit_clean:
         for d in documents:
             if not d["ready"] and d["blocking_reasons"]:
@@ -443,6 +451,7 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         "reservation_supported": reservation_supported,
         "ready_to_create":      ready_to_create,
         "blocking_reasons":     blocking_reasons,
+        "batch_blocking_reasons": batch_blocking_reasons,
         "currency":             batch_currency,
         "reservation_exists":   reservation_exists,
         "reservation_id":       reservation_id,
@@ -459,6 +468,7 @@ def _empty_response(batch_id: str) -> Dict[str, Any]:
         "reservation_supported": caps["reservation_supported"],
         "ready_to_create":      False,
         "blocking_reasons":     ["no sales documents found"],
+        "batch_blocking_reasons": ["no sales documents found"],
         "currency":             "PLN",
         "reservation_exists":   False,
         "reservation_id":       None,

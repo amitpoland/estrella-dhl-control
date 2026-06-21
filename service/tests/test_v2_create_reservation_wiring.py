@@ -71,8 +71,11 @@ def test_button_gated_on_reservation_readiness_not_post(detail):
 def test_disabled_reason_is_canonical_backend_blocker(detail):
     # the reason comes from the reservation-preview blocking_reasons (batch + client)
     assert "reservation-blocked-reason" in detail
-    assert "const reservationReasons = [" in detail
-    assert "reservationPreview && reservationPreview.blocking_reasons" in detail
+    # Blockers are surfaced at TWO scopes (Draft #38 closure): batch-level
+    # (warehouse) from reservationPreview.batch_blocking_reasons, and draft/client
+    # from reservationDoc.blocking_reasons — kept separate so a batch-wide count is
+    # not read as a draft-line blocker.
+    assert "reservationPreview.batch_blocking_reasons" in detail
     assert "reservationDoc && reservationDoc.blocking_reasons" in detail
     # readiness derives from ready_to_create AND the draft's client doc.ready
     assert "reservationPreview.ready_to_create && reservationDoc && reservationDoc.ready" in detail
