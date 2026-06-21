@@ -127,7 +127,7 @@ function _fmtPln(n) {
   if (n == null || n === '') return '—';
   const x = Number(n); return isNaN(x) ? '—' : 'PLN ' + x.toLocaleString('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-function _fmtRate(n) { return (n == null || n === '') ? '—' : Number(n).toFixed(4); }
+function _fmtRate(n) { if (n == null || n === '') return '—'; const x = Number(n); return isNaN(x) ? '—' : x.toFixed(4); }
 function _fmtDate(iso, withTime) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -137,6 +137,65 @@ function _fmtDate(iso, withTime) {
     s += ' · ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   }
   return s;
+}
+
+// ── Shipment prop normalizer ─────────────────────────────────────────────────
+// Both callers (DashboardPage list row + DashboardKanban `_raw`) hand this page the
+// RAW snake_case batch row from GET /api/v1/dashboard/batches, but the page was built
+// for the camelCase shape produced by dashboard-kanban.jsx `_transformBatch`. Without
+// this, shipment.awb / sadStatus / pzStatus / dhlStatus / overall are all `undefined`
+// (the cause of the blank AWB + fake-importer + wrong workflow strip operators saw).
+// Mirror _transformBatch's status mappers here so the page reads correct status strings.
+function _mapOverallStatus(status) {
+  const m = {
+    success: 'Ready for Booking', partial: 'Ready for Booking',
+    blocked: 'Action Required', failed: 'Action Required',
+    awaiting_dhl_email: 'Awaiting DHL', awaiting_sad: 'Awaiting SAD',
+    awaiting_clearance: 'Awaiting Clearance', in_preparation: 'In Preparation',
+    draft: 'Draft', ready: 'Ready for PZ', processing: 'In Preparation', collecting: 'In Preparation',
+  };
+  return m[status] || (status ? status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Pending');
+}
+function _mapDhl(s) {
+  if (!s) return '—';
+  const m = {
+    awaiting_dhl_email: 'Awaiting DHL Email', dhl_email_received: 'DHL Email Received',
+    reply_sent: 'Reply Sent', reply_queued: 'Reply Queued', pre_check_completed: 'Pre-check Completed',
+    pre_check_pending: 'Pre-check Pending', reply_package_prepared: 'Reply Package Prepared',
+  };
+  return m[s] || s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+function _mapSad(s) {
+  if (!s) return 'SAD Pending';
+  const m = {
+    sad_pending: 'SAD Pending', sad_uploaded: 'SAD Uploaded', customs_parsed: 'Customs Parsed',
+    customs_verified: 'Customs Verified', verification_needed: 'Verification Needed',
+    missing: 'SAD Pending', uploaded: 'SAD Uploaded', uploaded_parsed: 'Customs Parsed',
+  };
+  return m[s] || s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+function _mapPz(s) {
+  if (!s) return 'Locked';
+  const m = { locked: 'Locked', ready: 'Ready for PZ', generated: 'Generated', exported: 'Exported', complete: 'Exported' };
+  return m[s] || s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+function _normalizeShipment(s) {
+  s = s || {};
+  // Already in camelCase (transformed) shape → pass through unchanged.
+  if (s.sadStatus || s.pzStatus || s.dhlStatus) return s;
+  return Object.assign({}, s, {
+    batch_id:        s.batch_id,
+    awb:             s.awb || s.tracking_no || s.doc_no || s.batch_id || null,
+    carrier:         s.carrier || null,
+    mrn:             s.mrn || null,
+    tracking_status: s.tracking_status || null,
+    tracking_url:    s.tracking_url || null,
+    client:          s.client || null,
+    overall:         s.overall || _mapOverallStatus(s.status),
+    dhlStatus:       _mapDhl(s.dhl_status),
+    sadStatus:       _mapSad(s.sad_status),
+    pzStatus:        _mapPz(s.pz_status),
+  });
 }
 
 // Flatten the raw audit object → display fields. null wherever the authority is silent.
@@ -195,6 +254,14 @@ function deriveDetail(audit, shipment) {
     pzExportDate: wf.pz_created_at || wf.pz_adopted_at || wf.last_generated_at || null,
     wfirmaMode:   wf.mode || null,
     pzFileGenerated: !!(audit.pz_output && (audit.pz_output.pdf || audit.pz_output.xlsx)),
+    // Document generation + pre-check — real signals from the audit, not status proxies
+    precheckDone:        !!pc.completed_at,
+    // Prefer the endpoint's authoritative on-disk existence flag; only fall back to a
+    // stored filename pointer when the flag is absent (never show "Generated" for a
+    // file the endpoint reports missing).
+    polishDescGenerated: audit.polish_desc_file_exists != null ? audit.polish_desc_file_exists === true : !!audit.polish_desc_filename,
+    dskGenerated:        audit.dsk_file_exists != null ? audit.dsk_file_exists === true : !!audit.dsk_filename,
+    replyPackageBuilt:   !!(audit.dhl_reply_package || audit.agency_reply_package),
     // Totals (PLN) — audit totals are authoritative; fall back to the list row
     netPln:   tot.net   != null ? tot.net   : (shipment.net   != null ? shipment.net   : null),
     grossPln: tot.gross != null ? tot.gross : (shipment.gross != null ? shipment.gross : null),
@@ -205,6 +272,9 @@ function deriveDetail(audit, shipment) {
 }
 
 function ShipmentDetailPage({ shipment, onBack }) {
+  // Callers pass the raw snake_case batch row — normalize to the camelCase shape
+  // this page reads (awb/sadStatus/pzStatus/dhlStatus/overall). Idempotent.
+  shipment = _normalizeShipment(shipment);
   const [activeTab, setActiveTab] = React.useState('overview');
 
   // Live shipment detail — fetched from the full-audit authority endpoint.
@@ -251,8 +321,8 @@ function ShipmentDetailPage({ shipment, onBack }) {
 
   const stageState = (id) => {
     if (id === 'intake')   return 'done';
-    if (id === 'precheck') return 'done';
-    if (id === 'reply')    return replySent ? 'done' : 'active';
+    if (id === 'precheck') return d.precheckDone ? 'done' : 'active';
+    if (id === 'reply')    return replySent ? 'done' : (d.precheckDone ? 'active' : 'pending');
     if (id === 'sad')      return sadUploaded ? 'done' : (replySent ? 'active' : 'pending');
     if (id === 'verified') return sadUploaded ? 'done' : 'pending';
     if (id === 'pz')       return pzGenerated ? 'done' : (sadUploaded ? 'active' : 'pending');
@@ -613,9 +683,9 @@ function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>Reply package status</div>
             <InfoRow label="DHL Email"           value={dhlEmailReceived ? 'Received ✓' : 'Awaiting'} />
-            <InfoRow label="Polish Description"  value={dhlEmailReceived ? 'Generated ✓' : '—'} />
-            <InfoRow label="DSK PDF"             value={dhlEmailReceived ? 'Generated ✓' : '—'} />
-            <InfoRow label="Reply Package"       value={replySent ? 'Sent ✓' : (dhlEmailReceived ? 'Built ✓' : '—')} />
+            <InfoRow label="Polish Description"  value={d.polishDescGenerated ? 'Generated ✓' : '—'} />
+            <InfoRow label="DSK PDF"             value={d.dskGenerated ? 'Generated ✓' : '—'} />
+            <InfoRow label="Reply Package"       value={replySent ? 'Sent ✓' : (d.replyPackageBuilt ? 'Built ✓' : '—')} />
             <InfoRow label="Reply Sent"          value={replySent ? 'Sent ✓ — see Timeline for exact time' : 'Not sent'} />
           </div>
         </div>

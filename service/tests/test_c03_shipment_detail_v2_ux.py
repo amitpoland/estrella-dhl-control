@@ -284,3 +284,33 @@ def test_detail_in_wired_pages():
     badge = _MOCK_BADGE.read_text(encoding="utf-8")
     m = re.search(r"const WIRED_PAGES\s*=\s*\[([^\]]+)\]", badge)
     assert m and "'detail'" in m.group(1), "'detail' must be in WIRED_PAGES"
+
+
+def test_normalizes_snake_case_prop():
+    """Raw snake_case batch rows (the actual caller shape) are normalized to the
+    camelCase shape the page reads — otherwise awb/sadStatus/etc. are undefined."""
+    src = _src()
+    assert "function _normalizeShipment(" in src, "shipment prop normalizer missing"
+    assert "s.tracking_no" in src, "awb must fall back to tracking_no for raw rows"
+    for mapper in ("_mapSad(s.sad_status)", "_mapPz(s.pz_status)", "_mapDhl(s.dhl_status)"):
+        assert mapper in src, f"status mapper call '{mapper}' missing"
+    assert "shipment = _normalizeShipment(shipment)" in src, "page must normalize the prop on entry"
+
+
+def test_doc_generation_from_real_existence_flag():
+    """Polish Description / DSK 'Generated ✓' come from the endpoint's on-disk
+    existence flag, not a status proxy (no 'Generated' for a missing file)."""
+    src = _src()
+    assert "polish_desc_file_exists" in src and "dsk_file_exists" in src
+    assert "d.polishDescGenerated" in src and "d.dskGenerated" in src
+    # the email-status proxy must no longer drive document-generation rows
+    assert "dhlEmailReceived ? 'Generated ✓'" not in src, (
+        "document generation must not be inferred from dhlEmailReceived"
+    )
+
+
+def test_precheck_stage_not_hardcoded_done():
+    """The pre-check workflow stage reflects the real dhl_precheck.completed_at signal."""
+    src = _src()
+    assert "precheckDone" in src and "pc.completed_at" in src
+    assert "if (id === 'precheck') return d.precheckDone" in src
