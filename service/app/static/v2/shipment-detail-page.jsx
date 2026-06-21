@@ -225,6 +225,7 @@ function deriveDetail(audit, shipment) {
     exporter: cd.exporter_name || null,
     lineCount:    tot.line_count != null ? tot.line_count : null,
     invoiceCount,
+    awb:          audit.tracking_no || shipment.awb || null,
     awbUploaded:  !!inp.awb,
     trackingStatus: shipment.tracking_status || null,
     // CIF authority (values are USD — invoice currency, NOT EUR)
@@ -373,7 +374,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
         }}>← Back</button>
         <div>
           <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>AWB / Tracking</div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace' }}>{shipment.awb}</div>
+          <div data-testid="header-awb" style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace' }}>{_dash(d.awb)}</div>
         </div>
         <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
         <div>
@@ -601,6 +602,7 @@ function OverviewTab({ d, shipment, sadUploaded, pzGenerated, pzExported, replyS
         {/* DHL clearance */}
         <PanelCard title="DHL Clearance" subtitle="Email correspondence + reply" status={replySent ? 'Reply Sent' : (dhlEmailReceived ? 'DHL Email Received' : 'Awaiting DHL Email')}>
           <InfoBlock rows={[
+            { label: 'AWB / Tracking',    value: _dash(d.awb),          mono: true },
             { label: 'Total Invoice CIF', value: _fmtUsd(d.cifUsd) },
             { label: 'DSK Recommendation', value: _dash(d.clearanceHint) },
             { label: 'DHL Email',         value: dhlEmailReceived ? 'Received ✓' : 'Awaiting' },
