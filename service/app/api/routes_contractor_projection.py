@@ -299,11 +299,27 @@ def backfill_contractor_projection(
 
 @router.get("/blocks/{batch_id}", dependencies=[_auth])
 def list_blocks(batch_id: str, include_resolved: bool = False) -> Dict[str, Any]:
-    """List draft-birth blocked records for a batch (open-only by default)."""
+    """List draft-birth blocked records for a batch (open-only by default).
+
+    Each block is enriched (read-only) with ``source_file_name`` resolved from
+    the originating sales document, so the operator UI can name the source
+    packing document — the block table itself stores only ``sales_document_id``.
+    """
     batch_id = _safe_batch_id(batch_id)
     blocks: List[Dict[str, Any]] = pildb.list_draft_birth_blocks(
         _proforma_db_path(), batch_id, include_resolved=include_resolved,
     )
+    # Build sales_document_id → source file name map (read-only).
+    src_by_id: Dict[str, str] = {}
+    try:
+        for sd in (ddb.get_sales_documents(batch_id) or []):
+            p = str(sd.get("source_file_path") or "").strip()
+            if p:
+                src_by_id[str(sd.get("id") or "")] = Path(p).name
+    except Exception:  # pragma: no cover - enrichment is best-effort
+        src_by_id = {}
+    for b in blocks:
+        b["source_file_name"] = src_by_id.get(str(b.get("sales_document_id") or ""), "")
     return {
         "batch_id":         batch_id,
         "include_resolved": include_resolved,

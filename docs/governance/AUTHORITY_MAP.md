@@ -564,6 +564,30 @@ only, no wFirma/booking; `GET .../blocks/{batch_id}`).
 reservation projection is **readiness reference only** — `ready_to_create` gating and the wFirma
 API write path are unchanged (P2/P4 preserved).
 
+## 14. Proforma product description + draft-screen authority (2026-06-21)
+
+**Description authority (single source)**: `description_engine.py` → `product_descriptions` table
+(`description_block` / `description_pl` / `description_en` / `description_bilingual`, generated from
+`polish_description_generator` ITEM_TRANSLATIONS). ONE PRODUCT_CODE = ONE LOCKED DESCRIPTION_BLOCK,
+reused by PZ/customs AND proforma. The proforma draft line carries these via
+`enrich_lines_from_product_descriptions`; the V1 draft screen now DISPLAYS the canonical
+description + provenance (`name_pl_source`). This is **display only**.
+
+**wFirma line-name authority (unchanged)**: the posted wFirma proforma/invoice line name = `design_no
+or product_code` (`routes_proforma.py:1553/7254`) — NOT `name_pl`/description. Changing the displayed
+description cannot alter the posted line. Whether the wFirma line name should adopt the canonical
+description is an OPEN decision (BACKLOG B-013, needs accounting/legal sign-off).
+
+**Blocked draft-birth visibility**: `proforma_draft_birth_blocks` → `GET /api/v1/admin/contractor-
+projection/blocks/{batch}` (now enriched read-only with `source_file_name`). Surfaced in the V1 Sales
+lane / proforma draft panel — operator sees source doc, parsed name, contractor id, code, reason,
+action. No hidden blocked records (Lesson M).
+
+**Active proforma UI surface**: V1 `shipment-detail.html` (frozen; patched only with minimal critical
+operator-readiness changes — customer-authority-summary-above-lines, canonical description display,
+blocked-record panel). V2 surfaces (`v2/proforma-detail.jsx` near-complete; `proforma-v2.html` partial)
+exist but are NOT the production surface — cutover is operator-approved Atlas-V2 work (BACKLOG B-014).
+
 ---
 
 _This map is append-only for new domains. To add a domain: follow the section template above.
