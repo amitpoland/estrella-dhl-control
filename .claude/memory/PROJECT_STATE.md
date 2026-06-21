@@ -69,6 +69,26 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
+## Current origin/main HEAD (2026-06-21, updated): `ef24ee3`
+
+- **origin/main HEAD = `ef24ee3`** — `feat(governance): persistent requirements check in /feature + promotion path (#714)` (merged 2026-06-21). Chain since `a39f220` (PR #704 docs): `3a14705` (#706 wfirma test) → `4624af5` (#711 registry circuit-breaker test) → `647efc7` (#712 docs archive) → `1184792` (#713 operational_authority extract) → `ef24ee3` (#714 /feature requirements check). Supersedes the `a39f220` block below (append-only — prior entries retained).
+
+## PR #716 — Show DHL AWB number on V2 shipment overview page / Row #7 (2026-06-21, OPEN DRAFT — GATE 1 SATISFIED, NOT MERGED, NOT DEPLOYED)
+
+- **PR #716 OPENED as DRAFT** (2026-06-21): Title: `feat(v2): show DHL AWB number on shipment overview page`. Branch `feat/v2-dhl-awb-display`. Commits `c88a829` (implementation) + `65bf201` (task state) + `9e66d4b` (observer scorecard). Base: origin/main. Status: **DRAFT, OPEN, GATE 1 SATISFIED**. NOT merged. NOT deployed. Awaiting operator browser verification then conversion from DRAFT to ready-for-review to merge.
+- **FEATURE_SCORECARD.md Row #7 logged** (2026-06-21): TASK_TYPE=V2_FRONTEND, SELECTED_SKILL=frontend-flow-reviewer (via SKILL_ROUTING.md), outcome=COMPLETE (GATE 1 satisfied, PR open, GATE 6 pending operator).
+- **Changes** (2 files + 1 new test file):
+  - `service/app/static/v2/shipment-detail-page.jsx`: `deriveDetail()` now returns `awb: audit.tracking_no || shipment.awb || null` (tracking_no from audit has priority). Sub-header AWB div gains `data-testid="header-awb"` and renders `_dash(d.awb)`. OverviewTab DHL Clearance InfoBlock first row changed to `{ label: 'AWB / Tracking', value: _dash(d.awb), mono: true }`.
+  - `service/tests/test_v2_shipment_detail_awb_contract.py` (NEW): 5 contract tests — all pass. Pin that `deriveDetail` returns `awb` field from `tracking_no` preferentially, `_dash(null)` renders `'—'`, header div carries `data-testid="header-awb"`, OverviewTab carries the AWB row with `mono: true`.
+- **AWB source authority**: `audit.tracking_no` (DHL tracking / customs authority) preferred over `shipment.awb` (intake field). Neither value is fabricated — `null` renders `—` per `_dash()`. Consistent with the authority approach established by PR #682 (`_normalizeShipment` snake-to-camelCase normaliser).
+- **OQ-PR682-FOLLOWUP item 1 addressed**: The low-severity nit from PR #682 ("wrap header `shipment.awb` in `_dash()`") is now fulfilled by this PR which wires the AWB from the full audit authority chain and applies `_dash()`.
+- **RULE 6 (scorecard)**: Scorecard `.claude/memory/scorecards/2026-06-21-row7-v2-dhl-awb-display.md` — **PRESENT on disk** (2026-06-21). Campaign: "Row #7 — V2 DHL AWB display". 3 agents: gap-detection EXEMPLARY (28/35), reviewer-challenge EXEMPLARY (29/35), final-consistency-review EXEMPLARY (29/35). 0 NEEDS-TUNING. 0 UNRELIABLE. 0 new GATE 4 items.
+- **Carried-forward GATE 4 items (not new)**:
+  - backend-safety-reviewer REPEATED-WEAK: **Issue #694 stays OPEN** (accumulates evidence; not triggered by this campaign which did not dispatch backend-safety-reviewer).
+  - frontend-flow-reviewer REPEATED-WEAK: **Issue #709 stays OPEN** (pending execution; frontend-flow-reviewer was not dispatched this campaign).
+- **GATE 2 status**: 1/3 open implementation PRs (#716 DRAFT). Queue has 2 slots available.
+- **Deploy gate**: NOT applicable until PR merges. After merge: static-asset only change (`.jsx` + test file) — no backend route change, no PZService restart required; standard `service/app/static/v2/` Copy-Item. Lesson J N/A (no root engine files).
+
 ## Current origin/main HEAD (2026-06-21, updated): `53a3cc7`
 
 - **origin/main HEAD = `53a3cc7`** — `fix(v2): wire Create Reservation button (reservation readiness gate + confirmed wFirma create) — Lesson M (#702)` (merged 2026-06-21). Chain since `3b14825` (PR #693): `db98a63` (#696 link-as-sales captures operator contractor_id) → `6a8641e` (#697 V2 link-as-sales contractor picker) → `b47ca02` (#698 proforma-list Retry → shared Btn) → `0de180f` (#699 proforma-v2 draft-scoped documents + readiness gate) → `53a3cc7` (#702 Create Reservation button). Supersedes the `3b14825` HEAD block below (append-only — prior entries retained).
@@ -5686,11 +5706,11 @@ Group D — Tests (3 new files):
 - **Display-only; wFirma line-name posting is NOT affected** (2026-06-21): the wFirma posted line name originates from `design_no`/`product_code` (`routes_proforma.py:1553/7254`). Whether the posted line name should ADOPT the canonical description is a separate accounting/legal decision tracked as BACKLOG B-013. No code may alter the posted-line source without an explicit operator decision here.
 - **V1 remains the active proforma surface; V2 cutover is Atlas-V2 scope** (2026-06-21): PR #677 patches V1 minimally (Lesson F). V2 cutover (`proforma-v2.html` / `v2/proforma-detail.jsx`) is the operator-approved Atlas-V2 work tracked as BACKLOG B-014. No V2 cutover may occur without an explicit operator decision.
 
-## Next 3 actions in queue (refreshed 2026-06-21 — PR #708 OPENED `d546f49`: freight blocker deep-link; Issues #709 + #710 filed; main HEAD `a39f220`)
+## Next 3 actions in queue (refreshed 2026-06-21 — PR #716 DRAFT opened `feat/v2-dhl-awb-display`; scorecard PRESENT; Row #7 COMPLETE; main HEAD `ef24ee3`)
 
-1. **Merge PR #708 (freight authority blocker deep-link)** — target: operator review + merge; GATE 1 satisfied, 24 + 123 tests green, no deploy gate risk on merge itself. Gating: OQ-PR708-MERGE open; GATE 2 slot required (verify count ≤3 impl PRs open).
-2. **Deploy PR #708 to production** — target: 7-agent gate GO + operator robocopy `service/app/**` → `C:\PZ\app\**` + `PZService` restart (backend route change) + GATE-6 browser verify freight blocker with Clear-Diamonds (live USD draft, `/suggest-freight` POST → confirm `freight_authority` block + deep-link renders correctly). Gating: OQ-PR708-DEPLOY open; requires #708 merged first.
-3. **Execute agent-tuning Issues #709 + #694** — target: frontend-flow-reviewer (#709) + backend-safety-reviewer (#694) evidence-packaging prompt hardened; both GATE 4 ISSUE dispositions executed; closes the REPEATED-WEAK pattern for both agents. Gating: OQ-PR694-ISSUE-EXECUTE + OQ-PR709-ISSUE-EXECUTE open; requires agent-prompt-refiner session or direct prompt edits.
+1. **Operator: browser verify + merge PR #716 (V2 DHL AWB display)** — target: open V2 shipment detail page, confirm AWB visible in header and OverviewTab DHL Clearance InfoBlock, console clean, no new network errors; then convert from DRAFT to ready-for-review and merge. Gating: OQ-PR716-GATE6 open; GATE 2 slot available (1/3 used).
+2. **Execute agent-tuning Issues #709 + #694** — target: frontend-flow-reviewer (#709) + backend-safety-reviewer (#694) evidence-packaging prompt hardened; both GATE 4 ISSUE dispositions executed; closes the REPEATED-WEAK pattern for both agents. Gating: OQ-PR694-ISSUE-EXECUTE + OQ-PR709-ISSUE-EXECUTE open; requires agent-prompt-refiner session or direct prompt edits.
+3. **Merge/deploy PR #708 pending or next eligible PR** — target: 7-agent gate GO for the freight authority blocker deep-link + robocopy + PZService restart + GATE-6 browser verify. Gating: OQ-PR708-MERGE + OQ-PR708-DEPLOY open; GATE 2 slot required.
 
 ## /feature Command and BACKLOG.md Governance (2026-06-20)
 
@@ -6352,6 +6372,13 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ---
 
 # OPEN QUESTIONS
+
+## OQ-PR716-GATE6: PR #716 (V2 DHL AWB display) GATE 6 browser verification pending (2026-06-21, OPEN DRAFT)
+
+- **Question**: Has the operator performed GATE 6 browser verification for PR #716 (`feat/v2-dhl-awb-display`)? Required checks: (a) open V2 shipment detail page on a real shipment with a known AWB; (b) confirm AWB number is visible in the sub-header AWB div (testid `header-awb`); (c) confirm OverviewTab DHL Clearance InfoBlock shows "AWB / Tracking" row with the correct value; (d) null AWB renders `—`; (e) console clean; (f) no new network errors. After verification passes, convert PR from DRAFT to ready-for-review and merge.
+- **Who can answer**: Operator — authenticated browser access to the running PZ service (V2 page is auth-gated; curl returns the Sign-In HTML at 200).
+- **Impact if unanswered**: PR #716 remains a DRAFT; Row #7 is code-COMPLETE but not merged; AWB display is unshipped; GATE 6 is unclosed.
+- **Candidate path to closure**: Operator performs browser smoke → no issues → converts PR to ready-for-review → squash-merge → orchestrator records new main HEAD in FACTS and closes this OQ.
 
 ## OQ-PR708-MERGE: PR #708 (freight authority blocker deep-link) awaiting merge (2026-06-21, OPEN)
 
