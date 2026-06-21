@@ -375,6 +375,7 @@ def _resolve_customer_via_master(
 def _resolve_customer(
     client_name: str,
     batch_id: Optional[str] = None,
+    client_contractor_id: str = "",
 ) -> Dict[str, Any]:
     """Resolve a sales-list client name to a customer identity.
 
@@ -457,11 +458,13 @@ def _resolve_customer(
                 client_name=raw,
                 documents_db_path=settings.storage_root / "documents.db",
                 customer_master_db_path=_customer_master_db_path(),
+                client_contractor_id=client_contractor_id,
             )
             if per_doc is not None:
                 out.update({
                     "found":                True,
-                    "match_strategy":       "per_document_upload",
+                    "match_strategy":       per_doc.get("match_strategy",
+                                                        "per_document_upload"),
                     "wfirma_customer_id":   per_doc["wfirma_customer_id"],
                     "resolved_wfirma_name": per_doc["resolved_master_name"],
                     "advisory":             per_doc["advisory"],
@@ -631,7 +634,8 @@ def _validate_args(batch_id: str, client_name: str) -> str:
     return cn
 
 
-def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
+def _build_preview(batch_id: str, client_name: str,
+                   client_contractor_id: str = "") -> Dict[str, Any]:
     """
     Canonical preview resolution. Returns the canonical preview dict.
     Identical body shape to what /preview emits over HTTP — used directly
@@ -709,7 +713,10 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     # Pass batch_id so the packing-upload Customer Master selection (set when
     # the operator picked a client during sales packing intake) outranks
     # any name-based fallback. See _resolve_customer docstring authority chain.
-    customer_resolution = _resolve_customer(client_name, batch_id=batch_id)
+    customer_resolution = _resolve_customer(
+        client_name, batch_id=batch_id,
+        client_contractor_id=client_contractor_id,
+    )
 
     # ── 1. Resolution rows (sales → wFirma product_code) ────────────────────
     resolution_rows = [
@@ -3921,6 +3928,55 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
     }
 
 
+def _enrich_invoice_line_names(lines: List[Dict[str, Any]]) -> None:
+    """Phase C — annotate each editable line with the customer-facing INVOICE
+    line-name authority: the wFirma goods-registry name that actually prints on
+    the proforma/invoice the customer receives.
+
+    The generated wFirma proforma references each good by id, so the line name
+    printed on the customer document is whatever ``<name>`` is stored in the
+    wFirma goods registry (mirrored locally as ``wfirma_products.product_name``)
+    — NOT the live ``description_engine`` canonical text and NOT ``name_pl``.
+    Surfacing this single authority lets the Sales editor, the printable
+    preview, and the generated invoice all render the SAME description (one
+    authority, one renderer).
+
+    Read-only projection. Never registers a product, never edits wFirma, never
+    changes the stored name. Mutates each line dict in place, adding:
+
+      ``invoice_line_name``        — the registered goods name (what prints), or
+                                     '' when the product is not yet registered.
+      ``invoice_line_name_source`` — 'wfirma_goods'        (registered → this is
+                                     authoritative) or 'pending_registration'
+                                     (no goods record yet — the name shown is the
+                                     pending value that will be registered).
+    """
+    if not lines:
+        return
+    prod_index: Dict[str, Dict[str, Any]] = {}
+    try:
+        from ..services import wfirma_db as _wfdb_inv
+        codes = sorted({
+            str(ln.get("product_code") or "").strip()
+            for ln in lines
+            if str(ln.get("product_code") or "").strip()
+        })
+        if codes:
+            prod_index = _wfdb_inv.get_products_batch(codes) or {}
+    except Exception as exc:  # pragma: no cover - enrichment is best-effort
+        log.warning("invoice line-name enrichment unavailable (non-fatal): %s", exc)
+        prod_index = {}
+    for ln in lines:
+        pc = str(ln.get("product_code") or "").strip()
+        inv_name = (str((prod_index.get(pc) or {}).get("product_name") or "")).strip()
+        if inv_name:
+            ln["invoice_line_name"] = inv_name
+            ln["invoice_line_name_source"] = "wfirma_goods"
+        else:
+            ln["invoice_line_name"] = ""
+            ln["invoice_line_name_source"] = "pending_registration"
+
+
 # ── M6 — Cross-batch proforma search (read-only) ─────────────────────────────
 # Authority: proforma_drafts table ONLY. No wFirma, no invoice ledger,
 # no email, no mutation. Purely read-only index.
@@ -4122,6 +4178,10 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
     except Exception as exc:
         log.warning("draft %s read-time enrichment failed (non-fatal): %s",
                     draft_id, exc)
+    # Phase C — annotate each line with the customer-facing invoice line-name
+    # authority (wFirma goods name) so the editor shows what will actually
+    # print, matching the preview and the generated invoice.
+    _enrich_invoice_line_names(full.get("editable_lines") or [])
     return JSONResponse({
         "ok":    True,
         "draft": full,
@@ -4440,6 +4500,10 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
         lines = _json.loads(d.editable_lines_json or "[]") or []
     except Exception:
         lines = []
+    # Phase C — annotate with the customer-facing invoice line-name authority
+    # (wFirma goods name) so this printable preview matches the editor and the
+    # generated invoice. Read-only.
+    _enrich_invoice_line_names(lines)
     try:
         charges = _json.loads(d.service_charges_json or "[]") or []
     except Exception:
@@ -4519,11 +4583,20 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
             )
 
     def _bilingual_desc(ln) -> str:
-        """Combine PL + EN descriptions in wFirma bilingual format.
+        """Resolve the line description for the printable preview.
 
-        Priority: description_pl (full customs sentence) over name_pl (short label).
-        Format: "{Polish}. / {English}"  — mirrors the wFirma proforma PDF layout.
+        Phase C — single authority: the customer-facing invoice prints the
+        wFirma goods-registry name, so prefer ``invoice_line_name`` when the
+        product is registered. This keeps the preview identical to the generated
+        invoice. Fall back to the customs bilingual sentence only when the
+        product is not yet registered (pending — no goods name exists yet), so
+        the operator still sees a meaningful pending value.
+
+        Format (fallback): "{Polish}. / {English}" — mirrors the wFirma layout.
         """
+        inv = (ln.get("invoice_line_name") or "").strip()
+        if inv and ln.get("invoice_line_name_source") == "wfirma_goods":
+            return inv
         pl = (ln.get("description_pl") or ln.get("name_pl") or "").strip()
         en = (ln.get("description_en") or "").strip()
         if pl and en:
@@ -5168,6 +5241,54 @@ def _repair_hint_for_blocker(reason: str) -> str:
     return "Resolve this blocker, then re-run readiness."
 
 
+def _eu_vat_candidate_from_master(cm: Any) -> Optional[Dict[str, str]]:
+    """Surface an on-file ``nip`` as a confirm-and-save EU-VAT CANDIDATE.
+
+    Context: the customer's canonical EU-VAT field is ``vat_eu_number`` (paired
+    with ``vat_eu_valid`` for VIES). The general tax-id field ``nip`` sometimes
+    already holds the EU VAT (e.g. an HU buyer stored as ``nip='HU32207880'``),
+    while ``vat_eu_number`` is left blank. When that happens the WDT gate blocks
+    for a "blank" VAT that is, to the operator, plainly on file — an authority
+    mismatch between what is stored and what the gate reads.
+
+    This returns the ``nip`` as a candidate ONLY when it is formatted as this EU
+    country's VAT (ISO-country prefix). It is deliberately conservative:
+
+      * It NEVER makes the customer WDT-eligible by itself. The readiness gate
+        still blocks until ``vat_eu_number`` is explicitly populated. This only
+        powers the operator's "save to Customer Master" action and the
+        authority-honest blocker wording — there is no silent nip→EU-VAT
+        acceptance (WDT is tax-sensitive; see safety gate).
+      * A bare domestic tax id (no country prefix) is NOT offered, so we never
+        assert EU-VAT eligibility from the wrong kind of number.
+
+    Returns ``{"candidate_vat", "candidate_source"}`` or ``None``.
+    """
+    from ..models.vat_resolver import EU_COUNTRIES  # noqa: PLC0415
+    country = (getattr(cm, "country", None)       or "").strip().upper()
+    vat_eu  = (getattr(cm, "vat_eu_number", None) or "").strip()
+    nip     = (getattr(cm, "nip", None)           or "").strip()
+    if vat_eu:                                   # canonical field already set
+        return None
+    if not country or country not in EU_COUNTRIES:
+        return None
+    if not nip:
+        return None
+    if nip.upper().replace(" ", "").startswith(country):
+        return {"candidate_vat": nip, "candidate_source": "nip"}
+    return None
+
+
+# #684 billed-line ambiguity reconciliation and #686 over-bill analysis now live
+# in the single canonical resolver (product_authority_resolver). They are
+# re-exported here under their historical private names so the readiness gate
+# and the existing tests are unchanged. See service/docs/adr/ADR-product-authority.md.
+from ..services.product_authority_resolver import (  # noqa: E402
+    reconcile_billed_ambiguity as _reconcile_billed_ambiguity,
+    analyze_product_code_billing as _analyze_product_code_billing,
+)
+
+
 def _derive_draft_readiness(
     draft: "pildb.ProformaDraft", *, intent: str,
 ) -> Dict[str, Any]:
@@ -5210,6 +5331,10 @@ def _derive_draft_readiness(
     blockers: List[Dict[str, str]] = []
     warnings: List[str] = []
     _seen: set = set()
+    # Structured WDT-VAT resolution data so the frontend can offer an explicit
+    # "save EU VAT to Customer Master" action (never auto-applied). None unless
+    # the WDT/nip-candidate case below is detected.
+    _vat_resolution: Optional[Dict[str, Any]] = None
 
     def _add(reason: str, repair_action: str = "") -> None:
         key = (reason or "").strip()
@@ -5224,7 +5349,10 @@ def _derive_draft_readiness(
     # ── 1. Comprehensive preview authority (ambiguity / warehouse / customer)
     preview: Dict[str, Any] = {}
     try:
-        preview = _build_preview(draft.batch_id or "", draft.client_name or "")
+        preview = _build_preview(
+            draft.batch_id or "", draft.client_name or "",
+            client_contractor_id=getattr(draft, "client_contractor_id", "") or "",
+        )
     except HTTPException as exc:
         _add(f"readiness preview failed: {exc.detail}",
              "Fix the batch_id/client_name identifiers on the draft.")
@@ -5232,8 +5360,41 @@ def _derive_draft_readiness(
         _add(f"readiness preview failed: {type(exc).__name__}: {exc}",
              "Inspect batch data — preview derivation must succeed before "
              "approve/post/convert (fail-closed).")
+    # Draft lines loaded once here (product_code is the identity authority —
+    # rule 6) so the ambiguity reconciliation below and the wfirma_products
+    # check (section 3) share the same parsed lines.
+    try:
+        _r_lines = json.loads(draft.editable_lines_json or "[]") or []
+    except Exception:
+        _r_lines = []
+        _add("editable_lines_json is not valid JSON — draft lines unreadable",
+             "Reset the draft from the sales packing list.")
+
+    # Reconcile batch-level design ambiguity against what is ACTUALLY billed.
+    # The preview's "maps to multiple product_codes" blockers collapse design_no
+    # across the whole batch (ignoring invoice context AND the product_code the
+    # billed line already carries). A design only BLOCKS when a billed line on
+    # this draft cannot be pinned to a valid product_code; a design no line bills
+    # is a batch artifact (note, not a blocker). No product_code is ever guessed.
+    _ambig_recon = _reconcile_billed_ambiguity(
+        preview.get("ambiguous_design_codes") or {}, _r_lines)
+
     for reason in (preview.get("blocking_reasons") or []):
+        if "maps to multiple product_codes" in str(reason):
+            continue   # re-derived below with billed-line product_code authority
         _add(str(reason))
+    for _amb_design, _amb_codes in _ambig_recon["genuinely_ambiguous"].items():
+        _add(
+            f"design_no {_amb_design!r} maps to multiple product_codes in this "
+            f"batch: {_amb_codes} — clarify which line to bill"
+        )
+    for _nb_design in _ambig_recon["not_billed"]:
+        warnings.append(
+            f"design_no {_nb_design!r} has multiple candidate product_codes in "
+            "the batch packing but no line on this draft bills it — batch "
+            "artifact, not a billing blocker"
+        )
+
     if intent in ("post", "convert"):
         for reason in (preview.get("export_blockers") or []):
             _add(str(reason),
@@ -5250,12 +5411,7 @@ def _derive_draft_readiness(
         _add(_pf_err)
 
     # ── 3. Missing wfirma_products mappings (unconditional block) ─────────
-    try:
-        _r_lines = json.loads(draft.editable_lines_json or "[]") or []
-    except Exception:
-        _r_lines = []
-        _add("editable_lines_json is not valid JSON — draft lines unreadable",
-             "Reset the draft from the sales packing list.")
+    # _r_lines was parsed once above (shared with the ambiguity reconciliation).
     _missing_codes: List[str] = []
     for _ln in _r_lines:
         _pc = (str(_ln.get("product_code") or "")).strip()
@@ -5301,13 +5457,42 @@ def _derive_draft_readiness(
                     _r_vat_eu = (getattr(_r_cm, "vat_eu_number", None)
                                  or "").strip()
                     if not _r_vat_eu:
-                        _add(
-                            "WDT (intra-EU 0%) requires the buyer's EU VAT "
-                            "number — customer master vat_eu_number is blank",
-                            "Add the buyer's EU VAT number to Customer "
-                            "Master (verify via VIES). Do NOT change "
-                            "vat_mode to bypass missing VAT data.",
-                        )
+                        # The gate authority is customer_master.vat_eu_number.
+                        # If a nip is on file that is formatted as this EU
+                        # country's VAT, surface it as a confirm-and-save
+                        # candidate so the operator has an inline repair path —
+                        # WITHOUT auto-accepting it (still blocks until saved).
+                        _cand = _eu_vat_candidate_from_master(_r_cm)
+                        if _cand:
+                            _vat_resolution = {
+                                "context":              "wdt",
+                                "vat_eu_number":        "",
+                                "candidate_vat":        _cand["candidate_vat"],
+                                "candidate_source":     _cand["candidate_source"],
+                                "contractor_id":        _r_contractor,
+                                "needs_save_to_master": True,
+                            }
+                            _add(
+                                "WDT (intra-EU 0%) requires the buyer's EU VAT "
+                                "in Customer Master. Tax number "
+                                f"{_cand['candidate_vat']!r} is on file (nip) "
+                                "but the canonical vat_eu_number field is "
+                                "blank — confirm it is the EU VAT and save it "
+                                "to Customer Master.",
+                                "Use 'Save EU VAT to Customer Master' to write "
+                                f"{_cand['candidate_vat']} into vat_eu_number "
+                                "(then VIES-verify). Do NOT change vat_mode to "
+                                "bypass missing VAT data.",
+                            )
+                        else:
+                            _add(
+                                "WDT (intra-EU 0%) requires the buyer's EU VAT "
+                                "number — customer master vat_eu_number is "
+                                "blank",
+                                "Add the buyer's EU VAT number to Customer "
+                                "Master (verify via VIES). Do NOT change "
+                                "vat_mode to bypass missing VAT data.",
+                            )
                     elif getattr(_r_cm, "vat_eu_valid", None) is not True:
                         warnings.append(
                             "vies_unverified: buyer vat_eu_number present "
@@ -5326,14 +5511,78 @@ def _derive_draft_readiness(
         _add(f"VAT readiness check failed: {type(exc).__name__}: {exc}",
              "Inspect customer master data for this client.")
 
-    # Structured ambiguity data so the frontend can render an exact
-    # product_code selector (requirement 4) instead of parsing reason text.
-    ambiguous_designs: Dict[str, Any] = {}
+    # ── 5. Duplicate / over-bill product_code guard (billing integrity) ────
+    # product_code = one purchase invoice line (a lot that may hold several
+    # designs/pieces). A product_code MAY be billed on multiple draft lines, but
+    # only up to the available packing quantity (rule 2 — the packing-line
+    # quantity is the split authority). Billing MORE than available is a
+    # double-bill of a physical line → hard blocker (rule 4). Mere duplication
+    # within the available quantity is legitimate (mixed lots) and does NOT
+    # block; it is surfaced in the structured field for transparency. Never
+    # auto-corrects or merges (rule 5).
+    duplicate_product_codes: List[Dict[str, Any]] = []
+    product_authority_available = True
+    try:
+        from ..services.product_authority_resolver import (  # noqa: PLC0415
+            resolve_batch_product_authority as _resolve_authority,
+        )
+        _auth = _resolve_authority(draft.batch_id or "")
+        if not _auth.get("authority_available", True):
+            # FAIL CLOSED (OQ-PR689-OVERBILL-FAILCLOSED): packing_lines authority
+            # could not be READ — we cannot prove product_code validity, available
+            # quantity, or over-bill status. Block approve/post/convert rather than
+            # silently pass on an unprovable billing state. No fallback to
+            # product_master (advisory only); no auto-correction.
+            product_authority_available = False
+            _add(
+                "packing authority unavailable — cannot validate product "
+                "identity or billed quantity ("
+                + str(_auth.get("authority_error") or "packing_lines read failed")
+                + ")",
+                "Restore packing_lines read access for this batch (packing_db), "
+                "then re-check readiness. Approve/post/convert stay blocked until "
+                "product identity and billed quantity can be validated.",
+            )
+        else:
+            duplicate_product_codes = _analyze_product_code_billing(
+                _r_lines,
+                _auth["available_by_product_code"],
+                _auth["invoice_by_product_code"])
+    except Exception as exc:
+        # FAIL CLOSED: an unexpected failure evaluating the over-bill guard is a
+        # HARD BLOCKER, not a warning — never approve/post/convert when the
+        # billing-integrity check could not run.
+        product_authority_available = False
+        _add(
+            "packing authority guard failed — cannot validate billed quantity "
+            f"({type(exc).__name__}: {exc})",
+            "Inspect the packing_lines read path; readiness stays blocked until "
+            "the over-bill guard can run.",
+        )
+    for _dp in duplicate_product_codes:
+        if _dp["over_billed"]:
+            _designs = ", ".join(_dp["design_nos"][:6]) + (
+                "…" if len(_dp["design_nos"]) > 6 else "")
+            _add(
+                f"product_code {_dp['product_code']!r} is billed "
+                f"{_dp['billed_qty']:g} but only {_dp['available_qty']:g} "
+                f"available in packing (invoice {_dp['invoice_no']}) — "
+                f"over-billed across {_dp['line_count']} draft lines "
+                f"[{_designs}]: confirm split-quantity or correct the sales lines",
+                "Reduce the billed quantity to the available packing quantity, "
+                "or fix the product_code on the duplicated sales lines. Do NOT "
+                "auto-merge lines or silently pick one.",
+            )
+
+    # Structured ambiguity data so the frontend renders an exact product_code
+    # selector — ONLY for designs a billed line cannot resolve (rule 6). Designs
+    # already pinned by a billed line's product_code, or not billed at all, are
+    # excluded here so the operator is not asked to re-resolve them.
+    ambiguous_designs: Dict[str, Any] = dict(_ambig_recon["genuinely_ambiguous"])
     resolved_designs:  Dict[str, Any] = {}
     try:
         from ..services.design_product_bridge import populate_from_packing
         _bs = populate_from_packing(draft.batch_id or "")
-        ambiguous_designs = dict(_bs.get("ambiguous_design_codes") or {})
         resolved_designs  = dict(_bs.get("resolved_design_codes") or {})
     except Exception as exc:
         warnings.append(f"design bridge summary unavailable: "
@@ -5349,6 +5598,9 @@ def _derive_draft_readiness(
         "warnings":          warnings,
         "ambiguous_designs": ambiguous_designs,
         "resolved_designs":  resolved_designs,
+        "vat_resolution":    _vat_resolution,
+        "duplicate_product_codes": duplicate_product_codes,
+        "product_authority_available": product_authority_available,
     }
 
 
@@ -8477,7 +8729,7 @@ def get_dual_valuation(batch_id: str, client_name: str) -> JSONResponse:
 #
 # Advisory drift/eligibility detection (ADR-029 §3, a typed extension of ADR-025
 # soft validation). All three routes are gated by ``conflict_detection_enabled``
-# (default OFF) and return 404 when the flag is off so the surface is inert until
+# (default OFF) and return a 200 no-op when the flag is off so the surface is inert until
 # the workspace opt-in. Detection is pure / local-only / wFirma-free (ADR-021
 # Invariant 7): the customer is resolved from local masters and passed into the
 # pure detector; persistence + audit live in proforma_conflict_db.
@@ -8542,12 +8794,12 @@ def scan_draft_conflicts(
     """Run the PR-1 conflict detectors against a draft and upsert findings.
 
     Advisory only — never blocks. Gated by ``conflict_detection_enabled``;
-    returns 404 when off. Pure/local detection; the detector does no wFirma I/O.
+    returns a 200 no-op when off. Pure/local detection; the detector does no wFirma I/O.
     Returns the full current conflict list for the draft (including any prior
     operator-resolved rows) so the UI sees the complete picture.
     """
     if not _conflicts_enabled():
-        raise HTTPException(status_code=404, detail="conflict detection is disabled")
+        return JSONResponse({"enabled": False, "draft_id": draft_id, "conflicts": []})
 
     draft = pildb.get_draft_by_id(_proforma_db_path(), draft_id)
     if draft is None:
@@ -8578,6 +8830,7 @@ def scan_draft_conflicts(
             current_value   = d.current_value,
             master_value    = d.master_value,
             reason          = d.reason,
+            evidence        = d.evidence,
             actor           = operator,
         )
 
@@ -8600,7 +8853,8 @@ def list_draft_conflicts(
     """List stored conflicts for a draft. ``statuses`` is an optional CSV filter
     (e.g. ``open,acknowledged``). Gated by ``conflict_detection_enabled``."""
     if not _conflicts_enabled():
-        raise HTTPException(status_code=404, detail="conflict detection is disabled")
+        return JSONResponse({"draft_id": draft_id, "proforma_id": str(draft_id),
+                             "count": 0, "conflicts": []})
 
     pid = str(draft_id)
     status_filter: Optional[List[str]] = None
@@ -8633,7 +8887,7 @@ def resolve_draft_conflict(
     The ``X-Operator`` header supplies ``resolved_by`` and is required for
     attribution. Gated by ``conflict_detection_enabled``."""
     if not _conflicts_enabled():
-        raise HTTPException(status_code=404, detail="conflict detection is disabled")
+        return JSONResponse({"enabled": False, "draft_id": draft_id})
 
     operator = (x_operator or "").strip()
     if not operator:

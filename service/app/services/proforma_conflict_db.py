@@ -26,6 +26,7 @@ Read-only / local-only: this module never calls wFirma (ADR-021 Invariant 7).
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -102,6 +103,7 @@ class ProformaConflict:
     resolution_reason: Optional[str] = None
     resolved_by:       Optional[str] = None
     resolved_at:       Optional[str] = None
+    evidence:          Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -130,6 +132,9 @@ def _row_to_conflict(row: sqlite3.Row) -> ProformaConflict:
         resolution_reason = row["resolution_reason"],
         resolved_by       = row["resolved_by"],
         resolved_at       = row["resolved_at"],
+        evidence          = (json.loads(row["evidence_json"])
+                             if ("evidence_json" in row.keys() and row["evidence_json"])
+                             else None),
     )
 
 
@@ -151,6 +156,7 @@ def init_db(db_path: Path) -> None:
                 current_value     TEXT,
                 master_value      TEXT,
                 reason            TEXT NOT NULL,
+                evidence_json     TEXT,
                 detected_at       TEXT NOT NULL,
                 status            TEXT NOT NULL,
                 resolution_type   TEXT,
@@ -202,6 +208,7 @@ def upsert_conflict(
     current_value:   Optional[str],
     master_value:    Optional[str],
     reason:          str,
+    evidence:        Optional[Dict[str, Any]] = None,
     actor:           Optional[str] = None,
 ) -> ProformaConflict:
     """Insert or refresh ONE advisory conflict.
@@ -242,11 +249,12 @@ def upsert_conflict(
                 INSERT INTO proforma_conflicts
                     (proforma_id, conflict_type, severity, authority_owner,
                      field_affected, current_value, master_value, reason,
-                     detected_at, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     evidence_json, detected_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (pid, conflict_type, severity, authority_owner, field_affected,
-                 current_value, master_value, reason, now, STATUS_OPEN),
+                 current_value, master_value, reason,
+                 (json.dumps(evidence) if evidence else None), now, STATUS_OPEN),
             )
             conn.commit()
             new_id = int(cur.lastrowid)

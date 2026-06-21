@@ -24,7 +24,12 @@ $Files = @(
         Dest = "react-dom.production.min.js"
     },
     @{
-        Url  = "https://unpkg.com/@babel/standalone/babel.min.js"
+        # PINNED to 7.x ON PURPOSE. Babel 8 changed @babel/preset-react's default JSX
+        # runtime to "automatic", which injects `import { jsx } from "react/jsx-runtime"`
+        # into compiled output and breaks the in-browser text/babel (classic <script>)
+        # pipeline used by /v2/index.html. Keep this in lock-step with the CDN fallback
+        # pin in service/app/static/v2/index.html. Guard: service/tests/test_v2_babel_pin.py.
+        Url  = "https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"
         Dest = "babel.min.js"
     }
 )

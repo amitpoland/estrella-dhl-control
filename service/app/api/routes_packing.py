@@ -1069,6 +1069,34 @@ async def reprocess_packing_documents(
                     result_entry["diagnostic_artifact"] = str(art) if art else None
                 sum_purchase += result_entry["rows_extracted"]
 
+                # Reprocess-parity (RC-1): mirror the sales-side flip below.
+                # Purchase packing extraction writes packing.db; the Document
+                # Registry reads the shipment_documents column, which stays
+                # 'pending' unless flipped here. Success = any rows stored
+                # (matches the intake gate). Read-before-write on the downgrade
+                # so a transient re-parse failure cannot overwrite a good row.
+                try:
+                    if line_records:
+                        _ddb.update_document_status(
+                            doc_id,
+                            extraction_status="extracted",
+                            parser_status="complete",
+                        )
+                    else:
+                        _cur = (_ddb.get_document(doc_id) or {})
+                        if (_cur.get("extraction_status") or "") not in ("extracted", "complete"):
+                            _ddb.update_document_status(
+                                doc_id,
+                                extraction_status="extraction_failed",
+                                parser_status="failed",
+                                requires_manual_review=True,
+                            )
+                except Exception as _exc:
+                    log.warning(
+                        "[%s] reprocess purchase status flip failed (non-fatal): %s",
+                        batch_id, _exc,
+                    )
+
             # ── Sales-side: extract_packing + store_sales_packing_lines ─
             elif document_type == "sales_packing_list":
                 sp_rows, _, _, sp_diag = extract_packing(file_path)
@@ -1096,29 +1124,30 @@ async def reprocess_packing_documents(
                 # the dashboard can render resolved/ambiguous/unresolved
                 # without re-deriving from logs.
                 result_entry["sales_matcher_summary"] = _matcher_summary
-                # Resolve a sales_documents id for this batch so sales
-                # lines are properly linked. If none exists yet, register
-                # a sales_invoice placeholder so the FK is satisfiable.
-                sales_docs = _ddb.get_documents_for_batch(batch_id, document_type="sales_invoice") or []
-                sales_doc_id = sales_docs[0]["id"] if sales_docs else ""
-                if not sales_doc_id:
-                    # Soft-register a sales_documents row keyed off the
-                    # packing file so downstream proforma readiness has
-                    # a join target. NEVER triggers external flows.
-                    try:
-                        _ddb.store_sales_document(
-                            batch_id=batch_id, document_id=doc_id,
-                            data={
-                                "client_name":      "",
-                                "client_ref":       "",
-                                "document_type":    "sales_packing_list",
-                                "source_file_path": str(file_path),
-                                "extraction_status": "pending",
-                            },
-                        )
-                        sales_doc_id = doc_id
-                    except Exception:
-                        sales_doc_id = doc_id
+                # Ensure a sales_documents row whose PRIMARY KEY id == doc_id
+                # (the sales packing list's shipment_documents.id). The lines
+                # below are keyed to doc_id; wfirma_reservation and the
+                # v_sales_to_wfirma view join sales_packing_lines on
+                # sales_documents.id, so the sales_documents row MUST carry that
+                # same id or every persisted line is orphaned from those
+                # readers. The old store_sales_document path minted a divergent
+                # random UUID — the root of that orphaning.
+                # ensure_sales_document_id is idempotent (re-reprocess reuses the
+                # row) and removes pre-fix phantom rows. NEVER triggers external
+                # flows. sales_doc_id stays == doc_id so all downstream linkage
+                # (client_name backfill, diagnostic write) is unchanged.
+                sales_doc_id = doc_id
+                try:
+                    _ddb.ensure_sales_document_id(
+                        batch_id, doc_id,
+                        document_type="sales_packing_list",
+                        source_file_path=str(file_path),
+                    )
+                except Exception as _exc:
+                    log.warning(
+                        "[%s] ensure_sales_document_id failed (non-fatal): %s",
+                        batch_id, _exc,
+                    )
 
                 # ── Preserve operator-supplied identity across reprocess ──
                 # The parser does not know client_name / client_ref — the
@@ -1376,6 +1405,31 @@ async def reprocess_packing_documents(
                     except AttributeError:
                         # Helper name varies between writers; fall back.
                         _ddb.store_sales_packing_lines(sales_doc_id, batch_id, line_records)
+                    # Reprocess-parity: the sales branch persists rows but the
+                    # intake-time shipment_documents.extraction_status stays
+                    # 'pending' unless flipped here. The packing card infers
+                    # 'extracted' from row count, but the Document Registry
+                    # reads the raw column — flip it so both agree. Gate on real
+                    # content (a product_code OR design_no on at least one row)
+                    # so a parse that yielded only blank rows is not mislabelled
+                    # 'extracted/complete'. Non-fatal.
+                    _has_content = any(
+                        (r.get("product_code") or "").strip()
+                        or (r.get("design_no") or "").strip()
+                        for r in line_records
+                    )
+                    if _has_content:
+                        try:
+                            _ddb.update_document_status(
+                                doc_id,
+                                extraction_status="extracted",
+                                parser_status="complete",
+                            )
+                        except Exception as _exc:
+                            log.warning(
+                                "[%s] reprocess sales status flip failed (non-fatal): %s",
+                                batch_id, _exc,
+                            )
 
                 # Fix 3: write rich Polish/English descriptions to product_descriptions
                 # from sales packing row fields (ctg/kt/col/quality) so that future
@@ -2511,6 +2565,12 @@ def get_packing_documents(batch_id: str) -> Dict[str, Any]:
 class _ClientMapping(BaseModel):
     packing_document_id: str
     client_name: str
+    # Optional operator-selected Customer-Master contractor. When supplied it is
+    # the customer authority for this client (contractor_id beats the parsed/
+    # free-text name — rules 1–2) and is persisted onto the sales chain so the
+    # proforma draft resolves by it. When omitted, the existing name-fallback
+    # behaviour is unchanged (rule 6).
+    client_contractor_id: str = ""
 
 
 class _LinkAsSalesBody(BaseModel):
@@ -2546,10 +2606,12 @@ def link_packing_as_sales(
     for mapping in body.client_mappings:
         pdoc_id = (mapping.packing_document_id or "").strip()
         client  = (mapping.client_name or "").strip()
+        cid     = (mapping.client_contractor_id or "").strip()
         if not pdoc_id or not client:
             results.append({
                 "packing_document_id": pdoc_id,
                 "client_name":         client,
+                "client_contractor_id": cid,
                 "ok":                  False,
                 "reason":              "missing packing_document_id or client_name",
             })
@@ -2585,11 +2647,16 @@ def link_packing_as_sales(
             })
             continue
 
-        # Get-or-create a stable sales_document record for this packing doc + client
+        # Get-or-create a stable sales_document record for this packing doc +
+        # client. The operator-selected contractor_id (when supplied) is the
+        # customer authority and is written onto sales_documents.client_contractor_id
+        # → projected onto the sales lines → the proforma draft, so the draft
+        # resolves Customer Master by contractor_id (selected beats parsed name).
         sales_doc_id = ddb.get_or_create_sales_document_for_packing(
             batch_id=batch_id,
             packing_document_id=pdoc_id,
             client_name=client,
+            client_contractor_id=cid,
         )
 
         # Map packing_lines → sales_packing_lines, excluding unmatched rows.
@@ -2604,6 +2671,7 @@ def link_packing_as_sales(
         results.append({
             "packing_document_id": pdoc_id,
             "client_name":         client,
+            "client_contractor_id": cid,
             "ok":                  True,
             "packing_lines_read":  len(packing_lines),
             "sales_lines_written": repl["inserted"],
@@ -2614,6 +2682,49 @@ def link_packing_as_sales(
             batch_id, client, pdoc_id, len(packing_lines), repl["inserted"],
             unmatched_skipped,
         )
+
+    # Seed the per-batch packing_contractor_resolution (the fallback authority
+    # store read by derive_customer_resolution_via_packing) ONLY when this call
+    # resolves the batch to a SINGLE operator-selected contractor. That store is
+    # UNIQUE(batch_id, role='client') — a multi-client backfill cannot be
+    # represented there without misrouting, so for multiple distinct contractors
+    # we rely solely on the per-document client_contractor_id projected onto the
+    # sales chain above (which resolves each draft correctly via step 0 of
+    # derive_customer_authority_for_draft). Never infer from text (rule 5).
+    cid_to_name: Dict[str, str] = {}
+    for r in results:
+        rc = (r.get("client_contractor_id") or "").strip()
+        if r.get("ok") and rc:
+            cid_to_name.setdefault(rc, r.get("client_name") or "")
+    if len(cid_to_name) == 1:
+        sel_cid, sel_name = next(iter(cid_to_name.items()))
+        try:
+            from ..services import packing_resolution_db as prdb
+            prdb.upsert_resolution(
+                settings.storage_root / "packing_resolutions.sqlite",
+                batch_id=batch_id,
+                role="client",
+                verdict={
+                    "parsed_name":         sel_name,
+                    "matched_master_type": "customer_master",
+                    "matched_master_id":   sel_cid,
+                    "matched_wfirma_id":   sel_cid,
+                    "tier":                1,
+                    "confidence":          1.0,
+                    "reason":              "link_as_sales_operator_selected",
+                },
+                operator_user="link_as_sales",
+                status_override="confirmed",
+            )
+            log.info("[%s] link_as_sales seeded client resolution (contractor=%s)",
+                     batch_id, sel_cid)
+        except Exception as exc:
+            log.warning("[%s] link_as_sales resolution seed failed (non-fatal): %s",
+                        batch_id, exc)
+    elif len(cid_to_name) > 1:
+        log.info("[%s] link_as_sales: %d distinct operator-selected contractors — "
+                 "per-batch resolution not seeded; per-document contractor_id "
+                 "authority used per draft instead.", batch_id, len(cid_to_name))
 
     # Trigger proforma draft auto-sync (non-blocking; any error is logged, not raised)
     sync_summary: Dict[str, Any] = {}
@@ -2642,7 +2753,8 @@ def link_packing_as_sales(
             detail={
                 "batch_id": batch_id,
                 "mappings": [
-                    {"doc": m.packing_document_id, "client": m.client_name}
+                    {"doc": m.packing_document_id, "client": m.client_name,
+                     "contractor_id": (m.client_contractor_id or "").strip()}
                     for m in body.client_mappings
                 ],
                 "results": results,

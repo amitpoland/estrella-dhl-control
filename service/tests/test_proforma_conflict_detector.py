@@ -248,3 +248,49 @@ def test_implemented_set_is_the_four_pr1_validators():
         "customer_vat_eu_changed",
         "service_charge_defaults_changed",
     }
+
+
+# ── ADR-029/ADR-022 divergence-vs-temporal governance marker ─────────────────
+
+def test_divergence_findings_carry_semantic_marker():
+    """The three master-comparison divergence checks (V3/V5/V8) must each carry
+    evidence["semantic"] so reviewers / UI never read 'current draft != current
+    master' as temporal drift."""
+    # V3 — currency vs customer default.
+    v3 = [d for d in detect_conflicts(
+              proforma_id="1", currency="USD",
+              customer=_customer(default_currency="EUR"))
+          if d.conflict_type == "currency_vs_customer_default"]
+    assert v3, "expected a currency divergence finding"
+    assert v3[0].evidence.get("semantic") == "divergence_not_temporal_drift"
+    assert "pr2_todo" in v3[0].evidence
+
+    # V5 — customer VAT-EU resolution vs draft code.
+    v5 = [d for d in detect_conflicts(
+              proforma_id="1", currency="USD", vat_code="23",
+              vat_context=CustomerForVAT(country="US", vat_eu_valid=None))
+          if d.conflict_type == "customer_vat_eu_changed"]
+    assert v5, "expected a VAT divergence finding"
+    assert v5[0].evidence.get("semantic") == "divergence_not_temporal_drift"
+    assert "pr2_todo" in v5[0].evidence
+
+    # V8 — service-charge default vs draft amount.
+    v8 = [d for d in detect_conflicts(
+              proforma_id="1", currency="EUR",
+              service_charges=[{"charge_type": "freight", "amount": 75, "currency": "EUR"}],
+              customer=_customer(freight_mode="fixed", freight_fixed_amount_eur="50"))
+          if d.conflict_type == "service_charge_defaults_changed"]
+    assert v8, "expected a service-charge divergence finding"
+    assert v8[0].evidence.get("semantic") == "divergence_not_temporal_drift"
+    assert "pr2_todo" in v8[0].evidence
+
+
+def test_v4_static_eligibility_carries_no_divergence_marker():
+    """V4 bank_account_currency_unsupported is a STATIC eligibility error, not a
+    master comparison — it must NOT carry the divergence/temporal marker (pins the
+    intentional distinction the detector docstring declares)."""
+    v4 = [d for d in detect_conflicts(proforma_id="1", currency="GBP", customer=None)
+          if d.conflict_type == "bank_account_currency_unsupported"]
+    assert v4, "expected a bank-account eligibility finding"
+    assert v4[0].evidence.get("semantic") is None
+    assert "pr2_todo" not in v4[0].evidence

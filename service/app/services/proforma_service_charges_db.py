@@ -135,6 +135,95 @@ def delete_charge(batch_id: str, client_name: str,
         return cur.rowcount > 0
 
 
+def move_charges_client_name(
+    batch_id: str, old_client_name: str, new_client_name: str,
+) -> List[Dict[str, Any]]:
+    """PR-3 rename mode: move every charge from old_client_name → new_client_name.
+
+    Used when the draft is being RENAMED in place (no canonical-named draft
+    pre-existed) — the charges belong to the same draft and must travel with it.
+    On a charge_type collision (the target already has that type — defensive,
+    shouldn't happen in pure-rename), the TARGET (canonical) value is kept and
+    the old row is dropped. Returns the list of DROPPED non-zero charges for
+    operator disclosure (empty in the normal rename path).
+    """
+    if _db_path is None or not batch_id or not old_client_name:
+        return []
+    if old_client_name == new_client_name:
+        return []
+    now = _now()
+    dropped: List[Dict[str, Any]] = []
+    with _lock, _connect() as con:
+        target_types = {r["charge_type"] for r in con.execute(
+            "SELECT charge_type FROM proforma_service_charges "
+            "WHERE batch_id=? AND client_name=?",
+            (batch_id, new_client_name),
+        ).fetchall()}
+        old_rows = con.execute(
+            "SELECT charge_type, amount, currency, note FROM proforma_service_charges "
+            "WHERE batch_id=? AND client_name=?",
+            (batch_id, old_client_name),
+        ).fetchall()
+        for r in old_rows:
+            ct = r["charge_type"]
+            if ct in target_types:
+                # canonical already holds this type → canonical wins; drop old.
+                if float(r["amount"] or 0) > 0:
+                    dropped.append({
+                        "charge_type": ct, "amount": float(r["amount"]),
+                        "currency": r["currency"], "note": r["note"],
+                        "old_client_name": old_client_name,
+                        "reason": "canonical_already_has_charge_type",
+                    })
+            else:
+                con.execute(
+                    "UPDATE proforma_service_charges "
+                    "SET client_name=?, updated_at=? "
+                    "WHERE batch_id=? AND client_name=? AND charge_type=?",
+                    (new_client_name, now, batch_id, old_client_name, ct),
+                )
+        # Remove any old rows not moved (the collision ones).
+        con.execute(
+            "DELETE FROM proforma_service_charges "
+            "WHERE batch_id=? AND client_name=?",
+            (batch_id, old_client_name),
+        )
+    return dropped
+
+
+def drop_charges_client_name(
+    batch_id: str, old_client_name: str,
+) -> List[Dict[str, Any]]:
+    """PR-3 canonical-wins (collision) mode: delete every charge under
+    old_client_name because a canonical-named draft already owns the authority.
+
+    Returns the list of DROPPED non-zero charges for operator disclosure — the
+    discard is never silent (operator chose 'canonical always wins').
+    """
+    if _db_path is None or not batch_id or not old_client_name:
+        return []
+    dropped: List[Dict[str, Any]] = []
+    with _lock, _connect() as con:
+        rows = con.execute(
+            "SELECT charge_type, amount, currency, note FROM proforma_service_charges "
+            "WHERE batch_id=? AND client_name=?",
+            (batch_id, old_client_name),
+        ).fetchall()
+        for r in rows:
+            if float(r["amount"] or 0) > 0:
+                dropped.append({
+                    "charge_type": r["charge_type"], "amount": float(r["amount"]),
+                    "currency": r["currency"], "note": r["note"],
+                    "old_client_name": old_client_name,
+                    "reason": "canonical_wins_collision",
+                })
+        con.execute(
+            "DELETE FROM proforma_service_charges WHERE batch_id=? AND client_name=?",
+            (batch_id, old_client_name),
+        )
+    return dropped
+
+
 def replace_all(
     *,
     batch_id:    str,

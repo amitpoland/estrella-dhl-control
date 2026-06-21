@@ -377,8 +377,12 @@ def test_routes_proforma_resolve_customer_wires_packing_authority():
     assert '"packing_master"' in src
     # 4. The result dict carries an "advisory" field
     assert '"advisory":' in src
-    # 5. _build_preview passes batch_id into _resolve_customer
-    assert "_resolve_customer(client_name, batch_id=batch_id)" in src
+    # 5. _build_preview passes batch_id into _resolve_customer.
+    #    (PR-3 widened the call to also thread client_contractor_id, so this is
+    #    pinned by intent rather than an exact single-line string.)
+    assert "_resolve_customer(" in src
+    assert "batch_id=batch_id" in src
+    assert "client_contractor_id=client_contractor_id" in src
 
 
 # ── 12. Source-grep: helper never writes ────────────────────────────────────

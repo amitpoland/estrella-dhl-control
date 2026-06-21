@@ -17,44 +17,31 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
-- **Task:** Add observation-only performance metrics to FEATURE_SCORECARD
+- **Task:** Proforma draft authority UI (V1) — customer-authority summary above lines (A), canonical product-description display + provenance (B), blocked draft-birth records surfaced (C), V2 inspected/reported not switched (D)
 - **Started:** 2026-06-21
-- **Status:** COMPLETE
+- **Status:** IN_PROGRESS → CLOSE (PR open)
 - **HOLD reason (if BLOCKED-HOLD):** —
+- **Branch / worktree:** `feat/proforma-authority-ui` @ `C:\PZ-pf-ui` (base origin/main `dc58ad4`)
+- **Notes:** V1 frozen — minimal critical operator-readiness only. Display-only (no wFirma post / valuation change). GATE-6 = JSX compiles (offline Babel, 0 fail) + 46 structural tests; live browser behavioural verify deferred to deploy. reviewer-challenge CLEAR-WITH-CONDITIONS (resolved), frontend-flow findings fixed (testid §8 + token), final-consistency CLEAR. BACKLOG B-012..B-014.
 
-### Completion criteria
+### Prior task (COMPLETE) — PR-3 Dropdown selection wins
 
-- [x] 8 new measurement columns added to `FEATURE_SCORECARD.md` header
-- [x] Existing rows #1–#4 get `—` for new columns (no reinterpretation)
-- [x] Row #5 filled for this task
-- [x] No changes to `/feature`, `SKILL_ROUTING.md`, `TASK_EXECUTION_PROTOCOL.md`, `CLAUDE.md`
-- [x] reviewer-challenge: SHIP (3 mitigations resolved inline)
-- [x] final-consistency-review: PASS 6/6 + 8/8
-- [x] Committed and pushed on `claude/new-session-fetvj6`
-- [x] `TASK_STATE.md` → COMPLETE
-- [x] FEATURE_SCORECARD Row #5 self-referential fill
+- PR #675 squash-merged at `7b94a73`; backfill verified in prod on SHIPMENT_9158478722. PR-2+PR-3 DEPLOYED to C:\PZ @ 7b94a73, hashes match.
 
-## Previous task (COMPLETE)
+### Completion criteria (PR-3)
 
-- **Task:** Improve shipment intake diagnostics and operator troubleshooting visibility
-- **Started:** 2026-06-21
-- **Status:** COMPLETE
+- [x] Forward: grouping uses canonical CM bill_to_name (overrides parsed); sales chain canonicalized (no split-brain); re-upload no dup
+- [x] Resolver contractor-id-first (`derive_customer_authority_for_draft`); routes_proforma threads it
+- [x] Migration (operator-triggered backfill, EDITABLE only): rename/supersede per clone_generation; charges money-safe (frozen canonical never drops); reservation canonical-wins; full disclosure (dropped/orphan/ambiguous)
+- [x] Fixed latent NameError (`log` unbound in proforma_invoice_link_db.py — also affected PR-2 block helpers)
+- [x] 16 real-builder tests; 208-test regression + smoke 63; full reviewer battery (3 implementation bugs + 1 latent NameError caught & fixed)
+- [x] No valuation / CIF / PZ / accounting / booking / wFirma-API change
+- [ ] Deploy PR-2 + PR-3 to production (C:\PZ) via 7-agent gate + operator backfill of SHIPMENT_9158478722 — PENDING (operator-run)
 
----
+### Prior task (COMPLETE) — PR-2 Contractor-at-Birth Projection
 
-## Previous task (COMPLETE)
+- PR #673 squash-merged at `f652de0`. Carried `shipment_documents.client_contractor_id` through sales → draft → reservation; visible blocked draft-birth records; idempotent backfill. FEATURE_SCORECARD Row #1.
 
-- **Task:** Improve Proforma draft blocker visibility and operator guidance in V2 shipment detail
-- **Started:** 2026-06-21
-- **Status:** COMPLETE
-
----
-
-## Previous task (COMPLETE)
-
-- **Task:** Improve DHL shipment detail diagnostics and operator visibility
-- **Started:** 2026-06-21
-- **Status:** COMPLETE
 
 ---
 
@@ -64,6 +51,16 @@ Rules and boundary vs PROJECT_STATE.md:
 - 2026-06-21 — Task #3 COMPLETE: PR #687 updated (proforma draft blocker visibility in V2 proforma tab)
 - 2026-06-21 — Task #2 COMPLETE: PR #687 updated (DHL clearance pipeline diagnostics in V2 DHL tab)
 - 2026-06-21 — Task #1 COMPLETE: PR #687 draft (proforma readiness display in V2 proforma tab)
+
+- 2026-06-20 — /feature command created at .claude/commands/feature.md.
+
+- 2026-06-21 — PR #675 squash-merged at `7b94a73`: PR-3 Dropdown selection wins.
+  Scorecard `2026-06-21-pr3-dropdown-selection-authority.md` (6 agents, 5 EXEMPLARY / 1 ACCEPTABLE).
+  Battery caught 3 implementation bugs + 1 latent NameError, all fixed pre-merge. BACKLOG B-009..B-011 filed.
+
+- 2026-06-20 — PR #673 squash-merged at `f652de0`: PR-2 Contractor-at-Birth Projection.
+  Scorecard `2026-06-20-pr2-contractor-at-birth-projection.md` (9 agents, 6 EXEMPLARY / 3 ACCEPTABLE).
+  BACKLOG B-002..B-008 filed (all SCHEDULED). PROJECT_STATE updated.
 
 - 2026-06-20 — /feature command created at .claude/commands/feature.md.
 

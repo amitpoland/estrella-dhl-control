@@ -32,6 +32,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from ..services import document_db as ddb
+from ..services import packing_db as pdb
+from ..services import document_readiness as docrev
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
@@ -1293,6 +1295,102 @@ def list_batch_documents(batch_id: str) -> JSONResponse:
             except Exception as exc:
                 log.warning("[%s] invoice lines enrichment failed (non-fatal) doc=%s: %s",
                             batch_id, doc_id, exc)
+        # ── Sales-packing enrichment ──────────────────────────────────
+        # sales_packing_list extraction writes to sales_packing_lines
+        # (keyed by sales_document_id == this shipment_documents.id), not
+        # to document_extracted_fields — so without this branch the registry
+        # rendered "Lines/Fields: 0" for sales rows even when 84 lines exist.
+        # Mirror the invoice enrichment so the UI shows the real count.
+        elif (d.get("document_type") or "") == "sales_packing_list":
+            try:
+                lines_preview = ddb.get_sales_packing_lines_for_document(doc_id, limit=20)
+                lines_total   = ddb.count_sales_packing_lines_for_document(doc_id)
+                row["lines_preview"]   = lines_preview
+                row["lines_count"]     = lines_total
+                row["lines_truncated"] = lines_total > len(lines_preview)
+            except Exception as exc:
+                log.warning("[%s] sales packing lines enrichment failed (non-fatal) doc=%s: %s",
+                            batch_id, doc_id, exc)
+        # ── Purchase-packing enrichment ───────────────────────────────
+        # purchase_packing_list extraction writes to packing.db
+        # (packing_lines, keyed by packing_document_id → packing_documents),
+        # NOT to documents.db — so without this branch the registry rendered
+        # "Lines/Fields: 0" for purchase rows even when lines existed. The
+        # registry row is a shipment_documents row; bridge to its packing
+        # document by (batch_id, file_hash) — equivalently (batch_id,
+        # file_name) when a hash is absent. Mirror the invoice/sales branches.
+        elif (d.get("document_type") or "") == "purchase_packing_list":
+            try:
+                _bid = d.get("batch_id") or batch_id
+                _fh  = d.get("file_hash") or ""
+                _fn  = d.get("file_name") or ""
+                lines_preview = pdb.get_packing_lines_for_shipment_document(_bid, _fh, _fn, limit=20)
+                lines_total   = pdb.count_packing_lines_for_shipment_document(_bid, _fh, _fn)
+                row["lines_preview"]   = lines_preview
+                row["lines_count"]     = lines_total
+                row["lines_truncated"] = lines_total > len(lines_preview)
+            except Exception as exc:
+                log.warning("[%s] purchase packing lines enrichment failed (non-fatal) doc=%s: %s",
+                            batch_id, doc_id, exc)
+
+        # ── Review-state authority ─────────────────────────────────────
+        # Attach the single backend review verdict (review_state /
+        # review_reason / review_code) so the registry Review column is never
+        # blank and never shows a stale 'pending'. The frontend renders this
+        # verdict verbatim; it must not invent a state of its own.
+        #
+        # For purchase packing lists the authoritative extraction status lives
+        # in packing.db / packing_documents (the shipment_documents column was
+        # historically never written back) — reconcile from there so a complete
+        # parse is reported as complete (RC-1).
+        dtype = (d.get("document_type") or "")
+        effective_status = None
+        contractor_ctx = None
+        try:
+            if dtype == "purchase_packing_list":
+                effective_status = pdb.get_packing_status_for_shipment_document(
+                    d.get("batch_id") or batch_id,
+                    d.get("file_hash") or "",
+                    d.get("file_name") or "",
+                ) or None
+            elif dtype == "sales_packing_list":
+                # Only apply the contractor gate when enrichment actually ran
+                # (lines_preview present). If the sales-lines enrichment above
+                # was swallowed, leave contractor_ctx None so the gate is
+                # skipped — never a FALSE 'client_unresolved' block.
+                if "lines_preview" in row:
+                    _line_client = ""
+                    for _ln in (row.get("lines_preview") or []):
+                        _cn = str((_ln.get("client_name") or "")).strip()
+                        if _cn:
+                            _line_client = _cn
+                            break
+                    contractor_ctx = {
+                        "client_contractor_id": d.get("client_contractor_id") or "",
+                        "client_name": _line_client,
+                    }
+            _lc = row.get("lines_count")
+            review = docrev.derive_document_review(
+                d,
+                line_count=_lc if isinstance(_lc, int) else None,
+                contractor_context=contractor_ctx,
+                effective_extraction_status=effective_status,
+            )
+            row.update(review.as_dict())
+            row["extraction_status_effective"] = (
+                effective_status or d.get("extraction_status") or ""
+            )
+        except Exception as exc:
+            log.warning("[%s] review-state derivation failed (non-fatal) doc=%s: %s",
+                        batch_id, doc_id, exc)
+            # Never leave the row blank — the registry invariant is that every
+            # row carries a concrete (non-empty) review_state. Surface the
+            # derivation error honestly instead of inventing a verdict.
+            row.setdefault("review_state", "needs_review")
+            row.setdefault("review_reason", "Review state unavailable — check logs")
+            row.setdefault("review_code", "review_derivation_error")
+            row.setdefault("extraction_status_effective", d.get("extraction_status") or "")
+
         enriched.append(row)
     return JSONResponse({
         "batch_id": batch_id,

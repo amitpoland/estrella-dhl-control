@@ -19,9 +19,11 @@ each stays visible+disabled+reasoned) and B1 (no enabled success without backend
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 _DETAIL = Path(__file__).resolve().parents[1] / "app" / "static" / "v2" / "shipment-detail-page.jsx"
+_MOCK_BADGE = Path(__file__).resolve().parents[1] / "app" / "static" / "v2" / "mock-badge.jsx"
 
 
 def _src() -> str:
@@ -217,3 +219,98 @@ def test_uses_components_jsx_atoms_not_pz_components():
     """Page reuses v2/components.jsx atoms (Btn/Badge); must not reference pz-components.js."""
     src = _src()
     assert "pz-components" not in src, "must not reference pz-components.js (B2)"
+
+
+# ── F. Authority-honest data wiring (detail-wiring) ───────────────────────────
+# The page must render REAL values from the full-audit authority endpoint, never
+# the design-time literals that made operators report "still a mockup page". The
+# MOCK banner is only retired (page added to WIRED_PAGES) because of this wiring.
+
+def test_fetches_full_audit_authority():
+    """Detail page reads GET /api/v1/dashboard/batches/{batch_id} (full-audit authority)."""
+    src = _src()
+    assert "/api/v1/dashboard/batches/' + encodeURIComponent(batchId)" in src, (
+        "detail page must fetch the full-audit endpoint GET /api/v1/dashboard/batches/{batch_id}"
+    )
+    assert "function deriveDetail(" in src, "deriveDetail (audit → display fields) missing"
+
+
+def test_derive_reads_real_authority_blocks():
+    """deriveDetail must read the real audit authority blocks, not invent values."""
+    src = _src()
+    for key in ("customs_declaration", "dhl_precheck", "wfirma_export", "audit.timeline"):
+        assert key in src, f"deriveDetail must read real authority block '{key}'"
+
+
+def test_no_fabricated_detail_values():
+    """Every literal that triggered the 'still a mockup' report must be gone."""
+    src = _src()
+    for fake in (
+        "EUR 1,280", "27 Apr 2024", "Agencja Celna", "PZ/2024/001234",
+        "WF-2024-04-PZ-1234", "LRN-20240427", "EUR/PLN 4.2650", "EUR/PLN 4.2510",
+        "TIMELINE_EVENTS",
+    ):
+        assert fake not in src, f"fabricated value '{fake}' still present — not authority-honest"
+
+
+def test_pz_and_wfirma_from_audit():
+    """PZ number + wFirma external doc id come from the wfirma_export authority."""
+    src = _src()
+    assert "wfirma_pz_fullnumber" in src and "wfirma_pz_doc_id" in src
+
+
+def test_cif_is_usd_not_eur():
+    """CIF is denominated in USD (invoice currency) from dhl_precheck, not a faked EUR figure."""
+    src = _src()
+    assert "function _fmtUsd(" in src, "USD formatter missing"
+    assert "invoice_cif_total_usd" in src, "CIF must read dhl_precheck.invoice_cif_total_usd"
+
+
+def test_missing_fields_render_dash():
+    """A _dash() helper renders '—' for any field the authority does not carry (no fakes)."""
+    src = _src()
+    assert "function _dash(" in src
+
+
+def test_timeline_renders_real_events():
+    """Timeline renders the real audit.timeline event log, not a hardcoded array."""
+    src = _src()
+    assert "d.timeline" in src, "timeline must come from the audit event log"
+    assert 'data-testid="timeline-empty"' in src, "empty-state must be honest when no events"
+
+
+def test_detail_in_wired_pages():
+    """'detail' (the shipment drill-down) is wired → MOCK banner retired for it."""
+    badge = _MOCK_BADGE.read_text(encoding="utf-8")
+    m = re.search(r"const WIRED_PAGES\s*=\s*\[([^\]]+)\]", badge)
+    assert m and "'detail'" in m.group(1), "'detail' must be in WIRED_PAGES"
+
+
+def test_normalizes_snake_case_prop():
+    """Raw snake_case batch rows (the actual caller shape) are normalized to the
+    camelCase shape the page reads — otherwise awb/sadStatus/etc. are undefined."""
+    src = _src()
+    assert "function _normalizeShipment(" in src, "shipment prop normalizer missing"
+    assert "s.tracking_no" in src, "awb must fall back to tracking_no for raw rows"
+    for mapper in ("_mapSad(s.sad_status)", "_mapPz(s.pz_status)", "_mapDhl(s.dhl_status)"):
+        assert mapper in src, f"status mapper call '{mapper}' missing"
+    assert "shipment = _normalizeShipment(shipment)" in src, "page must normalize the prop on entry"
+
+
+def test_doc_generation_from_real_existence_flag():
+    """Polish Description / DSK 'Generated ✓' come from the endpoint's on-disk
+    existence flag, not a status proxy (no 'Generated' for a missing file)."""
+    src = _src()
+    assert "polish_desc_file_exists" in src and "dsk_file_exists" in src
+    assert "d.polishDescGenerated" in src and "d.dskGenerated" in src
+    # the email-status proxy must no longer drive document-generation rows
+    assert "dhlEmailReceived ? 'Generated ✓'" not in src, (
+        "document generation must not be inferred from dhlEmailReceived"
+    )
+
+
+def test_precheck_stage_not_hardcoded_done():
+    """The pre-check workflow stage reflects the real dhl_precheck.completed_at signal."""
+    src = _src()
+    assert "precheckDone" in src and "pc.completed_at" in src
+    assert "if (id === 'precheck') return d.precheckDone" in src

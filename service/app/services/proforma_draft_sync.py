@@ -61,34 +61,20 @@ def _resolve_product_codes_for_batch(
     sales draft resolution.  Returns ``{}`` when packing_db is not
     initialised or the batch has no purchase packing_lines.
     """
-    out: Dict[str, set] = {}
     if not (batch_id or "").strip():
         return {}
-    db_path = getattr(_pdb, "_db_path", None)
-    if db_path is None:
-        return {}
+    # Canonical authority (packing_lines) — single resolver. Returns the same
+    # stripped-key, sorted, null-filtered map this function used to derive with
+    # its own SELECT DISTINCT. See product_authority_resolver / ADR-product-authority.
+    from .product_authority_resolver import design_to_product_codes  # noqa: PLC0415
     try:
-        with sqlite3.connect(str(db_path)) as con:
-            con.row_factory = sqlite3.Row
-            rows = con.execute(
-                "SELECT DISTINCT design_no, product_code FROM packing_lines "
-                "WHERE batch_id=? "
-                "AND product_code IS NOT NULL AND product_code<>''",
-                (str(batch_id),),
-            ).fetchall()
+        return design_to_product_codes(batch_id)
     except Exception as exc:
         log.warning(
             "[%s] batch-scoped design lookup failed (non-fatal): %s",
             batch_id, exc,
         )
         return {}
-    for r in rows:
-        d = (r["design_no"] or "").strip()
-        p = (r["product_code"] or "").strip()
-        if not d or not p:
-            continue
-        out.setdefault(d, set()).add(p)
-    return {d: sorted(ps) for d, ps in out.items()}
 
 
 def resolve_sales_lines_for_batch(
@@ -359,14 +345,19 @@ def _lookup_sales_doc_source_path(
 
 
 def _emit_draft_birth_skip_events(
-    resolved_lines: List[Dict[str, Any]],
-    by_client:      Dict[str, List[Dict[str, Any]]],
-    audit_path:     Optional[Path],
-    operator:       str,
-    batch_id:       str,
+    resolved_lines:    List[Dict[str, Any]],
+    contributing_docs: set,
+    audit_path:        Optional[Path],
+    operator:          str,
+    batch_id:          str,
 ) -> Tuple[int, int]:
-    """Emit ONE timeline event per sales_document whose lines were all dropped
-    due to empty client_name. Returns (pending_count, skipped_count).
+    """Emit ONE timeline event per sales_document that produced NO grouped line.
+    Returns (pending_count, skipped_count).
+
+    PR-2: "dropped" is decided by membership in *contributing_docs* (the set of
+    sales_document_ids that landed at least one line in a draft group), NOT by
+    client_name. A doc whose empty client_name was recovered from contractor
+    authority therefore no longer emits a false skip event.
 
     pending_count  = docs that emitted EV_PROFORMA_DRAFT_CREATION_PENDING_RESOLUTION
                      (at least one identity signal — VAT or heading candidate — found)
@@ -389,7 +380,6 @@ def _emit_draft_birth_skip_events(
             "lines_count":  0,
             "value":        0.0,
             "currency":     "",
-            "has_client":   False,
         })
         info["lines_count"] += 1
         try:
@@ -398,11 +388,11 @@ def _emit_draft_birth_skip_events(
             pass
         if not info["currency"]:
             info["currency"] = str(ln.get("currency") or "")
-        if str(ln.get("client_name") or "").strip():
-            info["has_client"] = True
 
-    # Only docs that contributed ZERO lines to by_client are dropped.
-    dropped = {sd: info for sd, info in per_doc.items() if not info["has_client"]}
+    # Only docs that produced ZERO grouped lines are dropped (contractor-
+    # recovered docs are in contributing_docs and excluded here).
+    dropped = {sd: info for sd, info in per_doc.items()
+               if sd not in (contributing_docs or set())}
     if not dropped:
         return 0, 0
 
@@ -521,26 +511,167 @@ def sync_draft_from_packing_upload(
     # Lines that already carry hs_code are left unchanged.
     resolved_lines = _enrich_lines_with_hs(resolved_lines, master_db_path)
 
-    # ── 2. Group by client_name ───────────────────────────────────────────────
-    by_client: Dict[str, List[Dict[str, Any]]] = {}
-    for ln in resolved_lines:
-        cn = str(ln.get("client_name") or "").strip()
-        if not cn:
-            continue
-        by_client.setdefault(cn, []).append(ln)
+    # ── 2. Group by contractor authority (PR-2 contractor-at-birth) ────────────
+    # Authority model: client_contractor_id (Customer Master, resolved at
+    # intake) is the PRIMARY grouping authority; client_name is the FALLBACK
+    # identity AND the draft storage key — every downstream table
+    # (proforma_drafts, wfirma_reservation_drafts, proforma_service_charges) is
+    # keyed by client_name, so we never re-key it. Per line:
+    #   * client_name present            → group under that name (unchanged path)
+    #   * empty name + contractor_id     → resolve client_name from Customer
+    #                                       Master bill_to_name(cid) → group
+    #                                       under it (recovers the historic
+    #                                       silent drop)
+    #   * empty name + (no cid OR cid has no Customer Master row)
+    #                                    → VISIBLE blocked draft-birth record
+    # Draft count can only INCREASE or stay equal vs the pre-PR client_name-only
+    # grouping — never decrease (regression-tested).
+    _cm_path: Optional[Path] = None
+    try:
+        from ..core.config import settings as _settings
+        _cm_path = Path(_settings.storage_root) / "customer_master.sqlite"
+    except Exception:
+        _cm_path = None
 
-    # ── 2.5 Skip-visibility emit (PR 1 — observation only, no behaviour change) ───
-    # For every sales_document_id whose lines were dropped above (empty
-    # client_name on EVERY line), emit ONE timeline event so the silent-drop
-    # class becomes auditable. Read-only preamble signals (VAT, heading
-    # candidate) are recorded to enable future deterministic resolution.
+    _cm_name_cache: Dict[str, str] = {}
+    _cm_warned: List[bool] = [False]
+
+    def _cm_name_for_cid(cid: str) -> str:
+        """Resolve Customer-Master bill_to_name for a contractor id. Cached,
+        best-effort, never raises. '' when no path / no match."""
+        if not cid:
+            return ""
+        if _cm_path is None or not _cm_path.is_file():
+            # Observability: a missing Customer Master DB silently disables the
+            # whole contractor-recovery path. Warn ONCE per sync, and only when a
+            # contractor id actually needed resolution (so quiet batches stay quiet).
+            if not _cm_warned[0]:
+                _cm_warned[0] = True
+                log.warning(
+                    "[%s] proforma_draft_sync: customer_master.sqlite not "
+                    "available (%s) — contractor name recovery disabled this run; "
+                    "empty-client_name docs with a contractor id will be blocked",
+                    batch_id, _cm_path,
+                )
+            return ""
+        if cid in _cm_name_cache:
+            return _cm_name_cache[cid]
+        name = ""
+        try:
+            from . import customer_master_db as _cmdb
+            rec = _cmdb.get_customer(_cm_path, cid)
+            if rec is not None:
+                name = (getattr(rec, "bill_to_name", "") or "").strip()
+        except Exception as _cm_exc:
+            log.debug("[%s] CM name lookup failed for cid=%s: %s",
+                      batch_id, cid, _cm_exc)
+        _cm_name_cache[cid] = name
+        return name
+
+    by_client: Dict[str, List[Dict[str, Any]]] = {}
+    group_cids: Dict[str, set] = {}            # repr_name -> {contractor_id, ...}
+    group_docs: Dict[str, set] = {}            # repr_name -> {sales_document_id}
+    contributing_docs: set = set()             # docs that produced a grouped line
+    blocked_docs: Dict[str, Dict[str, Any]] = {}  # sales_document_id -> info
+    # PR-3: docs whose stored client_name must be canonicalized to the
+    # Customer-Master bill_to_name (operator's upload pick wins over parsed name).
+    # Keyed by (sales_document_id, old_client_name) so a multi-client document
+    # never has unrelated lines clobbered.
+    docs_to_canonicalize: Dict[tuple, str] = {}   # (sales_document_id, old_cn) -> canonical
+
+    for ln in resolved_lines:
+        cn    = str(ln.get("client_name") or "").strip()
+        cid   = str(ln.get("client_contractor_id") or "").strip()
+        sd_id = str(ln.get("sales_document_id") or "")
+        # PR-3 "dropdown wins": when the line carries a contractor that resolves
+        # to a Customer-Master name, that canonical name is the AUTHORITY and
+        # OVERRIDES the parsed client_name. Fall back to the parsed name only
+        # when there is no contractor / no CM match (PR-2 behaviour preserved).
+        canonical = _cm_name_for_cid(cid)
+        repr_name = canonical or cn
+        if canonical and sd_id and cn != canonical:
+            docs_to_canonicalize[(sd_id, cn)] = canonical
+        if repr_name:
+            by_client.setdefault(repr_name, []).append(ln)
+            g = group_cids.setdefault(repr_name, set())
+            if cid:
+                g.add(cid)
+            group_docs.setdefault(repr_name, set())
+            if sd_id:
+                group_docs[repr_name].add(sd_id)
+                contributing_docs.add(sd_id)
+        elif sd_id:
+            info = blocked_docs.setdefault(sd_id, {
+                "lines_count": 0, "value": 0.0, "currency": "",
+                "client_contractor_id": cid,
+            })
+            info["lines_count"] += 1
+            try:
+                info["value"] += float(ln.get("total_value") or 0)
+            except (TypeError, ValueError):
+                pass
+            if not info["currency"]:
+                info["currency"] = str(ln.get("currency") or "")
+            if cid and not info["client_contractor_id"]:
+                info["client_contractor_id"] = cid
+
+    # ── 2.4 PR-3: canonicalize the sales chain (dropdown wins) ─────────────────
+    # Write the Customer-Master canonical name onto sales_documents + their
+    # sales_packing_lines so the stored client_name matches the draft, the
+    # v_sales_to_wfirma view, the reservation preview, and the NEXT sync — no
+    # split-brain, and re-uploads can never spawn a duplicate parsed-name draft.
+    for (_sd_id, _old_cn), _canon in docs_to_canonicalize.items():
+        try:
+            ddb.set_sales_client_name(batch_id, _sd_id, _canon, old_client_name=_old_cn)
+        except Exception as _canon_exc:
+            log.warning("[%s] set_sales_client_name failed (non-fatal) sd=%s: %s",
+                        batch_id, _sd_id, _canon_exc)
+
+    # ── 2.5 Skip-visibility emit (PR 1 audit) — reconciled with PR-2 grouping ──
+    # Emit ONE timeline event per sales_document that produced NO grouped line
+    # (so contractor-recovered docs no longer emit a false skip event). PR-1
+    # behaviour is preserved for genuinely-unresolved docs.
     pending_count, skipped_count = _emit_draft_birth_skip_events(
         resolved_lines=resolved_lines,
-        by_client=by_client,
+        contributing_docs=contributing_docs,
         audit_path=audit_path,
         operator=operator,
         batch_id=batch_id,
     )
+
+    # ── 2.6 Persist VISIBLE blocked draft-birth records (PR-2) ─────────────────
+    # docs that contributed zero grouped lines AND were not recovered → blocked.
+    birth_blocked = 0
+    for sd_id, info in blocked_docs.items():
+        if sd_id in contributing_docs:
+            continue  # some line of this doc did land in a group — not blocked
+        bcid = (info.get("client_contractor_id") or "").strip()
+        if bcid:
+            code = "client_unresolved"
+            reason = (
+                f"Contractor {bcid} resolved at intake has no Customer Master "
+                f"record — cannot derive a client name for draft creation."
+            )
+        else:
+            code = "contractor_missing"
+            reason = (
+                "No client name and no contractor selected at intake — draft "
+                "creation cannot determine the customer."
+            )
+        try:
+            pildb.record_draft_birth_block(
+                db_path, batch_id, sd_id,
+                code=code, reason=reason,
+                client_contractor_id=bcid,
+                client_name="",
+                lines_count=int(info.get("lines_count") or 0),
+                value=float(info.get("value") or 0),
+                currency=str(info.get("currency") or ""),
+            )
+            birth_blocked += 1
+        except Exception as _blk_exc:
+            log.debug("[%s] record_draft_birth_block failed (non-fatal): %s",
+                      batch_id, _blk_exc)
 
     result: Dict[str, Any] = {
         "batch_id":              batch_id,
@@ -548,6 +679,8 @@ def sync_draft_from_packing_upload(
         "created":               0,
         "synced":                0,
         "blocked":               0,
+        "birth_blocked":         birth_blocked,
+        "contractor_conflict":   0,
         "pending_resolution":    pending_count,
         "skipped_no_signal":     skipped_count,
         "designs_resolved":      resolution_summary["designs_resolved"],
@@ -567,6 +700,15 @@ def sync_draft_from_packing_upload(
         action   = "skipped"
         warning  = None
 
+        # PR-2: contractor reference for this group. Exactly one distinct
+        # contractor_id → project it onto the draft. >1 distinct id under one
+        # client_name is a contractor_conflict: record a VISIBLE advisory block
+        # but STILL create the draft by name (non-destructive — never a silent
+        # split/merge). Draft carries '' when ambiguous/absent.
+        cids = group_cids.get(client_name, set())
+        draft_cid = next(iter(cids)) if len(cids) == 1 else ""
+        is_conflict = len(cids) > 1
+
         try:
             draft, was_created = pildb.auto_create_draft_from_sales_packing(
                 db_path,
@@ -575,10 +717,36 @@ def sync_draft_from_packing_upload(
                 currency=currency,
                 lines=lines,
                 operator=operator,
+                client_contractor_id=draft_cid,
                 name_pl_lookup=ddb.get_product_description,
                 desc_generate=generate_name_pl_if_sufficient,
                 product_mapping_lookup=_wfdb.get_product,
             )
+            # A draft now exists for this group → clear any stale draft-birth
+            # block on its sales_documents, then (re)record a conflict advisory
+            # if the contractor authority is ambiguous.
+            for _sd in group_docs.get(client_name, set()):
+                try:
+                    pildb.resolve_draft_birth_block(db_path, batch_id, _sd)
+                    if is_conflict:
+                        pildb.record_draft_birth_block(
+                            db_path, batch_id, _sd,
+                            code="contractor_conflict",
+                            reason=(
+                                f"Client name {client_name!r} carries "
+                                f"{len(cids)} distinct contractor ids "
+                                f"({sorted(cids)}) — draft created by name; "
+                                f"operator must reconcile contractor identity."
+                            ),
+                            client_contractor_id="",
+                            client_name=client_name,
+                            lines_count=len(lines),
+                        )
+                except Exception as _blk_exc:
+                    log.debug("[%s] block lifecycle update failed (non-fatal): %s",
+                              batch_id, _blk_exc)
+            if is_conflict:
+                result["contractor_conflict"] += 1
 
             if was_created:
                 # ── 3a. Fresh draft created ───────────────────────────────

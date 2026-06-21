@@ -31,12 +31,18 @@ caller turns into a ProformaAlreadyConverted exception.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+# Module logger. Several defensive ``except`` branches (draft-birth block
+# lifecycle, canonical-name migration) call ``log.warning`` — without this
+# binding those branches would raise NameError instead of logging.
+log = logging.getLogger(__name__)
 
 
 # ── Public types ──────────────────────────────────────────────────────────────
@@ -457,6 +463,8 @@ class ProformaDraft:
     sales_price_authority_total_eur: Optional[float] = None
     sales_price_imported_at:         Optional[str]   = None
     sales_price_invoice_ref:         Optional[str]   = None
+    # ── Contractor-at-birth projection (PR-2) — additive reference only ───
+    client_contractor_id:            str             = ""
 
 
 def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
@@ -528,6 +536,12 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         ("sales_price_authority_total_eur", "REAL"),
         ("sales_price_imported_at",         "TEXT"),
         ("sales_price_invoice_ref",         "TEXT"),
+        # ── Contractor-at-birth projection (PR-2) ─────────────────────────────
+        # Authoritative Customer-Master contractor identity carried as an
+        # additive REFERENCE. The draft identity key remains client_name; this
+        # column never becomes the unique key (avoids re-keying service charges
+        # / authority joins). Default '' = unprojected (repaired by backfill).
+        ("client_contractor_id", "TEXT NOT NULL DEFAULT ''"),
     )
     for _col, _ddl in _ADDITIVE_DRAFT_COLUMNS:
         try:
@@ -651,6 +665,285 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_pde_draft "
         "ON proforma_draft_events(draft_id, occurred_at)"
     )
+
+    # ── PR-2: visible draft-birth blocked records ─────────────────────────
+    # When a sales packing document resolves to NEITHER a usable client_name
+    # NOR a Customer-Master-resolvable client_contractor_id, the draft cannot
+    # be born. Instead of the historic silent drop, sync records a visible,
+    # operator-readable block here. blocked_state lifecycle: 'open' while the
+    # condition holds; flipped to 'resolved' once a draft is later created for
+    # that sales_document (no stale red flags — Lesson M). Keyed by
+    # (batch_id, sales_document_id) so re-sync is idempotent.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS proforma_draft_birth_blocks (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id             TEXT NOT NULL,
+            sales_document_id    TEXT NOT NULL,
+            client_contractor_id TEXT NOT NULL DEFAULT '',
+            client_name          TEXT NOT NULL DEFAULT '',
+            blocked_state        TEXT NOT NULL DEFAULT 'open',
+            reason               TEXT NOT NULL DEFAULT '',
+            code                 TEXT NOT NULL DEFAULT '',
+            lines_count          INTEGER NOT NULL DEFAULT 0,
+            value                REAL NOT NULL DEFAULT 0,
+            currency             TEXT NOT NULL DEFAULT '',
+            created_at           TEXT NOT NULL,
+            updated_at           TEXT NOT NULL,
+            UNIQUE(batch_id, sales_document_id)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pdbb_batch "
+        "ON proforma_draft_birth_blocks(batch_id, blocked_state)"
+    )
+
+
+# ── PR-2: draft-birth blocked-record lifecycle ────────────────────────────────
+
+# Stable machine codes for why a draft could not be born. Operators read these
+# to know what to fix. ``contractor_conflict`` is advisory (a draft IS still
+# created by name) — the others are true non-creation blocks.
+DRAFT_BIRTH_BLOCK_CODES = (
+    "contractor_missing",   # no client_name AND no client_contractor_id
+    "client_unresolved",    # client_contractor_id present but no Customer Master match
+    "contractor_conflict",  # one client_name group carries >1 distinct contractor_id
+)
+
+
+def record_draft_birth_block(
+    db_path:              Path,
+    batch_id:             str,
+    sales_document_id:    str,
+    *,
+    code:                 str,
+    reason:               str,
+    client_contractor_id: str = "",
+    client_name:          str = "",
+    lines_count:          int = 0,
+    value:                float = 0.0,
+    currency:             str = "",
+) -> None:
+    """Idempotent upsert of an OPEN draft-birth block keyed by
+    (batch_id, sales_document_id). Never raises — visibility must not break
+    the non-blocking sync path."""
+    if not (batch_id or "").strip() or not (sales_document_id or "").strip():
+        return
+    now = _now_utc_iso()
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            _ensure_drafts_table(conn)
+            conn.execute(
+                """
+                INSERT INTO proforma_draft_birth_blocks
+                    (batch_id, sales_document_id, client_contractor_id,
+                     client_name, blocked_state, reason, code,
+                     lines_count, value, currency, created_at, updated_at)
+                VALUES (?,?,?,?, 'open', ?,?,?,?,?,?,?)
+                ON CONFLICT(batch_id, sales_document_id) DO UPDATE SET
+                    client_contractor_id = excluded.client_contractor_id,
+                    client_name          = excluded.client_name,
+                    blocked_state        = 'open',
+                    reason               = excluded.reason,
+                    code                 = excluded.code,
+                    lines_count          = excluded.lines_count,
+                    value                = excluded.value,
+                    currency             = excluded.currency,
+                    updated_at           = excluded.updated_at
+                """,
+                (batch_id, sales_document_id, client_contractor_id,
+                 client_name, reason, code,
+                 int(lines_count), float(value or 0), currency, now, now),
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("record_draft_birth_block failed (non-fatal): %s", exc)
+
+
+def resolve_draft_birth_block(
+    db_path:           Path,
+    batch_id:          str,
+    sales_document_id: str,
+) -> None:
+    """Flip any OPEN block for (batch_id, sales_document_id) to 'resolved'.
+    Called when a draft IS subsequently created for that document, so a stale
+    block never lingers. Never raises."""
+    if not (batch_id or "").strip() or not (sales_document_id or "").strip():
+        return
+    now = _now_utc_iso()
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            _ensure_drafts_table(conn)
+            conn.execute(
+                "UPDATE proforma_draft_birth_blocks "
+                "SET blocked_state='resolved', updated_at=? "
+                "WHERE batch_id=? AND sales_document_id=? AND blocked_state='open'",
+                (now, batch_id, sales_document_id),
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("resolve_draft_birth_block failed (non-fatal): %s", exc)
+
+
+def list_draft_birth_blocks(
+    db_path:          Path,
+    batch_id:         str,
+    *,
+    include_resolved: bool = False,
+) -> List[Dict[str, Any]]:
+    """Return draft-birth block records for *batch_id*. Open-only by default."""
+    if not (batch_id or "").strip():
+        return []
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            _ensure_drafts_table(conn)
+            conn.row_factory = sqlite3.Row
+            sql = (
+                "SELECT * FROM proforma_draft_birth_blocks WHERE batch_id=?"
+            )
+            params: tuple = (batch_id,)
+            if not include_resolved:
+                sql += " AND blocked_state='open'"
+            sql += " ORDER BY updated_at DESC"
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("list_draft_birth_blocks failed (non-fatal): %s", exc)
+        return []
+
+
+def migrate_draft_to_canonical_name(
+    db_path:          Path,
+    batch_id:         str,
+    old_client_name:  str,
+    canonical_name:   str,
+    *,
+    charge_move:         Optional[Callable[[str, str, str], List[Dict[str, Any]]]] = None,
+    charge_drop:         Optional[Callable[[str, str], List[Dict[str, Any]]]] = None,
+    reservation_migrate: Optional[Callable[[str, str, str], Dict[str, Any]]] = None,
+    operator:            str = "",
+) -> Dict[str, Any]:
+    """PR-3: migrate EDITABLE proforma drafts for (batch_id, old_client_name) to
+    *canonical_name* (the operator's Customer-Master selection wins over a parsed
+    name). EDITABLE drafts only — posted/approved/posting/cancelled/superseded
+    identity is FROZEN and never renamed.
+
+    Per draft row (across ALL clone_generations):
+      * a canonical-named draft already exists at the SAME clone_generation →
+        the old row is SUPERSEDED (canonical wins; superseded_by points at it),
+      * otherwise the old row is RENAMED in place to canonical_name.
+
+    Charges (per name, via injected callables — keeps this module dependency-free):
+      * canonical draft pre-existed (collision) → ``charge_drop`` (canonical wins;
+        dropped non-zero amounts returned for operator disclosure),
+      * else → ``charge_move`` (the renamed draft keeps its charges).
+    Reservation draft migrated via ``reservation_migrate`` (canonical-wins inside).
+
+    Idempotent: when ``old_client_name == canonical_name`` or no old rows exist,
+    returns a no-op. Returns a report dict (renamed / superseded / skipped_frozen
+    ids + dropped_charges + reservation summary).
+    """
+    report: Dict[str, Any] = {
+        "old_client_name": old_client_name,
+        "canonical_name":  canonical_name,
+        "renamed":         [],
+        "superseded":      [],
+        "skipped_frozen":  [],
+        "dropped_charges": [],
+        "reservation":     {"action": "noop"},
+        "action":          "noop",
+    }
+    if not (batch_id or "").strip() or not (old_client_name or "").strip() \
+            or not (canonical_name or "").strip():
+        return report
+    if old_client_name == canonical_name:
+        return report
+
+    now = _now_utc_iso()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_drafts_table(conn)
+
+        old_rows = conn.execute(
+            "SELECT id, draft_state, clone_generation FROM proforma_drafts "
+            "WHERE batch_id=? AND client_name=?",
+            (batch_id, old_client_name),
+        ).fetchall()
+        if not old_rows:
+            return report
+
+        # Whether an EDITABLE canonical draft exists — decides whether
+        # "canonical wins" can safely DROP old charges (only onto a live
+        # editable canonical), vs must PRESERVE them (frozen/posted canonical
+        # can never receive them — dropping would be unrecoverable money loss).
+        _editable_ph = ",".join("?" * len(EDITABLE_STATES))
+        canonical_editable = conn.execute(
+            f"SELECT 1 FROM proforma_drafts WHERE batch_id=? AND client_name=? "
+            f"AND draft_state IN ({_editable_ph}) LIMIT 1",
+            (batch_id, canonical_name, *EDITABLE_STATES),
+        ).fetchone() is not None
+
+        for r in old_rows:
+            state = (r["draft_state"] or "").strip()
+            if state not in EDITABLE_STATES:
+                report["skipped_frozen"].append({"id": r["id"], "state": state})
+                continue
+            gen = r["clone_generation"] if "clone_generation" in r.keys() else 0
+            canon_at_gen = conn.execute(
+                "SELECT id FROM proforma_drafts "
+                "WHERE batch_id=? AND client_name=? AND clone_generation=? LIMIT 1",
+                (batch_id, canonical_name, gen),
+            ).fetchone()
+            if canon_at_gen is not None:
+                conn.execute(
+                    "UPDATE proforma_drafts SET draft_state='superseded', "
+                    "superseded_by_draft_id=?, updated_at=? WHERE id=?",
+                    (canon_at_gen["id"], now, r["id"]),
+                )
+                report["superseded"].append(r["id"])
+            else:
+                conn.execute(
+                    "UPDATE proforma_drafts SET client_name=?, updated_at=? WHERE id=?",
+                    (canonical_name, now, r["id"]),
+                )
+                report["renamed"].append(r["id"])
+        conn.commit()
+
+    # ── Charges migration — OUTCOME-aware + money-safe ────────────────────────
+    # The charges must follow the LIVE editable canonical draft:
+    #   * renamed (the old draft BECAME canonical)        → MOVE (keep its charges)
+    #   * superseded into an EDITABLE canonical (collision)→ DROP old (operator's
+    #     "canonical wins"; dropped non-zero amounts are DISCLOSED)
+    #   * superseded into a FROZEN canonical              → MOVE (NEVER drop onto a
+    #     posted/unrecoverable draft — preserve the money, disclosed)
+    #   * nothing migrated (all frozen old)              → leave charges untouched
+    charge_mode = "none"
+    if report["renamed"]:
+        charge_mode = "move"
+    elif report["superseded"]:
+        charge_mode = "drop" if canonical_editable else "move"
+    report["charge_mode"] = charge_mode
+    try:
+        if charge_mode == "drop" and charge_drop is not None:
+            report["dropped_charges"] = charge_drop(batch_id, old_client_name) or []
+        elif charge_mode == "move" and charge_move is not None:
+            report["dropped_charges"] = \
+                charge_move(batch_id, old_client_name, canonical_name) or []
+    except Exception as _chg_exc:  # pragma: no cover - defensive
+        log.warning("draft charge migration failed (non-fatal) %s→%s: %s",
+                    old_client_name, canonical_name, _chg_exc)
+    try:
+        if reservation_migrate is not None:
+            report["reservation"] = \
+                reservation_migrate(batch_id, old_client_name, canonical_name) or {"action": "noop"}
+    except Exception as _res_exc:  # pragma: no cover - defensive
+        log.warning("reservation migration failed (non-fatal) %s→%s: %s",
+                    old_client_name, canonical_name, _res_exc)
+
+    report["action"] = (
+        "renamed" if report["renamed"] and not report["superseded"]
+        else "superseded" if report["superseded"] and not report["renamed"]
+        else "mixed" if (report["renamed"] or report["superseded"])
+        else "skipped"
+    )
+    return report
 
 
 # ── Phase 1 read shim: legacy status → new draft_state mapping ────────────
@@ -805,6 +1098,8 @@ def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
         sales_price_authority_total_eur = _opt("sales_price_authority_total_eur"),
         sales_price_imported_at         = _opt("sales_price_imported_at"),
         sales_price_invoice_ref         = _opt("sales_price_invoice_ref"),
+        # ── Contractor-at-birth projection (PR-2) ─────────────────────────
+        client_contractor_id            = (_opt("client_contractor_id") or ""),
     )
 
 
@@ -1665,6 +1960,7 @@ def auto_create_draft_from_sales_packing(
     currency:      str,
     lines:         List[Dict[str, Any]],
     operator:      str = "",
+    client_contractor_id: str = "",
     name_pl_lookup: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
     desc_generate:  Optional[Callable[..., Optional[str]]] = None,
     product_mapping_lookup: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
@@ -1768,12 +2064,31 @@ def auto_create_draft_from_sales_packing(
             (str(batch_id), str(client_name)),
         ).fetchone()
 
+        cid = str(client_contractor_id or "").strip()
         if existing is not None:
             existing_state = (existing["draft_state"] or "").strip()
             # Only treat cancelled/superseded as "gone" for idempotency
             # — every other state means "draft already exists, do not
             # touch it". Phase 2 never replaces lines on a live draft.
             if existing_state not in ("cancelled", "superseded"):
+                # PR-2 merge-not-replace: backfill the contractor reference on
+                # a live draft only when currently empty. Never changes
+                # client_name (the identity key) and never touches lines/price.
+                try:
+                    existing_cid = (existing["client_contractor_id"] or "").strip()
+                except (KeyError, IndexError):
+                    existing_cid = ""
+                if cid and not existing_cid:
+                    conn.execute(
+                        "UPDATE proforma_drafts SET client_contractor_id=? "
+                        "WHERE id=?",
+                        (cid, existing["id"]),
+                    )
+                    conn.commit()
+                    existing = conn.execute(
+                        "SELECT * FROM proforma_drafts WHERE id=? LIMIT 1",
+                        (existing["id"],),
+                    ).fetchone()
                 return (_row_to_draft(existing), False)
 
         # Either no row, or the existing row was cancelled/superseded. The
@@ -1813,15 +2128,15 @@ def auto_create_draft_from_sales_packing(
                  draft_state, draft_version, editable_lines_json,
                  service_charges_json, buyer_override_json,
                  ship_to_override_json, payment_terms_json, remarks,
-                 wfirma_proforma_fullnumber)
+                 wfirma_proforma_fullnumber, client_contractor_id)
             VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?,
                     ?, 1, ?,
-                    '[]', '{}', '{}', '{}', '', '')
+                    '[]', '{}', '{}', '{}', '', '', ?)
             """,
             (str(batch_id), str(client_name), legacy_status,
              str(currency or "").upper(),
              source_json, now, now,
-             initial_state, editable_json),
+             initial_state, editable_json, cid),
         )
         conn.commit()
         new_id = int(cur.lastrowid or 0)

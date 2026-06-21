@@ -142,6 +142,10 @@ def init_wfirma_db(db_path: Path) -> None:
             ("wfirma_reservation_id", "TEXT NOT NULL DEFAULT ''"),
             ("submitted_at",          "TEXT NOT NULL DEFAULT ''"),
             ("last_error",            "TEXT NOT NULL DEFAULT ''"),
+            # PR-2 contractor-at-birth: authoritative contractor reference
+            # carried into reservation readiness. Reference only — the unique
+            # key stays (batch_id, client_name); no gating/booking change.
+            ("client_contractor_id",  "TEXT NOT NULL DEFAULT ''"),
         ],
     )
     _add_columns_if_missing(
@@ -563,36 +567,95 @@ def upsert_reservation_draft(
     currency:       str = "USD",
     warehouse_id:   str = "",
     ready_to_create: bool = False,
+    client_contractor_id: str = "",
 ) -> str:
-    """Insert or update a reservation draft. Returns draft id."""
+    """Insert or update a reservation draft. Returns draft id.
+
+    PR-2: ``client_contractor_id`` is the authoritative contractor reference
+    carried into reservation readiness. Reference only — the unique key stays
+    (batch_id, client_name) and readiness/booking logic is unchanged. Merge-
+    not-replace: an empty incoming value never clears a stored reference.
+    """
     if _db_path is None or not batch_id or not client_name:
         return ""
     now = _now()
+    cid = str(client_contractor_id or "").strip()
     with _lock, _connect() as con:
         existing = con.execute(
-            "SELECT id FROM wfirma_reservation_drafts WHERE batch_id=? AND client_name=?",
+            "SELECT id, client_contractor_id FROM wfirma_reservation_drafts "
+            "WHERE batch_id=? AND client_name=?",
             (batch_id, client_name),
         ).fetchone()
         if existing:
+            existing_cid = (existing["client_contractor_id"] or "").strip()
+            cid_to_write = cid or existing_cid
             con.execute(
                 """UPDATE wfirma_reservation_drafts
                    SET client_ref=?, currency=?, warehouse_id=?,
-                       ready_to_create=?, updated_at=?
+                       ready_to_create=?, client_contractor_id=?, updated_at=?
                    WHERE id=?""",
                 (client_ref, currency, warehouse_id,
-                 1 if ready_to_create else 0, now, existing["id"]),
+                 1 if ready_to_create else 0, cid_to_write, now, existing["id"]),
             )
             return existing["id"]
         draft_id = str(uuid.uuid4())
         con.execute(
             """INSERT INTO wfirma_reservation_drafts
                (id, batch_id, client_name, client_ref, currency,
-                warehouse_id, ready_to_create, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                warehouse_id, ready_to_create, client_contractor_id,
+                created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (draft_id, batch_id, client_name, client_ref, currency,
-             warehouse_id, 1 if ready_to_create else 0, now, now),
+             warehouse_id, 1 if ready_to_create else 0, cid, now, now),
         )
         return draft_id
+
+
+def rename_reservation_draft_client(
+    batch_id: str, old_client_name: str, new_client_name: str,
+) -> Dict[str, Any]:
+    """PR-3: move a reservation draft from old_client_name → new_client_name.
+
+    Canonical-wins on collision: if a reservation draft already exists under
+    new_client_name, the OLD draft (and its lines) is removed and the canonical
+    one kept; otherwise the old draft is renamed in place (keeping its lines).
+    Lines are deleted explicitly (not relying on the per-connection CASCADE
+    pragma). Never raises on a missing old draft. Returns an action summary.
+    """
+    if _db_path is None or not batch_id or not old_client_name:
+        return {"action": "noop"}
+    if old_client_name == new_client_name:
+        return {"action": "noop"}
+    now = _now()
+    with _lock, _connect() as con:
+        old_row = con.execute(
+            "SELECT id FROM wfirma_reservation_drafts "
+            "WHERE batch_id=? AND client_name=?",
+            (batch_id, old_client_name),
+        ).fetchone()
+        if not old_row:
+            return {"action": "noop"}
+        new_row = con.execute(
+            "SELECT id FROM wfirma_reservation_drafts "
+            "WHERE batch_id=? AND client_name=?",
+            (batch_id, new_client_name),
+        ).fetchone()
+        if new_row:
+            line_n = con.execute(
+                "SELECT COUNT(*) FROM wfirma_reservation_lines WHERE draft_id=?",
+                (old_row["id"],),
+            ).fetchone()[0]
+            con.execute("DELETE FROM wfirma_reservation_lines WHERE draft_id=?",
+                        (old_row["id"],))
+            con.execute("DELETE FROM wfirma_reservation_drafts WHERE id=?",
+                        (old_row["id"],))
+            return {"action": "dropped_old", "old_id": old_row["id"],
+                    "dropped_lines": int(line_n)}
+        con.execute(
+            "UPDATE wfirma_reservation_drafts SET client_name=?, updated_at=? WHERE id=?",
+            (new_client_name, now, old_row["id"]),
+        )
+        return {"action": "renamed", "id": old_row["id"]}
 
 
 def get_reservation_draft(batch_id: str, client_name: str) -> Optional[Dict[str, Any]]:

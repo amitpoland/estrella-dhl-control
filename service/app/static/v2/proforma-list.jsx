@@ -65,6 +65,14 @@ function ProformaListPage({ onDrill }) {
         </div>
       </div>
 
+      {/* Backfill: promote purchase packing documents to sales with an
+          operator-selected Customer Master contractor as customer authority
+          (PR #696 backend). Available even at 0 drafts — that is when an
+          operator backfills. Reloads the list on success. */}
+      {window.LinkAsSalesBackfill && (
+        <window.LinkAsSalesBackfill batchId={batchId} onLinked={draftsHook.reload} />
+      )}
+
       {/* Loading / error / empty */}
       {draftsHook.loading && (
         <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-2)' }}>

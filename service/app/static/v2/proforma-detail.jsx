@@ -807,6 +807,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [readinessPost,    setReadinessPost]    = React.useState(null);
   const [resolvingDesign,  setResolvingDesign]  = React.useState(null);   // design_no in flight
   const [resolveError,     setResolveError]     = React.useState(null);
+  const [savingVat,        setSavingVat]        = React.useState(false);  // WDT vat→master save in flight
+  const [vatSaveError,     setVatSaveError]     = React.useState(null);
   const reloadReadiness = () => {
     const id = (draft && draft.id) || null;
     if (!id) return;
@@ -822,6 +824,42 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       .catch(() => setReadinessPost(null));
   };
   React.useEffect(reloadReadiness, [draft && draft.id, liveDraft.updated_at]);
+
+  // Resolve one ambiguous design_no by picking its exact product_code, then
+  // refresh readiness so the resolved blocker disappears.
+  const doResolveAmbiguity = (design, pc) => {
+    if (!pc || resolvingDesign) return;
+    const id = liveDraft.id || (draft && draft.id);
+    setResolvingDesign(design);
+    setResolveError(null);
+    window.PzApi.resolveDraftAmbiguity(id, design, pc)
+      .then(r => {
+        if (!(r && r.ok)) setResolveError((r && (r.error || r.detail)) || 'Resolution failed — check backend logs.');
+        reloadReadiness();
+      })
+      .catch(err => setResolveError((err && err.message) || 'Network error'))
+      .finally(() => setResolvingDesign(null));
+  };
+
+  // WDT repair: write the on-file EU-VAT candidate into customer_master.vat_eu_number.
+  // Explicit operator action — never auto-applied. The WDT gate stays blocked until
+  // this canonical field is populated (the tax rule is not bypassed; we only move a
+  // VAT that is plainly on file under `nip` into the field the gate reads). Then refresh.
+  const doSaveEuVat = (vr) => {
+    if (!vr || savingVat) return;
+    const cid = vr.contractor_id;
+    const vat = vr.candidate_vat;
+    if (!cid || !vat) { setVatSaveError('Missing contractor_id or VAT value.'); return; }
+    setSavingVat(true);
+    setVatSaveError(null);
+    window.PzApi.saveCustomerMaster(cid, { vat_eu_number: vat })
+      .then(r => {
+        if (!(r && r.ok)) setVatSaveError((r && (r.error || r.detail)) || 'Save failed — check backend logs.');
+        reloadReadiness();
+      })
+      .catch(err => setVatSaveError((err && err.message) || 'Network error'))
+      .finally(() => setSavingVat(false));
+  };
 
   // WIRED: fetch company profile for SELLER (GET /api/v1/settings/company-profile)
   const [companyProfile, setCompanyProfile] = React.useState(null);
@@ -861,6 +899,22 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     currency: ln.currency || 'EUR',
   }));
 
+  // Ambiguity line evidence: candidate product_code → packing-line context so
+  // the operator picks the exact code WITH evidence (qty / value / name), not a
+  // bare code. Keyed off the draft's own editable_lines (the lines being billed).
+  const linesByCode = {};
+  (liveDraft.editable_lines || []).forEach(ln => {
+    const pc = (ln.product_code || '').trim();
+    if (!pc) return;
+    linesByCode[pc] = {
+      qty:      parseFloat(ln.qty || 0),
+      value:    parseFloat(ln.unit_price || 0) * parseFloat(ln.qty || 0),
+      name:     ln.name_pl || ln.description_en || ln.item_type || '',
+      design:   ln.design_no || '',
+      currency: ln.currency || 'EUR',
+    };
+  });
+
   // FX rate from backend (no browser-side PLN conversion)
   const fxRate = liveDraft.exchange_rate ? parseFloat(liveDraft.exchange_rate) : null;
 
@@ -898,9 +952,17 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // for those fields.
   const bo = liveDraft.buyer_override || {};
   const cr = liveDraft.customer_resolution || {};
+  // VAT-EU authority: the canonical buyer VAT is buyer_override.vat_id, but the
+  // EU VAT is sometimes only on file under `nip` (general tax-id) while vat_id /
+  // customer_master.vat_eu_number are blank. Surface the on-file value instead of
+  // "—" so the card never hides a VAT the readiness gate is blocking on, and flag
+  // when it is not yet stored as the canonical EU-VAT field (vatEuFromNip).
+  const _boVatId = (bo.vat_id || '').trim();
+  const _boNip   = (bo.nip || '').trim();
   const customer = {
     name:       bo.name || liveDraft.client_name || (draft && draft.client_name) || '—',
-    vatEu:      bo.vat_id || '—',
+    vatEu:      _boVatId || _boNip || '—',
+    vatEuFromNip: !_boVatId && !!_boNip,
     address:    [bo.street, bo.city, bo.zip].filter(Boolean).join(', ') || '—',
     country:    bo.country || '—',
     // wfirmaId: explicit selection in buyer_override > name-resolution in cr > posted proof
@@ -1829,46 +1891,83 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               </div>
             </div>
           ))}
+          {/* WDT EU-VAT repair — explicit "save to Customer Master" action. The
+              VAT is on file (nip) but blank in the canonical vat_eu_number field
+              the WDT gate reads; this writes it there on operator confirm. The
+              gate stays blocked until saved — no tax bypass. */}
+          {readinessPost.vat_resolution && readinessPost.vat_resolution.needs_save_to_master && (
+            <div data-testid="readiness-vat-resolver"
+                 style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--border)',
+                          borderRadius: 6, background: 'var(--bg)' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>
+                EU VAT for WDT — confirm &amp; save to Customer Master
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-2, var(--text))', opacity: 0.85, marginBottom: 6 }}>
+                {'Tax number '}
+                <strong style={{ fontFamily: 'monospace' }}>{readinessPost.vat_resolution.candidate_vat}</strong>
+                {' is on file (nip) but the canonical EU-VAT field is blank. WDT (intra-EU 0%) requires it in Customer Master. This does not change vat_mode or bypass the rule — it saves the VAT into vat_eu_number so VIES can verify it.'}
+              </div>
+              <button
+                data-testid="btn-save-eu-vat"
+                disabled={savingVat}
+                onClick={() => doSaveEuVat(readinessPost.vat_resolution)}
+                style={{ background: 'var(--accent, #c9a456)', color: '#1a1a1a', border: 'none',
+                         borderRadius: 4, fontSize: 12, fontWeight: 600, padding: '5px 12px',
+                         cursor: savingVat ? 'default' : 'pointer', opacity: savingVat ? 0.6 : 1 }}
+              >
+                {savingVat ? '⏳ Saving…'
+                  : `Save EU VAT ${readinessPost.vat_resolution.candidate_vat} to Customer Master`}
+              </button>
+              {vatSaveError && (
+                <div data-testid="readiness-vat-save-error"
+                     style={{ color: 'var(--badge-red-text)', fontSize: 11, marginTop: 4 }}>
+                  {vatSaveError}
+                </div>
+              )}
+            </div>
+          )}
           {Object.keys(readinessPost.ambiguous_designs || {}).length > 0 && (
             <div style={{ marginTop: 8 }} data-testid="readiness-ambiguity-resolver">
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>
-                Resolve design ambiguity — select the exact product_code to bill:
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text)' }}>
+                Resolve design ambiguity — click the exact product_code to bill:
               </div>
               {Object.entries(readinessPost.ambiguous_designs).map(([design, codes]) => (
-                <div key={design} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                  <span style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--text)' }}>{design}</span>
-                  <select
-                    data-testid={`ambiguity-select-${design}`}
-                    disabled={!!resolvingDesign}
-                    defaultValue=""
-                    style={{
-                      background: 'var(--bg)', color: 'var(--text)',
-                      border: '1px solid var(--border)', borderRadius: 4,
-                      fontSize: 12, padding: '2px 6px',
-                    }}
-                    onChange={e => {
-                      const pc = e.target.value;
-                      if (!pc) return;
-                      const id = liveDraft.id || (draft && draft.id);
-                      setResolvingDesign(design);
-                      setResolveError(null);
-                      window.PzApi.resolveDraftAmbiguity(id, design, pc)
-                        .then(r => {
-                          if (!(r && r.ok)) {
-                            setResolveError((r && (r.error || r.detail)) || 'Resolution failed — check backend logs.');
-                          }
-                          reloadReadiness();
-                        })
-                        .catch(err => setResolveError((err && err.message) || 'Network error'))
-                        .finally(() => setResolvingDesign(null));
-                    }}
-                  >
-                    <option value="">— select product_code —</option>
-                    {(codes || []).map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                  {resolvingDesign === design && (
-                    <span style={{ fontSize: 11, color: 'var(--text)' }}>⏳ saving…</span>
-                  )}
+                <div key={design} data-testid={`ambiguity-row-${design}`}
+                     style={{ marginBottom: 8, paddingBottom: 6, borderBottom: '1px dashed var(--border)' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-2, var(--text))', marginBottom: 4 }}>
+                    {'design '}
+                    <span style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{design}</span>
+                    {' — pick the line to bill:'}
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {(codes || []).map(c => {
+                      const ev = linesByCode[c];
+                      return (
+                        <button
+                          key={c}
+                          data-testid={`ambiguity-choice-${design}-${c}`}
+                          disabled={!!resolvingDesign}
+                          onClick={() => doResolveAmbiguity(design, c)}
+                          title={ev ? `${ev.name || ''} · qty ${ev.qty} · ${ev.value.toFixed(2)} ${ev.currency}` : 'no line evidence on draft'}
+                          style={{ background: 'var(--card)', color: 'var(--text)',
+                                   border: '1px solid var(--border)', borderRadius: 6,
+                                   fontSize: 12, padding: '4px 8px', textAlign: 'left',
+                                   cursor: resolvingDesign ? 'default' : 'pointer',
+                                   opacity: resolvingDesign && resolvingDesign !== design ? 0.5 : 1 }}
+                        >
+                          <div style={{ fontFamily: 'monospace', fontWeight: 600 }}>{c}</div>
+                          {ev && (
+                            <div style={{ fontSize: 10, color: 'var(--text-2, var(--text))', opacity: 0.8 }}>
+                              {(ev.name ? ev.name + ' · ' : '')}{`qty ${ev.qty} · ${ev.value.toFixed(2)} ${ev.currency}`}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                    {resolvingDesign === design && (
+                      <span style={{ fontSize: 11, color: 'var(--text)', alignSelf: 'center' }}>⏳ saving…</span>
+                    )}
+                  </div>
                 </div>
               ))}
               {resolveError && (
@@ -1885,6 +1984,68 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Product-code billing evidence (display-only, surfaces #686) ────────
+          Renders the readiness gate's duplicate_product_codes: every purchase lot
+          (product_code) billed across >1 draft line, with billed vs available
+          packing quantity. A product_code is ONE purchase-invoice lot that may
+          legitimately span several designs/pieces — billing within the available
+          quantity is fine (shown here for transparency, never hidden); billing
+          MORE than available is an over-bill (double-bill) which the backend gate
+          ALSO raises as a blocker above. Pure reflection of the backend authority
+          — no local computation, no write actions (Lesson F rule 5). */}
+      {readinessPost && (readinessPost.duplicate_product_codes || []).length > 0 && (
+        <div data-testid="overbill-evidence-panel" style={{
+          background: 'var(--card)',
+          borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+          borderTop: '1px solid var(--border)',
+          padding: '12px 24px',
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>
+            Product-code billing — purchase lots billed across multiple lines
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text)', opacity: 0.7, marginBottom: 8 }}>
+            {'A product_code is one purchase-invoice lot and may legitimately span several designs. Billing within the available packing quantity is fine; an over-bill (billed > available) is a double-bill and blocks Approve / Post / Convert.'}
+          </div>
+          {(readinessPost.duplicate_product_codes || []).map((d) => {
+            const over = !!d.over_billed;
+            const designs = d.design_nos || [];
+            // product_code can contain '/' (e.g. EJL/26-27/299-2) — slugify for a
+            // selector-safe data-testid; the React key keeps the raw value.
+            const tid = String(d.product_code || '').replace(/[^a-zA-Z0-9_-]/g, '-');
+            return (
+              <div key={d.product_code} data-testid={`overbill-row-${tid}`}
+                   style={{ marginBottom: 8, paddingBottom: 6, borderBottom: '1px dashed var(--border)' }}>
+                <div style={{ fontSize: 12, color: over ? 'var(--badge-red-text)' : 'var(--text)' }}>
+                  {over ? '⛔ ' : '• '}
+                  <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{d.product_code}</span>
+                  {d.invoice_no ? <span style={{ opacity: 0.7 }}>{` · invoice ${d.invoice_no}`}</span> : null}
+                </div>
+                <div style={{ fontSize: 11, marginTop: 2 }}>
+                  <span style={{ color: over ? 'var(--badge-red-text)' : 'var(--text)', fontWeight: over ? 600 : 400 }}>
+                    {`billed ${+d.billed_qty} / available ${+d.available_qty}`}
+                  </span>
+                  <span style={{ color: 'var(--text)', opacity: 0.7 }}>
+                    {`  ·  ${d.line_count} line${d.line_count === 1 ? '' : 's'}  ·  ${designs.length} design${designs.length === 1 ? '' : 's'}`}
+                  </span>
+                  {over && (
+                    <span data-testid={`overbill-flag-${tid}`}
+                          style={{ color: 'var(--badge-red-text)', fontWeight: 600 }}>
+                      {'  ·  OVER-BILLED — see blocker above'}
+                    </span>
+                  )}
+                </div>
+                {designs.length > 0 && (
+                  <div data-testid={`overbill-designs-${tid}`}
+                       style={{ fontSize: 10, color: 'var(--text)', opacity: 0.65, marginTop: 2, fontFamily: 'monospace' }}>
+                    {designs.slice(0, 12).join(', ')}{designs.length > 12 ? ` +${designs.length - 12} more` : ''}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -1911,7 +2072,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             title="BUYER"
             name={customer.name}
             lines={[customer.address, customer.country]}
-            footer={`VAT EU: ${customer.vatEu}`}
+            footer={customer.vatEuFromNip
+              ? `VAT EU: ${customer.vatEu} · on file (not yet saved as EU VAT)`
+              : `VAT EU: ${customer.vatEu}`}
             warn={!customer.wfirmaId}
             warnMsg={!customer.wfirmaId ? 'Not mapped to wFirma customer' : null}
             mappedMsg={customer.wfirmaId
