@@ -14,6 +14,38 @@ Authority sources (load before any action):
 
 ---
 
+## Persistent Requirements Check (MANDATORY — runs before Phase 1)
+
+Read `PERSISTENT_REQUIREMENTS.md`. For every ACTIVE requirement, state whether this task touches the domain it protects.
+
+Required output block — emit this before any DISCOVERY work:
+
+```
+PERSISTENT REQUIREMENTS CHECK
+─────────────────────────────────────────
+ACTIVE REQUIREMENTS:
+- PR-001  Product description format (PL / EN)
+- PR-002  Customer Master authority
+- PR-003  Search-first idempotency
+- PR-004  DHL ship-to address priority
+- PR-005  Single authority ownership
+
+TASK IMPACT:
+- PR-001  affected: YES | NO
+- PR-002  affected: YES | NO
+- PR-003  affected: YES | NO
+- PR-004  affected: YES | NO
+- PR-005  affected: YES | NO
+
+VERIFICATION PLAN:
+- <one line per affected requirement stating what will be checked and how>
+─────────────────────────────────────────
+```
+
+**If any affected requirement would be VIOLATED by the plan as designed: stop here, explain the violation, and do not proceed to Phase 1 until the violation is resolved.**
+
+---
+
 ## Phase 1 — DISCOVERY
 
 **Step 0 — Skill routing (runs first, before any file read):**
@@ -103,6 +135,22 @@ Run the required test matrix (full table: `TASK_EXECUTION_PROTOCOL.md` §Phase 4
 Spawn `final-consistency-review`:
 `"Check that no incomplete work, unanswered questions, fake assumptions, disconnected UI, missing backend, broken tests, or uncommitted confusion exist. DO NOT edit files — read and report only."`
 
+**Persistent Requirements Verification (MANDATORY — runs before GATE 1):**
+
+For every requirement marked `affected: YES` in the pre-planning check:
+
+```
+PERSISTENT REQUIREMENTS VERIFICATION
+─────────────────────────────────────────
+PR-NNN:
+  Status:   PASS | FAIL | NOT AFFECTED
+  Evidence: <file:line or test name that confirms compliance>
+  Notes:    <any caveats, or omit if none>
+─────────────────────────────────────────
+```
+
+**A requirement with Status: FAIL blocks PR open — fix the violation first. Do not record PASS without evidence.**
+
 **GATE 1 checklist (must be satisfied before opening PR):**
 - [ ] All named subagents returned verdicts (or substitution disclosed per GATE 5)
 - [ ] Every HIGH/CRITICAL finding resolved or escalated
@@ -110,6 +158,7 @@ Spawn `final-consistency-review`:
 - [ ] Required test suites passed with counts
 - [ ] `git diff --name-only` matches plan list exactly
 - [ ] `final-consistency-review`: CLEAR
+- [ ] Persistent requirements verification: all affected PRs PASS (or no requirements affected)
 
 **Exit:** GATE 1 satisfied · GATE 2 < 3 open PRs.
 
@@ -178,6 +227,7 @@ Merge SHA: <sha>
 
 | Integration | Detail |
 |---|---|
+| **Persistent requirements** | `PERSISTENT_REQUIREMENTS.md` (repo root) — source of truth for PR-001–PR-NNN |
 | **Skill routing** | `.claude/SKILL_ROUTING.md` — keyword → skill map, algorithm, sample resolutions |
 | Protocol authority | `.claude/TASK_EXECUTION_PROTOCOL.md` — full phase rules |
 | Write authority | `docs/governance/AUTHORITY_MAP.md` |
