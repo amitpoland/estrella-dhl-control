@@ -825,6 +825,71 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   };
   React.useEffect(reloadReadiness, [draft && draft.id, liveDraft.updated_at]);
 
+  // ── wFirma reservation (Create Reservation button) ─────────────────────────
+  // The Create Reservation action is gated on the CANONICAL reservation readiness
+  // (GET /wfirma/reservation-preview) — distinct from the proforma post readiness,
+  // matching the reservation-create endpoint's own pre-flight gates. The button is
+  // DISABLED with the exact backend blocking_reasons when not ready; when ready, an
+  // explicit operator confirm precedes the LIVE wFirma write
+  // (POST /wfirma/reservations/create, hard-gated server-side).
+  const [reservationPreview,   setReservationPreview]   = React.useState(null);
+  const [reservationLoading,   setReservationLoading]   = React.useState(false);
+  const [showReservationModal, setShowReservationModal] = React.useState(false);
+  const [reservationBusy,      setReservationBusy]      = React.useState(false);
+  const [reservationResult,    setReservationResult]    = React.useState(null);
+  const loadReservationPreview = React.useCallback(() => {
+    if (!batchId) { setReservationPreview(null); return; }
+    setReservationLoading(true);
+    window.PzApi.getReservationPreview(batchId)
+      .then(r => setReservationPreview((r && r.ok && r.data) ? r.data : null))
+      .catch(() => setReservationPreview(null))
+      .finally(() => setReservationLoading(false));
+  }, [batchId]);
+  // Operator action: fetch when the Reservation tab is opened (no auto-fetch at
+  // page mount — Lesson F).
+  React.useEffect(() => {
+    if (activeTab === 'reservation') loadReservationPreview();
+  }, [activeTab, loadReservationPreview]);
+
+  const reservationDoc = (reservationPreview &&
+    (reservationPreview.documents || []).find(
+      // trim both sides so whitespace drift can't silently false-block the draft
+      d => (d.client_name || '').trim() === (clientName || '').trim())) || null;
+  const reservationExists = !!(reservationPreview && reservationPreview.reservation_exists);
+  const reservationId      = (reservationPreview && reservationPreview.reservation_id) || null;
+  // Ready only when the batch full-gate AND this draft's client document are ready.
+  const reservationReady = !!(reservationPreview &&
+    reservationPreview.ready_to_create && reservationDoc && reservationDoc.ready);
+  const reservationReasons = [
+    ...((reservationPreview && reservationPreview.blocking_reasons) || []),
+    ...((reservationDoc && reservationDoc.blocking_reasons) || []),
+  ].filter(Boolean);
+
+  const doCreateReservation = () => {
+    if (!batchId || !clientName) return;
+    setReservationBusy(true); setReservationResult(null);
+    window.PzApi.createReservation(batchId, clientName)
+      .then(r => {
+        const body = (r && r.data) || {};
+        if (r && r.ok && body.ok) {
+          setReservationResult({ ok: true, id: body.wfirma_reservation_id });
+          setShowReservationModal(false);
+          loadReservationPreview();   // refresh reservation state
+          reloadReadiness();          // refresh proforma readiness
+          draftHook && draftHook.refresh && draftHook.refresh();  // refresh draft
+        } else {
+          // backend error rides in r.error as "HTTP <status>: <json body>"
+          let msg = (r && r.error) || 'reservation create failed';
+          let code = null;
+          const mm = /HTTP \d+:\s*(.+)$/.exec(msg);
+          if (mm) { try { const b = JSON.parse(mm[1]); code = b.code || null; msg = b.error || b.code || msg; } catch (_) {} }
+          setReservationResult({ ok: false, code, error: msg });
+        }
+      })
+      .catch(e => setReservationResult({ ok: false, error: String(e) }))
+      .finally(() => setReservationBusy(false));
+  };
+
   // Resolve one ambiguous design_no by picking its exact product_code, then
   // refresh readiness so the resolved blocker disappears.
   const doResolveAmbiguity = (design, pc) => {
@@ -1684,7 +1749,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           {approving ? '⏳ Approving…' : '✓ Approve'}
         </TbBtn>
         {approveError && (
-          <span style={{ color: '#F44', fontSize: 11, maxWidth: 180 }}>{approveError}</span>
+          <span style={{ color: 'var(--badge-red-text)', fontSize: 11, maxWidth: 180 }}>{approveError}</span>
         )}
 
         <TbSep />
@@ -2324,7 +2389,16 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             exportBlockers={exportBlockers}
             preview={preview}
             canConvert={canConvert}
+            convertDisabledReason={convertDisabledReason}
             onConvert={() => canConvert && setShowConvertModal(true)}
+            reservationLoading={reservationLoading}
+            reservationReady={reservationReady}
+            reservationReasons={reservationReasons}
+            reservationExists={reservationExists}
+            reservationId={reservationId}
+            reservationBusy={reservationBusy}
+            reservationResult={reservationResult}
+            onCreateReservation={() => { setReservationResult(null); setShowReservationModal(true); }}
           />
         )}
         {activeTab === 'history' && (
@@ -2354,6 +2428,35 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             onConvert && onConvert(draft);
           }}
         />
+      )}
+      {showReservationModal && (
+        <Modal title="Create wFirma Reservation" onClose={() => !reservationBusy && setShowReservationModal(false)}>
+          <div data-testid="reservation-confirm-modal" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ fontSize: 13, color: 'var(--text)' }}>
+              This creates a <strong>live wFirma reservation</strong> for client{' '}
+              <strong>{clientName || '—'}</strong> on batch <code style={{ fontSize: 11 }}>{batchId}</code>.
+              The backend re-checks all reservation gates before writing.
+            </div>
+            {reservationResult && !reservationResult.ok && (
+              <div data-testid="reservation-error" style={{
+                fontSize: 12, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)',
+                border: '1px solid var(--badge-red-border)', borderRadius: 6, padding: '8px 10px',
+              }}>
+                Reservation failed{reservationResult.code ? ` (${reservationResult.code})` : ''}: {reservationResult.error}
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <Btn variant="outline" disabled={reservationBusy}
+                   onClick={() => setShowReservationModal(false)}
+                   data-testid="reservation-confirm-cancel">Cancel</Btn>
+              <Btn variant="primary" disabled={reservationBusy || !reservationReady}
+                   onClick={doCreateReservation}
+                   data-testid="reservation-confirm-create">
+                {reservationBusy ? 'Creating…' : 'Confirm — create wFirma reservation'}
+              </Btn>
+            </div>
+          </div>
+        </Modal>
       )}
       {showPreview && (
         <ProformaPreviewModal
@@ -2888,10 +2991,23 @@ function ProformaCustomerMappingTab({ customer }) {
 
 // ── Reservation tab ───────────────────────────────────────────────────────────
 // WIRED: blocking_reasons and export_blockers from POST /api/v1/proforma/preview/{batch_id}/{client_name}
-function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canConvert, onConvert }) {
+function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canConvert,
+                                  convertDisabledReason, onConvert,
+                                  reservationLoading, reservationReady, reservationReasons,
+                                  reservationExists, reservationId, reservationBusy,
+                                  reservationResult, onCreateReservation }) {
   const allReasons = [...blockingReasons, ...exportBlockers];
   const isBlocked  = allReasons.length > 0;
   const auditClean = exportBlockers.length === 0;
+  const resvReasons = reservationReasons || [];
+  // Disabled-reason for the Create Reservation button — the EXACT canonical
+  // backend reservation blocker (or the loading / already-created state).
+  const resvDisabledReason = reservationLoading
+    ? 'Loading reservation readiness…'
+    : reservationExists
+      ? `Reservation already created${reservationId ? ` (wFirma ${reservationId})` : ''}`
+      : (resvReasons[0] || 'Reservation readiness not loaded — open this tab to check.');
+  const resvCanCreate = !!reservationReady && !reservationExists && !reservationBusy;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -2903,9 +3019,9 @@ function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canC
       >
         <CapChip ok={!!preview} label="wFirma configured" />
         <CapChip ok={auditClean} label="Audit clean" />
-        <CapChip ok={!isBlocked} label="Reservation supported" />
+        <CapChip ok={reservationReady || reservationExists} label="Reservation ready" />
         <div style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-3)', display: 'flex', gap: 18 }}>
-          <span>Ready: <strong style={{ color: 'var(--text)' }}>{isBlocked ? '0' : '1'} / 1</strong></span>
+          <span>Reservation: <strong style={{ color: 'var(--text)' }}>{(reservationReady || reservationExists) ? '1' : '0'} / 1</strong></span>
         </div>
       </div>
 
@@ -2928,13 +3044,65 @@ function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canC
         </div>
       )}
 
+      {/* Reservation create — canonical reservation readiness gate.
+          The button reflects GET /wfirma/reservation-preview (distinct from the
+          proforma post readiness above): disabled with the EXACT backend reason
+          when not ready; when ready, click → confirm → live wFirma write. */}
+      <div data-testid="reservation-create-block" style={{
+        background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)',
+        borderRadius: 8, padding: '12px 16px',
+      }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>
+          wFirma Reservation
+        </div>
+        {reservationExists ? (
+          <div data-testid="reservation-exists" style={{ fontSize: 12, color: 'var(--badge-green-text)' }}>
+            ✓ Reservation created{reservationId ? ` — wFirma ${reservationId}` : ''}.
+          </div>
+        ) : resvCanCreate ? (
+          <div data-testid="reservation-ready" style={{ fontSize: 12, color: 'var(--badge-green-text)' }}>
+            ✓ Reservation readiness clear — you can create the wFirma reservation (you will be asked to confirm).
+          </div>
+        ) : (
+          <div data-testid="reservation-blocked-reason" style={{ fontSize: 12, color: 'var(--badge-amber-text)' }}>
+            {reservationLoading ? 'Loading reservation readiness…' : (
+              <span>Reservation blocked — exact backend reason{resvReasons.length > 1 ? 's' : ''}:
+                <ul style={{ margin: '4px 0 0', paddingLeft: 20, color: 'var(--text-2)' }}>
+                  {(resvReasons.length ? resvReasons : [resvDisabledReason]).map((r, i) =>
+                    <li key={i} style={{ marginBottom: 2 }}>{r}</li>)}
+                </ul>
+              </span>
+            )}
+          </div>
+        )}
+        {reservationResult && reservationResult.ok && (
+          <div data-testid="reservation-success" style={{ fontSize: 12, color: 'var(--badge-green-text)', marginTop: 6 }}>
+            ✓ wFirma reservation created{reservationResult.id ? ` (${reservationResult.id})` : ''}.
+          </div>
+        )}
+        {reservationResult && !reservationResult.ok && (
+          <div data-testid="reservation-inline-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginTop: 6 }}>
+            Reservation failed{reservationResult.code ? ` (${reservationResult.code})` : ''}: {reservationResult.error}
+          </div>
+        )}
+      </div>
+
       {/* Footer actions */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
-        <Btn variant="outline" disabled={isBlocked}>Create Reservation</Btn>
+        <Btn
+          variant="primary"
+          disabled={!resvCanCreate}
+          onClick={() => resvCanCreate && onCreateReservation && onCreateReservation()}
+          title={resvCanCreate ? `Create wFirma reservation` : resvDisabledReason}
+          data-testid="reservation-create-btn"
+        >
+          {reservationBusy ? 'Creating…' : 'Create Reservation'}
+        </Btn>
         <Btn
           variant="danger"
           disabled={!canConvert}
           onClick={onConvert}
+          title={canConvert ? 'Convert this proforma to a wFirma invoice' : (convertDisabledReason || 'Post to wFirma first, then convert')}
           data-testid="reservation-convert-btn"
         >
           ⚠ Convert Proforma to Invoice
