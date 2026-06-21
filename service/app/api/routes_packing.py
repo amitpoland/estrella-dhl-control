@@ -2565,6 +2565,12 @@ def get_packing_documents(batch_id: str) -> Dict[str, Any]:
 class _ClientMapping(BaseModel):
     packing_document_id: str
     client_name: str
+    # Optional operator-selected Customer-Master contractor. When supplied it is
+    # the customer authority for this client (contractor_id beats the parsed/
+    # free-text name — rules 1–2) and is persisted onto the sales chain so the
+    # proforma draft resolves by it. When omitted, the existing name-fallback
+    # behaviour is unchanged (rule 6).
+    client_contractor_id: str = ""
 
 
 class _LinkAsSalesBody(BaseModel):
@@ -2600,10 +2606,12 @@ def link_packing_as_sales(
     for mapping in body.client_mappings:
         pdoc_id = (mapping.packing_document_id or "").strip()
         client  = (mapping.client_name or "").strip()
+        cid     = (mapping.client_contractor_id or "").strip()
         if not pdoc_id or not client:
             results.append({
                 "packing_document_id": pdoc_id,
                 "client_name":         client,
+                "client_contractor_id": cid,
                 "ok":                  False,
                 "reason":              "missing packing_document_id or client_name",
             })
@@ -2639,11 +2647,16 @@ def link_packing_as_sales(
             })
             continue
 
-        # Get-or-create a stable sales_document record for this packing doc + client
+        # Get-or-create a stable sales_document record for this packing doc +
+        # client. The operator-selected contractor_id (when supplied) is the
+        # customer authority and is written onto sales_documents.client_contractor_id
+        # → projected onto the sales lines → the proforma draft, so the draft
+        # resolves Customer Master by contractor_id (selected beats parsed name).
         sales_doc_id = ddb.get_or_create_sales_document_for_packing(
             batch_id=batch_id,
             packing_document_id=pdoc_id,
             client_name=client,
+            client_contractor_id=cid,
         )
 
         # Map packing_lines → sales_packing_lines, excluding unmatched rows.
@@ -2658,6 +2671,7 @@ def link_packing_as_sales(
         results.append({
             "packing_document_id": pdoc_id,
             "client_name":         client,
+            "client_contractor_id": cid,
             "ok":                  True,
             "packing_lines_read":  len(packing_lines),
             "sales_lines_written": repl["inserted"],
@@ -2668,6 +2682,49 @@ def link_packing_as_sales(
             batch_id, client, pdoc_id, len(packing_lines), repl["inserted"],
             unmatched_skipped,
         )
+
+    # Seed the per-batch packing_contractor_resolution (the fallback authority
+    # store read by derive_customer_resolution_via_packing) ONLY when this call
+    # resolves the batch to a SINGLE operator-selected contractor. That store is
+    # UNIQUE(batch_id, role='client') — a multi-client backfill cannot be
+    # represented there without misrouting, so for multiple distinct contractors
+    # we rely solely on the per-document client_contractor_id projected onto the
+    # sales chain above (which resolves each draft correctly via step 0 of
+    # derive_customer_authority_for_draft). Never infer from text (rule 5).
+    cid_to_name: Dict[str, str] = {}
+    for r in results:
+        rc = (r.get("client_contractor_id") or "").strip()
+        if r.get("ok") and rc:
+            cid_to_name.setdefault(rc, r.get("client_name") or "")
+    if len(cid_to_name) == 1:
+        sel_cid, sel_name = next(iter(cid_to_name.items()))
+        try:
+            from ..services import packing_resolution_db as prdb
+            prdb.upsert_resolution(
+                settings.storage_root / "packing_resolutions.sqlite",
+                batch_id=batch_id,
+                role="client",
+                verdict={
+                    "parsed_name":         sel_name,
+                    "matched_master_type": "customer_master",
+                    "matched_master_id":   sel_cid,
+                    "matched_wfirma_id":   sel_cid,
+                    "tier":                1,
+                    "confidence":          1.0,
+                    "reason":              "link_as_sales_operator_selected",
+                },
+                operator_user="link_as_sales",
+                status_override="confirmed",
+            )
+            log.info("[%s] link_as_sales seeded client resolution (contractor=%s)",
+                     batch_id, sel_cid)
+        except Exception as exc:
+            log.warning("[%s] link_as_sales resolution seed failed (non-fatal): %s",
+                        batch_id, exc)
+    elif len(cid_to_name) > 1:
+        log.info("[%s] link_as_sales: %d distinct operator-selected contractors — "
+                 "per-batch resolution not seeded; per-document contractor_id "
+                 "authority used per draft instead.", batch_id, len(cid_to_name))
 
     # Trigger proforma draft auto-sync (non-blocking; any error is logged, not raised)
     sync_summary: Dict[str, Any] = {}
@@ -2696,7 +2753,8 @@ def link_packing_as_sales(
             detail={
                 "batch_id": batch_id,
                 "mappings": [
-                    {"doc": m.packing_document_id, "client": m.client_name}
+                    {"doc": m.packing_document_id, "client": m.client_name,
+                     "contractor_id": (m.client_contractor_id or "").strip()}
                     for m in body.client_mappings
                 ],
                 "results": results,

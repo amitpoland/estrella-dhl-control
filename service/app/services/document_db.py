@@ -1784,6 +1784,8 @@ def get_or_create_sales_document_for_packing(
     batch_id:            str,
     packing_document_id: str,
     client_name:         str,
+    *,
+    client_contractor_id: str = "",
 ) -> str:
     """
     Idempotent: return or create a sales_documents row that represents a purchase
@@ -1794,17 +1796,30 @@ def get_or_create_sales_document_for_packing(
     row.  If the row already exists but the client_name differs (operator
     corrected a typo), the name is updated in-place.
 
+    ``client_contractor_id`` — the operator's link-as-sales Customer-Master
+    selection. When supplied it is the customer authority and is written onto
+    ``sales_documents.client_contractor_id`` (which ``replace_sales_packing_lines``
+    then projects onto the sales lines → the proforma draft). It OUTRANKS the
+    best-effort projection and any parsed name (rules 1–2); the projection is
+    used only when no contractor was selected (rule 3). When blank, behaviour is
+    unchanged (existing fallback — rule 6).
+
     Returns the sales_document primary-key id.
     """
     if _db_path is None:
         return ""
     synthetic_doc_id = f"packing:{packing_document_id}"
+    explicit_cid = (client_contractor_id or "").strip()
     now = _now()
     with _lock, _connect() as con:
-        # PR-2: project contractor authority from the REAL packing
-        # shipment_documents row (id == packing_document_id), not the synthetic
-        # back-ref. Best-effort; '' when unbound.
-        cid = _shipment_doc_contractor_id(con, packing_document_id)
+        # Contractor (customer) authority precedence:
+        #   1. explicit_cid  — operator's link-as-sales Customer-Master pick
+        #                      (highest authority; contractor_id outranks name).
+        #   2. projected_cid — best-effort projection from the packing
+        #                      shipment_documents row; '' when unbound.
+        # The operator selection WINS; fall back to the projection only when no
+        # contractor was selected (rules 1–3).
+        projected_cid = _shipment_doc_contractor_id(con, packing_document_id)
         existing = con.execute(
             "SELECT id, client_contractor_id FROM sales_documents "
             "WHERE batch_id=? AND document_id=?",
@@ -1812,9 +1827,9 @@ def get_or_create_sales_document_for_packing(
         ).fetchone()
         if existing:
             existing_cid = (existing["client_contractor_id"] or "").strip()
-            # Merge-not-replace: only fill the contractor reference when it is
-            # currently empty (never clobber a resolved authority — #570 class).
-            cid_to_write = existing_cid or cid
+            # Explicit operator pick wins; else preserve a resolved authority
+            # (never clobber with a projection — #570 class); else best-effort.
+            cid_to_write = explicit_cid or existing_cid or projected_cid
             if client_name:
                 con.execute(
                     "UPDATE sales_documents "
@@ -1841,7 +1856,7 @@ def get_or_create_sales_document_for_packing(
                 client_name, "",
                 "packing_list_promote", "", "",
                 "", "extracted",
-                cid,
+                explicit_cid or projected_cid,
                 now, now,
             ),
         )
