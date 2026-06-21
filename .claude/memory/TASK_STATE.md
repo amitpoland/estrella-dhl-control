@@ -22,14 +22,21 @@ Rules and boundary vs PROJECT_STATE.md:
 - **Status:** COMPLETE
 - **HOLD reason (if BLOCKED-HOLD):** —
 
-## Previous task (COMPLETE)
+### Completion criteria
 
-- **Task:** Improve shipment intake diagnostics and operator troubleshooting visibility
-- **Started:** 2026-06-21
-- **Completed:** 2026-06-21
-- **Status:** COMPLETE
-
----
+- [x] `IntakeDiagnosticsCard` — lifecycle stage rendered with human-readable label and authority footnote
+- [x] `IntakeDiagnosticsCard` — artifact checklist (invoices, AWB PDF, sales packing, SAD) present vs missing
+- [x] `IntakeDiagnosticsCard` — blocking reason surfaced from `action_reason`/`failed_checks` in callout
+- [x] `IntakeDiagnosticsCard` — operator action CTA based on missing artifacts
+- [x] `OverviewTab` — Shipment card uses real data from batch detail fetch (no hardcoded counts)
+- [x] `pz-api.js` — `getBatchDetail(batchId)` method added
+- [x] reviewer-challenge mitigations resolved
+- [x] `test_sprint35b_shipment_detail_documents.py` — T12/T13/T14/T15 added (section G)
+- [x] GATE 1 satisfied
+- [x] GATE 6 documented (browser verification deferred to operator — in-container; same as Tasks #1–3)
+- [x] PR updated on `claude/new-session-fetvj6`
+- [x] `TASK_STATE.md` → COMPLETE
+- [x] FEATURE_SCORECARD Row #4 filled
 
 ## Previous task (COMPLETE)
 
@@ -49,6 +56,8 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## History (most recent first)
 
+- 2026-06-21 — Task #4 COMPLETE: PR #687 updated (intake diagnostics, IntakeDiagnosticsCard, T12–T15)
+- 2026-06-21 — Task #3 COMPLETE: PR #687 updated (proforma draft blocker visibility in V2 proforma tab)
 - 2026-06-21 — Task #2 COMPLETE: PR #687 updated (DHL clearance pipeline diagnostics in V2 DHL tab)
 - 2026-06-21 — Task #1 COMPLETE: PR #687 draft (proforma readiness display in V2 proforma tab)
 
