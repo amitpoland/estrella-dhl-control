@@ -881,6 +881,36 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       .catch(() => setBatchPackingLines([]));
   }, [batchId]);
 
+  // Draft-scoped packing enrichment. AUTHORITY RULE: documents (Packing List,
+  // CMR) render only THIS draft's billed editable_lines. The batch/shipment
+  // packing rows (which span ALL clients on the batch — 84 rows here) may ENRICH
+  // a draft line with physical fields (weight, kt, colour, quality, size, HSN,
+  // origin) matched by design_no (most specific) then product_code — but they
+  // MUST NEVER add a line the draft does not bill. So we index the batch rows and
+  // look one up per editable line; we never iterate the batch rows to build a
+  // document.
+  const _packingByDesign = React.useMemo(() => {
+    const m = {};
+    (batchPackingLines || []).forEach(l => {
+      const d = String(l.design_no || '').trim();
+      if (d && !(d in m)) m[d] = l;
+    });
+    return m;
+  }, [batchPackingLines]);
+  const _packingByCode = React.useMemo(() => {
+    const m = {};
+    (batchPackingLines || []).forEach(l => {
+      const c = String(l.product_code || '').trim();
+      if (c && !(c in m)) m[c] = l;
+    });
+    return m;
+  }, [batchPackingLines]);
+  const _enrichPacking = React.useCallback((ln) => {
+    const d = String((ln && ln.design_no) || '').trim();
+    const c = String((ln && ln.product_code) || '').trim();
+    return (d && _packingByDesign[d]) || (c && _packingByCode[c]) || {};
+  }, [_packingByDesign, _packingByCode]);
+
   // ── Authority-wired data construction ──────────────────────────────────────
   // Product lines from backend editable_lines
   const lines = (liveDraft.editable_lines || []).map((ln, i) => ({
@@ -1147,24 +1177,32 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // Metal and stone types surface as a single goods_summary description, not per-line columns.
   // Returns { lines: [{item_type, qty, net_weight, origin}], goods_summary, total_qty }
   const _cmrAggPackingLines = (() => {
-    if (!batchPackingLines || !batchPackingLines.length) {
+    // CMR totals aggregate ONLY this draft's billed editable_lines (qty authority),
+    // enriched with physical metal/stone/weight from the matched batch packing row.
+    // Never aggregates the full-shipment batch packing (which spans all clients).
+    const _el = liveDraft.editable_lines || [];
+    if (!_el.length) {
       return { lines: [], goods_summary: '', total_qty: 0 };
     }
     const groups = {};
     const metals  = new Set();
     const stones  = new Set();
     let totalQty  = 0;
-    for (const l of batchPackingLines) {
-      const key = (l.item_type || 'other').toUpperCase();
+    for (const ln of _el) {
+      const pk = _enrichPacking(ln);                       // batch row (enrichment only)
+      const itemType = ln.item_type || pk.item_type || 'other';
+      const key = String(itemType).toUpperCase();
       if (!groups[key]) {
-        groups[key] = { item_type: _cmrItemLabel(l.item_type), qty: 0, net_weight: null, origin: 'India' };
+        groups[key] = { item_type: _cmrItemLabel(itemType), qty: 0, net_weight: null,
+                        origin: pk.origin || ln.origin || 'India' };
       }
-      groups[key].qty += Number(l.quantity) || 0;
-      totalQty        += Number(l.quantity) || 0;
-      const nw = Number(l.net_weight) || 0;
+      const q = Number(ln.qty) || 0;                       // DRAFT billed qty (authority)
+      groups[key].qty += q;
+      totalQty        += q;
+      const nw = Number(pk.net_weight) || 0;               // physical weight (enrichment)
       if (nw > 0) groups[key].net_weight = (groups[key].net_weight || 0) + nw;
-      const m = _parseMetal(l.metal);       if (m) metals.add(m);
-      const s = _parseStone(l.stone_type);  if (s) stones.add(s);
+      const m = _parseMetal(pk.metal);       if (m) metals.add(m);
+      const s = _parseStone(pk.stone_type);  if (s) stones.add(s);
     }
     const metalsStr    = Array.from(metals).join(' & ');
     const stonesStr    = Array.from(stones).join(' & ');
@@ -1252,35 +1290,39 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const packingListData = (() => {
     const currency      = liveDraft.currency || 'EUR';
     const _editableLines = liveDraft.editable_lines || [];
-    const sortedLines   = [...batchPackingLines].sort(
-      (a, b) => (Number(a.pack_sr) || 0) - (Number(b.pack_sr) || 0)
-    );
-    const rows = sortedLines.map((l, i) => {
-      const qty       = Number(l.quantity)   || 0;
-      const _dl       = _editableLines[i];
-      // Sales price authority: editable_lines[i] (index-matched, pack_sr order)
-      const unitPrice = (_dl && Number(_dl.unit_price) > 0)
-        ? Number(_dl.unit_price)
-        : (Number(l.unit_price_eur) || Number(l.unit_price) || 0);
+    // ONE row per BILLED draft line (never the full-shipment batch packing).
+    // qty + sales price come from the draft editable line (the billing authority);
+    // physical fields (kt/colour/quality/weights/size/HSN/origin) are ENRICHED
+    // from the matched batch packing row by design_no/product_code. Packing List
+    // total === draft total.
+    const rows = _editableLines.map((ln, i) => {
+      const pk        = _enrichPacking(ln);
+      const qty       = Number(ln.qty) || 0;
+      const unitPrice = Number(ln.unit_price) > 0
+        ? Number(ln.unit_price)
+        : (Number(pk.unit_price_eur) || Number(pk.unit_price) || 0);
       return {
-        sr:          l.pack_sr  || (i + 1),
-        ctg:         _cmrItemLabel(l.item_type),          // Pendant / Ring / Earrings
-        client_po:   l.invoice_no      || '',
-        design:      l.design_no       || l.product_code || '—',
-        kt:          (l.metal || '').split('/')[0] || '', // "14KT"
-        col:         (l.metal || '').split('/')[1] || '', // "W", "P", "Y"
-        quality:     l.quality_string  || '',
+        sr:           pk.pack_sr || (i + 1),
+        ctg:          _cmrItemLabel(ln.item_type || pk.item_type),  // Pendant / Ring / Earrings
+        client_po:    pk.invoice_no || ln.client_ref || '',
+        product_code: ln.product_code || pk.product_code || '—',
+        design:       ln.design_no    || pk.design_no    || '—',
+        kt:           (pk.metal || '').split('/')[0] || '', // "14KT"
+        col:          (pk.metal || '').split('/')[1] || '', // "W", "P", "Y"
+        quality:      pk.quality_string || '',
         // diamond_weight / color_weight stored since 2026-06-09 schema migration.
         // Existing rows show null (—) until packing is re-uploaded or force_reextract=True.
-        dia_wt:      Number(l.diamond_weight) > 0 ? Number(l.diamond_weight) : null,
-        col_wt:      Number(l.color_weight)   > 0 ? Number(l.color_weight)   : null,
-        net_wt:      Number(l.net_weight) > 0 ? Number(l.net_weight) : null,
+        dia_wt:       Number(pk.diamond_weight) > 0 ? Number(pk.diamond_weight) : null,
+        col_wt:       Number(pk.color_weight)   > 0 ? Number(pk.color_weight)   : null,
+        gross_wt:     Number(pk.gross_weight)   > 0 ? Number(pk.gross_weight)   : null,
+        net_wt:       Number(pk.net_weight)     > 0 ? Number(pk.net_weight)     : null,
         qty,
-        unit_price:  unitPrice,
-        total_value: unitPrice * qty,
+        unit_price:   unitPrice,
+        total_value:  unitPrice * qty,
         // size: stored from packing XLSX "Size" column since 2026-06-09.
-        // scan_code is a barcode key (EJL/…|sr…|…), NOT the ring/piece size.
-        size:        l.size || '',
+        size:         pk.size || '',
+        hsn:          ln.hs_code || pk.hs_code || '',
+        origin:       ln.origin || pk.origin || '',
       };
     });
     const grand_total = rows.reduce((s, r) => s + r.total_value, 0);
@@ -1361,8 +1403,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       ? `Cannot send in '${draftState}' state`
       : '';
 
-  const blockingReasons = (preview && preview.blocking_reasons) || [];
-  const exportBlockers  = (preview && preview.export_blockers)  || [];
+  // SINGLE readiness authority. The Reservation tab, the Overview blocker banners,
+  // and the "What's blocking" panel all read the CANONICAL backend readiness
+  // (readinessPost — the same source the Approve/Post/Convert buttons + tooltips
+  // and the top "Not ready" panel use), NOT the preview's batch/client-wide
+  // blocking_reasons (which can surface stale design-ambiguity that the canonical
+  // readiness has already reconciled away, and counts the client's whole sales
+  // packing instead of the draft's billed lines). When ambiguous_designs is empty
+  // the canonical readiness carries no ambiguity blocker, so none is shown.
+  const blockingReasons = ((readinessPost && readinessPost.blockers) || []).map(b => b.reason);
+  // The wFirma PZ / export prerequisite is already included in readinessPost.blockers
+  // for the post intent, so it is carried by blockingReasons above — no separate
+  // (stale) preview export list.
+  const exportBlockers  = [];
   const vatResolution   = disclosure && disclosure.vat_resolution;
 
   const proformaLabel = liveDraft.wfirma_proforma_fullnumber
@@ -1831,10 +1884,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           seen.add(key);
           rows.push({ reason, repair: repair || null, gates });
         };
+        // Canonical readiness only (readinessPost / readinessApprove). The
+        // Reservation / Export rows previously fed from the stale preview are
+        // gone — readinessPost.blockers already carries the reservation + wFirma
+        // PZ/export blockers (post intent), so they appear here under Post/Convert.
         postBlockers.forEach(b => add(b.reason, b.repair_action, 'Post / Convert'));
         approveBlockers.forEach(b => add(b.reason, b.repair_action, 'Approve'));
-        exportBlockers.forEach(r => add(r, null, 'Export / PDF'));
-        blockingReasons.forEach(r => add(r, null, 'Reservation'));
         if (rows.length === 0) return null;
         const tagColor = g => g.startsWith('Post') ? 'var(--badge-red-text)'
           : g === 'Approve' ? 'var(--badge-amber-text, var(--text-2))'

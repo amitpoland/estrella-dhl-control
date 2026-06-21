@@ -141,47 +141,57 @@ function EJPackingList({ packingData }) {
           ))}
         </div>
 
-        {/* ── 13-column packing table ── */}
-        <table className="ej-table" style={{ fontSize: 8, marginBottom: 14 }}>
+        {/* ── 18-column packing table (full commercial detail) ── */}
+        <table className="ej-table" style={{ fontSize: 7.5, marginBottom: 14 }}>
           <thead>
             <tr style={{ borderTop: '2px solid #0B3D2E' }}>
-              <th style={{ width: 30, textAlign: 'center',  padding: '5px 4px' }}>Sr</th>
-              <th style={{ width: 78, padding: '5px 4px' }}>Category</th>
-              <th style={{ width: 100, padding: '5px 4px' }}>Client PO</th>
-              <th style={{ width: 150, padding: '5px 4px' }}>Design</th>
-              <th style={{ width: 36, textAlign: 'center',  padding: '5px 4px' }}>Kt</th>
-              <th style={{ width: 30, textAlign: 'center',  padding: '5px 4px' }}>Col</th>
-              <th style={{ width: 62, textAlign: 'center',  padding: '5px 4px' }}>Quality</th>
-              <th style={{ width: 56, textAlign: 'right',   padding: '5px 4px' }}>Dia Wt</th>
-              <th style={{ width: 56, textAlign: 'right',   padding: '5px 4px' }}>Col Wt</th>
-              <th style={{ width: 36, textAlign: 'right',   padding: '5px 4px' }}>Qty</th>
-              <th style={{ width: 74, textAlign: 'right',   padding: '5px 4px' }}>Value&nbsp;({cur})</th>
-              <th style={{ width: 88, textAlign: 'right',   padding: '5px 4px' }}>Total Value</th>
-              <th style={{ width: 52, textAlign: 'center',  padding: '5px 4px' }}>Size</th>
+              <th style={{ width: 24, textAlign: 'center',  padding: '5px 3px' }}>Sr</th>
+              <th style={{ width: 60, padding: '5px 3px' }}>Category</th>
+              <th style={{ width: 80, padding: '5px 3px' }}>Client PO</th>
+              <th style={{ width: 96, padding: '5px 3px' }}>Product Code</th>
+              <th style={{ width: 120, padding: '5px 3px' }}>Design</th>
+              <th style={{ width: 32, textAlign: 'center',  padding: '5px 3px' }}>Kt</th>
+              <th style={{ width: 26, textAlign: 'center',  padding: '5px 3px' }}>Col</th>
+              <th style={{ width: 52, textAlign: 'center',  padding: '5px 3px' }}>Quality</th>
+              <th style={{ width: 46, textAlign: 'right',   padding: '5px 3px' }}>Dia Wt</th>
+              <th style={{ width: 46, textAlign: 'right',   padding: '5px 3px' }}>Col Wt</th>
+              <th style={{ width: 50, textAlign: 'right',   padding: '5px 3px' }}>Gross Wt</th>
+              <th style={{ width: 46, textAlign: 'right',   padding: '5px 3px' }}>Net Wt</th>
+              <th style={{ width: 30, textAlign: 'right',   padding: '5px 3px' }}>Qty</th>
+              <th style={{ width: 64, textAlign: 'right',   padding: '5px 3px' }}>Value&nbsp;({cur})</th>
+              <th style={{ width: 76, textAlign: 'right',   padding: '5px 3px' }}>Total Value</th>
+              <th style={{ width: 44, textAlign: 'center',  padding: '5px 3px' }}>Size</th>
+              <th style={{ width: 54, textAlign: 'center',  padding: '5px 3px' }}>HSN</th>
+              <th style={{ width: 44, textAlign: 'center',  padding: '5px 3px' }}>Origin</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={13} style={{ textAlign: 'center', color: '#94A3B8', padding: '20px', fontSize: 11 }}>
+                <td colSpan={18} style={{ textAlign: 'center', color: '#94A3B8', padding: '20px', fontSize: 11 }}>
                   No packing lines loaded — open this batch from the proforma detail page.
                 </td>
               </tr>
             ) : rows.map((r, ri) => (
               <tr key={r.sr || ri} style={{ background: ri % 2 === 0 ? '#FFFFFF' : '#FAFBFC' }}>
-                <td className="ej-c ej-num"  style={{ padding: '3px 4px' }}>{r.sr}</td>
-                <td                          style={{ padding: '3px 4px' }}>{r.ctg       || '—'}</td>
-                <td className="ej-mono"      style={{ padding: '3px 4px', fontSize: 7.5 }}>{r.client_po || '—'}</td>
-                <td style={{ fontWeight: 600, padding: '3px 4px' }}>{r.design || '—'}</td>
-                <td className="ej-c ej-mono" style={{ padding: '3px 4px' }}>{r.kt        || '—'}</td>
-                <td className="ej-c ej-mono" style={{ padding: '3px 4px' }}>{r.col       || '—'}</td>
-                <td className="ej-c"         style={{ padding: '3px 4px' }}>{r.quality   || '—'}</td>
-                <td className="ej-r ej-num"  style={{ padding: '3px 4px', color: '#94A3B8' }}>{_pkgFmtWt(r.dia_wt)}</td>
-                <td className="ej-r ej-num"  style={{ padding: '3px 4px', color: '#94A3B8' }}>{_pkgFmtWt(r.col_wt)}</td>
-                <td className="ej-r ej-num"  style={{ padding: '3px 4px', fontWeight: 600 }}>{r.qty}</td>
-                <td className="ej-r ej-num"  style={{ padding: '3px 4px' }}>{_pkgFmtMoney(r.unit_price)}</td>
-                <td className="ej-r ej-num"  style={{ padding: '3px 4px', fontWeight: 600 }}>{_pkgFmtMoney(r.total_value)}</td>
-                <td className="ej-c ej-mono" style={{ padding: '3px 4px', fontSize: 7.5 }}>{r.size || '—'}</td>
+                <td className="ej-c ej-num"  style={{ padding: '3px 3px' }}>{r.sr}</td>
+                <td                          style={{ padding: '3px 3px' }}>{r.ctg          || '—'}</td>
+                <td className="ej-mono"      style={{ padding: '3px 3px', fontSize: 7 }}>{r.client_po    || '—'}</td>
+                <td className="ej-mono"      style={{ padding: '3px 3px', fontSize: 7 }}>{r.product_code || '—'}</td>
+                <td style={{ fontWeight: 600, padding: '3px 3px' }}>{r.design || '—'}</td>
+                <td className="ej-c ej-mono" style={{ padding: '3px 3px' }}>{r.kt           || '—'}</td>
+                <td className="ej-c ej-mono" style={{ padding: '3px 3px' }}>{r.col          || '—'}</td>
+                <td className="ej-c"         style={{ padding: '3px 3px' }}>{r.quality      || '—'}</td>
+                <td className="ej-r ej-num"  style={{ padding: '3px 3px', color: '#94A3B8' }}>{_pkgFmtWt(r.dia_wt)}</td>
+                <td className="ej-r ej-num"  style={{ padding: '3px 3px', color: '#94A3B8' }}>{_pkgFmtWt(r.col_wt)}</td>
+                <td className="ej-r ej-num"  style={{ padding: '3px 3px', color: '#94A3B8' }}>{_pkgFmtWt(r.gross_wt)}</td>
+                <td className="ej-r ej-num"  style={{ padding: '3px 3px', color: '#94A3B8' }}>{_pkgFmtWt(r.net_wt)}</td>
+                <td className="ej-r ej-num"  style={{ padding: '3px 3px', fontWeight: 600 }}>{r.qty}</td>
+                <td className="ej-r ej-num"  style={{ padding: '3px 3px' }}>{_pkgFmtMoney(r.unit_price)}</td>
+                <td className="ej-r ej-num"  style={{ padding: '3px 3px', fontWeight: 600 }}>{_pkgFmtMoney(r.total_value)}</td>
+                <td className="ej-c ej-mono" style={{ padding: '3px 3px', fontSize: 7 }}>{r.size   || '—'}</td>
+                <td className="ej-c ej-mono" style={{ padding: '3px 3px', fontSize: 7 }}>{r.hsn    || '—'}</td>
+                <td className="ej-c ej-mono" style={{ padding: '3px 3px', fontSize: 7 }}>{r.origin || '—'}</td>
               </tr>
             ))}
           </tbody>
@@ -190,13 +200,13 @@ function EJPackingList({ packingData }) {
               <td colSpan={2} style={{ padding: '5px 6px', color: '#0B3D2E', fontSize: 8.5 }}>
                 {rows.length} design(s)
               </td>
-              <td colSpan={7} style={{ padding: '5px 4px' }}/>
+              <td colSpan={10} style={{ padding: '5px 4px' }}/>
               <td className="ej-r ej-num" style={{ padding: '5px 6px', fontSize: 8.5 }}>{totalQty}</td>
               <td style={{ padding: '5px 4px' }}/>
               <td className="ej-r ej-num" style={{ padding: '5px 6px', fontSize: 8.5 }}>
                 {cur} {_pkgFmtMoney(grandTotal)}
               </td>
-              <td style={{ padding: '5px 4px' }}/>
+              <td colSpan={3} style={{ padding: '5px 4px' }}/>
             </tr>
           </tfoot>
         </table>
