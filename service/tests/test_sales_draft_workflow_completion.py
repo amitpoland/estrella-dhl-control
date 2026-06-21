@@ -121,6 +121,22 @@ def _seed_blocked_doc(batch_id: str) -> str:
     return sd_id
 
 
+def _seed_draft_with_lines(proforma_db: Path, batch_id: str, lines_json: str,
+                           client_name: str = "ACME") -> int:
+    with sqlite3.connect(str(proforma_db)) as conn:
+        pildb._ensure_drafts_table(conn)
+        now = pildb._now_utc_iso()
+        cur = conn.execute(
+            "INSERT INTO proforma_drafts (batch_id, client_name, status, "
+            "currency, draft_state, draft_version, source_lines_json, "
+            "editable_lines_json, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (batch_id, client_name, "draft", "EUR", "editing", 1, "[]",
+             lines_json, now, now),
+        )
+        return int(cur.lastrowid)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Phase A — data layer: set_sales_document_contractor
 # ══════════════════════════════════════════════════════════════════════════════
@@ -163,6 +179,16 @@ class TestPhaseADataLayer:
             "sales_documents_updated": 0, "sales_lines_updated": 0,
             "previous_contractor_id": "",
         }
+
+    def test_set_contractor_same_value_still_reports_previous(self, storage):
+        b = "B-SETC-SAME"
+        sd_id = _seed_blocked_doc(b)
+        ddb.set_sales_document_contractor(b, sd_id, CID_ACME)
+        res = ddb.set_sales_document_contractor(b, sd_id, CID_ACME)
+        # Re-assigning the same value still fires the UPDATE and discloses the
+        # prior value (route layer derives overwrote_existing=False from this).
+        assert res["previous_contractor_id"] == CID_ACME
+        assert res["sales_documents_updated"] == 1
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -261,6 +287,26 @@ class TestPhaseAAssignRoute:
         )
         assert r.status_code == 400, r.text
 
+    def test_assign_rejects_empty_sales_document_id(self, client, storage):
+        cli, _ = client
+        b = "B-ASSIGN-E1"
+        _add_customer(storage, CID_ACME, "ACME CORP")
+        r = cli.post(
+            f"/api/v1/admin/contractor-projection/assign/{b}",
+            json={"sales_document_id": "  ", "contractor_id": CID_ACME},
+        )
+        assert r.status_code == 400, r.text
+
+    def test_assign_rejects_empty_contractor_id(self, client, storage):
+        cli, _ = client
+        b = "B-ASSIGN-E2"
+        sd_id = _seed_blocked_doc(b)
+        r = cli.post(
+            f"/api/v1/admin/contractor-projection/assign/{b}",
+            json={"sales_document_id": sd_id, "contractor_id": ""},
+        )
+        assert r.status_code == 400, r.text
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Phase C — invoice line-name authority enrichment
@@ -317,6 +363,28 @@ class TestPhaseCInvoiceNameEnrichment:
         assert unreg["invoice_line_name"] == ""
         assert unreg["invoice_line_name_source"] == "pending_registration"
 
+    def test_preview_shows_wfirma_goods_name_when_registered(self, client, storage, proforma_db):
+        cli, _ = client
+        wfdb.upsert_product("PCX", wfirma_product_id="g-3", product_name="Gold Ring 14K")
+        draft_id = _seed_draft_with_lines(
+            proforma_db, "B-PREV-1",
+            '[{"product_code":"PCX","qty":1,"unit_price":10}]')
+        r = cli.get(f"/api/v1/proforma/draft/{draft_id}/preview.html")
+        assert r.status_code == 200, r.text
+        # The printable preview shows the customer-facing wFirma goods name.
+        assert "Gold Ring 14K" in r.text
+
+    def test_preview_falls_back_to_bilingual_when_unregistered(self, client, storage, proforma_db):
+        cli, _ = client
+        draft_id = _seed_draft_with_lines(
+            proforma_db, "B-PREV-2",
+            '[{"product_code":"UNREG","qty":1,"unit_price":10,'
+            '"description_pl":"Pierscionek","description_en":"Ring"}]')
+        r = cli.get(f"/api/v1/proforma/draft/{draft_id}/preview.html")
+        assert r.status_code == 200, r.text
+        # Not registered → falls back to the bilingual customs sentence.
+        assert "Pierscionek" in r.text or "Ring" in r.text
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Backend source contracts (no external surfaces, endpoint present)
@@ -369,7 +437,9 @@ class TestFrontendContracts:
         i_lines = html.index('data-testid="draft-lines-table"')
         i_charges = html.index('data-testid="draft-charges-table"')
         assert i_summary < i_billto < i_lines, "Bill-to picker must precede lines"
-        assert i_overrides < i_lines, "Buyer/Ship-to/Payment must precede lines"
+        assert i_billto < i_overrides < i_lines, (
+            "order within the customer block: Bill-to picker → Buyer/Ship-to/"
+            "Payment overrides, both above lines")
         assert i_lines < i_charges, "lines still precede service charges"
 
     def test_phase_b_overrides_not_duplicated(self, html):

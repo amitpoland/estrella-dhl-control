@@ -15961,9 +15961,13 @@ function ProformaBlockedRecordResolver({ batchId, block, onToast, onResolved }) 
             contractor_id:     selected.bill_to_contractor_id,
           }) });
       if (r && r.ok) {
+        const overwriteNote = r.overwrote_existing
+          ? ` (replaced previous contractor ${r.previous_contractor_id})`
+          : '';
         onToast && onToast(
           'Customer assigned — draft generated for '
-            + (r.canonical_name || selected.bill_to_name || 'this document'),
+            + (r.canonical_name || selected.bill_to_name || 'this document')
+            + overwriteNote,
           'success');
         setOpen(false);
         onResolved && onResolved();   // refresh blocks + drafts
