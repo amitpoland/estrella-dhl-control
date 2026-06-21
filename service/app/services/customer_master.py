@@ -162,6 +162,7 @@ def pick_freight(
     if not service_id:
         return {
             "ok": False, "blocked": True,
+            "field": "freight_service_id",
             "reason": "freight_service_id is not configured for this customer",
         }
 
@@ -200,6 +201,7 @@ def pick_freight(
             }
         return {
             "ok": False, "blocked": True,
+            "field": "freight_fixed_amount_eur",
             "reason": "no EUR freight amount configured (freight_fixed_amount_eur is not set)",
         }
 
@@ -214,12 +216,17 @@ def pick_freight(
             }
         return {
             "ok": False, "blocked": True,
+            "field": "freight_fixed_amount_usd",
             "reason": "no USD freight amount configured (freight_fixed_amount_usd is not set)",
         }
 
     else:
         return {
             "ok": False, "blocked": True,
+            # No Customer Master field can repair an unsupported draft currency
+            # (this is a draft-side problem, not missing freight authority), so
+            # there is no missing `field` to deep-link to.
+            "field": None,
             "reason": (
                 f"draft_currency {ccy!r} is not supported; "
                 "only EUR and USD are accepted"

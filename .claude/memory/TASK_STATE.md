@@ -17,12 +17,16 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
-- **Task:** Proforma draft authority UI (V1) — customer-authority summary above lines (A), canonical product-description display + provenance (B), blocked draft-birth records surfaced (C), V2 inspected/reported not switched (D)
+- **Task:** Row #7 — Show DHL AWB number on V2 shipment overview page
 - **Started:** 2026-06-21
-- **Status:** IN_PROGRESS → CLOSE (PR open)
+- **Status:** IN_PROGRESS
 - **HOLD reason (if BLOCKED-HOLD):** —
-- **Branch / worktree:** `feat/proforma-authority-ui` @ `C:\PZ-pf-ui` (base origin/main `dc58ad4`)
-- **Notes:** V1 frozen — minimal critical operator-readiness only. Display-only (no wFirma post / valuation change). GATE-6 = JSX compiles (offline Babel, 0 fail) + 46 structural tests; live browser behavioural verify deferred to deploy. reviewer-challenge CLEAR-WITH-CONDITIONS (resolved), frontend-flow findings fixed (testid §8 + token), final-consistency CLEAR. BACKLOG B-012..B-014.
+- **Branch / worktree:** `feat/v2-dhl-awb-display` (base origin/main `ef24ee3`)
+- **Notes:** Read-only display change. AWB sourced from `audit.tracking_no` via already-fetched `GET /api/v1/dashboard/batches/{batch_id}`. 3 JSX edits + 1 new test file. reviewer-challenge CLEAR (ship with mitigations: 5th test, PR-body note on panel placement).
+
+### Prior task (COMPLETE) — Proforma draft authority UI (PR #677)
+
+- PR #677 squash-merged at `308145d`. V1 shipment-detail.html additive display-only: customer-authority summary + canonical description + blocked draft-birth records. BACKLOG B-012..B-014.
 
 ### Prior task (COMPLETE) — PR-3 Dropdown selection wins
 

@@ -19,6 +19,7 @@ import sqlite3
 import xml.etree.ElementTree as ET
 from collections import Counter
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse, Response, HTMLResponse
@@ -5379,10 +5380,34 @@ def _derive_draft_readiness(
     _ambig_recon = _reconcile_billed_ambiguity(
         preview.get("ambiguous_design_codes") or {}, _r_lines)
 
+    # The draft's billed product_codes — the billing authority (rule 6). Warehouse
+    # / stock and wfirma_products blockers must be scoped to THESE codes, not the
+    # client's whole sales packing list for the batch. The preview's blocking_reasons
+    # count *design-lines* across the client's entire sales packing (e.g. 61 lines
+    # for only 2 distinct billed product_codes), which inflates and mis-attributes
+    # the gate to other drafts'/clients' pieces on the same shipment. So we SKIP the
+    # client-wide design-ambiguity, wfirma_products, and per-state stock blockers
+    # here and RE-DERIVE them draft-scoped: ambiguity below (billed-line product_code
+    # authority), wfirma_products in section 3, and stock state in section 3b.
+    _billed_pcs = {
+        (str(ln.get("product_code") or "")).strip()
+        for ln in _r_lines
+        if (str(ln.get("product_code") or "")).strip()
+    }
+    _STOCK_STATE_MARKERS = (
+        "still in PURCHASE_TRANSIT", "already in SALES_TRANSIT",
+        "in CLOSED state", "no inventory_state row",
+        "no scan_codes in packing_lines", "in unexpected state",
+    )
     for reason in (preview.get("blocking_reasons") or []):
-        if "maps to multiple product_codes" in str(reason):
+        _rs = str(reason)
+        if "maps to multiple product_codes" in _rs:
             continue   # re-derived below with billed-line product_code authority
-        _add(str(reason))
+        if "not matched in wfirma_products" in _rs:
+            continue   # section 3 re-derives this draft-scoped (distinct billed codes)
+        if any(_m in _rs for _m in _STOCK_STATE_MARKERS):
+            continue   # section 3b re-derives this draft-scoped (distinct billed codes)
+        _add(_rs)
     for _amb_design, _amb_codes in _ambig_recon["genuinely_ambiguous"].items():
         _add(
             f"design_no {_amb_design!r} maps to multiple product_codes in this "
@@ -5431,6 +5456,44 @@ def _derive_draft_readiness(
             "Register the listed products in wFirma and add the "
             "wfirma_product_id mapping to wfirma_products, then re-check "
             "readiness.",
+        )
+
+    # ── 3b. Warehouse / stock state, scoped to the draft's billed codes ───
+    # The preview reports per-state stock counts over the client's ENTIRE sales
+    # packing list (design-line granularity → inflated counts like "61" for only
+    # 2 distinct billed product_codes). A draft's POST is gated only by the stock
+    # state of the product_codes it actually bills (rule 6 — editable_lines are
+    # the billing authority). Re-derive from the preview's per-line stock_status,
+    # deduped to DISTINCT billed product_codes — never the whole batch/client.
+    # This NEVER bypasses the warehouse gate: each billed code still must be in an
+    # eligible (received) state; it only stops other drafts'/clients' transit
+    # pieces from blocking THIS draft.
+    _DRAFT_STOCK_BLURB = {
+        "purchase_transit": "still in PURCHASE_TRANSIT (not yet received in warehouse)",
+        "sales_transit":    "already in SALES_TRANSIT (committed to another proforma/invoice)",
+        "closed":           "in CLOSED state (already delivered)",
+        "missing_state":    "have packing_lines scan_codes but no inventory_state row "
+                            "— inventory_state_engine has not seeded this batch",
+        "no_scan_codes":    "have no scan_codes in packing_lines for the resolved product_code",
+    }
+    _pc_stock: Dict[str, Any] = {}   # product_code -> (stock_ok, stock_status)
+    for _pl in (preview.get("lines") or []):
+        _plpc = (str(_pl.get("product_code") or "")).strip()
+        if _plpc and _plpc not in _pc_stock:
+            _pc_stock[_plpc] = (bool(_pl.get("stock_ok")),
+                                str(_pl.get("stock_status") or ""))
+    _stock_blocked_draft: Dict[str, int] = {}
+    for _pc in sorted(_billed_pcs):
+        _ok, _st = _pc_stock.get(_pc, (True, ""))
+        if not _ok and _st:
+            _stock_blocked_draft[_st] = _stock_blocked_draft.get(_st, 0) + 1
+    for _st, _cnt in sorted(_stock_blocked_draft.items()):
+        _blurb = _DRAFT_STOCK_BLURB.get(_st, f"in stock state {_st!r}")
+        _add(
+            f"{_cnt} product(s) {_blurb}",
+            "Receive the listed product_code(s) into warehouse stock (warehouse "
+            "scan / DHL delivery confirmation), then re-check readiness. Only the "
+            "products THIS draft bills gate it — other drafts' pieces do not.",
         )
 
     # ── 4. WDT EU-VAT requirement (requirement 6) ─────────────────────────
@@ -6854,6 +6917,9 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
             "blocked_reason":  None,
         }
     else:
+        # cm is resolved here (resolution-blocked path returned above): expose
+        # the exact record + missing field + deep-link so the operator repairs
+        # the freight authority IN Customer Master, then retries.
         freight_entry = {
             "available":       False,
             "already_applied": "freight" in applied_types,
@@ -6862,6 +6928,7 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
             "label":           None,
             "wfirma_service_id": None,
             "blocked_reason":  freight_result.get("reason", "no freight data"),
+            "freight_authority": _freight_authority_block(cm, freight_result),
         }
 
     # Insurance suggestion (needs sales total for formula mode)
@@ -7026,6 +7093,48 @@ def apply_service_charges(
 
 # ── PR 2C.3b — customer-master suggestions ────────────────────────────────────
 
+def _cm_freight_edit_url(contractor_id: str) -> Optional[str]:
+    """Deep-link to the exact Customer Master record's edit view.
+
+    customer-master-v2.html reads ``?contractor_id=`` and opens that record, so
+    the freight blocker can route the operator straight to the record whose
+    freight authority is missing — no manual hunt through the customer list.
+    """
+    cid = (contractor_id or "").strip()
+    # safe="" mirrors the frontend's encodeURIComponent (encodes '/' too) so the
+    # backend-built deep-link matches customer-master-v2.html's own link format.
+    return (f"/dashboard/customer-master-v2.html?contractor_id={quote(cid, safe='')}"
+            if cid else None)
+
+
+def _freight_authority_block(cm: Optional["CustomerMaster"],
+                             pick_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Structured repair context for a BLOCKED freight suggestion.
+
+    Customer Master is the single freight authority. When ``pick_freight`` blocks
+    because the resolved record is missing a freight field, surface WHICH record
+    (contractor_id + name) and WHICH field, plus a deep-link to edit that exact
+    record — so the operator fixes the authority in Customer Master and retries,
+    with no draft-level override or guessed fallback.
+
+    ``resolved`` is True only when a Customer Master record was actually resolved;
+    callers must NOT synthesise an identity when resolution itself failed.
+    """
+    if cm is None:
+        return {"resolved": False}
+    missing = pick_result.get("field")
+    return {
+        "resolved":      True,
+        "contractor_id": cm.bill_to_contractor_id,
+        "bill_to_name":  cm.bill_to_name,
+        "missing_field": missing,
+        # Deep-link only when a Customer Master field is what's missing. A block
+        # with no CM field to repair (e.g. unsupported draft currency) gets no
+        # edit link — there is nothing on the record to fix.
+        "edit_url":      _cm_freight_edit_url(cm.bill_to_contractor_id) if missing else None,
+    }
+
+
 def _suggest_lookup(draft_id: int):
     """Shared setup for suggest-freight / suggest-insurance.
 
@@ -7148,8 +7257,11 @@ def suggest_freight_endpoint(draft_id: int) -> JSONResponse:
 
     result = pick_freight(cm, draft_currency)
     if not result.get("ok"):
+        # cm is resolved here (resolution-blocked path returned above), so
+        # surface the exact record + missing field + deep-link for repair.
         return JSONResponse({**base, "ok": False, "blocked": True,
-                             "reason": result.get("reason", "unknown")})
+                             "reason": result.get("reason", "unknown"),
+                             "freight_authority": _freight_authority_block(cm, result)})
 
     from decimal import Decimal as _Dec
     return JSONResponse({

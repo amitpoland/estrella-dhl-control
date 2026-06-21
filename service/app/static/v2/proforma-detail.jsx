@@ -825,6 +825,76 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   };
   React.useEffect(reloadReadiness, [draft && draft.id, liveDraft.updated_at]);
 
+  // ── wFirma reservation (Create Reservation button) ─────────────────────────
+  // The Create Reservation action is gated on the CANONICAL reservation readiness
+  // (GET /wfirma/reservation-preview) — distinct from the proforma post readiness,
+  // matching the reservation-create endpoint's own pre-flight gates. The button is
+  // DISABLED with the exact backend blocking_reasons when not ready; when ready, an
+  // explicit operator confirm precedes the LIVE wFirma write
+  // (POST /wfirma/reservations/create, hard-gated server-side).
+  const [reservationPreview,   setReservationPreview]   = React.useState(null);
+  const [reservationLoading,   setReservationLoading]   = React.useState(false);
+  const [showReservationModal, setShowReservationModal] = React.useState(false);
+  const [reservationBusy,      setReservationBusy]      = React.useState(false);
+  const [reservationResult,    setReservationResult]    = React.useState(null);
+  const loadReservationPreview = React.useCallback(() => {
+    if (!batchId) { setReservationPreview(null); return; }
+    setReservationLoading(true);
+    window.PzApi.getReservationPreview(batchId)
+      .then(r => setReservationPreview((r && r.ok && r.data) ? r.data : null))
+      .catch(() => setReservationPreview(null))
+      .finally(() => setReservationLoading(false));
+  }, [batchId]);
+  // Operator action: fetch when the Reservation tab is opened (no auto-fetch at
+  // page mount — Lesson F).
+  React.useEffect(() => {
+    if (activeTab === 'reservation') loadReservationPreview();
+  }, [activeTab, loadReservationPreview]);
+
+  const reservationDoc = (reservationPreview &&
+    (reservationPreview.documents || []).find(
+      // trim both sides so whitespace drift can't silently false-block the draft
+      d => (d.client_name || '').trim() === (clientName || '').trim())) || null;
+  const reservationExists = !!(reservationPreview && reservationPreview.reservation_exists);
+  const reservationId      = (reservationPreview && reservationPreview.reservation_id) || null;
+  // Ready only when the batch full-gate AND this draft's client document are ready.
+  const reservationReady = !!(reservationPreview &&
+    reservationPreview.ready_to_create && reservationDoc && reservationDoc.ready);
+  // Reservation blockers are surfaced at TWO distinct scopes so a BATCH-level
+  // warehouse blocker (e.g. "84 packing line(s) not yet scanned" — counts the
+  // whole batch's packing, NOT this draft's billed lines) is never mistaken for a
+  // Draft blocker. batch_blocking_reasons (warehouse + wFirma config) block every
+  // client in the batch; reservationDoc.blocking_reasons are THIS draft/client's
+  // own. The CREATE GATE (reservationReady) is unchanged — this only clarifies the
+  // DISPLAY (Lesson F rule 5: reflect backend truth, never re-derive it).
+  const reservationBatchReasons = ((reservationPreview && reservationPreview.batch_blocking_reasons) || []).filter(Boolean);
+  const reservationDraftReasons = ((reservationDoc && reservationDoc.blocking_reasons) || []).filter(Boolean);
+
+  const doCreateReservation = () => {
+    if (!batchId || !clientName) return;
+    setReservationBusy(true); setReservationResult(null);
+    window.PzApi.createReservation(batchId, clientName)
+      .then(r => {
+        const body = (r && r.data) || {};
+        if (r && r.ok && body.ok) {
+          setReservationResult({ ok: true, id: body.wfirma_reservation_id });
+          setShowReservationModal(false);
+          loadReservationPreview();   // refresh reservation state
+          reloadReadiness();          // refresh proforma readiness
+          draftHook && draftHook.refresh && draftHook.refresh();  // refresh draft
+        } else {
+          // backend error rides in r.error as "HTTP <status>: <json body>"
+          let msg = (r && r.error) || 'reservation create failed';
+          let code = null;
+          const mm = /HTTP \d+:\s*(.+)$/.exec(msg);
+          if (mm) { try { const b = JSON.parse(mm[1]); code = b.code || null; msg = b.error || b.code || msg; } catch (_) {} }
+          setReservationResult({ ok: false, code, error: msg });
+        }
+      })
+      .catch(e => setReservationResult({ ok: false, error: String(e) }))
+      .finally(() => setReservationBusy(false));
+  };
+
   // Resolve one ambiguous design_no by picking its exact product_code, then
   // refresh readiness so the resolved blocker disappears.
   const doResolveAmbiguity = (design, pc) => {
@@ -881,7 +951,41 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       .catch(() => setBatchPackingLines([]));
   }, [batchId]);
 
+  // Draft-scoped packing enrichment. AUTHORITY RULE: documents (Packing List,
+  // CMR) render only THIS draft's billed editable_lines. The batch/shipment
+  // packing rows (which span ALL clients on the batch — 84 rows here) may ENRICH
+  // a draft line with physical fields (weight, kt, colour, quality, size, HSN,
+  // origin) matched by design_no (most specific) then product_code — but they
+  // MUST NEVER add a line the draft does not bill. So we index the batch rows and
+  // look one up per editable line; we never iterate the batch rows to build a
+  // document.
+  const _packingByDesign = React.useMemo(() => {
+    const m = {};
+    (batchPackingLines || []).forEach(l => {
+      const d = String(l.design_no || '').trim();
+      if (d && !(d in m)) m[d] = l;
+    });
+    return m;
+  }, [batchPackingLines]);
+  const _packingByCode = React.useMemo(() => {
+    const m = {};
+    (batchPackingLines || []).forEach(l => {
+      const c = String(l.product_code || '').trim();
+      if (c && !(c in m)) m[c] = l;
+    });
+    return m;
+  }, [batchPackingLines]);
+  const _enrichPacking = React.useCallback((ln) => {
+    const d = String((ln && ln.design_no) || '').trim();
+    const c = String((ln && ln.product_code) || '').trim();
+    return (d && _packingByDesign[d]) || (c && _packingByCode[c]) || {};
+  }, [_packingByDesign, _packingByCode]);
+
   // ── Authority-wired data construction ──────────────────────────────────────
+  // Draft currency authority — the draft header currency (e.g. USD). Per-line and
+  // preview displays inherit THIS, never a hardcoded 'EUR', so a USD draft is not
+  // mislabelled as EUR. (Issue: USD draft shown as EUR in Lines tab / preview.)
+  const draftCurrency = liveDraft.currency || (draft && draft.currency) || 'EUR';
   // Product lines from backend editable_lines
   const lines = (liveDraft.editable_lines || []).map((ln, i) => ({
     seq:      i + 1,
@@ -896,7 +1000,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     hsCode:   ln.hs_code || '—',
     origin:   ln.origin || (liveDraft.origin_country) || (companyProfile && companyProfile.country) || '—',
     purity:   ln.purity || '',
-    currency: ln.currency || 'EUR',
+    currency: ln.currency || draftCurrency,
   }));
 
   // Ambiguity line evidence: candidate product_code → packing-line context so
@@ -911,7 +1015,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       value:    parseFloat(ln.unit_price || 0) * parseFloat(ln.qty || 0),
       name:     ln.name_pl || ln.description_en || ln.item_type || '',
       design:   ln.design_no || '',
-      currency: ln.currency || 'EUR',
+      currency: ln.currency || draftCurrency,
     };
   });
 
@@ -1033,14 +1137,30 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     }
     return '—';
   })();
+  // Freight + insurance for the preview — surfaced explicitly so they are never
+  // silently absent. A charge with no draft entry renders an explicit "not set"
+  // state (present:false), not a hidden/zero value.
+  const _svcCharges = liveDraft.service_charges || [];
+  const previewCharges = ['freight', 'insurance'].map(t => {
+    const c = _svcCharges.find(x => (x.charge_type || '').toLowerCase() === t && (Number(x.amount) || 0) !== 0);
+    return {
+      type:     t,
+      label:    t === 'freight' ? 'Freight' : 'Insurance',
+      amount:   c ? (Number(c.amount) || 0) : null,
+      currency: (c && c.currency) || draftCurrency,
+      present:  !!c,
+    };
+  });
   const previewDocData = {
     doc_no:   _previewLabel,
+    currency: draftCurrency,
+    charges:  previewCharges,
     date:     liveDraft.invoice_date || liveDraft.created_at
               ? (liveDraft.invoice_date || liveDraft.created_at || '').slice(0, 10) : '—',
     due:      _dueFallback,
     payment:  paymentTermsDisplay,
     payment_terms_days: _ptDays,
-    rate:     { eur: fxRate, date: liveDraft.exchange_rate_date || '—', table: liveDraft.nbp_table || '—' },
+    rate:     { eur: fxRate, currency: draftCurrency, date: liveDraft.exchange_rate_date || '—', table: liveDraft.nbp_table || '—' },
     // Address lines follow EU print convention: street / zip city / country.
     // Structured fields preferred; comma-joined string is the legacy fallback.
     seller:   {
@@ -1147,24 +1267,32 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // Metal and stone types surface as a single goods_summary description, not per-line columns.
   // Returns { lines: [{item_type, qty, net_weight, origin}], goods_summary, total_qty }
   const _cmrAggPackingLines = (() => {
-    if (!batchPackingLines || !batchPackingLines.length) {
+    // CMR totals aggregate ONLY this draft's billed editable_lines (qty authority),
+    // enriched with physical metal/stone/weight from the matched batch packing row.
+    // Never aggregates the full-shipment batch packing (which spans all clients).
+    const _el = liveDraft.editable_lines || [];
+    if (!_el.length) {
       return { lines: [], goods_summary: '', total_qty: 0 };
     }
     const groups = {};
     const metals  = new Set();
     const stones  = new Set();
     let totalQty  = 0;
-    for (const l of batchPackingLines) {
-      const key = (l.item_type || 'other').toUpperCase();
+    for (const ln of _el) {
+      const pk = _enrichPacking(ln);                       // batch row (enrichment only)
+      const itemType = ln.item_type || pk.item_type || 'other';
+      const key = String(itemType).toUpperCase();
       if (!groups[key]) {
-        groups[key] = { item_type: _cmrItemLabel(l.item_type), qty: 0, net_weight: null, origin: 'India' };
+        groups[key] = { item_type: _cmrItemLabel(itemType), qty: 0, net_weight: null,
+                        origin: pk.origin || ln.origin || 'India' };
       }
-      groups[key].qty += Number(l.quantity) || 0;
-      totalQty        += Number(l.quantity) || 0;
-      const nw = Number(l.net_weight) || 0;
+      const q = Number(ln.qty) || 0;                       // DRAFT billed qty (authority)
+      groups[key].qty += q;
+      totalQty        += q;
+      const nw = Number(pk.net_weight) || 0;               // physical weight (enrichment)
       if (nw > 0) groups[key].net_weight = (groups[key].net_weight || 0) + nw;
-      const m = _parseMetal(l.metal);       if (m) metals.add(m);
-      const s = _parseStone(l.stone_type);  if (s) stones.add(s);
+      const m = _parseMetal(pk.metal);       if (m) metals.add(m);
+      const s = _parseStone(pk.stone_type);  if (s) stones.add(s);
     }
     const metalsStr    = Array.from(metals).join(' & ');
     const stonesStr    = Array.from(stones).join(' & ');
@@ -1252,35 +1380,39 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const packingListData = (() => {
     const currency      = liveDraft.currency || 'EUR';
     const _editableLines = liveDraft.editable_lines || [];
-    const sortedLines   = [...batchPackingLines].sort(
-      (a, b) => (Number(a.pack_sr) || 0) - (Number(b.pack_sr) || 0)
-    );
-    const rows = sortedLines.map((l, i) => {
-      const qty       = Number(l.quantity)   || 0;
-      const _dl       = _editableLines[i];
-      // Sales price authority: editable_lines[i] (index-matched, pack_sr order)
-      const unitPrice = (_dl && Number(_dl.unit_price) > 0)
-        ? Number(_dl.unit_price)
-        : (Number(l.unit_price_eur) || Number(l.unit_price) || 0);
+    // ONE row per BILLED draft line (never the full-shipment batch packing).
+    // qty + sales price come from the draft editable line (the billing authority);
+    // physical fields (kt/colour/quality/weights/size/HSN/origin) are ENRICHED
+    // from the matched batch packing row by design_no/product_code. Packing List
+    // total === draft total.
+    const rows = _editableLines.map((ln, i) => {
+      const pk        = _enrichPacking(ln);
+      const qty       = Number(ln.qty) || 0;
+      const unitPrice = Number(ln.unit_price) > 0
+        ? Number(ln.unit_price)
+        : (Number(pk.unit_price_eur) || Number(pk.unit_price) || 0);
       return {
-        sr:          l.pack_sr  || (i + 1),
-        ctg:         _cmrItemLabel(l.item_type),          // Pendant / Ring / Earrings
-        client_po:   l.invoice_no      || '',
-        design:      l.design_no       || l.product_code || '—',
-        kt:          (l.metal || '').split('/')[0] || '', // "14KT"
-        col:         (l.metal || '').split('/')[1] || '', // "W", "P", "Y"
-        quality:     l.quality_string  || '',
+        sr:           pk.pack_sr || (i + 1),
+        ctg:          _cmrItemLabel(ln.item_type || pk.item_type),  // Pendant / Ring / Earrings
+        client_po:    pk.invoice_no || ln.client_ref || '',
+        product_code: ln.product_code || pk.product_code || '—',
+        design:       ln.design_no    || pk.design_no    || '—',
+        kt:           (pk.metal || '').split('/')[0] || '', // "14KT"
+        col:          (pk.metal || '').split('/')[1] || '', // "W", "P", "Y"
+        quality:      pk.quality_string || '',
         // diamond_weight / color_weight stored since 2026-06-09 schema migration.
         // Existing rows show null (—) until packing is re-uploaded or force_reextract=True.
-        dia_wt:      Number(l.diamond_weight) > 0 ? Number(l.diamond_weight) : null,
-        col_wt:      Number(l.color_weight)   > 0 ? Number(l.color_weight)   : null,
-        net_wt:      Number(l.net_weight) > 0 ? Number(l.net_weight) : null,
+        dia_wt:       Number(pk.diamond_weight) > 0 ? Number(pk.diamond_weight) : null,
+        col_wt:       Number(pk.color_weight)   > 0 ? Number(pk.color_weight)   : null,
+        gross_wt:     Number(pk.gross_weight)   > 0 ? Number(pk.gross_weight)   : null,
+        net_wt:       Number(pk.net_weight)     > 0 ? Number(pk.net_weight)     : null,
         qty,
-        unit_price:  unitPrice,
-        total_value: unitPrice * qty,
+        unit_price:   unitPrice,
+        total_value:  unitPrice * qty,
         // size: stored from packing XLSX "Size" column since 2026-06-09.
-        // scan_code is a barcode key (EJL/…|sr…|…), NOT the ring/piece size.
-        size:        l.size || '',
+        size:         pk.size || '',
+        hsn:          ln.hs_code || pk.hs_code || '',
+        origin:       ln.origin || pk.origin || '',
       };
     });
     const grand_total = rows.reduce((s, r) => s + r.total_value, 0);
@@ -1361,8 +1493,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       ? `Cannot send in '${draftState}' state`
       : '';
 
-  const blockingReasons = (preview && preview.blocking_reasons) || [];
-  const exportBlockers  = (preview && preview.export_blockers)  || [];
+  // SINGLE readiness authority. The Reservation tab, the Overview blocker banners,
+  // and the "What's blocking" panel all read the CANONICAL backend readiness
+  // (readinessPost — the same source the Approve/Post/Convert buttons + tooltips
+  // and the top "Not ready" panel use), NOT the preview's batch/client-wide
+  // blocking_reasons (which can surface stale design-ambiguity that the canonical
+  // readiness has already reconciled away, and counts the client's whole sales
+  // packing instead of the draft's billed lines). When ambiguous_designs is empty
+  // the canonical readiness carries no ambiguity blocker, so none is shown.
+  const blockingReasons = ((readinessPost && readinessPost.blockers) || []).map(b => b.reason);
+  // The wFirma PZ / export prerequisite is already included in readinessPost.blockers
+  // for the post intent, so it is carried by blockingReasons above — no separate
+  // (stale) preview export list.
+  const exportBlockers  = [];
   const vatResolution   = disclosure && disclosure.vat_resolution;
 
   const proformaLabel = liveDraft.wfirma_proforma_fullnumber
@@ -1631,7 +1774,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           {approving ? '⏳ Approving…' : '✓ Approve'}
         </TbBtn>
         {approveError && (
-          <span style={{ color: '#F44', fontSize: 11, maxWidth: 180 }}>{approveError}</span>
+          <span style={{ color: 'var(--badge-red-text)', fontSize: 11, maxWidth: 180 }}>{approveError}</span>
         )}
 
         <TbSep />
@@ -1691,7 +1834,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         </TbBtn>
         <TbBtn
           disabled
-          title="Document generation not yet available from this view"
+          title={
+            'Document-package generation (proforma PDF · packing list · CMR · CN23) is not yet wired — ' +
+            'backend gap M4: POST /api/v1/proforma/draft/{id}/generate-documents (see BACKEND_GAP_REGISTER.md §2, priority LOW). ' +
+            'For now use ◫ Preview to view the layouts and ⎙ Print for the wFirma proforma PDF.'
+          }
           data-testid="tb-generate"
         >
           ⚙ Generate ▾
@@ -1831,10 +1978,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           seen.add(key);
           rows.push({ reason, repair: repair || null, gates });
         };
+        // Canonical readiness only (readinessPost / readinessApprove). The
+        // Reservation / Export rows previously fed from the stale preview are
+        // gone — readinessPost.blockers already carries the reservation + wFirma
+        // PZ/export blockers (post intent), so they appear here under Post/Convert.
         postBlockers.forEach(b => add(b.reason, b.repair_action, 'Post / Convert'));
         approveBlockers.forEach(b => add(b.reason, b.repair_action, 'Approve'));
-        exportBlockers.forEach(r => add(r, null, 'Export / PDF'));
-        blockingReasons.forEach(r => add(r, null, 'Reservation'));
         if (rows.length === 0) return null;
         const tagColor = g => g.startsWith('Post') ? 'var(--badge-red-text)'
           : g === 'Approve' ? 'var(--badge-amber-text, var(--text-2))'
@@ -2259,7 +2408,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             />
           </React.Fragment>
         )}
-        {activeTab === 'lines' && <ProformaLinesTab lines={lines} />}
+        {activeTab === 'lines' && <ProformaLinesTab lines={lines} currency={draftCurrency} />}
         {activeTab === 'customer_mapping' && (
           <ProformaCustomerMappingTab customer={customer} />
         )}
@@ -2269,7 +2418,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             exportBlockers={exportBlockers}
             preview={preview}
             canConvert={canConvert}
+            convertDisabledReason={convertDisabledReason}
             onConvert={() => canConvert && setShowConvertModal(true)}
+            reservationLoading={reservationLoading}
+            reservationReady={reservationReady}
+            reservationBatchReasons={reservationBatchReasons}
+            reservationDraftReasons={reservationDraftReasons}
+            reservationClientName={clientName}
+            draftLineCount={lines.length}
+            reservationExists={reservationExists}
+            reservationId={reservationId}
+            reservationBusy={reservationBusy}
+            reservationResult={reservationResult}
+            onCreateReservation={() => { setReservationResult(null); setShowReservationModal(true); }}
           />
         )}
         {activeTab === 'history' && (
@@ -2299,6 +2460,35 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             onConvert && onConvert(draft);
           }}
         />
+      )}
+      {showReservationModal && (
+        <Modal title="Create wFirma Reservation" onClose={() => !reservationBusy && setShowReservationModal(false)}>
+          <div data-testid="reservation-confirm-modal" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ fontSize: 13, color: 'var(--text)' }}>
+              This creates a <strong>live wFirma reservation</strong> for client{' '}
+              <strong>{clientName || '—'}</strong> on batch <code style={{ fontSize: 11 }}>{batchId}</code>.
+              The backend re-checks all reservation gates before writing.
+            </div>
+            {reservationResult && !reservationResult.ok && (
+              <div data-testid="reservation-error" style={{
+                fontSize: 12, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)',
+                border: '1px solid var(--badge-red-border)', borderRadius: 6, padding: '8px 10px',
+              }}>
+                Reservation failed{reservationResult.code ? ` (${reservationResult.code})` : ''}: {reservationResult.error}
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <Btn variant="outline" disabled={reservationBusy}
+                   onClick={() => setShowReservationModal(false)}
+                   data-testid="reservation-confirm-cancel">Cancel</Btn>
+              <Btn variant="primary" disabled={reservationBusy || !reservationReady}
+                   onClick={doCreateReservation}
+                   data-testid="reservation-confirm-create">
+                {reservationBusy ? 'Creating…' : 'Confirm — create wFirma reservation'}
+              </Btn>
+            </div>
+          </div>
+        </Modal>
       )}
       {showPreview && (
         <ProformaPreviewModal
@@ -2457,9 +2647,44 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
                   {type.charAt(0).toUpperCase() + type.slice(1)}
                 </span>
                 {blocked ? (
-                  <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
-                    {s.blocked_reason || 'Not available'}
-                  </span>
+                  (() => {
+                    // Customer Master is the single freight authority. When the
+                    // record WAS resolved but is missing a freight field, deep-link
+                    // straight to that exact record's edit view + offer Retry —
+                    // no draft-level override, no guessed fallback. (freight_authority
+                    // is freight-only; absent/unresolved → reason text only.)
+                    const fa = s.freight_authority;
+                    const canRepair = fa && fa.resolved && fa.edit_url;
+                    return (
+                      <span data-testid={`suggestion-blocked-${type}`}
+                            style={{ fontSize: 12, color: 'var(--text-2)', display: 'flex',
+                                     flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                        <span>{s.blocked_reason || 'Not available'}</span>
+                        {canRepair && (
+                          <React.Fragment>
+                            <a data-testid={`freight-authority-edit-${type}`}
+                               href={fa.edit_url} target="_blank" rel="noopener"
+                               title={`Edit freight authority on Customer Master record ${fa.contractor_id}`}
+                               style={{ color: 'var(--accent)', fontWeight: 600 }}>
+                              Edit {fa.bill_to_name || 'Customer Master'} ({fa.contractor_id}) →
+                            </a>
+                            {canEdit && (
+                              <button data-testid={`freight-authority-retry-${type}`}
+                                      disabled={chargesLoading}
+                                      title="Re-check Customer Master after setting the freight amount"
+                                      onClick={onFetchSuggestions}
+                                      style={{ fontSize: 11, padding: '1px 8px', background: 'none',
+                                               border: '1px solid var(--border)', borderRadius: 4,
+                                               cursor: chargesLoading ? 'wait' : 'pointer',
+                                               color: 'var(--text-2)' }}>
+                                ↻ Retry
+                              </button>
+                            )}
+                          </React.Fragment>
+                        )}
+                      </span>
+                    );
+                  })()
                 ) : alreadyApplied ? (
                   <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
                     Already applied ({fmtAmt(s.amount, s.currency)})
@@ -2723,7 +2948,11 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
 }
 
 // ── Lines tab ─────────────────────────────────────────────────────────────────
-function ProformaLinesTab({ lines }) {
+function ProformaLinesTab({ lines, currency }) {
+  // Amount columns are labelled with the DRAFT currency (e.g. USD), never a
+  // hardcoded EUR. The underlying line fields are named unitEur/netEur for
+  // historical reasons but carry the draft-currency amount.
+  const cur = currency || 'EUR';
   return (
     <div>
       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>
@@ -2733,7 +2962,7 @@ function ProformaLinesTab({ lines }) {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-              {['#', 'SKU', 'DESCRIPTION', 'HS CODE', 'ORIGIN', 'QTY', 'UNIT EUR', 'NET EUR'].map((h, i) => (
+              {['#', 'SKU', 'DESCRIPTION', 'HS CODE', 'ORIGIN', 'QTY', `UNIT ${cur}`, `NET ${cur}`].map((h, i) => (
                 <th key={h} style={{ padding: '9px 12px', textAlign: i >= 5 ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em' }}>{h}</th>
               ))}
             </tr>
@@ -2764,7 +2993,7 @@ function ProformaLinesTab({ lines }) {
           </tbody>
           <tfoot>
             <tr style={{ borderTop: '2px solid var(--border)', background: 'var(--bg-subtle)' }}>
-              <td colSpan="7" style={{ padding: '11px 12px', textAlign: 'right', fontSize: 12, fontWeight: 700 }}>Total</td>
+              <td colSpan="7" style={{ padding: '11px 12px', textAlign: 'right', fontSize: 12, fontWeight: 700 }}>Total · {cur}</td>
               <td style={{ padding: '11px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--accent)' }} data-testid="proforma-lines-total">
                 {lines.length > 0 ? lines.reduce((s, l) => s + l.netEur, 0).toFixed(2) : '—'}
               </td>
@@ -2833,10 +3062,34 @@ function ProformaCustomerMappingTab({ customer }) {
 
 // ── Reservation tab ───────────────────────────────────────────────────────────
 // WIRED: blocking_reasons and export_blockers from POST /api/v1/proforma/preview/{batch_id}/{client_name}
-function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canConvert, onConvert }) {
+function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canConvert,
+                                  convertDisabledReason, onConvert,
+                                  reservationLoading, reservationReady,
+                                  reservationBatchReasons, reservationDraftReasons,
+                                  reservationClientName, draftLineCount,
+                                  reservationExists, reservationId, reservationBusy,
+                                  reservationResult, onCreateReservation }) {
   const allReasons = [...blockingReasons, ...exportBlockers];
   const isBlocked  = allReasons.length > 0;
   const auditClean = exportBlockers.length === 0;
+  // Two-scope reservation blockers (see ProformaDetailPage): draft/client-specific
+  // vs batch-level (warehouse). Kept SEPARATE so a batch-wide warehouse count is
+  // never read as a blocker on this draft's billed lines.
+  const draftReasons = reservationDraftReasons || [];
+  const batchReasons = reservationBatchReasons || [];
+  const hasAnyReason = (draftReasons.length + batchReasons.length) > 0;
+  // Disabled-reason for the Create Reservation button — the EXACT canonical
+  // backend blocker, scope-labelled (draft blockers first, then batch-level).
+  const resvDisabledReason = reservationLoading
+    ? 'Loading reservation readiness…'
+    : reservationExists
+      ? `Reservation already created${reservationId ? ` (wFirma ${reservationId})` : ''}`
+      : (draftReasons[0]
+          ? `This draft: ${draftReasons[0]}`
+          : (batchReasons[0]
+              ? `Batch-level: ${batchReasons[0]}`
+              : 'Reservation readiness not loaded — open this tab to check.'));
+  const resvCanCreate = !!reservationReady && !reservationExists && !reservationBusy;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -2848,9 +3101,9 @@ function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canC
       >
         <CapChip ok={!!preview} label="wFirma configured" />
         <CapChip ok={auditClean} label="Audit clean" />
-        <CapChip ok={!isBlocked} label="Reservation supported" />
+        <CapChip ok={reservationReady || reservationExists} label="Reservation ready" />
         <div style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-3)', display: 'flex', gap: 18 }}>
-          <span>Ready: <strong style={{ color: 'var(--text)' }}>{isBlocked ? '0' : '1'} / 1</strong></span>
+          <span>Reservation: <strong style={{ color: 'var(--text)' }}>{(reservationReady || reservationExists) ? '1' : '0'} / 1</strong></span>
         </div>
       </div>
 
@@ -2873,13 +3126,86 @@ function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canC
         </div>
       )}
 
+      {/* Reservation create — canonical reservation readiness gate.
+          The button reflects GET /wfirma/reservation-preview (distinct from the
+          proforma post readiness above): disabled with the EXACT backend reason
+          when not ready; when ready, click → confirm → live wFirma write. */}
+      <div data-testid="reservation-create-block" style={{
+        background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)',
+        borderRadius: 8, padding: '12px 16px',
+      }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>
+          wFirma Reservation
+        </div>
+        {reservationExists ? (
+          <div data-testid="reservation-exists" style={{ fontSize: 12, color: 'var(--badge-green-text)' }}>
+            ✓ Reservation created{reservationId ? ` — wFirma ${reservationId}` : ''}.
+          </div>
+        ) : resvCanCreate ? (
+          <div data-testid="reservation-ready" style={{ fontSize: 12, color: 'var(--badge-green-text)' }}>
+            ✓ Reservation readiness clear — you can create the wFirma reservation (you will be asked to confirm).
+          </div>
+        ) : (
+          <div data-testid="reservation-blocked-reason" style={{ fontSize: 12, color: 'var(--badge-amber-text)' }}>
+            {reservationLoading ? 'Loading reservation readiness…' : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {/* This draft / client — blockers specific to the lines being billed here. */}
+                {draftReasons.length > 0 && (
+                  <div data-testid="reservation-draft-blockers">
+                    <div style={{ fontWeight: 700 }}>
+                      This draft{reservationClientName ? ` — ${reservationClientName}` : ''} ({draftLineCount != null ? draftLineCount : '—'} billed line{draftLineCount === 1 ? '' : 's'}):
+                    </div>
+                    <ul style={{ margin: '4px 0 0', paddingLeft: 20, color: 'var(--text-2)' }}>
+                      {draftReasons.map((r, i) => <li key={i} style={{ marginBottom: 2 }}>{r}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {/* Batch-level (warehouse) — affects EVERY client in the batch, not this
+                    draft's billed lines. Explicitly labelled so a batch-wide packing
+                    count (e.g. "84 …") is never read as a Draft #38 line blocker. */}
+                {batchReasons.length > 0 && (
+                  <div data-testid="reservation-batch-blockers">
+                    <div style={{ fontWeight: 700 }}>
+                      Batch-level (warehouse) — affects all clients in this batch, not this draft's billed lines:
+                    </div>
+                    <ul style={{ margin: '4px 0 0', paddingLeft: 20, color: 'var(--text-2)' }}>
+                      {batchReasons.map((r, i) => <li key={i} style={{ marginBottom: 2 }}>{r}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {!hasAnyReason && <div>{resvDisabledReason}</div>}
+              </div>
+            )}
+          </div>
+        )}
+        {reservationResult && reservationResult.ok && (
+          <div data-testid="reservation-success" style={{ fontSize: 12, color: 'var(--badge-green-text)', marginTop: 6 }}>
+            ✓ wFirma reservation created{reservationResult.id ? ` (${reservationResult.id})` : ''}.
+          </div>
+        )}
+        {reservationResult && !reservationResult.ok && (
+          <div data-testid="reservation-inline-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginTop: 6 }}>
+            Reservation failed{reservationResult.code ? ` (${reservationResult.code})` : ''}: {reservationResult.error}
+          </div>
+        )}
+      </div>
+
       {/* Footer actions */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
-        <Btn variant="outline" disabled={isBlocked}>Create Reservation</Btn>
+        <Btn
+          variant="primary"
+          disabled={!resvCanCreate}
+          onClick={() => resvCanCreate && onCreateReservation && onCreateReservation()}
+          title={resvCanCreate ? `Create wFirma reservation` : resvDisabledReason}
+          data-testid="reservation-create-btn"
+        >
+          {reservationBusy ? 'Creating…' : 'Create Reservation'}
+        </Btn>
         <Btn
           variant="danger"
           disabled={!canConvert}
           onClick={onConvert}
+          title={canConvert ? 'Convert this proforma to a wFirma invoice' : (convertDisabledReason || 'Post to wFirma first, then convert')}
           data-testid="reservation-convert-btn"
         >
           ⚠ Convert Proforma to Invoice
