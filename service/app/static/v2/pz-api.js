@@ -482,6 +482,13 @@
     getPzHealth: () =>
       _get(`${BASE}/pz/health`),
 
+    // GET /api/v1/dhl/readiness/{batch_id}
+    // DHL customs pipeline state: dhl_status (7-state pipeline), next_required_action,
+    // sla_breach (bool), sla_breach_reason, missing_documents[], awb, timestamps.
+    // Authority: dhl_readiness.py:get_dhl_readiness — read-only, no side effects.
+    getDhlReadiness: (batchId) =>
+      _get(`${BASE}/dhl/readiness/${encodeURIComponent(batchId)}`),
+
     // GET /api/v1/dhl/auto-scan-status
     // DHL inbox scanner: status, started_at, batches_checked, received_set,
     // b2_triggered, errors_count, next_run_at.

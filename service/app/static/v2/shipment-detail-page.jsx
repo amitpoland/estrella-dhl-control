@@ -468,10 +468,144 @@ function navLinkStyle() {
 
 // ── DHL / CUSTOMS
 
+// 7-state DHL pipeline labels — matches V1 shipment-detail.html:8631-8637 and dhl_readiness.py:31-39.
+const DHL_PIPELINE_STATES = [
+  { key: 'awaiting_start',   label: 'Awaiting Start' },
+  { key: 'dhl_contacted',    label: 'DHL Contacted' },
+  { key: 'dhl_replied',      label: 'DHL Replied' },
+  { key: 'dsk_received',     label: 'DSK / Cesja Rcvd' },
+  { key: 'agency_forwarded', label: 'Agency Forwarded' },
+  { key: 'sad_received',     label: 'SAD Received' },
+  { key: 'customs_cleared',  label: 'Customs Cleared' },
+];
+
+// DHL customs pipeline diagnostics panel.
+// Authority: GET /api/v1/dhl/readiness/{batch_id} (dhl_readiness.py:get_dhl_readiness).
+// Read-only — no write-on-read side effects; no mountDelayMs stagger needed.
+// Re-fetches on each tab activation (intentional: operator sees fresh pipeline state on return).
+// Stale-mount guard via cancelled flag prevents setState after unmount.
+// NOTE: the 7-state pipeline state (from audit timeline) is a SEPARATE authority from the
+// coarse shipment.dhlStatus field (from batch summary). They should agree directionally;
+// the pipeline card clearly labels its source to avoid confusion if they diverge.
+function DhlReadinessCard({ batchId }) {
+  const [readiness, setReadiness] = React.useState(null);
+  const [loading, setLoading]     = React.useState(true);
+  const [errType, setErrType]     = React.useState(null);
+
+  React.useEffect(() => {
+    if (!batchId) { setLoading(false); return; }
+    let cancelled = false;
+    window.PzApi.getDhlReadiness(batchId)
+      .then(r => {
+        if (cancelled) return;
+        if (r.ok && r.data) {
+          setReadiness(r.data);
+        } else {
+          setErrType(r.type === 'auth' ? 'auth' : 'error');
+        }
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) { setErrType('error'); setLoading(false); }
+      });
+    return () => { cancelled = true; };
+  }, [batchId]);
+
+  if (!batchId) {
+    return (
+      <div data-testid="dhl-readiness-no-batch" style={{ padding: '14px 20px', color: 'var(--text-2)', fontSize: 12 }}>
+        No batch context — DHL clearance pipeline state unavailable.
+      </div>
+    );
+  }
+  if (loading) {
+    return (
+      <div data-testid="dhl-readiness-loading" style={{ padding: '14px 20px', color: 'var(--text-2)', fontSize: 12 }}>
+        Loading DHL clearance pipeline…
+      </div>
+    );
+  }
+  if (!readiness) {
+    const msg = errType === 'auth'
+      ? 'Session expired — please refresh the page.'
+      : 'Cannot load DHL clearance pipeline state. Check V1 Shipment Detail for current status.';
+    return (
+      <div data-testid="dhl-readiness-error" style={{ padding: '14px 20px', color: 'var(--badge-red-text)', fontSize: 12 }}>
+        {msg}
+      </div>
+    );
+  }
+
+  const currentIdx = DHL_PIPELINE_STATES.findIndex(s => s.key === readiness.dhl_status);
+
+  return (
+    <div data-testid="dhl-readiness-card" style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-subtle)' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 8 }}>Clearance Pipeline</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 10 }}>
+        {DHL_PIPELINE_STATES.map((s, i) => {
+          const isCurrent = i === currentIdx;
+          const isPast    = i < currentIdx;
+          return (
+            <span
+              key={s.key}
+              data-testid={isCurrent ? 'dhl-stage-current' : undefined}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 3,
+                padding: '3px 8px', borderRadius: 4, fontSize: 11,
+                fontWeight: isCurrent ? 700 : 500,
+                background: isCurrent ? 'var(--accent)' : (isPast ? 'var(--badge-green-bg)' : 'var(--badge-neutral-bg)'),
+                color: isCurrent ? '#fff' : (isPast ? 'var(--badge-green-text)' : 'var(--text-3)'),
+                border: `1px solid ${isCurrent ? 'var(--accent)' : (isPast ? 'var(--badge-green-border)' : 'var(--border-subtle)')}`,
+              }}
+            >
+              {isPast && <span aria-hidden="true">✓</span>}
+              {isCurrent && <span aria-hidden="true">▶</span>}
+              {s.label}
+            </span>
+          );
+        })}
+      </div>
+
+      {readiness.next_required_action && (
+        <div style={{ fontSize: 12, color: 'var(--text)', background: 'var(--bg-subtle)', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border-subtle)', marginBottom: 8 }}>
+          <span style={{ fontWeight: 700 }}>Next: </span>{readiness.next_required_action}
+        </div>
+      )}
+
+      {/* SLA breach banner — gated strictly on sla_breach === true.
+          sla_breach_reason may be truthy even when breach is suppressed (e.g. "suppressed: SAD received").
+          Never show the red banner on sla_breach_reason truthiness alone (V1 precedent: shipment-detail.html:8648). */}
+      {readiness.sla_breach === true && (
+        <div data-testid="dhl-sla-breach" style={{
+          display: 'flex', alignItems: 'flex-start', gap: 8,
+          padding: '7px 10px', borderRadius: 6, marginBottom: 8,
+          background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+          color: 'var(--badge-red-text)', fontSize: 12,
+        }}>
+          <span aria-hidden="true" style={{ fontWeight: 800, flexShrink: 0 }}>⚠</span>
+          <span>SLA breach: {readiness.sla_breach_reason}</span>
+        </div>
+      )}
+
+      {readiness.missing_documents && readiness.missing_documents.length > 0 && (
+        <div style={{ fontSize: 12, marginBottom: 8 }}>
+          <span style={{ fontWeight: 700, color: 'var(--text-3)' }}>Awaiting: </span>
+          <span style={{ color: 'var(--badge-amber-text)' }}>{readiness.missing_documents.join(' · ')}</span>
+        </div>
+      )}
+
+      <div style={{ fontSize: 10, color: 'var(--text-3)', borderTop: '1px solid var(--border-subtle)', paddingTop: 5, marginTop: 4 }}>
+        Source: DHL clearance pipeline (audit timeline) · state: <code style={{ fontFamily: 'monospace' }}>{readiness.dhl_status}</code> · GET /api/v1/dhl/readiness/&#123;batch_id&#125;
+      </div>
+    </div>
+  );
+}
+
 function DhlTab({ shipment, sadUploaded, dhlEmailReceived, replySent, batchId }) {
   const bid = batchId || '{batch_id}';
   return (
     <>
+      <DhlReadinessCard batchId={batchId} />
       <SectionLabel>Step 1 · DHL clearance email & reply</SectionLabel>
       <PanelCard
         title="DHL Clearance"
@@ -482,6 +616,9 @@ function DhlTab({ shipment, sadUploaded, dhlEmailReceived, replySent, batchId })
         <div style={{ padding: '18px 20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 28 }}>
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>Customs values</div>
+            <BackendPendingBanner testid="dhl-customs-values-pending">
+              Customs values (CIF/FOB/freight/insurance) are not yet wired to a V2 endpoint. For live values, use V1 Shipment Detail.
+            </BackendPendingBanner>
             <InfoRow label="Total Invoice CIF"     value="EUR 1,280.00" />
             <InfoRow label="FOB Value"             value="EUR 1,150.00" />
             <InfoRow label="Freight"               value="EUR 95.00" />
