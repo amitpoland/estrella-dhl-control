@@ -5213,6 +5213,67 @@ def _eu_vat_candidate_from_master(cm: Any) -> Optional[Dict[str, str]]:
     return None
 
 
+def _reconcile_billed_ambiguity(
+    ambiguous_design_codes: Dict[str, Any],
+    draft_lines: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Reconcile batch-level design_no ambiguity against what is ACTUALLY billed.
+
+    Authority (rules 5/6): ``product_code`` (invoice_no + line position) is the
+    product-identity authority; ``design_no`` is descriptive only. The batch
+    bridge (``design_product_bridge.populate_from_packing``) flags any design_no
+    that maps to >1 product_code across the WHOLE batch — collapsing it globally
+    and discarding the invoice context. But that is a *billing* blocker only when
+    a line being billed on THIS draft cannot be pinned to a single product_code.
+
+    For each ambiguous design this classifies it as:
+      * ``resolved``        — every billed line for it already carries a
+                              product_code that is one of the batch's valid
+                              candidates for that design (the sales-packing /
+                              intake matcher already chose it). The code is only
+                              VALIDATED against the candidate set, never guessed.
+      * ``genuinely_ambiguous`` — a billed line for it has no product_code, or a
+                              product_code that is NOT a valid candidate. Still
+                              blocks (no auto-pick — operator must choose).
+      * ``not_billed``      — no line on this draft bills the design. A batch
+                              artifact (design present in packing but not on this
+                              proforma). Downgraded to a non-blocking note.
+
+    Pure function (no I/O). Returns ``{genuinely_ambiguous, resolved, not_billed}``.
+    """
+    def _norm(s: Any) -> str:
+        return str(s or "").strip().upper()
+
+    billed_by_design: Dict[str, List[str]] = {}
+    for ln in (draft_lines or []):
+        billed_by_design.setdefault(_norm(ln.get("design_no")), []).append(
+            _norm(ln.get("product_code")))
+
+    genuinely_ambiguous: Dict[str, List[str]] = {}
+    resolved:            Dict[str, List[str]] = {}
+    not_billed:          List[str] = []
+
+    for design, codes in (ambiguous_design_codes or {}).items():
+        candidates = {_norm(c) for c in (codes or [])}
+        billed_pcs = billed_by_design.get(_norm(design))
+        if not billed_pcs:
+            not_billed.append(design)
+            continue
+        # Every billed line for this design must already carry a product_code
+        # that is one of the batch's valid candidates. A blank or off-candidate
+        # code keeps the design blocking — never resolved by guessing.
+        if all(pc and pc in candidates for pc in billed_pcs):
+            resolved[design] = sorted({pc for pc in billed_pcs})
+        else:
+            genuinely_ambiguous[design] = sorted(codes)
+
+    return {
+        "genuinely_ambiguous": genuinely_ambiguous,
+        "resolved":            resolved,
+        "not_billed":          not_billed,
+    }
+
+
 def _derive_draft_readiness(
     draft: "pildb.ProformaDraft", *, intent: str,
 ) -> Dict[str, Any]:
@@ -5284,8 +5345,41 @@ def _derive_draft_readiness(
         _add(f"readiness preview failed: {type(exc).__name__}: {exc}",
              "Inspect batch data — preview derivation must succeed before "
              "approve/post/convert (fail-closed).")
+    # Draft lines loaded once here (product_code is the identity authority —
+    # rule 6) so the ambiguity reconciliation below and the wfirma_products
+    # check (section 3) share the same parsed lines.
+    try:
+        _r_lines = json.loads(draft.editable_lines_json or "[]") or []
+    except Exception:
+        _r_lines = []
+        _add("editable_lines_json is not valid JSON — draft lines unreadable",
+             "Reset the draft from the sales packing list.")
+
+    # Reconcile batch-level design ambiguity against what is ACTUALLY billed.
+    # The preview's "maps to multiple product_codes" blockers collapse design_no
+    # across the whole batch (ignoring invoice context AND the product_code the
+    # billed line already carries). A design only BLOCKS when a billed line on
+    # this draft cannot be pinned to a valid product_code; a design no line bills
+    # is a batch artifact (note, not a blocker). No product_code is ever guessed.
+    _ambig_recon = _reconcile_billed_ambiguity(
+        preview.get("ambiguous_design_codes") or {}, _r_lines)
+
     for reason in (preview.get("blocking_reasons") or []):
+        if "maps to multiple product_codes" in str(reason):
+            continue   # re-derived below with billed-line product_code authority
         _add(str(reason))
+    for _amb_design, _amb_codes in _ambig_recon["genuinely_ambiguous"].items():
+        _add(
+            f"design_no {_amb_design!r} maps to multiple product_codes in this "
+            f"batch: {_amb_codes} — clarify which line to bill"
+        )
+    for _nb_design in _ambig_recon["not_billed"]:
+        warnings.append(
+            f"design_no {_nb_design!r} has multiple candidate product_codes in "
+            "the batch packing but no line on this draft bills it — batch "
+            "artifact, not a billing blocker"
+        )
+
     if intent in ("post", "convert"):
         for reason in (preview.get("export_blockers") or []):
             _add(str(reason),
@@ -5302,12 +5396,7 @@ def _derive_draft_readiness(
         _add(_pf_err)
 
     # ── 3. Missing wfirma_products mappings (unconditional block) ─────────
-    try:
-        _r_lines = json.loads(draft.editable_lines_json or "[]") or []
-    except Exception:
-        _r_lines = []
-        _add("editable_lines_json is not valid JSON — draft lines unreadable",
-             "Reset the draft from the sales packing list.")
+    # _r_lines was parsed once above (shared with the ambiguity reconciliation).
     _missing_codes: List[str] = []
     for _ln in _r_lines:
         _pc = (str(_ln.get("product_code") or "")).strip()
@@ -5407,14 +5496,15 @@ def _derive_draft_readiness(
         _add(f"VAT readiness check failed: {type(exc).__name__}: {exc}",
              "Inspect customer master data for this client.")
 
-    # Structured ambiguity data so the frontend can render an exact
-    # product_code selector (requirement 4) instead of parsing reason text.
-    ambiguous_designs: Dict[str, Any] = {}
+    # Structured ambiguity data so the frontend renders an exact product_code
+    # selector — ONLY for designs a billed line cannot resolve (rule 6). Designs
+    # already pinned by a billed line's product_code, or not billed at all, are
+    # excluded here so the operator is not asked to re-resolve them.
+    ambiguous_designs: Dict[str, Any] = dict(_ambig_recon["genuinely_ambiguous"])
     resolved_designs:  Dict[str, Any] = {}
     try:
         from ..services.design_product_bridge import populate_from_packing
         _bs = populate_from_packing(draft.batch_id or "")
-        ambiguous_designs = dict(_bs.get("ambiguous_design_codes") or {})
         resolved_designs  = dict(_bs.get("resolved_design_codes") or {})
     except Exception as exc:
         warnings.append(f"design bridge summary unavailable: "
