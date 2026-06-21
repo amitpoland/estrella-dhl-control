@@ -49,7 +49,14 @@
 // M6-cleanup: 'proforma_search' added — ProformaSearchPage wired to
 //   GET /api/v1/proforma/search via PzApi.searchProformaDrafts. Read-only,
 //   no mock data. False positive MOCK banner resolved. WIRED_PAGES = 17/17.
-const WIRED_PAGES = ['proforma', 'proforma_search', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard', 'api_status', 'diagnostics', 'coverage'];
+// detail-wiring: 'detail' added — ShipmentDetailPage (the shipment drill-down reached
+//   via page==='detail') wired read-only to GET /api/v1/dashboard/batches/{batch_id}
+//   (full-audit authority). All hardcoded values removed — CIF (real USD), clearance
+//   date, customs agent, LRN, SAD/NBP rates, A00/B00, PZ number + wFirma doc id, line
+//   count, invoice count, and the activity timeline now render from the audit; missing
+//   fields show '—'. Write actions remain visible+disabled (Lesson M) on their domain
+//   pages. WIRED_PAGES = 18/18.
+const WIRED_PAGES = ['proforma', 'proforma_search', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard', 'api_status', 'diagnostics', 'coverage', 'detail'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;

@@ -179,7 +179,9 @@ class TestTestIds:
 
 
 # =============================================================================
-# 6. WIRED_PAGES includes 'coverage' + 'proforma_search' (17/17 = 100%)
+# 6. WIRED_PAGES includes 'coverage' + 'proforma_search' + 'detail' (18/18 = 100%)
+#    'detail' = the Shipment Detail drill-down (page==='detail'), wired read-only
+#    to GET /api/v1/dashboard/batches/{batch_id}. See test_c03_shipment_detail_v2_ux.py.
 # =============================================================================
 
 class TestWiredPages:
@@ -187,20 +189,20 @@ class TestWiredPages:
         src = _read(MOCK_BADGE)
         assert "'coverage'" in src, "'coverage' not found in WIRED_PAGES"
 
-    def test_wired_pages_count_17(self):
+    def test_wired_pages_count_18(self):
         src = _read(MOCK_BADGE)
         match = re.search(r"const WIRED_PAGES\s*=\s*\[([^\]]+)\]", src)
         assert match, "WIRED_PAGES array not found"
         entries = [e.strip().strip("'\"") for e in match.group(1).split(",") if e.strip()]
-        assert len(entries) == 17, f"Expected 17 WIRED_PAGES entries (100%), found {len(entries)}: {entries}"
+        assert len(entries) == 18, f"Expected 18 WIRED_PAGES entries (100%), found {len(entries)}: {entries}"
 
-    def test_all_17_slugs_present(self):
+    def test_all_18_slugs_present(self):
         """Every V2 page slug must be in WIRED_PAGES."""
         src = _read(MOCK_BADGE)
         for slug in ['proforma', 'proforma_search', 'inbox', 'inventory', 'dhl',
                      'shipments', 'automation', 'intelligence', 'documents',
                      'proforma_detail', 'wfirma_setup', 'master', 'carriers',
-                     'dashboard', 'api_status', 'diagnostics', 'coverage']:
+                     'dashboard', 'api_status', 'diagnostics', 'coverage', 'detail']:
             assert f"'{slug}'" in src, f"Slug '{slug}' not in WIRED_PAGES"
 
 
