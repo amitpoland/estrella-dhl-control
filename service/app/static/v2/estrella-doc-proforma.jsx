@@ -178,7 +178,11 @@ function EJDocCarrierRow({ carrier }) {
 function EJProformaClassic({ docData }) {
   const d = docData || {};
   const lines = d.lines || [];
+  const cur = d.currency || "EUR";                       // draft currency, not hardcoded EUR
+  const charges = d.charges || [];                        // freight / insurance (value or "not set")
+  const chargesPresent = charges.filter(c => c && c.present);
   const totalEur = typeof d.total_eur === "number" ? d.total_eur : lines.reduce((s, l) => s + (l.netEur || 0), 0);
+  const grandTotal = totalEur + chargesPresent.reduce((s, c) => s + (Number(c.amount) || 0), 0);
   const totalPln = typeof d.total_pln === "number" ? d.total_pln : null;
 
   return (
@@ -209,7 +213,7 @@ function EJProformaClassic({ docData }) {
             ["Payment due",   d.due     || "—"],
             ["Payment terms", d.payment || "—"],
             ["FX · NBP",   d.rate && d.rate.eur
-              ? `1 EUR = ${Number(d.rate.eur).toFixed(4)} PLN · ${d.rate.date || ""}`
+              ? `1 ${cur} = ${Number(d.rate.eur).toFixed(4)} PLN · ${d.rate.date || ""}`
               : "—"],
           ].map(([k, v], i) => (
             <div key={k} style={{ padding: "10px 12px", borderRight: i < 3 ? "1px solid #E2E8F0" : "none" }}>
@@ -238,9 +242,9 @@ function EJProformaClassic({ docData }) {
               <th style={{ width: 80 }}>SKU / Code</th>
               <th style={{ width: 48 }}>Origin</th>
               <th className="ej-r" style={{ width: 36 }}>Qty</th>
-              <th className="ej-r" style={{ width: 72 }}>Unit · EUR</th>
+              <th className="ej-r" style={{ width: 72 }}>Unit · {cur}</th>
               <th className="ej-c" style={{ width: 44 }}>Tax</th>
-              <th className="ej-r" style={{ width: 80 }}>Net · EUR</th>
+              <th className="ej-r" style={{ width: 80 }}>Net · {cur}</th>
             </tr>
           </thead>
           <tbody>
@@ -280,16 +284,24 @@ function EJProformaClassic({ docData }) {
         <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 18 }}>
           <div style={{ width: 320, border: "1px solid #E2E8F0", borderRadius: 4, overflow: "hidden" }}>
             <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderBottom: "1px solid #E2E8F0", fontSize: 10 }}>
-              <span>Subtotal · EUR</span>
+              <span>Subtotal (goods) · {cur}</span>
               <span className="ej-mono">{totalEur.toFixed(2)}</span>
             </div>
+            {charges.map(c => (
+              <div key={c.type} data-ej-charge={c.type} style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderBottom: "1px solid #E2E8F0", fontSize: 10 }}>
+                <span>{c.label} · {cur}</span>
+                <span className="ej-mono" style={{ color: c.present ? undefined : "#94A3B8" }}>
+                  {c.present ? Number(c.amount).toFixed(2) : "— not set"}
+                </span>
+              </div>
+            ))}
             <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderBottom: "1px solid #E2E8F0", fontSize: 10 }}>
               <span>VAT (0% WDT)</span>
               <span className="ej-mono">0.00</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 12px", background: "#0B3D2E", color: "#fff", fontSize: 12, fontWeight: 700 }}>
-              <span>Total due</span>
-              <span className="ej-mono">EUR {totalEur.toFixed(2)}</span>
+              <span>{chargesPresent.length ? "Total incl. freight & insurance" : "Total due"}</span>
+              <span className="ej-mono">{cur} {grandTotal.toFixed(2)}</span>
             </div>
             {totalPln !== null && (
               <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 12px", background: "#FBF8F1", fontSize: 9, color: "#B0892F" }}>
@@ -342,7 +354,11 @@ function EJProformaClassic({ docData }) {
 function EJProformaModern({ docData }) {
   const d = docData || {};
   const lines = d.lines || [];
+  const cur = d.currency || "EUR";
+  const charges = d.charges || [];
+  const chargesPresent = charges.filter(c => c && c.present);
   const totalEur = typeof d.total_eur === "number" ? d.total_eur : lines.reduce((s, l) => s + (l.netEur || 0), 0);
+  const grandTotal = totalEur + chargesPresent.reduce((s, c) => s + (Number(c.amount) || 0), 0);
   const totalPln = typeof d.total_pln === "number" ? d.total_pln : null;
 
   return (
@@ -354,7 +370,7 @@ function EJProformaModern({ docData }) {
           <EJDocLogo size="md"/>
           <div style={{ display: "flex", gap: 6 }}>
             <span className="ej-pill ej-pill-green">PRO FORMA</span>
-            <span className="ej-pill">EUR</span>
+            <span className="ej-pill">{cur}</span>
             <span className="ej-pill">WDT 0%</span>
           </div>
         </div>
@@ -420,8 +436,8 @@ function EJProformaModern({ docData }) {
               <th style={{ width: 80 }}>SKU / Code</th>
               <th style={{ width: 48 }}>Origin</th>
               <th className="ej-r" style={{ width: 36 }}>Qty</th>
-              <th className="ej-r" style={{ width: 70 }}>Unit EUR</th>
-              <th className="ej-r" style={{ width: 80 }}>Net EUR</th>
+              <th className="ej-r" style={{ width: 70 }}>Unit {cur}</th>
+              <th className="ej-r" style={{ width: 80 }}>Net {cur}</th>
             </tr>
           </thead>
           <tbody>
@@ -458,9 +474,9 @@ function EJProformaModern({ docData }) {
         }}>
           {[
             ["Items",      lines.length,               false],
-            ["Subtotal",   `EUR ${totalEur.toFixed(2)}`,false],
+            ["Subtotal",   `${cur} ${totalEur.toFixed(2)}`,false],
             ["VAT",        "0% WDT · 0.00",             false],
-            ["Total due",  `EUR ${totalEur.toFixed(2)}`, true],
+            [chargesPresent.length ? "Total incl. charges" : "Total due", `${cur} ${grandTotal.toFixed(2)}`, true],
           ].map(([k, v, hi], i) => (
             <div key={k} style={{
               padding: "12px 14px",
@@ -471,6 +487,16 @@ function EJProformaModern({ docData }) {
               <div className="ej-eyebrow" style={{ color: hi ? "rgba(255,255,255,0.7)" : undefined }}>{k}</div>
               <div className="ej-mono" style={{ fontSize: 14, fontWeight: 700, marginTop: 2 }}>{v}</div>
             </div>
+          ))}
+        </div>
+
+        {/* Freight / insurance — explicit value or "not set" (never silently absent) */}
+        <div data-ej-charges="1" style={{ display: "flex", gap: 18, fontSize: 9.5, color: "#475569", marginBottom: 10 }}>
+          {charges.map(c => (
+            <span key={c.type} data-ej-charge={c.type}>
+              {c.label} · {cur}: <span className="ej-mono" style={{ color: c.present ? "#0B3D2E" : "#94A3B8", fontWeight: 600 }}>
+                {c.present ? Number(c.amount).toFixed(2) : "— not set"}</span>
+            </span>
           ))}
         </div>
 
@@ -496,7 +522,7 @@ function EJProformaModern({ docData }) {
         display: "flex", justifyContent: "space-between",
       }}>
         {d.rate && d.rate.eur
-          ? <span>FX · NBP {d.rate.table || ""} · 1 EUR = {Number(d.rate.eur).toFixed(4)} PLN</span>
+          ? <span>FX · NBP {d.rate.table || ""} · 1 {cur} = {Number(d.rate.eur).toFixed(4)} PLN</span>
           : <span/>}
         <span>{d.seller && d.seller.email ? `${d.seller.email}  ${d.seller.phone || ""}` : ""}</span>
       </div>
@@ -511,7 +537,11 @@ function EJProformaModern({ docData }) {
 function EJProformaBold({ docData }) {
   const d = docData || {};
   const lines = d.lines || [];
+  const cur = d.currency || "EUR";
+  const charges = d.charges || [];
+  const chargesPresent = charges.filter(c => c && c.present);
   const totalEur = typeof d.total_eur === "number" ? d.total_eur : lines.reduce((s, l) => s + (l.netEur || 0), 0);
+  const grandTotal = totalEur + chargesPresent.reduce((s, c) => s + (Number(c.amount) || 0), 0);
   const totalPln = typeof d.total_pln === "number" ? d.total_pln : null;
 
   return (
@@ -532,7 +562,7 @@ function EJProformaBold({ docData }) {
             ["Issued",        d.date    || "—"],
             ["Payment due",   d.due     || "—"],
             ["Payment terms", d.payment || "—"],
-            ["FX · NBP",     d.rate && d.rate.eur ? `1 EUR = ${Number(d.rate.eur).toFixed(4)} PLN` : "—"],
+            ["FX · NBP",     d.rate && d.rate.eur ? `1 ${cur} = ${Number(d.rate.eur).toFixed(4)} PLN` : "—"],
           ].map(([k, v]) => (
             <div key={k}>
               <div style={{ fontSize: 8.5, letterSpacing: "0.16em", textTransform: "uppercase", opacity: 0.6, fontWeight: 600 }}>{k}</div>
@@ -570,8 +600,8 @@ function EJProformaBold({ docData }) {
               <th style={{ width: 70 }}>SKU</th>
               <th style={{ width: 44 }}>Origin</th>
               <th className="ej-r" style={{ width: 32 }}>Qty</th>
-              <th className="ej-r" style={{ width: 64 }}>Unit</th>
-              <th className="ej-r" style={{ width: 70 }}>Net EUR</th>
+              <th className="ej-r" style={{ width: 64 }}>Unit {cur}</th>
+              <th className="ej-r" style={{ width: 70 }}>Net {cur}</th>
             </tr>
           </thead>
           <tbody>
@@ -605,9 +635,19 @@ function EJProformaBold({ docData }) {
         <div style={{ marginBottom: 18, padding: 16, background: "#FBF8F1", borderLeft: "4px solid #C9A24B", borderRadius: 4 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
             <div>
-              <div className="ej-eyebrow ej-eyebrow-gold">Total due · WDT 0% intra-EU</div>
+              <div className="ej-eyebrow ej-eyebrow-gold">{chargesPresent.length ? "Total incl. freight & insurance · WDT 0% intra-EU" : "Total due · WDT 0% intra-EU"}</div>
               <div style={{ fontSize: 32, fontWeight: 700, color: "#0B3D2E", lineHeight: 1, marginTop: 4 }}>
-                EUR {totalEur.toFixed(2)}
+                {cur} {grandTotal.toFixed(2)}
+              </div>
+              <div data-ej-charges="1" style={{ fontSize: 9.5, color: "#475569", marginTop: 4, display: "flex", gap: 14 }}>
+                <span>Goods {cur} {totalEur.toFixed(2)}</span>
+                {charges.map(c => (
+                  <span key={c.type} data-ej-charge={c.type}>
+                    {c.label} {c.present
+                      ? <span className="ej-mono" style={{ color: "#0B3D2E", fontWeight: 600 }}>{cur} {Number(c.amount).toFixed(2)}</span>
+                      : <span style={{ color: "#94A3B8" }}>— not set</span>}
+                  </span>
+                ))}
               </div>
               {totalPln !== null && (
                 <div style={{ fontSize: 10, color: "#B0892F", marginTop: 2 }}>

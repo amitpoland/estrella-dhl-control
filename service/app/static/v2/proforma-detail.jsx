@@ -860,10 +860,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // Ready only when the batch full-gate AND this draft's client document are ready.
   const reservationReady = !!(reservationPreview &&
     reservationPreview.ready_to_create && reservationDoc && reservationDoc.ready);
-  const reservationReasons = [
-    ...((reservationPreview && reservationPreview.blocking_reasons) || []),
-    ...((reservationDoc && reservationDoc.blocking_reasons) || []),
-  ].filter(Boolean);
+  // Reservation blockers are surfaced at TWO distinct scopes so a BATCH-level
+  // warehouse blocker (e.g. "84 packing line(s) not yet scanned" — counts the
+  // whole batch's packing, NOT this draft's billed lines) is never mistaken for a
+  // Draft blocker. batch_blocking_reasons (warehouse + wFirma config) block every
+  // client in the batch; reservationDoc.blocking_reasons are THIS draft/client's
+  // own. The CREATE GATE (reservationReady) is unchanged — this only clarifies the
+  // DISPLAY (Lesson F rule 5: reflect backend truth, never re-derive it).
+  const reservationBatchReasons = ((reservationPreview && reservationPreview.batch_blocking_reasons) || []).filter(Boolean);
+  const reservationDraftReasons = ((reservationDoc && reservationDoc.blocking_reasons) || []).filter(Boolean);
 
   const doCreateReservation = () => {
     if (!batchId || !clientName) return;
@@ -977,6 +982,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   }, [_packingByDesign, _packingByCode]);
 
   // ── Authority-wired data construction ──────────────────────────────────────
+  // Draft currency authority — the draft header currency (e.g. USD). Per-line and
+  // preview displays inherit THIS, never a hardcoded 'EUR', so a USD draft is not
+  // mislabelled as EUR. (Issue: USD draft shown as EUR in Lines tab / preview.)
+  const draftCurrency = liveDraft.currency || (draft && draft.currency) || 'EUR';
   // Product lines from backend editable_lines
   const lines = (liveDraft.editable_lines || []).map((ln, i) => ({
     seq:      i + 1,
@@ -991,7 +1000,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     hsCode:   ln.hs_code || '—',
     origin:   ln.origin || (liveDraft.origin_country) || (companyProfile && companyProfile.country) || '—',
     purity:   ln.purity || '',
-    currency: ln.currency || 'EUR',
+    currency: ln.currency || draftCurrency,
   }));
 
   // Ambiguity line evidence: candidate product_code → packing-line context so
@@ -1006,7 +1015,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       value:    parseFloat(ln.unit_price || 0) * parseFloat(ln.qty || 0),
       name:     ln.name_pl || ln.description_en || ln.item_type || '',
       design:   ln.design_no || '',
-      currency: ln.currency || 'EUR',
+      currency: ln.currency || draftCurrency,
     };
   });
 
@@ -1128,14 +1137,30 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     }
     return '—';
   })();
+  // Freight + insurance for the preview — surfaced explicitly so they are never
+  // silently absent. A charge with no draft entry renders an explicit "not set"
+  // state (present:false), not a hidden/zero value.
+  const _svcCharges = liveDraft.service_charges || [];
+  const previewCharges = ['freight', 'insurance'].map(t => {
+    const c = _svcCharges.find(x => (x.charge_type || '').toLowerCase() === t && (Number(x.amount) || 0) !== 0);
+    return {
+      type:     t,
+      label:    t === 'freight' ? 'Freight' : 'Insurance',
+      amount:   c ? (Number(c.amount) || 0) : null,
+      currency: (c && c.currency) || draftCurrency,
+      present:  !!c,
+    };
+  });
   const previewDocData = {
     doc_no:   _previewLabel,
+    currency: draftCurrency,
+    charges:  previewCharges,
     date:     liveDraft.invoice_date || liveDraft.created_at
               ? (liveDraft.invoice_date || liveDraft.created_at || '').slice(0, 10) : '—',
     due:      _dueFallback,
     payment:  paymentTermsDisplay,
     payment_terms_days: _ptDays,
-    rate:     { eur: fxRate, date: liveDraft.exchange_rate_date || '—', table: liveDraft.nbp_table || '—' },
+    rate:     { eur: fxRate, currency: draftCurrency, date: liveDraft.exchange_rate_date || '—', table: liveDraft.nbp_table || '—' },
     // Address lines follow EU print convention: street / zip city / country.
     // Structured fields preferred; comma-joined string is the legacy fallback.
     seller:   {
@@ -1809,7 +1834,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         </TbBtn>
         <TbBtn
           disabled
-          title="Document generation not yet available from this view"
+          title={
+            'Document-package generation (proforma PDF · packing list · CMR · CN23) is not yet wired — ' +
+            'backend gap M4: POST /api/v1/proforma/draft/{id}/generate-documents (see BACKEND_GAP_REGISTER.md §2, priority LOW). ' +
+            'For now use ◫ Preview to view the layouts and ⎙ Print for the wFirma proforma PDF.'
+          }
           data-testid="tb-generate"
         >
           ⚙ Generate ▾
@@ -2379,7 +2408,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             />
           </React.Fragment>
         )}
-        {activeTab === 'lines' && <ProformaLinesTab lines={lines} />}
+        {activeTab === 'lines' && <ProformaLinesTab lines={lines} currency={draftCurrency} />}
         {activeTab === 'customer_mapping' && (
           <ProformaCustomerMappingTab customer={customer} />
         )}
@@ -2393,7 +2422,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             onConvert={() => canConvert && setShowConvertModal(true)}
             reservationLoading={reservationLoading}
             reservationReady={reservationReady}
-            reservationReasons={reservationReasons}
+            reservationBatchReasons={reservationBatchReasons}
+            reservationDraftReasons={reservationDraftReasons}
+            reservationClientName={clientName}
+            draftLineCount={lines.length}
             reservationExists={reservationExists}
             reservationId={reservationId}
             reservationBusy={reservationBusy}
@@ -2881,7 +2913,11 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
 }
 
 // ── Lines tab ─────────────────────────────────────────────────────────────────
-function ProformaLinesTab({ lines }) {
+function ProformaLinesTab({ lines, currency }) {
+  // Amount columns are labelled with the DRAFT currency (e.g. USD), never a
+  // hardcoded EUR. The underlying line fields are named unitEur/netEur for
+  // historical reasons but carry the draft-currency amount.
+  const cur = currency || 'EUR';
   return (
     <div>
       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>
@@ -2891,7 +2927,7 @@ function ProformaLinesTab({ lines }) {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-              {['#', 'SKU', 'DESCRIPTION', 'HS CODE', 'ORIGIN', 'QTY', 'UNIT EUR', 'NET EUR'].map((h, i) => (
+              {['#', 'SKU', 'DESCRIPTION', 'HS CODE', 'ORIGIN', 'QTY', `UNIT ${cur}`, `NET ${cur}`].map((h, i) => (
                 <th key={h} style={{ padding: '9px 12px', textAlign: i >= 5 ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em' }}>{h}</th>
               ))}
             </tr>
@@ -2922,7 +2958,7 @@ function ProformaLinesTab({ lines }) {
           </tbody>
           <tfoot>
             <tr style={{ borderTop: '2px solid var(--border)', background: 'var(--bg-subtle)' }}>
-              <td colSpan="7" style={{ padding: '11px 12px', textAlign: 'right', fontSize: 12, fontWeight: 700 }}>Total</td>
+              <td colSpan="7" style={{ padding: '11px 12px', textAlign: 'right', fontSize: 12, fontWeight: 700 }}>Total · {cur}</td>
               <td style={{ padding: '11px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--accent)' }} data-testid="proforma-lines-total">
                 {lines.length > 0 ? lines.reduce((s, l) => s + l.netEur, 0).toFixed(2) : '—'}
               </td>
@@ -2993,20 +3029,31 @@ function ProformaCustomerMappingTab({ customer }) {
 // WIRED: blocking_reasons and export_blockers from POST /api/v1/proforma/preview/{batch_id}/{client_name}
 function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canConvert,
                                   convertDisabledReason, onConvert,
-                                  reservationLoading, reservationReady, reservationReasons,
+                                  reservationLoading, reservationReady,
+                                  reservationBatchReasons, reservationDraftReasons,
+                                  reservationClientName, draftLineCount,
                                   reservationExists, reservationId, reservationBusy,
                                   reservationResult, onCreateReservation }) {
   const allReasons = [...blockingReasons, ...exportBlockers];
   const isBlocked  = allReasons.length > 0;
   const auditClean = exportBlockers.length === 0;
-  const resvReasons = reservationReasons || [];
+  // Two-scope reservation blockers (see ProformaDetailPage): draft/client-specific
+  // vs batch-level (warehouse). Kept SEPARATE so a batch-wide warehouse count is
+  // never read as a blocker on this draft's billed lines.
+  const draftReasons = reservationDraftReasons || [];
+  const batchReasons = reservationBatchReasons || [];
+  const hasAnyReason = (draftReasons.length + batchReasons.length) > 0;
   // Disabled-reason for the Create Reservation button — the EXACT canonical
-  // backend reservation blocker (or the loading / already-created state).
+  // backend blocker, scope-labelled (draft blockers first, then batch-level).
   const resvDisabledReason = reservationLoading
     ? 'Loading reservation readiness…'
     : reservationExists
       ? `Reservation already created${reservationId ? ` (wFirma ${reservationId})` : ''}`
-      : (resvReasons[0] || 'Reservation readiness not loaded — open this tab to check.');
+      : (draftReasons[0]
+          ? `This draft: ${draftReasons[0]}`
+          : (batchReasons[0]
+              ? `Batch-level: ${batchReasons[0]}`
+              : 'Reservation readiness not loaded — open this tab to check.'));
   const resvCanCreate = !!reservationReady && !reservationExists && !reservationBusy;
 
   return (
@@ -3066,12 +3113,33 @@ function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canC
         ) : (
           <div data-testid="reservation-blocked-reason" style={{ fontSize: 12, color: 'var(--badge-amber-text)' }}>
             {reservationLoading ? 'Loading reservation readiness…' : (
-              <span>Reservation blocked — exact backend reason{resvReasons.length > 1 ? 's' : ''}:
-                <ul style={{ margin: '4px 0 0', paddingLeft: 20, color: 'var(--text-2)' }}>
-                  {(resvReasons.length ? resvReasons : [resvDisabledReason]).map((r, i) =>
-                    <li key={i} style={{ marginBottom: 2 }}>{r}</li>)}
-                </ul>
-              </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {/* This draft / client — blockers specific to the lines being billed here. */}
+                {draftReasons.length > 0 && (
+                  <div data-testid="reservation-draft-blockers">
+                    <div style={{ fontWeight: 700 }}>
+                      This draft{reservationClientName ? ` — ${reservationClientName}` : ''} ({draftLineCount != null ? draftLineCount : '—'} billed line{draftLineCount === 1 ? '' : 's'}):
+                    </div>
+                    <ul style={{ margin: '4px 0 0', paddingLeft: 20, color: 'var(--text-2)' }}>
+                      {draftReasons.map((r, i) => <li key={i} style={{ marginBottom: 2 }}>{r}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {/* Batch-level (warehouse) — affects EVERY client in the batch, not this
+                    draft's billed lines. Explicitly labelled so a batch-wide packing
+                    count (e.g. "84 …") is never read as a Draft #38 line blocker. */}
+                {batchReasons.length > 0 && (
+                  <div data-testid="reservation-batch-blockers">
+                    <div style={{ fontWeight: 700 }}>
+                      Batch-level (warehouse) — affects all clients in this batch, not this draft's billed lines:
+                    </div>
+                    <ul style={{ margin: '4px 0 0', paddingLeft: 20, color: 'var(--text-2)' }}>
+                      {batchReasons.map((r, i) => <li key={i} style={{ marginBottom: 2 }}>{r}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {!hasAnyReason && <div>{resvDisabledReason}</div>}
+              </div>
             )}
           </div>
         )}
