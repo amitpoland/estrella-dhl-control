@@ -2212,6 +2212,146 @@ function ContractorResolutionPanel({ batchId, packingInfo }) {
 }
 
 
+// Phase E — translate a reservation block (gate code / blocking reason) into a
+// concrete operator remedy so a blocked "Save reservation to wFirma" is always
+// actionable instead of opaque. Pure string mapping; no I/O.
+const RESERVATION_REMEDIES = [
+  { test: /not configured|WFIRMA_API|api[_ ]?(login|key|password)/i,
+    remedy: 'wFirma API is not configured — set WFIRMA_API_LOGIN / PASSWORD / COMPANY_ID in the service .env (operator), then restart.' },
+  { test: /warehouse module|reservation.*not support|module.*enabl/i,
+    remedy: 'The wFirma warehouse module is off — set WFIRMA_WAREHOUSE_MODULE_ENABLED=true and WFIRMA_WAREHOUSE_ID in .env (operator), then restart the service.' },
+  { test: /warehouse.*not found/i,
+    remedy: 'WFIRMA_WAREHOUSE_ID is not found in wFirma — verify it matches a live wFirma warehouse.' },
+  { test: /customer.*(not match|not mapp|mapping|wfirma_customer_id)|not mapped/i,
+    remedy: 'Customer is not matched to a wFirma contractor — open the Customer Mapping tab and match this client (wfirma_customer_id must be set).' },
+  { test: /client_name is empty|no contractor|contractor.*missing/i,
+    remedy: 'No customer resolved for this document — resolve the blocked sales record (assign a customer in the Proforma panel) before reserving.' },
+  { test: /product.*(not match|not mapp|not regist)|goods/i,
+    remedy: 'One or more products are not registered in wFirma — run “Resolve products” for this batch so every line has a wFirma good id.' },
+  { test: /stock|insufficient/i,
+    remedy: 'Insufficient warehouse stock for one or more lines — scan items into the warehouse / reconcile inventory, then retry.' },
+  { test: /not yet scanned|scan flow|orphan|audit issues/i,
+    remedy: 'Warehouse audit is not clean (missing scans / invalid flow / orphans) — resolve the warehouse audit issues first.' },
+  { test: /vat code/i,
+    remedy: 'VAT code 23 could not be resolved in wFirma — check the wFirma VAT configuration.' },
+  { test: /already (created|exists)|already processed|submitting/i,
+    remedy: 'A reservation already exists (or is in progress) for this client — refresh to see its id; do not resubmit.' },
+];
+function reservationRemedy(textOrList) {
+  const text = Array.isArray(textOrList) ? textOrList.join('; ') : String(textOrList || '');
+  for (const r of RESERVATION_REMEDIES) { if (r.test.test(text)) return r.remedy; }
+  return '';
+}
+
+
+// Phase E — Reservation save surface. Reconnects the wFirma reservation-create
+// flow to the Sales page after its entry point was removed in C27.1 (the
+// confirm modal it drove was left orphaned). SINGLE authority: this panel does
+// NOT call wFirma itself — it only opens the existing confirm modal
+// (onSave(doc)) which re-runs the live diagnostic before the operator confirms.
+// Readiness comes from the existing reservation-preview endpoint.
+function ReservationSavePanel({ preview, loading, results, onLoad, onSave }) {
+  if (!preview) {
+    return (
+      <div style={{ marginTop: 8 }}>
+        <Btn small variant="outline" onClick={onLoad} disabled={loading}
+             data-testid="reservation-save-load-btn">
+          {loading ? 'Loading reservation readiness…' : 'Load reservation readiness'}
+        </Btn>
+      </div>
+    );
+  }
+  if (preview.error) {
+    return (
+      <div data-testid="reservation-save-error"
+           style={{ marginTop: 8, fontSize: 11, color: 'var(--badge-red-text)' }}>
+        Reservation readiness failed: {preview.error}
+      </div>
+    );
+  }
+  const docs = preview.documents || [];
+  return (
+    <div data-testid="reservation-save-panel" style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                      letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 6 }}>
+        Save reservation to wFirma
+      </div>
+      {preview.reservation_exists && (
+        <div data-testid="reservation-save-exists"
+             style={{ fontSize: 11, marginBottom: 8, padding: '6px 8px', borderRadius: 4,
+                        background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)',
+                        border: '1px solid var(--badge-green-border)' }}>
+          ✓ Reservation already saved{preview.reservation_id ? ` — id ${preview.reservation_id}` : ''}.
+        </div>
+      )}
+      {docs.length === 0 && (
+        <div style={{ fontSize: 11, color: 'var(--text-3)' }}>No sales documents to reserve.</div>
+      )}
+      {docs.map((doc, i) => {
+        const cn = doc.client_name || `doc-${i}`;
+        const res = (results || {})[cn];
+        const saved = res && res.ok && res.wfirma_reservation_id;
+        const blockedRemedy = !doc.ready
+          ? reservationRemedy((doc.blocking_reasons || []).concat([preview.blocking_reasons || []]).flat())
+          : '';
+        return (
+          <div key={cn}
+               data-testid={`reservation-save-row-${cn}`}
+               style={{ padding: '6px 0', borderTop: i ? '1px dashed var(--card-border)' : 'none',
+                          fontSize: 11.5 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <strong style={{ flex: 1, minWidth: 120 }}>{cn}</strong>
+              <span style={{ color: 'var(--text-3)' }}>
+                {doc.sales_doc_no || '—'} · {doc.total_value != null
+                  ? Number(doc.total_value).toLocaleString('pl-PL', { minimumFractionDigits: 2 })
+                    + ' ' + (preview.currency || '')
+                  : '—'}
+              </span>
+              <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 3,
+                               background: doc.customer_match ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+                               color: doc.customer_match ? 'var(--badge-green-text)' : 'var(--badge-amber-text)' }}>
+                {doc.customer_match ? 'customer matched' : 'customer unmatched'}
+              </span>
+              {saved ? (
+                <span data-testid={`reservation-saved-${cn}`}
+                      style={{ fontSize: 10, fontWeight: 700, color: 'var(--badge-green-text)' }}>
+                  ✓ saved · id {res.wfirma_reservation_id}
+                </span>
+              ) : (
+                <Btn small variant="primary"
+                     disabled={!doc.ready}
+                     onClick={() => onSave(doc)}
+                     data-testid={`reservation-save-btn-${cn}`}
+                     title={doc.ready ? 'Open the confirmation modal and submit this reservation to wFirma'
+                                      : 'Resolve the blockers below before saving'}>
+                  Save reservation to wFirma
+                </Btn>
+              )}
+            </div>
+            {!doc.ready && (doc.blocking_reasons || []).length > 0 && (
+              <div data-testid={`reservation-block-${cn}`}
+                   style={{ marginTop: 3, color: 'var(--badge-amber-text)' }}>
+                Blocked: {(doc.blocking_reasons || []).join('; ')}
+                {blockedRemedy && (
+                  <div style={{ marginTop: 2, color: 'var(--text-2)' }}>→ {blockedRemedy}</div>
+                )}
+              </div>
+            )}
+            {res && !res.ok && (
+              <div data-testid={`reservation-result-block-${cn}`}
+                   style={{ marginTop: 3, color: 'var(--badge-red-text)' }}>
+                Last attempt blocked: {(res.blocking_reasons || [res.reason || res.error || 'blocked']).join('; ')}
+                {res.remedy && <div style={{ marginTop: 2, color: 'var(--text-2)' }}>→ {res.remedy}</div>}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+
 function BatchDetailPage({ batchId, onBack, onToast }) {
   const [audit, setAudit] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
@@ -2654,10 +2794,14 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
         body: JSON.stringify({ batch_id: batchId, payload: { client_name: clientName } }),
       });
       if (!d.ok) {
-        // Engine returns 200 with ok=false for blocked/skipped — treat as soft error
-        const reason = d.reason || d.error || 'blocked';
-        setCreateResults(prev => ({ ...prev, [clientName]: d }));
-        onToast(`Create blocked for ${clientName}: ${reason}`, 'error');
+        // Engine returns 200 with ok=false for blocked/skipped — treat as soft error.
+        // Phase E: attach a concrete remedy so the block is actionable.
+        const reasons = (d.blocking_reasons && d.blocking_reasons.length)
+          ? d.blocking_reasons : [d.reason || d.error || 'blocked'];
+        const reason = reasons.join('; ');
+        const remedy = reservationRemedy(reasons.concat([d.code || '']));
+        setCreateResults(prev => ({ ...prev, [clientName]: { ...d, remedy } }));
+        onToast(`Create blocked for ${clientName}: ${reason}${remedy ? ' — ' + remedy : ''}`, 'error');
       } else if (d.status === 'skipped') {
         setCreateResults(prev => ({ ...prev, [clientName]: d }));
         onToast(`Reservation already exists for ${clientName}`, 'info');
@@ -2671,8 +2815,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
       // apiFetch throws on non-2xx — extract structured payload if available
       let body = { ok: false, code: 'CLIENT_ERROR', error: e.message };
       try { body = JSON.parse((e.message || '').split(': ').slice(1).join(': ')) || body; } catch {}
-      setCreateResults(prev => ({ ...prev, [clientName]: body }));
-      onToast(`Create failed for ${clientName}: ${body.error || e.message}`, 'error');
+      const remedy = reservationRemedy(
+        (body.blocking_reasons || [body.error || body.code || e.message]).concat([body.code || '']));
+      setCreateResults(prev => ({ ...prev, [clientName]: { ...body, remedy } }));
+      onToast(`Create failed for ${clientName}: ${body.error || e.message}${remedy ? ' — ' + remedy : ''}`, 'error');
     }
     setCreateBusy(false);
     setCreateConfirm(null);
@@ -5626,6 +5772,15 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         Resolve all sections below before creating a wFirma reservation.
                       </div>
                     )}
+                    {/* Phase E — reservation save entry (single-page workflow).
+                        Reconnects the create flow removed in C27.1; reuses the
+                        existing confirm modal + reservation-preview readiness. */}
+                    <ReservationSavePanel
+                        preview={reservationPreview}
+                        loading={reservationPreviewLoading}
+                        results={createResults}
+                        onLoad={loadReservationPreview}
+                        onSave={(doc) => setCreateConfirm({ client_name: doc.client_name, doc })} />
                   </Card>
 
                   {/* Missing scans — C13D: suppressed for pure-transit batches */}
@@ -13469,6 +13624,9 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
     // Reset visibility panel on open (Phase 5.5A)
     setVisibility(null);
     setVisOpen(false);
+    // Phase D — clear any freight block from the previously-open draft so its
+    // (now stale) client/currency fix-it text never bleeds onto another draft.
+    setFreightBlock(null);
     try {
       const d = await apiFetch(`/api/v1/proforma/draft/${draftId}`);
       setOpenDraft(d.draft);
@@ -13483,7 +13641,7 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
 
   const closeOne = () => {
     setOpenId(null); setOpenDraft(null); setEvents(null); setEventsOpen(false);
-    setVisibility(null); setVisOpen(false);
+    setVisibility(null); setVisOpen(false); setFreightBlock(null);
   };
 
   // Phase 5.5A — lazy-load visibility on demand
@@ -13758,6 +13916,10 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
     });
 
   const [chargePrefill, setChargePrefill] = React.useState(null);
+  // Phase D — persistent, actionable freight-suggestion block reason. The
+  // backend already returns the exact missing authority field in `reason`;
+  // we keep it inline (not just a toast) with a fix-it pointer.
+  const [freightBlock, setFreightBlock] = React.useState(null);
 
   // ── PR 2C.3c — bulk price recovery state ─────────────────────────────────
   const [priceRecoveryOpen,     setPriceRecoveryOpen]     = React.useState(false);
@@ -13896,9 +14058,11 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
                { method: 'DELETE' });
 
   const onSuggestFreight = React.useCallback(async () => {
+    setFreightBlock(null);  // clear any prior block on each attempt
     try {
       const r = await apiFetch(`/api/v1/proforma/draft/${openId}/suggest-freight`);
       if (r && r.ok && r.suggestion) {
+        setFreightBlock(null);
         setChargePrefill({
           charge_type: 'freight',
           amount:      r.suggestion.amount,
@@ -13906,10 +14070,19 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
           label:       r.suggestion.label || '',
         });
       } else {
+        // Keep the exact authority reason inline (not just an ephemeral toast)
+        // and name the field/source the operator must fill — Phase D: a freight
+        // suggestion either works or clearly identifies the missing authority.
         const reason = (r && r.reason) ? r.reason : 'no freight data configured';
+        setFreightBlock({
+          reason,
+          currency: (r && r.draft_currency) || (openDraft && openDraft.currency) || '',
+          client: (openDraft && openDraft.client_name) || '',
+        });
         onToast && onToast(`Freight suggestion blocked: ${reason}`, 'warn');
       }
     } catch (e) {
+      setFreightBlock({ reason: e.message, currency: '', client: '' });
       onToast && onToast(`Suggest freight failed: ${e.message}`, 'error');
     }
   }, [openId, openDraft, onToast]);
@@ -14346,12 +14519,12 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
           {birthBlocks.map((b, i) => {
             const cid = (b.client_contractor_id || '').trim();
             const action = b.code === 'contractor_missing'
-              ? 'Re-run intake and select the client from Customer Master for this sales document.'
+              ? 'Pick the customer below to assign it and generate the draft — no re-intake needed.'
               : b.code === 'client_unresolved'
-              ? 'Add a Customer Master record for this contractor, then re-run the contractor backfill.'
+              ? 'Pick the correct Customer Master customer below to bind it and generate the draft.'
               : b.code === 'contractor_conflict'
-              ? 'Reconcile the contractor — this client name maps to more than one contractor.'
-              : 'Resolve the client identity for this sales document.';
+              ? 'This client name maps to more than one contractor — pick the correct customer below to resolve it.'
+              : 'Pick the customer below to resolve the client identity and generate the draft.';
             return (
               <div key={b.sales_document_id || i}
                    data-testid={`proforma-blocked-record-${b.sales_document_id || i}`}
@@ -14366,10 +14539,16 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
                 {cid && (
                   <a data-testid={`proforma-blocked-cm-link-${b.sales_document_id || i}`}
                      href={`/dashboard/customer-master-v2.html?contractor_id=${encodeURIComponent(cid)}`}
-                     style={{ color: 'var(--accent)', fontWeight: 600 }}>
+                     style={{ color: 'var(--accent)', fontWeight: 600, marginRight: 10 }}>
                     Open in Customer Master →
                   </a>
                 )}
+                {/* Phase A — in-page repair: assign customer + generate draft. */}
+                <ProformaBlockedRecordResolver
+                    batchId={batchId}
+                    block={b}
+                    onToast={onToast}
+                    onResolved={refreshList} />
               </div>
             );
           })}
@@ -15049,6 +15228,101 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
                 );
               })()}
 
+              {/* Customer controls (Phase B — customer-first layout). The
+                  editable Bill-to picker + Buyer / Ship-to / Payment overrides
+                  render ABOVE the descriptions and line details so the operator
+                  confirms and edits WHO the customer is before touching lines.
+                  Relocated from below the lines (operator-requested ordering;
+                  no capability removed — Lesson M). */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr',
+                              gap: 12, marginBottom: 14, fontSize: 12 }}>
+                {/* PR-203a: single Bill-to customer picker that cascades
+                    buyer / ship-to / payment-terms onto the draft so the
+                    operator no longer has to click three separate Save
+                    buttons. */}
+                {isEditable && (
+                  <ProformaBillToPicker
+                      customers={customerOptions}
+                      status={applyingCustomer}
+                      onApply={onApplyCustomerDefaults}
+                      testid="draft-bill-to-picker-top" />
+                )}
+                <ProformaDraftRemarksEditor
+                    value={openDraft.remarks || ''}
+                    editable={isEditable}
+                    onSave={(v) => onPatchField('remarks', v)} />
+                <div data-testid="draft-overrides-summary"
+                     style={{ display: 'grid',
+                                gridTemplateColumns: 'repeat(3, 1fr)',
+                                gap: 8, fontSize: 12 }}>
+                  <ProformaJsonObjectEditor
+                      label="Buyer override"
+                      testidPrefix="draft-buyer"
+                      pickerMode="buyer"
+                      fields={[
+                        { key: 'type',    label: 'Type',     placeholder: 'company / individual' },
+                        { key: 'name',    label: 'Name',     placeholder: 'Company or individual name' },
+                        { key: 'vat_id',  label: 'VAT ID',   placeholder: 'Tax ID (companies)' },
+                        { key: 'street',  label: 'Street',   placeholder: 'Street + No.' },
+                        { key: 'city',    label: 'City',     placeholder: 'City' },
+                        { key: 'zip',     label: 'ZIP',      placeholder: 'Postal code' },
+                        { key: 'country', label: 'Country',  placeholder: 'ISO country' },
+                        { key: 'email',   label: 'Email',    placeholder: 'name@…' },
+                        { key: 'phone',   label: 'Phone',    placeholder: '+...' },
+                      ]}
+                      value={openDraft.buyer_override}
+                      editable={isEditable}
+                      onSave={(v) => onPatchField('buyer_override', v)}
+                      extras={({ pickFromCustomer }) => (
+                        <ProformaCustomerPicker
+                            customers={customerOptions}
+                            onPick={pickFromCustomer}
+                            testid="draft-buyer-customer-picker" />
+                      )} />
+                  <ProformaJsonObjectEditor
+                      label="Ship-to override"
+                      testidPrefix="draft-ship-to"
+                      pickerMode="ship_to"
+                      fields={[
+                        { key: 'type',    label: 'Type',     placeholder: 'company / individual' },
+                        { key: 'name',    label: 'Name',     placeholder: 'Recipient name' },
+                        { key: 'street',  label: 'Street',   placeholder: 'Street + No.' },
+                        { key: 'city',    label: 'City',     placeholder: 'City' },
+                        { key: 'zip',     label: 'ZIP',      placeholder: 'Postal code' },
+                        { key: 'country', label: 'Country',  placeholder: 'ISO country' },
+                        { key: 'phone',   label: 'Phone',    placeholder: '+...' },
+                        { key: 'email',   label: 'Email',    placeholder: 'name@…' },
+                      ]}
+                      value={openDraft.ship_to_override}
+                      editable={isEditable}
+                      onSave={(v) => onPatchField('ship_to_override', v)}
+                      extras={({ pickFromCustomer }) => (
+                        <ProformaCustomerPicker
+                            customers={customerOptions}
+                            onPick={pickFromCustomer}
+                            testid="draft-ship-to-customer-picker" />
+                      )} />
+                  <ProformaJsonObjectEditor
+                      label="Payment terms"
+                      testidPrefix="draft-payment-terms"
+                      pickerMode="payment_terms"
+                      fields={[
+                        { key: 'days',   label: 'Days',     placeholder: 'e.g. 30' },
+                        { key: 'method', label: 'Method',   placeholder: 'transfer / cash / …' },
+                        { key: 'note',   label: 'Note',     placeholder: 'Free text' },
+                      ]}
+                      value={openDraft.payment_terms}
+                      editable={isEditable}
+                      onSave={(v) => onPatchField('payment_terms', v)}
+                      extras={({ pickFromCustomer }) => (
+                        <ProformaCustomerPicker
+                            customers={customerOptions}
+                            onPick={pickFromCustomer}
+                            testid="draft-payment-terms-customer-picker" />
+                      )} />
+                </div>
+              </div>
+
               {/* Lines */}
               <div style={{ marginBottom: 14 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
@@ -15144,6 +15418,29 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
                         Calculate insurance
                       </Btn>
                     </div>
+                    {freightBlock && (
+                      <div data-testid="freight-block-reason"
+                           style={{ marginBottom: 8, padding: '8px 10px', borderRadius: 4,
+                                      fontSize: 11.5, lineHeight: 1.4,
+                                      background: 'var(--badge-amber-bg, #fffbeb)',
+                                      border: '1px solid var(--badge-amber-border, #fbbf24)',
+                                      color: 'var(--badge-amber-text, #92400e)' }}>
+                        <div style={{ fontWeight: 700 }}>Freight authority missing</div>
+                        <div>{freightBlock.reason}</div>
+                        <div style={{ marginTop: 4 }}>
+                          Set <code>freight_fixed_amount_{(freightBlock.currency || 'eur').toLowerCase()}</code>
+                          {' '}(and <code>freight_service_id</code>) on the Customer Master record
+                          {freightBlock.client ? <> for <strong>{freightBlock.client}</strong></> : null}, then click
+                          {' '}<strong>Suggest freight from master</strong> again.
+                          {' '}
+                          <a data-testid="freight-block-cm-link"
+                             href="/dashboard/customer-master-v2.html" target="_blank" rel="noopener"
+                             style={{ color: 'var(--accent)', fontWeight: 600 }}>
+                            Open Customer Master →
+                          </a>
+                        </div>
+                      </div>
+                    )}
                     <ProformaDraftAddChargeForm onAdd={onAddCharge}
                                                draftCurrency={openDraft.currency}
                                                lineCurrencies={Array.from(new Set(
@@ -15153,96 +15450,6 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
                                                prefill={chargePrefill} />
                   </div>
                 )}
-              </div>
-
-              {/* Top-level fields */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr',
-                              gap: 12, marginBottom: 14, fontSize: 12 }}>
-                {/* PR-203a: single Bill-to customer picker that cascades
-                    buyer / ship-to / payment-terms onto the draft so the
-                    operator no longer has to click three separate Save
-                    buttons. */}
-                {isEditable && (
-                  <ProformaBillToPicker
-                      customers={customerOptions}
-                      status={applyingCustomer}
-                      onApply={onApplyCustomerDefaults}
-                      testid="draft-bill-to-picker-top" />
-                )}
-                <ProformaDraftRemarksEditor
-                    value={openDraft.remarks || ''}
-                    editable={isEditable}
-                    onSave={(v) => onPatchField('remarks', v)} />
-                <div data-testid="draft-overrides-summary"
-                     style={{ display: 'grid',
-                                gridTemplateColumns: 'repeat(3, 1fr)',
-                                gap: 8, fontSize: 12 }}>
-                  <ProformaJsonObjectEditor
-                      label="Buyer override"
-                      testidPrefix="draft-buyer"
-                      pickerMode="buyer"
-                      fields={[
-                        { key: 'type',    label: 'Type',     placeholder: 'company / individual' },
-                        { key: 'name',    label: 'Name',     placeholder: 'Company or individual name' },
-                        { key: 'vat_id',  label: 'VAT ID',   placeholder: 'Tax ID (companies)' },
-                        { key: 'street',  label: 'Street',   placeholder: 'Street + No.' },
-                        { key: 'city',    label: 'City',     placeholder: 'City' },
-                        { key: 'zip',     label: 'ZIP',      placeholder: 'Postal code' },
-                        { key: 'country', label: 'Country',  placeholder: 'ISO country' },
-                        { key: 'email',   label: 'Email',    placeholder: 'name@…' },
-                        { key: 'phone',   label: 'Phone',    placeholder: '+...' },
-                      ]}
-                      value={openDraft.buyer_override}
-                      editable={isEditable}
-                      onSave={(v) => onPatchField('buyer_override', v)}
-                      extras={({ pickFromCustomer }) => (
-                        <ProformaCustomerPicker
-                            customers={customerOptions}
-                            onPick={pickFromCustomer}
-                            testid="draft-buyer-customer-picker" />
-                      )} />
-                  <ProformaJsonObjectEditor
-                      label="Ship-to override"
-                      testidPrefix="draft-ship-to"
-                      pickerMode="ship_to"
-                      fields={[
-                        { key: 'type',    label: 'Type',     placeholder: 'company / individual' },
-                        { key: 'name',    label: 'Name',     placeholder: 'Recipient name' },
-                        { key: 'street',  label: 'Street',   placeholder: 'Street + No.' },
-                        { key: 'city',    label: 'City',     placeholder: 'City' },
-                        { key: 'zip',     label: 'ZIP',      placeholder: 'Postal code' },
-                        { key: 'country', label: 'Country',  placeholder: 'ISO country' },
-                        { key: 'phone',   label: 'Phone',    placeholder: '+...' },
-                        { key: 'email',   label: 'Email',    placeholder: 'name@…' },
-                      ]}
-                      value={openDraft.ship_to_override}
-                      editable={isEditable}
-                      onSave={(v) => onPatchField('ship_to_override', v)}
-                      extras={({ pickFromCustomer }) => (
-                        <ProformaCustomerPicker
-                            customers={customerOptions}
-                            onPick={pickFromCustomer}
-                            testid="draft-ship-to-customer-picker" />
-                      )} />
-                  <ProformaJsonObjectEditor
-                      label="Payment terms"
-                      testidPrefix="draft-payment-terms"
-                      pickerMode="payment_terms"
-                      fields={[
-                        { key: 'days',   label: 'Days',     placeholder: 'e.g. 30' },
-                        { key: 'method', label: 'Method',   placeholder: 'transfer / cash / …' },
-                        { key: 'note',   label: 'Note',     placeholder: 'Free text' },
-                      ]}
-                      value={openDraft.payment_terms}
-                      editable={isEditable}
-                      onSave={(v) => onPatchField('payment_terms', v)}
-                      extras={({ pickFromCustomer }) => (
-                        <ProformaCustomerPicker
-                            customers={customerOptions}
-                            onPick={pickFromCustomer}
-                            testid="draft-payment-terms-customer-picker" />
-                      )} />
-                </div>
               </div>
 
               {/* Action row — gated by current draft_state */}
@@ -15514,29 +15721,37 @@ function ProformaDraftLineRow({ line, editable, onPatch, onDelete, sourceLines }
             {namePlShort || '—'}
           </span>
         )}
-        {/* Canonical product description (one authority: product_descriptions /
-            description_engine, the SAME source PZ/customs uses). DISPLAY ONLY —
-            the wFirma line name posts from design_no / product_code, not this. */}
+        {/* Phase C — customer-facing INVOICE line name (one authority, one
+            renderer). The wFirma proforma/invoice prints the goods-registry
+            name (mirrored as wfirma_products.product_name), surfaced by the
+            backend as invoice_line_name. This is the SAME text the preview and
+            the generated invoice show. When the product is not yet registered
+            in wFirma there is no invoice name yet — we show the pending value
+            (name_pl / canonical) that will be registered, clearly marked. */}
         {(() => {
-          const canon = (line.description_bilingual || '').trim()
+          const inv = (line.invoice_line_name || '').trim();
+          const registered = line.invoice_line_name_source === 'wfirma_goods' && !!inv;
+          // Pending preview: the value that WILL become the invoice name at
+          // registration (name_pl), falling back to the bilingual canonical.
+          const pending = (line.name_pl || '').trim()
+            || (line.description_bilingual || '').trim()
             || [ (line.description_pl || '').trim(), (line.description_en || '').trim() ]
                  .filter(Boolean).join(' / ');
-          const src = line.name_pl_source || '';
-          const label = canon ? 'canonical'
-            : src === 'generated' ? 'generated fallback'
-            : src === 'operator' ? 'operator'
-            : 'no canonical source';
+          const shown = registered ? inv : pending;
+          const label = registered ? 'invoice (wFirma)' : 'pending registration';
           return (
             <div data-testid={`draft-line-canon-desc-${line.line_id}`}
-                 title="Canonical product description (product_descriptions / description_engine — the same authority used for PZ/customs). Display only: the wFirma line name uses design_no / product_code."
+                 title={registered
+                   ? 'Customer-facing invoice line name — the wFirma goods-registry name that prints on the proforma/invoice. Same authority as the preview and the generated document.'
+                   : 'Not yet registered in wFirma — this is the pending line name that will be used when the product is registered. The live preview/invoice will use the wFirma goods name.'}
                  style={{ marginTop: 3, fontSize: 10, lineHeight: 1.3,
                             color: 'var(--text-3)' }}>
-              <span style={{ color: canon ? 'var(--text-2)' : 'var(--text-3)' }}>
-                {canon || '— no canonical description —'}
+              <span style={{ color: shown ? 'var(--text-2)' : 'var(--text-3)' }}>
+                {shown || '— no invoice description —'}
               </span>
               <span data-testid={`draft-line-desc-source-${line.line_id}`}
                     style={{ marginLeft: 4, fontWeight: 700,
-                               color: canon ? 'var(--badge-green-text, #166534)' : 'var(--badge-amber-text)' }}>
+                               color: registered ? 'var(--badge-green-text, #166534)' : 'var(--badge-amber-text)' }}>
                 · {label}
               </span>
             </div>
@@ -15696,6 +15911,157 @@ function ProformaCustomerCard({ resolution, clientName, onRemapOpen }) {
 // Rows carry bill_to_*, ship_to_*, freight_*, insurance_* and
 // payment_terms_days.  The picker shows a `bill_to_name · country · nip`
 // summary in the dropdown and emits the full row to `onPick`.
+// ── Phase A — in-page blocked-record resolver ──────────────────────────────
+// A blocked draft-birth record means no contractor/customer could be resolved
+// for a sales document, so no Proforma draft was born. This widget lets the
+// operator fix it WITHOUT leaving the Sales page or re-running intake: search
+// Customer Master → pick the customer → Assign. The backend writes the
+// contractor onto the sales chain and immediately re-runs the projection/sync
+// so the draft is born and the block resolves. Reuses the admin
+// contractor-projection surface (same auth as the backfill repair endpoint).
+function ProformaBlockedRecordResolver({ batchId, block, onToast, onResolved }) {
+  const sdId = String((block && block.sales_document_id) || '');
+  const [open, setOpen]           = React.useState(false);
+  const [q, setQ]                 = React.useState((block && block.client_name) || '');
+  const [results, setResults]     = React.useState([]);
+  const [searched, setSearched]   = React.useState(false);
+  const [searching, setSearching] = React.useState(false);
+  const [selected, setSelected]   = React.useState(null);
+  const [saving, setSaving]       = React.useState(false);
+
+  const runSearch = React.useCallback(async () => {
+    setSearching(true);
+    setSearched(true);
+    try {
+      const term = (q || '').trim();
+      const url = '/api/v1/customer-master/'
+        + (term ? ('?q=' + encodeURIComponent(term)) : '');
+      const r = await apiFetch(url);
+      setResults((r && r.customers) || []);
+    } catch (e) {
+      onToast && onToast('Customer search failed: ' + e.message, 'error');
+      setResults([]);
+    }
+    setSearching(false);
+  }, [q, onToast]);
+
+  const onAssign = React.useCallback(async () => {
+    if (!selected || !selected.bill_to_contractor_id) {
+      onToast && onToast('Pick a Customer Master customer first', 'info');
+      return;
+    }
+    setSaving(true);
+    try {
+      const r = await apiFetch(
+        '/api/v1/admin/contractor-projection/assign/' + encodeURIComponent(batchId),
+        { method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sales_document_id: sdId,
+            contractor_id:     selected.bill_to_contractor_id,
+          }) });
+      if (r && r.ok) {
+        const overwriteNote = r.overwrote_existing
+          ? ` (replaced previous contractor ${r.previous_contractor_id})`
+          : '';
+        onToast && onToast(
+          'Customer assigned — draft generated for '
+            + (r.canonical_name || selected.bill_to_name || 'this document')
+            + overwriteNote,
+          'success');
+        setOpen(false);
+        onResolved && onResolved();   // refresh blocks + drafts
+      } else {
+        const why = (r && (r.detail || r.reason || r.error)) || 'see server logs';
+        onToast && onToast('Assign failed: ' + why, 'error');
+      }
+    } catch (e) {
+      onToast && onToast('Assign failed: ' + e.message, 'error');
+    }
+    setSaving(false);
+  }, [selected, batchId, sdId, onResolved, onToast]);
+
+  if (!sdId) return null;
+
+  return (
+    <div style={{ marginTop: 6 }}>
+      {!open ? (
+        <Btn small variant="primary"
+             data-testid={`proforma-blocked-resolve-toggle-${sdId}`}
+             onClick={() => { setOpen(true); if (!searched) runSearch(); }}>
+          Select customer & generate draft
+        </Btn>
+      ) : (
+        <div data-testid={`proforma-blocked-resolver-${sdId}`}
+             style={{ marginTop: 4, padding: '8px 10px', borderRadius: 4,
+                        background: 'var(--card)',
+                        border: '1px solid var(--badge-amber-border, #fbbf24)' }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+            <input value={q} onChange={(e) => setQ(e.target.value)}
+                   onKeyDown={(e) => { if (e.key === 'Enter') runSearch(); }}
+                   placeholder="Search Customer Master by name…"
+                   data-testid={`proforma-blocked-search-input-${sdId}`}
+                   style={{ flex: 1, fontSize: 12, padding: '4px 6px',
+                              border: '1px solid var(--card-border)', borderRadius: 3 }} />
+            <Btn small onClick={runSearch} disabled={searching}
+                 data-testid={`proforma-blocked-search-btn-${sdId}`}>
+              {searching ? 'Searching…' : 'Search'}
+            </Btn>
+          </div>
+          <div data-testid={`proforma-blocked-results-${sdId}`}
+               style={{ maxHeight: 160, overflowY: 'auto',
+                          border: '1px solid var(--card-border)', borderRadius: 3 }}>
+            {results.length === 0 && (
+              <div style={{ padding: '6px 8px', fontSize: 11, color: 'var(--text-3)' }}>
+                {searching ? 'Searching…'
+                  : searched ? 'No Customer Master matches. Refine the search, '
+                               + 'or add the customer in Customer Master first.'
+                  : 'Type a name and search.'}
+              </div>
+            )}
+            {results.map(c => {
+              const cid = String(c.bill_to_contractor_id || '');
+              const isSel = selected
+                && String(selected.bill_to_contractor_id || '') === cid;
+              return (
+                <div key={cid || c.id}
+                     data-testid={`proforma-blocked-result-${sdId}-${cid}`}
+                     onClick={() => setSelected(c)}
+                     style={{ padding: '5px 8px', fontSize: 11.5, cursor: 'pointer',
+                                borderBottom: '1px solid var(--badge-amber-border, #fbbf24)',
+                                background: isSel ? 'var(--row-hover)' : 'transparent' }}>
+                  <strong>{c.bill_to_name || '—'}</strong>
+                  {c.country ? <span style={{ color: 'var(--text-3)' }}> · {c.country}</span> : null}
+                  {(c.nip || c.vat_eu_number)
+                    ? <span style={{ color: 'var(--text-3)' }}> · VAT {c.nip || c.vat_eu_number}</span>
+                    : null}
+                  <span style={{ color: 'var(--text-3)', marginLeft: 6, fontFamily: 'monospace' }}>
+                    #{cid || '—'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' }}>
+            <Btn small variant="primary" onClick={onAssign}
+                 disabled={saving || !selected}
+                 data-testid={`proforma-blocked-assign-btn-${sdId}`}>
+              {saving ? 'Assigning…'
+                : selected ? `Assign ${selected.bill_to_name || 'customer'} & generate draft`
+                : 'Assign customer & generate draft'}
+            </Btn>
+            <Btn small variant="outline" onClick={() => setOpen(false)}
+                 data-testid={`proforma-blocked-cancel-${sdId}`}>
+              Cancel
+            </Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ── PR-203a: top-level Bill-to picker ───────────────────────────────────
 // Renders ONE dropdown.  Selecting a customer fires `onApply(row)` which
 // the panel converts into three sequential PATCHes (buyer / ship-to /
