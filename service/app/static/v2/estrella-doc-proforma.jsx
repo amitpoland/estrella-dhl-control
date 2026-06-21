@@ -7,12 +7,14 @@
 //   .date         string            issue date (ISO or formatted)
 //   .due          string|null       payment due date
 //   .payment      string            payment terms
-//   .rate         { eur: number, date: string, table: string }
+//   .currency     string            draft currency code (e.g. "USD"); labels use this, not a hardcoded EUR
+//   .rate         { eur: number, currency: string, date: string, table: string }  (eur = the PLN rate, mislabelled for legacy)
+//   .charges[]    { type, label, amount: number|null, currency, present }  freight / insurance (present=false → "not set")
 //   .seller       { name, addr, city, vat, email, phone, web }
 //   .buyer        { name, addr, city, country, vat }
 //   .ship_to      { name, addr, city, country } | null   recipient when ship_to_override set
-//   .lines[]      { seq, sku, desc, purity, origin, qty, unitEur, netEur }
-//   .total_eur    number
+//   .lines[]      { seq, sku, desc, purity, origin, qty, unitEur, netEur }  (unitEur/netEur named for legacy; carry the DRAFT-currency amount)
+//   .total_eur    number            goods subtotal in the draft currency (legacy name)
 //   .total_pln    number|null
 //   .carrier      { awb, incoterm } | null   optional
 //
@@ -182,7 +184,12 @@ function EJProformaClassic({ docData }) {
   const charges = d.charges || [];                        // freight / insurance (value or "not set")
   const chargesPresent = charges.filter(c => c && c.present);
   const totalEur = typeof d.total_eur === "number" ? d.total_eur : lines.reduce((s, l) => s + (l.netEur || 0), 0);
-  const grandTotal = totalEur + chargesPresent.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  // Only fold SAME-currency charges into the grand total — a charge in another
+  // currency (e.g. PLN freight on a USD draft) is shown in its own currency and
+  // NOT summed, so the printed total is never a cross-currency misstatement.
+  const grandTotal = totalEur + chargesPresent
+    .filter(c => (c.currency || cur) === cur)
+    .reduce((s, c) => s + (Number(c.amount) || 0), 0);
   const totalPln = typeof d.total_pln === "number" ? d.total_pln : null;
 
   return (
@@ -289,9 +296,9 @@ function EJProformaClassic({ docData }) {
             </div>
             {charges.map(c => (
               <div key={c.type} data-ej-charge={c.type} style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderBottom: "1px solid #E2E8F0", fontSize: 10 }}>
-                <span>{c.label} · {cur}</span>
+                <span>{c.label}</span>
                 <span className="ej-mono" style={{ color: c.present ? undefined : "#94A3B8" }}>
-                  {c.present ? Number(c.amount).toFixed(2) : "— not set"}
+                  {c.present ? `${c.currency || cur} ${Number(c.amount).toFixed(2)}` : "— not set"}
                 </span>
               </div>
             ))}
@@ -300,7 +307,7 @@ function EJProformaClassic({ docData }) {
               <span className="ej-mono">0.00</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 12px", background: "#0B3D2E", color: "#fff", fontSize: 12, fontWeight: 700 }}>
-              <span>{chargesPresent.length ? "Total incl. freight & insurance" : "Total due"}</span>
+              <span>{grandTotal > totalEur ? "Total incl. freight & insurance" : "Total due"}</span>
               <span className="ej-mono">{cur} {grandTotal.toFixed(2)}</span>
             </div>
             {totalPln !== null && (
@@ -358,7 +365,10 @@ function EJProformaModern({ docData }) {
   const charges = d.charges || [];
   const chargesPresent = charges.filter(c => c && c.present);
   const totalEur = typeof d.total_eur === "number" ? d.total_eur : lines.reduce((s, l) => s + (l.netEur || 0), 0);
-  const grandTotal = totalEur + chargesPresent.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  // Same-currency charges only (cross-currency charges are shown, not summed).
+  const grandTotal = totalEur + chargesPresent
+    .filter(c => (c.currency || cur) === cur)
+    .reduce((s, c) => s + (Number(c.amount) || 0), 0);
   const totalPln = typeof d.total_pln === "number" ? d.total_pln : null;
 
   return (
@@ -476,7 +486,7 @@ function EJProformaModern({ docData }) {
             ["Items",      lines.length,               false],
             ["Subtotal",   `${cur} ${totalEur.toFixed(2)}`,false],
             ["VAT",        "0% WDT · 0.00",             false],
-            [chargesPresent.length ? "Total incl. charges" : "Total due", `${cur} ${grandTotal.toFixed(2)}`, true],
+            [grandTotal > totalEur ? "Total incl. charges" : "Total due", `${cur} ${grandTotal.toFixed(2)}`, true],
           ].map(([k, v, hi], i) => (
             <div key={k} style={{
               padding: "12px 14px",
@@ -494,8 +504,8 @@ function EJProformaModern({ docData }) {
         <div data-ej-charges="1" style={{ display: "flex", gap: 18, fontSize: 9.5, color: "#475569", marginBottom: 10 }}>
           {charges.map(c => (
             <span key={c.type} data-ej-charge={c.type}>
-              {c.label} · {cur}: <span className="ej-mono" style={{ color: c.present ? "#0B3D2E" : "#94A3B8", fontWeight: 600 }}>
-                {c.present ? Number(c.amount).toFixed(2) : "— not set"}</span>
+              {c.label}: <span className="ej-mono" style={{ color: c.present ? "#0B3D2E" : "#94A3B8", fontWeight: 600 }}>
+                {c.present ? `${c.currency || cur} ${Number(c.amount).toFixed(2)}` : "— not set"}</span>
             </span>
           ))}
         </div>
@@ -541,7 +551,10 @@ function EJProformaBold({ docData }) {
   const charges = d.charges || [];
   const chargesPresent = charges.filter(c => c && c.present);
   const totalEur = typeof d.total_eur === "number" ? d.total_eur : lines.reduce((s, l) => s + (l.netEur || 0), 0);
-  const grandTotal = totalEur + chargesPresent.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  // Same-currency charges only (cross-currency charges are shown, not summed).
+  const grandTotal = totalEur + chargesPresent
+    .filter(c => (c.currency || cur) === cur)
+    .reduce((s, c) => s + (Number(c.amount) || 0), 0);
   const totalPln = typeof d.total_pln === "number" ? d.total_pln : null;
 
   return (
@@ -635,7 +648,7 @@ function EJProformaBold({ docData }) {
         <div style={{ marginBottom: 18, padding: 16, background: "#FBF8F1", borderLeft: "4px solid #C9A24B", borderRadius: 4 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
             <div>
-              <div className="ej-eyebrow ej-eyebrow-gold">{chargesPresent.length ? "Total incl. freight & insurance · WDT 0% intra-EU" : "Total due · WDT 0% intra-EU"}</div>
+              <div className="ej-eyebrow ej-eyebrow-gold">{grandTotal > totalEur ? "Total incl. freight & insurance · WDT 0% intra-EU" : "Total due · WDT 0% intra-EU"}</div>
               <div style={{ fontSize: 32, fontWeight: 700, color: "#0B3D2E", lineHeight: 1, marginTop: 4 }}>
                 {cur} {grandTotal.toFixed(2)}
               </div>
@@ -644,7 +657,7 @@ function EJProformaBold({ docData }) {
                 {charges.map(c => (
                   <span key={c.type} data-ej-charge={c.type}>
                     {c.label} {c.present
-                      ? <span className="ej-mono" style={{ color: "#0B3D2E", fontWeight: 600 }}>{cur} {Number(c.amount).toFixed(2)}</span>
+                      ? <span className="ej-mono" style={{ color: "#0B3D2E", fontWeight: 600 }}>{c.currency || cur} {Number(c.amount).toFixed(2)}</span>
                       : <span style={{ color: "#94A3B8" }}>— not set</span>}
                   </span>
                 ))}

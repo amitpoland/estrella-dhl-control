@@ -58,6 +58,13 @@ def test_backend_exposes_batch_blocking_reasons(resv):
     cap    = resv.index("batch_blocking_reasons = list(blocking_reasons)")
     rollup = resv.index('f"{d[\'client_name\']!r}: "')
     assert cap < rollup, "batch_blocking_reasons must be captured before per-doc roll-ups"
+    # content isolation: the per-doc roll-up appends to blocking_reasons, never to
+    # batch_blocking_reasons — and the capture is a copy (list(...)), so a client
+    # roll-up can never leak into the batch-scoped list even on a future refactor.
+    assert "batch_blocking_reasons.append(" not in resv, (
+        "nothing may append to batch_blocking_reasons — it is a frozen snapshot"
+    )
+    assert "list(blocking_reasons)" in resv, "batch snapshot must be a copy, not an alias"
 
 
 def test_backend_batch_field_is_not_gating(resv):
