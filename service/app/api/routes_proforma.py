@@ -5175,6 +5175,44 @@ def _repair_hint_for_blocker(reason: str) -> str:
     return "Resolve this blocker, then re-run readiness."
 
 
+def _eu_vat_candidate_from_master(cm: Any) -> Optional[Dict[str, str]]:
+    """Surface an on-file ``nip`` as a confirm-and-save EU-VAT CANDIDATE.
+
+    Context: the customer's canonical EU-VAT field is ``vat_eu_number`` (paired
+    with ``vat_eu_valid`` for VIES). The general tax-id field ``nip`` sometimes
+    already holds the EU VAT (e.g. an HU buyer stored as ``nip='HU32207880'``),
+    while ``vat_eu_number`` is left blank. When that happens the WDT gate blocks
+    for a "blank" VAT that is, to the operator, plainly on file — an authority
+    mismatch between what is stored and what the gate reads.
+
+    This returns the ``nip`` as a candidate ONLY when it is formatted as this EU
+    country's VAT (ISO-country prefix). It is deliberately conservative:
+
+      * It NEVER makes the customer WDT-eligible by itself. The readiness gate
+        still blocks until ``vat_eu_number`` is explicitly populated. This only
+        powers the operator's "save to Customer Master" action and the
+        authority-honest blocker wording — there is no silent nip→EU-VAT
+        acceptance (WDT is tax-sensitive; see safety gate).
+      * A bare domestic tax id (no country prefix) is NOT offered, so we never
+        assert EU-VAT eligibility from the wrong kind of number.
+
+    Returns ``{"candidate_vat", "candidate_source"}`` or ``None``.
+    """
+    from ..models.vat_resolver import EU_COUNTRIES  # noqa: PLC0415
+    country = (getattr(cm, "country", None)       or "").strip().upper()
+    vat_eu  = (getattr(cm, "vat_eu_number", None) or "").strip()
+    nip     = (getattr(cm, "nip", None)           or "").strip()
+    if vat_eu:                                   # canonical field already set
+        return None
+    if not country or country not in EU_COUNTRIES:
+        return None
+    if not nip:
+        return None
+    if nip.upper().replace(" ", "").startswith(country):
+        return {"candidate_vat": nip, "candidate_source": "nip"}
+    return None
+
+
 def _derive_draft_readiness(
     draft: "pildb.ProformaDraft", *, intent: str,
 ) -> Dict[str, Any]:
@@ -5217,6 +5255,10 @@ def _derive_draft_readiness(
     blockers: List[Dict[str, str]] = []
     warnings: List[str] = []
     _seen: set = set()
+    # Structured WDT-VAT resolution data so the frontend can offer an explicit
+    # "save EU VAT to Customer Master" action (never auto-applied). None unless
+    # the WDT/nip-candidate case below is detected.
+    _vat_resolution: Optional[Dict[str, Any]] = None
 
     def _add(reason: str, repair_action: str = "") -> None:
         key = (reason or "").strip()
@@ -5311,13 +5353,42 @@ def _derive_draft_readiness(
                     _r_vat_eu = (getattr(_r_cm, "vat_eu_number", None)
                                  or "").strip()
                     if not _r_vat_eu:
-                        _add(
-                            "WDT (intra-EU 0%) requires the buyer's EU VAT "
-                            "number — customer master vat_eu_number is blank",
-                            "Add the buyer's EU VAT number to Customer "
-                            "Master (verify via VIES). Do NOT change "
-                            "vat_mode to bypass missing VAT data.",
-                        )
+                        # The gate authority is customer_master.vat_eu_number.
+                        # If a nip is on file that is formatted as this EU
+                        # country's VAT, surface it as a confirm-and-save
+                        # candidate so the operator has an inline repair path —
+                        # WITHOUT auto-accepting it (still blocks until saved).
+                        _cand = _eu_vat_candidate_from_master(_r_cm)
+                        if _cand:
+                            _vat_resolution = {
+                                "context":              "wdt",
+                                "vat_eu_number":        "",
+                                "candidate_vat":        _cand["candidate_vat"],
+                                "candidate_source":     _cand["candidate_source"],
+                                "contractor_id":        _r_contractor,
+                                "needs_save_to_master": True,
+                            }
+                            _add(
+                                "WDT (intra-EU 0%) requires the buyer's EU VAT "
+                                "in Customer Master. Tax number "
+                                f"{_cand['candidate_vat']!r} is on file (nip) "
+                                "but the canonical vat_eu_number field is "
+                                "blank — confirm it is the EU VAT and save it "
+                                "to Customer Master.",
+                                "Use 'Save EU VAT to Customer Master' to write "
+                                f"{_cand['candidate_vat']} into vat_eu_number "
+                                "(then VIES-verify). Do NOT change vat_mode to "
+                                "bypass missing VAT data.",
+                            )
+                        else:
+                            _add(
+                                "WDT (intra-EU 0%) requires the buyer's EU VAT "
+                                "number — customer master vat_eu_number is "
+                                "blank",
+                                "Add the buyer's EU VAT number to Customer "
+                                "Master (verify via VIES). Do NOT change "
+                                "vat_mode to bypass missing VAT data.",
+                            )
                     elif getattr(_r_cm, "vat_eu_valid", None) is not True:
                         warnings.append(
                             "vies_unverified: buyer vat_eu_number present "
@@ -5359,6 +5430,7 @@ def _derive_draft_readiness(
         "warnings":          warnings,
         "ambiguous_designs": ambiguous_designs,
         "resolved_designs":  resolved_designs,
+        "vat_resolution":    _vat_resolution,
     }
 
 
