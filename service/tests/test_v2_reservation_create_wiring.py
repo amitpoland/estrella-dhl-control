@@ -107,11 +107,18 @@ def test_five_state_gating_and_explicit_reason():
     locally (Lesson F rule 5)."""
     src = _detail()
     assert "const canCreate" in src, "ProformaReservationTab must compute canCreate"
-    assert "!!preview && !isBlocked" in src, (
-        "canCreate must reflect backend preview authority (preview present + not blocked)"
+    # Gate on the canonical readiness authority (LOADED + clean), with the
+    # handler-present check — NOT the preview-loaded sentinel, which would
+    # false-enable in the window where readinessPost is still null.
+    assert "!!reservationReady && !isBlocked && !!onCreateReservation" in src, (
+        "canCreate must gate on reservationReady (canonical readiness) + not blocked + handler"
+    )
+    assert "readinessPost && readinessPost.ready === true" in src, (
+        "reservationReady must derive from the canonical readinessPost authority "
+        "(loaded + ready), never the preview-loaded sentinel alone (Lesson F rule 5)"
     )
     assert "disabledReason" in src, "must surface an explicit disabled reason (Lesson M)"
-    assert "preview has not loaded" in src, (
+    assert "readiness has not loaded" in src, (
         "must explain the not-yet-ready state to the operator"
     )
 
@@ -135,11 +142,17 @@ def test_modal_has_confirmation_idempotency_and_calls_pzapi():
     assert 'data-testid="reservation-create-modal-confirm"' in modal, (
         "modal must require an explicit operator confirmation checkbox"
     )
+    assert 'data-testid="reservation-create-modal-submit"' in modal, (
+        "modal submit button must carry a testid for E2E targeting"
+    )
     assert "window.PzApi.createWfirmaReservation(" in modal, (
         "modal must submit through PzApi.createWfirmaReservation (transport layer)"
     )
     assert "idempotent" in modal.lower(), (
         "modal must disclose the backend idempotency guarantee to the operator"
+    )
+    assert "!confirmed || loading" in modal, (
+        "handleCreate must guard against double-submit (re-entrancy) before the live write"
     )
 
 

@@ -1419,6 +1419,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // for the post intent, so it is carried by blockingReasons above — no separate
   // (stale) preview export list.
   const exportBlockers  = [];
+  // Reservation-create readiness — gate the Create Reservation button on the SAME
+  // canonical authority the Post/Convert buttons use (readinessPost), requiring it
+  // to be LOADED and clean (ready === true). Gating on the preview-loaded sentinel
+  // alone would false-enable the button in the window where readinessPost is still
+  // null (blockers default to []). The backend re-runs all 10 reservation gates
+  // regardless — this is a UI affordance, not the authority (Lesson F rule 5).
+  const reservationReady = !!(readinessPost && readinessPost.ready === true);
   const vatResolution   = disclosure && disclosure.vat_resolution;
 
   const proformaLabel = liveDraft.wfirma_proforma_fullnumber
@@ -2326,6 +2333,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             blockingReasons={blockingReasons}
             exportBlockers={exportBlockers}
             preview={preview}
+            reservationReady={reservationReady}
             canConvert={canConvert}
             onConvert={() => canConvert && setShowConvertModal(true)}
             onCreateReservation={() => setShowReservationModal(true)}
@@ -2904,23 +2912,26 @@ function ProformaCustomerMappingTab({ customer }) {
 }
 
 // ── Reservation tab ───────────────────────────────────────────────────────────
-// WIRED: blocking_reasons and export_blockers from POST /api/v1/proforma/preview/{batch_id}/{client_name}
-function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canConvert, onConvert, onCreateReservation }) {
+// WIRED: blocking reasons from the CANONICAL backend readiness (readinessPost —
+// GET /api/v1/proforma/draft/{id}/readiness?intent=post), passed in as
+// blockingReasons; reservationReady = (readinessPost.ready === true).
+function ProformaReservationTab({ blockingReasons, exportBlockers, preview, reservationReady, canConvert, onConvert, onCreateReservation }) {
   const allReasons = [...blockingReasons, ...exportBlockers];
   const isBlocked  = allReasons.length > 0;
   const auditClean = exportBlockers.length === 0;
 
   // Lesson M five-state truth model — the Create Reservation control is
-  // `available` (enabled + wired) ONLY when the backend preview has loaded AND
-  // reports no blocking_reasons / export_blockers. Otherwise it stays VISIBLE
-  // but `disabled` with the exact reason — never enabled-and-inert. Readiness is
-  // reflected from backend authority here, never re-derived (Lesson F rule 5);
-  // the backend re-runs all 10 gates on submit regardless.
-  const canCreate      = !!preview && !isBlocked && !!onCreateReservation;
+  // `available` (enabled + wired) ONLY when the canonical backend readiness has
+  // LOADED and is clean (reservationReady) AND there are no blocking reasons.
+  // Otherwise it stays VISIBLE but `disabled` with the exact reason — never
+  // enabled-and-inert. Readiness is reflected from backend authority here, never
+  // re-derived (Lesson F rule 5); the backend re-runs all 10 reservation gates
+  // on submit regardless.
+  const canCreate      = !!reservationReady && !isBlocked && !!onCreateReservation;
   const disabledReason = isBlocked
     ? 'Resolve the blocking reasons above before creating a reservation.'
-    : (!preview
-        ? 'wFirma reservation preview has not loaded yet — cannot confirm readiness.'
+    : (!reservationReady
+        ? 'Draft readiness has not loaded yet — cannot confirm the reservation is safe to create.'
         : '');
 
   return (
@@ -3277,6 +3288,22 @@ function CreateReservationModal({ batchId, clientName, preview, liveDraft, onClo
   const [loading,   setLoading]   = React.useState(false);
   const [apiError,  setApiError]  = React.useState(null);
 
+  // apiFetch surfaces a non-2xx as "HTTP <status>: <body>", where the body is the
+  // backend JSON { ok:false, code, error }. Extract the human-readable message
+  // (+ gate code) so the operator sees e.g. "Draft is not marked ready_to_create.
+  // (DRAFT_NOT_READY)" instead of a raw JSON blob.
+  const friendlyError = (raw) => {
+    if (!raw) return 'Reservation failed — check backend logs.';
+    const m = String(raw).match(/\{[\s\S]*\}\s*$/);
+    if (m) {
+      try {
+        const j = JSON.parse(m[0]);
+        if (j && j.error) return j.code ? `${j.error} (${j.code})` : j.error;
+      } catch (_) { /* fall through to raw */ }
+    }
+    return String(raw);
+  };
+
   const handleCreate = () => {
     if (!confirmed || loading) return;
     setLoading(true);
@@ -3286,14 +3313,14 @@ function CreateReservationModal({ batchId, clientName, preview, liveDraft, onClo
     window.PzApi.createWfirmaReservation(batchId, clientName)
       .then(res => {
         if (res && res.ok) {
-          onSuccess && onSuccess();
+          onSuccess && onSuccess();   // always unmounts the modal (parent closes it)
         } else {
-          setApiError((res && res.error) ? res.error : 'Reservation failed — check backend logs.');
+          setApiError(friendlyError(res && res.error));
           setLoading(false);
         }
       })
       .catch(e => {
-        setApiError((e && e.message) ? e.message : 'Reservation failed — check backend logs.');
+        setApiError(friendlyError(e && e.message));
         setLoading(false);
       });
   };
