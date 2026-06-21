@@ -304,6 +304,22 @@
     refreshCustomerDictionaries: () =>
       _postM(`${BASE}/customer-master/dictionaries/refresh`, {}),
 
+    // ── Packing — link-as-sales backfill ─────────────────────────────────
+    // GET /api/v1/packing/{batch_id}/packing-documents
+    // Returns { ok, data: { batch_id, count, documents: [{ id,
+    //   suggested_client_name, line_count, is_duplicate, canonical_id, ... }] } }
+    getPackingDocuments: (batchId) =>
+      _get(`${BASE}/packing/${encodeURIComponent(batchId)}/packing-documents`),
+
+    // POST /api/v1/packing/{batch_id}/link-as-sales
+    // clientMappings: [{ packing_document_id, client_name, client_contractor_id }]
+    // client_contractor_id (the operator's Customer-Master pick) is the customer
+    // authority — backend (#696) persists it onto the sales chain. Omit/blank →
+    // backend name-fallback. Transport only; the page decides the mappings.
+    linkAsSales: (batchId, clientMappings) =>
+      _postM(`${BASE}/packing/${encodeURIComponent(batchId)}/link-as-sales`,
+        { client_mappings: clientMappings || [] }),
+
     // -- Action proposals (Inbox 2B.3b write wiring) ----------------------
     // Attribution rides in the BODY (approved_by / rejected_by) per the
     // action-proposals contract -- NOT the X-Operator header that _callM
