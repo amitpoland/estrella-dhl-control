@@ -111,8 +111,119 @@ function BackendPendingBanner({ testid, children }) {
   );
 }
 
+// ── Authority-honest value derivation ────────────────────────────────────────
+// Every displayed value below comes from GET /api/v1/dashboard/batches/{batch_id}
+// (returns the full audit object — same authority the V1 page reads). Any field the
+// authority does not carry renders as '—'. Nothing on this page is invented.
+function _dash(v) { return (v === null || v === undefined || v === '') ? '—' : v; }
+function _fmtUsd(n) {
+  if (n == null || n === '') return '—';
+  const x = Number(n); if (isNaN(x)) return '—';
+  return 'USD ' + x.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function _fmtPln(n) {
+  const f = window.EstrellaShared && window.EstrellaShared.fmtPLN;
+  if (f) return f(n);
+  if (n == null || n === '') return '—';
+  const x = Number(n); return isNaN(x) ? '—' : 'PLN ' + x.toLocaleString('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function _fmtRate(n) { return (n == null || n === '') ? '—' : Number(n).toFixed(4); }
+function _fmtDate(iso, withTime) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso);
+  let s = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  if (withTime && /[T ]\d\d:/.test(String(iso))) {
+    s += ' · ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  }
+  return s;
+}
+
+// Flatten the raw audit object → display fields. null wherever the authority is silent.
+function deriveDetail(audit, shipment) {
+  audit = audit || {};
+  shipment = shipment || {};
+  const cd  = audit.customs_declaration || {};
+  const pc  = audit.dhl_precheck || {};
+  const wf  = audit.wfirma_export || {};
+  const inp = audit.inputs || {};
+  const tot = audit.totals || {};
+  const ver = audit.verification || {};
+
+  const invoiceCount = Array.isArray(inp.invoices) ? inp.invoices.length
+                     : Array.isArray(inp.invoice_refs) ? inp.invoice_refs.length : null;
+
+  // Customs verification checks — only those with a real backing signal are shown.
+  const checks = [];
+  if (cd.values_match != null) checks.push({ label: 'CIF values match (invoice vs SAD)', ok: cd.values_match === true });
+  if (ver.cif_match  != null)  checks.push({ label: 'CIF verified against declaration',   ok: ver.cif_match === true });
+  if (cd.cif_alert   != null)  checks.push({ label: 'No CIF discrepancy alert',            ok: cd.cif_alert === false });
+  if (cd.rate_alert  != null)  checks.push({ label: 'Exchange rate within tolerance',      ok: cd.rate_alert === false });
+
+  return {
+    loaded:   !!audit.batch_id,
+    importer: cd.importer_name || shipment.client || null,
+    exporter: cd.exporter_name || null,
+    lineCount:    tot.line_count != null ? tot.line_count : null,
+    invoiceCount,
+    awbUploaded:  !!inp.awb,
+    trackingStatus: shipment.tracking_status || null,
+    // CIF authority (values are USD — invoice currency, NOT EUR)
+    cifUsd:       pc.invoice_cif_total_usd != null ? pc.invoice_cif_total_usd : (cd.invoice_cif_usd != null ? cd.invoice_cif_usd : null),
+    thresholdUsd: pc.threshold_usd != null ? pc.threshold_usd : null,
+    cifSource:    pc.cif_source || null,
+    clearanceHint: pc.clearance_hint || null,
+    dskRequiredHint: pc.dsk_required_hint === true,
+    invoicesParsed: pc.invoices_parsed != null ? pc.invoices_parsed : null,
+    // Customs / SAD authority
+    mrn:          cd.mrn || shipment.mrn || null,
+    lrn:          cd.lrn || null,
+    clearanceDate: cd.clearance_date || null,
+    customsAgent:  cd.customs_agent || null,
+    sadRate:      cd.sad_customs_rate != null ? cd.sad_customs_rate : null,
+    nbpRate:      cd.nbp_rate != null ? cd.nbp_rate : null,
+    nbpTable:     cd.nbp_table || null,
+    dutyA00Pln:   cd.duty_a00_pln != null ? cd.duty_a00_pln : null,
+    vatB00Pln:    cd.vat_b00_pln != null ? cd.vat_b00_pln : null,
+    vatModeLabel: cd.vat_mode_label_en || null,
+    cnCode:       cd.cn_code || null,
+    goodsDescription: cd.goods_description || null,
+    checks,
+    // PZ / wFirma authority
+    pzNumber:     wf.wfirma_pz_fullnumber || null,
+    pzDocId:      wf.wfirma_pz_doc_id || null,
+    pzExportDate: wf.pz_created_at || wf.pz_adopted_at || wf.last_generated_at || null,
+    wfirmaMode:   wf.mode || null,
+    pzFileGenerated: !!(audit.pz_output && (audit.pz_output.pdf || audit.pz_output.xlsx)),
+    // Totals (PLN) — audit totals are authoritative; fall back to the list row
+    netPln:   tot.net   != null ? tot.net   : (shipment.net   != null ? shipment.net   : null),
+    grossPln: tot.gross != null ? tot.gross : (shipment.gross != null ? shipment.gross : null),
+    dutyPln:  tot.duty  != null ? tot.duty  : (shipment.duty  != null ? shipment.duty  : null),
+    // Real activity log
+    timeline: Array.isArray(audit.timeline) ? audit.timeline : [],
+  };
+}
+
 function ShipmentDetailPage({ shipment, onBack }) {
   const [activeTab, setActiveTab] = React.useState('overview');
+
+  // Live shipment detail — fetched from the full-audit authority endpoint.
+  const [detail,        setDetail]        = React.useState(null);
+  const [detailLoading, setDetailLoading] = React.useState(false);
+  const [detailError,   setDetailError]   = React.useState(null);
+  const batchId = shipment && shipment.batch_id;
+
+  React.useEffect(() => {
+    if (!batchId) return;
+    let cancelled = false;
+    setDetailLoading(true); setDetailError(null);
+    window.EstrellaShared.apiFetch('/api/v1/dashboard/batches/' + encodeURIComponent(batchId))
+      .then(a => { if (!cancelled) { setDetail(a); setDetailLoading(false); } })
+      .catch(e => { if (!cancelled) { setDetailError((e && e.message) || 'Failed to load shipment detail'); setDetailLoading(false); } });
+    return () => { cancelled = true; };
+  }, [batchId]);
+
+  const d = React.useMemo(() => deriveDetail(detail, shipment), [detail, shipment]);
 
   // Workflow state is DERIVED from authoritative shipment props — read-only.
   // No local setters fake progress; the page reflects backend truth, never produces it.
@@ -197,12 +308,12 @@ function ShipmentDetailPage({ shipment, onBack }) {
         <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
         <div>
           <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>Importer</div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{shipment.client || 'Estrella Jewels Sp. z o.o.'}</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{_dash(d.importer)}</div>
         </div>
         <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>Pieces</div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{shipment.pieces || 47}</div>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>Lines</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{_dash(d.lineCount)}</div>
         </div>
         <div style={{ flex: 1 }} />
         <Badge status={shipment.overall} />
@@ -295,6 +406,15 @@ function ShipmentDetailPage({ shipment, onBack }) {
         style={{ padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 20 }}
       >
 
+        {detailError && (
+          <div data-testid="detail-load-error" role="alert" style={{
+            padding: '12px 16px', borderRadius: 8, fontSize: 12, lineHeight: 1.5,
+            background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', color: 'var(--badge-amber-text)',
+          }}>
+            ⚠ Could not load full shipment detail ({detailError}). Showing summary values only; some fields below may read “—”.
+          </div>
+        )}
+
         {/* Next-action callout */}
         {nextAction && activeTab === 'overview' && (
           <div style={{
@@ -326,21 +446,21 @@ function ShipmentDetailPage({ shipment, onBack }) {
         )}
 
         {activeTab === 'overview' && (
-          <OverviewTab shipment={shipment} sadUploaded={sadUploaded} pzGenerated={pzGenerated} pzExported={pzExported} replySent={replySent} dhlEmailReceived={dhlEmailReceived} setActiveTab={setActiveTab} />
+          <OverviewTab d={d} shipment={shipment} sadUploaded={sadUploaded} pzGenerated={pzGenerated} pzExported={pzExported} replySent={replySent} dhlEmailReceived={dhlEmailReceived} setActiveTab={setActiveTab} />
         )}
         {activeTab === 'proforma' && (
           <ProformaTabInShipment shipment={shipment} />
         )}
         {activeTab === 'dhl' && (
           <DhlTab
-            shipment={shipment} sadUploaded={sadUploaded}
+            d={d} shipment={shipment} sadUploaded={sadUploaded}
             dhlEmailReceived={dhlEmailReceived} replySent={replySent}
             batchId={shipment && shipment.batch_id}
           />
         )}
         {activeTab === 'pz' && (
           <PzTab
-            shipment={shipment} sadUploaded={sadUploaded}
+            d={d} shipment={shipment} sadUploaded={sadUploaded}
             pzGenerated={pzGenerated} pzExported={pzExported} pzNumber={pzNumber}
             batchId={shipment && shipment.batch_id}
             setActiveTab={setActiveTab}
@@ -350,7 +470,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
           <DocumentsTab batchId={shipment && shipment.batch_id} />
         )}
         {activeTab === 'timeline' && (
-          <TimelineTab shipment={shipment} sadUploaded={sadUploaded} pzGenerated={pzGenerated} replySent={replySent} dhlEmailReceived={dhlEmailReceived} pzExported={pzExported} />
+          <TimelineTab d={d} detailLoading={detailLoading} />
         )}
       </div>
     </div>
@@ -386,27 +506,28 @@ function InfoBlock({ rows }) {
 
 // ── OVERVIEW
 
-function OverviewTab({ shipment, sadUploaded, pzGenerated, pzExported, replySent, dhlEmailReceived, setActiveTab }) {
+function OverviewTab({ d, shipment, sadUploaded, pzGenerated, pzExported, replySent, dhlEmailReceived, setActiveTab }) {
+  const wfirmaLabel = d.pzDocId ? 'Booked ✓' : (d.wfirmaMode === 'clipboard' ? 'Clipboard generated' : (pzExported ? 'Exported ✓' : 'Not exported'));
   return (
     <>
       <SectionLabel>Key figures</SectionLabel>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
-        <StatTile label="Pieces"        value={shipment.pieces || 47} />
-        <StatTile label="Total CIF"     value="EUR 1,280" />
-        <StatTile label="Net (PLN)"     value={shipment.net} />
-        <StatTile label="Duty A00"      value={shipment.duty} />
+        <StatTile label="Lines"         value={_dash(d.lineCount)} />
+        <StatTile label="Total CIF"     value={_fmtUsd(d.cifUsd)} />
+        <StatTile label="Net (PLN)"     value={_fmtPln(d.netPln)} />
+        <StatTile label="Duty A00"      value={_fmtPln(d.dutyPln)} />
       </div>
 
       <SectionLabel style={{ marginTop: 8 }}>Workflow areas</SectionLabel>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         {/* Shipment */}
-        <PanelCard title="Shipment" subtitle="Tracking, invoices, AWB" status="DHL In Transit">
+        <PanelCard title="Shipment" subtitle="Tracking, invoices, AWB" status={_dash(d.trackingStatus) === '—' ? (shipment.carrier || 'Shipment') : d.trackingStatus}>
           <InfoBlock rows={[
-            { label: 'AWB / Tracking', value: shipment.awb, mono: true },
-            { label: 'Carrier',        value: shipment.carrier },
-            { label: 'Tracking',       value: 'In Transit' },
-            { label: 'Invoices',       value: '3 uploaded' },
-            { label: 'AWB PDF',        value: 'Uploaded ✓' },
+            { label: 'AWB / Tracking', value: _dash(shipment.awb), mono: true },
+            { label: 'Carrier',        value: _dash(shipment.carrier) },
+            { label: 'Tracking',       value: _dash(d.trackingStatus) },
+            { label: 'Invoices',       value: d.invoiceCount != null ? (d.invoiceCount + ' uploaded') : '—' },
+            { label: 'AWB PDF',        value: d.awbUploaded ? 'Uploaded ✓' : '—' },
           ]} />
           <div style={{ padding: '0 20px 16px' }}>
             <button onClick={() => setActiveTab('dhl')} data-testid="ov-shipment-open-dhl" style={navLinkStyle()}>Open DHL / Customs →</button>
@@ -416,8 +537,8 @@ function OverviewTab({ shipment, sadUploaded, pzGenerated, pzExported, replySent
         {/* DHL clearance */}
         <PanelCard title="DHL Clearance" subtitle="Email correspondence + reply" status={replySent ? 'Reply Sent' : (dhlEmailReceived ? 'DHL Email Received' : 'Awaiting DHL Email')}>
           <InfoBlock rows={[
-            { label: 'Total Invoice CIF', value: 'EUR 1,280.00' },
-            { label: 'DSK Recommendation', value: 'Standard DSK' },
+            { label: 'Total Invoice CIF', value: _fmtUsd(d.cifUsd) },
+            { label: 'DSK Recommendation', value: _dash(d.clearanceHint) },
             { label: 'DHL Email',         value: dhlEmailReceived ? 'Received ✓' : 'Awaiting' },
             { label: 'Reply Status',      value: replySent ? 'Sent ✓' : 'Not sent' },
           ]} />
@@ -430,9 +551,9 @@ function OverviewTab({ shipment, sadUploaded, pzGenerated, pzExported, replySent
         <PanelCard title="Customs / SAD" subtitle="ZC429 declaration & verification" status={sadUploaded ? 'SAD Uploaded' : 'SAD Pending'}>
           <InfoBlock rows={[
             { label: 'SAD / ZC429',    value: sadUploaded ? 'Uploaded ✓' : 'Not uploaded' },
-            { label: 'MRN',            value: shipment.mrn, mono: true },
-            { label: 'Clearance Date', value: sadUploaded ? '27 Apr 2024' : '—' },
-            { label: 'Customs Agent',  value: sadUploaded ? 'Agencja Celna' : '—' },
+            { label: 'MRN',            value: _dash(d.mrn), mono: true },
+            { label: 'Clearance Date', value: _fmtDate(d.clearanceDate) },
+            { label: 'Customs Agent',  value: _dash(d.customsAgent) },
           ]} />
           <div style={{ padding: '0 20px 16px' }}>
             <button onClick={() => setActiveTab('dhl')} data-testid="ov-customs-open-dhl" style={navLinkStyle()}>Open DHL / Customs →</button>
@@ -443,9 +564,9 @@ function OverviewTab({ shipment, sadUploaded, pzGenerated, pzExported, replySent
         <PanelCard title="PZ / Accounting" subtitle="Goods receipt & wFirma export" status={pzExported ? 'Exported' : (pzGenerated ? 'Generated' : (sadUploaded ? 'Ready for PZ' : 'Locked'))}>
           <InfoBlock rows={[
             { label: 'PZ Status',  value: pzGenerated ? 'Generated ✓' : (sadUploaded ? 'Ready' : 'Locked') },
-            { label: 'PZ Number',  value: pzGenerated ? 'PZ/2024/001234' : '—', mono: true },
-            { label: 'Net Value',  value: shipment.net },
-            { label: 'wFirma',     value: pzExported ? 'Exported ✓' : 'Not exported' },
+            { label: 'PZ Number',  value: _dash(d.pzNumber), mono: true },
+            { label: 'Net Value',  value: _fmtPln(d.netPln) },
+            { label: 'wFirma',     value: wfirmaLabel },
           ]} />
           <div style={{ padding: '0 20px 16px' }}>
             <button onClick={() => setActiveTab('pz')} data-testid="ov-open-pz" style={navLinkStyle()}>Open PZ / Accounting →</button>
@@ -468,7 +589,7 @@ function navLinkStyle() {
 
 // ── DHL / CUSTOMS
 
-function DhlTab({ shipment, sadUploaded, dhlEmailReceived, replySent, batchId }) {
+function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId }) {
   const bid = batchId || '{batch_id}';
   return (
     <>
@@ -482,12 +603,12 @@ function DhlTab({ shipment, sadUploaded, dhlEmailReceived, replySent, batchId })
         <div style={{ padding: '18px 20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 28 }}>
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>Customs values</div>
-            <InfoRow label="Total Invoice CIF"     value="EUR 1,280.00" />
-            <InfoRow label="FOB Value"             value="EUR 1,150.00" />
-            <InfoRow label="Freight"               value="EUR 95.00" />
-            <InfoRow label="Insurance"             value="EUR 35.00" />
-            <InfoRow label="DHL Threshold"         value="EUR 150 — Reply Required" />
-            <InfoRow label="DSK Recommendation"    value="Standard DSK" />
+            <InfoRow label="Total Invoice CIF"  value={_fmtUsd(d.cifUsd)} />
+            <InfoRow label="CIF Source"         value={_dash(d.cifSource)} />
+            <InfoRow label="Invoices Parsed"    value={_dash(d.invoicesParsed)} />
+            <InfoRow label="DHL Threshold"      value={d.thresholdUsd != null ? (_fmtUsd(d.thresholdUsd) + (d.dskRequiredHint ? ' — Reply Required' : '')) : '—'} />
+            <InfoRow label="DSK Recommendation" value={_dash(d.clearanceHint)} />
+            <InfoRow label="CN Code"            value={_dash(d.cnCode)} />
           </div>
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>Reply package status</div>
@@ -495,7 +616,7 @@ function DhlTab({ shipment, sadUploaded, dhlEmailReceived, replySent, batchId })
             <InfoRow label="Polish Description"  value={dhlEmailReceived ? 'Generated ✓' : '—'} />
             <InfoRow label="DSK PDF"             value={dhlEmailReceived ? 'Generated ✓' : '—'} />
             <InfoRow label="Reply Package"       value={replySent ? 'Sent ✓' : (dhlEmailReceived ? 'Built ✓' : '—')} />
-            <InfoRow label="Reply Sent"          value={replySent ? '27 Apr 2024 · 14:32' : 'Not sent'} />
+            <InfoRow label="Reply Sent"          value={replySent ? 'Sent ✓ — see Timeline for exact time' : 'Not sent'} />
           </div>
         </div>
         <BackendPendingBanner testid="dhl-actions-pending-note">
@@ -523,31 +644,26 @@ function DhlTab({ shipment, sadUploaded, dhlEmailReceived, replySent, batchId })
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>Document references</div>
             <InfoRow label="SAD / ZC429 Status" value={sadUploaded ? 'Uploaded ✓' : 'Not uploaded'} />
-            <InfoRow label="MRN"                value={shipment.mrn} mono />
-            <InfoRow label="LRN"                value={sadUploaded ? 'LRN-20240427-001' : '—'} mono />
-            <InfoRow label="Clearance Date"     value={sadUploaded ? '27 Apr 2024' : '—'} />
-            <InfoRow label="Customs Agent"      value={sadUploaded ? 'Agencja Celna Sp. z o.o.' : '—'} />
+            <InfoRow label="MRN"                value={_dash(d.mrn)} mono />
+            <InfoRow label="LRN"                value={_dash(d.lrn)} mono />
+            <InfoRow label="Clearance Date"     value={_fmtDate(d.clearanceDate)} />
+            <InfoRow label="Customs Agent"      value={_dash(d.customsAgent)} />
           </div>
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>Values & rates</div>
-            <InfoRow label="SAD Exchange Rate"   value={sadUploaded ? 'EUR/PLN 4.2650' : '—'} />
-            <InfoRow label="NBP Accounting Rate" value={sadUploaded ? 'EUR/PLN 4.2510' : '—'} />
-            <InfoRow label="A00 Duty"            value={sadUploaded ? 'PLN 282.00' : '—'} />
-            <InfoRow label="B00 VAT"             value={sadUploaded ? 'PLN 1,254.60' : '—'} />
-            <InfoRow label="Art.33a / Import"    value={sadUploaded ? 'Standard Import' : '—'} />
+            <InfoRow label="SAD Customs Rate"    value={d.sadRate != null ? ('USD/PLN ' + _fmtRate(d.sadRate)) : '—'} />
+            <InfoRow label="NBP Accounting Rate" value={d.nbpRate != null ? ('USD/PLN ' + _fmtRate(d.nbpRate)) : '—'} />
+            <InfoRow label="A00 Duty"            value={_fmtPln(d.dutyA00Pln)} />
+            <InfoRow label="B00 VAT"             value={_fmtPln(d.vatB00Pln)} />
+            <InfoRow label="VAT Mode"            value={_dash(d.vatModeLabel)} />
           </div>
         </div>
 
-        {sadUploaded && (
+        {d.checks.length > 0 && (
           <div style={{ margin: '0 20px 16px', padding: '14px 16px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 8 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-green-text)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>Verification checks</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              {[
-                { label: 'Invoice reference check',     ok: true },
-                { label: 'CIF / customs value check',   ok: true },
-                { label: 'Importer / exporter check',   ok: true },
-                { label: 'Quantity check',              ok: shipment.sadStatus !== 'Verification Needed' },
-              ].map(c => (
+              {d.checks.map(c => (
                 <div key={c.label} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
                   <span style={{
                     width: 18, height: 18, borderRadius: 9,
@@ -576,8 +692,9 @@ function DhlTab({ shipment, sadUploaded, dhlEmailReceived, replySent, batchId })
 
 // ── PZ / ACCOUNTING
 
-function PzTab({ shipment, sadUploaded, pzGenerated, pzExported, pzNumber, batchId, setActiveTab }) {
+function PzTab({ d, shipment, sadUploaded, pzGenerated, pzExported, pzNumber, batchId, setActiveTab }) {
   const bid = batchId || '{batch_id}';
+  const wfirmaStatus = d.pzDocId ? 'Booked ✓' : (d.wfirmaMode === 'clipboard' ? 'Clipboard generated' : (pzExported ? 'Exported ✓' : 'Not exported'));
   if (!sadUploaded) {
     return (
       <PanelCard title="PZ Document & wFirma Booking" subtitle="Goods receipt, audit files, and accounting export" status="Locked">
@@ -610,16 +727,16 @@ function PzTab({ shipment, sadUploaded, pzGenerated, pzExported, pzNumber, batch
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>PZ details</div>
             <InfoRow label="PZ Status"   value={pzGenerated ? 'Generated ✓' : 'Ready for PZ'} />
-            <InfoRow label="PZ Number"   value={pzNumber || '—'} mono />
-            <InfoRow label="Net Value"   value={shipment.net} />
-            <InfoRow label="Gross Value" value={shipment.gross} />
-            <InfoRow label="Duty A00"    value={shipment.duty} />
+            <InfoRow label="PZ Number"   value={_dash(d.pzNumber)} mono />
+            <InfoRow label="Net Value"   value={_fmtPln(d.netPln)} />
+            <InfoRow label="Gross Value" value={_fmtPln(d.grossPln)} />
+            <InfoRow label="Duty A00"    value={_fmtPln(d.dutyPln)} />
           </div>
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>wFirma export</div>
-            <InfoRow label="wFirma Status"   value={pzExported ? 'Exported ✓' : 'Not exported'} />
-            <InfoRow label="Export Date"     value={pzExported ? '27 Apr 2024' : '—'} />
-            <InfoRow label="External Doc ID" value={pzExported ? 'WF-2024-04-PZ-1234' : '—'} mono />
+            <InfoRow label="wFirma Status"   value={wfirmaStatus} />
+            <InfoRow label="Export Date"     value={_fmtDate(d.pzExportDate, true)} />
+            <InfoRow label="External Doc ID" value={_dash(d.pzDocId)} mono />
           </div>
         </div>
 
@@ -766,64 +883,68 @@ function DocumentsTab({ batchId }) {
 
 // ── TIMELINE
 
-const TIMELINE_EVENTS = [
-  { label: 'Shipment created',                done: true, date: '10 Apr 2024 · 09:12' },
-  { label: 'Invoice uploaded',                done: true, date: '10 Apr 2024 · 09:15' },
-  { label: 'AWB uploaded',                    done: true, date: '10 Apr 2024 · 09:17' },
-  { label: 'DHL pre-check completed',         done: true, date: '10 Apr 2024 · 09:20' },
-  { label: 'DHL email received',              done: null, date: null, key: 'dhlEmail' },
-  { label: 'Polish description generated',    done: null, date: null, key: 'dhlEmail' },
-  { label: 'DSK generated',                   done: null, date: null, key: 'dhlEmail' },
-  { label: 'Reply package prepared',          done: null, date: null, key: 'dhlEmail' },
-  { label: 'Reply sent to DHL',               done: null, date: null, key: 'reply' },
-  { label: 'SAD / ZC429 uploaded',            done: null, date: null, key: 'sad' },
-  { label: 'Customs values parsed',           done: null, date: null, key: 'sad' },
-  { label: 'Verification checks passed',      done: null, date: null, key: 'sad' },
-  { label: 'PZ unlocked',                     done: null, date: null, key: 'pzUnlock' },
-  { label: 'PZ generated',                    done: null, date: null, key: 'pz' },
-  { label: 'PZ number confirmed',             done: null, date: null, key: 'pz' },
-  { label: 'Exported to wFirma',              done: null, date: null, key: 'wfirma' },
-];
+// Real activity timeline — rendered straight from audit.timeline (the authoritative
+// append-only event log). No fabricated events; the list is empty when the authority
+// has none. Friendly labels for common events; unknown events are prettified generically.
+const _EVENT_LABELS = {
+  batch_created:                'Shipment created',
+  dhl_precheck_completed:       'DHL pre-check completed',
+  dhl_email_received:           'DHL clearance email received',
+  polish_description_generated: 'Polish description generated',
+  dsk_generated:                'DSK generated',
+  reply_package_generated:      'Reply package prepared',
+  reply_sent:                   'Reply sent to DHL',
+  agency_forward_after_dhl_queued: 'Forwarded to customs agency',
+  sad_imported:                 'SAD / ZC429 imported',
+  pz_created:                   'PZ created',
+  pz_confirmed:                 'PZ number confirmed',
+  wfirma_pz_created:            'PZ booked in wFirma',
+};
+function _humanizeEvent(name) {
+  if (!name) return 'Event';
+  if (_EVENT_LABELS[name]) return _EVENT_LABELS[name];
+  return String(name).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
 
-function TimelineTab({ shipment, sadUploaded, pzGenerated, replySent, dhlEmailReceived, pzExported }) {
-  const events = TIMELINE_EVENTS.map(e => {
-    let done = e.done;
-    if (e.key === 'dhlEmail' && (dhlEmailReceived || replySent)) done = true;
-    if (e.key === 'reply'    && replySent) done = true;
-    if (e.key === 'sad'      && sadUploaded) done = true;
-    if (e.key === 'pzUnlock' && sadUploaded) done = true;
-    if (e.key === 'pz'       && pzGenerated) done = true;
-    if (e.key === 'wfirma'   && pzExported) done = true;
-    return { ...e, done };
-  });
+function TimelineTab({ d, detailLoading }) {
+  const events = (d.timeline || []).slice().sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+
+  if (detailLoading && events.length === 0) {
+    return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>Loading timeline…</div>;
+  }
 
   return (
-    <PanelCard title="Activity timeline" subtitle="Chronological audit log of every event for this shipment">
-      <div style={{ padding: '24px 28px' }}>
-        <div style={{ position: 'relative', paddingLeft: 28 }}>
-          <div style={{ position: 'absolute', left: 9, top: 6, bottom: 6, width: 2, background: 'var(--border)' }} />
-          {events.map((e, i) => (
-            <div key={i} style={{ position: 'relative', marginBottom: 18, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
-              <div style={{
-                position: 'absolute', left: -28,
-                width: 20, height: 20, borderRadius: 10,
-                background: e.done ? '#22A06B' : 'var(--card)',
-                border: `2px solid ${e.done ? '#22A06B' : 'var(--border)'}`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                zIndex: 1, top: 0,
-              }}>
-                {e.done && <span style={{ fontSize: 10, color: '#fff', fontWeight: 800 }}>✓</span>}
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: e.done ? 600 : 500, color: e.done ? 'var(--text)' : 'var(--text-3)' }}>{e.label}</div>
-                {e.done && e.date && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2, fontFamily: 'monospace' }}>{e.date}</div>}
-                {e.done && !e.date && <div style={{ fontSize: 11, color: 'var(--badge-green-text)', marginTop: 2, fontWeight: 600 }}>Completed</div>}
-                {!e.done && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Pending</div>}
-              </div>
-            </div>
-          ))}
+    <PanelCard title="Activity timeline" subtitle={`Chronological audit log — ${events.length} event${events.length === 1 ? '' : 's'} recorded`}>
+      {events.length === 0 ? (
+        <div data-testid="timeline-empty" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>
+          No timeline events recorded for this shipment yet.
         </div>
-      </div>
+      ) : (
+        <div data-testid="timeline-events" style={{ padding: '24px 28px' }}>
+          <div style={{ position: 'relative', paddingLeft: 28 }}>
+            <div style={{ position: 'absolute', left: 9, top: 6, bottom: 6, width: 2, background: 'var(--border)' }} />
+            {events.map((e, i) => (
+              <div key={i} style={{ position: 'relative', marginBottom: 18, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+                <div style={{
+                  position: 'absolute', left: -28,
+                  width: 20, height: 20, borderRadius: 10,
+                  background: '#22A06B', border: '2px solid #22A06B',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  zIndex: 1, top: 0,
+                }}>
+                  <span style={{ fontSize: 10, color: '#fff', fontWeight: 800 }}>✓</span>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{_humanizeEvent(e.event)}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2, fontFamily: 'monospace' }}>
+                    {_fmtDate(e.ts, true)}{e.actor ? ' · ' + e.actor : ''}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </PanelCard>
   );
 }
