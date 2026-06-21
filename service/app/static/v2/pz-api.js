@@ -320,6 +320,23 @@
       _postM(`${BASE}/packing/${encodeURIComponent(batchId)}/link-as-sales`,
         { client_mappings: clientMappings || [] }),
 
+    // ── wFirma reservation ───────────────────────────────────────────────
+    // GET /api/v1/wfirma/reservation-preview/{batch_id}
+    // Returns { ok, data: { ready_to_create, blocking_reasons[], reservation_exists,
+    //   reservation_id, documents: [{ client_name, ready, blocking_reasons[], ... }] } }
+    // This is the CANONICAL reservation readiness (distinct from proforma post readiness).
+    getReservationPreview: (batchId) =>
+      _get(`${BASE}/wfirma/reservation-preview/${encodeURIComponent(batchId)}`),
+
+    // POST /api/v1/wfirma/reservations/create  { batch_id, client_name }
+    // LIVE wFirma write — hard-gated by check_wfirma_config + per-draft GATE_* checks.
+    // 200 → { ok:true, wfirma_reservation_id }; 409 → gate code; 502 → wFirma error.
+    // Operator-confirmed action only (the UI gates on getReservationPreview readiness
+    // and requires explicit confirmation before calling this).
+    createReservation: (batchId, clientName) =>
+      _postM(`${BASE}/wfirma/reservations/create`,
+        { batch_id: batchId, client_name: clientName }),
+
     // -- Action proposals (Inbox 2B.3b write wiring) ----------------------
     // Attribution rides in the BODY (approved_by / rejected_by) per the
     // action-proposals contract -- NOT the X-Operator header that _callM
