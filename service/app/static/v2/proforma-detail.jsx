@@ -1987,6 +1987,68 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         </div>
       )}
 
+      {/* ── Product-code billing evidence (display-only, surfaces #686) ────────
+          Renders the readiness gate's duplicate_product_codes: every purchase lot
+          (product_code) billed across >1 draft line, with billed vs available
+          packing quantity. A product_code is ONE purchase-invoice lot that may
+          legitimately span several designs/pieces — billing within the available
+          quantity is fine (shown here for transparency, never hidden); billing
+          MORE than available is an over-bill (double-bill) which the backend gate
+          ALSO raises as a blocker above. Pure reflection of the backend authority
+          — no local computation, no write actions (Lesson F rule 5). */}
+      {readinessPost && (readinessPost.duplicate_product_codes || []).length > 0 && (
+        <div data-testid="overbill-evidence-panel" style={{
+          background: 'var(--card)',
+          borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+          borderTop: '1px solid var(--border)',
+          padding: '12px 24px',
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>
+            Product-code billing — purchase lots billed across multiple lines
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text)', opacity: 0.7, marginBottom: 8 }}>
+            {'A product_code is one purchase-invoice lot and may legitimately span several designs. Billing within the available packing quantity is fine; an over-bill (billed > available) is a double-bill and blocks Approve / Post / Convert.'}
+          </div>
+          {(readinessPost.duplicate_product_codes || []).map((d) => {
+            const over = !!d.over_billed;
+            const designs = d.design_nos || [];
+            // product_code can contain '/' (e.g. EJL/26-27/299-2) — slugify for a
+            // selector-safe data-testid; the React key keeps the raw value.
+            const tid = String(d.product_code || '').replace(/[^a-zA-Z0-9_-]/g, '-');
+            return (
+              <div key={d.product_code} data-testid={`overbill-row-${tid}`}
+                   style={{ marginBottom: 8, paddingBottom: 6, borderBottom: '1px dashed var(--border)' }}>
+                <div style={{ fontSize: 12, color: over ? 'var(--badge-red-text)' : 'var(--text)' }}>
+                  {over ? '⛔ ' : '• '}
+                  <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{d.product_code}</span>
+                  {d.invoice_no ? <span style={{ opacity: 0.7 }}>{` · invoice ${d.invoice_no}`}</span> : null}
+                </div>
+                <div style={{ fontSize: 11, marginTop: 2 }}>
+                  <span style={{ color: over ? 'var(--badge-red-text)' : 'var(--text)', fontWeight: over ? 600 : 400 }}>
+                    {`billed ${+d.billed_qty} / available ${+d.available_qty}`}
+                  </span>
+                  <span style={{ color: 'var(--text)', opacity: 0.7 }}>
+                    {`  ·  ${d.line_count} line${d.line_count === 1 ? '' : 's'}  ·  ${designs.length} design${designs.length === 1 ? '' : 's'}`}
+                  </span>
+                  {over && (
+                    <span data-testid={`overbill-flag-${tid}`}
+                          style={{ color: 'var(--badge-red-text)', fontWeight: 600 }}>
+                      {'  ·  OVER-BILLED — see blocker above'}
+                    </span>
+                  )}
+                </div>
+                {designs.length > 0 && (
+                  <div data-testid={`overbill-designs-${tid}`}
+                       style={{ fontSize: 10, color: 'var(--text)', opacity: 0.65, marginTop: 2, fontFamily: 'monospace' }}>
+                    {designs.slice(0, 12).join(', ')}{designs.length > 12 ? ` +${designs.length - 12} more` : ''}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* ── Party cards (SELLER / BUYER / RECIPIENT) ────────────────────── */}
       <div style={{
         background: 'var(--card)',
