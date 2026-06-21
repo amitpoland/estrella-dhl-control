@@ -19,23 +19,22 @@ Rules and boundary vs PROJECT_STATE.md:
 
 - **Task:** Improve Proforma draft blocker visibility and operator guidance in V2 shipment detail
 - **Started:** 2026-06-21
-- **Status:** IN_PROGRESS
+- **Status:** COMPLETE
 - **HOLD reason (if BLOCKED-HOLD):** —
 
 ### Completion criteria
 
-- [ ] `DraftReadinessCard` — blockers rendered as numbered `<ol>` with repair_action in callout box
-- [ ] `DraftReadinessCard` — `post_failed` state shows `draft.error_hint` in red error box with retry guidance
-- [ ] `ProformaTabInShipment` — green "all complete" banner when all drafts approved/posted
-- [ ] `DraftReadinessCard` — positive "✓ Ready to approve" state unchanged (already correct)
-- [ ] reviewer-challenge CLEAR (or all findings resolved)
-- [ ] `test_sprint35b_shipment_detail_documents.py` — 3 new source-assertion tests added
-- [ ] pytest targeted suite passed
-- [ ] GATE 1 satisfied
-- [ ] GATE 6 documented (browser verification deferred to operator)
-- [ ] PR #687 updated on `claude/new-session-fetvj6`
-- [ ] `TASK_STATE.md` → COMPLETE
-- [ ] FEATURE_SCORECARD Row #3 filled
+- [x] `DraftReadinessCard` — blockers rendered as numbered `<ol>` with repair_action in callout box
+- [x] `DraftReadinessCard` — `post_failed` state shows `draft.error_hint` in red error box with retry guidance
+- [x] `ProformaTabInShipment` — green "all complete" banner when all drafts approved/posted
+- [x] `DraftReadinessCard` — positive "✓ Ready to approve" state unchanged (already correct)
+- [x] reviewer-challenge mitigations resolved (4 findings)
+- [x] `test_sprint35b_shipment_detail_documents.py` — T9/T10/T11 added (11/11 pass)
+- [x] GATE 1 satisfied (all subagents returned verdicts, final-consistency PASS 8/8)
+- [x] GATE 6 documented (browser verification deferred to operator)
+- [x] PR #687 updated on `claude/new-session-fetvj6`
+- [x] `TASK_STATE.md` → COMPLETE
+- [x] FEATURE_SCORECARD Row #3 filled
 
 ---
 
