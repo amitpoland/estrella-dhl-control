@@ -69,6 +69,33 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
+## Current origin/main HEAD (2026-06-22, updated): `ef24ee3`
+
+- **origin/main HEAD = `ef24ee3`** — verified 2026-06-22 after PR #706 + PR #711 merged. Both `3a14705` (#706) and `4624af5` (#711) are ancestors of `ef24ee3`. Chain since `53a3cc7` (#702): `3a14705` (#706 conftest reset_all fix) → `4624af5` (#711 registry breaker isolation contract test). Supersedes the `53a3cc7` block below (append-only — prior entries retained).
+
+## PR #706 + #711 — wFirma reservation suite test-isolation flake CLOSED (2026-06-22, both MERGED to main; NOT deployed — tests not deployed)
+
+- **Root cause**: the autouse `_isolate_ai_gateway` fixture in `service/tests/conftest.py` reset only the `ai_gateway` circuit breakers, never the process-global registry breakers in `app/core/circuit_breaker.py`. The `wfirma` registry breaker (`get_circuit_breaker("wfirma")`, `failure_threshold=4`, `recovery_timeout=90s` — NOT the `5/60` zoho defaults) tripped OPEN inside `test_gate_blocks_when_diagnostic_unreachable` and leaked OPEN into later tests → spurious `DIAGNOSTIC_FAILED` (503 `circuit_breaker_open`). Full file: `test_wfirma_reservation_create.py` ran 18 failed / 9 passed; every test passed in isolation.
+- **PR #706 (`fix/wfirma-reservation-test-isolation`) MERGED squash `3a14705` (2026-06-21)**: minimal conftest-only fix — `_isolate_ai_gateway` now calls `app.core.circuit_breaker.reset_all()` at BOTH setup (before `yield`) and teardown (after `yield`). Import-guarded `if sys.modules.get('app.core.circuit_breaker') is not None` (matches existing `svc`/`gw` guards; no-op for tests that never import the module). Changes: conftest.py only.
+- **PR #711 (`test(wfirma): pin registry circuit-breaker isolation contract`) MERGED squash `4624af5` (2026-06-21)**: test-only +44/-0. Adds `service/tests/test_conftest_registry_breaker_isolation.py`: `test_a` trips the `wfirma` breaker OPEN; `test_b` asserts it is CLOSED on the next test (fails if the `#706` `reset_all()` call is ever reverted). Salvaged from a parallel session's superset branch, rebased onto post-#706 main to drop the duplicate conftest diff (same operator-directed collision-resolution pattern as #702→#703→#705).
+- **VERIFIED on origin/main `ef24ee3` (2026-06-22)**:
+  - `conftest.py` has `reset_all()` at setup (~line 71, before `yield`) AND teardown (~line 96, after `yield`).
+  - Exactly ONE copy of `service/tests/test_conftest_registry_breaker_isolation.py` in the tree.
+  - Both `3a14705` (#706) and `4624af5` (#711) are ancestors of `origin/main ef24ee3`.
+- **Result**: file 18 failed/9 passed → 27 passed/0 errors. ZERO regressions — broad `-k wfirma` count 129→111 (the 18 removed are exactly `reservation_create`; residual byte-identical with/without the fix). Deploy baselines unaffected: `test_pz_*` 221 passed, `test_carrier_*` 420 passed.
+- **NOT deployed, no PZService restart** — `service/tests/**` has zero production runtime surface. No `C:\PZ` change, no robocopy, no sc.exe action.
+- **NOTE (superseding stale summary)**: any prior rolling summary mentioning "Open PRs: ... #706 (test) ..." is stale. PR #706 is MERGED (`3a14705`), not open. This FACTS block is the authoritative record; do NOT rewrite the prior summary line (append-only rule).
+- **Cross-reference memory**: `reference_wfirma_test_circuit_breaker_flake` (full closure record) + `feedback_shared_worktree_repo_hazards` (shared-worktree operational lessons below).
+
+## Shared-worktree operational lessons — C:\PZ-verify (2026-06-22)
+
+Recorded from incidents observed during the #706/#711 test-isolation campaign. Binding on all sessions using `C:\PZ-verify` (or any shared repo worktree):
+
+1. **NEVER use `git stash` in the shared `C:\PZ-verify` repo.** The git stash stack is GLOBAL to the repository — it is shared across ALL worktrees of that repo. A `git stash pop` in one session can silently pop WIP that belongs to a different concurrent session.
+2. **Use `git checkout <ref> -- <file>` for temporary negative checks** (e.g. verify a test fails without a fix): apply the temporary state, run the check, then restore with `git checkout HEAD -- <file>`. This is worktree-local and does not pollute the stash or any other worktree.
+3. **Push early — origin is the only durable store.** A concurrent session can delete a local branch or reset the worktree mid-task. Any commit that exists only locally is at risk. Push to origin before switching context or starting a parallel task.
+4. **One-session rule (reinforced):** only one Claude Code session may operate against `C:\PZ-verify` at a time (per CLAUDE.md PATH GUARD). A second concurrent session on the same worktree races branch state and can produce duplicate commits (incident 2026-06-04). If a second session is needed, use `git worktree add` to create a separate worktree, or restrict the second session to read-only operations.
+
 ## Current origin/main HEAD (2026-06-21, updated): `53a3cc7`
 
 - **origin/main HEAD = `53a3cc7`** — `fix(v2): wire Create Reservation button (reservation readiness gate + confirmed wFirma create) — Lesson M (#702)` (merged 2026-06-21). Chain since `3b14825` (PR #693): `db98a63` (#696 link-as-sales captures operator contractor_id) → `6a8641e` (#697 V2 link-as-sales contractor picker) → `b47ca02` (#698 proforma-list Retry → shared Btn) → `0de180f` (#699 proforma-v2 draft-scoped documents + readiness gate) → `53a3cc7` (#702 Create Reservation button). Supersedes the `3b14825` HEAD block below (append-only — prior entries retained).
