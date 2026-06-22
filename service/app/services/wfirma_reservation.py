@@ -230,21 +230,37 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         return _stock_status(inv_pc) == "dispatched"
 
     # ── 6. Audit gate ─────────────────────────────────────────────────────────
+    # Authority separation (2026-06-22): the warehouse scan audit (missing scans,
+    # scan-flow violations, orphan records) is a WAREHOUSE / physical-traceability
+    # signal. A wFirma *reservation* is SALES authority and is gated by per-line
+    # warehouse DISPATCH status (`stock_ok`), NOT by whole-batch scan completeness
+    # of the import packing list. Counting every unscanned import packing line as a
+    # reservation blocker conflated purchase-domain traceability with sales-domain
+    # readiness (the recurring "84 packing line(s) not yet scanned" defect on AWB
+    # 9158478722). These are now ADVISORIES — visible, never blocking.
     missing_scans = waudit.get_missing_scans(batch_id)
     invalid_flows = waudit.get_invalid_flows(batch_id)
     orphans       = waudit.get_orphan_inventory(batch_id)
 
-    blocking_reasons: List[str] = []
+    batch_advisories: List[str] = []
     if missing_scans:
-        blocking_reasons.append(f"{len(missing_scans)} packing line(s) not yet scanned into warehouse")
+        batch_advisories.append(
+            f"{len(missing_scans)} packing line(s) awaiting warehouse confirmation "
+            f"(advisory — optional traceability, does not block reservation)"
+        )
     if invalid_flows:
-        blocking_reasons.append(f"{len(invalid_flows)} invalid scan flow(s) detected")
+        batch_advisories.append(f"{len(invalid_flows)} invalid scan flow(s) detected (advisory)")
     if orphans:
-        blocking_reasons.append(f"{len(orphans)} orphan warehouse record(s)")
+        batch_advisories.append(f"{len(orphans)} orphan warehouse record(s) (advisory)")
 
-    audit_clean = not bool(blocking_reasons)
+    # `audit_clean` retained for response compatibility, but it NO LONGER gates
+    # `ready_to_create` — it is informational (true when no warehouse advisories).
+    audit_clean = not bool(batch_advisories)
 
-    # wFirma configuration blocking reasons
+    # Authority: INFRASTRUCTURE — these ARE legitimate batch blockers for a wFirma
+    # reservation create: without the API or the warehouse module the write cannot
+    # physically happen. They remain hard blockers.
+    blocking_reasons: List[str] = []
     if not wfirma_configured:
         blocking_reasons.append("wFirma API not configured (WFIRMA_API_LOGIN / PASSWORD / COMPANY_ID)")
     if wfirma_configured and not reservation_supported:
@@ -345,6 +361,7 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         total_value = sum(r["unit_price"] * r["quantity"] for r in rows)
 
         doc_blocking: List[str] = []
+        doc_advisories: List[str] = []
         if not customer_ok:
             doc_blocking.append("client_name is empty")
         if not customer_match and not create_customer_allowed:
@@ -355,8 +372,17 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         unmatched_rows  = [r for r in rows if r["product_code"].startswith("UNMATCHED:")]
         missing_product = [r for r in rows if not r["product_match"] and not r["product_code"].startswith("UNMATCHED:")]
         if unmatched_rows:
-            doc_blocking.append(
-                f"{len(unmatched_rows)} SKU(s) not linked to packing lines"
+            # Authority: SALES advisory (2026-06-22). A sales SKU that does not
+            # resolve to an import packing line / wFirma product is a sales-data
+            # linkage gap — it is shown as an advisory, NOT a red fiscal blocker.
+            # The matched rows still drive readiness honestly (unmatched rows are
+            # not reservable, so the doc stays not-ready until linked), and the
+            # actual wFirma write is still hard-gated by GATE_PRODUCTS_NOT_MAPPED
+            # in wfirma_reservation_create. This separates sales-linkage signalling
+            # from fiscal blocking.
+            doc_advisories.append(
+                f"{len(unmatched_rows)} SKU(s) not yet linked to a wFirma product "
+                f"(sales-data advisory)"
             )
         if missing_product and not create_product_allowed:
             codes = [r["product_code"] for r in missing_product]
@@ -417,27 +443,29 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
             "ready":           doc_ready,
             "total_value":     round(total_value, 2),
             "blocking_reasons": doc_blocking,
+            "advisories":      doc_advisories,
             "rows":            rows,
         })
 
     # ── 8. Overall readiness ──────────────────────────────────────────────────
+    # Authority separation (2026-06-22): `ready_to_create` no longer includes
+    # `audit_clean`. Whole-batch warehouse scan completeness is a WAREHOUSE
+    # advisory, not a SALES reservation gate. Reservation readiness now depends
+    # only on per-document readiness (customer matched + products mapped + stock
+    # dispatched per billed line) and the infrastructure blockers (API / module).
     all_docs_ready  = bool(documents) and all(d["ready"] for d in documents)
     ready_to_create = (
-        audit_clean
-        and all_docs_ready
+        all_docs_ready
         and wfirma_configured
         and reservation_supported
     )
 
-    # Batch-level (warehouse + wFirma config) blockers — these block EVERY client
-    # in the batch and are NOT specific to any one draft (e.g. "84 packing line(s)
-    # not yet scanned" counts the whole batch's packing, not one draft's billed
-    # lines). Captured BEFORE the per-document roll-ups are folded into
-    # blocking_reasons below, so the frontend can render batch-scope vs
-    # draft-scope distinctly. Display-only — does NOT affect ready_to_create.
+    # Batch-level blockers (infrastructure only now). Warehouse scan signals are
+    # surfaced separately via `batch_advisories` so the frontend renders advisory
+    # vs blocker distinctly. Display-only.
     batch_blocking_reasons = list(blocking_reasons)
 
-    if not all_docs_ready and audit_clean:
+    if not all_docs_ready:
         for d in documents:
             if not d["ready"] and d["blocking_reasons"]:
                 blocking_reasons.append(
@@ -452,6 +480,7 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         "ready_to_create":      ready_to_create,
         "blocking_reasons":     blocking_reasons,
         "batch_blocking_reasons": batch_blocking_reasons,
+        "batch_advisories":     batch_advisories,
         "currency":             batch_currency,
         "reservation_exists":   reservation_exists,
         "reservation_id":       reservation_id,
@@ -469,6 +498,7 @@ def _empty_response(batch_id: str) -> Dict[str, Any]:
         "ready_to_create":      False,
         "blocking_reasons":     ["no sales documents found"],
         "batch_blocking_reasons": ["no sales documents found"],
+        "batch_advisories":     [],
         "currency":             "PLN",
         "reservation_exists":   False,
         "reservation_id":       None,

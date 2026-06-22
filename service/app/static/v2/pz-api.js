@@ -340,6 +340,21 @@
       _postM(`${BASE}/wfirma/reservations/create`,
         { batch_id: batchId, client_name: clientName }),
 
+    // GET /api/v1/warehouse/receipt/{batch_id}
+    // WAREHOUSE authority: per-line expected vs confirmed received quantities +
+    // batch summary { total_lines, confirmed_lines, unconfirmed_lines,
+    // shortage_lines, overage_lines, fully_confirmed, serial_controlled, lines[] }.
+    getReceiptStatus: (batchId) =>
+      _get(`${BASE}/warehouse/receipt/${encodeURIComponent(batchId)}`),
+
+    // POST /api/v1/warehouse/receipt/confirm  { batch_id, lines:[{line_key, accepted_qty}], source_documents? }
+    // LOCAL operator confirmation write (X-Operator) — NO wFirma/fiscal write.
+    // Expected qty is resolved server-side from the import packing authority, so
+    // shortage/overage are derived (not client-trusted).
+    confirmReceipt: (batchId, lines, sourceDocuments) =>
+      _postM(`${BASE}/warehouse/receipt/confirm`,
+        { batch_id: batchId, lines: lines, source_documents: sourceDocuments || null }),
+
     // -- Action proposals (Inbox 2B.3b write wiring) ----------------------
     // Attribution rides in the BODY (approved_by / rejected_by) per the
     // action-proposals contract -- NOT the X-Operator header that _callM
