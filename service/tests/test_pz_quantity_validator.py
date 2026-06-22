@@ -249,3 +249,76 @@ def test_empty_input_returns_empty_result():
     assert result.rows    == []
     assert result.events  == []
     assert result.advisory is None
+
+
+# ── 9: unit=None fallback ─────────────────────────────────────────────────────
+
+def test_unit_none_falls_back_to_szt_and_normalises():
+    """unit=None defaults to 'szt.' (integer-only), so fractional qty must normalise."""
+    row = _row("NULL-UNIT", quantity=5.7, unit_netto_pln=100.0, unit="szt.")
+    row_with_none = BatchRow(
+        product_code   = "NULL-UNIT",
+        quantity       = 5.7,
+        unit_netto_pln = 100.0,
+        invoice_no     = "INV/001",
+        description_en = "Test product",
+        pl_desc        = "produkt testowy",
+        item_type      = "EARRINGS",
+        unit           = None,
+    )
+    result = validate_pz_quantities([row_with_none])
+    # unit=None → fallback "szt." → integer-only → rounds 5.7 → 6
+    assert result.rows[0].quantity == 6.0
+    assert len(result.events) == 1
+    assert result.events[0].unit == "szt."
+
+
+# ── 10: qty rounds to zero guard ─────────────────────────────────────────────
+
+def test_qty_rounds_to_zero_passes_unchanged():
+    """qty=0.4 rounds to 0 via round_half_up — guard must pass row unchanged, not send count=0."""
+    row    = _row("ZERO-GUARD", quantity=0.4, unit_netto_pln=500.0, unit="szt.")
+    result = validate_pz_quantities([row])
+    # Row returned unchanged (original qty preserved); no event emitted.
+    assert result.rows[0].quantity == 0.4
+    assert result.events == []
+    assert result.advisory is None
+
+
+# ── 11: NaN / non-finite guard ────────────────────────────────────────────────
+
+def test_nan_quantity_passes_unchanged_without_raising():
+    """NaN row must not raise — returned unchanged with no event."""
+    import math
+    row = BatchRow(
+        product_code   = "NAN-TEST",
+        quantity       = float("nan"),
+        unit_netto_pln = 100.0,
+        invoice_no     = "INV/001",
+        description_en = "Test product",
+        pl_desc        = "produkt testowy",
+        item_type      = "EARRINGS",
+        unit           = "szt.",
+    )
+    result = validate_pz_quantities([row])
+    assert len(result.rows) == 1
+    assert math.isnan(result.rows[0].quantity)
+    assert result.events == []
+    assert result.advisory is None
+
+
+def test_inf_quantity_passes_unchanged_without_raising():
+    """inf row must not raise — returned unchanged with no event."""
+    row = BatchRow(
+        product_code   = "INF-TEST",
+        quantity       = float("inf"),
+        unit_netto_pln = 100.0,
+        invoice_no     = "INV/001",
+        description_en = "Test product",
+        pl_desc        = "produkt testowy",
+        item_type      = "EARRINGS",
+        unit           = "szt.",
+    )
+    result = validate_pz_quantities([row])
+    assert len(result.rows) == 1
+    assert result.events == []
