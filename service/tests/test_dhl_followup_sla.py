@@ -140,6 +140,38 @@ def test_is_due_false_when_inactive():
     assert is_due(state, now=_pl(hour=11)) is False
 
 
+def test_is_due_fails_closed_on_malformed_next_followup_at(caplog):
+    """Regression (GATE-4 / reviewer-challenge L2): a malformed next_followup_at
+    must fail CLOSED. is_due gates a send-capable path (pre-T# follow-up AND the
+    post-DSK chase, which re-uses this exact function); an unparseable timestamp
+    is a data-integrity problem to surface, NOT a reason to fire a chase email.
+    Previously this branch returned True ("fire and self-heal")."""
+    state = {"active": True, "next_followup_at": "not-an-iso-timestamp"}
+    with caplog.at_level("WARNING"):
+        assert is_due(state, now=_pl(hour=11)) is False   # was True before the fix
+    assert any("next_followup_at" in r.getMessage() for r in caplog.records)
+
+
+def test_is_due_true_when_well_formed_past_timestamp_unchanged():
+    """A legitimately-due slot (well-formed past timestamp) is unaffected by the
+    fail-closed change — still fires. Only malformed timestamps changed."""
+    state = {"active": True, "next_followup_at": _pl(hour=10).isoformat()}
+    assert is_due(state, now=_pl(hour=11)) is True
+
+
+def test_is_due_shared_chase_state_fails_closed_on_malformed():
+    """dhl_dsk_chase_sla re-exports this same is_due (state-key-agnostic). A
+    malformed next_followup_at on a dhl_dsk_chase-shaped state must also fail
+    closed — the chase send path must not nag DHL on corrupt schedule data."""
+    from app.services.dhl_dsk_chase_sla import is_due as chase_is_due
+    state = {"active": True, "next_followup_at": "2026-13-99T99:99:99",
+             "sent_idempotency_keys": []}
+    assert chase_is_due(state, now=_pl(hour=11)) is False
+    # well-formed past timestamp still due (unchanged)
+    state["next_followup_at"] = _pl(hour=10).isoformat()
+    assert chase_is_due(state, now=_pl(hour=11)) is True
+
+
 # ── Monitor integration ──────────────────────────────────────────────────────
 
 def _settings(tmp_path: Path):
