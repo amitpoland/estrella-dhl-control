@@ -63,6 +63,7 @@ from ..core.security import require_api_key
 from ..core import timeline as tl
 from ..services.batch_service import get_output_dir
 from ..services.import_pz_builder import BatchRow, build_pz_request_from_batch
+from ..services.pz_quantity_validator import validate_pz_quantities
 from ..services.wfirma_pz_notes import build_wfirma_pz_notes
 from ..services import description_engine as deng
 from ..services import wfirma_client
@@ -700,6 +701,38 @@ def _patch_pz_adopted(output_dir: Path, wfirma_pz_doc_id: str) -> Optional[str]:
     except Exception as e:
         log.error("[pz_adopt] AUDIT PATCH FAILED for doc_id=%s — %s", wfirma_pz_doc_id, e)
         return str(e)
+
+
+def _write_qty_normalization_events(
+    output_dir: Path,
+    batch_id:   str,
+    events:     list,
+) -> None:
+    """Append quantity normalisation events to audit.json. Non-blocking."""
+    audit_path = output_dir / "audit.json"
+    if not audit_path.exists():
+        log.warning("[%s] qty norm: audit.json missing — events not written", batch_id)
+        return
+    try:
+        audit    = json.loads(audit_path.read_text(encoding="utf-8"))
+        existing = list(audit.get("quantity_normalization_events") or [])
+        ts       = time.strftime("%Y-%m-%dT%H:%M:%S")
+        existing.extend(
+            {
+                "product_code":       e.product_code,
+                "original_quantity":  e.original_quantity,
+                "normalized_quantity": e.normalized_quantity,
+                "unit":               e.unit,
+                "reason":             e.reason,
+                "normalized_at":      ts,
+            }
+            for e in events
+        )
+        audit["quantity_normalization_events"] = existing
+        write_json_atomic(audit_path, audit)
+        log.info("[%s] qty norm: wrote %d event(s) to audit", batch_id, len(events))
+    except Exception as ex:
+        log.error("[%s] qty norm: audit write failed: %s", batch_id, ex)
 
 
 # ── PZ idempotency guard + lock ───────────────────────────────────────────────
@@ -1656,6 +1689,10 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         for i, r in enumerate(rows_raw)
     ]
 
+    # ── Quantity normalisation — wFirma rejects fractional counts for physical units ──
+    qty_validation = validate_pz_quantities(batch_rows)
+    batch_rows     = qty_validation.rows
+
     # ── Build preview ─────────────────────────────────────────────────────────
     # Compact audit-trail notes go into the wFirma PZ <description>
     # field (operator-visible "Uwagi"). Sourced from the current audit
@@ -1777,6 +1814,16 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         "stored_status":            audit.get("status", ""),
         "effective_status":         eff_status,
         "status_normalized":        status_normalized,
+        "quantity_normalization_review": [
+            {
+                "product_code":       e.product_code,
+                "original_quantity":  e.original_quantity,
+                "normalized_quantity": e.normalized_quantity,
+                "unit":               e.unit,
+                "reason":             e.reason,
+            }
+            for e in qty_validation.events
+        ],
     })
 
 
@@ -2603,6 +2650,12 @@ async def wfirma_pz_create(
         for i, r in enumerate(rows_raw)
     ]
 
+    # ── Quantity normalisation — wFirma rejects fractional counts for physical units ──
+    qty_validation = validate_pz_quantities(batch_rows)
+    batch_rows     = qty_validation.rows
+    if qty_validation.events:
+        _write_qty_normalization_events(output_dir, batch_id, qty_validation.events)
+
     # ── Guard 6: preview must be ready ───────────────────────────────────────
     preview = build_pz_request_from_batch(
         rows           = batch_rows,
@@ -2750,6 +2803,16 @@ async def wfirma_pz_create(
                 "audit_error":       audit_write_error,
                 "planned_lines":     planned,
                 "line_count":        len(planned),
+                "quantity_normalization_review": [
+                    {
+                        "product_code":       e.product_code,
+                        "original_quantity":  e.original_quantity,
+                        "normalized_quantity": e.normalized_quantity,
+                        "unit":               e.unit,
+                        "reason":             e.reason,
+                    }
+                    for e in qty_validation.events
+                ],
             },
         )
 
@@ -2759,6 +2822,16 @@ async def wfirma_pz_create(
         "wfirma_pz_doc_id": pz_result.wfirma_pz_doc_id,
         "planned_lines":    planned,
         "line_count":       len(planned),
+        "quantity_normalization_review": [
+            {
+                "product_code":       e.product_code,
+                "original_quantity":  e.original_quantity,
+                "normalized_quantity": e.normalized_quantity,
+                "unit":               e.unit,
+                "reason":             e.reason,
+            }
+            for e in qty_validation.events
+        ],
     })
 
 
