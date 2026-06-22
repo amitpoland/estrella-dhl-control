@@ -134,6 +134,27 @@ def test_batch_adopt_empty_batch_is_safe():
     m.assert_not_called()
 
 
+def test_batch_adopt_only_considers_this_batch_codes():
+    """A code that is pending_adoption but is NOT in this batch's invoice_lines
+    must never be passed to adopt_pending_product — batch scoping bounds which
+    codes the call may adopt (reviewer-challenge: cross-batch scoping)."""
+    from app.api import routes_wfirma_capabilities as cap
+    calls = []
+    # Only IN_BATCH is in this batch's invoice_lines; get_products_batch is
+    # called with the batch's codes, so an OUTSIDER pending row is never seen.
+    with patch("app.services.document_db.get_invoice_lines_for_batch",
+               return_value=_invoice_rows("IN_BATCH")), \
+         patch("app.services.wfirma_db.get_products_batch",
+               return_value={"IN_BATCH": {"sync_status": "pending_adoption",
+                                          "wfirma_product_id": "9"}}), \
+         patch("app.services.wfirma_db.adopt_pending_product",
+               side_effect=lambda pc: (calls.append(pc), True)[1]):
+        resp = cap.adopt_pending_found_for_batch("BATCH_Y", x_operator=None)
+    data = json.loads(resp.body)
+    assert data["adopted"] == ["IN_BATCH"]
+    assert calls == ["IN_BATCH"]   # OUTSIDER global pending row never touched
+
+
 # ── 3. Source guards ────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")

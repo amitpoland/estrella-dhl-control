@@ -1067,9 +1067,16 @@ def adopt_pending_found_for_batch(
     WFIRMA_CREATE_PRODUCT_ALLOWED on the per-row create-and-adopt path.
 
     Batch-scoped: only the codes present in this batch's invoice_lines are
-    considered, so it never touches another batch's pending rows. Rows that are
-    missing, unlinked, already-matched, or in any other status are SKIPPED with
-    an explicit reason. Idempotent.
+    considered. Note that wfirma_products maps product_code → wFirma good
+    GLOBALLY (one unique row per code — there is no per-batch product mapping),
+    so adopting code X is by design a global authority decision: it asserts
+    "code X maps to wFirma good Y" everywhere, which is correct because the code
+    is the global identity. Batch scoping bounds WHICH codes this call may adopt;
+    it does not (and need not) create per-batch product rows. Operators wanting
+    to eyeball each wFirma name before committing use the per-row Compare +
+    Adopt in the pending modal; batch adopt trusts the discovery (goods/find by
+    code) mapping. Rows that are missing, unlinked, already-matched, or in any
+    other status are SKIPPED with an explicit reason. Idempotent.
 
     Response: { ok, batch_id, considered, adopted_count, adopted[], skipped[] }
     """

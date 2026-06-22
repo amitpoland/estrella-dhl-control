@@ -10724,7 +10724,7 @@ function OperatorWorkflowCard({ batchId, onToast }) {
                              onClick={() => handleRegisterMissing(row)}
                              disabled={!!missingActionBusy[row.product_code] || !(row.item_type && row.item_type !== '—')}
                              style={{ marginLeft: 6 }}>
-                          {missingActionBusy[row.product_code] ? '⟳ Registering…' : 'Register'}
+                          {missingActionBusy[row.product_code] ? '⟳ Registering…' : 'Register in wFirma'}
                         </Btn>
                       )}
                       {missingActionMsg[row.product_code] && (
@@ -10747,7 +10747,7 @@ function OperatorWorkflowCard({ batchId, onToast }) {
             )}
           </div>
         )}
-        <div style={{ marginTop: 6, color: '#6b7280' }}>
+        <div style={{ marginTop: 6, color: 'var(--text-3)' }}>
           Detail panel below provides per-row write actions.
         </div>
       </div>
