@@ -375,8 +375,13 @@ class Settings(BaseSettings):
     dhl_orch_auto_send_dhl_reply:      bool = Field(default=False)
     # Phase B2 — agency advance pack (pre-arrival, side-channel)
     dhl_orch_auto_send_agency_advance: bool = Field(default=False)
-    # Phase B3 — DHL follow-up SLA (post-arrival)
+    # Phase B3 — DHL follow-up SLA (post-arrival, pre-T#: chase DHL for the
+    # initial customs request; stops once any DHL email arrives)
     dhl_orch_auto_send_dhl_followup:   bool = Field(default=False)
+    # Phase B5 — post-DSK-reply DHL DSK/cesja chase. SEPARATE emergency switch
+    # from B3: this fires AFTER Estrella sends the signed DSK authorization and
+    # chases DHL for the DSK number/cesja if DHL delays. Default OFF (Lesson E).
+    dhl_orch_auto_send_dsk_chase:      bool = Field(default=False)
 
     # Note (single-authority consolidation, 2026-05-26): the prior
     # dhl_auto_followup_* flags introduced by an earlier draft engine
