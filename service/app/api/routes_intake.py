@@ -952,6 +952,8 @@ async def shipment_intake(
             from ..services.sales_packing_code_detection import normalize_sales_row_codes
             _code_norm: Dict[str, int] = {}
             for _r in sp_rows:
+                if not isinstance(_r, dict):
+                    continue
                 _r, _cls = normalize_sales_row_codes(_r)
                 if _cls != "unchanged":
                     for _tag in _cls.split("+"):
@@ -2200,6 +2202,8 @@ async def sales_packing_reingest(
         from ..services.sales_packing_code_detection import normalize_sales_row_codes
         _rc: Dict[str, int] = {}
         for _r in sp_rows:
+            if not isinstance(_r, dict):
+                continue
             _r, _cls = normalize_sales_row_codes(_r)
             if _cls != "unchanged":
                 for _tag in _cls.split("+"):

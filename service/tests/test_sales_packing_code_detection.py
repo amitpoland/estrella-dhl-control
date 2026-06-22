@@ -56,6 +56,15 @@ def test_is_product_code_false(v):
     assert is_product_code(v) is False, v
 
 
+@pytest.mark.parametrize("v", [
+    "18KT2.50", "0.75CT", "2.50GM", "SIZE12.5", "PROF/001", "INV/2026/12",
+    "GH-SI1", "14KT",
+])
+def test_is_product_code_rejects_annotations_and_refs(v):
+    # karat/carat/size/quality/doc-ref strings must NOT be treated as codes
+    assert is_product_code(v) is False, v
+
+
 def test_category_and_placeholder_helpers():
     assert is_category_token("pnd") and is_category_token("RNG")
     assert not is_category_token("J4006R01513")
@@ -112,6 +121,14 @@ def test_genuine_pnd_in_design_column_preserved_for_disambiguator():
     row, cls = normalize_sales_row_codes({"design_no": "PND", "item_type": "PND"})
     assert row["design_no"] == "PND"
     assert cls == "unchanged"
+
+
+def test_category_token_in_design_superseded_by_real_description_code():
+    # PND in the design column but a real code in DESCRIPTION → prefer the code
+    # (direct match beats the price heuristic).
+    row, cls = normalize_sales_row_codes({"design_no": "PND", "item_type": "J4006R01513"})
+    assert row["design_no"] == "J4006R01513"
+    assert "category_token_superseded_by_description" in cls
 
 
 def test_existing_real_design_is_left_untouched():
