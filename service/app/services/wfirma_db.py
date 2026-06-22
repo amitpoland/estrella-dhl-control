@@ -541,6 +541,32 @@ def get_products_batch(product_codes: List[str]) -> Dict[str, Dict[str, Any]]:
     return {row["product_code"]: dict(row) for row in rows}
 
 
+def adopt_pending_product(product_code: str) -> bool:
+    """Adopt a found-in-wFirma product into local 'matched' authority.
+
+    LOCAL ONLY — never calls wFirma, never creates/edits a good. Flips ONLY a
+    row that already carries a wfirma_product_id AND sync_status=='pending_adoption'
+    (i.e. the product was discovered in wFirma and is awaiting an explicit
+    operator decision). All other columns are preserved. Returns True iff a row
+    was adopted; False for missing / already-matched / non-pending / unlinked
+    rows. Idempotent — re-running after adoption is a no-op (returns False).
+    """
+    if _db_path is None or not (product_code or "").strip():
+        return False
+    now = _now()
+    with _lock, _connect() as con:
+        cur = con.execute(
+            """UPDATE wfirma_products
+                  SET sync_status='matched', updated_at=?
+                WHERE product_code=?
+                  AND sync_status='pending_adoption'
+                  AND wfirma_product_id IS NOT NULL
+                  AND TRIM(wfirma_product_id) <> ''""",
+            (now, product_code.strip()),
+        )
+        return cur.rowcount > 0
+
+
 def list_products(sync_status: Optional[str] = None) -> List[Dict[str, Any]]:
     if _db_path is None:
         return []
