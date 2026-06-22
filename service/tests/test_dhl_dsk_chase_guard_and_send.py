@@ -296,3 +296,100 @@ def test_process_stops_on_dhl_thread_reply_without_docs(_send_patches, tmp_path,
     assert saved["dhl_dsk_chase"]["active"] is False
     assert saved["dhl_dsk_chase"]["stop_reason"] == "dhl_thread_reply_after_dsk_reply"
     _send_patches["queue"].assert_not_called()
+
+
+# ── Concurrency: start condition must hold the per-batch lock ────────────────
+#
+# GATE-4 / PR #719 deploy-gate salvage (deploy-persistence-storage-reviewer):
+# the START read-modify-write must run under the SAME _b5_lock(batch_id) the
+# send path uses, with an in-lock re-read + not-active re-check. Otherwise two
+# concurrent monitor sweeps both observe not-active and both write a start —
+# a last-writer-wins double-start. This test deliberately uses the REAL
+# per-batch lock (NOT the _send_patches nullcontext mock) so contention is real.
+
+def test_concurrent_start_attempts_produce_single_start(tmp_path, monkeypatch):
+    """Two monitor sweeps racing the START condition collapse to exactly ONE
+    start — one first_followup_at, one dhl_dsk_chase_started timeline event.
+
+    The two threads are rendezvoused at the pre-lock eligibility gate so both
+    pass it BEFORE either writes — the precise TOCTOU window the lock closes.
+    Pre-fix (start RMW outside the lock) both threads write a start and both
+    return started=True; this assertion (exactly one start) goes red there.
+    """
+    import threading
+    import app.utils.proposal_lock as plock
+    import app.services.dhl_dsk_chase_sla as sla
+
+    plock._reset_locks_for_tests()
+
+    # Eligible, FRESH reply → after start the first follow-up is +4h (future),
+    # so the send path is never reached (no SMTP / queue side-effects to mock).
+    a = _audit(dhl_reply_package={"email_id": "q1", "status": "sent",
+                                  "queued_at": _iso(_now()),
+                                  "sent_at":   _iso(_now()),
+                                  "send_verified": True,
+                                  "ticket": "T#1WA2606220000005"})
+    p = _write_audit(tmp_path, a)
+
+    # Rendezvous the two threads at the pre-lock eligibility gate so both pass
+    # it before either acquires the write lock. Only the first two calls (the
+    # per-thread pre-lock gate) wait; the winner's in-lock re-check call (3rd)
+    # must NOT block or the fixed code would deadlock holding the lock.
+    gate          = threading.Barrier(2)
+    seen          = {"n": 0}
+    seen_lock     = threading.Lock()
+    real_should   = sla.should_start_dsk_chase
+
+    def _gated_should_start(audit):
+        with seen_lock:
+            seen["n"] += 1
+            mine = seen["n"]
+        res = real_should(audit)
+        if mine <= 2:
+            try:
+                gate.wait(timeout=5)
+            except threading.BrokenBarrierError:
+                pass
+        return res
+
+    monkeypatch.setattr(sla, "should_start_dsk_chase", _gated_should_start)
+
+    from app.services.active_shipment_monitor import _process_dsk_chase
+
+    results: list = []
+    res_lock = threading.Lock()
+
+    def _run():
+        out = _process_dsk_chase(p, json.loads(p.read_text()))
+        with res_lock:
+            results.append(out)
+
+    t1 = threading.Thread(target=_run)
+    t2 = threading.Thread(target=_run)
+    t1.start(); t2.start()
+    t1.join(timeout=10); t2.join(timeout=10)
+    assert not t1.is_alive() and not t2.is_alive(), "threads deadlocked"
+
+    # Exactly one sweep performed the start; neither sent (not due yet).
+    started = [o for o in results if o.get("started")]
+    assert len(started) == 1, f"expected exactly one start, got {len(results)} results: {results}"
+    assert all(not o.get("sent") for o in results)
+
+    # Disk shows a single coherent active chase.
+    saved = json.loads(p.read_text())
+    chase = saved["dhl_dsk_chase"]
+    assert chase["active"] is True
+    assert chase["followup_count"] == 0
+
+    # Exactly one start was recorded on the timeline — no duplicate event.
+    started_events = [e for e in saved.get("timeline", [])
+                      if e.get("event") == "dhl_dsk_chase_started"]
+    assert len(started_events) == 1, started_events
+
+    # The thread that lost the race adopted the winner's authoritative state
+    # instead of writing a second start.
+    losers = [o for o in results if not o.get("started")]
+    assert len(losers) == 1
+    loser_state = losers[0].get("state_after") or {}
+    assert loser_state.get("active") is True
+    assert loser_state.get("first_followup_at") == chase["first_followup_at"]
