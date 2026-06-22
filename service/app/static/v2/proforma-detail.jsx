@@ -1392,7 +1392,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         ? Number(ln.unit_price)
         : (Number(pk.unit_price_eur) || Number(pk.unit_price) || 0);
       return {
-        sr:           pk.pack_sr || (i + 1),
+        // SR is the packing-list's own sequential line number (1..N). Do NOT use
+        // the matched packing row's pack_sr — several billed lines can map to the
+        // same design (mixed lots), so pack_sr collides (e.g. JR04929 → 9 ×3) and
+        // leaves gaps/out-of-order rows. The draft's editable_lines are the row
+        // authority; number them sequentially.
+        sr:           i + 1,
         ctg:          _cmrItemLabel(ln.item_type || pk.item_type),  // Pendant / Ring / Earrings
         client_po:    pk.invoice_no || ln.client_ref || '',
         product_code: ln.product_code || pk.product_code || '—',
@@ -1411,8 +1416,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         total_value:  unitPrice * qty,
         // size: stored from packing XLSX "Size" column since 2026-06-09.
         size:         pk.size || '',
+        // HSN intentionally shown outside Europe only (operator decision 2026-06-09):
+        // EU/WDT shipments render "—". packing_lines has no hs_code column.
         hsn:          ln.hs_code || pk.hs_code || '',
-        origin:       ln.origin || pk.origin || '',
+        // Origin defaults to India (goods manufacturing origin) — same default the
+        // CMR uses (line ~1287). packing_lines has no origin column.
+        origin:       ln.origin || pk.origin || 'India',
       };
     });
     const grand_total = rows.reduce((s, r) => s + r.total_value, 0);
