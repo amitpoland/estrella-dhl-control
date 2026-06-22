@@ -16,6 +16,7 @@ Lifecycle:
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, time, timedelta
 from typing import Any, Dict, Optional
 
@@ -23,6 +24,8 @@ try:
     from zoneinfo import ZoneInfo
 except ImportError:                                            # Python < 3.9 safety
     from backports.zoneinfo import ZoneInfo                    # type: ignore
+
+log = logging.getLogger(__name__)
 
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -393,7 +396,20 @@ def derive_sad_followup_status(
 
 
 def is_due(state: Dict[str, Any], now: Optional[datetime] = None) -> bool:
-    """True if current time is at-or-past next_followup_at AND state is active."""
+    """True if current time is at-or-past next_followup_at AND state is active.
+
+    Fail-CLOSED on a malformed ``next_followup_at``. This function gates a
+    send-capable path — it is shared (re-exported) by BOTH the pre-T# DHL
+    follow-up sender (``active_shipment_monitor._process_dhl_followup``) and the
+    post-DSK chase sender (``active_shipment_monitor._process_dsk_chase``). A
+    ``next_followup_at`` that cannot be parsed as ISO-8601 is a data-integrity
+    problem (corruption, partial write, or future schema drift), NOT a reason to
+    email DHL. So an unparseable timestamp is treated as NOT due and logged for
+    an operator to surface. A legitimately-due slot always carries a well-formed
+    ``next_followup_at`` (every writer emits ``.isoformat()``), so fail-closed
+    never strands a real slot — the next sweep with a well-formed timestamp picks
+    it up normally.
+    """
     if not state.get("active"):
         return False
     next_at = state.get("next_followup_at")
@@ -402,6 +418,14 @@ def is_due(state: Dict[str, Any], now: Optional[datetime] = None) -> bool:
     try:
         next_dt = datetime.fromisoformat(str(next_at).replace("Z", "+00:00"))
     except Exception:
-        return True   # malformed → fire and self-heal next sweep
+        # Malformed → fail CLOSED (do NOT fire). Surface as a data-integrity
+        # warning rather than sending a spurious chase/follow-up email.
+        log.warning(
+            "dhl_followup_sla.is_due: unparseable next_followup_at=%r — treating "
+            "slot as NOT due (fail-closed); data-integrity issue to repair, not "
+            "an email trigger",
+            next_at,
+        )
+        return False
     now_dt = _to_poland(now or _now_poland())
     return _to_poland(next_dt) <= now_dt
