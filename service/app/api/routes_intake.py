@@ -2193,6 +2193,20 @@ async def sales_packing_reingest(
             currency_for_doc = ""
             currency_source  = "missing"
 
+        # Sales code normalization — same as shipment_intake: route the real
+        # design code from DESCRIPTION into design_no and EJL refs into
+        # order_ref BEFORE PND + matcher, so a reingest of a mixed-column file
+        # (PRODUCT blank / EJL ref, code in DESCRIPTION) resolves linkage.
+        from ..services.sales_packing_code_detection import normalize_sales_row_codes
+        _rc: Dict[str, int] = {}
+        for _r in sp_rows:
+            _r, _cls = normalize_sales_row_codes(_r)
+            if _cls != "unchanged":
+                for _tag in _cls.split("+"):
+                    _rc[_tag] = _rc.get(_tag, 0) + 1
+        if _rc:
+            log.info("[%s] reingest code normalization: %s", batch_id, _rc)
+
         # PND tiebreak — same builder as intake.
         from ..services.sales_pnd_disambiguator import disambiguate_pnd
         inv_no_for_pnd = ""
@@ -2271,8 +2285,12 @@ async def sales_packing_reingest(
                 "design_no":    str(r.get("design_no", "") or ""),
                 "bag_id":       str(r.get("bag_id", "") or ""),
                 "quantity":     float(r.get("quantity", 0) or 0),
-                "remarks":      str(r.get("client_po", "") or
-                                     r.get("remarks", "") or ""),
+                # Preserve EJL order reference separately (never as code).
+                "remarks":      (
+                    ("order_ref=" + str(r.get("order_ref")).strip() + "; "
+                     if str(r.get("order_ref", "") or "").strip() else "")
+                    + str(r.get("client_po", "") or r.get("remarks", "") or "")
+                ).strip().rstrip(";").strip(),
                 "unit_price":   float(r.get("unit_price",  0) or 0),
                 "total_value":  float(r.get("total_value", 0) or 0),
                 "currency":     final_currency,
