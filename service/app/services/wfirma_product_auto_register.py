@@ -191,14 +191,25 @@ def _register_one(
     product_code:    str,
     item_type:       str,
     description_en:  str,
+    design_no:       str = "",
     dry_run:         bool,
     operator:        str = "operator",
     batch_id:        str = "",
 ) -> Dict[str, Any]:
     """Search-first single-code register. Mirrors the HTTP endpoint logic
-    so the surface area is identical. Returns the per-code result dict."""
+    so the surface area is identical. Returns the per-code result dict.
+
+    Authority: ``product_code`` is the SOLE wFirma identity key (goods/find +
+    goods/add). ``design_no`` is the cross-document matching/metadata key and is
+    NEVER sent to wFirma — it is carried through only so the operator/UI can see
+    the design->product linkage alongside the wFirma code.
+    """
     out: Dict[str, Any] = {
         "product_code":       product_code,
+        # Matching / metadata key only — NEVER the wFirma identity. design_linkage
+        # flags whether the design<->product_code link is present for this row.
+        "design_no":          design_no,
+        "design_linkage":     "linked" if (design_no or "").strip() else "incomplete",
         "item_type":          item_type,
         "description_en":     description_en,
         "status":             "",
@@ -462,6 +473,25 @@ def ensure_products_for_batch(
         out["errors"].append(f"invoice_lines read failed: {exc}")
         return out
 
+    # design_no enrichment (read-only). design_no is the cross-document MATCHING
+    # key and lives in packing_lines (keyed alongside product_code), NOT in
+    # invoice_lines (the invoice PDF carries no design numbers). We surface it
+    # next to product_code so the operator/UI sees the design->product linkage.
+    # It is NEVER used as the wFirma identity — wFirma lookup/create stay keyed
+    # on product_code below. Best-effort: a missing packing DB leaves design_no
+    # blank (design_linkage="incomplete"), never an error.
+    design_by_code: Dict[str, str] = {}
+    try:
+        from . import packing_db as _pdb
+        if getattr(_pdb, "_db_path", None) is not None:
+            for pl in (_pdb.get_packing_lines_for_batch(batch_id) or []):
+                _pc = (pl.get("product_code") or "").strip()
+                _dn = (pl.get("design_no") or "").strip()
+                if _pc and _dn and _pc not in design_by_code:
+                    design_by_code[_pc] = _dn
+    except Exception as exc:
+        out["errors"].append(f"design_no enrichment failed (non-fatal): {exc}")
+
     # De-duplicate by product_code (multiple rows for same code → register once).
     # First-seen wins for item_type / description_en derivation.
     by_code: Dict[str, Dict[str, str]] = {}
@@ -473,6 +503,7 @@ def ensure_products_for_batch(
         by_code[pc] = {
             "item_type":      _derive_item_type(desc),
             "description_en": desc,
+            "design_no":      design_by_code.get(pc, ""),
         }
 
     out["scanned"] = len(by_code)
@@ -482,6 +513,7 @@ def ensure_products_for_batch(
             product_code   = pc,
             item_type      = ctx["item_type"],
             description_en = ctx["description_en"],
+            design_no      = ctx.get("design_no", ""),
             dry_run        = dry_run,
             operator       = operator,
             batch_id       = batch_id,
