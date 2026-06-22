@@ -879,17 +879,22 @@ def _collect_attachments_for_draft(
 
 @_register("check_followup_sla")
 def _handle_followup_sla(batch_id: str, action: Dict[str, Any]) -> Dict[str, Any]:
-    """Check if follow-up SLA needs to be started or is already running."""
+    """Check if follow-up SLA needs to be started or is already running.
+
+    Cowork-safe (CLAUDE.md §9): only reads/writes the ``dhl_followup`` SLA state
+    on the audit. Sends no email and mutates no financial fields.
+    """
     audit_path, audit = _load_audit(batch_id)
 
     try:
         from .dhl_followup_sla import start_followup, is_due
-        followup = audit.get("dhl_followup_sla") or {}
-        if not followup.get("started"):
-            start_followup(audit, reason="no_dhl_response_detected_by_cowork")
+        followup = audit.get("dhl_followup") or {}
+        if not followup.get("active"):
+            start_followup(audit, datetime.now(timezone.utc),
+                           "no_dhl_response_detected_by_cowork")
             write_json_atomic(audit_path, audit)
             return {"started": True}
-        elif is_due(audit):
+        elif is_due(followup):
             return {"due": True, "message": "follow-up SLA is due for action"}
         else:
             return {"running": True, "message": "follow-up SLA already active"}
