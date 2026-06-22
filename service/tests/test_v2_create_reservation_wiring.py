@@ -150,3 +150,48 @@ def test_v1_not_touched():
         p = _V2.parent / v1
         if p.is_file():
             assert "createReservation" not in p.read_text(encoding="utf-8", errors="ignore")
+
+
+# ── hardening salvaged from the superseded #703 guard (architecture-neutral) ──
+# These pin contracts the #702 guard did not yet assert. They do NOT change the
+# #702 architecture (reservation-preview gate); they only strengthen the wire.
+
+def test_create_reservation_is_mutation_postm(pzapi):
+    """The live wFirma write must ride the mutation path (_postM → X-Operator
+    audit identity), never a read-like _post / _get."""
+    i = pzapi.index("createReservation:")
+    body = pzapi[i:i + 200]
+    assert "_postM(" in body, (
+        "createReservation is a live wFirma write — must use _postM (X-Operator audit)"
+    )
+
+
+def test_no_raw_fetch_to_reservation_endpoint_in_jsx(detail):
+    """The reservation write must only ever leave through PzApi.createReservation —
+    never a raw fetch/apiFetch in the page component."""
+    for bad in (
+        "apiFetch('/api/v1/wfirma/reservations/create'",
+        'apiFetch("/api/v1/wfirma/reservations/create"',
+        "fetch('/api/v1/wfirma/reservations/create'",
+        'fetch("/api/v1/wfirma/reservations/create"',
+    ):
+        assert bad not in detail, f"page must not call the reservation endpoint directly: {bad!r}"
+
+
+def test_backend_reservation_create_route_exists():
+    """The wired path must target a real, registered backend route (no dangling
+    wire)."""
+    routes = (_V2.parent.parent / "api" / "routes_wfirma_reservation.py").read_text(
+        encoding="utf-8", errors="replace")
+    assert 'prefix="/api/v1/wfirma"' in routes, "router prefix must be /api/v1/wfirma"
+    assert '@router.post("/reservations/create"' in routes, (
+        "POST /api/v1/wfirma/reservations/create must exist (the button's target)"
+    )
+
+
+def test_old_inert_button_form_is_gone(detail):
+    """Regression: the pre-existing enabled-and-inert Create Reservation button
+    (no onClick) must never reappear."""
+    assert '<Btn variant="outline" disabled={isBlocked}>Create Reservation</Btn>' not in detail, (
+        "the enabled-and-inert Create Reservation button must not return (Lesson M)"
+    )
