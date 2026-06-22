@@ -54,6 +54,7 @@ from .api.routes_proforma import router as proforma_router
 from .api.routes_proforma_adopt import router as proforma_adopt_router
 from .api.routes_warehouse import router as warehouse_router
 from .api.routes_warehouse_audit import router as warehouse_audit_router
+from .api.routes_warehouse_receipt import router as warehouse_receipt_router
 from .api.routes_wfirma_capabilities import router as wfirma_capabilities_router
 from .api.routes_wfirma_reservation import router as wfirma_reservation_router
 from .api.routes_dhl_readiness import router as dhl_readiness_router
@@ -98,6 +99,7 @@ from .services.batch_manager import manager as batch_manager
 from .services.export_service import run_engine_health_check
 from .services.packing_db   import init_packing_db
 from .services.warehouse_db import init_warehouse_db
+from .services.warehouse_receipt_db import init_warehouse_receipt_db
 from .services.document_db  import init_document_db
 from .services.wfirma_db    import init_wfirma_db
 from .services.correction_registry import init_correction_registry
@@ -164,6 +166,7 @@ async def lifespan(app: FastAPI):
     _root.mkdir(parents=True, exist_ok=True)
     init_packing_db(_root   / "packing.db")
     init_warehouse_db(_root / "warehouse.db")
+    init_warehouse_receipt_db(_root / "warehouse_receipt.db")  # WAREHOUSE authority: qty confirmation
     init_document_db(_root  / "documents.db")
     init_wfirma_db(_root    / "wfirma.db")
     init_correction_registry(_root / "correction_registry.db")
@@ -473,6 +476,7 @@ app.include_router(proforma_router)
 app.include_router(proforma_adopt_router)
 app.include_router(warehouse_router)
 app.include_router(warehouse_audit_router)
+app.include_router(warehouse_receipt_router)  # WAREHOUSE authority: receipt qty confirmation
 app.include_router(wfirma_capabilities_router)
 app.include_router(wfirma_reservation_router)
 app.include_router(dhl_readiness_router)

@@ -28,6 +28,7 @@ ALLOWED_OVERRIDE_TYPES: frozenset[str] = frozenset({
 FORBIDDEN_OVERRIDE_TYPES: frozenset[str] = frozenset({
     "cif_match",
     "invoice_refs_match",
+    "invoice_value_coverage",   # customs value coverage authority (Lesson N, 2026-06-22)
     "importer_match",
     "qty_match_by_type",
 })
@@ -45,6 +46,7 @@ _OVERRIDE_FLAG_PREFIXES: dict[str, tuple[str, ...]] = {
 # When all structural checks remaining in failed_checks are overridden, that flag is suppressed.
 _STRUCTURAL_MISMATCH_CHECKS: frozenset[str] = frozenset({
     "invoice_refs_match",
+    "invoice_value_coverage",   # financial coverage authority (Lesson N, 2026-06-22)
     "cif_match",
     "qty_match_by_type",
     "importer_match",

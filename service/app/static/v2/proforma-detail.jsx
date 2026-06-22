@@ -869,6 +869,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // DISPLAY (Lesson F rule 5: reflect backend truth, never re-derive it).
   const reservationBatchReasons = ((reservationPreview && reservationPreview.batch_blocking_reasons) || []).filter(Boolean);
   const reservationDraftReasons = ((reservationDoc && reservationDoc.blocking_reasons) || []).filter(Boolean);
+  // Authority separation (2026-06-22): warehouse scan completeness and sales-data
+  // SKU linkage are ADVISORIES, never blockers. They are rendered in a distinct
+  // amber advisory panel — they do NOT gate reservationReady.
+  const reservationBatchAdvisories = ((reservationPreview && reservationPreview.batch_advisories) || []).filter(Boolean);
+  const reservationDraftAdvisories = ((reservationDoc && reservationDoc.advisories) || []).filter(Boolean);
 
   const doCreateReservation = () => {
     if (!batchId || !clientName) return;
@@ -2433,12 +2438,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             reservationReady={reservationReady}
             reservationBatchReasons={reservationBatchReasons}
             reservationDraftReasons={reservationDraftReasons}
+            reservationBatchAdvisories={reservationBatchAdvisories}
+            reservationDraftAdvisories={reservationDraftAdvisories}
             reservationClientName={clientName}
             draftLineCount={lines.length}
             reservationExists={reservationExists}
             reservationId={reservationId}
             reservationBusy={reservationBusy}
             reservationResult={reservationResult}
+            batchId={batchId}
             onCreateReservation={() => { setReservationResult(null); setShowReservationModal(true); }}
           />
         )}
@@ -3069,15 +3077,139 @@ function ProformaCustomerMappingTab({ customer }) {
   );
 }
 
+// ── Warehouse receipt confirmation (WAREHOUSE authority) ────────────────────
+// Operator confirms received quantities by line. This — NOT scanning every
+// physical piece — is the warehouse-receipt signal. Per-piece scan is optional
+// traceability unless the shipment is serial_controlled. Visible + functional.
+function ReceiptConfirmBlock({ batchId }) {
+  const [status, setStatus]   = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [open, setOpen]       = React.useState(false);
+  const [accepted, setAccepted] = React.useState({});   // line_key -> qty (string)
+  const [busy, setBusy]       = React.useState(false);
+  const [msg, setMsg]         = React.useState(null);
+
+  const load = React.useCallback(() => {
+    if (!batchId) return;
+    setLoading(true);
+    window.PzApi.getReceiptStatus(batchId)
+      .then(r => setStatus((r && r.ok && r.data) ? r.data : null))
+      .catch(() => setStatus(null))
+      .finally(() => setLoading(false));
+  }, [batchId]);
+  React.useEffect(() => { load(); }, [load]);
+
+  const openEditor = () => {
+    const seed = {};
+    ((status && status.lines) || []).forEach(l => {
+      seed[l.line_key] = String(l.accepted_qty != null ? l.accepted_qty : l.expected_qty);
+    });
+    setAccepted(seed);
+    setOpen(true);
+  };
+
+  const submit = () => {
+    const lines = Object.keys(accepted).map(k => ({ line_key: k, accepted_qty: Number(accepted[k]) }));
+    if (!lines.length) return;
+    setBusy(true); setMsg(null);
+    window.PzApi.confirmReceipt(batchId, lines)
+      .then(r => {
+        if (r && r.ok) { setMsg({ ok: true, text: `Confirmed ${(r.data && r.data.confirmed_now) || lines.length} line(s).` }); setOpen(false); load(); }
+        else { setMsg({ ok: false, text: (r && r.error) || 'Confirmation failed.' }); }
+      })
+      .catch(e => setMsg({ ok: false, text: String(e) }))
+      .finally(() => setBusy(false));
+  };
+
+  const total   = status ? status.total_lines : 0;
+  const confd   = status ? status.confirmed_lines : 0;
+  const serial  = !!(status && status.serial_controlled);
+
+  return (
+    <div data-testid="receipt-confirm-block" style={{
+      background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)',
+      borderRadius: 8, padding: '12px 16px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>Warehouse receipt — received quantities</div>
+        {serial && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--badge-amber-text)' }}>SERIAL-CONTROLLED · scan required</span>}
+      </div>
+      {loading ? (
+        <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading receipt status…</div>
+      ) : total === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No import packing lines found for this batch.</div>
+      ) : (
+        <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+          {confd} / {total} line(s) confirmed
+          {status.shortage_lines > 0 ? ` · ${status.shortage_lines} shortage` : ''}
+          {status.overage_lines > 0 ? ` · ${status.overage_lines} overage` : ''}
+          {status.fully_confirmed ? ' ✓' : ''}
+        </div>
+      )}
+      {msg && (
+        <div data-testid="receipt-confirm-msg" style={{ fontSize: 12, marginTop: 6,
+          color: msg.ok ? 'var(--badge-green-text)' : 'var(--badge-red-text)' }}>{msg.text}</div>
+      )}
+      {total > 0 && !open && (
+        <div style={{ marginTop: 8 }}>
+          <Btn small variant="primary" data-testid="receipt-confirm-open" onClick={openEditor}>
+            Confirm received quantities
+          </Btn>
+        </div>
+      )}
+      {open && (
+        <div data-testid="receipt-confirm-editor" style={{ marginTop: 10 }}>
+          <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--text-3)' }}>
+                <th style={{ padding: '4px 6px' }}>Product</th>
+                <th style={{ padding: '4px 6px' }}>Expected</th>
+                <th style={{ padding: '4px 6px' }}>Accepted</th>
+              </tr>
+            </thead>
+            <tbody>
+              {((status && status.lines) || []).map(l => (
+                <tr key={l.line_key} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                  <td style={{ padding: '4px 6px' }}>{l.product_code || l.design_no || l.line_key}</td>
+                  <td style={{ padding: '4px 6px' }}>{l.expected_qty}</td>
+                  <td style={{ padding: '4px 6px' }}>
+                    <input
+                      type="number" step="any"
+                      data-testid={`receipt-accept-${l.line_key}`}
+                      value={accepted[l.line_key] != null ? accepted[l.line_key] : ''}
+                      onChange={e => setAccepted({ ...accepted, [l.line_key]: e.target.value })}
+                      style={{ width: 80, padding: '2px 6px' }}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <Btn small variant="primary" disabled={busy} data-testid="receipt-confirm-submit" onClick={submit}>
+              {busy ? 'Saving…' : 'Save confirmation'}
+            </Btn>
+            <Btn small variant="ghost" disabled={busy} onClick={() => setOpen(false)}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Reservation tab ───────────────────────────────────────────────────────────
 // WIRED: blocking_reasons and export_blockers from POST /api/v1/proforma/preview/{batch_id}/{client_name}
 function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canConvert,
                                   convertDisabledReason, onConvert,
                                   reservationLoading, reservationReady,
                                   reservationBatchReasons, reservationDraftReasons,
+                                  reservationBatchAdvisories, reservationDraftAdvisories,
                                   reservationClientName, draftLineCount,
                                   reservationExists, reservationId, reservationBusy,
-                                  reservationResult, onCreateReservation }) {
+                                  reservationResult, batchId, onCreateReservation }) {
+  const batchAdvisories = reservationBatchAdvisories || [];
+  const draftAdvisories = reservationDraftAdvisories || [];
+  const hasAdvisories = (batchAdvisories.length + draftAdvisories.length) > 0;
   const allReasons = [...blockingReasons, ...exportBlockers];
   const isBlocked  = allReasons.length > 0;
   const auditClean = exportBlockers.length === 0;
@@ -3134,6 +3266,45 @@ function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canC
           ✓ All preconditions met. Conversion can proceed from the toolbar above.
         </div>
       )}
+
+      {/* Advisories — warehouse traceability + sales-data linkage. These NEVER
+          block the reservation (authority separation). Rendered distinctly from
+          blockers so an operator is never misled into reading an advisory as a
+          hard stop. */}
+      {hasAdvisories && (
+        <div data-testid="reservation-advisory-panel" style={{
+          background: 'var(--badge-amber-bg)', border: '1px dashed var(--badge-amber-border)',
+          borderRadius: 8, padding: '12px 16px',
+        }}>
+          <div style={{ fontWeight: 700, color: 'var(--badge-amber-text)', marginBottom: 6 }}>
+            Advisories (do not block — informational)
+          </div>
+          {batchAdvisories.length > 0 && (
+            <div style={{ marginBottom: draftAdvisories.length ? 8 : 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)' }}>
+                Warehouse / batch (optional traceability):
+              </div>
+              <ul style={{ margin: '2px 0 0', paddingLeft: 20, fontSize: 12, color: 'var(--text-2)' }}>
+                {batchAdvisories.map((a, i) => <li key={i}>{a}</li>)}
+              </ul>
+            </div>
+          )}
+          {draftAdvisories.length > 0 && (
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)' }}>
+                Sales linkage (this draft):
+              </div>
+              <ul style={{ margin: '2px 0 0', paddingLeft: 20, fontSize: 12, color: 'var(--text-2)' }}>
+                {draftAdvisories.map((a, i) => <li key={i}>{a}</li>)}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Warehouse receipt — operator quantity confirmation (WAREHOUSE authority).
+          Replaces "scan every piece" as the receipt signal. Always visible. */}
+      <ReceiptConfirmBlock batchId={batchId} />
 
       {/* Reservation create — canonical reservation readiness gate.
           The button reflects GET /wfirma/reservation-preview (distinct from the

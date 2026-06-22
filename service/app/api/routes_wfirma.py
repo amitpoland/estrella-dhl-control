@@ -68,6 +68,7 @@ from ..services import description_engine as deng
 from ..services import wfirma_client
 from ..services import wfirma_db
 from ..services import suppliers_db as _sdb
+from ..services import warehouse_receipt as _wrcpt
 from ..utils.io import write_json_atomic
 
 
@@ -1722,6 +1723,31 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         blocker_codes=[b["code"] for b in preview_blockers],
     )
 
+    # Authority: WAREHOUSE → IMPORT_PZ advisory (2026-06-22). Surface unconfirmed
+    # received quantity as an ADVISORY on the Import PZ preview, NOT a blocker
+    # (operator decision: build the confirmation flow, advisory-first). The fiscal
+    # hard gates on PZ create (SAD, PZ-done, MRN, supplier, mapped products,
+    # duplicate, live-write flag) are unchanged.
+    quantity_advisories: list[str] = []
+    try:
+        _receipt = _wrcpt.get_receipt_status(batch_id)
+        if _receipt.get("unconfirmed_lines", 0) > 0 and _receipt.get("total_lines", 0) > 0:
+            quantity_advisories.append(
+                f"received quantity not yet confirmed for "
+                f"{_receipt['unconfirmed_lines']} of {_receipt['total_lines']} line(s) "
+                f"(advisory — confirm received quantities to complete warehouse receipt)"
+            )
+        if _receipt.get("shortage_lines", 0) > 0:
+            quantity_advisories.append(
+                f"{_receipt['shortage_lines']} line(s) confirmed with a shortage (advisory)"
+            )
+        if _receipt.get("overage_lines", 0) > 0:
+            quantity_advisories.append(
+                f"{_receipt['overage_lines']} line(s) confirmed with an overage (advisory)"
+            )
+    except Exception as _rcpt_exc:  # advisory only — never break the preview
+        log.warning("[%s] receipt advisory unavailable: %s", batch_id, _rcpt_exc)
+
     eff_status, status_normalized = _compute_effective_pz_status(audit)
     return JSONResponse({
         "batch_id":                 batch_id,
@@ -1732,6 +1758,7 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         "would_create_pz":          result.ready and supplier_resolved and bool(warehouse_id),
         "ready":                    result.ready,
         "blockers":                 preview_blockers,
+        "quantity_advisories":      quantity_advisories,
         "engine_error":             None,
         "pz_lifecycle":             pz_lifecycle,
         "unresolved_product_codes": result.unresolved_codes,
@@ -1778,8 +1805,17 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
     """
     output_dir = get_output_dir(batch_id)
     audit      = _read_audit(output_dir)
-    _guard_wfirma_export(audit)
 
+    # ── Authority: PRODUCT ────────────────────────────────────────────────────
+    # Product master creation/adoption is the FIRST authority in the chain and
+    # is sourced from supplier invoice / import product rows. It MUST NOT be
+    # gated on customs (SAD/ZC429) or PZ status — those belong to the IMPORT_PZ
+    # authority, which is downstream. We therefore do NOT call
+    # `_guard_wfirma_export` here (which would hard-require SAD + a completed PZ).
+    # The only legitimate product-source precondition is that processed product
+    # rows exist; `_build_rows` enforces that with a clear WFIRMA_NO_ROWS 422.
+    # Per-code STALE_AUTHORITY_REFUSED + WFIRMA_CREATE_PRODUCT_ALLOWED still
+    # protect the live-create path. (Authority-model separation, 2026-06-22.)
     rows_raw = _build_rows(output_dir, audit)
 
     # ── Collect unique (product_code, item_type, description_en) per code ────

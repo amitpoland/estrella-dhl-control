@@ -13,14 +13,16 @@ class BatchSummary(BaseModel):
 
 
 class VerificationSummary(BaseModel):
-    invoice_refs_match:   Optional[bool]
-    cif_match:            Optional[bool]
-    qty_match_by_type:    Optional[bool]
-    importer_match:       Optional[bool]
-    exporter_match:       Optional[bool]
-    blocked_phrases_clean: Optional[bool]
-    duty_rate_ok:         Optional[bool]
-    amendment_flags:      List[str]
+    invoice_refs_match:        Optional[bool]
+    invoice_value_coverage:    Optional[bool]   # financial authority: True = value confirmed covered
+    invoice_refs_completeness: Optional[str]    # "verified"|"review_needed"|"missing_pdf"|"not_verified"
+    cif_match:                 Optional[bool]
+    qty_match_by_type:         Optional[bool]
+    importer_match:            Optional[bool]
+    exporter_match:            Optional[bool]
+    blocked_phrases_clean:     Optional[bool]
+    duty_rate_ok:              Optional[bool]
+    amendment_flags:           List[str]
 
 
 class OutputFiles(BaseModel):

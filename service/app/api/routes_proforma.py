@@ -752,6 +752,7 @@ def _build_preview(batch_id: str, client_name: str,
             "export_blockers":        export_blockers,
             "export_advisories":      export_advisories,
             "line_mismatch_advisories": [],
+            "stock_advisories":       [],
             "warehouse_blockers":     warehouse_blockers,
             "batch_lifecycle":        batch_lifecycle,
             "lines":                  [],
@@ -1013,6 +1014,14 @@ def _build_preview(batch_id: str, client_name: str,
         blocking_reasons.append(
             f"{missing_product} product(s) not matched in wfirma_products"
         )
+    # Authority: PROFORMA (2026-06-22). A proforma is built from customer +
+    # product master + pricing. Inventory / stock state MUST NOT hard-block a
+    # proforma — a proforma can legitimately be issued before goods are received
+    # (business rule "Proforma can be created without stock"). Stock state is
+    # therefore surfaced as an ADVISORY, never a blocker. Double-billing of
+    # already-committed / delivered pieces remains protected by the over-bill
+    # fail-closed gate in `_derive_draft_readiness` (billed_qty vs available_qty),
+    # which is the correct fiscal authority for that risk.
     # Stock is reported per state; never written.
     _STATE_BLURB = {
         "purchase_transit": "still in PURCHASE_TRANSIT (not yet received in warehouse)",
@@ -1024,9 +1033,10 @@ def _build_preview(batch_id: str, client_name: str,
                             "— inventory_state_engine has not seeded this batch",
         "no_scan_codes":    "have no scan_codes in packing_lines for the resolved product_code",
     }
+    stock_advisories: List[str] = []
     for state, count in stock_blocked.items():
         blurb = _STATE_BLURB.get(state, f"in unexpected state {state!r}")
-        blocking_reasons.append(f"{count} product(s) {blurb}")
+        stock_advisories.append(f"{count} product(s) {blurb}")
 
     # Customer match — uses the central resolver result computed above.
     # Same resolver used by _build_proforma_request so a passing preview
@@ -1192,6 +1202,7 @@ def _build_preview(batch_id: str, client_name: str,
         "export_blockers":  export_blockers,
         "export_advisories":       export_advisories,
         "line_mismatch_advisories": line_mismatch_advisories,
+        "stock_advisories":        stock_advisories,
         "warehouse_blockers":      warehouse_blockers,
         "batch_lifecycle":         batch_lifecycle,
         "lines":                   lines,
@@ -5337,7 +5348,11 @@ def _derive_draft_readiness(
     # the WDT/nip-candidate case below is detected.
     _vat_resolution: Optional[Dict[str, Any]] = None
 
-    def _add(reason: str, repair_action: str = "") -> None:
+    def _add(reason: str, repair_action: str = "", authority: str = "PROFORMA") -> None:
+        # Authority tagging (2026-06-22): every emitted blocker declares which
+        # business authority owns it (PRODUCT / PROFORMA / IMPORT_PZ / WAREHOUSE /
+        # SALES). Governance rule: a warning may not be promoted to a hard blocker
+        # without an explicit business rule + regression test.
         key = (reason or "").strip()
         if not key or key in _seen:
             return
@@ -5345,7 +5360,14 @@ def _derive_draft_readiness(
         blockers.append({
             "reason":        reason,
             "repair_action": repair_action or _repair_hint_for_blocker(reason),
+            "authority":     authority,
         })
+
+    def _advise(msg: str) -> None:
+        """Surface an advisory (warning) — never blocks readiness."""
+        m = (msg or "").strip()
+        if m and m not in warnings:
+            warnings.append(m)
 
     # ── 1. Comprehensive preview authority (ambiguity / warehouse / customer)
     preview: Dict[str, Any] = {}
@@ -5459,15 +5481,14 @@ def _derive_draft_readiness(
         )
 
     # ── 3b. Warehouse / stock state, scoped to the draft's billed codes ───
-    # The preview reports per-state stock counts over the client's ENTIRE sales
-    # packing list (design-line granularity → inflated counts like "61" for only
-    # 2 distinct billed product_codes). A draft's POST is gated only by the stock
-    # state of the product_codes it actually bills (rule 6 — editable_lines are
-    # the billing authority). Re-derive from the preview's per-line stock_status,
-    # deduped to DISTINCT billed product_codes — never the whole batch/client.
-    # This NEVER bypasses the warehouse gate: each billed code still must be in an
-    # eligible (received) state; it only stops other drafts'/clients' transit
-    # pieces from blocking THIS draft.
+    # Authority: PROFORMA (2026-06-22). Stock state is ADVISORY for a proforma —
+    # a proforma may be issued before goods are received (business rule "Proforma
+    # can be created without stock; inventory/PZ must not block proforma"). The
+    # double-billing risk (committed / delivered pieces) is owned by the over-bill
+    # fail-closed gate below (§7, billed_qty vs available_qty), which is the correct
+    # quantity-risk authority. Stock-state counts here are emitted via `_advise`,
+    # never `_add`, so they never block approve/post/convert. (Scoped to the
+    # draft's DISTINCT billed product_codes — never the whole batch/client.)
     _DRAFT_STOCK_BLURB = {
         "purchase_transit": "still in PURCHASE_TRANSIT (not yet received in warehouse)",
         "sales_transit":    "already in SALES_TRANSIT (committed to another proforma/invoice)",
@@ -5489,11 +5510,9 @@ def _derive_draft_readiness(
             _stock_blocked_draft[_st] = _stock_blocked_draft.get(_st, 0) + 1
     for _st, _cnt in sorted(_stock_blocked_draft.items()):
         _blurb = _DRAFT_STOCK_BLURB.get(_st, f"in stock state {_st!r}")
-        _add(
-            f"{_cnt} product(s) {_blurb}",
-            "Receive the listed product_code(s) into warehouse stock (warehouse "
-            "scan / DHL delivery confirmation), then re-check readiness. Only the "
-            "products THIS draft bills gate it — other drafts' pieces do not.",
+        _advise(
+            f"{_cnt} product(s) {_blurb} (advisory — stock does not block the proforma; "
+            "double-billing is guarded by the over-bill quantity check)"
         )
 
     # ── 4. WDT EU-VAT requirement (requirement 6) ─────────────────────────

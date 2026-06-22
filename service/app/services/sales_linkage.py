@@ -219,20 +219,30 @@ def get_sales_linkage(
     invalid_flows = waudit.get_invalid_flows(batch_id)
     orphans       = waudit.get_orphan_inventory(batch_id)
 
+    # Authority separation (2026-06-22): warehouse scan completeness, scan-flow
+    # validity, and orphan records are WAREHOUSE / physical-traceability signals.
+    # They are advisory only — they MUST NOT be promoted into hard blockers that
+    # gate sales-invoice readiness (and, downstream, must never reach IMPORT_PZ
+    # readiness). They stay in `audit_warnings`; they are NOT appended to
+    # `blocking_reasons`. A genuine final-dispatch stop, if ever required, must be
+    # a SALES-authority gate with an explicit business rule + regression test.
     if missing_scans:
-        msg = f"{len(missing_scans)} packing line(s) not yet scanned into warehouse"
-        audit_warnings.append(msg)
-        blocking_reasons.append(msg)
+        audit_warnings.append(
+            f"{len(missing_scans)} packing line(s) awaiting warehouse confirmation "
+            f"(advisory — optional traceability)"
+        )
 
     if invalid_flows:
-        msg = f"{len(invalid_flows)} invalid scan flow(s) detected (e.g. DISPATCH without RECEIVE)"
-        audit_warnings.append(msg)
-        blocking_reasons.append(msg)
+        audit_warnings.append(
+            f"{len(invalid_flows)} invalid scan flow(s) detected "
+            f"(advisory — e.g. DISPATCH without RECEIVE)"
+        )
 
     if orphans:
-        msg = f"{len(orphans)} orphan warehouse record(s) with no matching packing line"
-        audit_warnings.append(msg)
-        blocking_reasons.append(msg)
+        audit_warnings.append(
+            f"{len(orphans)} orphan warehouse record(s) with no matching packing line "
+            f"(advisory)"
+        )
 
     if blocking_reasons:
         ready_for_invoice = False

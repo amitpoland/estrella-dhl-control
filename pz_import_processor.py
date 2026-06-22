@@ -2374,12 +2374,14 @@ def verify_sad_invoice_match(invoices: list, zc429: dict) -> dict:
 
         if _refs_method == "inferred_from_sad_free_text":
             # Inferred refs: don't set hard False — treat as partial
-            inv_refs_match = None if (missing_in_pdfs or extra_not_in_sad) else True
+            _raw_refs_match = None if (missing_in_pdfs or extra_not_in_sad) else True
         else:
-            inv_refs_match = (not missing_in_pdfs and not extra_not_in_sad)
+            _raw_refs_match = (not missing_in_pdfs and not extra_not_in_sad)
+        inv_refs_match = _raw_refs_match  # may be revised in §1b after CIF check
     else:
         missing_in_pdfs = []
         extra_not_in_sad = []
+        _raw_refs_match = None
         inv_refs_match = None  # None = could not verify (SAD refs not parsed)
 
     # ── 2. CIF total match ────────────────────────────────────────────────────
@@ -2420,6 +2422,48 @@ def verify_sad_invoice_match(invoices: list, zc429: dict) -> dict:
     else:
         cif_match = None   # could not verify
         _cif_status = "SAD CIF not available"
+
+    # ── 1b. Customs value coverage authority (requires CIF from §2) ───────────
+    # invoice_value_coverage: financial authority. True = value confirmed covered.
+    # False = SAD has refs we cannot produce PDF evidence for, OR CIF mismatch.
+    # None  = CIF unverifiable (cannot confirm or deny coverage).
+    if missing_in_pdfs:
+        invoice_value_coverage = False   # SAD holds ref to invoice without PDF
+    elif cif_match is True:
+        invoice_value_coverage = True
+    elif cif_match is False:
+        invoice_value_coverage = False
+    else:
+        invoice_value_coverage = None
+
+    # invoice_refs_completeness: administrative completeness (string, non-blocking).
+    # "verified"      — all N935 refs have PDF evidence and vice-versa.
+    # "review_needed" — extra PDFs not listed in N935; value may still be covered.
+    # "missing_pdf"   — SAD N935 references an invoice with no PDF (dangerous).
+    # "not_verified"  — N935 not parsed / refs unavailable.
+    if not sad_refs:
+        invoice_refs_completeness = "not_verified"
+    elif not missing_in_pdfs and not extra_not_in_sad:
+        invoice_refs_completeness = "verified"
+    elif missing_in_pdfs:
+        invoice_refs_completeness = "missing_pdf"
+    elif extra_not_in_sad:
+        invoice_refs_completeness = "review_needed"
+    else:
+        invoice_refs_completeness = "not_verified"
+
+    # Revise inv_refs_match: False ONLY when SAD N935 lists invoices we have no
+    # PDF evidence for (missing_in_pdfs — the financially dangerous direction).
+    # extra_not_in_sad alone → None (N935 administrative omission; not a financial
+    # block when invoice_value_coverage is True). True stays True.
+    if _raw_refs_match is True:
+        inv_refs_match = True
+    elif missing_in_pdfs:
+        inv_refs_match = False       # dangerous: SAD refs invoice without PDF
+    elif extra_not_in_sad:
+        inv_refs_match = None        # administrative omission — advisory, not block
+    else:
+        inv_refs_match = _raw_refs_match
 
     # ── 3. Quantity by item type ──────────────────────────────────────────────
     # Sum from invoices
@@ -2556,12 +2600,18 @@ def verify_sad_invoice_match(invoices: list, zc429: dict) -> dict:
     elif inv_refs_match is False:
         _inv_refs_label = "Not found in SAD"
     else:
-        # None — could not verify; check if SAD had inferred refs
+        # None — could not verify, or N935 administrative omission
         _sad_refs_method = zc429.get("invoice_refs_method", "")
-        if _sad_refs_method == "inferred_from_sad_free_text":
+        if invoice_refs_completeness == "review_needed" and extra_not_in_sad:
+            _xtra_str = ", ".join(extra_not_in_sad[:3])
+            if len(extra_not_in_sad) > 3:
+                _xtra_str += "…"
+            _cov_note = "value confirmed" if invoice_value_coverage is True else "value unconfirmed"
+            _inv_refs_label = f"Partial — N935 omits: {_xtra_str} ({_cov_note})"
+        elif _sad_refs_method == "inferred_from_sad_free_text":
             _inv_refs_label = "Partially verified — invoice references inferred from SAD/free text"
         else:
-            _inv_refs_label = "Partially verified — invoice references inferred from SAD/free text" if sad_refs else "Not found in SAD"
+            _inv_refs_label = "Partially verified — SAD N935 refs parsed; invoice set differs" if sad_refs else "Not found in SAD"
 
     # Exporter label
     if exporter_match is True:
@@ -2657,12 +2707,14 @@ def verify_sad_invoice_match(invoices: list, zc429: dict) -> dict:
 
     return {
         # Invoice number reconciliation
-        "invoice_refs_match":        inv_refs_match,    # True/False/None
-        "invoice_refs_label":        _inv_refs_label,   # human-readable label
-        "sad_invoice_refs":          sad_refs,
-        "parsed_invoice_nos":        parsed_nos,
-        "missing_invoices_in_pdfs":  missing_in_pdfs,
-        "extra_invoices_not_in_sad": extra_not_in_sad,
+        "invoice_refs_match":         inv_refs_match,             # True/False/None
+        "invoice_value_coverage":     invoice_value_coverage,     # True/False/None (financial authority)
+        "invoice_refs_completeness":  invoice_refs_completeness,  # "verified"|"review_needed"|"missing_pdf"|"not_verified"
+        "invoice_refs_label":         _inv_refs_label,            # human-readable label
+        "sad_invoice_refs":           sad_refs,
+        "parsed_invoice_nos":         parsed_nos,
+        "missing_invoices_in_pdfs":   missing_in_pdfs,
+        "extra_invoices_not_in_sad":  extra_not_in_sad,
         # CIF
         "cif_match":            cif_match,              # True/False/None
         "cif_status":           _cif_status,            # human-readable status
@@ -2711,14 +2763,20 @@ def build_amendment_flags(
     """
     flags = []
 
-    # 1. SAD invoice references mismatch
-    if verification["invoice_refs_match"] is False:
-        miss = verification["missing_invoices_in_pdfs"]
-        xtra = verification["extra_invoices_not_in_sad"]
-        if miss:
-            flags.append(f"SAD lists invoices not in PDF set: {', '.join(miss)}")
-        if xtra:
-            flags.append(f"Invoices in PDF set not listed in SAD: {', '.join(xtra)}")
+    # 1. SAD invoice references — split by authority direction
+    _miss = verification.get("missing_invoices_in_pdfs") or []
+    _xtra = verification.get("extra_invoices_not_in_sad") or []
+    _val_coverage = verification.get("invoice_value_coverage")
+
+    # Hard blocker: SAD N935 references invoices we have no PDF evidence for.
+    if _miss:
+        flags.append(f"SAD lists invoices not in PDF set: {', '.join(_miss)}")
+
+    # extra_not_in_sad with confirmed value coverage → advisory only, NOT a blocking
+    # amendment_flag. Surfaced via verification.invoice_refs_completeness = "review_needed".
+    # extra_not_in_sad without confirmed coverage → emit as blocking amendment flag.
+    if _xtra and _val_coverage is not True:
+        flags.append(f"Invoices in PDF set not listed in SAD: {', '.join(_xtra)}")
 
     # 2. CIF mismatch
     if verification["cif_match"] is False:
@@ -2761,18 +2819,19 @@ def build_amendment_flags(
             flags.append(f"Invalid insurance ${inv['insurance_usd']} in {inv['invoice_no']} — must be ≥ 0")
 
     # 7. Blocked correction-log phrases
-    # [VERIFY-GAP] entries are non-fatal visibility notes, not parse errors — skip them.
+    # [VERIFY-GAP] and [REVIEW-NEEDED] entries are non-fatal visibility notes — skip them.
     blocked = ["reparsed", "not found", "suspicious", "failed", "invalid",
                "manual entry", "could not"]
     for entry in corrections_log:
-        if entry.startswith("[VERIFY-GAP]"):
+        if entry.startswith("[VERIFY-GAP]") or entry.startswith("[REVIEW-NEEDED]"):
             continue
         if any(p in entry.lower() for p in blocked):
             flags.append(f"Parse warning: {entry[:120]}")
 
     # 8. Master amendment flag — if any structural mismatch exists
     structural_mismatch = any([
-        verification["invoice_refs_match"] is False,
+        verification.get("invoice_value_coverage") is False,
+        verification.get("invoice_refs_match") is False,
         verification["cif_match"] is False,
         verification["qty_match_by_type"] is False,
         verification["importer_match"] is False,
@@ -3328,7 +3387,19 @@ def process_batch(inv_paths: list, zc429_path: str, rate: float = None,
     # Prefix [VERIFY-GAP] so build_amendment_flags blocked-phrase scanner skips these.
     _refs_method = zc429.get("invoice_refs_method", "N935")
     if verification.get("invoice_refs_match") is None:
-        if _refs_method == "inferred_from_sad_free_text":
+        if verification.get("invoice_refs_completeness") == "review_needed":
+            _extra = verification.get("extra_invoices_not_in_sad") or []
+            _cov_state = (
+                "customs value confirmed"
+                if verification.get("invoice_value_coverage") is True
+                else "customs value unconfirmed"
+            )
+            corrections_log.append(
+                f"[REVIEW-NEEDED] SAD N935 incomplete: {', '.join(_extra)} present in "
+                f"invoice PDF set but not listed in N935 — {_cov_state}; "
+                "broker SAD correction recommended."
+            )
+        elif _refs_method == "inferred_from_sad_free_text":
             corrections_log.append(
                 "[VERIFY-GAP] SAD invoice references partially verified — "
                 "inferred from SAD free text / document sections (not via N935)."
