@@ -2,8 +2,8 @@
 broker_followup_detector.py — read-only detector + draft generator for
 broker follow-up emails on blocked batches with financial/document gaps.
 
-Triggered by `failed_checks` containing `invoice_refs_match` or `cif_match`.
-These checks are FORBIDDEN override types — operator cannot accept them.
+Triggered by `failed_checks` containing `invoice_refs_match`, `invoice_value_coverage`,
+or `cif_match`. These checks are FORBIDDEN override types — operator cannot accept them.
 The only path forward is to obtain the missing document(s) or a corrected SAD.
 
 This module:
@@ -29,7 +29,8 @@ from typing import Any, Dict, List, Optional
 
 # failed_checks names that trigger broker follow-up
 TRIGGER_CHECKS: frozenset[str] = frozenset({
-    "invoice_refs_match",
+    "invoice_refs_match",       # SAD refs invoice without PDF (missing_in_pdfs direction)
+    "invoice_value_coverage",   # financial coverage failed (Lesson N, 2026-06-22)
     "cif_match",
 })
 
