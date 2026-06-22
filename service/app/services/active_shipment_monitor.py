@@ -2423,24 +2423,49 @@ def _process_dsk_chase(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any
 
     # ── Start condition ──────────────────────────────────────────────────────
     if not state.get("active"):
-        starter = should_start_dsk_chase(audit)
-        if not starter:
+        # Cheap pre-lock gate (mirrors the send path's pre-lock is_due check):
+        # the common sweep is not eligible to start, so skip the lock entirely.
+        if not should_start_dsk_chase(audit):
             return out
-        trig_time = dsk_reply_sent_at(audit)
-        if trig_time is None:   # defensive — should_start guarantees presence
-            return out
-        new_state = start_dsk_chase(audit, trig_time, starter["reason"])
-        write_json_atomic(audit_path, audit)
-        try:
-            tl.log_event(audit_path, "dhl_dsk_chase_started", "monitor",
-                         "active_shipment_monitor",
-                         detail={"trigger_reason":    new_state["trigger_reason"],
-                                 "first_followup_at":  new_state["first_followup_at"]})
-        except Exception:
-            pass
-        out["started"]     = True
-        out["state_after"] = new_state
-        state = new_state
+        # GATE-4 / PR #719 salvage: read-modify-write the START under the SAME
+        # per-batch lock the send path uses. Without it, two concurrent monitor
+        # sweeps could both observe not-active and both write a start —
+        # last-writer-wins double-start. Re-read the authoritative audit inside
+        # the lock and re-check not-active before writing, mirroring the send
+        # path's locking discipline (Lesson E §1 execution-time re-check).
+        from ..utils.proposal_lock import proposal_write_lock as _b5_lock
+        batch_id = audit_path.parent.name
+        with _b5_lock(batch_id):
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            state = audit.get("dhl_dsk_chase") or {}
+            if state.get("active"):
+                # Another sweep won the start race while we waited for the lock.
+                # Adopt its authoritative state; do not start a second time.
+                # Fall-through is INTENTIONAL — do NOT return here: the now-active
+                # state may already be due (backlog trigger), so let the send
+                # gate below decide whether to send this sweep.
+                out["state_after"] = state
+            else:
+                starter = should_start_dsk_chase(audit)
+                if not starter:
+                    out["state_after"] = state
+                    return out
+                trig_time = dsk_reply_sent_at(audit)
+                if trig_time is None:   # defensive — should_start guarantees presence
+                    out["state_after"] = state
+                    return out
+                new_state = start_dsk_chase(audit, trig_time, starter["reason"])
+                write_json_atomic(audit_path, audit)
+                try:
+                    tl.log_event(audit_path, "dhl_dsk_chase_started", "monitor",
+                                 "active_shipment_monitor",
+                                 detail={"trigger_reason":    new_state["trigger_reason"],
+                                         "first_followup_at":  new_state["first_followup_at"]})
+                except Exception:
+                    pass
+                out["started"]     = True
+                out["state_after"] = new_state
+                state = new_state
 
     # ── Send when due ──────────────────────────────────────────────────────────
     if not (state.get("active") and is_due(state)):
