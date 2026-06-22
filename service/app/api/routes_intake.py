@@ -245,6 +245,36 @@ def _write_draft_audit(
     write_json_atomic(output_dir / "audit.json", audit)
 
 
+def _auto_discover_products_on_intake(batch_id: str) -> None:
+    """Safe autonomous product discovery (dry-run) after invoice_lines are
+    stored at intake. Stages products that ALREADY exist in wFirma as
+    ``pending_adoption`` so they surface in "Resolve pending products" for
+    one-click Adopt.
+
+    Read-only against wFirma (``goods/find``) + idempotent local mirror only —
+    NEVER creates a wFirma good (no ``goods/add``) and NEVER auto-adopts
+    (``sync_status`` stays ``pending_adoption``, not ``matched``). Governance:
+    ``product.auto_register_dry_run`` is a SAFE_AUTONOMOUS_ACTION. Flag-gated
+    (``wfirma_auto_discover_on_intake``, default on) and fully non-blocking — a
+    wFirma outage logs and returns, never failing intake.
+    """
+    if not getattr(settings, "wfirma_auto_discover_on_intake", True):
+        return
+    try:
+        from ..services.wfirma_product_auto_register import ensure_products_for_batch
+        res = ensure_products_for_batch(
+            batch_id, dry_run=True, operator="intake_auto_discover",
+        )
+        log.info(
+            "[%s] auto-discover (intake): scanned=%s existing=%s pending=%s "
+            "missing=%s failed=%s",
+            batch_id, res.get("scanned"), res.get("existing_mapped"),
+            res.get("pending_adoption"), res.get("missing"), res.get("failed"),
+        )
+    except Exception as exc:  # never block intake on discovery
+        log.warning("[%s] auto-discover (intake) failed (non-fatal): %s", batch_id, exc)
+
+
 # ── Main intake endpoint ──────────────────────────────────────────────────────
 
 @router.post("/intake", dependencies=[_auth])
@@ -579,6 +609,13 @@ async def shipment_intake(
             inv_summaries.append({"file": name, "error": str(exc), "lines_stored": 0})
 
         inv_nos.append(inv_no_parsed)
+
+    # ── B2. Auto-discover products at intake (safe, dry-run, non-blocking) ─────
+    # invoice_lines (the product authority + descriptions) are now stored for
+    # every uploaded invoice. Stage any products already in wFirma as
+    # pending_adoption so the operator can one-click Adopt — no wFirma writes,
+    # no silent adoption. See _auto_discover_products_on_intake.
+    _auto_discover_products_on_intake(batch_id)
 
     # ── C. Save + process purchase packing lists ──────────────────────────────
     packing_results: List[Dict[str, Any]] = []
@@ -1833,6 +1870,9 @@ async def add_document_to_batch(
                         batch_id, name, exc)
             parser_status = "extraction_failed"
             extraction_summary = {"error": str(exc)}
+
+        # Re-stage products after adding an invoice doc (safe, dry-run, non-blocking).
+        _auto_discover_products_on_intake(batch_id)
 
     elif policy["parser"] == "packing":
         try:

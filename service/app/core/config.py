@@ -278,6 +278,12 @@ class Settings(BaseSettings):
     wfirma_sync_suppliers_allowed:  bool = Field(default=False)
     wfirma_delete_invoice_allowed:  bool = Field(default=False)
     wfirma_create_pz_allowed:       bool = Field(default=False)
+    # Auto-discover products at intake: after invoice_lines are stored, run the
+    # SAFE_AUTONOMOUS dry-run (ensure_products_for_batch(dry_run=True)) so
+    # products already in wFirma are staged as pending_adoption for one-click
+    # Adopt. Read-only + idempotent local mirror — NEVER creates a wFirma good,
+    # NEVER auto-adopts. Flaggable so ops can disable if wFirma is unreachable.
+    wfirma_auto_discover_on_intake: bool = Field(default=True)
     # Governed correction push gate: enables POST /pz/lineage/{batch_id}/correction-push-wfirma.
     # Default False. Flip to True only when a Global Jewellery correction has been staged
     # (correction_execution_record.json written) and the operator intends to push to wFirma.
