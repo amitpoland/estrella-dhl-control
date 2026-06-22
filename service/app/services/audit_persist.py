@@ -19,8 +19,8 @@ Rules
 -----
 - Append-only: never deletes timeline entries or rewrites historical
   structure. The only field this module *replaces* is ``audit.status``,
-  and only when the existing
-  ``routes_wfirma._compute_effective_pz_status`` says the operator-
+  and only when the canonical
+  ``operational_authority.compute_effective_pz_status`` says the operator-
   effective state has changed.
 - Idempotent: re-running every helper for the same input produces the
   same final audit.json (sets are de-duped on natural keys).
@@ -77,8 +77,8 @@ def restamp_pz_status_if_done(audit_path: Path) -> Dict[str, Any]:
     If the operator-effective PZ state is done (``"success"``/``"partial"``)
     but the stored ``audit.status`` lags behind, persist the effective value.
 
-    Uses the SAME normalisation logic the wFirma export guard already uses
-    (``routes_wfirma._compute_effective_pz_status``) so on-disk and read-
+    Uses the SAME canonical normalisation the wFirma export guard uses
+    (``operational_authority.compute_effective_pz_status``) so on-disk and read-
     time gates stay aligned.
 
     Returns ``{"changed": bool, "stored_before": str, "stored_after": str,
@@ -95,8 +95,12 @@ def restamp_pz_status_if_done(audit_path: Path) -> Dict[str, Any]:
     stored = (audit.get("status") or "").strip()
 
     try:
-        # Lazy import to avoid the route → helper → route cycle.
-        from ..api.routes_wfirma import _compute_effective_pz_status, _PZ_DONE
+        # A1 Stage 2: import the single canonical authority from the leaf
+        # operational_authority (no route → helper → route cycle).
+        from .operational_authority import (
+            compute_effective_pz_status as _compute_effective_pz_status,
+            PZ_DONE as _PZ_DONE,
+        )
     except Exception as exc:
         return {"changed": False, "stored_before": stored, "stored_after": stored,
                 "effective": "", "reason": f"normalisation helper unavailable: {exc}"}

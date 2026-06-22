@@ -151,12 +151,17 @@ def compute_effective_pz_status(a: Dict[str, Any]) -> tuple:
     """Return ``(effective_status, normalized_flag)`` — the EFFECTIVE / creatability
     PZ-status authority.
 
-    Campaign A1, Stage 1: an ADDITIVE, behaviour-identical extraction of
-    ``routes_wfirma._compute_effective_pz_status`` into its canonical leaf home.
-    Pinned byte-for-byte against the live fork by
-    ``test_compute_effective_pz_status_extraction_parity.py``. Stage 1 is additive
-    only — no caller is repointed and the fork is NOT retired (that happens later,
-    behind a default-OFF flag, after shadow validation).
+    Campaign A1: Stage 1 extracted this (byte-identical) from the former fork
+    ``routes_wfirma._compute_effective_pz_status``; Stage 2
+    (feat/a1-stage2-retire-pz-fork) then COLLAPSED that fork into a delegating shim
+    onto THIS function and repointed the audit_evidence / audit_persist importers
+    here — so this is now the SINGLE implementation. Pinned by
+    ``test_compute_effective_pz_status_extraction_parity.py`` +
+    ``test_a1_stage2_pz_status_single_authority.py``. The Stage-1 "default-OFF flag
+    after shadow validation" plan was SUPERSEDED in Stage 2: for a pure, no-I/O
+    function whose extraction is machine-proven byte-identical, there is no second
+    implementation left to shadow-compare; a flag retaining two impls is the
+    duplication being removed. (Operator-ratifiable — see the Stage 2 report.)
 
     This is a SEPARATE concern from ``derive_pz_status`` (the DISPLAY authority —
     the ``complete|ready|locked|failed`` enum). ``is_pz_done`` / ``derive_pz_status``

@@ -1,5 +1,31 @@
 # Live Task Queue
 
+## ACTIVE (2026-06-22) — Campaign A1 Stage 2: collapse the duplicate effective-PZ-status authority
+
+**Selected from project state:** `docs/platform-consolidation-discovery/MIGRATION_ROADMAP.md` Wave 2 / R-5 / CA-3 —
+*"retire `_compute_effective_pz_status`, route through `operational_authority`."* Stage 1 (#713, `1184792`)
+additively created the canonical `operational_authority.compute_effective_pz_status` (byte-identical, parity-pinned).
+Next queued item after Draft #38 (#707 CLOSED — not reopened).
+
+**Classification:** refactor (duplicate-authority collapse) on the wFirma write/gating path → explicit safety review required.
+
+**Authority map**
+- Canonical leaf (truth): `services/operational_authority.compute_effective_pz_status(a) -> (status, normalized)`.
+- Duplicate fork (collapse): `api/routes_wfirma._compute_effective_pz_status(audit)` — byte-identical body; call sites 289/341/1594/1648/1774; importers `audit_evidence.py`, `audit_persist.py`.
+- Parity tests: `test_compute_effective_pz_status_extraction_parity.py` (26) + `test_derive_pz_status.py` (10).
+
+**Plan (replacement, not additive)**
+- [ ] fork → delegating shim: `return operational_authority.compute_effective_pz_status(audit)` (logic removed; symbol + 5 call sites preserved).
+- [ ] `audit_evidence.py` + `audit_persist.py` import the fn + `PZ_DONE` from the leaf `operational_authority`, not `routes_wfirma` (removes services→routes import).
+- [ ] guard test `test_a1_stage2_pz_status_single_authority.py`.
+- [ ] parity (26) + derive (10) + PZ/wFirma regression + deploy baseline; 7-reviewer safety review; deploy = operator-only (backend → restart + pycache).
+
+**Deviation disclosed (operator):** Stage 1 noted Stage 2 should be *"behind a default-OFF flag after shadow validation."* This collapses to a delegating shim instead — byte-identical parity is machine-proven (cannot shadow-drift from yourself); a flag retaining two impls is the additive-repair we are removing. Strictly lower risk. Re-shapeable to flag+shadow on operator request (FINAL REPORT §9).
+
+**Out of scope (separate authority):** removing the shim symbol + repointing the 5 call sites to the canonical name = Stage 3. Draft #38/#707 stays CLOSED.
+
+---
+
 > Master Data campaign closed B11 audit on 2026-05-16.
 > Operational Integrity + Automation campaign closed P0-P5 on 2026-05-16 (PR #108 merged).
 > Operational Stabilization + Observation campaign closed P0-P4 on 2026-05-16.
