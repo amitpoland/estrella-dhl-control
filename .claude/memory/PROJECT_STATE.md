@@ -5694,6 +5694,36 @@ Group D — Tests (3 new files):
 
 # DECISIONS
 
+## Authority-Model Separation — six separate authorities (2026-06-22)
+
+- **Binding (operator-approved, permanent, no flag):** import, product master, proforma,
+  warehouse receipt, barcode traceability, and sales linkage are SEPARATE authorities.
+  Purchase-domain warehouse scan counts and sales-domain SKU linkage MUST NOT be hard
+  blockers on product creation, proforma readiness, or the wFirma reservation/PZ gate.
+  Full matrix + enforcement: CLAUDE.md **Lesson N**. Origin: recurring AWB 9158478722 defect
+  (31 "unmapped", 84 "not scanned", sales linkage "action-needed", "PZ preview blocked").
+- **What changed (PR `fix/authority-model-separation`):** product resolve no longer gated
+  on SAD/PZ-done; reservation `ready_to_create` no longer gated on whole-batch scan
+  (`audit_clean` now informational); scan + SKU-linkage → advisories; `sales_linkage` scan
+  signals stay in `audit_warnings` not `blocking_reasons`; proforma stock state →
+  `stock_advisories`/`warnings` (over-bill fail-closed gate remains the double-bill
+  authority); import PZ preview surfaces unconfirmed received-qty as an advisory.
+- **New WAREHOUSE authority:** operator quantity confirmation replaces mandatory per-piece
+  scan as the receipt signal — `warehouse_receipt_db` + `warehouse_receipt` service +
+  `POST/GET /api/v1/warehouse/receipt*` (derived shortage/overage, audit trail, idempotent).
+  Per-piece scan stays optional unless `serial_controlled=true` (read from `audit.json`).
+- **Decision: received-qty confirmation is ADVISORY-FIRST on Import PZ** (not a new hard
+  gate) — promotable to a hard gate later via explicit operator decision + regression test.
+- **Unchanged fiscal hard gates:** duplicate wFirma product/PZ, unmapped products on PZ,
+  SAD/customs evidence on PZ, price conflicts, WDT EU-VAT, over-bill, and the four
+  `WFIRMA_CREATE_*` live-write flags. No live wFirma write performed in this PR.
+- **Governance rule:** any new guard MUST declare its authority (`authority` field on
+  structured blockers); a warning may not be promoted to a hard blocker without a named
+  accounting/customs/duplicate-write/quantity-risk reason + a regression test.
+- **Relationship to PR #726:** complementary, not conflicting — #726 fixed the V1
+  `shipment_setup_detail` display fold (sales prep blockers leaking into import PZ posting
+  blockers); this PR is the broader backend + V2 authority separation. No file overlap.
+
 ## Sprint 03.3 Scope C E3a — GATE 4 Dispositions (2026-06-16)
 
 - **Issue #611 ISSUE** — `get_email_by_id()` follow-up: add dedicated function to email_service for inbox evidence lookup (E3b / follow-up scope). Filed 2026-06-16.

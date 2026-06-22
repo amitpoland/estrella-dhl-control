@@ -692,6 +692,43 @@ have prevented).
 
 **Reference**: Atlas V2 Final Closure Audit (2026-06-07); operator governance directive; PROJECT_STATE.md DECISIONS section.
 
+### Lesson N — Import, product master, proforma, warehouse receipt, barcode traceability, and sales linkage are SEPARATE authorities (2026-06-22)
+
+**GATE 1 + reviewer-challenge + frontend-flow-reviewer + backend-safety-reviewer.**
+Origin: recurring defect on AWB 9158478722 (batch `SHIPMENT_9158478722_2026-06_924c4e59`,
+Draft #38) — 31 "products unmapped", 84 pcs "PURCHASE_TRANSIT / not scanned", sales linkage
+"action-needed", "PZ preview blocked". Root cause: purchase-domain **warehouse scan counts**
+and sales-domain **SKU linkage** were promoted into hard blockers on product creation,
+proforma readiness, and the wFirma reservation gate, conflating six distinct authorities.
+
+**Binding rule — six separate authorities, each owns its own gates:**
+
+| Authority | Source of truth | May hard-block on | Must NOT block on |
+|---|---|---|---|
+| **PRODUCT** | supplier invoice / import rows | missing product code, duplicate conflict, invalid accounting fields, live-create approval (`WFIRMA_CREATE_PRODUCT_ALLOWED`) | stock, scan, sales packing, PZ status, SAD, proforma |
+| **PROFORMA** | customer + product master + pricing | customer unmatched/ambiguous, missing price, design ambiguity, over-bill, WDT EU-VAT, margin-mask | inventory / stock / PZ / scan (advisory only) |
+| **IMPORT_PZ** | import invoice/packing + customs evidence + mapped products + confirmed received qty | unmapped products, no SAD/customs evidence, duplicate PZ, price conflict, live-write approval (`WFIRMA_CREATE_PZ_ALLOWED`) | sales packing list, customer allocation, per-piece barcode scan |
+| **WAREHOUSE** | operator quantity confirmation by line/batch (`warehouse_receipt` service) | (advisory; quantity-risk only) | mandatory per-piece scan unless `serial_controlled` |
+| **SALES** | sales packing / allocation / reservation | final dispatch / sales posting; reservation: customer matched + product mapped + stock dispatched per billed line | product creation, proforma, product adoption, import qty confirmation, import PZ |
+
+**Enforcement:**
+1. **Every guard must declare its authority.** Structured blockers carry an `authority`
+   field ∈ {PRODUCT, PROFORMA, IMPORT_PZ, WAREHOUSE, SALES}; guard functions name it in the docstring.
+2. **A warning may NOT be promoted into a hard blocker** without (a) an explicit business
+   rule naming a real accounting / customs / duplicate-write / quantity-risk reason, AND
+   (b) a regression test pinning it. Default for missing information is an ADVISORY.
+3. **Warehouse receipt = operator quantity confirmation**, not per-piece scan. Scan stays
+   optional traceability unless the shipment is `serial_controlled` (read from `audit.json`).
+4. Fiscal writes (`WFIRMA_CREATE_PRODUCT/PZ/PROFORMA/INVOICE`) remain hard-gated and
+   operator-approved regardless of any advisory demotion.
+
+**Where it binds**: every readiness/blocker producer (`routes_proforma`, `wfirma_reservation`,
+`sales_linkage`, `routes_wfirma` product-resolve + pz_preview, `warehouse_receipt`); every PR
+that adds or moves a readiness gate. A new guard that blocks across authority boundaries without
+a named business rule + test is incomplete by this lesson.
+
+**Reference**: PR `fix/authority-model-separation` (2026-06-22); `service/tests/test_authority_separation.py`; PROJECT_STATE.md DECISIONS section.
+
 ---
 
 ## Frontend Design Standard

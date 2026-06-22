@@ -93,17 +93,24 @@ def test_inflated_client_wide_blockers_are_scoped_to_billed_codes(monkeypatch):
             {"product_code": "OTHER/2", "stock_ok": False, "stock_status": "purchase_transit"},
         ],
     }
-    reasons, _ = _reasons(monkeypatch, preview)
+    reasons, res = _reasons(monkeypatch, preview)
+    warnings = res.get("warnings", [])
     # the inflated client-wide line-counts are gone
     assert not any("61 product" in r for r in reasons), reasons
     # other clients' codes never block this draft
     assert not any("OTHER" in r for r in reasons), reasons
-    # draft-scoped transit blocker for the 2 DISTINCT billed codes (both in transit)
-    assert any("2 product(s) still in PURCHASE_TRANSIT" in r for r in reasons), reasons
-    # draft-scoped wfirma blocker (section 3) for the same 2 billed codes
+    # Authority separation (2026-06-22): stock state (PURCHASE_TRANSIT) is now an
+    # ADVISORY, not a blocker — a proforma may be issued before goods are received.
+    # It must NOT appear in blockers, and must appear (draft-scoped to the 2
+    # DISTINCT billed codes) in warnings instead.
+    assert not any("PURCHASE_TRANSIT" in r for r in reasons), reasons
+    assert any("2 product(s) still in PURCHASE_TRANSIT" in w for w in warnings), warnings
+    # draft-scoped wfirma blocker (section 3) for the same 2 billed codes — STILL
+    # a hard blocker (accounting authority), and authority-tagged.
     assert any("not matched in wfirma_products (missing wfirma_product_id)" in r
                for r in reasons), reasons
     assert any(PC1 in r and PC2 in r for r in reasons), reasons
+    assert all(b.get("authority") for b in res["blockers"]), res["blockers"]
 
 
 def test_draft_with_received_codes_has_no_transit_blocker(monkeypatch):

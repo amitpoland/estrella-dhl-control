@@ -346,7 +346,12 @@ def test_warehouse_stock_makes_stock_ok_true(client):
     assert body["ready"] is True
 
 
-def test_purchase_transit_blocks(client):
+# Authority separation (2026-06-22): stock state is ADVISORY for a proforma — a
+# proforma may be issued before goods are received. Stock states must NOT appear in
+# blocking_reasons; they appear in stock_advisories. The double-bill risk is owned by
+# the over-bill fail-closed gate at draft readiness, not the preview stock gate.
+
+def test_purchase_transit_is_advisory_not_blocker(client):
     _seed_purchase(design_no="JE401", product_code="EJL/PT-1")
     _seed_sales("ACME", [{"sku": "JE401", "qty": 1.0}])
     _seed_invoice_pricing("EJL/PT-1", 20.0, "USD")
@@ -358,13 +363,12 @@ def test_purchase_transit_blocks(client):
 
     body = client.post(f"/api/v1/proforma/preview/{BATCH}/ACME",
                        headers=_auth()).json()
-    assert body["ready"] is False
-    assert body["lines"][0]["stock_ok"]     is False
     assert body["lines"][0]["stock_status"] == "purchase_transit"
-    assert any("PURCHASE_TRANSIT" in br for br in body["blocking_reasons"])
+    assert not any("PURCHASE_TRANSIT" in br for br in body["blocking_reasons"])
+    assert any("PURCHASE_TRANSIT" in a for a in body["stock_advisories"])
 
 
-def test_sales_transit_blocks(client):
+def test_sales_transit_is_advisory_not_blocker(client):
     _seed_purchase(design_no="JE402", product_code="EJL/ST-1")
     _seed_sales("ACME", [{"sku": "JE402", "qty": 1.0}])
     _seed_invoice_pricing("EJL/ST-1", 20.0, "USD")
@@ -376,12 +380,12 @@ def test_sales_transit_blocks(client):
 
     body = client.post(f"/api/v1/proforma/preview/{BATCH}/ACME",
                        headers=_auth()).json()
-    assert body["ready"] is False
     assert body["lines"][0]["stock_status"] == "sales_transit"
-    assert any("SALES_TRANSIT" in br for br in body["blocking_reasons"])
+    assert not any("SALES_TRANSIT" in br for br in body["blocking_reasons"])
+    assert any("SALES_TRANSIT" in a for a in body["stock_advisories"])
 
 
-def test_closed_state_blocks(client):
+def test_closed_state_is_advisory_not_blocker(client):
     _seed_purchase(design_no="JE403", product_code="EJL/CL-1")
     _seed_sales("ACME", [{"sku": "JE403", "qty": 1.0}])
     _seed_invoice_pricing("EJL/CL-1", 20.0, "USD")
@@ -393,13 +397,13 @@ def test_closed_state_blocks(client):
 
     body = client.post(f"/api/v1/proforma/preview/{BATCH}/ACME",
                        headers=_auth()).json()
-    assert body["ready"] is False
     assert body["lines"][0]["stock_status"] == "closed"
-    assert any("CLOSED" in br for br in body["blocking_reasons"])
+    assert not any("CLOSED" in br for br in body["blocking_reasons"])
+    assert any("CLOSED" in a for a in body["stock_advisories"])
 
 
-def test_missing_inventory_state_blocks(client):
-    """Packing lines exist with scan_codes but were never seeded — must block."""
+def test_missing_inventory_state_is_advisory_not_blocker(client):
+    """Packing lines exist with scan_codes but were never seeded — advisory, not block."""
     _seed_purchase(design_no="JE404", product_code="EJL/MS-1")
     _seed_sales("ACME", [{"sku": "JE404", "qty": 1.0}])
     _seed_invoice_pricing("EJL/MS-1", 20.0, "USD")
@@ -409,9 +413,10 @@ def test_missing_inventory_state_blocks(client):
 
     body = client.post(f"/api/v1/proforma/preview/{BATCH}/ACME",
                        headers=_auth()).json()
-    assert body["ready"] is False
     assert body["lines"][0]["stock_ok"]     is False
     assert body["lines"][0]["stock_status"] == "missing_state"
+    assert not any("inventory_state" in br for br in body["blocking_reasons"])
+    assert any("inventory_state" in a for a in body["stock_advisories"])
 
 
 def test_warehouse_dispatch_no_longer_required(client):
