@@ -2441,6 +2441,9 @@ def _process_dsk_chase(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any
             if state.get("active"):
                 # Another sweep won the start race while we waited for the lock.
                 # Adopt its authoritative state; do not start a second time.
+                # Fall-through is INTENTIONAL — do NOT return here: the now-active
+                # state may already be due (backlog trigger), so let the send
+                # gate below decide whether to send this sweep.
                 out["state_after"] = state
             else:
                 starter = should_start_dsk_chase(audit)
