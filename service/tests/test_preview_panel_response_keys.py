@@ -37,11 +37,12 @@ def test_panel_reads_current_response_keys(panel):
         assert key in panel, f"preview panel must read response key {key!r}"
 
 
-def test_mapped_combines_existing_and_pending(panel):
-    # mapped = existing_mapped + pending_adoption (not the absent mirrored_count)
-    assert re.search(r"n\(p\.existing_mapped\)\s*\|\|\s*0\)\s*\+\s*\(n\(p\.pending_adoption\)", panel), (
-        "mapped must be computed as existing_mapped + pending_adoption"
-    )
+def test_existing_and_pending_shown_as_separate_rows(panel):
+    # existing_mapped (done) and pending_adoption (needs Adopt) drive different
+    # actions, so they must be distinct rows — not folded into one "mapped".
+    assert 'data-testid="preview-existing-mapped"' in panel
+    assert 'data-testid="preview-pending"' in panel
+    assert "p.existing_mapped != null" in panel
 
 
 def test_missing_handles_integer(panel):
@@ -59,7 +60,7 @@ def test_failed_and_errors_and_buckets_surfaced(panel):
 
 
 def test_numeric_testids_present(panel):
-    for tid in ("preview-scanned", "preview-mapped", "preview-pending",
+    for tid in ("preview-scanned", "preview-existing-mapped", "preview-pending",
                 "preview-missing", "preview-created", "preview-blocked"):
         assert f'data-testid="{tid}"' in panel, f"missing data-testid {tid}"
 
