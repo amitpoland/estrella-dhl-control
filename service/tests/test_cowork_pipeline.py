@@ -1036,3 +1036,83 @@ def test_existing_queue_records_unchanged(tmp_path, monkeypatch):
     original = next(e for e in queue if e["id"] == "existing_email_001")
     assert original["status"] == "sent"
     assert original["provider_message_id"] == "msg_12345"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# check_followup_sla action handler (DHL follow-up SLA)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_followup_sla_starts_on_missing_dhl_response(tmp_path, monkeypatch):
+    """check_followup_sla starts the DHL follow-up SLA when none is active.
+
+    Regression: the handler previously read audit["dhl_followup_sla"].started
+    (wrong key + field) and called start_followup(audit, reason=...) — an invalid
+    signature that raised TypeError. Only ImportError was caught, so the action
+    crashed into failed[] for every batch that triggered it. It must now write
+    audit["dhl_followup"].active via start_followup(audit, trigger_time, reason)
+    and succeed.
+    """
+    monkeypatch.setattr("app.services.cowork_action_runner.settings", _settings(tmp_path))
+    batch_dir = _seed_shipment(tmp_path, "B_SLA_START")
+
+    from app.services.cowork_action_runner import run_actions
+
+    actions = [{"action": "check_followup_sla", "task_id": "task_sla_1",
+                "reason": "no DHL response detected by cowork"}]
+    out = run_actions("B_SLA_START", actions)
+
+    # Action executed cleanly — not failed (pins the TypeError regression)
+    assert out["ok"] is True
+    assert out["failed"] == []
+    assert out["executed"][0]["result"] == {"started": True}
+
+    audit = json.loads((batch_dir / "audit.json").read_text())
+    # Correct state key + field written; the old (wrong) key is never created
+    assert audit["dhl_followup"]["active"] is True
+    assert "dhl_followup_sla" not in audit
+    # §9: cowork must not mutate financial fields
+    assert audit["clearance_decision"]["total_value_usd"] == 10366
+
+
+def test_followup_sla_reports_due(tmp_path, monkeypatch):
+    """An active follow-up past its next_followup_at is reported as due.
+
+    Regression: the handler previously called is_due(audit) with the whole audit
+    dict instead of the follow-up state dict, so active/next_followup_at were
+    never seen and this branch was dead. It must now call is_due(audit["dhl_followup"]).
+    """
+    monkeypatch.setattr("app.services.cowork_action_runner.settings", _settings(tmp_path))
+    _seed_shipment(tmp_path, "B_SLA_DUE", dhl_followup={
+        "active": True,
+        "next_followup_at": "2020-01-01T00:00:00+02:00",
+        "followup_count": 0,
+    })
+
+    from app.services.cowork_action_runner import run_actions
+
+    actions = [{"action": "check_followup_sla", "task_id": "task_sla_2", "reason": "poll"}]
+    out = run_actions("B_SLA_DUE", actions)
+
+    assert out["ok"] is True
+    assert out["executed"][0]["result"]["due"] is True
+
+
+def test_followup_sla_reports_running_when_not_due(tmp_path, monkeypatch):
+    """An active follow-up not yet due is reported as running and is not restarted."""
+    monkeypatch.setattr("app.services.cowork_action_runner.settings", _settings(tmp_path))
+    batch_dir = _seed_shipment(tmp_path, "B_SLA_RUN", dhl_followup={
+        "active": True,
+        "next_followup_at": "2099-01-01T00:00:00+02:00",
+        "followup_count": 2,
+    })
+
+    from app.services.cowork_action_runner import run_actions
+
+    actions = [{"action": "check_followup_sla", "task_id": "task_sla_3", "reason": "poll"}]
+    out = run_actions("B_SLA_RUN", actions)
+
+    assert out["ok"] is True
+    assert out["executed"][0]["result"]["running"] is True
+    # Idempotent: existing follow-up state preserved, not reset
+    audit = json.loads((batch_dir / "audit.json").read_text())
+    assert audit["dhl_followup"]["followup_count"] == 2
