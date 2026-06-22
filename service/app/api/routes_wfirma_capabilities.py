@@ -1703,6 +1703,13 @@ def split_import_vs_sales_blockers(
         post_blockers.append("WFIRMA_CREATE_PZ_ALLOWED is False (admin flag)")
     if batch_lifecycle in ("DHL_TRANSIT", "PRE_IMPORT"):
         post_blockers.append("warehouse scan-in not yet performed (transit)")
+    elif batch_lifecycle == "UNKNOWN":
+        # Fail closed: lifecycle defaults to "UNKNOWN" in the response skeleton
+        # and stays there when inventory_batch_state cannot determine the batch
+        # (exception or no rows). Warehouse receipt is unconfirmed, so do NOT
+        # report import-PZ posting readiness — this is a warehouse/stock
+        # authority gate, not a sales gate.
+        post_blockers.append("warehouse receipt not confirmed (inventory state unknown)")
 
     return {
         "blockers_for_preparation": prep_blockers,

@@ -102,6 +102,22 @@ def test_warehouse_transit_remains_a_real_posting_blocker():
         ), lifecycle
 
 
+def test_unknown_lifecycle_fails_closed_on_warehouse_receipt():
+    """Warehouse receipt is a fiscal/stock gate: when inventory state cannot be
+    determined (lifecycle 'UNKNOWN' — the skeleton default / exception path),
+    import PZ readiness must fail CLOSED, not optimistically report ready.
+    Regression guard for the reviewer-challenge finding on this fix."""
+    r = split_import_vs_sales_blockers(
+        client_names=["Diamond Point"],       # sales present (not the gate)
+        unresolved_customers=[],
+        products_missing_count=0,              # products OK
+        wfirma_create_pz_allowed=True,         # flag on
+        batch_lifecycle="UNKNOWN",             # warehouse state undeterminable
+    )
+    assert r["can_post_to_wfirma"] is False
+    assert any("warehouse receipt not confirmed" in b for b in r["blockers_for_posting"])
+
+
 def test_create_pz_flag_off_remains_a_real_posting_blocker():
     r = split_import_vs_sales_blockers(
         client_names=["Diamond Point"],
