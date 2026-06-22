@@ -2352,6 +2352,233 @@ def _process_dhl_followup(
     return out
 
 
+# ── Post-DSK-reply DHL DSK/cesja chase (Phase B5) ────────────────────────────
+
+def _process_dsk_chase(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]:
+    """Post-DSK-reply DHL DSK/cesja chase SLA driver (Phase B5).
+
+    SEPARATE authority from _process_dhl_followup (pre-T#). It starts AFTER the
+    EJ→DHL DSK authorization reply is sent (audit.dhl_reply_package queued/sent)
+    and chases DHL for the DSK number / cesja until the docs arrive / agency
+    forward sent / terminal.
+
+      1. If active and a stop condition holds → stop.
+      2. If not active and should_start → start (first = dsk_reply_sent + 4h,
+         clamped to the working window).
+      3. If active and due → build + guard + queue + auto-send via SMTP, advance.
+
+    Idempotent; flag-gated SEPARATELY by DHL_ORCH_AUTO_SEND_DSK_CHASE; never
+    sends twice for the same scheduled slot. Lesson E: execution-time re-check
+    inside the lock, idempotency key written before send, terminal suppression,
+    env isolation via email_sender.
+    """
+    from .dhl_dsk_chase_sla import (
+        should_start_dsk_chase, start_dsk_chase, stop_dsk_chase,
+        record_dsk_chase_sent, is_due, dsk_reply_sent_at,
+        dsk_docs_received, agency_forward_sent, is_terminal,
+        dhl_replied_after_dsk_reply,
+        STOP_DSK_DOCS_RECEIVED, STOP_AGENCY_FORWARD_SENT, STOP_TERMINAL,
+        STOP_DHL_THREAD_REPLY,
+    )
+    out: Dict[str, Any] = {"started": False, "sent": False, "stopped": False,
+                           "error": None, "state_after": None}
+
+    state = audit.get("dhl_dsk_chase") or {}
+
+    # Email Evidence V2 fallback — local store may show DHL docs before audit.
+    docs_arrived = dsk_docs_received(audit)
+    if not docs_arrived:
+        try:
+            from .email_evidence_store import get_summary as _ev_get_summary
+            _awb = str(audit.get("awb") or audit.get("tracking_no") or "")
+            if _awb and (_ev_get_summary(_awb) or {}).get("dhl_documents_received"):
+                docs_arrived = True
+        except Exception:
+            pass
+
+    # ── Stop conditions ──────────────────────────────────────────────────────
+    if state.get("active"):
+        stop_reason = None
+        if docs_arrived:
+            stop_reason = STOP_DSK_DOCS_RECEIVED
+        elif agency_forward_sent(audit):
+            stop_reason = STOP_AGENCY_FORWARD_SENT
+        elif is_terminal(audit):
+            stop_reason = STOP_TERMINAL
+        elif dhl_replied_after_dsk_reply(audit):
+            # Q4: DHL responded on the thread after our DSK reply but the docs
+            # did not classify/validate — stop nagging and let the operator look.
+            stop_reason = STOP_DHL_THREAD_REPLY
+        if stop_reason:
+            stop_dsk_chase(audit, stop_reason)
+            write_json_atomic(audit_path, audit)
+            try:
+                tl.log_event(audit_path, "dhl_dsk_chase_stopped", "monitor",
+                             "active_shipment_monitor", detail={"reason": stop_reason})
+            except Exception:
+                pass
+            out["stopped"]     = True
+            out["state_after"] = audit["dhl_dsk_chase"]
+            return out
+
+    # ── Start condition ──────────────────────────────────────────────────────
+    if not state.get("active"):
+        starter = should_start_dsk_chase(audit)
+        if not starter:
+            return out
+        trig_time = dsk_reply_sent_at(audit)
+        if trig_time is None:   # defensive — should_start guarantees presence
+            return out
+        new_state = start_dsk_chase(audit, trig_time, starter["reason"])
+        write_json_atomic(audit_path, audit)
+        try:
+            tl.log_event(audit_path, "dhl_dsk_chase_started", "monitor",
+                         "active_shipment_monitor",
+                         detail={"trigger_reason":    new_state["trigger_reason"],
+                                 "first_followup_at":  new_state["first_followup_at"]})
+        except Exception:
+            pass
+        out["started"]     = True
+        out["state_after"] = new_state
+        state = new_state
+
+    # ── Send when due ──────────────────────────────────────────────────────────
+    if not (state.get("active") and is_due(state)):
+        out["state_after"] = state
+        return out
+
+    from ..utils.proposal_lock import proposal_write_lock as _b5_lock
+    batch_id = audit_path.parent.name
+    with _b5_lock(batch_id):
+        # Re-read authoritative state inside the lock.
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        state = audit.get("dhl_dsk_chase") or {}
+        if not (state.get("active") and is_due(state)):
+            out["state_after"] = state
+            return out
+        # Execution-time re-validation (Lesson E §1): docs may have arrived, DHL
+        # may have replied, or the workflow advanced between the pre-lock read
+        # and lock acquisition.
+        if (dsk_docs_received(audit) or agency_forward_sent(audit)
+                or is_terminal(audit) or dhl_replied_after_dsk_reply(audit)):
+            out["state_after"] = state
+            return out
+
+        try:
+            from .dhl_dsk_chase_email_builder import build_dsk_chase_email
+            from .email_service              import queue_email
+            from .email_sender               import send_queued_email, _smtp_configured
+            from .dhl_dsk_chase_guard import (
+                validate_dsk_chase_send_preconditions,
+                record_idempotency_key_into_audit,
+            )
+
+            pkg = build_dsk_chase_email(audit, batch_id)
+            guard = validate_dsk_chase_send_preconditions(audit, pkg)
+            if not guard.ok:
+                try:
+                    tl.log_event(audit_path, "dhl_dsk_chase_suppressed", "monitor",
+                                 "active_shipment_monitor",
+                                 detail={"reason": guard.reason,
+                                         "idempotency_key": guard.idempotency_key})
+                except Exception:
+                    pass
+                log.info("[monitor] dhl_dsk_chase suppressed batch=%s reason=%s",
+                         batch_id, guard.reason)
+                out["suppressed_reason"] = guard.reason
+                out["idempotency_key"]   = guard.idempotency_key
+                out["state_after"]       = audit.get("dhl_dsk_chase")
+                return out
+
+            try:
+                tl.log_event(audit_path, "dhl_dsk_chase_send_intent", "monitor",
+                             "active_shipment_monitor",
+                             detail={"idempotency_key": guard.idempotency_key,
+                                     "primary_to":      guard.primary_to,
+                                     "cc_count":        guard.cc_count,
+                                     "attach_count":    guard.attach_count,
+                                     "subject":         pkg.get("subject", "")})
+                try:
+                    _disk = json.loads(audit_path.read_text(encoding="utf-8"))
+                    audit["timeline"] = _disk.get("timeline", audit.get("timeline", []))
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            existing = [a for a in pkg.get("attachments", [])
+                        if Path(a.get("path", "")).is_file()]
+
+            # Replay safety (Lesson E §4): persist the idempotency key BEFORE
+            # the queue/send call so a crash mid-SMTP blocks a duplicate.
+            record_idempotency_key_into_audit(audit, guard.idempotency_key)
+            write_json_atomic(audit_path, audit)
+
+            email_id = queue_email(
+                to=pkg["to"], subject=pkg["subject"],
+                body_html=pkg["body_html"], body_text=pkg["body_text"],
+                batch_id=batch_id,
+                cc=pkg.get("cc", ""),
+                from_address=pkg.get("from_address", ""),
+                email_type=pkg.get("email_type", "dhl_dsk_chase"),
+                attachments=existing,
+            )
+            send_outcome = None
+            if _smtp_configured():
+                send_outcome = send_queued_email(email_id, method="smtp")
+
+            if send_outcome and send_outcome.get("ok") and send_outcome.get("status") == "sent":
+                record_dsk_chase_sent(audit)
+                write_json_atomic(audit_path, audit)
+                try:
+                    tl.log_event(audit_path, "dhl_dsk_chase_sent", "monitor",
+                                 "active_shipment_monitor",
+                                 detail={"email_id": email_id,
+                                         "provider_message_id": send_outcome.get("provider_message_id"),
+                                         "idempotency_key": guard.idempotency_key,
+                                         "followup_count": audit["dhl_dsk_chase"]["followup_count"],
+                                         "next_followup_at": audit["dhl_dsk_chase"]["next_followup_at"]})
+                except Exception:
+                    pass
+                out["sent"]                = True
+                out["email_id"]            = email_id
+                out["provider_message_id"] = send_outcome.get("provider_message_id")
+                out["idempotency_key"]     = guard.idempotency_key
+                out["state_after"]         = audit["dhl_dsk_chase"]
+            else:
+                # Send failed — remove the pre-written idem key so the slot can
+                # retry on the next sweep; do NOT advance next_followup_at.
+                err = (send_outcome or {}).get("error", "smtp_not_configured")
+                try:
+                    _state = audit.get("dhl_dsk_chase") or {}
+                    _keys  = _state.get("sent_idempotency_keys") or []
+                    if isinstance(_keys, list) and guard.idempotency_key in _keys:
+                        _state["sent_idempotency_keys"] = [k for k in _keys if k != guard.idempotency_key]
+                        audit["dhl_dsk_chase"] = _state
+                        write_json_atomic(audit_path, audit)
+                except Exception:
+                    pass
+                if not _smtp_configured():
+                    flags = audit.get("risk_flags") or []
+                    if "dhl_dsk_chase_send_failed" not in flags:
+                        flags.append("dhl_dsk_chase_send_failed")
+                        audit["risk_flags"] = flags
+                        write_json_atomic(audit_path, audit)
+                out["error"]           = err
+                out["idempotency_key"] = guard.idempotency_key
+                try:
+                    tl.log_event(audit_path, "dhl_dsk_chase_send_failed", "monitor",
+                                 "active_shipment_monitor",
+                                 detail={"idempotency_key": guard.idempotency_key,
+                                         "error": err, "email_id": email_id})
+                except Exception:
+                    pass
+        except Exception as exc:
+            out["error"] = f"dsk_chase_send_failed: {exc}"
+
+    return out
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
@@ -2608,6 +2835,17 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
                 action["dhl_followup"] = followup_result
         except Exception as exc:
             action["dhl_followup_error"] = str(exc)
+
+        # 5c-bis. Post-DSK-reply DHL DSK/cesja chase (Phase B5) — SEPARATE SLA
+        # from 5c. Starts after the EJ→DHL DSK reply is sent; fires when due;
+        # stops when DHL docs arrive / agency forward sent / terminal.
+        try:
+            audit_chase = json.loads(audit_path.read_text(encoding="utf-8"))
+            chase_result = _process_dsk_chase(audit_path, audit_chase)
+            if chase_result.get("started") or chase_result.get("sent") or chase_result.get("stopped"):
+                action["dhl_dsk_chase"] = chase_result
+        except Exception as exc:
+            action["dhl_dsk_chase_error"] = str(exc)
 
         # 5d. Post-DHL → agency forward (after DSK / customs docs received)
         try:
