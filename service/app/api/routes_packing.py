@@ -3233,3 +3233,178 @@ async def delete_packing_document(
         "deleted_lines": result["deleted_lines"],
         "disk_deleted":  disk_deleted,
     }
+
+
+# ── Scored-pending operator confirmation ──────────────────────────────────────
+#
+# When resolve_sales_lines_for_batch() cannot auto-assign product_code with
+# HIGH confidence (≥ 0.85), it records the design in scored_pending.json
+# alongside audit.json.  The operator reads the recommendations here and
+# confirms (or overrides) per-row assignments.
+#
+# Safety:
+#   - product_code must be in the design's candidates list (no invention).
+#   - row_id must exist in sales_packing_lines for this batch (no cross-batch).
+#   - All assignments validated before any DB write (fail-closed).
+#   - Confirms trigger a non-blocking draft re-sync so the draft picks up
+#     the resolved product_codes immediately.
+#   - No wFirma writes, no inventory mutations, no proforma approval.
+
+class _ScoredPendingAssignment(BaseModel):
+    row_id: str        # sales_packing_lines.id
+    design_no: str
+    product_code: str  # must be in candidates for this design_no
+
+
+class _ConfirmScoredPendingBody(BaseModel):
+    assignments: List[_ScoredPendingAssignment]
+
+
+@router.get("/{batch_id}/scored-pending", dependencies=[_auth])
+def get_scored_pending(batch_id: str) -> Dict[str, Any]:
+    """Return designs awaiting operator product-code confirmation."""
+    output_dir = _validate_batch(batch_id)
+    sp_path = output_dir / "scored_pending.json"
+    if not sp_path.exists():
+        return {"batch_id": batch_id, "designs": {}, "count": 0}
+    try:
+        data = json.loads(sp_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.warning("[%s] scored_pending read error: %s", batch_id, exc)
+        return {"batch_id": batch_id, "designs": {}, "count": 0, "read_error": str(exc)}
+    designs = data.get("designs") or {}
+    return {"batch_id": batch_id, "designs": designs, "count": len(designs)}
+
+
+@router.post("/{batch_id}/scored-pending/confirm", dependencies=[_auth])
+def confirm_scored_pending(
+    batch_id: str,
+    body: _ConfirmScoredPendingBody,
+    x_operator: Optional[str] = Header(default="operator", alias="X-Operator"),
+) -> Dict[str, Any]:
+    """Confirm operator product-code assignments for MEDIUM/LOW-confidence designs.
+
+    Validates all assignments before writing (fail-closed).  Updates
+    sales_packing_lines.product_code, logs a timeline event, removes confirmed
+    designs from scored_pending.json, then re-triggers draft sync so the draft
+    immediately reflects the resolved product_codes.
+
+    Safety rules enforced:
+      - product_code must be a known candidate for the design (no invention).
+      - row_id must exist in sales_packing_lines for this batch (no cross-batch).
+      - No wFirma writes, no inventory mutations, no fiscal actions.
+    """
+    output_dir = _validate_batch(batch_id)
+    sp_path    = output_dir / "scored_pending.json"
+
+    if not sp_path.exists():
+        raise HTTPException(status_code=404, detail="No scored_pending data for this batch.")
+    try:
+        pending_data = json.loads(sp_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"scored_pending read error: {exc}")
+
+    designs = pending_data.get("designs") or {}
+
+    # ── Phase 1: validate all assignments before any write (fail-closed) ───────
+    for asgn in body.assignments:
+        pending = designs.get(asgn.design_no)
+        if pending is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"design_no {asgn.design_no!r} not found in scored_pending.",
+            )
+        candidates = pending.get("candidates", [])
+        if asgn.product_code not in candidates:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"product_code {asgn.product_code!r} is not a valid candidate "
+                    f"for design {asgn.design_no!r}. Valid candidates: {candidates}"
+                ),
+            )
+
+    rows_by_id = {r["id"]: r for r in (ddb.get_sales_packing_lines(batch_id) or [])}
+    for asgn in body.assignments:
+        if asgn.row_id not in rows_by_id:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"row_id {asgn.row_id!r} not found in sales_packing_lines "
+                    f"for batch {batch_id}."
+                ),
+            )
+
+    # ── Phase 2: apply updates ─────────────────────────────────────────────────
+    applied    = 0
+    failed_ids: List[str] = []
+    for asgn in body.assignments:
+        ok = ddb.update_sales_packing_line_product_code(batch_id, asgn.row_id, asgn.product_code)
+        if ok:
+            applied += 1
+        else:
+            failed_ids.append(asgn.row_id)
+
+    if failed_ids:
+        log.warning("[%s] scored_pending confirm: %d row(s) failed to update: %s",
+                    batch_id, len(failed_ids), failed_ids)
+
+    # ── Phase 3: audit timeline ────────────────────────────────────────────────
+    operator   = x_operator or "operator"
+    audit_path = output_dir / "audit.json"
+    tl.log_event(
+        audit_path,
+        "SCORED_PENDING_CONFIRMED",
+        "packing_scored_pending_confirm",
+        actor=operator,
+        detail={
+            "batch_id":    batch_id,
+            "applied":     applied,
+            "failed":      len(failed_ids),
+            "assignments": [
+                {
+                    "row_id":       a.row_id,
+                    "design_no":    a.design_no,
+                    "product_code": a.product_code,
+                }
+                for a in body.assignments
+            ],
+        },
+    )
+
+    # ── Phase 4: remove confirmed designs from scored_pending.json ─────────────
+    confirmed_designs = {a.design_no for a in body.assignments}
+    remaining = {dn: dinfo for dn, dinfo in designs.items() if dn not in confirmed_designs}
+    pending_data["designs"] = remaining
+    try:
+        sp_path.write_text(json.dumps(pending_data, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+    except Exception as _e:
+        log.warning("[%s] scored_pending update after confirm failed (non-fatal): %s",
+                    batch_id, _e)
+
+    # ── Phase 5: re-trigger draft sync (non-blocking) ─────────────────────────
+    if applied > 0:
+        try:
+            from ..services.proforma_draft_sync import sync_draft_from_packing_upload
+            _pf_db_path = settings.storage_root / "proforma_links.db"
+            _sync_result = sync_draft_from_packing_upload(
+                batch_id=batch_id,
+                operator=operator,
+                db_path=_pf_db_path,
+                audit_path=audit_path,
+                master_db_path=settings.storage_root / "master_data.sqlite",
+            )
+            log.info("[%s] post-confirm draft sync: %s", batch_id, _sync_result)
+        except Exception as _sync_exc:
+            log.warning("[%s] post-confirm draft sync failed (non-fatal): %s",
+                        batch_id, _sync_exc)
+
+    return {
+        "ok":                True,
+        "batch_id":          batch_id,
+        "applied":           applied,
+        "failed":            len(failed_ids),
+        "failed_row_ids":    failed_ids,
+        "remaining_designs": len(remaining),
+    }

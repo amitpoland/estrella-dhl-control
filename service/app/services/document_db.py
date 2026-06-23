@@ -2577,3 +2577,37 @@ def get_document_coverage_summary(db_path: Optional[Path] = None) -> Dict[str, A
     except Exception as exc:
         log.warning("[document_db] get_document_coverage_summary failed: %s", exc)
         return {}
+
+
+def update_sales_packing_line_product_code(
+    batch_id: str,
+    row_id: str,
+    product_code: str,
+) -> bool:
+    """Set ``product_code`` on one ``sales_packing_lines`` row.
+
+    Used by POST /packing/{batch_id}/scored-pending/confirm when the operator
+    explicitly assigns a product_code to a row that the spec scorer could not
+    auto-resolve with HIGH confidence.
+
+    Returns True when exactly one row was updated.  Never raises.
+    """
+    global _db_path
+    if _db_path is None:
+        log.warning("update_sales_packing_line_product_code: document_db not initialised")
+        return False
+    if not (batch_id or "").strip() or not (row_id or "").strip():
+        return False
+    try:
+        with sqlite3.connect(str(_db_path)) as con:
+            cur = con.execute(
+                "UPDATE sales_packing_lines SET product_code=? WHERE id=? AND batch_id=?",
+                ((product_code or "").strip(), row_id, batch_id),
+            )
+            return cur.rowcount == 1
+    except Exception as exc:
+        log.warning(
+            "update_sales_packing_line_product_code row=%r batch=%r: %s",
+            row_id, batch_id, exc,
+        )
+        return False
