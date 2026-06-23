@@ -7,6 +7,8 @@ Phase D boundary for callers that pass all guards.
 
 No HTTP. No DB. No credentials leaked.
 """
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from app.services.carrier.adapters.live import DhlExpressLiveAdapter
@@ -109,20 +111,36 @@ def test_empty_api_key_raises_config_error():
         adapter.create_shipment(_req("BATCH-001"))
 
 
-# ── Phase D boundary ──────────────────────────────────────────────────────────
+# ── Phase D — HTTP calls (guards pass → real DHL API called) ─────────────────
 
 
-def test_create_shipment_raises_not_implemented_when_guards_pass():
-    """Both guards pass → NotImplementedError marks the Phase D HTTP boundary."""
+def test_create_shipment_calls_dhl_api_when_guards_pass():
+    """Both guards pass → Phase D makes POST to DHL API (mocked)."""
     adapter = _live_adapter(api_key="k", api_secret="s", allowlist="BATCH-001")
-    with pytest.raises(NotImplementedError, match="Phase D"):
-        adapter.create_shipment(_req("BATCH-001"))
+    mock_resp = MagicMock()
+    mock_resp.is_success = True
+    mock_resp.json.return_value = {
+        "shipmentTrackingNumber": "1234567890",
+        "documents": [],
+    }
+    with patch("app.services.carrier.adapters.live.httpx.Client") as mock_client_cls:
+        mock_client_cls.return_value.__enter__.return_value.post.return_value = mock_resp
+        result = adapter.create_shipment(_req("BATCH-001"))
+    assert result.tracking_ref == "1234567890"
+    assert result.simulated is False
 
 
-def test_get_shipment_raises_not_implemented_with_creds():
+def test_get_shipment_calls_dhl_api_with_creds():
+    """Credentials present → Phase D makes GET to DHL shipment API (mocked)."""
     adapter = _live_adapter(api_key="k", api_secret="s")
-    with pytest.raises(NotImplementedError, match="Phase D"):
-        adapter.get_shipment("SIM-FAKE")
+    mock_resp = MagicMock()
+    mock_resp.is_success = True
+    mock_resp.json.return_value = {"status": "delivered"}
+    with patch("app.services.carrier.adapters.live.httpx.Client") as mock_client_cls:
+        mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_resp
+        result = adapter.get_shipment("SIM-FAKE")
+    assert result.tracking_ref == "SIM-FAKE"
+    assert result.simulated is False
 
 
 def test_get_shipment_raises_config_error_without_creds():
