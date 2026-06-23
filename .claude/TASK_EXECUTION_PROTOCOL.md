@@ -7,7 +7,7 @@ Governing sources (read at session start, do not re-derive):
 - `CLAUDE.md` — GATES 1–6, Anti-HOLD, Engineering Lessons, 7-agent deploy gate
 - `docs/governance/anti-hold-and-completion.md` — full Anti-HOLD spec, decision table, 4 HOLD conditions
 - `docs/governance/AUTHORITY_MAP.md` — write authority by domain, cross-domain principles P1–P4
-- `.claude/memory/PROJECT_STATE.md` — current project state (RULE 1, CLAUDE.md)
+- `.claude/memory/PROJECT_STATE_SUMMARY.md` — compact project state for startup (RULE 1, CLAUDE.md); full `.claude/memory/PROJECT_STATE.md` only when DECISIONS/OPEN QUESTIONS lookup is required
 - `.claude/memory/TASK_STATE.md` — in-flight task tracker
 
 ---
@@ -64,7 +64,7 @@ acceptance criteria. This policy is subordinate to the four HOLD conditions in
 **Allowed actions:**
 - Read files, grep, glob, web search
 - Read `AUTHORITY_MAP.md` to identify domain authority owner and forbidden write locations
-- Read `PROJECT_STATE.md`, `TASK_STATE.md`, open PRs (GATE 2 check)
+- Read `PROJECT_STATE_SUMMARY.md` + `TASK_STATE.md`; check GATE 2 (≤3 open impl PRs) from summary
 - Read existing tests for the affected domain
 - Spawn `Explore` or `gap-detection` subagent (non-blocking; report only)
 - Write side-discoveries to `BACKLOG.md`
