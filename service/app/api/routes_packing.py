@@ -3246,7 +3246,7 @@ async def delete_packing_document(
 #   - product_code must be in the design's candidates list (no invention).
 #   - row_id must exist in sales_packing_lines for this batch (no cross-batch).
 #   - All assignments validated before any DB write (fail-closed).
-#   - Confirms trigger a non-blocking draft re-sync so the draft picks up
+#   - Confirms trigger an exception-safe best-effort re-sync so the draft picks up
 #     the resolved product_codes immediately.
 #   - No wFirma writes, no inventory mutations, no proforma approval.
 
@@ -3373,7 +3373,19 @@ def confirm_scored_pending(
     )
 
     # ── Phase 4: remove confirmed designs from scored_pending.json ─────────────
-    confirmed_designs = {a.design_no for a in body.assignments}
+    # Only clear a design when ALL its assigned rows applied successfully.
+    # Designs with any failed row remain in scored_pending so the operator
+    # can see which rows still need fixing.
+    failed_id_set = set(failed_ids)
+    fully_confirmed: set[str] = set()
+    for asgn in body.assignments:
+        if asgn.row_id not in failed_id_set:
+            fully_confirmed.add(asgn.design_no)
+    # A design is only removed if none of its submitted rows failed.
+    design_has_failed_row = {
+        asgn.design_no for asgn in body.assignments if asgn.row_id in failed_id_set
+    }
+    confirmed_designs = fully_confirmed - design_has_failed_row
     remaining = {dn: dinfo for dn, dinfo in designs.items() if dn not in confirmed_designs}
     pending_data["designs"] = remaining
     try:
@@ -3383,7 +3395,9 @@ def confirm_scored_pending(
         log.warning("[%s] scored_pending update after confirm failed (non-fatal): %s",
                     batch_id, _e)
 
-    # ── Phase 5: re-trigger draft sync (non-blocking) ─────────────────────────
+    # ── Phase 5: exception-safe best-effort re-sync ───────────────────────────
+    # Runs synchronously in the handler (intentional — no thread). Any error
+    # is caught and logged; it does not roll back the confirmed product_codes.
     if applied > 0:
         try:
             from ..services.proforma_draft_sync import sync_draft_from_packing_upload
