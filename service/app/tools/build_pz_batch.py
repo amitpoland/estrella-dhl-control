@@ -274,7 +274,11 @@ def save_csv(batch: PZBatch, out_dir: Path) -> Path:
             "towar",
             "",                               # Kod EAN
         ])
-    p.write_text(buf.getvalue(), encoding="utf-8-sig")
+    # write_bytes (not write_text): the csv.writer already emits explicit \r\n
+    # line terminators; on Windows/py3.9 Path.write_text opens in text mode and
+    # re-translates \n -> \r\n, doubling every terminator into \r\r\n. Writing
+    # bytes preserves the writer's line endings exactly.
+    p.write_bytes(buf.getvalue().encode("utf-8-sig"))
     return p
 
 

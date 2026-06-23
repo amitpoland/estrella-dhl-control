@@ -158,6 +158,14 @@ def storage(tmp_path):
 @pytest.fixture()
 def client(storage):
     from app.main import app
+    # Force-close every registry circuit breaker (notably "wfirma") AFTER app
+    # import. The shared conftest reset is guarded on app.core.circuit_breaker
+    # already being in sys.modules; when this module's lazy `from app.main import
+    # app` is the first to pull it in, that guard misses and a breaker tripped
+    # OPEN by an earlier test (e.g. a poison connection-error gate test) would
+    # 503 every wFirma call here. Resetting after import removes the race.
+    from app.core.circuit_breaker import reset_all
+    reset_all()
     with patch.object(settings, "storage_root", storage):
         with TestClient(app, raise_server_exceptions=True) as c:
             yield c

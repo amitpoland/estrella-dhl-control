@@ -297,6 +297,10 @@ def test_save_json_csv_ui_round_trip(tmp_path: Path):
     assert j["supplier"]["wfirma_id"] == "38142296"
 
     # CSV — first line, semicolon-separated, comma decimal
+    # On-disk line endings must be exactly \r\n (one per row), never the doubled
+    # \r\r\n produced by Path.write_text on Windows. Guard against regression.
+    csv_bytes = pc.read_bytes()
+    assert b"\r\r\n" not in csv_bytes
     raw = pc.read_text(encoding="utf-8-sig").splitlines()
     assert len(raw) == 4
     parsed = list(csv.reader(io.StringIO("\n".join(raw)), delimiter=";"))

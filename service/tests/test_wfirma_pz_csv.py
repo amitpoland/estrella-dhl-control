@@ -189,6 +189,20 @@ def test_write_csv_creates_file_with_bom(tmp_path: Path):
     assert raw.startswith(b"\xef\xbb\xbf"), "UTF-8 BOM missing"
 
 
+def test_write_csv_line_endings_not_doubled(tmp_path: Path):
+    # render_csv emits explicit \r\n terminators. write_csv must preserve them
+    # exactly on disk — never the doubled \r\r\n that Path.write_text produces in
+    # text mode on Windows. A doubled terminator splits each row into an extra
+    # blank line on read-back and corrupts the wFirma import.
+    rows = csvbld.build_csv_rows(_payload())
+    out = tmp_path / "endings.csv"
+    csvbld.write_csv(out, rows)
+    raw = out.read_bytes()
+    assert b"\r\r\n" not in raw
+    lines = out.read_text(encoding=csvbld.CSV_ENCODING).splitlines()
+    assert len(lines) == len(rows)            # no blank separator lines
+
+
 def test_build_for_file_writes_csv_and_returns_path(tmp_path: Path):
     src = tmp_path / "PZ_READY_test.json"
     src.write_text(json.dumps(_payload()), encoding="utf-8")

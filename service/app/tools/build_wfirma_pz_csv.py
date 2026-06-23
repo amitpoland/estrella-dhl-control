@@ -188,7 +188,11 @@ def render_csv(rows: List[List[str]]) -> str:
 def write_csv(path: Path, rows: List[List[str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = render_csv(rows)
-    path.write_text(text, encoding=CSV_ENCODING)
+    # write_bytes (not write_text): render_csv emits explicit \r\n terminators;
+    # on Windows/py3.9 Path.write_text re-translates \n -> \r\n, doubling every
+    # terminator into \r\r\n and corrupting the wFirma import CSV. Writing bytes
+    # preserves the line endings exactly.
+    path.write_bytes(text.encode(CSV_ENCODING))
 
 
 def build_for_file(src: Path, out_dir: Path) -> Tuple[CsvValidation, Path | None, List[List[str]]]:
