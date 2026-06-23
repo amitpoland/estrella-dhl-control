@@ -13569,6 +13569,208 @@ function parseBulkPriceText(text) {
   return { ok: errors.length === 0 && prices.length > 0, prices, errors };
 }
 
+// ── ScoredPendingPanel ───────────────────────────────────────────────────────
+// Shows MEDIUM-confidence ambiguous designs that require operator confirmation
+// before the draft can be fully resolved.  Data comes from the scorer sidecar
+// file (scored_pending.json) via GET /api/v1/packing/{batchId}/scored-pending.
+// Operator picks a product_code per row and clicks "Confirm".
+// POST /api/v1/packing/{batchId}/scored-pending/confirm applies the assignments
+// and triggers a non-blocking re-sync so the draft picks up the codes.
+function ScoredPendingPanel({ batchId, onToast, onConfirmed }) {
+  const [data, setData]         = React.useState(null);   // {designs, count}
+  const [loading, setLoading]   = React.useState(true);
+  const [selections, setSelections] = React.useState({}); // rowId → product_code
+  const [busy, setBusy]         = React.useState(false);
+
+  const refresh = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await apiFetch(
+        `/api/v1/packing/${encodeURIComponent(batchId)}/scored-pending`);
+      setData(r || { designs: {}, count: 0 });
+      // Seed selections from recommended_assignments
+      const init = {};
+      for (const [, d] of Object.entries((r && r.designs) || {})) {
+        for (const a of (d.recommended_assignments || [])) {
+          if (a.row_id) init[a.row_id] = a.recommended_product_code;
+        }
+      }
+      setSelections(init);
+    } catch (e) {
+      onToast && onToast('Failed to load scored pending: ' + e.message, 'error');
+    }
+    setLoading(false);
+  }, [batchId, onToast]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  if (loading) return null;
+  if (!data || !data.count) return null;
+
+  const designs = data.designs || {};
+
+  const handleConfirm = async () => {
+    setBusy(true);
+    try {
+      const assignments = [];
+      for (const [designNo, d] of Object.entries(designs)) {
+        for (const a of (d.recommended_assignments || [])) {
+          const chosen = selections[a.row_id] || a.recommended_product_code;
+          if (chosen) {
+            assignments.push({
+              row_id:      a.row_id,
+              design_no:   designNo,
+              product_code: chosen,
+            });
+          }
+        }
+      }
+      if (!assignments.length) {
+        onToast && onToast('No assignments to confirm.', 'warning');
+        setBusy(false);
+        return;
+      }
+      const result = await apiFetch(
+        `/api/v1/packing/${encodeURIComponent(batchId)}/scored-pending/confirm`,
+        { method: 'POST', body: JSON.stringify({ assignments }) },
+      );
+      const applied = result.applied || 0;
+      const failed  = result.failed  || 0;
+      if (failed > 0) {
+        onToast && onToast(
+          `Confirmed ${applied} assignment(s); ${failed} row(s) failed validation.`,
+          'warning',
+        );
+      } else {
+        onToast && onToast(
+          `${applied} design assignment(s) confirmed — draft re-sync triggered.`,
+          'success',
+        );
+      }
+      await refresh();
+      onConfirmed && onConfirmed();
+    } catch (e) {
+      onToast && onToast('Confirm failed: ' + e.message, 'error');
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div data-testid="scored-pending-panel"
+         style={{ margin: '0 0 16px', padding: '14px 16px',
+                  background: 'var(--badge-amber-bg)',
+                  border: '1px solid var(--badge-amber-text)',
+                  borderRadius: 8 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6,
+                    color: 'var(--badge-amber-text)' }}>
+        ⚠ Design assignment required — {data.count} design(s) need operator confirmation
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 12 }}>
+        The scorer could not auto-resolve these designs (MEDIUM confidence).
+        Select the correct product code for each sales row and click Confirm.
+      </div>
+
+      {Object.entries(designs).map(([designNo, d]) => (
+        <div key={designNo}
+             data-testid={`scored-pending-design-${designNo}`}
+             style={{ marginBottom: 14, padding: 10,
+                      background: 'var(--bg)', borderRadius: 6,
+                      border: '1px solid var(--border-1)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <span style={{ fontWeight: 600, fontSize: 12 }}>{designNo}</span>
+            <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 10,
+                           background: '#fed7aa', color: '#c2410c' }}>
+              {d.confidence_label || 'MEDIUM'}
+            </span>
+            {d.spec_diff_fields && d.spec_diff_fields.length > 0 && (
+              <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                spec: {d.spec_diff_fields.join(', ')}
+              </span>
+            )}
+          </div>
+
+          {d.audit_trail && Object.keys(d.audit_trail).length > 0 && (
+            <details data-testid={`scored-pending-audit-${designNo}`}
+                     style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 8 }}>
+              <summary style={{ cursor: 'pointer' }}>Scorer audit trail</summary>
+              <pre style={{ marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {JSON.stringify(d.audit_trail, null, 2)}
+              </pre>
+            </details>
+          )}
+
+          {(d.distribution_hint && Object.keys(d.distribution_hint).length > 0) && (
+            <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 8 }}>
+              Distribution hint:{' '}
+              {Object.entries(d.distribution_hint)
+                .map(([c, n]) => `${c}: ${n}`)
+                .join(' · ')}
+            </div>
+          )}
+
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <thead>
+              <tr style={{ color: 'var(--text-3)', borderBottom: '1px solid var(--border-0)' }}>
+                <th style={{ textAlign: 'left', padding: '2px 6px' }}>Row ID</th>
+                <th style={{ textAlign: 'left', padding: '2px 6px' }}>Recommended</th>
+                <th style={{ textAlign: 'left', padding: '2px 6px' }}>Assign</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(d.recommended_assignments || []).map((a, i) => (
+                <tr key={a.row_id || i}
+                    data-testid={`scored-pending-row-${a.row_id || i}`}>
+                  <td style={{ padding: '3px 6px', fontFamily: 'ui-monospace,monospace',
+                               fontSize: 10, color: 'var(--text-3)' }}>
+                    {(a.row_id || '').slice(-8) || '—'}
+                  </td>
+                  <td style={{ padding: '3px 6px', fontSize: 10 }}>
+                    {a.recommended_product_code || '—'}
+                    {a.audit_reason && (
+                      <span style={{ color: 'var(--text-3)', marginLeft: 4 }}>
+                        ({a.audit_reason})
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ padding: '3px 6px' }}>
+                    <Sel
+                      data-testid={`scored-pending-sel-${a.row_id || i}`}
+                      value={selections[a.row_id] || a.recommended_product_code || ''}
+                      onChange={e => setSelections(prev => ({
+                        ...prev, [a.row_id]: e.target.value,
+                      }))}
+                      style={{ fontSize: 11, padding: '1px 4px' }}
+                    >
+                      {(d.candidates || []).map(c => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </Sel>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+
+      <button
+        data-testid="scored-pending-confirm-btn"
+        disabled={busy}
+        onClick={handleConfirm}
+        style={{
+          fontSize: 12, padding: '6px 16px', borderRadius: 6,
+          background: busy ? 'var(--text-3)' : '#7c3aed',
+          color: '#fff', border: 'none',
+          cursor: busy ? 'not-allowed' : 'pointer',
+          marginTop: 4,
+        }}
+      >
+        {busy ? 'Confirming…' : 'Confirm Assignments'}
+      </button>
+    </div>
+  );
+}
+
 function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
   const [drafts, setDrafts]       = React.useState([]);
   const [loading, setLoading]     = React.useState(true);
@@ -14259,6 +14461,8 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
 
   if (!drafts.length) {
     return (
+      <React.Fragment>
+      <ScoredPendingPanel batchId={batchId} onToast={onToast} onConfirmed={refreshList} />
       <Card data-testid="proforma-draft-panel-empty" style={{ marginBottom: 16 }}>
         <SectionHeader icon="◇" title="Local Proforma Drafts"
                        subtitle="No proforma drafts yet. Upload a client sales file, or use the link button below if purchase packing files are already uploaded." />
@@ -14446,6 +14650,7 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
           </div>
         )}
       </Card>
+      </React.Fragment>
     );
   }
 
@@ -14456,6 +14661,8 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
   const isPosting     = openDraft && openDraft.draft_state === 'posting';
 
   return (
+    <React.Fragment>
+    <ScoredPendingPanel batchId={batchId} onToast={onToast} onConfirmed={refreshList} />
     <Card data-testid="proforma-draft-panel"
           className="ej-doc-suite"
           style={{

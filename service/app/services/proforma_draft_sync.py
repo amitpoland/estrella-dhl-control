@@ -258,6 +258,15 @@ def _apply_spec_reconciliation(
                 batch_id, dn, resolved_codes, result.confidence, result.method,
             )
         else:
+            _rec_asgns = []
+            for _asgn in result.recommended_assignments:
+                _idx = _asgn.sales_row_index
+                if 0 <= _idx < len(sales_clones):
+                    _rec_asgns.append({
+                        "row_id":                   sales_clones[_idx].get("id", ""),
+                        "recommended_product_code": _asgn.recommended_product_code,
+                        "audit_reason":             _asgn.audit_reason,
+                    })
             designs_scored_pending[dn] = {
                 "candidates":               cands,
                 "distribution_hint":        result.distribution_hint,
@@ -266,6 +275,7 @@ def _apply_spec_reconciliation(
                 "spec_diff_fields":         result.spec_diff_fields,
                 "audit_trail":              result.audit_trail,
                 "requires_operator_review": True,
+                "recommended_assignments":  _rec_asgns,
             }
             log.info(
                 "[%s] spec reconciliation scored %r as %s (confidence=%.2f) — "
@@ -607,15 +617,17 @@ def sync_draft_from_packing_upload(
 
     if not sales_lines:
         return {
-            "batch_id":          batch_id,
-            "clients_processed": 0,
-            "created":           0,
-            "synced":            0,
-            "blocked":           0,
-            "no_sales_lines":    True,
-            "designs_resolved":   {},
-            "designs_ambiguous":  {},
-            "designs_unresolved": [],
+            "batch_id":               batch_id,
+            "clients_processed":      0,
+            "created":                0,
+            "synced":                 0,
+            "blocked":                0,
+            "no_sales_lines":         True,
+            "designs_resolved":       {},
+            "designs_ambiguous":      {},
+            "designs_unresolved":     [],
+            "designs_reconciled":     {},
+            "designs_scored_pending": {},
         }
 
     # ── 1.5 Resolve missing product_code via batch-scoped lookup ─────────────
@@ -791,19 +803,39 @@ def sync_draft_from_packing_upload(
                       batch_id, _blk_exc)
 
     result: Dict[str, Any] = {
-        "batch_id":              batch_id,
-        "clients_processed":     0,
-        "created":               0,
-        "synced":                0,
-        "blocked":               0,
-        "birth_blocked":         birth_blocked,
-        "contractor_conflict":   0,
-        "pending_resolution":    pending_count,
-        "skipped_no_signal":     skipped_count,
-        "designs_resolved":      resolution_summary["designs_resolved"],
-        "designs_ambiguous":     resolution_summary["designs_ambiguous"],
-        "designs_unresolved":    resolution_summary["designs_unresolved"],
+        "batch_id":               batch_id,
+        "clients_processed":      0,
+        "created":                0,
+        "synced":                 0,
+        "blocked":                0,
+        "birth_blocked":          birth_blocked,
+        "contractor_conflict":    0,
+        "pending_resolution":     pending_count,
+        "skipped_no_signal":      skipped_count,
+        "designs_resolved":       resolution_summary["designs_resolved"],
+        "designs_ambiguous":      resolution_summary["designs_ambiguous"],
+        "designs_unresolved":     resolution_summary["designs_unresolved"],
+        "designs_reconciled":     resolution_summary["designs_reconciled"],
+        "designs_scored_pending": resolution_summary["designs_scored_pending"],
     }
+
+    # Persist designs_scored_pending for the operator confirmation endpoint.
+    # Cleared on confirm (POST /scored-pending/confirm) or overwritten on re-upload.
+    if audit_path is not None and resolution_summary.get("designs_scored_pending"):
+        _sp_path = Path(audit_path).parent / "scored_pending.json"
+        try:
+            import json as _json
+            _sp_path.write_text(
+                _json.dumps({
+                    "batch_id": batch_id,
+                    "designs":  resolution_summary["designs_scored_pending"],
+                }, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            log.info("[%s] scored_pending persisted: %d design(s)", batch_id,
+                     len(resolution_summary["designs_scored_pending"]))
+        except Exception as _sp_exc:
+            log.warning("[%s] scored_pending write failed (non-fatal): %s", batch_id, _sp_exc)
 
     # Birth/reset name_pl fallback + mapping advisory callables. Lazy imports
     # keep the service layer free of route/parser import cycles; both are
