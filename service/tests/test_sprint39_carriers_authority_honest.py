@@ -392,5 +392,8 @@ class TestNoOtherPagesTouched:
         for name in ["createCarrier", "updateCarrier", "deleteCarrier",
                       "testCarrierConnection", "disconnectCarrier",
                       "rotateCarrierToken", "startCarrierOAuth"]:
-            assert name not in src, \
+            # Word-boundary match: 'createCarrier' must not appear as a standalone
+            # identifier. 'createCarrierShipment' (Phase D AWB) is NOT a match
+            # because 'S' after 'createCarrier' is a word character, not a boundary.
+            assert not re.search(r"\b" + re.escape(name) + r"\b", src), \
                 f"pz-api.js added {name} — Sprint 39 does not create carrier management APIs"
