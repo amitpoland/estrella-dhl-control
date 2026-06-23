@@ -737,6 +737,244 @@ function PriorInvoiceHistoryModal({ contractorId, contractorName, onClose }) {
   );
 }
 
+// ── AWB Generate Modal ────────────────────────────────────────────────────────
+// WIRED: POST /api/v1/carrier/{batch_id}/shipment
+// Requires CARRIER_API_STATUS=live + DHL credentials in environment.
+function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
+  const [form, setForm] = React.useState({
+    weight_kg:    '',
+    length_cm:    '',
+    width_cm:     '',
+    height_cm:    '',
+    declared_value: (prefill.declared_value || '').toString(),
+    currency:     'EUR',
+    name:         prefill.name || '',
+    street:       prefill.street || '',
+    city:         prefill.city || '',
+    postal_code:  prefill.postal_code || '',
+    country_code: prefill.country_code || '',
+    phone:        prefill.phone || '',
+    special_instructions: '',
+  });
+  const [loading, setLoading] = React.useState(false);
+  const [apiError, setApiError] = React.useState(null);
+  const [result, setResult] = React.useState(null);
+
+  const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
+
+  const handleSubmit = () => {
+    if (loading) return;
+    const missing = [];
+    if (!form.weight_kg)    missing.push('Weight (kg)');
+    if (!form.length_cm)    missing.push('Length (cm)');
+    if (!form.width_cm)     missing.push('Width (cm)');
+    if (!form.height_cm)    missing.push('Height (cm)');
+    if (!form.declared_value) missing.push('Declared value');
+    if (!form.name)         missing.push('Recipient name');
+    if (!form.street)       missing.push('Street');
+    if (!form.city)         missing.push('City');
+    if (!form.country_code) missing.push('Country code');
+    if (missing.length) { setApiError(`Missing required fields: ${missing.join(', ')}`); return; }
+
+    setLoading(true);
+    setApiError(null);
+
+    window.PzApi.createCarrierShipment(batchId, {
+      declared_value:      parseFloat(form.declared_value),
+      currency:            form.currency,
+      weight_kg:           parseFloat(form.weight_kg),
+      dimensions: {
+        length_cm: parseFloat(form.length_cm),
+        width_cm:  parseFloat(form.width_cm),
+        height_cm: parseFloat(form.height_cm),
+      },
+      recipient_address: {
+        name:         form.name,
+        street:       form.street,
+        city:         form.city,
+        postal_code:  form.postal_code,
+        country_code: form.country_code.toUpperCase(),
+        phone:        form.phone,
+      },
+      special_instructions: form.special_instructions || null,
+    })
+      .then(r => {
+        if (r && r.tracking_ref) {
+          setResult(r);
+        } else {
+          const msg = (r && (r.detail || r.error)) || 'AWB creation failed — check backend logs.';
+          setApiError(typeof msg === 'object' ? JSON.stringify(msg) : msg);
+        }
+        setLoading(false);
+      })
+      .catch(e => {
+        setApiError((e && e.message) ? e.message : 'AWB creation failed — check backend logs.');
+        setLoading(false);
+      });
+  };
+
+  const inputStyle = {
+    width: '100%', padding: '8px 10px', borderRadius: 6,
+    border: '1px solid var(--border)', background: 'var(--bg)',
+    color: 'var(--text)', fontSize: 13, fontFamily: 'inherit', boxSizing: 'border-box',
+  };
+  const labelStyle = { fontSize: 11, color: 'var(--text-3)', fontWeight: 500, marginBottom: 4, display: 'block' };
+  const fieldStyle = { marginBottom: 14 };
+
+  const overlay = {
+    position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000,
+    display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px',
+  };
+  const card = {
+    background: 'var(--card)', borderRadius: 12, width: 560, maxWidth: '94vw',
+    maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px var(--shadow-heavy)',
+  };
+  const header = {
+    padding: '18px 24px', borderBottom: '1px solid var(--border)',
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'sticky', top: 0,
+    background: 'var(--card)', zIndex: 1,
+  };
+
+  if (result) {
+    return (
+      <div style={overlay} onClick={() => { onSuccess && onSuccess(result); onClose(); }} data-testid="awb-generate-modal">
+        <div onClick={e => e.stopPropagation()} style={card}>
+          <div style={header}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--badge-green-text)' }}>⚡ AWB Created</div>
+            <button onClick={() => { onSuccess && onSuccess(result); onClose(); }}
+              style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
+          </div>
+          <div style={{ padding: '24px' }} data-testid="awb-generate-success">
+            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
+              DHL Express AWB generated successfully
+            </div>
+            <div style={{
+              padding: '16px 18px', background: 'var(--bg-subtle)', borderRadius: 8,
+              border: '1px solid var(--badge-green-border)', marginBottom: 20,
+            }}>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>TRACKING NUMBER (AWB)</div>
+              <div style={{
+                fontSize: 22, fontWeight: 800, fontFamily: 'monospace',
+                color: 'var(--badge-green-text)', letterSpacing: 1,
+              }}>{result.tracking_ref}</div>
+              <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-3)' }}>
+                Mode: {result.mode} · State: {result.state}
+                {result.simulated && <span style={{ marginLeft: 8, color: 'var(--badge-amber-text)' }}>(SIMULATED)</span>}
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 20 }}>
+              Label PDF saved to server. Contact ops to retrieve or print the shipping label.
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button
+                onClick={() => { navigator.clipboard && navigator.clipboard.writeText(result.tracking_ref); }}
+                style={{ ...inputStyle, width: 'auto', padding: '8px 16px', cursor: 'pointer' }}
+              >Copy AWB</button>
+              <Btn variant="primary" onClick={() => { onSuccess && onSuccess(result); onClose(); }}>Done</Btn>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={overlay} onClick={onClose} data-testid="awb-generate-modal">
+      <div onClick={e => e.stopPropagation()} style={card}>
+        <div style={header}>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>⚡ Generate DHL Express AWB</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: '20px 24px' }}>
+
+          {/* Package dimensions */}
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>Package</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
+            {[['weight_kg','Weight (kg)'],['length_cm','L (cm)'],['width_cm','W (cm)'],['height_cm','H (cm)']].map(([k, label]) => (
+              <div key={k}>
+                <label style={labelStyle}>{label} *</label>
+                <input type="number" min="0" step="0.1" value={form[k]}
+                  onChange={e => set(k, e.target.value)} style={inputStyle}
+                  data-testid={`awb-field-${k}`} />
+              </div>
+            ))}
+          </div>
+
+          {/* Declared value */}
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 14 }}>
+            <div>
+              <label style={labelStyle}>Declared Value *</label>
+              <input type="number" min="0" step="0.01" value={form.declared_value}
+                onChange={e => set('declared_value', e.target.value)} style={inputStyle}
+                data-testid="awb-field-declared_value" />
+            </div>
+            <div>
+              <label style={labelStyle}>Currency</label>
+              <input value={form.currency} readOnly style={{ ...inputStyle, opacity: 0.6, cursor: 'not-allowed' }} />
+            </div>
+          </div>
+
+          {/* Recipient address */}
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>Recipient</div>
+          <div style={fieldStyle}>
+            <label style={labelStyle}>Full Name / Company *</label>
+            <input value={form.name} onChange={e => set('name', e.target.value)} style={inputStyle} data-testid="awb-field-name" />
+          </div>
+          <div style={fieldStyle}>
+            <label style={labelStyle}>Street Address *</label>
+            <input value={form.street} onChange={e => set('street', e.target.value)} style={inputStyle} data-testid="awb-field-street" />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
+            <div>
+              <label style={labelStyle}>City *</label>
+              <input value={form.city} onChange={e => set('city', e.target.value)} style={inputStyle} data-testid="awb-field-city" />
+            </div>
+            <div>
+              <label style={labelStyle}>Postal Code</label>
+              <input value={form.postal_code} onChange={e => set('postal_code', e.target.value)} style={inputStyle} data-testid="awb-field-postal_code" />
+            </div>
+            <div>
+              <label style={labelStyle}>Country Code *</label>
+              <input value={form.country_code} onChange={e => set('country_code', e.target.value.toUpperCase())}
+                maxLength={2} placeholder="PL" style={inputStyle} data-testid="awb-field-country_code" />
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 18 }}>
+            <div>
+              <label style={labelStyle}>Phone</label>
+              <input value={form.phone} onChange={e => set('phone', e.target.value)} style={inputStyle} data-testid="awb-field-phone" />
+            </div>
+            <div>
+              <label style={labelStyle}>Special Instructions</label>
+              <input value={form.special_instructions} onChange={e => set('special_instructions', e.target.value)} style={inputStyle} data-testid="awb-field-instructions" />
+            </div>
+          </div>
+
+          {apiError && (
+            <div style={{
+              padding: '10px 14px', background: 'var(--badge-red-bg)', borderRadius: 6,
+              color: 'var(--badge-red-text)', fontSize: 12, marginBottom: 16,
+            }} data-testid="awb-error">{apiError}</div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+              Live DHL Express AWB · batch: <code>{batchId}</code>
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <Btn variant="ghost" onClick={onClose} disabled={loading}>Cancel</Btn>
+              <Btn variant="primary" onClick={handleSubmit} disabled={loading} data-testid="awb-submit-btn">
+                {loading ? 'Creating AWB…' : '⚡ Create AWB'}
+              </Btn>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
@@ -757,6 +995,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
   // M2 — Send Proforma Email modal state
   const [showSendModal, setShowSendModal] = React.useState(false);
+
+  // M8 — AWB Generate modal state
+  const [showAwbModal, setShowAwbModal] = React.useState(false);
 
   // M5 — Inline Edit mode state
   const [editMode,         setEditMode]          = React.useState(false);
@@ -1857,18 +2098,14 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         >
           ⚙ Generate ▾
         </TbBtn>
-        {/* M8 — DHL Express AWB generation (BACKEND-PENDING per Lesson M).
-            Carrier gate is pending (CARRIER_API_STATUS=pending in production).
-            Button is visible and disabled with an explicit reason per Lesson M §3-4.
-            Enable by setting CARRIER_API_STATUS=shadow|live and wiring the
-            AWB generation modal to POST /api/v1/carrier/{batch_id}/shipment. */}
+        {/* M8 — DHL Express AWB generation. WIRED: POST /api/v1/carrier/{batch_id}/shipment.
+            Requires CARRIER_API_STATUS=live + DHL credentials in environment. */}
         <TbBtn
-          disabled
-          title={
-            'Generate DHL Express AWB — Carrier gate not yet active. ' +
-            'CARRIER_API_STATUS must be "shadow" or "live" to enable AWB generation. ' +
-            'Contact admin to activate the carrier integration.'
-          }
+          onClick={() => setShowAwbModal(true)}
+          disabled={!batchId}
+          title={batchId
+            ? 'Generate DHL Express AWB — opens shipment form'
+            : 'No batch loaded — open a proforma with a batch to generate AWB'}
           data-testid="tb-awb-generate"
         >
           ⚡ AWB Generate
@@ -2557,6 +2794,22 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             setShowSendModal(false);
             draftHook && draftHook.reload && draftHook.reload();
           }}
+        />
+      )}
+      {showAwbModal && batchId && (
+        <AwbGenerateModal
+          batchId={batchId}
+          prefill={{
+            declared_value: detail.total_eur ? detail.total_eur.toFixed(2) : '',
+            name:         (sto && sto.name)    || (bo && bo.name)    || customer.name || '',
+            street:       (sto && sto.street)  || (bo && bo.street)  || '',
+            city:         (sto && sto.city)    || (bo && bo.city)    || '',
+            postal_code:  (sto && sto.zip)     || (bo && bo.zip)     || '',
+            country_code: (sto && sto.country) || (bo && bo.country) || '',
+            phone:        (bo && bo.phone)     || '',
+          }}
+          onClose={() => setShowAwbModal(false)}
+          onSuccess={() => setShowAwbModal(false)}
         />
       )}
       {buyerEditOpen && (

@@ -340,6 +340,14 @@
       _postM(`${BASE}/wfirma/reservations/create`,
         { batch_id: batchId, client_name: clientName }),
 
+    // POST /api/v1/carrier/{batch_id}/shipment
+    // Creates a DHL Express AWB. Requires CARRIER_API_STATUS=live and credentials.
+    // body: { recipient_address, declared_value, currency, weight_kg, dimensions,
+    //         shipper_account? (falls back to server setting), special_instructions? }
+    // Returns: { batch_id, idempotency_key, mode, state, tracking_ref, simulated }
+    createCarrierShipment: (batchId, body) =>
+      _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`, body),
+
     // GET /api/v1/warehouse/receipt/{batch_id}
     // WAREHOUSE authority: per-line expected vs confirmed received quantities +
     // batch summary { total_lines, confirmed_lines, unconfirmed_lines,

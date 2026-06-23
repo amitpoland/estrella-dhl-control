@@ -88,7 +88,7 @@ def _get_shipment_db_path() -> Path:
 
 
 class ShipmentRequestBody(BaseModel):
-    shipper_account: str
+    shipper_account: Optional[str] = None  # falls back to DHL_EXPRESS_ACCOUNT_NUMBER setting
     recipient_address: dict
     declared_value: float
     currency: str
@@ -108,6 +108,18 @@ def create_shipment(
     coordinator: CarrierCoordinator = Depends(_get_coordinator),
 ) -> JSONResponse:
     from ..core.config import settings
+
+    # Resolve shipper account — body takes precedence, then settings, then 422
+    shipper_account = body.shipper_account or settings.dhl_express_account_number
+    if not shipper_account:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "No DHL Express account number configured",
+                "code": "SHIPPER_ACCOUNT_MISSING",
+                "guidance": "Set DHL_EXPRESS_ACCOUNT_NUMBER in environment or pass shipper_account in request body.",
+            },
+        )
 
     # Resolve recipient address via Customer Master authority (Condition 2: feature flag)
     if settings.awb_address_authority_enabled:
@@ -155,7 +167,7 @@ def create_shipment(
 
     request = ShipmentRequest(
         batch_id=batch_id,
-        shipper_account=body.shipper_account,
+        shipper_account=shipper_account,
         recipient_address=carrier_address,
         declared_value=body.declared_value,
         currency=body.currency,
