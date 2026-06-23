@@ -27,6 +27,7 @@ class CarrierConfig:
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
     api_url: str = "https://express.api.dhl.com"
+    use_sandbox: bool = False
     account_number: Optional[str] = None
     live_allowlist: str = ""                       # comma-separated batch_ids; empty = no live
 

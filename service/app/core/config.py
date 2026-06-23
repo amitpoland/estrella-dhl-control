@@ -334,6 +334,7 @@ class Settings(BaseSettings):
     dhl_express_api_key:        Optional[str] = Field(default=None)
     dhl_express_api_secret:     Optional[str] = Field(default=None)
     dhl_express_api_url:        str           = Field(default="https://express.api.dhl.com")
+    dhl_express_use_sandbox:    bool          = Field(default=False)
     dhl_express_account_number: Optional[str] = Field(default=None)
 
     # DHL Express shipper identity — used by the live adapter to populate shipperDetails.

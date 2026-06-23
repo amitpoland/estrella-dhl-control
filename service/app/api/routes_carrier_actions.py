@@ -57,6 +57,7 @@ def _get_carrier_config() -> CarrierConfig:
         api_key=settings.dhl_express_api_key,
         api_secret=settings.dhl_express_api_secret,
         api_url=settings.dhl_express_api_url,
+        use_sandbox=settings.dhl_express_use_sandbox,
         account_number=settings.dhl_express_account_number,
         live_allowlist=settings.carrier_live_allowlist,
     )

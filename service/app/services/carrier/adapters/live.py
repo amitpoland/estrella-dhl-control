@@ -6,7 +6,12 @@ Guards (run before every API call):
   2. Credential check — api_key + api_secret + account_number must be set
 
 HTTP: httpx.Client with BasicAuth(api_key, api_secret), timeout 30s.
-Endpoint: POST {api_url}/mydhlapi/shipments
+Endpoint: POST {api_url}/mydhlapi/shipments         (production, DHL_EXPRESS_USE_SANDBOX=false)
+          POST {api_url}/mydhlapi/test/shipments    (sandbox,    DHL_EXPRESS_USE_SANDBOX=true)
+
+DHL_EXPRESS_API_URL is the base URL only (https://express.api.dhl.com).
+Use DHL_EXPRESS_USE_SANDBOX=true to route to the test endpoint — do NOT append
+/mydhlapi/test to DHL_EXPRESS_API_URL; that produces a double-path 404.
 
 On success: returns ShipmentResult(mode=LIVE, state=SUBMITTED, tracking_ref=<AWB>, simulated=False)
             and saves label PDF (if returned) to carrier_storage_root/labels/{batch_id}-{tracking_ref}.pdf
@@ -65,7 +70,7 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
             timeout=30.0,
         ) as client:
             resp = client.post(
-                f"{self._config.api_url}/mydhlapi/shipments",
+                f"{self._config.api_url.rstrip('/')}{self._api_path()}/shipments",
                 json=body,
             )
 
@@ -100,7 +105,7 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
             timeout=30.0,
         ) as client:
             resp = client.get(
-                f"{self._config.api_url}/mydhlapi/shipments/{tracking_ref}",
+                f"{self._config.api_url.rstrip('/')}{self._api_path()}/shipments/{tracking_ref}",
             )
 
         if not resp.is_success:
@@ -138,6 +143,18 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
                 f"batch_id {batch_id!r} is not in carrier_live_allowlist. "
                 "Add it to CARRIER_LIVE_ALLOWLIST or set CARRIER_LIVE_ALLOWLIST=* to permit all."
             )
+
+    def _api_path(self) -> str:
+        """Return the DHL MyDHL API path prefix based on sandbox flag.
+
+        Production: /mydhlapi
+        Sandbox:    /mydhlapi/test
+
+        DHL_EXPRESS_API_URL must be the bare base URL (https://express.api.dhl.com).
+        Setting DHL_EXPRESS_USE_SANDBOX=true switches the path; do NOT put /mydhlapi/test
+        in DHL_EXPRESS_API_URL — that causes a double-path 404.
+        """
+        return "/mydhlapi/test" if self._config.use_sandbox else "/mydhlapi"
 
     def _check_credentials(self) -> None:
         if not self._config.api_key or not self._config.api_secret:

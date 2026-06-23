@@ -33,12 +33,13 @@ def _req(batch_id: str = "BATCH-001") -> ShipmentRequest:
     )
 
 
-def _live_adapter(api_key="k", api_secret="s", allowlist="BATCH-001") -> DhlExpressLiveAdapter:
+def _live_adapter(api_key="k", api_secret="s", allowlist="BATCH-001", use_sandbox=False) -> DhlExpressLiveAdapter:
     cfg = CarrierConfig(
         status="live",
         api_key=api_key,
         api_secret=api_secret,
         live_allowlist=allowlist,
+        use_sandbox=use_sandbox,
     )
     return DhlExpressLiveAdapter(cfg)
 
@@ -164,3 +165,47 @@ def test_allowlist_error_does_not_contain_api_key():
     with pytest.raises(CarrierAllowlistError) as exc:
         adapter.create_shipment(_req("BATCH-001"))
     assert "my-api-key-value" not in str(exc.value)
+
+
+# ── sandbox URL routing ───────────────────────────────────────────────────────
+
+
+def test_api_path_production_default():
+    adapter = _live_adapter(use_sandbox=False)
+    assert adapter._api_path() == "/mydhlapi"
+
+
+def test_api_path_sandbox():
+    adapter = _live_adapter(use_sandbox=True)
+    assert adapter._api_path() == "/mydhlapi/test"
+
+
+def test_create_shipment_uses_production_url_by_default():
+    """Production URL must not contain /test path segment."""
+    adapter = _live_adapter(use_sandbox=False)
+    mock_resp = MagicMock()
+    mock_resp.is_success = True
+    mock_resp.json.return_value = {"shipmentTrackingNumber": "PROD-AWB-001", "documents": []}
+    with patch("app.services.carrier.adapters.live.httpx.Client") as mock_client_cls:
+        mock_post = mock_client_cls.return_value.__enter__.return_value.post
+        mock_post.return_value = mock_resp
+        adapter.create_shipment(_req("BATCH-001"))
+    url_called = mock_post.call_args[0][0]
+    assert "/mydhlapi/shipments" in url_called
+    assert "/mydhlapi/test" not in url_called
+
+
+def test_create_shipment_uses_sandbox_url_when_flag_set():
+    """Sandbox flag routes to /mydhlapi/test/shipments, not /mydhlapi/test/mydhlapi/shipments."""
+    adapter = _live_adapter(use_sandbox=True)
+    mock_resp = MagicMock()
+    mock_resp.is_success = True
+    mock_resp.json.return_value = {"shipmentTrackingNumber": "SAND-AWB-001", "documents": []}
+    with patch("app.services.carrier.adapters.live.httpx.Client") as mock_client_cls:
+        mock_post = mock_client_cls.return_value.__enter__.return_value.post
+        mock_post.return_value = mock_resp
+        adapter.create_shipment(_req("BATCH-001"))
+    url_called = mock_post.call_args[0][0]
+    assert url_called.endswith("/mydhlapi/test/shipments")
+    # Guard against the double-path bug: /mydhlapi/test/mydhlapi/test/shipments
+    assert url_called.count("/mydhlapi/test") == 1
