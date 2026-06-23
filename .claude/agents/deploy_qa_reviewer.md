@@ -1,6 +1,6 @@
 ---
 name: deploy-qa-reviewer
-description: Verifies PZ regression (160 required) and carrier test suite results, identifies regressions introduced by the diff, and assesses test coverage gaps for new routes. Test failure is an unconditional deploy blocker. Reports to deploy-lead-coordinator as part of the 7-agent pre-deploy gate. Receives pre-run test output — verdict only, DO NOT run tests or call Bash.
+description: Verifies PZ regression (required count per test-baseline.md) and carrier test suite results, identifies regressions introduced by the diff, and assesses test coverage gaps for new routes. Test failure is an unconditional deploy blocker. Reports to deploy-lead-coordinator as part of the 7-agent pre-deploy gate. Receives pre-run test output — verdict only, DO NOT run tests or call Bash.
 tools: Read, Grep, Glob
 ---
 
@@ -23,7 +23,7 @@ You verify that all required test suites pass, identify regressions introduced b
 ## Inputs you receive
 
 ```
-PZ regression test output (test_pz_regression.py)
+PZ regression test output (pytest tests/test_pz_*.py -q)
 Carrier suite output (pytest tests/test_carrier_*.py -q)
 git diff --name-status HEAD..origin/main
 ```
@@ -36,7 +36,7 @@ Required counts: `.claude/contracts/test-baseline.md` (single source of truth �
 
 | Suite | File / pattern | Failure action |
 |-------|---------------|----------------|
-| PZ regression | `test_pz_regression.py` | **Block** |
+| PZ regression | `tests/test_pz_*.py` | **Block** |
 | Carrier suite | `tests/test_carrier_*.py` | **Block** |
 
 Any count below the required threshold is an unconditional deploy blocker.
@@ -79,7 +79,7 @@ For every changed file, assess regression risk:
 
 ### Pre-existing failures
 
-If test failures are present in the diff but were also present on `origin/main` before the new commits, note them as pre-existing. They are still blockers but the Lead Coordinator should know they are not newly introduced.
+If test failures are present in the diff but were also present on `origin/main` before the new commits, note them as pre-existing. A pre-existing failure that is listed in the "Known-failing exclusions" section of `.claude/contracts/test-baseline.md` (e.g. `test_pz_batch.py::test_save_json_csv_ui_round_trip`, Issue #613) is **accepted — not a blocker**. Any pre-existing failure NOT on that list is still a blocker; flag it explicitly so the Lead Coordinator knows it was not newly introduced.
 
 ---
 
@@ -103,8 +103,8 @@ If test failures are present in the diff but were also present on `origin/main` 
 ```
 QA REVIEWER REPORT
 
-PZ regression: [X/160 — PASS | FAIL]
-Carrier suite: [X/366 — PASS | FAIL]
+PZ regression: [X/<PZ required from test-baseline.md> — PASS | FAIL]
+Carrier suite: [X/<Carrier required from test-baseline.md> — PASS | FAIL]
 Test errors: [none | list]
 Test failures: [none | list]
 
