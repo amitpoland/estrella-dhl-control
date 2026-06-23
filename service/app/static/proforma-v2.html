@@ -91,15 +91,26 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script>
+  // Babel ≥7.14 preset-react defaults to the automatic JSX runtime, which emits
+  // ES-module syntax that breaks non-module scripts.  Register a combined preset
+  // that forces the classic React.createElement transform instead.
+  Babel.registerPreset('react-classic', {
+    presets: [
+      [Babel.availablePresets['react'], { runtime: 'classic' }],
+      [Babel.availablePresets['env']]
+    ]
+  });
+</script>
 
 <!-- Shared layer — load order is the dependency order -->
-<script type="text/babel" data-presets="env,react" src="/dashboard/dashboard-shared.js"></script>
-<script type="text/babel" data-presets="env,react" src="/dashboard/pz-api.js"></script>
-<script type="text/babel" data-presets="env,react" src="/dashboard/pz-state.js"></script>
-<script type="text/babel" data-presets="env,react" src="/dashboard/pz-components.js"></script>
+<script type="text/babel" data-presets="react-classic" src="/dashboard/dashboard-shared.js"></script>
+<script type="text/babel" data-presets="react-classic" src="/dashboard/pz-api.js"></script>
+<script type="text/babel" data-presets="react-classic" src="/dashboard/pz-state.js"></script>
+<script type="text/babel" data-presets="react-classic" src="/dashboard/pz-components.js"></script>
 
 <!-- Proforma V2 page -->
-<script type="text/babel" data-presets="env,react">
+<script type="text/babel" data-presets="react-classic">
 (function () {
   'use strict';
 

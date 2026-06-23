@@ -334,7 +334,17 @@ class Settings(BaseSettings):
     dhl_express_api_key:        Optional[str] = Field(default=None)
     dhl_express_api_secret:     Optional[str] = Field(default=None)
     dhl_express_api_url:        str           = Field(default="https://express.api.dhl.com")
+    dhl_express_use_sandbox:    bool          = Field(default=False)
     dhl_express_account_number: Optional[str] = Field(default=None)
+
+    # DHL Express shipper identity — used by the live adapter to populate shipperDetails.
+    # All default to None; live mode will raise CarrierConfigError if name/address missing.
+    dhl_express_shipper_name:         Optional[str] = Field(default=None)
+    dhl_express_shipper_address1:     Optional[str] = Field(default=None)
+    dhl_express_shipper_city:         Optional[str] = Field(default=None)
+    dhl_express_shipper_postal_code:  Optional[str] = Field(default=None)
+    dhl_express_shipper_country_code: str           = Field(default="IN")
+    dhl_express_shipper_phone:        Optional[str] = Field(default=None)
 
     # DHL webhook HMAC secret. None = webhook endpoint returns 503 (never silently open).
     dhl_webhook_secret: Optional[str] = Field(default=None)

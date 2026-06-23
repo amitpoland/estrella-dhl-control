@@ -10,7 +10,7 @@ Referenced by: `deploy_qa_reviewer.md`, `deploy_lead_coordinator.md`, `deploy.md
 | Suite | File / pattern | Required pass count | Failure action |
 |-------|---------------|---------------------|----------------|
 | PZ regression | `tests/test_pz_*.py` | **221** | Unconditional deploy block |
-| Carrier suite | `tests/test_carrier_*.py` | **412** | Unconditional deploy block |
+| Carrier suite | `tests/test_carrier_*.py` | **469** | Unconditional deploy block |
 
 Any test ERROR (not just FAILED) is also an unconditional block.
 Any count below the required threshold is an unconditional block.
@@ -36,3 +36,6 @@ When a new golden batch is committed or a new test is added:
 | 2026-05-22 | 160 | 381 | count update — carrier suite grew from new adapter/idempotency tests |
 | 2026-06-09 | 160 | 412 | count update — carrier suite grew from phase5/plt/doc-package/routes tests |
 | 2026-06-10 | 221 | 412 | file-reference fix: test_pz_regression.py never existed; actual PZ suite is tests/test_pz_*.py (221 passing, 1 pre-existing failure in test_pz_batch.py::test_save_json_csv_ui_round_trip) |
+| 2026-06-23 | 221 | 430 | carrier suite grew by 10 tests — test_carrier_live_adapter.py added in PR #734 (Phase D live DHL Express AWB); gate tests updated from NotImplementedError stubs to mock-based HTTP call verification (net 0 change) |
+| 2026-06-23 | 221 | 434 | carrier suite grew by 4 tests — sandbox URL routing fix (DHL_EXPRESS_USE_SANDBOX flag + _api_path() method + double-path guard tests) |
+| 2026-06-23 | 221 | 469 | carrier suite grew by 35 tests — AWB modal upgrade (test_carrier_awb_modal_fields.py): product_code/description/customer_reference/shipment_reference/receiver_eori/receiver_vat_id/email/currency fields + GET /carrier/services endpoint + box_types authority validation |

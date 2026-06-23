@@ -57,6 +57,7 @@ def _get_carrier_config() -> CarrierConfig:
         api_key=settings.dhl_express_api_key,
         api_secret=settings.dhl_express_api_secret,
         api_url=settings.dhl_express_api_url,
+        use_sandbox=settings.dhl_express_use_sandbox,
         account_number=settings.dhl_express_account_number,
         live_allowlist=settings.carrier_live_allowlist,
     )
@@ -88,16 +89,44 @@ def _get_shipment_db_path() -> Path:
 
 
 class ShipmentRequestBody(BaseModel):
-    shipper_account: str
+    shipper_account: Optional[str] = None  # falls back to DHL_EXPRESS_ACCOUNT_NUMBER setting
     recipient_address: dict
     declared_value: float
     currency: str
     weight_kg: float
     dimensions: dict
     special_instructions: Optional[str] = None
+    # Upgraded AWB modal fields — all optional, defaults applied in ShipmentRequest
+    product_code: Optional[str] = None        # DHL productCode; defaults to "P"
+    description: Optional[str] = None         # shipment description; defaults to "Jewellery"
+    customer_reference: Optional[str] = None  # proforma/order reference
+    shipment_reference: Optional[str] = None  # internal batch reference
+    receiver_vat_id: Optional[str] = None     # receiver EU VAT number
+    receiver_eori: Optional[str] = None       # receiver EORI number
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+
+# Static DHL product catalogue — no live DHL call, no credentials required.
+# Must appear before /{batch_id} routes to avoid path-parameter capture.
+_DHL_SERVICES = [
+    {"code": "P", "name": "Express Worldwide",             "delivery": "End of day"},
+    {"code": "Y", "name": "Express 12:00",                 "delivery": "By 12:00"},
+    {"code": "K", "name": "Express 9:00",                  "delivery": "By 09:00"},
+    {"code": "D", "name": "Express Worldwide (Documents)", "delivery": "Documents only"},
+    {"code": "T", "name": "Express Domestic",              "delivery": "Domestic service"},
+]
+
+
+@router.get("/services", summary="List available DHL Express product codes (static catalogue)")
+def list_carrier_services(_auth: None = Depends(require_api_key)) -> JSONResponse:
+    """Returns the static DHL Express product code catalogue.
+
+    No live DHL call is made. Use this to populate the service dropdown in the AWB modal.
+    Availability for a specific shipment requires a DHL /rates query (not yet implemented).
+    """
+    return JSONResponse(_DHL_SERVICES)
 
 
 @router.post("/{batch_id}/shipment")
@@ -108,6 +137,18 @@ def create_shipment(
     coordinator: CarrierCoordinator = Depends(_get_coordinator),
 ) -> JSONResponse:
     from ..core.config import settings
+
+    # Resolve shipper account — body takes precedence, then settings, then 422
+    shipper_account = body.shipper_account or settings.dhl_express_account_number
+    if not shipper_account:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "No DHL Express account number configured",
+                "code": "SHIPPER_ACCOUNT_MISSING",
+                "guidance": "Set DHL_EXPRESS_ACCOUNT_NUMBER in environment or pass shipper_account in request body.",
+            },
+        )
 
     # Resolve recipient address via Customer Master authority (Condition 2: feature flag)
     if settings.awb_address_authority_enabled:
@@ -155,13 +196,19 @@ def create_shipment(
 
     request = ShipmentRequest(
         batch_id=batch_id,
-        shipper_account=body.shipper_account,
+        shipper_account=shipper_account,
         recipient_address=carrier_address,
         declared_value=body.declared_value,
         currency=body.currency,
         weight_kg=body.weight_kg,
         dimensions=body.dimensions,
         special_instructions=body.special_instructions,
+        product_code=body.product_code or "P",
+        description=body.description or "Jewellery",
+        customer_reference=body.customer_reference,
+        shipment_reference=body.shipment_reference,
+        receiver_vat_id=body.receiver_vat_id,
+        receiver_eori=body.receiver_eori,
     )
     try:
         result = coordinator.create_shipment(request)

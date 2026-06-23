@@ -28,12 +28,19 @@ class ShipmentState(str, Enum):
 class ShipmentRequest:
     batch_id: str
     shipper_account: str
-    recipient_address: dict
+    recipient_address: dict   # may include email, phone, company
     declared_value: float
     currency: str
     weight_kg: float
     dimensions: dict
     special_instructions: Optional[str] = None
+    # Upgraded AWB modal fields
+    product_code: str = "P"                      # DHL productCode (P=Express Worldwide)
+    description: str = "Jewellery"               # content.description
+    customer_reference: Optional[str] = None     # proforma/order ref → customerReferences CU
+    shipment_reference: Optional[str] = None     # batch/internal ref  → customerReferences AAO
+    receiver_vat_id: Optional[str] = None        # DHL registrationNumbers EUV
+    receiver_eori: Optional[str] = None          # DHL registrationNumbers EOR
 
 
 @dataclass

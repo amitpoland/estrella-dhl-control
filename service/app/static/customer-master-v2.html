@@ -88,11 +88,22 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script type="text/babel" data-presets="env,react" src="/dashboard/pz-design-v2.js"></script>
-<script type="text/babel" data-presets="env,react" src="/dashboard/pz-api.js"></script>
-<script type="text/babel" data-presets="env,react" src="/dashboard/pz-state.js"></script>
+<script>
+  // Babel ≥7.14 preset-react defaults to the automatic JSX runtime, which emits
+  // ES-module syntax that breaks non-module scripts.  Register a combined preset
+  // that forces the classic React.createElement transform instead.
+  Babel.registerPreset('react-classic', {
+    presets: [
+      [Babel.availablePresets['react'], { runtime: 'classic' }],
+      [Babel.availablePresets['env']]
+    ]
+  });
+</script>
+<script type="text/babel" data-presets="react-classic" src="/dashboard/pz-design-v2.js"></script>
+<script type="text/babel" data-presets="react-classic" src="/dashboard/pz-api.js"></script>
+<script type="text/babel" data-presets="react-classic" src="/dashboard/pz-state.js"></script>
 
-<script type="text/babel" data-presets="env,react">
+<script type="text/babel" data-presets="react-classic">
 (function () {
   'use strict';
 
@@ -382,6 +393,390 @@
     );
   }
 
+  // ── CarrierAccountsSection ───────────────────────────────────────────────
+
+  function CarrierAccountsSection({ contractorId }) {
+    const [accounts, setAccounts] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [fetchError, setFetchError] = useState(null);
+    const [adding, setAdding] = useState(false);
+    const [editId, setEditId] = useState(null);
+    const [form, setFormState] = useState({});
+    const [saving, setSaving] = useState(false);
+    const [toast, setToast] = useState(null);
+    const [opened, setOpened] = useState(false);
+
+    const showToast = (msg, type = 'info') => {
+      setToast({ msg, type });
+      setTimeout(() => setToast(null), 3000);
+    };
+
+    const load = useCallback(async () => {
+      setLoading(true);
+      setFetchError(null);
+      const res = await apiFetch(`/api/v1/customer-master/${contractorId}/carrier-accounts`);
+      setLoading(false);
+      if (res.ok) setAccounts(res.data.accounts || []);
+      else setFetchError(res.error || 'Failed to load carrier accounts');
+    }, [contractorId]);
+
+    useEffect(() => { if (opened) load(); }, [opened, load]);
+
+    const handleSave = async () => {
+      setSaving(true);
+      const url = editId
+        ? `/api/v1/customer-master/${contractorId}/carrier-accounts/${editId}`
+        : `/api/v1/customer-master/${contractorId}/carrier-accounts`;
+      const method = editId ? 'PUT' : 'POST';
+      const res = await apiFetch(url, { method, body: JSON.stringify(form) });
+      setSaving(false);
+      if (res.ok) {
+        showToast(editId ? 'Account updated.' : 'Account added.', 'success');
+        setAdding(false); setEditId(null); setFormState({});
+        load();
+      } else {
+        showToast(res.error || 'Save failed.', 'error');
+      }
+    };
+
+    const handleDelete = async (id) => {
+      if (!confirm('Delete this carrier account?')) return;
+      const res = await apiFetch(
+        `/api/v1/customer-master/${contractorId}/carrier-accounts/${id}`,
+        { method: 'DELETE' }
+      );
+      if (res.ok) { showToast('Deleted.', 'success'); load(); }
+      else showToast(res.error || 'Delete failed.', 'error');
+    };
+
+    const startEdit = (acct) => {
+      setEditId(acct.id);
+      setFormState({
+        carrier: acct.carrier, account_number: acct.account_number,
+        account_name: acct.account_name, payment_type: acct.payment_type,
+        service_level: acct.service_level, is_default: acct.is_default,
+      });
+      setAdding(true);
+    };
+
+    const carrierTag = (c) => {
+      const cls = { dhl: 'tag-blue', fedex: 'tag-purple', ups: 'tag-amber', other: 'tag-neutral' };
+      const label = { dhl: 'DHL Express', fedex: 'FedEx', ups: 'UPS', other: 'Other' };
+      return <span className={`tag ${cls[c] || 'tag-neutral'}`}>{label[c] || c}</span>;
+    };
+
+    return (
+      <Card style={{ padding: '14px 16px', marginBottom: 12 }}>
+        {toast && <Toast msg={toast.msg} type={toast.type} />}
+        <details onToggle={e => { if (e.target.open && !opened) setOpened(true); }}>
+          <summary data-testid="carrier-accounts-summary">Carrier Accounts</summary>
+          <div className="section-body">
+            {loading && <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '8px 0' }}><span className="spinner" /> Loading…</div>}
+            {fetchError && <div style={{ fontSize: 12, color: 'var(--badge-red-text)', padding: '4px 0' }}>{fetchError}</div>}
+
+            {!loading && accounts && accounts.length > 0 && (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, marginBottom: 10 }} data-testid="carrier-accounts-table">
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                    {['Carrier','Account #','Name','Payment Type','',''].map(h =>
+                      <th key={h} style={{ padding: '5px 8px', textAlign: 'left', fontWeight: 600, color: 'var(--text-2)' }}>{h}</th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {accounts.map(a => (
+                    <tr key={a.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}
+                        data-testid={`carrier-row-${a.id}`}>
+                      <td style={{ padding: '5px 8px' }}>{carrierTag(a.carrier)}</td>
+                      <td style={{ padding: '5px 8px', fontFamily: 'monospace' }}>{a.account_number}</td>
+                      <td style={{ padding: '5px 8px', color: 'var(--text-2)' }}>{a.account_name || '—'}</td>
+                      <td style={{ padding: '5px 8px' }}>{a.payment_type || '—'}</td>
+                      <td style={{ padding: '5px 8px' }}>
+                        {a.is_default && <span className="tag tag-green">default</span>}
+                      </td>
+                      <td style={{ padding: '5px 8px', display: 'flex', gap: 4 }}>
+                        <Btn variant="ghost" small onClick={() => startEdit(a)} data-testid={`btn-edit-carrier-${a.id}`}>Edit</Btn>
+                        <Btn variant="ghost" small onClick={() => handleDelete(a.id)}
+                            data-testid={`btn-del-carrier-${a.id}`}
+                            style={{ color: 'var(--badge-red-text)' }}>✕</Btn>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {!loading && accounts && accounts.length === 0 && !adding && (
+              <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '4px 0 8px' }}>
+                No carrier accounts configured yet.
+              </div>
+            )}
+
+            {adding ? (
+              <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, padding: 12, marginTop: 8 }}>
+                <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--text-2)', marginBottom: 10 }}>
+                  {editId ? 'Edit Carrier Account' : 'Add Carrier Account'}
+                </div>
+                <div className="grid-2">
+                  <SelectField label="Carrier *" name="carrier" value={form.carrier}
+                    onChange={(n,v) => setFormState(f => ({...f, [n]: v}))}
+                    options={[{value:'dhl',label:'DHL Express'},{value:'fedex',label:'FedEx'},{value:'ups',label:'UPS'},{value:'other',label:'Other'}]}
+                    testId="field-new-carrier" />
+                  <div className="field-group">
+                    <label>Account Number *</label>
+                    <input type="text" value={form.account_number ?? ''}
+                      onChange={e => setFormState(f => ({...f, account_number: e.target.value}))}
+                      data-testid="field-new-account-number" />
+                  </div>
+                  <div className="field-group">
+                    <label>Account Name</label>
+                    <input type="text" value={form.account_name ?? ''}
+                      onChange={e => setFormState(f => ({...f, account_name: e.target.value}))}
+                      data-testid="field-new-account-name" />
+                  </div>
+                  <SelectField label="Payment Type" name="payment_type" value={form.payment_type}
+                    onChange={(n,v) => setFormState(f => ({...f, [n]: v}))}
+                    options={[{value:'shipper',label:'Shipper'},{value:'receiver',label:'Receiver'},{value:'third_party',label:'Third Party'}]}
+                    testId="field-new-payment-type" />
+                  <div className="field-group">
+                    <label>Service Level</label>
+                    <input type="text" value={form.service_level ?? ''}
+                      onChange={e => setFormState(f => ({...f, service_level: e.target.value}))}
+                      placeholder="e.g. EXPRESS_WORLDWIDE"
+                      data-testid="field-new-service-level" />
+                  </div>
+                  <div className="field-group" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 22 }}>
+                    <input type="checkbox" id="chk-carrier-default" checked={!!form.is_default}
+                      onChange={e => setFormState(f => ({...f, is_default: e.target.checked}))}
+                      data-testid="field-new-is-default" />
+                    <label htmlFor="chk-carrier-default" style={{ marginBottom: 0, cursor: 'pointer' }}>Set as default</label>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <Btn variant="primary" small onClick={handleSave} disabled={saving} data-testid="btn-save-carrier-acct">
+                    {saving ? <><span className="spinner" style={{ marginRight: 4 }} />Saving…</> : (editId ? 'Update Account' : 'Save Account')}
+                  </Btn>
+                  <Btn variant="ghost" small
+                    onClick={() => { setAdding(false); setEditId(null); setFormState({}); }}
+                    data-testid="btn-cancel-carrier-acct">Cancel</Btn>
+                </div>
+              </div>
+            ) : (
+              <Btn variant="secondary" small
+                onClick={() => { setAdding(true); setEditId(null); setFormState({}); }}
+                data-testid="btn-add-carrier-acct" style={{ marginTop: 6 }}>
+                + Add Carrier Account
+              </Btn>
+            )}
+          </div>
+        </details>
+      </Card>
+    );
+  }
+
+  // ── ShippingAddressesSection ──────────────────────────────────────────────
+
+  function ShippingAddressesSection({ contractorId }) {
+    const [addresses, setAddresses] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [fetchError, setFetchError] = useState(null);
+    const [adding, setAdding] = useState(false);
+    const [editId, setEditId] = useState(null);
+    const [form, setFormState] = useState({});
+    const [saving, setSaving] = useState(false);
+    const [toast, setToast] = useState(null);
+    const [opened, setOpened] = useState(false);
+
+    const showToast = (msg, type = 'info') => {
+      setToast({ msg, type });
+      setTimeout(() => setToast(null), 3000);
+    };
+
+    const load = useCallback(async () => {
+      setLoading(true);
+      setFetchError(null);
+      const res = await apiFetch(`/api/v1/customer-master/${contractorId}/shipping-addresses`);
+      setLoading(false);
+      if (res.ok) setAddresses(res.data.addresses || []);
+      else setFetchError(res.error || 'Failed to load shipping addresses');
+    }, [contractorId]);
+
+    useEffect(() => { if (opened) load(); }, [opened, load]);
+
+    const handleSave = async () => {
+      setSaving(true);
+      const url = editId
+        ? `/api/v1/customer-master/${contractorId}/shipping-addresses/${editId}`
+        : `/api/v1/customer-master/${contractorId}/shipping-addresses`;
+      const method = editId ? 'PUT' : 'POST';
+      const res = await apiFetch(url, { method, body: JSON.stringify(form) });
+      setSaving(false);
+      if (res.ok) {
+        showToast(editId ? 'Address updated.' : 'Address added.', 'success');
+        setAdding(false); setEditId(null); setFormState({});
+        load();
+      } else {
+        showToast(res.error || 'Save failed.', 'error');
+      }
+    };
+
+    const handleDelete = async (id) => {
+      if (!confirm('Delete this shipping address?')) return;
+      const res = await apiFetch(
+        `/api/v1/customer-master/${contractorId}/shipping-addresses/${id}`,
+        { method: 'DELETE' }
+      );
+      if (res.ok) { showToast('Deleted.', 'success'); load(); }
+      else showToast(res.error || 'Delete failed.', 'error');
+    };
+
+    const startEdit = (addr) => {
+      setEditId(addr.id);
+      setFormState({
+        label: addr.label, name: addr.name, person: addr.person,
+        street: addr.street, city: addr.city, zip: addr.zip,
+        country: addr.country, phone: addr.phone, email: addr.email,
+        is_default: addr.is_default,
+      });
+      setAdding(true);
+    };
+
+    return (
+      <Card style={{ padding: '14px 16px', marginBottom: 12 }}>
+        {toast && <Toast msg={toast.msg} type={toast.type} />}
+        <details onToggle={e => { if (e.target.open && !opened) setOpened(true); }}>
+          <summary data-testid="shipping-addresses-summary">Shipping Addresses</summary>
+          <div className="section-body">
+            {loading && <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '8px 0' }}><span className="spinner" /> Loading…</div>}
+            {fetchError && <div style={{ fontSize: 12, color: 'var(--badge-red-text)', padding: '4px 0' }}>{fetchError}</div>}
+
+            {!loading && addresses && addresses.length > 0 && (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, marginBottom: 10 }} data-testid="shipping-addresses-table">
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                    {['Label','Name','City','Country','',''].map(h =>
+                      <th key={h} style={{ padding: '5px 8px', textAlign: 'left', fontWeight: 600, color: 'var(--text-2)' }}>{h}</th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {addresses.map(a => (
+                    <tr key={a.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}
+                        data-testid={`address-row-${a.id}`}>
+                      <td style={{ padding: '5px 8px', fontWeight: 600 }}>
+                        {a.label}
+                        {a.is_default && <span className="tag tag-green" style={{ marginLeft: 5 }}>default</span>}
+                      </td>
+                      <td style={{ padding: '5px 8px' }}>{a.name || '—'}</td>
+                      <td style={{ padding: '5px 8px', color: 'var(--text-2)' }}>{a.city || '—'}</td>
+                      <td style={{ padding: '5px 8px' }}>{a.country || '—'}</td>
+                      <td style={{ padding: '5px 8px', display: 'flex', gap: 4 }}>
+                        <Btn variant="ghost" small onClick={() => startEdit(a)} data-testid={`btn-edit-addr-${a.id}`}>Edit</Btn>
+                        <Btn variant="ghost" small onClick={() => handleDelete(a.id)}
+                            data-testid={`btn-del-addr-${a.id}`}
+                            style={{ color: 'var(--badge-red-text)' }}>✕</Btn>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {!loading && addresses && addresses.length === 0 && !adding && (
+              <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '4px 0 8px' }}>
+                No shipping addresses configured yet.
+              </div>
+            )}
+
+            {adding ? (
+              <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, padding: 12, marginTop: 8 }}>
+                <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--text-2)', marginBottom: 10 }}>
+                  {editId ? 'Edit Shipping Address' : 'Add Shipping Address'}
+                </div>
+                <div className="grid-2">
+                  <div className="field-group">
+                    <label>Label * <span style={{ fontWeight: 400, color: 'var(--text-3)' }}>(e.g. Warehouse, HQ)</span></label>
+                    <input type="text" value={form.label ?? ''}
+                      onChange={e => setFormState(f => ({...f, label: e.target.value}))}
+                      data-testid="field-new-addr-label" />
+                  </div>
+                  <div className="field-group">
+                    <label>Company Name</label>
+                    <input type="text" value={form.name ?? ''}
+                      onChange={e => setFormState(f => ({...f, name: e.target.value}))}
+                      data-testid="field-new-addr-name" />
+                  </div>
+                  <div className="field-group">
+                    <label>Contact Person</label>
+                    <input type="text" value={form.person ?? ''}
+                      onChange={e => setFormState(f => ({...f, person: e.target.value}))}
+                      data-testid="field-new-addr-person" />
+                  </div>
+                  <div className="field-group">
+                    <label>Street</label>
+                    <input type="text" value={form.street ?? ''}
+                      onChange={e => setFormState(f => ({...f, street: e.target.value}))}
+                      data-testid="field-new-addr-street" />
+                  </div>
+                  <div className="field-group">
+                    <label>City</label>
+                    <input type="text" value={form.city ?? ''}
+                      onChange={e => setFormState(f => ({...f, city: e.target.value}))}
+                      data-testid="field-new-addr-city" />
+                  </div>
+                  <div className="field-group">
+                    <label>ZIP</label>
+                    <input type="text" value={form.zip ?? ''}
+                      onChange={e => setFormState(f => ({...f, zip: e.target.value}))}
+                      data-testid="field-new-addr-zip" />
+                  </div>
+                  <div className="field-group">
+                    <label>Country (ISO-2)</label>
+                    <input type="text" value={form.country ?? ''} maxLength={2}
+                      onChange={e => setFormState(f => ({...f, country: e.target.value.toUpperCase()}))}
+                      placeholder="e.g. PL, DE" data-testid="field-new-addr-country" />
+                  </div>
+                  <div className="field-group">
+                    <label>Phone</label>
+                    <input type="tel" value={form.phone ?? ''}
+                      onChange={e => setFormState(f => ({...f, phone: e.target.value}))}
+                      data-testid="field-new-addr-phone" />
+                  </div>
+                  <div className="field-group">
+                    <label>Email</label>
+                    <input type="email" value={form.email ?? ''}
+                      onChange={e => setFormState(f => ({...f, email: e.target.value}))}
+                      data-testid="field-new-addr-email" />
+                  </div>
+                  <div className="field-group" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 22 }}>
+                    <input type="checkbox" id="chk-addr-default" checked={!!form.is_default}
+                      onChange={e => setFormState(f => ({...f, is_default: e.target.checked}))}
+                      data-testid="field-new-addr-default" />
+                    <label htmlFor="chk-addr-default" style={{ marginBottom: 0, cursor: 'pointer' }}>Set as default</label>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <Btn variant="primary" small onClick={handleSave} disabled={saving} data-testid="btn-save-addr">
+                    {saving ? <><span className="spinner" style={{ marginRight: 4 }} />Saving…</> : (editId ? 'Update Address' : 'Save Address')}
+                  </Btn>
+                  <Btn variant="ghost" small
+                    onClick={() => { setAdding(false); setEditId(null); setFormState({}); }}
+                    data-testid="btn-cancel-addr">Cancel</Btn>
+                </div>
+              </div>
+            ) : (
+              <Btn variant="secondary" small
+                onClick={() => { setAdding(true); setEditId(null); setFormState({}); }}
+                data-testid="btn-add-addr" style={{ marginTop: 6 }}>
+                + Add Shipping Address
+              </Btn>
+            )}
+          </div>
+        </details>
+      </Card>
+    );
+  }
+
   // ── CustomerDetail ────────────────────────────────────────────────────────
 
   function CustomerDetail({ contractorId }) {
@@ -573,8 +968,12 @@
                       testId="field-risk-status" />
                     <CheckField label="KUKE Approved" name="kuke_approved" value={form.kuke_approved} onChange={setField} testId="field-kuke-approved" />
                     <Field label="KUKE Limit" name="kuke_limit" value={form.kuke_limit} onChange={setField} type="number" testId="field-kuke-limit" />
+                    <SelectField label="KUKE Currency" name="kuke_currency" value={form.kuke_currency} onChange={setField}
+                      options={[{value:'PLN',label:'PLN'},{value:'EUR',label:'EUR'},{value:'USD',label:'USD'}]}
+                      testId="field-kuke-currency" />
                     <Field label="KUKE Expiry" name="kuke_expiry_date" value={form.kuke_expiry_date} onChange={setField} testId="field-kuke-expiry" />
                     <Field label="KUKE Policy #" name="kuke_policy_number" value={form.kuke_policy_number} onChange={setField} testId="field-kuke-policy" />
+                    <Field label="KUKE Self-Retention (%)" name="kuke_self_retention_pct" value={form.kuke_self_retention_pct} onChange={(n,v) => setField(n, v ? parseFloat(v) : null)} type="number" testId="field-kuke-retention" />
                     <SelectField label="KYC Status" name="kyc_status" value={form.kyc_status} onChange={setField}
                       options={[{value:'pending',label:'Pending'},{value:'approved',label:'Approved'},{value:'expired',label:'Expired'},{value:'rejected',label:'Rejected'}]}
                       testId="field-kyc-status" />
@@ -583,6 +982,14 @@
                     <SelectField label="AML Risk Rating" name="aml_risk_rating" value={form.aml_risk_rating} onChange={setField}
                       options={[{value:'low',label:'Low'},{value:'medium',label:'Medium'},{value:'high',label:'High'}]}
                       testId="field-aml-rating" />
+                    <Field label="Beneficial Owner" name="beneficial_owner" value={form.beneficial_owner} onChange={setField} testId="field-beneficial-owner" />
+                    <SelectField label="Owner ID Type" name="owner_id_type" value={form.owner_id_type} onChange={setField}
+                      options={[{value:'passport',label:'Passport'},{value:'id_card',label:'ID Card'},{value:'drivers_license',label:"Driver's License"}]}
+                      testId="field-owner-id-type" />
+                    <Field label="Owner ID Number" name="owner_id_number" value={form.owner_id_number} onChange={setField} testId="field-owner-id-number" />
+                    <SelectField label="PEP Check Result" name="pep_check_result" value={form.pep_check_result} onChange={setField}
+                      options={[{value:'clear',label:'Clear'},{value:'flagged',label:'Flagged'},{value:'pending',label:'Pending'}]}
+                      testId="field-pep-check" />
                   </div>
                 </div>
               </details>
@@ -610,6 +1017,9 @@
                 </div>
               </details>
             </Card>
+
+            <CarrierAccountsSection contractorId={contractorId} />
+            <ShippingAddressesSection contractorId={contractorId} />
 
           </div>{/* end left */}
 

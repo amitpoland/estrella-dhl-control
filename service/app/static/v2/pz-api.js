@@ -340,6 +340,28 @@
       _postM(`${BASE}/wfirma/reservations/create`,
         { batch_id: batchId, client_name: clientName }),
 
+    // POST /api/v1/carrier/{batch_id}/shipment
+    // Creates a DHL Express AWB. Requires CARRIER_API_STATUS=live and credentials.
+    // body: { recipient_address, declared_value, currency, weight_kg, dimensions,
+    //         shipper_account?, special_instructions?,
+    //         product_code?, description?, customer_reference?, shipment_reference?,
+    //         receiver_vat_id?, receiver_eori? }
+    // Returns: { batch_id, idempotency_key, mode, state, tracking_ref, simulated }
+    createCarrierShipment: (batchId, body) =>
+      _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`, body),
+
+    // GET /api/v1/carrier/services
+    // Returns static DHL Express product code catalogue. No credentials required.
+    // Returns: [{ code, name, delivery }]
+    listCarrierServices: () =>
+      _get(`${BASE}/carrier/services`),
+
+    // GET /api/v1/box-types/?active=true
+    // Returns active box type profiles (Box Master). Used to populate the AWB modal dropdown.
+    // Returns: [{ id, code, name, length_cm, width_cm, height_cm, tare_weight_kg, active }]
+    listBoxTypes: (activeOnly = true) =>
+      _get(`${BASE}/box-types/${activeOnly ? '?active=true' : ''}`),
+
     // GET /api/v1/warehouse/receipt/{batch_id}
     // WAREHOUSE authority: per-line expected vs confirmed received quantities +
     // batch summary { total_lines, confirmed_lines, unconfirmed_lines,
