@@ -88,26 +88,34 @@ def resolve_sales_lines_for_batch(
       1. row already has non-empty ``product_code`` → keep unchanged.
       2. row has ``design_no`` and the batch lookup returns exactly ONE
          product_code → clone the row with the resolved ``product_code``
-         and ``resolution_source="batch_packing_lines"`` (observability
-         only; consumers must not depend on this field).
-      3. batch lookup returns multiple candidates → leave row unchanged
-         (empty ``product_code``); record under ``designs_ambiguous``.
+         and ``resolution_source="batch_packing_lines"``.
+      3. batch lookup returns multiple candidates → attempt spec-based
+         reconciliation (reconciliation_scorer):
+           3a. HIGH confidence (>= 0.85): auto-assign product_code on each
+               row clone, ``resolution_source="spec_reconciliation"``,
+               remove from ``designs_ambiguous``, record in
+               ``designs_reconciled``.
+           3b. MEDIUM/LOW confidence: leave rows with empty product_code;
+               record distribution plan in ``designs_scored_pending`` for
+               operator confirmation.
       4. batch lookup returns zero candidates → leave row unchanged;
          record under ``designs_unresolved``.
 
     The DB-layer invariant in proforma_invoice_link_db.py — rows with
     empty ``product_code`` are skipped at create/reset time — is
-    preserved.  This resolver only fills in product_code earlier, from
-    same-batch local evidence.  It NEVER invents codes, NEVER uses
-    design_no as a fallback product_code, and NEVER consults the global
+    preserved.  This resolver only fills in product_code from same-batch
+    local evidence.  It NEVER invents codes, NEVER uses design_no as a
+    fallback product_code, and NEVER consults the global
     design_product_mapping registry.
 
     Returns (resolved_lines, summary). ``summary`` shape::
 
         {
-          "designs_resolved":   {design_no: product_code, ...},
-          "designs_ambiguous":  {design_no: [product_code, ...], ...},
-          "designs_unresolved": [design_no, ...],
+          "designs_resolved":       {design_no: product_code, ...},
+          "designs_ambiguous":      {design_no: [product_code, ...], ...},
+          "designs_unresolved":     [design_no, ...],
+          "designs_reconciled":     {design_no: {method, confidence, ...}, ...},
+          "designs_scored_pending": {design_no: {distribution_hint, ...}, ...},
         }
     """
     lookup = _resolve_product_codes_for_batch(batch_id)
@@ -115,6 +123,9 @@ def resolve_sales_lines_for_batch(
     designs_resolved:   Dict[str, str]       = {}
     designs_ambiguous:  Dict[str, List[str]] = {}
     designs_unresolved: set                  = set()
+
+    # Mutable clones for ambiguous rows; updated in-place by spec scorer below
+    _ambiguous_clones: Dict[str, List[Dict[str, Any]]] = {}
 
     for ln in (sales_lines or []):
         pc = str(ln.get("product_code") or "").strip()
@@ -134,10 +145,12 @@ def resolve_sales_lines_for_batch(
             designs_resolved[dn] = cands[0]
         elif len(cands) > 1:
             designs_ambiguous[dn] = list(cands)
-            resolved.append(ln)
+            clone = dict(ln)   # mutable copy — may be updated by spec scorer
+            resolved.append(clone)
+            _ambiguous_clones.setdefault(dn, []).append(clone)
             log.warning(
                 "[%s] sales draft sync: design %r ambiguous in batch "
-                "packing_lines -> %s — skipping (no product_code set)",
+                "packing_lines -> %s — attempting spec reconciliation",
                 batch_id, dn, cands,
             )
         else:
@@ -149,12 +162,116 @@ def resolve_sales_lines_for_batch(
                 batch_id, dn,
             )
 
+    # ── Secondary resolution: spec-based reconciliation ───────────────────────
+    designs_reconciled:     Dict[str, Any] = {}
+    designs_scored_pending: Dict[str, Any] = {}
+
+    if designs_ambiguous:
+        _apply_spec_reconciliation(
+            batch_id,
+            designs_ambiguous,
+            _ambiguous_clones,
+            designs_reconciled,
+            designs_scored_pending,
+        )
+
     summary = {
-        "designs_resolved":   designs_resolved,
-        "designs_ambiguous":  designs_ambiguous,
-        "designs_unresolved": sorted(designs_unresolved),
+        "designs_resolved":       designs_resolved,
+        "designs_ambiguous":      designs_ambiguous,
+        "designs_unresolved":     sorted(designs_unresolved),
+        "designs_reconciled":     designs_reconciled,
+        "designs_scored_pending": designs_scored_pending,
     }
     return resolved, summary
+
+
+def _apply_spec_reconciliation(
+    batch_id: str,
+    designs_ambiguous: Dict[str, List[str]],
+    ambiguous_clones: Dict[str, List[Dict[str, Any]]],
+    designs_reconciled: Dict[str, Any],
+    designs_scored_pending: Dict[str, Any],
+) -> None:
+    """Apply spec-based reconciliation for ambiguous designs.
+
+    Mutates the caller's dicts in-place:
+      - clones in ``ambiguous_clones``: sets product_code / resolution_source
+        for HIGH-confidence matches.
+      - ``designs_ambiguous``: removes auto-resolved designs.
+      - ``designs_reconciled``: adds auto-resolved design summaries.
+      - ``designs_scored_pending``: adds medium/low-confidence distribution
+        plans for operator review.
+
+    Never raises — scorer errors are caught and logged.
+    """
+    try:
+        from .reconciliation_scorer import (   # noqa: PLC0415
+            score_ambiguous_design,
+            HIGH_CONFIDENCE_THRESHOLD,
+        )
+    except ImportError:
+        log.warning(
+            "reconciliation_scorer not importable — spec reconciliation skipped"
+        )
+        return
+
+    for dn, cands in list(designs_ambiguous.items()):
+        sales_clones = ambiguous_clones.get(dn, [])
+        if not sales_clones:
+            continue
+
+        try:
+            result = score_ambiguous_design(batch_id, dn, cands, sales_clones)
+        except Exception as exc:
+            log.warning(
+                "[%s] spec reconciliation raised for %r: %s — skipping",
+                batch_id, dn, exc,
+            )
+            continue
+
+        if result.confidence >= HIGH_CONFIDENCE_THRESHOLD:
+            for assignment in result.recommended_assignments:
+                idx = assignment.sales_row_index
+                if 0 <= idx < len(sales_clones) and assignment.recommended_product_code:
+                    clone = sales_clones[idx]
+                    clone["product_code"]              = assignment.recommended_product_code
+                    clone["resolution_source"]         = "spec_reconciliation"
+                    clone["reconciliation_confidence"] = result.confidence
+                    clone["reconciliation_audit"]      = result.audit_trail
+            del designs_ambiguous[dn]
+            resolved_codes = list({
+                a.recommended_product_code
+                for a in result.recommended_assignments
+                if a.recommended_product_code
+            })
+            designs_reconciled[dn] = {
+                "method":         result.method,
+                "confidence":     result.confidence,
+                "diff_fields":    result.spec_diff_fields,
+                "audit_trail":    result.audit_trail,
+                "assigned_count": len(result.recommended_assignments),
+                "product_codes":  resolved_codes,
+            }
+            log.info(
+                "[%s] spec reconciliation AUTO-RESOLVED %r -> %r "
+                "(confidence=%.2f method=%s)",
+                batch_id, dn, resolved_codes, result.confidence, result.method,
+            )
+        else:
+            designs_scored_pending[dn] = {
+                "candidates":               cands,
+                "distribution_hint":        result.distribution_hint,
+                "confidence":               result.confidence,
+                "confidence_label":         result.confidence_label,
+                "spec_diff_fields":         result.spec_diff_fields,
+                "audit_trail":              result.audit_trail,
+                "requires_operator_review": True,
+            }
+            log.info(
+                "[%s] spec reconciliation scored %r as %s (confidence=%.2f) — "
+                "operator review required",
+                batch_id, dn, result.confidence_label, result.confidence,
+            )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
