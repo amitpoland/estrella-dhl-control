@@ -316,7 +316,16 @@ def test_box_types_table_exists_in_master_data_db():
 
 
 def test_shipment_request_body_forwards_product_code(client):
-    """Route forwards product_code from body to ShipmentRequest (mocked adapter)."""
+    """Route forwards product_code from body to ShipmentRequest (mocked adapter).
+
+    Uses dependency_overrides (not module-level patch) because FastAPI captures the
+    original callable at route registration — a module-attribute patch is invisible to DI.
+    shipper_account is supplied in the body so the 422 gate at line 142 is satisfied
+    regardless of whether DHL_EXPRESS_ACCOUNT_NUMBER is set in the environment.
+    """
+    from app.main import app
+    from app.api.routes_carrier_actions import _get_coordinator
+
     mock_result = MagicMock()
     mock_result.idempotency_key = "abc"
     mock_result.mode.value = "shadow"
@@ -324,15 +333,16 @@ def test_shipment_request_body_forwards_product_code(client):
     mock_result.tracking_ref = "SAND-001"
     mock_result.simulated = True
 
-    with patch("app.api.routes_carrier_actions._get_coordinator") as mock_coord_dep:
-        mock_coord = MagicMock()
-        mock_coord.create_shipment.return_value = mock_result
-        mock_coord_dep.return_value = mock_coord
+    mock_coord = MagicMock()
+    mock_coord.create_shipment.return_value = mock_result
 
+    app.dependency_overrides[_get_coordinator] = lambda: mock_coord
+    try:
         resp = client.post(
             "/api/v1/carrier/BATCH-001/shipment",
             headers={"X-API-Key": "test"},
             json={
+                "shipper_account": "TEST-001",
                 "recipient_address": {"name": "T", "street": "S", "city": "C",
                                       "postal_code": "00", "country_code": "PL"},
                 "declared_value": 100.0,
@@ -347,18 +357,17 @@ def test_shipment_request_body_forwards_product_code(client):
                 "receiver_eori": "GB987",
             },
         )
-
-    if resp.status_code == 503:
-        pytest.skip("CARRIER_API_STATUS=pending in test environment — route gated")
+    finally:
+        app.dependency_overrides.pop(_get_coordinator, None)
 
     assert resp.status_code == 200
     call_args = mock_coord.create_shipment.call_args
-    if call_args:
-        req_arg = call_args[0][0]
-        assert req_arg.product_code == "Y"
-        assert req_arg.description == "Silver bracelets"
-        assert req_arg.customer_reference == "PRO/042/2026"
-        assert req_arg.shipment_reference == "BATCH-001"
-        assert req_arg.receiver_vat_id == "GB123"
-        assert req_arg.receiver_eori == "GB987"
-        assert req_arg.currency == "USD"
+    assert call_args is not None, "coordinator.create_shipment was never called"
+    req_arg = call_args[0][0]
+    assert req_arg.product_code == "Y"
+    assert req_arg.description == "Silver bracelets"
+    assert req_arg.customer_reference == "PRO/042/2026"
+    assert req_arg.shipment_reference == "BATCH-001"
+    assert req_arg.receiver_vat_id == "GB123"
+    assert req_arg.receiver_eori == "GB987"
+    assert req_arg.currency == "USD"
