@@ -740,40 +740,97 @@ function PriorInvoiceHistoryModal({ contractorId, contractorName, onClose }) {
 // ── AWB Generate Modal ────────────────────────────────────────────────────────
 // WIRED: POST /api/v1/carrier/{batch_id}/shipment
 // Requires CARRIER_API_STATUS=live + DHL credentials in environment.
+// Prefill authority:
+//   recipient identity/address → Customer Master (via buyer_override / ship_to_override)
+//   box dimensions             → Box Master (box_types table via /api/v1/box-types/)
+//   declared value / currency  → draft total / draft currency
+//   EORI / VAT                 → Customer Master (bo.eori, bo.vat_id)
+//   DHL service                → /api/v1/carrier/services (static catalogue)
 function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [form, setForm] = React.useState({
-    weight_kg:    '',
-    length_cm:    '',
-    width_cm:     '',
-    height_cm:    '',
+    // Service
+    product_code:  prefill.product_code || 'P',
+    // Package
+    box_type_code: '',
+    weight_kg:     '',
+    length_cm:     '',
+    width_cm:      '',
+    height_cm:     '',
+    // Value
     declared_value: (prefill.declared_value || '').toString(),
-    currency:     'EUR',
+    currency:       prefill.currency || 'EUR',
+    // Description & references
+    description:         prefill.description || 'Jewellery',
+    customer_reference:  prefill.customer_reference || '',
+    shipment_reference:  prefill.shipment_reference || '',
+    // Recipient
     name:         prefill.name || '',
     street:       prefill.street || '',
     city:         prefill.city || '',
     postal_code:  prefill.postal_code || '',
     country_code: prefill.country_code || '',
     phone:        prefill.phone || '',
+    email:        prefill.email || '',
+    // Customs
+    receiver_vat_id: prefill.receiver_vat_id || '',
+    receiver_eori:   prefill.receiver_eori || '',
+    // Misc
     special_instructions: '',
   });
-  const [loading, setLoading] = React.useState(false);
-  const [apiError, setApiError] = React.useState(null);
-  const [result, setResult] = React.useState(null);
+  const [loading,       setLoading]       = React.useState(false);
+  const [apiError,      setApiError]      = React.useState(null);
+  const [result,        setResult]        = React.useState(null);
+  const [boxTypes,      setBoxTypes]      = React.useState([]);
+  const [services,      setServices]      = React.useState([]);
+  const [boxOverridden, setBoxOverridden] = React.useState(false); // true when dims differ from selected box
+
+  // Load box types and service catalogue once on mount
+  React.useEffect(() => {
+    window.PzApi.listBoxTypes && window.PzApi.listBoxTypes()
+      .then(r => setBoxTypes(Array.isArray(r) ? r : []))
+      .catch(() => setBoxTypes([]));
+    window.PzApi.listCarrierServices && window.PzApi.listCarrierServices()
+      .then(r => setServices(Array.isArray(r) ? r : []))
+      .catch(() => setServices([]));
+  }, []);
 
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
+
+  // When a box profile is selected, auto-fill dimensions and flag override state
+  const handleBoxSelect = (code) => {
+    set('box_type_code', code);
+    if (!code) return;
+    const box = boxTypes.find(b => b.code === code);
+    if (!box) return;
+    setForm(prev => ({
+      ...prev,
+      box_type_code: code,
+      length_cm:  (box.length_cm  || '').toString(),
+      width_cm:   (box.width_cm   || '').toString(),
+      height_cm:  (box.height_cm  || '').toString(),
+    }));
+    setBoxOverridden(false);
+  };
+
+  // Mark override when operator manually edits dims after box selection
+  const handleDimChange = (k, v) => {
+    setBoxOverridden(!!form.box_type_code);
+    set(k, v);
+  };
 
   const handleSubmit = () => {
     if (loading) return;
     const missing = [];
-    if (!form.weight_kg)    missing.push('Weight (kg)');
-    if (!form.length_cm)    missing.push('Length (cm)');
-    if (!form.width_cm)     missing.push('Width (cm)');
-    if (!form.height_cm)    missing.push('Height (cm)');
+    if (!form.weight_kg)      missing.push('Weight (kg)');
+    if (!form.length_cm)      missing.push('Length (cm)');
+    if (!form.width_cm)       missing.push('Width (cm)');
+    if (!form.height_cm)      missing.push('Height (cm)');
     if (!form.declared_value) missing.push('Declared value');
-    if (!form.name)         missing.push('Recipient name');
-    if (!form.street)       missing.push('Street');
-    if (!form.city)         missing.push('City');
-    if (!form.country_code) missing.push('Country code');
+    if (!form.name)           missing.push('Recipient name');
+    if (!form.street)         missing.push('Street');
+    if (!form.city)           missing.push('City');
+    if (!form.country_code)   missing.push('Country code');
+    if (!form.description)    missing.push('Description');
     if (missing.length) { setApiError(`Missing required fields: ${missing.join(', ')}`); return; }
 
     setLoading(true);
@@ -794,8 +851,15 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
         city:         form.city,
         postal_code:  form.postal_code,
         country_code: form.country_code.toUpperCase(),
-        phone:        form.phone,
+        phone:        form.phone || undefined,
+        email:        form.email || undefined,
       },
+      product_code:       form.product_code || 'P',
+      description:        form.description || 'Jewellery',
+      customer_reference: form.customer_reference || null,
+      shipment_reference: form.shipment_reference || null,
+      receiver_vat_id:    form.receiver_vat_id || null,
+      receiver_eori:      form.receiver_eori || null,
       special_instructions: form.special_instructions || null,
     })
       .then(r => {
@@ -818,16 +882,21 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     border: '1px solid var(--border)', background: 'var(--bg)',
     color: 'var(--text)', fontSize: 13, fontFamily: 'inherit', boxSizing: 'border-box',
   };
+  const selStyle = { ...inputStyle, cursor: 'pointer' };
   const labelStyle = { fontSize: 11, color: 'var(--text-3)', fontWeight: 500, marginBottom: 4, display: 'block' };
   const fieldStyle = { marginBottom: 14 };
+  const sectionHead = {
+    fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+    textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10, marginTop: 4,
+  };
 
   const overlay = {
     position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000,
     display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px',
   };
   const card = {
-    background: 'var(--card)', borderRadius: 12, width: 560, maxWidth: '94vw',
-    maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px var(--shadow-heavy)',
+    background: 'var(--card)', borderRadius: 12, width: 600, maxWidth: '96vw',
+    maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 20px 60px var(--shadow-heavy)',
   };
   const header = {
     padding: '18px 24px', borderBottom: '1px solid var(--border)',
@@ -840,9 +909,10 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       <div style={overlay} onClick={() => { onSuccess && onSuccess(result); onClose(); }} data-testid="awb-generate-modal">
         <div onClick={e => e.stopPropagation()} style={card}>
           <div style={header}>
-            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--badge-green-text)' }}>⚡ AWB Created</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--badge-green-text)' }}>AWB Created</div>
             <button onClick={() => { onSuccess && onSuccess(result); onClose(); }}
-              style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
+              style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}
+              aria-label="Close">×</button>
           </div>
           <div style={{ padding: '24px' }} data-testid="awb-generate-success">
             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
@@ -878,76 +948,182 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     );
   }
 
+  // Derive selected box for tare weight hint
+  const selectedBox = boxTypes.find(b => b.code === form.box_type_code);
+
   return (
     <div style={overlay} onClick={onClose} data-testid="awb-generate-modal">
       <div onClick={e => e.stopPropagation()} style={card}>
         <div style={header}>
-          <div style={{ fontSize: 18, fontWeight: 700 }}>⚡ Generate DHL Express AWB</div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>Generate DHL Express AWB</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}
+            aria-label="Close">×</button>
         </div>
         <div style={{ padding: '20px 24px' }}>
 
-          {/* Package dimensions */}
-          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>Package</div>
+          {/* ── DHL Service ── */}
+          <div style={sectionHead}>DHL Service</div>
+          <div style={fieldStyle}>
+            <label htmlFor="awb-product_code" style={labelStyle}>Service / Product *</label>
+            <select id="awb-product_code" value={form.product_code}
+              onChange={e => set('product_code', e.target.value)}
+              style={selStyle} data-testid="awb-field-product_code">
+              {services.length > 0
+                ? services.map(s => (
+                    <option key={s.code} value={s.code}>{s.name} ({s.code}) — {s.delivery}</option>
+                  ))
+                : <option value="P">Express Worldwide (P) — End of day</option>
+              }
+            </select>
+          </div>
+
+          {/* ── Package ── */}
+          <div style={sectionHead}>Package</div>
+          <div style={fieldStyle}>
+            <label htmlFor="awb-box_type" style={labelStyle}>Box Profile</label>
+            <select id="awb-box_type" value={form.box_type_code}
+              onChange={e => handleBoxSelect(e.target.value)}
+              style={selStyle} data-testid="awb-field-box_type_code">
+              <option value="">— Enter dimensions manually —</option>
+              {boxTypes.map(b => (
+                <option key={b.code} value={b.code}>
+                  {b.name || b.code} ({b.length_cm}×{b.width_cm}×{b.height_cm} cm, tare {b.tare_weight_kg} kg)
+                </option>
+              ))}
+            </select>
+            {boxOverridden && (
+              <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }}>
+                Dimensions overridden from box profile — will be sent as entered
+              </div>
+            )}
+            {selectedBox && !boxOverridden && (
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+                Tare weight: {selectedBox.tare_weight_kg} kg — add to cargo weight to get total package weight
+              </div>
+            )}
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
-            {[['weight_kg','Weight (kg)'],['length_cm','L (cm)'],['width_cm','W (cm)'],['height_cm','H (cm)']].map(([k, label]) => (
+            {[['weight_kg','Weight (kg)', true],['length_cm','L (cm)', true],['width_cm','W (cm)', true],['height_cm','H (cm)', true]].map(([k, lbl, req]) => (
               <div key={k}>
-                <label style={labelStyle}>{label} *</label>
-                <input type="number" min="0" step="0.1" value={form[k]}
-                  onChange={e => set(k, e.target.value)} style={inputStyle}
-                  data-testid={`awb-field-${k}`} />
+                <label htmlFor={`awb-${k}`} style={labelStyle}>{lbl}{req ? ' *' : ''}</label>
+                <input id={`awb-${k}`} type="number" min="0" step="0.1" value={form[k]}
+                  onChange={e => k === 'weight_kg' ? set(k, e.target.value) : handleDimChange(k, e.target.value)}
+                  style={inputStyle} data-testid={`awb-field-${k}`} />
               </div>
             ))}
           </div>
 
-          {/* Declared value */}
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 14 }}>
+          {/* ── Declared Value ── */}
+          <div style={sectionHead}>Declared Value</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '3fr 1fr', gap: 10, marginBottom: 14 }}>
             <div>
-              <label style={labelStyle}>Declared Value *</label>
-              <input type="number" min="0" step="0.01" value={form.declared_value}
+              <label htmlFor="awb-declared_value" style={labelStyle}>Declared Value *</label>
+              <input id="awb-declared_value" type="number" min="0" step="0.01" value={form.declared_value}
                 onChange={e => set('declared_value', e.target.value)} style={inputStyle}
                 data-testid="awb-field-declared_value" />
             </div>
             <div>
-              <label style={labelStyle}>Currency</label>
-              <input value={form.currency} readOnly style={{ ...inputStyle, opacity: 0.6, cursor: 'not-allowed' }} />
+              <label htmlFor="awb-currency" style={labelStyle}>Currency *</label>
+              <select id="awb-currency" value={form.currency}
+                onChange={e => set('currency', e.target.value)}
+                style={selStyle} data-testid="awb-field-currency">
+                {['EUR','USD','PLN','GBP'].map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
             </div>
           </div>
 
-          {/* Recipient address */}
-          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>Recipient</div>
+          {/* ── Description & References ── */}
+          <div style={sectionHead}>Description & References</div>
           <div style={fieldStyle}>
-            <label style={labelStyle}>Full Name / Company *</label>
-            <input value={form.name} onChange={e => set('name', e.target.value)} style={inputStyle} data-testid="awb-field-name" />
+            <label htmlFor="awb-description" style={labelStyle}>Shipment Description * (appears on customs label)</label>
+            <input id="awb-description" value={form.description}
+              onChange={e => set('description', e.target.value)} style={inputStyle}
+              data-testid="awb-field-description" />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+            <div>
+              <label htmlFor="awb-customer_reference" style={labelStyle}>Customer Reference (proforma/order no.)</label>
+              <input id="awb-customer_reference" value={form.customer_reference}
+                onChange={e => set('customer_reference', e.target.value)} style={inputStyle}
+                data-testid="awb-field-customer_reference" />
+            </div>
+            <div>
+              <label htmlFor="awb-shipment_reference" style={labelStyle}>Shipment Reference (internal)</label>
+              <input id="awb-shipment_reference" value={form.shipment_reference}
+                onChange={e => set('shipment_reference', e.target.value)} style={inputStyle}
+                data-testid="awb-field-shipment_reference" />
+            </div>
+          </div>
+
+          {/* ── Recipient ── */}
+          <div style={sectionHead}>Recipient</div>
+          <div style={fieldStyle}>
+            <label htmlFor="awb-name" style={labelStyle}>Full Name / Company *</label>
+            <input id="awb-name" value={form.name} onChange={e => set('name', e.target.value)}
+              style={inputStyle} data-testid="awb-field-name" />
           </div>
           <div style={fieldStyle}>
-            <label style={labelStyle}>Street Address *</label>
-            <input value={form.street} onChange={e => set('street', e.target.value)} style={inputStyle} data-testid="awb-field-street" />
+            <label htmlFor="awb-street" style={labelStyle}>Street Address *</label>
+            <input id="awb-street" value={form.street} onChange={e => set('street', e.target.value)}
+              style={inputStyle} data-testid="awb-field-street" />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
             <div>
-              <label style={labelStyle}>City *</label>
-              <input value={form.city} onChange={e => set('city', e.target.value)} style={inputStyle} data-testid="awb-field-city" />
+              <label htmlFor="awb-city" style={labelStyle}>City *</label>
+              <input id="awb-city" value={form.city} onChange={e => set('city', e.target.value)}
+                style={inputStyle} data-testid="awb-field-city" />
             </div>
             <div>
-              <label style={labelStyle}>Postal Code</label>
-              <input value={form.postal_code} onChange={e => set('postal_code', e.target.value)} style={inputStyle} data-testid="awb-field-postal_code" />
+              <label htmlFor="awb-postal_code" style={labelStyle}>Postal Code</label>
+              <input id="awb-postal_code" value={form.postal_code} onChange={e => set('postal_code', e.target.value)}
+                style={inputStyle} data-testid="awb-field-postal_code" />
             </div>
             <div>
-              <label style={labelStyle}>Country Code *</label>
-              <input value={form.country_code} onChange={e => set('country_code', e.target.value.toUpperCase())}
+              <label htmlFor="awb-country_code" style={labelStyle}>Country *</label>
+              <input id="awb-country_code" value={form.country_code}
+                onChange={e => set('country_code', e.target.value.toUpperCase())}
                 maxLength={2} placeholder="PL" style={inputStyle} data-testid="awb-field-country_code" />
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 18 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
             <div>
-              <label style={labelStyle}>Phone</label>
-              <input value={form.phone} onChange={e => set('phone', e.target.value)} style={inputStyle} data-testid="awb-field-phone" />
+              <label htmlFor="awb-phone" style={labelStyle}>Phone</label>
+              <input id="awb-phone" value={form.phone} onChange={e => set('phone', e.target.value)}
+                style={inputStyle} data-testid="awb-field-phone" />
             </div>
             <div>
-              <label style={labelStyle}>Special Instructions</label>
-              <input value={form.special_instructions} onChange={e => set('special_instructions', e.target.value)} style={inputStyle} data-testid="awb-field-instructions" />
+              <label htmlFor="awb-email" style={labelStyle}>Email</label>
+              <input id="awb-email" type="email" value={form.email} onChange={e => set('email', e.target.value)}
+                style={inputStyle} data-testid="awb-field-email" />
             </div>
+          </div>
+
+          {/* ── Customs / Tax IDs ── */}
+          <div style={sectionHead}>Customs Identifiers</div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+            Prefilled from Customer Master where available. Leave blank if not applicable.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+            <div>
+              <label htmlFor="awb-receiver_vat_id" style={labelStyle}>Receiver VAT ID (EU)</label>
+              <input id="awb-receiver_vat_id" value={form.receiver_vat_id}
+                onChange={e => set('receiver_vat_id', e.target.value)} style={inputStyle}
+                data-testid="awb-field-receiver_vat_id" />
+            </div>
+            <div>
+              <label htmlFor="awb-receiver_eori" style={labelStyle}>Receiver EORI</label>
+              <input id="awb-receiver_eori" value={form.receiver_eori}
+                onChange={e => set('receiver_eori', e.target.value)} style={inputStyle}
+                data-testid="awb-field-receiver_eori" />
+            </div>
+          </div>
+
+          {/* ── Misc ── */}
+          <div style={fieldStyle}>
+            <label htmlFor="awb-instructions" style={labelStyle}>Special Instructions</label>
+            <input id="awb-instructions" value={form.special_instructions}
+              onChange={e => set('special_instructions', e.target.value)} style={inputStyle}
+              data-testid="awb-field-instructions" />
           </div>
 
           {apiError && (
@@ -964,7 +1140,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             <div style={{ display: 'flex', gap: 10 }}>
               <Btn variant="ghost" onClick={onClose} disabled={loading}>Cancel</Btn>
               <Btn variant="primary" onClick={handleSubmit} disabled={loading} data-testid="awb-submit-btn">
-                {loading ? 'Creating AWB…' : '⚡ Create AWB'}
+                {loading ? 'Creating AWB…' : 'Create AWB'}
               </Btn>
             </div>
           </div>
@@ -2800,13 +2976,25 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         <AwbGenerateModal
           batchId={batchId}
           prefill={{
-            declared_value: detail.total_eur ? detail.total_eur.toFixed(2) : '',
-            name:         (sto && sto.name)    || (bo && bo.name)    || customer.name || '',
-            street:       (sto && sto.street)  || (bo && bo.street)  || '',
-            city:         (sto && sto.city)    || (bo && bo.city)    || '',
-            postal_code:  (sto && sto.zip)     || (bo && bo.zip)     || '',
-            country_code: (sto && sto.country) || (bo && bo.country) || '',
-            phone:        (bo && bo.phone)     || '',
+            // Value — from draft authority
+            declared_value:     detail.total_eur ? detail.total_eur.toFixed(2) : '',
+            currency:           draftCurrency || 'EUR',
+            // Recipient identity — Customer Master via ship_to / buyer_override
+            name:               (sto && sto.name)    || (bo && bo.name)    || customer.name || '',
+            street:             (sto && sto.street)  || (bo && bo.street)  || '',
+            city:               (sto && sto.city)    || (bo && bo.city)    || '',
+            postal_code:        (sto && sto.zip)     || (bo && bo.zip)     || '',
+            country_code:       (sto && sto.country) || (bo && bo.country) || '',
+            phone:              (sto && sto.phone)   || (bo && bo.phone)   || '',
+            email:              (sto && sto.email)   || (bo && bo.email)   || '',
+            // Customs — Customer Master
+            receiver_vat_id:    (bo && (bo.vat_id || bo.vat_eu_number)) || '',
+            receiver_eori:      (bo && bo.eori) || '',
+            // References — from draft
+            customer_reference: (draft && draft.doc_no) || (liveDraft && liveDraft.proforma_number) || '',
+            shipment_reference: batchId || '',
+            // Description — default; operator overrides in modal
+            description:        'Jewellery',
           }}
           onClose={() => setShowAwbModal(false)}
           onSuccess={() => setShowAwbModal(false)}

@@ -175,10 +175,21 @@ def _build_shipment_body(request: ShipmentRequest, settings) -> dict:
     today = datetime.date.today().isoformat()
     planned = f"{today}T08:00:00 GMT+00:00"
 
+    receiver_details = _build_receiver_details(request.recipient_address)
+
+    # Attach EORI / VAT registration numbers to receiver if provided
+    reg_numbers = []
+    if request.receiver_eori:
+        reg_numbers.append({"number": request.receiver_eori, "typeCode": "EOR"})
+    if request.receiver_vat_id:
+        reg_numbers.append({"number": request.receiver_vat_id, "typeCode": "EUV"})
+    if reg_numbers:
+        receiver_details["registrationNumbers"] = reg_numbers
+
     body: dict = {
         "plannedShippingDateAndTime": planned,
         "pickup": {"isRequested": False},
-        "productCode": "P",  # Express Worldwide
+        "productCode": request.product_code or "P",
         "accounts": [
             {
                 "typeCode": "shipper",
@@ -194,7 +205,7 @@ def _build_shipment_body(request: ShipmentRequest, settings) -> dict:
         },
         "customerDetails": {
             "shipperDetails": _build_shipper_details(settings),
-            "receiverDetails": _build_receiver_details(request.recipient_address),
+            "receiverDetails": receiver_details,
         },
         "content": {
             "packages": [
@@ -212,9 +223,18 @@ def _build_shipment_body(request: ShipmentRequest, settings) -> dict:
             "declaredValueCurrency": request.currency,
             "incoterm": "DAP",
             "unitOfMeasurement": "metric",
-            "description": "Jewellery",
+            "description": request.description or "Jewellery",
         },
     }
+
+    # Customer / shipment references
+    refs = []
+    if request.customer_reference:
+        refs.append({"value": request.customer_reference[:35], "typeCode": "CU"})
+    if request.shipment_reference:
+        refs.append({"value": request.shipment_reference[:35], "typeCode": "AAO"})
+    if refs:
+        body["customerReferences"] = refs
 
     if request.special_instructions:
         body["specialServices"] = [
