@@ -1656,6 +1656,71 @@ async def customer_master_sync_apply(request: Request) -> JSONResponse:
 #     The frontend MUST hide write buttons when these flags are False.
 
 
+def split_import_vs_sales_blockers(
+    *,
+    client_names: list,
+    unresolved_customers: list,
+    products_missing_count: int,
+    wfirma_create_pz_allowed: bool,
+    batch_lifecycle: str,
+) -> dict:
+    """Authority split for the setup-detail readiness panel.
+
+    IMPORT PZ / wFirma goods receipt is governed by IMPORT authority ONLY:
+    mapped products, warehouse receipt (stock authority), and the
+    ``WFIRMA_CREATE_PZ_ALLOWED`` fiscal gate. SALES preparation prerequisites
+    (proforma drafts, customer/contractor mapping) are DOWNSTREAM sales
+    authority — they gate proforma *preparation*, never the import PZ.
+
+    Prior behaviour folded the sales prep blockers into the posting list, which
+    wrongly blocked the import PZ on AWB 9158478722 whenever a proforma draft or
+    customer mapping was missing. Imported goods may sit in inventory before
+    being sold, so sales linkage must be advisory (visible, never blocking) for
+    the import PZ.
+
+    Returns the readiness sub-dict (prep/post/advisory lists + the two
+    derived booleans). Pure function — no I/O — so the authority contract is
+    unit-testable without seeding every backing DB.
+    """
+    prep_blockers: list = []          # SALES (proforma) preparation authority
+    if not client_names:
+        prep_blockers.append("no proforma drafts exist for this batch")
+    if unresolved_customers:
+        prep_blockers.append(
+            "{0} customer(s) unmapped: ".format(len(unresolved_customers))
+            + ", ".join(d["client_name"] for d in unresolved_customers[:3])
+            + ("..." if len(unresolved_customers) > 3 else "")
+        )
+
+    # IMPORT PZ posting prerequisites — fiscal/customs gates ONLY. Sales prep is
+    # intentionally NOT folded in here (that fold was the AWB 9158478722 bug).
+    post_blockers: list = []          # IMPORT PZ / wFirma goods-receipt authority
+    if products_missing_count > 0:
+        post_blockers.append(
+            "{0} product code(s) unmapped in wFirma".format(products_missing_count)
+        )
+    if not wfirma_create_pz_allowed:
+        post_blockers.append("WFIRMA_CREATE_PZ_ALLOWED is False (admin flag)")
+    if batch_lifecycle in ("DHL_TRANSIT", "PRE_IMPORT"):
+        post_blockers.append("warehouse scan-in not yet performed (transit)")
+    elif batch_lifecycle == "UNKNOWN":
+        # Fail closed: lifecycle defaults to "UNKNOWN" in the response skeleton
+        # and stays there when inventory_batch_state cannot determine the batch
+        # (exception or no rows). Warehouse receipt is unconfirmed, so do NOT
+        # report import-PZ posting readiness — this is a warehouse/stock
+        # authority gate, not a sales gate.
+        post_blockers.append("warehouse receipt not confirmed (inventory state unknown)")
+
+    return {
+        "blockers_for_preparation": prep_blockers,
+        "blockers_for_posting":     post_blockers,
+        # Sales linkage is advisory for the import PZ: visible, never blocking.
+        "sales_linkage_advisory":   list(prep_blockers),
+        "can_prepare_proforma":     not prep_blockers,
+        "can_post_to_wfirma":       not post_blockers,
+    }
+
+
 @router.get("/shipment/{batch_id:path}/setup-detail", dependencies=[_auth])
 def shipment_setup_detail(batch_id: str) -> JSONResponse:
     """READ-ONLY operator setup detail for products + customers + readiness."""
@@ -1686,6 +1751,7 @@ def shipment_setup_detail(batch_id: str) -> JSONResponse:
             "can_post_to_wfirma":         False,
             "blockers_for_preparation":   [],
             "blockers_for_posting":       [],
+            "sales_linkage_advisory":     [],
             "purchase_transit_count":     0,
             "batch_lifecycle":            "UNKNOWN",
         },
@@ -1880,32 +1946,19 @@ def shipment_setup_detail(batch_id: str) -> JSONResponse:
     except Exception as exc:
         out["errors"].append("inventory_batch_state read failed: " + str(exc))
 
-    prep_blockers: list = []
-    post_blockers: list = []
-
-    if not client_names:
-        prep_blockers.append("no proforma drafts exist for this batch")
+    # Authority split (Lesson I — workflow-class fix): IMPORT PZ readiness is
+    # governed by import authority only (products + warehouse receipt + fiscal
+    # gate); SALES prep (proforma drafts + customer mapping) is downstream and
+    # advisory. See split_import_vs_sales_blockers() for the full rationale.
     unresolved_customers = [d for d in out["customers"]["details"] if d["status"] == "unmapped"]
-    if unresolved_customers:
-        prep_blockers.append(
-            "{0} customer(s) unmapped: ".format(len(unresolved_customers))
-            + ", ".join(d["client_name"] for d in unresolved_customers[:3])
-            + ("..." if len(unresolved_customers) > 3 else "")
+    out["readiness"].update(
+        split_import_vs_sales_blockers(
+            client_names             = client_names,
+            unresolved_customers     = unresolved_customers,
+            products_missing_count   = out["products"]["missing_count"],
+            wfirma_create_pz_allowed = bool(getattr(_s, "wfirma_create_pz_allowed", False)),
+            batch_lifecycle          = out["readiness"]["batch_lifecycle"],
         )
-
-    post_blockers.extend(prep_blockers)
-    if out["products"]["missing_count"] > 0:
-        post_blockers.append(
-            "{0} product code(s) unmapped in wFirma".format(out["products"]["missing_count"])
-        )
-    if not bool(getattr(_s, "wfirma_create_pz_allowed", False)):
-        post_blockers.append("WFIRMA_CREATE_PZ_ALLOWED is False (admin flag)")
-    if out["readiness"]["batch_lifecycle"] in ("DHL_TRANSIT", "PRE_IMPORT"):
-        post_blockers.append("warehouse scan-in not yet performed (transit)")
-
-    out["readiness"]["blockers_for_preparation"] = prep_blockers
-    out["readiness"]["blockers_for_posting"]     = post_blockers
-    out["readiness"]["can_prepare_proforma"]     = not prep_blockers
-    out["readiness"]["can_post_to_wfirma"]       = not post_blockers
+    )
 
     return JSONResponse(out)
