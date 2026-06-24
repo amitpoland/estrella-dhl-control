@@ -860,6 +860,7 @@
                 <Field label="Country *" name="country" value={form.country} onChange={setField} hint="ISO-3166 alpha-2 (e.g. PL, DE, IN)" testId="field-country" />
                 <Field label="NIP / Tax ID" name="nip" value={form.nip} onChange={setField} testId="field-nip" />
                 <Field label="VAT EU Number" name="vat_eu_number" value={form.vat_eu_number} onChange={setField} testId="field-vat-eu" />
+                <Field label="VAT EU Validated At" name="vat_eu_validated_at" value={form.vat_eu_validated_at} onChange={setField} hint="ISO date — set by VIES check" testId="field-vat-eu-validated-at" />
                 <Field label="EORI" name="eori" value={form.eori} onChange={setField} testId="field-eori" />
                 <Field label="REGON" name="regon" value={form.regon} onChange={setField} testId="field-regon" />
                 <Field label="Short Code" name="short_code" value={form.short_code} onChange={setField} testId="field-short-code" />
@@ -872,6 +873,7 @@
                 <SelectField label="VAT Mode" name="vat_mode" value={String(form.vat_mode ?? '')} onChange={(n,v) => setField(n, v ? parseInt(v) : null)}
                   options={[{value:'0',label:'0 — Standard'},{value:'1',label:'1 — EU'},{value:'2',label:'2 — Export'}]}
                   testId="field-vat-mode" />
+                <CheckField label="VAT EU Valid" name="vat_eu_valid" value={form.vat_eu_valid} onChange={setField} testId="field-vat-eu-valid" />
               </div>
             </Card>
 
@@ -924,6 +926,7 @@
                       testId="field-freight-mode" />
                     <Field label="Currency" name="freight_currency" value={form.freight_currency} onChange={setField} testId="field-freight-currency" />
                     <Field label="Last Amount" name="freight_last_amount" value={form.freight_last_amount} onChange={setField} type="number" testId="field-freight-last" />
+                    <Field label="Avg Amount" name="freight_avg_amount" value={form.freight_avg_amount} onChange={setField} type="number" hint="Rolling average — for reference" testId="field-freight-avg" />
                     <Field label="Fixed EUR" name="freight_fixed_amount_eur" value={form.freight_fixed_amount_eur} onChange={setField} type="number" testId="field-freight-eur" />
                     <Field label="Fixed USD" name="freight_fixed_amount_usd" value={form.freight_fixed_amount_usd} onChange={setField} type="number" testId="field-freight-usd" />
                     <Field label="Label PL" name="freight_label_pl" value={form.freight_label_pl} onChange={setField} testId="field-freight-label-pl" />
@@ -946,6 +949,8 @@
                       testId="field-ins-mode" />
                     <Field label="Rate (%)" name="insurance_rate" value={form.insurance_rate} onChange={setField} type="number" testId="field-ins-rate" />
                     <Field label="Min Amount" name="insurance_min_amount" value={form.insurance_min_amount} onChange={setField} type="number" testId="field-ins-min" />
+                    <Field label="Min Override" name="insurance_min_override" value={form.insurance_min_override} onChange={setField} type="number" hint="Operator override for auto-detected min" testId="field-ins-min-override" />
+                    <Field label="Min EUR" name="insurance_min_eur" value={form.insurance_min_eur} onChange={setField} type="number" hint="Formula floor for EUR drafts" testId="field-ins-min-eur" />
                     <Field label="Fixed EUR" name="insurance_fixed_amount_eur" value={form.insurance_fixed_amount_eur} onChange={setField} type="number" testId="field-ins-eur" />
                     <Field label="Fixed USD" name="insurance_fixed_amount_usd" value={form.insurance_fixed_amount_usd} onChange={setField} type="number" testId="field-ins-usd" />
                     <Field label="Label PL" name="insurance_label_pl" value={form.insurance_label_pl} onChange={setField} testId="field-ins-label-pl" />
