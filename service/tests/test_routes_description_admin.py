@@ -22,13 +22,15 @@ from app.core.config import settings  # noqa: E402
 
 _AUTH = {"X-API-Key": "test-key-secret"}
 
-# Product code must NOT contain "/" — path params stop at real slashes.
-# Production product codes with "/" must be passed via URL-encoding (%2F),
-# which Starlette resolves correctly. Tests use a dash-separated code for clarity.
-_PC = "TEST-001"
+# Routes use {product_code:path} so slashes in codes are safe — pass them raw.
+_PC       = "TEST-001"
+_PC_SLASH = "EJL/26-27/292-1"   # real product code pattern with slashes
 
 _VALID_PL = "Pierścionek z 14-karatowego złota (próba 585) z diamentami laboratoryjnymi."
 _VALID_EN = "14KT Gold Ring With Laboratory Grown Diamonds. Jewellery."
+
+# EN with "Gold" + "Jewellery" but NO stone word → warning → gate=WARN (not blocked).
+_WARN_EN  = "14KT Gold Ring. Jewellery."
 
 
 @pytest.fixture()
@@ -166,3 +168,48 @@ def test_put_requires_auth(client):
         json={"description_pl": _VALID_PL},
     )
     assert r.status_code == 401
+
+
+def test_put_warn_returns_422(client, tmp_path):
+    """WARN gate (ok but has warnings) is also rejected — backend mirrors UI canSave=PASS-only."""
+    _seed(tmp_path)
+    r = client.put(
+        f"/api/v1/description-admin/product/{_PC}",
+        headers=_AUTH,
+        json={"description_pl": _VALID_PL, "description_en": _WARN_EN},
+    )
+    assert r.status_code == 422, r.text
+    data = r.json()
+    assert data["detail"]["error"] == "WARN"
+
+
+def test_slash_product_code_routes(client, tmp_path):
+    """Product codes with slashes (EJL/26-27/292-1) work via {product_code:path}."""
+    _seed(tmp_path, product_code=_PC_SLASH)
+
+    # GET
+    r = client.get(
+        f"/api/v1/description-admin/product/{_PC_SLASH}",
+        headers=_AUTH,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["product_code"] == _PC_SLASH
+
+    # POST /validate
+    r = client.post(
+        f"/api/v1/description-admin/product/{_PC_SLASH}/validate",
+        headers=_AUTH,
+        json={"description_pl": _VALID_PL, "description_en": _VALID_EN},
+    )
+    assert r.status_code == 200
+    assert r.json()["gate"] == "PASS"
+
+    # PUT
+    r = client.put(
+        f"/api/v1/description-admin/product/{_PC_SLASH}",
+        headers=_AUTH,
+        json={"description_pl": _VALID_PL, "description_en": _VALID_EN},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["source"] == "manual"
+    assert r.json()["product_code"] == _PC_SLASH
