@@ -337,7 +337,8 @@ def description_authority_review_queue(user: dict = Depends(require_admin)) -> J
     conn.row_factory = _sql.Row
     try:
         rows = conn.execute(
-            "SELECT product_code, description_pl, description_en, source, updated_at "
+            "SELECT product_code, description_pl, description_en, source, updated_at, "
+            "       description_en_updated_by, description_en_updated_at, description_en_update_reason "
             "FROM product_descriptions WHERE source='manual' ORDER BY product_code"
         ).fetchall()
     finally:
@@ -348,14 +349,17 @@ def description_authority_review_queue(user: dict = Depends(require_admin)) -> J
         result = validate_description_line(row["description_pl"] or "", row["description_en"] or "")
         if result.blocked:
             queue.append({
-                "product_code":       row["product_code"],
-                "description_pl":     row["description_pl"] or "",
-                "description_en":     row["description_en"] or "",
-                "source":             row["source"] or "",
-                "updated_at":         row["updated_at"] or "",
-                "shorthand_detected": result.shorthand_detected,
-                "advisory":           result.advisory,
-                "product_type":       _classify_product_type(row["description_pl"] or ""),
+                "product_code":                row["product_code"],
+                "description_pl":              row["description_pl"] or "",
+                "description_en":              row["description_en"] or "",
+                "source":                      row["source"] or "",
+                "updated_at":                  row["updated_at"] or "",
+                "description_en_updated_by":   row["description_en_updated_by"] or "",
+                "description_en_updated_at":   row["description_en_updated_at"] or "",
+                "description_en_update_reason": row["description_en_update_reason"] or "",
+                "shorthand_detected":          result.shorthand_detected,
+                "advisory":                    result.advisory,
+                "product_type":                _classify_product_type(row["description_pl"] or ""),
             })
 
     return JSONResponse(content={"count": len(queue), "queue": queue}, headers=_NO_CACHE)
@@ -363,7 +367,8 @@ def description_authority_review_queue(user: dict = Depends(require_admin)) -> J
 
 class _DescriptionEnUpdate(BaseModel):
     description_en: str
-    operator:       str
+    reason:         str   # mandatory — stored in description_en_update_reason
+    operator:       str   # legacy label echoed from UI; actor comes from session
 
 
 @router.patch("/description-authority/{product_code:path}/description-en")
@@ -374,8 +379,10 @@ def update_description_en(
 ) -> JSONResponse:
     """Operator update of description_en for one product_code.
 
-    Validates the proposed value via validate_description_line() before writing.
-    Returns 422 if the proposed value would still fail. Writes source='manual'.
+    Validates via validate_description_line() before writing.
+    Returns 422 if the proposed value still fails — no write occurs.
+    On success writes description_en_updated_by (session email),
+    description_en_updated_at (UTC), description_en_update_reason.
     """
     import sqlite3 as _sql
     import logging as _log
@@ -383,6 +390,9 @@ def update_description_en(
     from ..services.description_length_policy import validate_description_line
 
     proposed_en = (body.description_en or "").strip()
+    reason      = (body.reason or "").strip()
+    actor       = user.get("email") or user.get("username") or "?"
+
     db_path = settings.storage_root / "documents.db"
     if not db_path.exists():
         raise HTTPException(status_code=503, detail="documents.db not found")
@@ -417,26 +427,31 @@ def update_description_en(
     try:
         conn.execute(
             "UPDATE product_descriptions "
-            "SET description_en=?, source='manual', updated_at=datetime('now') "
+            "SET description_en=?, source='manual', updated_at=datetime('now'), "
+            "    description_en_updated_by=?, "
+            "    description_en_updated_at=datetime('now'), "
+            "    description_en_update_reason=? "
             "WHERE product_code=?",
-            (proposed_en, product_code),
+            (proposed_en, actor, reason, product_code),
         )
         conn.commit()
     finally:
         conn.close()
 
     _log.getLogger(__name__).info(
-        "description-authority: %s updated description_en for %r (operator=%s)",
-        user.get("email", "?"), product_code, body.operator,
+        "description-authority: %s updated description_en for %r reason=%r",
+        actor, product_code, reason,
     )
 
     return JSONResponse(
         content={
-            "ok":             True,
-            "product_code":   product_code,
-            "description_en": proposed_en,
-            "source":         "manual",
-            "warnings":       result.warnings,
+            "ok":                          True,
+            "product_code":                product_code,
+            "description_en":              proposed_en,
+            "source":                      "manual",
+            "description_en_updated_by":   actor,
+            "description_en_update_reason": reason,
+            "warnings":                    result.warnings,
         },
         headers=_NO_CACHE,
     )

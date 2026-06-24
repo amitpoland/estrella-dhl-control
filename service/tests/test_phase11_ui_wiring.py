@@ -170,3 +170,58 @@ class TestDescriptionAuthorityAdminRoutes:
         content = main_path.read_text(encoding="utf-8")
         assert '/admin/description-authority' in content
         assert 'description-authority-admin.html' in content
+
+    def test_patch_body_model_has_reason_field(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from app.api.routes_admin import _DescriptionEnUpdate
+        m = _DescriptionEnUpdate(description_en="test", reason="shorthand fix", operator="op")
+        assert m.reason == "shorthand fix"
+
+    def test_patch_sql_writes_all_three_audit_columns(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        import inspect
+        from app.api import routes_admin
+        src = inspect.getsource(routes_admin.update_description_en)
+        assert "description_en_updated_by"      in src
+        assert "description_en_updated_at"      in src
+        assert "description_en_update_reason"   in src
+
+    def test_document_db_has_forward_compat_for_audit_columns(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        import inspect
+        from app.services import document_db
+        src = inspect.getsource(document_db.init_document_db)
+        assert "description_en_updated_by"      in src
+        assert "description_en_updated_at"      in src
+        assert "description_en_update_reason"   in src
+
+    def test_review_queue_endpoint_selects_audit_columns(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        import inspect
+        from app.api import routes_admin
+        src = inspect.getsource(routes_admin.description_authority_review_queue)
+        assert "description_en_updated_by"      in src
+        assert "description_en_updated_at"      in src
+        assert "description_en_update_reason"   in src
+
+    def test_frontend_has_reason_input_testid(self):
+        content = _read("description-authority-admin.html")
+        assert 'data-testid={`reason-input-' in content
+
+    def test_frontend_displays_audit_trail(self):
+        content = _read("description-authority-admin.html")
+        assert "description_en_updated_by"      in content
+        assert "description_en_updated_at"      in content
+        assert "description_en_update_reason"   in content
+
+    def test_frontend_save_blocked_without_reason(self):
+        content = _read("description-authority-admin.html")
+        assert "Podaj powód zmiany przed zapisem" in content
+
+    def test_frontend_sends_reason_in_patch_body(self):
+        content = _read("description-authority-admin.html")
+        assert "reason," in content or "reason:" in content

@@ -309,10 +309,14 @@ def init_document_db(db_path: Path) -> None:
         # ── Forward-compat: product_descriptions added description_en /
         # description_line later. Idempotent ALTER for older DBs.
         for col, ddl in (
-            ("description_en",   "TEXT NOT NULL DEFAULT ''"),
-            ("description_line", "TEXT NOT NULL DEFAULT ''"),
+            ("description_en",            "TEXT NOT NULL DEFAULT ''"),
+            ("description_line",          "TEXT NOT NULL DEFAULT ''"),
             # Phase 4 — name_sk: Slovak product name (nullable, operator-populated)
-            ("name_sk",          "TEXT"),
+            ("name_sk",                   "TEXT"),
+            # Post-PR #741 — per-field EN audit trail (description_en changes only)
+            ("description_en_updated_by", "TEXT NOT NULL DEFAULT ''"),
+            ("description_en_updated_at", "TEXT NOT NULL DEFAULT ''"),
+            ("description_en_update_reason", "TEXT NOT NULL DEFAULT ''"),
         ):
             try:
                 con.execute(

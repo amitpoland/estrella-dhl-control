@@ -170,8 +170,9 @@ function ReviewQueue() {
   const [queue, setQueue] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
-  const [editing, setEditing] = useState({});   // product_code → new EN text
-  const [saving, setSaving] = useState({});      // product_code → bool
+  // editing: product_code → { en: string, reason: string }
+  const [editing, setEditing] = useState({});
+  const [saving, setSaving] = useState({});
   const [toast, setToast] = useState(null);
 
   const load = useCallback(async () => {
@@ -192,14 +193,20 @@ function ReviewQueue() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  const startEdit = (code, current) =>
-    setEditing(prev => ({ ...prev, [code]: current }));
+  const startEdit = (code, currentEn) =>
+    setEditing(prev => ({ ...prev, [code]: { en: currentEn, reason: '' } }));
 
   const cancelEdit = (code) =>
     setEditing(prev => { const n = { ...prev }; delete n[code]; return n; });
 
-  const saveEdit = async (code, plText) => {
-    const proposed = editing[code] || '';
+  const setEditField = (code, field, value) =>
+    setEditing(prev => ({ ...prev, [code]: { ...prev[code], [field]: value } }));
+
+  const saveEdit = async (code) => {
+    const draft = editing[code] || {};
+    const proposed = (draft.en || '').trim();
+    const reason   = (draft.reason || '').trim();
+    if (!reason) { showToast('Podaj powód zmiany przed zapisem.', 'error'); return; }
     setSaving(prev => ({ ...prev, [code]: true }));
     try {
       const resp = await fetch(
@@ -208,7 +215,7 @@ function ReviewQueue() {
           method: 'PATCH',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ description_en: proposed, operator: 'admin-ui' }),
+          body: JSON.stringify({ description_en: proposed, reason, operator: 'admin-ui' }),
         }
       );
       const j = await resp.json();
@@ -260,15 +267,15 @@ function ReviewQueue() {
               <th>Kod produktu</th>
               <th>Typ</th>
               <th>description_pl (PL)</th>
-              <th>description_en (EN — aktualna)</th>
+              <th>description_en (EN)</th>
               <th>Powód blokady</th>
               <th>Akcja</th>
             </tr>
           </thead>
           <tbody>
             {queue.map(row => {
-              const isEditing = code => editing[code] !== undefined;
-              const inEdit = isEditing(row.product_code);
+              const inEdit = editing[row.product_code] !== undefined;
+              const draft  = editing[row.product_code] || { en: '', reason: '' };
               return (
                 <tr key={row.product_code} className={inEdit ? 'edit-row' : ''}>
                   <td>
@@ -279,16 +286,38 @@ function ReviewQueue() {
                   <td style={{ fontSize: 12, maxWidth: 220 }}>{row.description_pl}</td>
                   <td style={{ minWidth: 260 }}>
                     {inEdit ? (
-                      <textarea
-                        data-testid={`en-input-${row.product_code}`}
-                        className="en-input"
-                        value={editing[row.product_code]}
-                        onChange={e => setEditing(prev => ({ ...prev, [row.product_code]: e.target.value }))}
-                      />
+                      <>
+                        <textarea
+                          data-testid={`en-input-${row.product_code}`}
+                          className="en-input"
+                          value={draft.en}
+                          onChange={e => setEditField(row.product_code, 'en', e.target.value)}
+                        />
+                        <input
+                          data-testid={`reason-input-${row.product_code}`}
+                          type="text"
+                          placeholder="Powód zmiany (wymagany)"
+                          value={draft.reason}
+                          onChange={e => setEditField(row.product_code, 'reason', e.target.value)}
+                          style={{
+                            width: '100%', marginTop: 5, fontSize: 12,
+                            border: `1px solid ${draft.reason ? 'var(--border)' : 'var(--badge-red-border, #fca5a5)'}`,
+                            borderRadius: 5, padding: '4px 8px', boxSizing: 'border-box',
+                          }}
+                        />
+                      </>
                     ) : (
-                      <span style={{ fontSize: 12, color: row.description_en ? 'inherit' : 'var(--text-muted)' }}>
-                        {row.description_en || <em>brak EN</em>}
-                      </span>
+                      <>
+                        <span style={{ fontSize: 12, color: row.description_en ? 'inherit' : 'var(--text-muted)' }}>
+                          {row.description_en || <em>brak EN</em>}
+                        </span>
+                        {row.description_en_updated_by && (
+                          <span className="advisory-chip">
+                            {row.description_en_updated_by} · {row.description_en_updated_at}
+                            {row.description_en_update_reason && ` · „${row.description_en_update_reason}"`}
+                          </span>
+                        )}
+                      </>
                     )}
                   </td>
                   <td>
@@ -302,7 +331,7 @@ function ReviewQueue() {
                           data-testid={`btn-save-${row.product_code}`}
                           className="btn-xs btn-save"
                           disabled={saving[row.product_code]}
-                          onClick={() => saveEdit(row.product_code, row.description_pl)}
+                          onClick={() => saveEdit(row.product_code)}
                           style={{ marginRight: 6 }}
                         >
                           {saving[row.product_code] ? '…' : 'Zapisz'}
