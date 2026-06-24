@@ -765,6 +765,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     shipment_reference:  prefill.shipment_reference || '',
     // Recipient
     name:         prefill.name || '',
+    company_name: prefill.company_name || '',
     street:       prefill.street || '',
     city:         prefill.city || '',
     postal_code:  prefill.postal_code || '',
@@ -783,16 +784,30 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [boxTypes,      setBoxTypes]      = React.useState([]);
   const [services,      setServices]      = React.useState([]);
   const [boxOverridden, setBoxOverridden] = React.useState(false); // true when dims differ from selected box
+  const [carrierStatus, setCarrierStatus] = React.useState(null);
+  const [boxTypesLoaded, setBoxTypesLoaded] = React.useState(false);
 
-  // Load box types and service catalogue once on mount
+  // Load box types, service catalogue, and carrier status once on mount
   React.useEffect(() => {
     window.PzApi.listBoxTypes && window.PzApi.listBoxTypes()
-      .then(r => setBoxTypes(Array.isArray(r) ? r : []))
-      .catch(() => setBoxTypes([]));
+      .then(r => {
+        setBoxTypes(r && r.ok && r.data && Array.isArray(r.data.box_types) ? r.data.box_types : []);
+        setBoxTypesLoaded(true);
+      })
+      .catch(() => { setBoxTypes([]); setBoxTypesLoaded(true); });
     window.PzApi.listCarrierServices && window.PzApi.listCarrierServices()
-      .then(r => setServices(Array.isArray(r) ? r : []))
+      .then(r => setServices(r && r.ok && Array.isArray(r.data) ? r.data : []))
       .catch(() => setServices([]));
+    window.PzApi.getCarrierStatus && window.PzApi.getCarrierStatus()
+      .then(r => setCarrierStatus(r && r.ok ? r.data : null))
+      .catch(() => setCarrierStatus(null));
   }, []);
+
+  const _apiStatus = carrierStatus && carrierStatus.carrier_api_status;
+  const isPending = !_apiStatus || _apiStatus === 'pending';
+  const _footerLabel = isPending ? 'Carrier API pending'
+    : _apiStatus === 'shadow' ? 'Shadow DHL AWB'
+    : 'Live DHL Express AWB';
 
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
@@ -819,14 +834,14 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   };
 
   const handleSubmit = () => {
-    if (loading) return;
+    if (loading || isPending) return;
     const missing = [];
     if (!form.weight_kg)      missing.push('Weight (kg)');
     if (!form.length_cm)      missing.push('Length (cm)');
     if (!form.width_cm)       missing.push('Width (cm)');
     if (!form.height_cm)      missing.push('Height (cm)');
     if (!form.declared_value) missing.push('Declared value');
-    if (!form.name)           missing.push('Recipient name');
+    if (!form.name && !form.company_name) missing.push('Company Name or Contact Full Name');
     if (!form.street)         missing.push('Street');
     if (!form.city)           missing.push('City');
     if (!form.country_code)   missing.push('Country code');
@@ -846,7 +861,8 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
         height_cm: parseFloat(form.height_cm),
       },
       recipient_address: {
-        name:         form.name,
+        name:         form.name || form.company_name,
+        company:      form.company_name || undefined,
         street:       form.street,
         city:         form.city,
         postal_code:  form.postal_code,
@@ -960,6 +976,16 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             aria-label="Close">×</button>
         </div>
         <div style={{ padding: '20px 24px' }}>
+          {isPending && (
+            <div style={{
+              padding: '10px 14px', background: 'var(--badge-amber-bg, #fef3c7)',
+              borderRadius: 6, border: '1px solid var(--badge-amber-border, #d97706)',
+              color: 'var(--badge-amber-text, #92400e)', fontSize: 12, marginBottom: 16,
+            }} data-testid="awb-pending-banner">
+              Carrier API is pending. Live/shadow AWB generation is disabled.
+              Set CARRIER_API_STATUS=shadow or CARRIER_API_STATUS=live to activate.
+            </div>
+          )}
 
           {/* ── DHL Service ── */}
           <div style={sectionHead}>DHL Service</div>
@@ -991,6 +1017,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
                 </option>
               ))}
             </select>
+            {boxTypesLoaded && boxTypes.length === 0 && (
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}
+                   data-testid="awb-box-empty-state">
+                No active box profiles found in Box Master.
+              </div>
+            )}
             {boxOverridden && (
               <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }}>
                 Dimensions overridden from box profile — will be sent as entered
@@ -1058,8 +1090,15 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
           {/* ── Recipient ── */}
           <div style={sectionHead}>Recipient</div>
           <div style={fieldStyle}>
-            <label htmlFor="awb-name" style={labelStyle}>Full Name / Company *</label>
+            <label htmlFor="awb-company_name" style={labelStyle}>Company Name *</label>
+            <input id="awb-company_name" value={form.company_name}
+              onChange={e => set('company_name', e.target.value)}
+              style={inputStyle} data-testid="awb-field-company_name" />
+          </div>
+          <div style={fieldStyle}>
+            <label htmlFor="awb-name" style={labelStyle}>Contact Full Name</label>
             <input id="awb-name" value={form.name} onChange={e => set('name', e.target.value)}
+              placeholder="Optional — leave blank if unknown"
               style={inputStyle} data-testid="awb-field-name" />
           </div>
           <div style={fieldStyle}>
@@ -1134,12 +1173,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
           )}
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-              Live DHL Express AWB · batch: <code>{batchId}</code>
+            <div style={{ fontSize: 11, color: isPending ? 'var(--badge-amber-text, #92400e)' : 'var(--text-3)' }}>
+              {_footerLabel} · batch: <code>{batchId}</code>
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <Btn variant="ghost" onClick={onClose} disabled={loading}>Cancel</Btn>
-              <Btn variant="primary" onClick={handleSubmit} disabled={loading} data-testid="awb-submit-btn">
+              <Btn variant="primary" onClick={handleSubmit} disabled={loading || isPending} data-testid="awb-submit-btn">
                 {loading ? 'Creating AWB…' : 'Create AWB'}
               </Btn>
             </div>
@@ -2980,7 +3019,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             declared_value:     detail.total_eur ? detail.total_eur.toFixed(2) : '',
             currency:           draftCurrency || 'EUR',
             // Recipient identity — Customer Master via ship_to / buyer_override
-            name:               (sto && sto.name)    || (bo && bo.name)    || customer.name || '',
+            company_name:       (sto && sto.name)    || (bo && bo.name)    || customer.name || '',
+            name:               '',
             street:             (sto && sto.street)  || (bo && bo.street)  || '',
             city:               (sto && sto.city)    || (bo && bo.city)    || '',
             postal_code:        (sto && sto.zip)     || (bo && bo.zip)     || '',
