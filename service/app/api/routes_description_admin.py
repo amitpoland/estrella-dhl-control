@@ -78,7 +78,7 @@ def _row_response(row: dict) -> dict:
 
 # ── GET ───────────────────────────────────────────────────────────────────────
 
-@router.get("/product/{product_code}", dependencies=[_auth])
+@router.get("/product/{product_code:path}", dependencies=[_auth])
 def get_product_description_admin(product_code: str) -> JSONResponse:
     """Return current description row + live validation gate."""
     row = ddb.get_product_description(product_code.strip())
@@ -100,7 +100,7 @@ class ValidateRequest(BaseModel):
     description_en: str = ""
 
 
-@router.post("/product/{product_code}/validate", dependencies=[_auth])
+@router.post("/product/{product_code:path}/validate", dependencies=[_auth])
 def validate_description_admin(
     product_code: str,
     body: ValidateRequest,
@@ -125,7 +125,7 @@ class SaveRequest(BaseModel):
     name_pl: Optional[str] = None  # if omitted, existing name_pl is preserved
 
 
-@router.put("/product/{product_code}", dependencies=[_auth])
+@router.put("/product/{product_code:path}", dependencies=[_auth])
 def save_description_admin(
     product_code: str,
     body: SaveRequest,
@@ -147,11 +147,13 @@ def save_description_admin(
         )
 
     vr = validate_description_line(pl, en)
-    if vr.blocked or not vr.ok:
+    if vr.blocked or not vr.ok or vr.warnings:
+        # Spec: save enabled only when gate = PASS. WARN (ok but has warnings)
+        # is also rejected so backend and UI agree — no bypass via direct API call.
         raise HTTPException(
             status_code=422,
             detail={
-                "error":      "BLOCKED",
+                "error":      _gate(vr),
                 "advisory":   vr.advisory,
                 "validation": _vr_dict(vr),
             },
