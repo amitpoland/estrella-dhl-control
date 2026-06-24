@@ -1432,48 +1432,35 @@ async def reprocess_packing_documents(
                             )
 
                 # Canonical description authority: pre-populate product_descriptions
-                # using description_engine.get_description_block() so the customs
-                # engine (normalize_item_description) writes the legal Polish sentence.
+                # using description_engine.get_description_block() so the item type's
+                # Polish translation is seeded before the proforma draft is born.
                 # Sales-packing Ctg/Kt/Col/Quality codes are NOT used — they produce
                 # short item-type-code names that diverge from the customs PDF
                 # (Lesson N / single-authority rule).
-                # Authority chain: invoice_lines.description (English)
-                #   → customs_description_engine.normalize_item_description()
-                #   → product_descriptions.description_pl (customs-grade sentence).
-                # If no invoice English description is available, skip entirely —
-                # do not fabricate. description_pl must never come from category codes.
-                # Non-fatal: description failure never blocks parse.
+                #
+                # description_en is intentionally NOT populated here.
+                # invoice_lines.description for EJL products is supplier shorthand
+                # (e.g. "PCS, 14KT Gold, LGD Stud Jewellery RING") — not a
+                # customs-grade English sentence. Writing shorthand as description_en
+                # would cause the renderer to produce:
+                #   "{customs_pl} / PCS, 14KT Gold, ..."
+                # which violates the canonical authority rule.
+                # description_en is left blank; build_description_line() outputs PL
+                # only until a verified customs-grade English sentence is explicitly
+                # provided by the operator or a dedicated English-authority pipeline.
                 try:
                     from ..services.description_engine import (
                         get_description_block as _get_desc_block,
                     )
-                    # Build invoice-line lookup keyed by product_code once per batch.
-                    _inv_lines   = _ddb.get_invoice_lines(batch_id)
-                    _inv_en_by_pc: Dict[str, str] = {}
-                    for _il in _inv_lines:
-                        _il_pc = str(_il.get("product_code") or "").strip()
-                        _il_en = str(_il.get("description")  or "").strip()
-                        if _il_pc and _il_en and _il_pc not in _inv_en_by_pc:
-                            _inv_en_by_pc[_il_pc] = _il_en
-
                     _seen_desc_pcs: set = set()
                     for _sr in sp_rows:
                         _pc  = (_sr.get("product_code") or "").strip()
                         if not _pc or _pc in _seen_desc_pcs:
                             continue
                         _seen_desc_pcs.add(_pc)
-                        _ctg    = (_sr.get("item_type") or "").strip().upper()
-                        _inv_en = _inv_en_by_pc.get(_pc, "")
-                        if not _inv_en:
-                            log.warning(
-                                "[%s] sales packing: no invoice English description "
-                                "for %s — skipping product_descriptions pre-population "
-                                "(do not fabricate).",
-                                batch_id, _pc,
-                            )
-                            continue
+                        _ctg = (_sr.get("item_type") or "").strip().upper()
                         try:
-                            _get_desc_block(_pc, _ctg, description_en=_inv_en)
+                            _get_desc_block(_pc, _ctg)
                         except Exception as _block_exc:
                             log.warning(
                                 "[%s] sales packing: get_description_block failed "
