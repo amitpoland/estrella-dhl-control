@@ -51,7 +51,6 @@ from .sales_packing_parser import (
     parse_ejl_sales_packing,
     validate_grand_total,
     build_patch_lookup,
-    generate_name_pl_if_sufficient,
 )
 
 log    = get_logger(__name__)
@@ -1172,6 +1171,22 @@ def _build_preview(batch_id: str, client_name: str,
                             f"{_zero_unit_price} line(s) have zero/missing unit_price "
                             "— import sales prices before approving"
                         )
+                    # Operator-override mismatch advisory: surface before finalization
+                    # so the operator can review, NOT a silent pass-through.
+                    try:
+                        from ..services.proforma_intelligence import (
+                            detect_operator_override_mismatches as _dom,
+                        )
+                        _mismatches = _dom(
+                            _edit_lines,
+                            master_db_path=settings.storage_root / "documents.db",
+                        )
+                        for _mm in _mismatches:
+                            blocking_reasons.append(
+                                f"[ADVISORY] {_mm.message}"
+                            )
+                    except Exception:
+                        pass
     except Exception:
         pass  # non-fatal — preview still works without editable-lines pre-approve check
 
@@ -5970,7 +5985,26 @@ def import_draft_sales_prices(
         ln["unit_price"]   = float(row.unit_price)
         ln["total_eur"]    = float(row.line_total)
         ln["currency"]     = "EUR"
-        ln["name_pl"]      = row.desc_pl
+        # Authority: read customs-grade Polish description from product_descriptions;
+        # never fabricate from TSV category codes (Lesson N / single-authority rule).
+        _pc = str(ln.get("product_code") or "").strip()
+        _pd_row = ddb.get_product_description(_pc) if _pc else None
+        _pd_text = (
+            (_pd_row or {}).get("description_pl")
+            or (_pd_row or {}).get("name_pl")
+            or ""
+        ).strip()
+        if _pd_text:
+            ln["name_pl"]        = _pd_text
+            ln["name_pl_source"] = "product_descriptions.description_pl"
+        else:
+            ln["name_pl"]        = ""
+            ln["name_pl_source"] = "missing_product_descriptions"
+            ln.setdefault("_warnings", []).append(
+                f"Polish customs description missing for product_code={_pc!r}. "
+                "Generate customs description package first. "
+                "Proforma must not fabricate Polish description."
+            )
         ln["remarks"]      = row.desc_en
         # #529 — stamp sales-price provenance. Before this, a line repriced from
         # the sales packing list still carried its cost-basis price_source
@@ -6460,7 +6494,7 @@ def reset_proforma_draft_from_sales_packing(
         sales_lines=sales_lines,
         reset_all=reset_all,
         name_pl_lookup=ddb.get_product_description,
-        desc_generate=generate_name_pl_if_sufficient,
+        desc_generate=None,
         product_mapping_lookup=wfdb.get_product,
     ))
 
@@ -8593,6 +8627,9 @@ def get_proforma_draft_intelligence(draft_id: int) -> JSONResponse:
 
     # Anomaly detection + missing-field inference
     anomalies   = _intel.detect_line_anomalies(lines, corpus=corpus)
+    anomalies  += _intel.detect_operator_override_mismatches(
+        lines, master_db_path=_master_db_path()
+    )
     suggestions = _intel.infer_missing_fields(lines, master_db_path=_master_db_path())
 
     # Confidence scoring

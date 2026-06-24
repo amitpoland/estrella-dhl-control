@@ -18,6 +18,10 @@ Coverage:
   10. Source-grep: routes_packing must not import generate_description for PD writes
   11. Packing import calls get_description_block with invoice English description
   12. RNG 14KT LGD ring stores customs-grade sentence via get_description_block
+  13. Operator override differing from description_pl surfaces ANOMALY_OPERATOR_DESCRIPTION_MISMATCH
+  14. Operator override matching description_pl is a clean pass (no anomaly, no false positive)
+  15. detect_operator_override_mismatches skips lines without name_pl_source='operator'
+  16. detect_operator_override_mismatches returns empty when no canonical description_pl exists
 """
 from __future__ import annotations
 
@@ -410,4 +414,141 @@ class TestPackingImportAuthority:
         assert not (desc_pl in short_artifacts), (
             f"description_pl must not be a short generator artifact. "
             f"Got: {desc_pl!r}. Expected a full customs-grade legal sentence."
+        )
+
+
+# ── 13–16. Operator-override mismatch advisory ────────────────────────────────
+
+class TestOperatorOverrideMismatch:
+    """
+    When a draft line has name_pl_source='operator' and the operator's name_pl
+    differs from the canonical product_descriptions.description_pl, the intelligence
+    layer must surface ANOMALY_OPERATOR_DESCRIPTION_MISMATCH (severity=high).
+
+    It must NOT fire when the operator value matches canonical (clean byte-match),
+    and must NOT fire for lines that lack name_pl_source='operator'.
+    """
+
+    def _make_db(self, tmp_path, product_code: str, description_pl: str):
+        """Create a minimal documents.db with one product_descriptions row."""
+        import sqlite3
+        db = tmp_path / "documents.db"
+        with sqlite3.connect(str(db)) as con:
+            con.execute("""
+                CREATE TABLE product_descriptions (
+                    product_code TEXT PRIMARY KEY,
+                    description_pl TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            con.execute(
+                "INSERT INTO product_descriptions VALUES (?,?)",
+                (product_code, description_pl),
+            )
+        return db
+
+    def _detect(self, lines, db_path):
+        from service.app.services.proforma_intelligence import (
+            detect_operator_override_mismatches,
+            ANOMALY_OPERATOR_DESCRIPTION_MISMATCH,
+        )
+        return detect_operator_override_mismatches(lines, master_db_path=db_path)
+
+    def test_operator_override_differing_surfaces_anomaly(self, tmp_path):
+        """Test 13: operator name_pl ≠ canonical description_pl → HIGH anomaly."""
+        canonical = (
+            "Wyrób jubilerski z 14-karatowego złota (próba 585) wysadzany diamentami "
+            "laboratoryjnymi. Biżuteria do noszenia."
+        )
+        db = self._make_db(tmp_path, "EJL/26-27/327-1", canonical)
+
+        lines = [{
+            "product_code":   "EJL/26-27/327-1",
+            "name_pl":        "pierścionek z diamentami",  # old generator value
+            "name_pl_source": "operator",
+            "line_id":        "ln-01",
+        }]
+        anomalies = self._detect(lines, db)
+
+        from service.app.services.proforma_intelligence import (
+            ANOMALY_OPERATOR_DESCRIPTION_MISMATCH,
+            SEVERITY_HIGH,
+        )
+        assert len(anomalies) == 1, (
+            "Expected exactly 1 anomaly for operator override mismatch"
+        )
+        a = anomalies[0]
+        assert a.anomaly_type == ANOMALY_OPERATOR_DESCRIPTION_MISMATCH
+        assert a.severity == SEVERITY_HIGH
+        assert a.confidence == 1.0
+        assert "pierścionek z diamentami" in a.message
+        assert "14-karatowego" in a.message or "585" in a.message
+        assert "EJL/26-27/327-1" in a.message
+
+    def test_operator_override_matching_canonical_is_clean(self, tmp_path):
+        """Test 14: operator name_pl == canonical description_pl → no anomaly (clean byte-match)."""
+        canonical = (
+            "Wyrób jubilerski z 14-karatowego złota (próba 585) wysadzany diamentami "
+            "laboratoryjnymi. Biżuteria do noszenia."
+        )
+        db = self._make_db(tmp_path, "EJL/26-27/327-1", canonical)
+
+        lines = [{
+            "product_code":   "EJL/26-27/327-1",
+            "name_pl":        canonical,       # operator confirmed the canonical text
+            "name_pl_source": "operator",
+            "line_id":        "ln-01",
+        }]
+        anomalies = self._detect(lines, db)
+
+        assert anomalies == [], (
+            "No anomaly expected when operator value matches canonical description_pl "
+            "(clean byte-match must not produce a false positive)"
+        )
+
+    def test_non_operator_source_not_flagged(self, tmp_path):
+        """Test 15: lines with name_pl_source != 'operator' must not trigger the guard."""
+        canonical = "Wyrób jubilerski z 14-karatowego złota. Biżuteria."
+        db = self._make_db(tmp_path, "EJL/26-27/327-1", canonical)
+
+        lines = [
+            {
+                "product_code":   "EJL/26-27/327-1",
+                "name_pl":        "pierścionek z diamentami",
+                "name_pl_source": "product_descriptions",  # not operator
+                "line_id":        "ln-01",
+            },
+            {
+                "product_code":   "EJL/26-27/327-1",
+                "name_pl":        "pierścionek z diamentami",
+                "name_pl_source": "auto",
+                "line_id":        "ln-02",
+            },
+        ]
+        anomalies = self._detect(lines, db)
+
+        assert anomalies == [], (
+            "Operator-override guard must only fire for name_pl_source='operator'"
+        )
+
+    def test_no_canonical_means_no_anomaly(self, tmp_path):
+        """Test 16: if product_descriptions has no row for this product_code, skip silently."""
+        db = tmp_path / "documents.db"
+        import sqlite3
+        with sqlite3.connect(str(db)) as con:
+            con.execute(
+                "CREATE TABLE product_descriptions "
+                "(product_code TEXT PRIMARY KEY, description_pl TEXT NOT NULL DEFAULT '')"
+            )
+            # No row for EJL/26-27/327-1
+
+        lines = [{
+            "product_code":   "EJL/26-27/327-1",
+            "name_pl":        "pierścionek z diamentami",
+            "name_pl_source": "operator",
+            "line_id":        "ln-01",
+        }]
+        anomalies = self._detect(lines, db)
+
+        assert anomalies == [], (
+            "No canonical description_pl in DB → no anomaly to surface (nothing to compare)"
         )
