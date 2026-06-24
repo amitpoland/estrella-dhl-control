@@ -1626,11 +1626,377 @@ function CustomerDetailPage({ contractorId, onBack }) {
 }
 
 
+// ── Description Authority Editor ────────────────────────────────────────────
+//
+// Custom panel for editing product_descriptions rows (source='manual').
+// GET  /api/v1/description-admin/product/{code}   — fetch + validate
+// POST /api/v1/description-admin/product/{code}/validate — live feedback
+// PUT  /api/v1/description-admin/product/{code}   — save (audit event)
+//
+// Authority: product_descriptions master row only. Posted/issued/locked
+// draft snapshots are immutable. Future drafts pick up new values via
+// get_description_block(). (PR #741)
+
+function DescriptionAdminPanel() {
+  const [code,     setCode]     = React.useState("");
+  const [row,      setRow]      = React.useState(null);
+  const [fetchErr, setFetchErr] = React.useState(null);
+  const [loading,  setLoading]  = React.useState(false);
+
+  // Edit state
+  const [editing,    setEditing]    = React.useState(false);
+  const [editPl,     setEditPl]     = React.useState("");
+  const [editEn,     setEditEn]     = React.useState("");
+  const [editName,   setEditName]   = React.useState("");
+  const [liveResult, setLiveResult] = React.useState(null);
+  const [valBusy,    setValBusy]    = React.useState(false);
+  const [saveBusy,   setSaveBusy]   = React.useState(false);
+  const [saveErr,    setSaveErr]    = React.useState(null);
+  const valTimer = React.useRef(null);
+
+  async function doLookup(e) {
+    if (e) e.preventDefault();
+    const pc = code.trim();
+    if (!pc) return;
+    setFetchErr(null); setRow(null); setEditing(false); setLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/description-admin/product/${encodeURIComponent(pc)}`);
+      setRow(d);
+    } catch (ex) {
+      setFetchErr(formatApiError(ex));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function startEdit() {
+    setEditPl(row.description_pl || "");
+    setEditEn(row.description_en || "");
+    setEditName(row.name_pl || "");
+    setLiveResult({ gate: row.gate, validation: row.validation, rendered_line: row.rendered_line });
+    setSaveErr(null);
+    setEditing(true);
+  }
+
+  async function doValidate(pl, en) {
+    if (!row) return;
+    setValBusy(true);
+    try {
+      const d = await apiFetch(
+        `/api/v1/description-admin/product/${encodeURIComponent(row.product_code)}/validate`,
+        { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ description_pl: pl, description_en: en }) }
+      );
+      setLiveResult(d);
+    } catch (_) { /* non-fatal */ }
+    finally { setValBusy(false); }
+  }
+
+  function scheduleValidate(pl, en) {
+    clearTimeout(valTimer.current);
+    valTimer.current = setTimeout(() => doValidate(pl, en), 350);
+  }
+
+  function onPlChange(v) { setEditPl(v); scheduleValidate(v, editEn); }
+  function onEnChange(v) { setEditEn(v); scheduleValidate(editPl, v); }
+
+  async function doSave() {
+    setSaveErr(null); setSaveBusy(true);
+    try {
+      const d = await apiFetch(
+        `/api/v1/description-admin/product/${encodeURIComponent(row.product_code)}`,
+        { method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ description_pl: editPl, description_en: editEn,
+                                 name_pl: editName || undefined }) }
+      );
+      setRow(d);
+      setEditing(false);
+      showToast("Description saved (source=manual). Future drafts will use new values.", "ok");
+    } catch (ex) {
+      setSaveErr(formatApiError(ex));
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  function GateBadge({ gate }) {
+    if (!gate) return null;
+    const styles = {
+      PASS:    { bg: "var(--ok-soft)",      fg: "var(--ok)" },
+      WARN:    { bg: "var(--warning-soft)", fg: "var(--warning)" },
+      BLOCKED: { bg: "var(--danger-soft)",  fg: "var(--danger)" },
+    }[gate] || { bg: "#f0f1f4", fg: "var(--text-soft)" };
+    const icons = { PASS: "✓", WARN: "⚠", BLOCKED: "✗" };
+    return (
+      <span style={{ display:"inline-block", padding:"2px 10px", borderRadius:10,
+                     background: styles.bg, color: styles.fg,
+                     fontWeight:600, fontSize:12 }}
+            data-testid={`gate-${gate.toLowerCase()}`}>
+        {icons[gate] || ""} {gate}
+      </span>
+    );
+  }
+
+  const liveGate   = liveResult && liveResult.gate;
+  const liveVal    = liveResult && liveResult.validation;
+  const liveRender = liveResult && liveResult.rendered_line;
+  const canSave    = liveGate === "PASS" && !saveBusy;
+
+  return (
+    <div data-testid="description-admin-panel">
+      <div className="page-header">
+        <div>
+          <h2 style={{ margin: 0 }}>Description Authority Editor</h2>
+          <p className="page-sub">
+            Edit canonical <code>description_pl</code> / <code>description_en</code> for a product.
+          </p>
+        </div>
+      </div>
+
+      <div className="authority-banner banner-auth" data-testid="desc-authority-banner">
+        <strong>Description authority (PR #741).</strong>{" "}
+        Edits here set <code>source=&apos;manual&apos;</code> in <code>product_descriptions</code>.
+        Posted / issued / locked draft snapshots are <strong>immutable</strong> — new values
+        flow to future drafts only via <code>get_description_block()</code>.
+      </div>
+
+      {/* Lookup form */}
+      <form onSubmit={doLookup}
+            style={{ display:"flex", gap:8, marginBottom:16 }}>
+        <input
+          type="text"
+          placeholder="Product code, e.g. EJL/26/27/1"
+          value={code}
+          onChange={e => setCode(e.target.value)}
+          style={{ flex:1, padding:"8px 12px", border:"1px solid var(--border)",
+                   borderRadius:6, fontSize:14, background:"var(--panel)" }}
+          data-testid="desc-product-code-input"
+        />
+        <button type="submit" className="btn btn-primary"
+                disabled={loading || !code.trim()}
+                data-testid="desc-lookup-btn">
+          {loading ? "Loading…" : "Look up"}
+        </button>
+      </form>
+
+      {fetchErr && (
+        <div className="modal-warning" data-testid="desc-fetch-error">{fetchErr}</div>
+      )}
+
+      {/* Read view */}
+      {row && !editing && (
+        <div className="card" style={{ padding:20 }} data-testid="desc-row-view">
+          <div style={{ display:"flex", justifyContent:"space-between",
+                        alignItems:"flex-start", marginBottom:16 }}>
+            <div>
+              <h3 style={{ margin:"0 0 4px" }}>{row.product_code}</h3>
+              <div style={{ fontSize:13, color:"var(--text-dim)" }}>
+                source: <code>{row.source}</code>
+                &nbsp;·&nbsp;item_type: <code>{row.item_type || "—"}</code>
+                &nbsp;·&nbsp;updated: <code>{(row.updated_at || "—").slice(0,19)}</code>
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+              <GateBadge gate={row.gate} />
+              <button className="btn" onClick={startEdit}
+                      data-testid="desc-edit-btn">
+                Edit description
+              </button>
+            </div>
+          </div>
+
+          <table style={{ width:"100%", fontSize:14, borderCollapse:"collapse" }}>
+            <tbody>
+              {[
+                ["description_pl", row.description_pl],
+                ["description_en", row.description_en],
+                ["Rendered line",  row.rendered_line],
+                ["name_pl",        row.name_pl],
+              ].map(([label, val]) => (
+                <tr key={label}>
+                  <td style={{ padding:"7px 16px 7px 0", color:"var(--text-dim)",
+                                whiteSpace:"nowrap", width:160, verticalAlign:"top" }}>
+                    {label}
+                  </td>
+                  <td style={{ padding:"7px 0" }}>
+                    {label === "Rendered line"
+                      ? <em>{val || "—"}</em>
+                      : val
+                        ? val
+                        : <em style={{ color:"var(--text-soft)" }}>
+                            {label === "description_en" ? "empty (PL-only)" : "empty"}
+                          </em>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {row.validation && row.validation.advisory && (
+            <div style={{ marginTop:12, padding:"10px 12px",
+                          background:"var(--warning-soft)", color:"var(--warning)",
+                          borderRadius:6, fontSize:13 }}
+                 data-testid="desc-view-advisory">
+              {row.validation.advisory}
+            </div>
+          )}
+          {row.validation && row.validation.warnings && row.validation.warnings.length > 0 && (
+            <ul style={{ margin:"8px 0 0", padding:"0 0 0 20px",
+                         fontSize:13, color:"var(--warning)" }}>
+              {row.validation.warnings.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* Edit form */}
+      {row && editing && (
+        <div className="card" style={{ padding:20 }} data-testid="desc-edit-form">
+          <div style={{ display:"flex", justifyContent:"space-between",
+                        alignItems:"center", marginBottom:16 }}>
+            <h3 style={{ margin:0 }}>Edit: {row.product_code}</h3>
+            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+              {valBusy && (
+                <span style={{ fontSize:12, color:"var(--text-dim)" }}>Validating…</span>
+              )}
+              {liveGate && <GateBadge gate={liveGate} />}
+            </div>
+          </div>
+
+          {/* description_pl */}
+          <div style={{ marginBottom:14 }}>
+            <label style={{ display:"block", fontSize:13, fontWeight:600,
+                             marginBottom:4, color:"var(--text-dim)" }}>
+              description_pl <span style={{ color:"var(--danger)" }}>*</span>
+              <span style={{ fontWeight:400, marginLeft:6, color:"var(--text-soft)", fontSize:12 }}>
+                (canonical Polish customs description)
+              </span>
+            </label>
+            <textarea
+              value={editPl}
+              onChange={e => onPlChange(e.target.value)}
+              rows={3}
+              style={{ width:"100%", padding:"8px 10px",
+                       border:"1px solid var(--border)", borderRadius:6,
+                       fontSize:14, resize:"vertical" }}
+              data-testid="desc-edit-pl"
+            />
+            {liveVal && liveVal.pl_chars > 0 && (
+              <div style={{ fontSize:12, color:"var(--text-dim)", marginTop:2 }}>
+                {liveVal.pl_chars} chars (soft limit 160)
+              </div>
+            )}
+          </div>
+
+          {/* description_en */}
+          <div style={{ marginBottom:14 }}>
+            <label style={{ display:"block", fontSize:13, fontWeight:600,
+                             marginBottom:4, color:"var(--text-dim)" }}>
+              description_en
+              <span style={{ fontWeight:400, marginLeft:6, color:"var(--text-soft)", fontSize:12 }}>
+                (leave blank for PL-only render; no supplier shorthand)
+              </span>
+            </label>
+            <textarea
+              value={editEn}
+              onChange={e => onEnChange(e.target.value)}
+              rows={2}
+              style={{ width:"100%", padding:"8px 10px",
+                       border:"1px solid var(--border)", borderRadius:6,
+                       fontSize:14, resize:"vertical" }}
+              data-testid="desc-edit-en"
+            />
+            {liveVal && liveVal.en_chars > 0 && (
+              <div style={{ fontSize:12, color:"var(--text-dim)", marginTop:2 }}>
+                {liveVal.en_chars} chars (soft limit 90)
+              </div>
+            )}
+          </div>
+
+          {/* name_pl */}
+          <div style={{ marginBottom:14 }}>
+            <label style={{ display:"block", fontSize:13, fontWeight:600,
+                             marginBottom:4, color:"var(--text-dim)" }}>
+              name_pl
+              <span style={{ fontWeight:400, marginLeft:6, color:"var(--text-soft)", fontSize:12 }}>
+                (display name; leave blank to keep current value)
+              </span>
+            </label>
+            <input
+              type="text"
+              value={editName}
+              onChange={e => setEditName(e.target.value)}
+              style={{ width:"100%", padding:"8px 10px",
+                       border:"1px solid var(--border)", borderRadius:6, fontSize:14 }}
+              data-testid="desc-edit-name"
+            />
+          </div>
+
+          {/* Live preview */}
+          {liveRender !== undefined && (
+            <div style={{ marginBottom:14, padding:"8px 12px",
+                          background:"var(--bg)", borderRadius:6, fontSize:13 }}
+                 data-testid="desc-live-preview">
+              <span style={{ color:"var(--text-dim)" }}>Rendered: </span>
+              <em>{liveRender || "—"}</em>
+            </div>
+          )}
+
+          {/* Advisory / warnings */}
+          {liveVal && liveVal.advisory && (
+            <div style={{ marginBottom:12, padding:"10px 12px",
+                          background: liveGate === "BLOCKED"
+                            ? "var(--danger-soft)" : "var(--warning-soft)",
+                          color: liveGate === "BLOCKED"
+                            ? "var(--danger)" : "var(--warning)",
+                          borderRadius:6, fontSize:13 }}
+                 data-testid="desc-edit-advisory">
+              {liveVal.advisory}
+            </div>
+          )}
+          {liveVal && liveVal.warnings && liveVal.warnings.length > 0 && (
+            <ul style={{ margin:"0 0 12px", padding:"0 0 0 20px",
+                         fontSize:13, color:"var(--warning)" }}>
+              {liveVal.warnings.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+          )}
+
+          {saveErr && (
+            <div className="modal-warning" data-testid="desc-save-error"
+                 style={{ marginBottom:12 }}>
+              {saveErr}
+            </div>
+          )}
+
+          <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:4 }}>
+            <button className="btn"
+                    onClick={() => { setEditing(false); setSaveErr(null); }}
+                    disabled={saveBusy}
+                    data-testid="desc-cancel-btn">
+              Cancel
+            </button>
+            <button className="btn btn-primary"
+                    onClick={doSave}
+                    disabled={!canSave}
+                    title={!canSave ? "Fix validation errors before saving" : ""}
+                    data-testid="desc-save-btn">
+              {saveBusy ? "Saving…" : "Save canonical description"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ── App shell ───────────────────────────────────────────────────────────────
 function App() {
   const [activeKey, setActiveKey] = React.useState("customers");
   const [detailCustomer, setDetailCustomer] = React.useState(null);
   const active = ENTITIES.find(e => e.key === activeKey) || ENTITIES[0];
+
+  function navTo(key) { setActiveKey(key); setDetailCustomer(null); }
 
   return (
     <div className="layout" data-testid="master-data-v2">
@@ -1640,20 +2006,28 @@ function App() {
           {ENTITIES.map(e => (
             <div key={e.key}
                  className={`nav-item ${activeKey === e.key ? "active" : ""} ${e.comingNext ? "coming" : ""}`}
-                 onClick={() => { setActiveKey(e.key); setDetailCustomer(null); }}
+                 onClick={() => navTo(e.key)}
                  data-testid={`nav-${e.key}`}>
               <span>{e.label}</span>
               {e.comingNext && <span className="badge">Coming</span>}
             </div>
           ))}
+          <div style={{ borderTop:"1px solid #2a3040", margin:"8px 0" }} />
+          <div className={`nav-item ${activeKey === "descriptions" ? "active" : ""}`}
+               onClick={() => navTo("descriptions")}
+               data-testid="nav-descriptions">
+            <span>Descriptions</span>
+          </div>
         </nav>
       </aside>
       <main className="main">
-        {activeKey === "customers" && detailCustomer
-          ? <CustomerDetailPage contractorId={detailCustomer}
-                                onBack={() => setDetailCustomer(null)} />
-          : <EntityPage key={active.key} entity={active}
-                        onOpenDetail={active.key === "customers" ? setDetailCustomer : null} />}
+        {activeKey === "descriptions"
+          ? <DescriptionAdminPanel />
+          : activeKey === "customers" && detailCustomer
+            ? <CustomerDetailPage contractorId={detailCustomer}
+                                  onBack={() => setDetailCustomer(null)} />
+            : <EntityPage key={active.key} entity={active}
+                          onOpenDetail={active.key === "customers" ? setDetailCustomer : null} />}
       </main>
     </div>
   );
