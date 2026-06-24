@@ -837,10 +837,14 @@ def sync_draft_from_packing_upload(
         except Exception as _sp_exc:
             log.warning("[%s] scored_pending write failed (non-fatal): %s", batch_id, _sp_exc)
 
-    # Birth/reset name_pl fallback + mapping advisory callables. Lazy imports
-    # keep the service layer free of route/parser import cycles; both are
-    # read-only (never write wFirma, never fabricate).
-    from ..api.sales_packing_parser import generate_name_pl_if_sufficient
+    # Mapping advisory callable. Lazy import keeps the service layer free of
+    # route/parser import cycles.
+    # NOTE: desc_generate is intentionally None — the sales_packing_parser generator
+    # produces short category-code names that diverge from the customs PDF (Lesson N).
+    # Canonical description authority is product_descriptions.description_pl (written
+    # by description_engine.get_description_block). _birth_resolve_name_pl path 4
+    # (blank + birth advisory) is the correct no-authority case — the operator must
+    # run the customs description package first.
     from . import wfirma_db as _wfdb
 
     # ── 3. Per-client sync ────────────────────────────────────────────────────
@@ -868,7 +872,7 @@ def sync_draft_from_packing_upload(
                 operator=operator,
                 client_contractor_id=draft_cid,
                 name_pl_lookup=ddb.get_product_description,
-                desc_generate=generate_name_pl_if_sufficient,
+                desc_generate=None,
                 product_mapping_lookup=_wfdb.get_product,
             )
             # A draft now exists for this group → clear any stale draft-birth
@@ -942,7 +946,7 @@ def sync_draft_from_packing_upload(
                         draft.updated_at,   # OCC token
                         sales_lines=lines,
                         name_pl_lookup=ddb.get_product_description,
-                        desc_generate=generate_name_pl_if_sufficient,
+                        desc_generate=None,
                         product_mapping_lookup=_wfdb.get_product,
                     )
                     action = "synced"
