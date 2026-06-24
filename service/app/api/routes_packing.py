@@ -1431,69 +1431,55 @@ async def reprocess_packing_documents(
                                 batch_id, _exc,
                             )
 
-                # Fix 3: write rich Polish/English descriptions to product_descriptions
-                # from sales packing row fields (ctg/kt/col/quality) so that future
-                # ensure_products_for_batch finds full descriptions instead of generic
-                # single-word names like "pierścionek".  source='auto' — manual overrides
-                # are never touched.  Non-fatal: description failure never blocks parse.
+                # Canonical description authority: pre-populate product_descriptions
+                # using description_engine.get_description_block() so the customs
+                # engine (normalize_item_description) writes the legal Polish sentence.
+                # Sales-packing Ctg/Kt/Col/Quality codes are NOT used — they produce
+                # short item-type-code names that diverge from the customs PDF
+                # (Lesson N / single-authority rule).
+                # Authority chain: invoice_lines.description (English)
+                #   → customs_description_engine.normalize_item_description()
+                #   → product_descriptions.description_pl (customs-grade sentence).
+                # If no invoice English description is available, skip entirely —
+                # do not fabricate. description_pl must never come from category codes.
+                # Non-fatal: description failure never blocks parse.
                 try:
-                    from ..api.sales_packing_parser import generate_description as _gen_sp_desc
                     from ..services.description_engine import (
-                        build_description_block as _bld_block,
-                        build_description_line  as _bld_line,
+                        get_description_block as _get_desc_block,
                     )
-                    _ITEM_MATERIAL: Dict[str, str] = {
-                        "EAR": "Metal (srebro/stop metali) z kamieniami ozdobnymi",
-                        "RNG": "Metal (srebro/stop metali) z kamieniami ozdobnymi",
-                        "NEC": "Metal (srebro/stop metali) z kamieniami ozdobnymi",
-                        "PND": "Metal (srebro/stop metali) z kamieniami ozdobnymi",
-                        "BRC": "Metal (srebro/stop metali) z kamieniami ozdobnymi",
-                        "BAN": "Metal (srebro/stop metali) z kamieniami ozdobnymi",
-                        "TPN": "Metal (srebro/stop metali)",
-                        "NRG": "Metal (srebro/stop metali)",
-                    }
-                    _ITEM_PURPOSE: Dict[str, str] = {
-                        "EAR": "Ozdoba noszona na uszach",
-                        "RNG": "Ozdoba noszona na palcu",
-                        "NEC": "Ozdoba noszona na szyi",
-                        "PND": "Ozdoba noszona na szyi",
-                        "BRC": "Ozdoba noszona na nadgarstku",
-                        "BAN": "Ozdoba noszona na nadgarstku",
-                        "TPN": "Ozdoba noszona na nosie",
-                        "NRG": "Ozdoba noszona na nosie",
-                    }
+                    # Build invoice-line lookup keyed by product_code once per batch.
+                    _inv_lines   = _ddb.get_invoice_lines(batch_id)
+                    _inv_en_by_pc: Dict[str, str] = {}
+                    for _il in _inv_lines:
+                        _il_pc = str(_il.get("product_code") or "").strip()
+                        _il_en = str(_il.get("description")  or "").strip()
+                        if _il_pc and _il_en and _il_pc not in _inv_en_by_pc:
+                            _inv_en_by_pc[_il_pc] = _il_en
+
                     _seen_desc_pcs: set = set()
                     for _sr in sp_rows:
-                        _pc  = (_sr.get("product_code")   or "").strip()
+                        _pc  = (_sr.get("product_code") or "").strip()
                         if not _pc or _pc in _seen_desc_pcs:
                             continue
                         _seen_desc_pcs.add(_pc)
-                        _ctg = (_sr.get("item_type")      or "").strip().upper()
-                        _kt  = (_sr.get("metal")          or "").strip()
-                        _col = (_sr.get("metal_color")    or "").strip()
-                        _qlt = (_sr.get("quality_string") or "").strip()
-                        _pl, _en = _gen_sp_desc(_ctg, _kt, _col, _qlt)
-                        if not _pl:
+                        _ctg    = (_sr.get("item_type") or "").strip().upper()
+                        _inv_en = _inv_en_by_pc.get(_pc, "")
+                        if not _inv_en:
+                            log.warning(
+                                "[%s] sales packing: no invoice English description "
+                                "for %s — skipping product_descriptions pre-population "
+                                "(do not fabricate).",
+                                batch_id, _pc,
+                            )
                             continue
-                        _mat = _ITEM_MATERIAL.get(_ctg, "Metal z kamieniami ozdobnymi")
-                        _pur = _ITEM_PURPOSE.get(_ctg, "Ozdoba")
-                        _blk = _bld_block(
-                            description_pl=_pl, material_pl=_mat,
-                            purpose_pl=_pur, description_en=_en,
-                        )
-                        _ddb.upsert_product_description(
-                            product_code=_pc, item_type=_ctg,
-                            name_pl=_pl, description_pl=_pl,
-                            material_pl=_mat, purpose_pl=_pur,
-                            description_block=_blk, source="auto",
-                            description_en=_en,
-                            description_line=_bld_line(_pl, _en),
-                        )
-                        log.debug(
-                            "[%s] sales packing: upserted description "
-                            "for %s (%s): %r",
-                            batch_id, _pc, _ctg, _pl,
-                        )
+                        try:
+                            _get_desc_block(_pc, _ctg, description_en=_inv_en)
+                        except Exception as _block_exc:
+                            log.warning(
+                                "[%s] sales packing: get_description_block failed "
+                                "for %s: %s",
+                                batch_id, _pc, _block_exc,
+                            )
                 except Exception as _desc_exc:
                     log.warning(
                         "[%s] sales packing: description pre-population "
