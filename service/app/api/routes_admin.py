@@ -393,6 +393,13 @@ def update_description_en(
     reason      = (body.reason or "").strip()
     actor       = user.get("email") or user.get("username") or "?"
 
+    if not reason:
+        return JSONResponse(
+            status_code=422,
+            content={"ok": False, "detail": "reason is required and must not be blank."},
+            headers=_NO_CACHE,
+        )
+
     db_path = settings.storage_root / "documents.db"
     if not db_path.exists():
         raise HTTPException(status_code=503, detail="documents.db not found")
