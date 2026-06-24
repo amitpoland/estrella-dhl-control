@@ -484,3 +484,186 @@ class TestEmailIntelligenceDedup:
         emails = record.get("emails") or []
         assert len(emails) == 1
         assert emails[0].get("dedup_status") == "unverified"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# B5-FIX — DHL reply package status reconciliation
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDhlReplyPackageReconciliation:
+    """Tests for _reconcile_dhl_reply_package_status (B5-FIX).
+
+    Mirrors TestAgencyPackageReconciliation (F4) for the DHL-side DSK
+    reply package so the Phase B5 DSK chase scheduler can always see
+    a confirmed sent_at even when the email send callback was missed.
+    """
+
+    # T11 — queued audit + sent email_queue → reconciled to sent
+    def test_queued_audit_sent_queue_reconciles_to_sent(self, tmp_path: Path) -> None:
+        """email_queue shows sent → audit.dhl_reply_package.status must become sent."""
+        from app.services.active_shipment_monitor import _reconcile_dhl_reply_package_status
+        from app.utils.io import write_json_atomic
+
+        email_id    = "4ab15110-93d9-47f4-bd42-826aa4cd0a8e"
+        sent_at     = "2026-06-24T07:26:18.826532+00:00"
+        provider_id = "<mock-provider-id-12345@mail>"
+
+        audit = _make_audit(
+            dhl_reply_package={
+                "email_id": email_id,
+                "status":   "queued",
+                "queued_at": "2026-06-24T07:26:18.874450+00:00",
+            },
+        )
+        audit_path = tmp_path / "audit.json"
+        write_json_atomic(audit_path, audit)
+
+        queue_entries = [
+            {
+                "id":                  email_id,
+                "status":              "sent",
+                "sent_at":             sent_at,
+                "provider_message_id": provider_id,
+            }
+        ]
+
+        with patch("app.services.email_service.get_all_emails", return_value=queue_entries):
+            result = _reconcile_dhl_reply_package_status(audit_path, audit)
+
+        assert result.get("reconciled") is True, "must return reconciled=True"
+        assert result["email_id"] == email_id
+        assert result["sent_at"]  == sent_at
+
+        drp = audit.get("dhl_reply_package") or {}
+        assert drp["status"]        == "sent",  "status must flip to sent"
+        assert drp["sent_at"]       == sent_at,  "sent_at must be populated"
+        assert drp.get("send_verified") is True
+        assert drp.get("reconciled_by") == "monitor_reconciliation"
+
+    # T12 — already-sent audit is a no-op
+    def test_already_sent_audit_noop(self, tmp_path: Path) -> None:
+        """If dhl_reply_package.status is already sent, function returns {} immediately."""
+        from app.services.active_shipment_monitor import _reconcile_dhl_reply_package_status
+        from app.utils.io import write_json_atomic
+
+        audit = _make_audit(
+            dhl_reply_package={"email_id": str(uuid.uuid4()), "status": "sent"},
+        )
+        audit_path = tmp_path / "audit.json"
+        write_json_atomic(audit_path, audit)
+
+        result = _reconcile_dhl_reply_package_status(audit_path, audit)
+        assert result == {}, "must be a no-op when status is already sent"
+
+    # T13 — missing email_id → no-op
+    def test_no_email_id_noop(self, tmp_path: Path) -> None:
+        """If dhl_reply_package has no email_id, function returns {} immediately."""
+        from app.services.active_shipment_monitor import _reconcile_dhl_reply_package_status
+        from app.utils.io import write_json_atomic
+
+        audit = _make_audit(dhl_reply_package={"status": "queued"})
+        audit_path = tmp_path / "audit.json"
+        write_json_atomic(audit_path, audit)
+
+        result = _reconcile_dhl_reply_package_status(audit_path, audit)
+        assert result == {}, "must be a no-op when email_id is absent"
+
+    # T14 — failed queue entry → returns reconciled=False, does not mark sent
+    def test_failed_queue_entry_not_marked_sent(self, tmp_path: Path) -> None:
+        """If email_queue shows failed, audit must NOT be updated to sent."""
+        from app.services.active_shipment_monitor import _reconcile_dhl_reply_package_status
+        from app.utils.io import write_json_atomic
+
+        email_id = str(uuid.uuid4())
+        audit = _make_audit(
+            dhl_reply_package={"email_id": email_id, "status": "queued"},
+        )
+        audit_path = tmp_path / "audit.json"
+        write_json_atomic(audit_path, audit)
+
+        queue_entries = [{"id": email_id, "status": "failed"}]
+        with patch("app.services.email_service.get_all_emails", return_value=queue_entries):
+            result = _reconcile_dhl_reply_package_status(audit_path, audit)
+
+        assert result.get("reconciled") is False
+        assert result.get("eq_status") == "failed"
+        drp = audit.get("dhl_reply_package") or {}
+        assert drp.get("status") == "queued", "status must remain queued on failed"
+
+    # T15 — dsk_reply_sent_at() sees the reconciled status (integration smoke)
+    def test_dsk_chase_sla_sees_reconciled_sent_at(self, tmp_path: Path) -> None:
+        """After reconciliation, dsk_reply_sent_at() must return a datetime."""
+        from app.services.active_shipment_monitor import _reconcile_dhl_reply_package_status
+        from app.services.dhl_dsk_chase_sla import dsk_reply_sent_at
+        from app.utils.io import write_json_atomic
+
+        email_id = str(uuid.uuid4())
+        sent_at  = "2026-06-24T07:26:18.826532+00:00"
+
+        audit = _make_audit(
+            dhl_reply_package={"email_id": email_id, "status": "queued"},
+        )
+        audit_path = tmp_path / "audit.json"
+        write_json_atomic(audit_path, audit)
+
+        queue_entries = [{"id": email_id, "status": "sent", "sent_at": sent_at}]
+        with patch("app.services.email_service.get_all_emails", return_value=queue_entries):
+            _reconcile_dhl_reply_package_status(audit_path, audit)
+
+        # After reconciliation, the in-memory audit has status=sent
+        result = dsk_reply_sent_at(audit)
+        assert result is not None, "dsk_reply_sent_at() must return a datetime after reconciliation"
+
+    # T16 — duplicate timeline event prevention
+    def test_timeline_event_not_duplicated_on_second_reconcile(self, tmp_path: Path) -> None:
+        """Running reconciliation twice must produce exactly one dhl_reply_sent_verified event."""
+        from app.services.active_shipment_monitor import _reconcile_dhl_reply_package_status
+        from app.utils.io import write_json_atomic
+        import json
+
+        email_id = str(uuid.uuid4())
+        sent_at  = "2026-06-24T07:26:18.826532+00:00"
+
+        audit = _make_audit(
+            dhl_reply_package={"email_id": email_id, "status": "queued"},
+        )
+        audit_path = tmp_path / "audit.json"
+        write_json_atomic(audit_path, audit)
+
+        queue_entries = [{"id": email_id, "status": "sent", "sent_at": sent_at}]
+        with patch("app.services.email_service.get_all_emails", return_value=queue_entries):
+            _reconcile_dhl_reply_package_status(audit_path, audit)
+            # Second run with already-sent in-memory audit: status is now "sent" → returns {} immediately
+            result2 = _reconcile_dhl_reply_package_status(audit_path, audit)
+
+        assert result2 == {}, "second run must be a no-op (status already sent)"
+
+        saved = json.loads(audit_path.read_text(encoding="utf-8"))
+        verified_events = [
+            e for e in (saved.get("timeline") or [])
+            if isinstance(e, dict) and e.get("event") == "dhl_reply_sent_verified"
+        ]
+        assert len(verified_events) == 1, (
+            f"expected exactly 1 dhl_reply_sent_verified event, got {len(verified_events)}"
+        )
+
+    # T17 — no live SMTP in any reconciliation test
+    def test_reconciliation_never_sends_email(self, tmp_path: Path) -> None:
+        """Reconciliation must never call queue_email or send_queued_email."""
+        from app.services.active_shipment_monitor import _reconcile_dhl_reply_package_status
+        from app.utils.io import write_json_atomic
+
+        email_id = str(uuid.uuid4())
+        audit = _make_audit(
+            dhl_reply_package={"email_id": email_id, "status": "queued"},
+        )
+        audit_path = tmp_path / "audit.json"
+        write_json_atomic(audit_path, audit)
+
+        with patch("app.services.email_service.queue_email") as mock_q, \
+             patch("app.services.email_sender.send_queued_email") as mock_s, \
+             patch("app.services.email_service.get_all_emails", return_value=[]):
+            _reconcile_dhl_reply_package_status(audit_path, audit)
+
+        mock_q.assert_not_called()
+        mock_s.assert_not_called()

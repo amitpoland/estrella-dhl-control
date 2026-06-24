@@ -1699,6 +1699,87 @@ def _reconcile_agency_package_status(
     return out
 
 
+# ── B5-FIX: DHL reply package status reconciliation ──────────────────────────
+
+def _reconcile_dhl_reply_package_status(
+    audit_path: Path, audit: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Reconcile audit.dhl_reply_package.status against email_queue.json.
+
+    When the DSK-authorisation reply email was sent (email_queue shows
+    status=sent) but the audit still shows status=queued (send callback
+    missed), this function repairs the discrepancy and writes a
+    dhl_reply_sent_verified timeline event so the Phase B5 DSK chase
+    scheduler can see the confirmed send timestamp.
+
+    Analogue of _reconcile_agency_package_status (F4-FIX) for the
+    DHL-side DSK reply package.
+
+    Safe: no-op if already sent, no email_id, or email not in queue.
+    Never sends email. Never modifies financial fields.
+    """
+    out: Dict[str, Any] = {}
+    drp       = (audit.get("dhl_reply_package") or {})
+    drp_status = drp.get("status")
+    email_id   = drp.get("email_id")
+
+    if not email_id or drp_status in ("sent", "failed"):
+        return out  # nothing to reconcile
+
+    # Guard: avoid duplicate timeline events if reconciliation runs twice
+    timeline_already = any(
+        isinstance(e, dict) and e.get("event") == "dhl_reply_sent_verified"
+        for e in (audit.get("timeline") or [])
+    )
+
+    try:
+        from .email_service import get_all_emails
+        for entry in get_all_emails(limit=1000):
+            if entry.get("id") != email_id:
+                continue
+            eq_status = entry.get("status")
+            if eq_status == "sent":
+                sent_at     = entry.get("sent_at") or datetime.now(timezone.utc).isoformat()
+                provider_id = entry.get("provider_message_id") or ""
+                drp["status"]        = "sent"
+                drp["sent_at"]       = sent_at
+                drp["send_verified"] = True
+                if provider_id:
+                    drp["provider_message_id"] = provider_id
+                drp["reconciled_by"] = "monitor_reconciliation"
+                audit["dhl_reply_package"] = drp
+                write_json_atomic(audit_path, audit)
+                if not timeline_already:
+                    try:
+                        tl.log_event(
+                            audit_path,
+                            "dhl_reply_sent_verified",
+                            "monitor",
+                            "active_shipment_monitor",
+                            detail={
+                                "queue_id":            email_id,
+                                "sent_at":             sent_at,
+                                "provider_message_id": provider_id,
+                                "reconciled":          True,
+                            },
+                        )
+                    except Exception:
+                        pass
+                out["reconciled"] = True
+                out["email_id"]   = email_id
+                out["sent_at"]    = sent_at
+            elif eq_status == "failed":
+                out["reconciled"] = False
+                out["eq_status"]  = "failed"
+                out["email_id"]   = email_id
+            break
+    except Exception as exc:
+        out["error"] = str(exc)
+
+    return out
+
+
 def _ensure_agency_forward_after_dhl(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]:
     """
     Auto-forward DHL-received customs documents to the agency (Piotr @ ACS,
@@ -2891,6 +2972,18 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
                 action["agency_package_reconciliation"] = rec_result
         except Exception as exc:
             action["agency_package_reconciliation_error"] = str(exc)
+
+        # 5d-bis-2. B5-FIX: DHL reply package status reconciliation.
+        # Syncs audit.dhl_reply_package.status from email_queue.json when
+        # the send callback was missed (audit stuck at "queued" despite sent).
+        # Enables the Phase B5 DSK chase scheduler to see the confirmed sent_at.
+        try:
+            audit_drec = json.loads(audit_path.read_text(encoding="utf-8"))
+            drec_result = _reconcile_dhl_reply_package_status(audit_path, audit_drec)
+            if drec_result.get("reconciled") or drec_result.get("error"):
+                action["dhl_reply_package_reconciliation"] = drec_result
+        except Exception as exc:
+            action["dhl_reply_package_reconciliation_error"] = str(exc)
 
         # 5e. Agency SLA — start 2h after agency forward sent; stop on docs received
         # Guard: skip entirely only when SLA is fully complete (started AND stopped).
