@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Description Authority — Admin</title>
+  <link rel="stylesheet" href="/static/pz-theme.css" />
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="/static/dashboard-shared.js"></script>
+  <style>
+    body { max-width: 1100px; margin: 0 auto; padding: 24px 16px; font-family: var(--font, system-ui, sans-serif); }
+    .metric-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .metric-card { background: var(--card-bg, #fff); border: 1px solid var(--border, #e5e7eb); border-radius: 8px; padding: 16px 20px; text-align: center; }
+    .metric-card .num { font-size: 2rem; font-weight: 700; line-height: 1.1; }
+    .metric-card .lbl { font-size: 12px; color: var(--text-muted, #6b7280); margin-top: 4px; }
+    .metric-card.ok   .num { color: var(--badge-green-text, #166534); }
+    .metric-card.warn .num { color: var(--badge-amber-text, #92400e); }
+    .metric-card.bad  .num { color: var(--badge-red-text, #991b1b); }
+    .metric-card.info .num { color: var(--badge-blue-text, #1e40af); }
+
+    .section-header { display: flex; align-items: center; gap: 12px; margin: 28px 0 12px; }
+    .section-header h2 { margin: 0; font-size: 15px; font-weight: 700; }
+    .tab-bar { display: flex; gap: 0; border-bottom: 2px solid var(--border, #e5e7eb); margin-bottom: 16px; }
+    .tab { padding: 8px 18px; cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+    .tab.active { border-bottom-color: var(--accent, #2563eb); color: var(--accent, #2563eb); font-weight: 600; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 7px 10px; background: var(--table-head-bg, #f9fafb); color: var(--text-muted, #6b7280); font-size: 12px; font-weight: 600; border-bottom: 1px solid var(--border, #e5e7eb); }
+    td { padding: 7px 10px; border-bottom: 1px solid var(--border, #e5e7eb); vertical-align: top; word-break: break-word; }
+    tr:hover td { background: var(--row-hover, #f9fafb); }
+
+    .pill { display: inline-block; border-radius: 9999px; font-size: 11px; font-weight: 600; padding: 2px 8px; }
+    .pill-red    { background: var(--badge-red-bg,   #fee2e2); color: var(--badge-red-text,   #991b1b); }
+    .pill-amber  { background: var(--badge-amber-bg, #fef3c7); color: var(--badge-amber-text, #92400e); }
+    .pill-green  { background: var(--badge-green-bg, #dcfce7); color: var(--badge-green-text, #166534); }
+    .pill-blue   { background: var(--badge-blue-bg,  #dbeafe); color: var(--badge-blue-text,  #1e40af); }
+
+    .advisory-chip { font-size: 11px; color: var(--text-muted, #6b7280); display: block; margin-top: 3px; }
+    .edit-row td { background: var(--badge-amber-bg, #fef3c7) !important; }
+    textarea.en-input { width: 100%; min-width: 240px; min-height: 56px; resize: vertical; font-size: 12px; border: 1px solid var(--border, #e5e7eb); border-radius: 5px; padding: 6px 8px; box-sizing: border-box; }
+    .btn-xs { display: inline-block; font-size: 12px; padding: 4px 12px; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; }
+    .btn-save   { background: var(--accent, #2563eb); color: #fff; }
+    .btn-cancel { background: var(--card-bg, #fff); border: 1px solid var(--border, #e5e7eb); color: var(--text, #111); }
+    .btn-edit   { background: var(--badge-amber-bg, #fef3c7); color: var(--badge-amber-text, #92400e); border: 1px solid var(--badge-amber-border, #fcd34d); }
+
+    .refresh-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; font-size: 12px; color: var(--text-muted, #6b7280); }
+    .refresh-bar button { font-size: 12px; padding: 4px 12px; border: 1px solid var(--border, #e5e7eb); background: var(--card-bg, #fff); border-radius: 5px; cursor: pointer; }
+    .error-msg { background: var(--badge-red-bg, #fee2e2); color: var(--badge-red-text, #991b1b); padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 12px; }
+    .loading { color: var(--text-muted, #6b7280); font-size: 13px; padding: 24px; text-align: center; }
+
+    .breakdown-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; font-size: 13px; }
+    .breakdown-grid table { font-size: 12px; }
+    .breakdown-grid th { font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+const { apiFetch, Badge, Btn, Toast } = window.__pzShared || {};
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+function Pill({ label, variant }) {
+  const cls = { red: 'pill-red', amber: 'pill-amber', green: 'pill-green', blue: 'pill-blue' }[variant] || 'pill-blue';
+  return <span className={`pill ${cls}`}>{label}</span>;
+}
+
+function BreakdownTable({ title, data }) {
+  if (!data || Object.keys(data).length === 0) return null;
+  return (
+    <div>
+      <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 6, color: 'var(--text-muted)' }}>{title}</div>
+      <table>
+        <thead><tr><th>Category</th><th>Count</th></tr></thead>
+        <tbody>
+          {Object.entries(data).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
+            <tr key={k}><td>{k}</td><td>{v}</td></tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Status Dashboard ──────────────────────────────────────────────────────────
+
+function StatusDashboard() {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const [ts, setTs] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const d = await fetch('/api/v1/admin/description-authority/status', { credentials: 'include' });
+      if (!d.ok) throw new Error(`HTTP ${d.status}`);
+      const j = await d.json();
+      setStatus(j);
+      setTs(new Date().toLocaleTimeString('pl-PL'));
+    } catch (e) { setErr(e.message); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading && !status) return <div className="loading">Ładowanie metryk…</div>;
+  if (err) return <div className="error-msg">Błąd: {err} — <button onClick={load}>Retry</button></div>;
+  if (!status) return null;
+
+  const pct = (n) => status.total > 0 ? ` (${Math.round(n / status.total * 100)}%)` : '';
+
+  return (
+    <div>
+      <div className="refresh-bar">
+        <span>Ostatni odczyt: {ts}</span>
+        <button onClick={load} disabled={loading}>{loading ? '…' : 'Odśwież'}</button>
+      </div>
+
+      <div className="metric-grid">
+        <div className="metric-card info"><div className="num">{status.total}</div><div className="lbl">Łącznie</div></div>
+        <div className="metric-card ok">  <div className="num">{status.ok}</div><div className="lbl">OK{pct(status.ok)}</div></div>
+        <div className="metric-card bad"> <div className="num">{status.blocked}</div><div className="lbl">BLOCKED{pct(status.blocked)}</div></div>
+        <div className="metric-card warn"><div className="num">{status.warnings}</div><div className="lbl">Ostrzeżenia{pct(status.warnings)}</div></div>
+        <div className="metric-card bad"> <div className="num">{status.shorthand_detected}</div><div className="lbl">Shorthand EN</div></div>
+        <div className="metric-card warn"><div className="num">{status.missing_en_count}</div><div className="lbl">Brak EN</div></div>
+        <div className="metric-card warn"><div className="num">{status.missing_pl}</div><div className="lbl">Brak PL</div></div>
+      </div>
+
+      <div className="breakdown-grid">
+        <BreakdownTable title="BLOCKED — wg źródła" data={status.blocked_by_source} />
+        <BreakdownTable title="BLOCKED — wg typu" data={status.blocked_by_type} />
+      </div>
+
+      {status.top_blocked && status.top_blocked.length > 0 && (
+        <details>
+          <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 13, marginBottom: 8 }}>
+            Top {status.top_blocked.length} zablokowanych wierszy
+          </summary>
+          <table>
+            <thead>
+              <tr><th>Kod</th><th>Typ</th><th>Źródło</th><th>Shorthand</th><th>description_en</th><th>Advisory</th></tr>
+            </thead>
+            <tbody>
+              {status.top_blocked.map(r => (
+                <tr key={r.product_code}>
+                  <td><code style={{ fontSize: 11 }}>{r.product_code}</code></td>
+                  <td>{r.product_type}</td>
+                  <td><Pill label={r.source} variant={r.source === 'manual' ? 'red' : 'amber'} /></td>
+                  <td>{r.shorthand_detected ? <Pill label="TAK" variant="red" /> : '—'}</td>
+                  <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.description_en || <em style={{ color: 'var(--text-muted)' }}>brak</em>}</td>
+                  <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{r.advisory}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
+    </div>
+  );
+}
+
+// ── Review Queue ──────────────────────────────────────────────────────────────
+
+function ReviewQueue() {
+  const [queue, setQueue] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const [editing, setEditing] = useState({});   // product_code → new EN text
+  const [saving, setSaving] = useState({});      // product_code → bool
+  const [toast, setToast] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const d = await fetch('/api/v1/admin/description-authority/review-queue', { credentials: 'include' });
+      if (!d.ok) throw new Error(`HTTP ${d.status}`);
+      const j = await d.json();
+      setQueue(j.queue || []);
+    } catch (e) { setErr(e.message); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const showToast = (msg, type = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
+  };
+
+  const startEdit = (code, current) =>
+    setEditing(prev => ({ ...prev, [code]: current }));
+
+  const cancelEdit = (code) =>
+    setEditing(prev => { const n = { ...prev }; delete n[code]; return n; });
+
+  const saveEdit = async (code, plText) => {
+    const proposed = editing[code] || '';
+    setSaving(prev => ({ ...prev, [code]: true }));
+    try {
+      const resp = await fetch(
+        `/api/v1/admin/description-authority/${encodeURIComponent(code)}/description-en`,
+        {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ description_en: proposed, operator: 'admin-ui' }),
+        }
+      );
+      const j = await resp.json();
+      if (!resp.ok || !j.ok) {
+        showToast(j.advisory || j.detail || 'Zapis nieudany', 'error');
+      } else {
+        showToast(`Zapisano: ${code}`);
+        cancelEdit(code);
+        await load();
+      }
+    } catch (e) {
+      showToast(e.message, 'error');
+    } finally {
+      setSaving(prev => { const n = { ...prev }; delete n[code]; return n; });
+    }
+  };
+
+  if (loading && !queue) return <div className="loading">Ładowanie kolejki…</div>;
+  if (err) return <div className="error-msg">Błąd: {err} — <button onClick={load}>Retry</button></div>;
+  if (!queue) return null;
+
+  return (
+    <div>
+      {toast && (
+        <div style={{
+          position: 'fixed', bottom: 24, right: 24, zIndex: 9999,
+          padding: '10px 18px', borderRadius: 8, fontWeight: 600, fontSize: 13,
+          background: toast.type === 'error' ? 'var(--badge-red-bg)' : 'var(--badge-green-bg)',
+          color:      toast.type === 'error' ? 'var(--badge-red-text)' : 'var(--badge-green-text)',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+        }}>
+          {toast.msg}
+        </div>
+      )}
+
+      <div className="refresh-bar">
+        <span>{queue.length} wierszy w kolejce</span>
+        <button onClick={load} disabled={loading}>{loading ? '…' : 'Odśwież'}</button>
+      </div>
+
+      {queue.length === 0 ? (
+        <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+          Brak wierszy do sprawdzenia.
+        </div>
+      ) : (
+        <table data-testid="review-queue-table">
+          <thead>
+            <tr>
+              <th>Kod produktu</th>
+              <th>Typ</th>
+              <th>description_pl (PL)</th>
+              <th>description_en (EN — aktualna)</th>
+              <th>Powód blokady</th>
+              <th>Akcja</th>
+            </tr>
+          </thead>
+          <tbody>
+            {queue.map(row => {
+              const isEditing = code => editing[code] !== undefined;
+              const inEdit = isEditing(row.product_code);
+              return (
+                <tr key={row.product_code} className={inEdit ? 'edit-row' : ''}>
+                  <td>
+                    <code style={{ fontSize: 11 }}>{row.product_code}</code>
+                    <span className="advisory-chip">{row.updated_at}</span>
+                  </td>
+                  <td><Pill label={row.product_type} variant="blue" /></td>
+                  <td style={{ fontSize: 12, maxWidth: 220 }}>{row.description_pl}</td>
+                  <td style={{ minWidth: 260 }}>
+                    {inEdit ? (
+                      <textarea
+                        data-testid={`en-input-${row.product_code}`}
+                        className="en-input"
+                        value={editing[row.product_code]}
+                        onChange={e => setEditing(prev => ({ ...prev, [row.product_code]: e.target.value }))}
+                      />
+                    ) : (
+                      <span style={{ fontSize: 12, color: row.description_en ? 'inherit' : 'var(--text-muted)' }}>
+                        {row.description_en || <em>brak EN</em>}
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    {row.shorthand_detected && <Pill label="Shorthand" variant="red" />}
+                    <span className="advisory-chip">{row.advisory}</span>
+                  </td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {inEdit ? (
+                      <>
+                        <button
+                          data-testid={`btn-save-${row.product_code}`}
+                          className="btn-xs btn-save"
+                          disabled={saving[row.product_code]}
+                          onClick={() => saveEdit(row.product_code, row.description_pl)}
+                          style={{ marginRight: 6 }}
+                        >
+                          {saving[row.product_code] ? '…' : 'Zapisz'}
+                        </button>
+                        <button
+                          className="btn-xs btn-cancel"
+                          onClick={() => cancelEdit(row.product_code)}
+                        >
+                          Anuluj
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        data-testid={`btn-edit-${row.product_code}`}
+                        className="btn-xs btn-edit"
+                        onClick={() => startEdit(row.product_code, row.description_en || '')}
+                      >
+                        Edytuj EN
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// ── Root App ───────────────────────────────────────────────────────────────────
+
+function App() {
+  const [tab, setTab] = useState('dashboard');
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>Description Authority</h1>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-muted)' }}>
+            Kompletność opisów celnych — post-PR #741
+          </p>
+        </div>
+        <a href="/dashboard" style={{ fontSize: 12, color: 'var(--accent)' }}>← Dashboard</a>
+      </div>
+
+      <div className="tab-bar">
+        <div
+          data-testid="tab-dashboard"
+          className={`tab${tab === 'dashboard' ? ' active' : ''}`}
+          onClick={() => setTab('dashboard')}
+        >
+          Metryki
+        </div>
+        <div
+          data-testid="tab-review-queue"
+          className={`tab${tab === 'review' ? ' active' : ''}`}
+          onClick={() => setTab('review')}
+        >
+          Kolejka przeglądów (manual)
+        </div>
+      </div>
+
+      {tab === 'dashboard' && <StatusDashboard />}
+      {tab === 'review'    && <ReviewQueue />}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>

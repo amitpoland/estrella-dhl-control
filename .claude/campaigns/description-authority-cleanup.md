@@ -74,6 +74,26 @@ the wFirma gate at posting time. Repair (items 4+5) unblocks them proactively.
 
 ---
 
+## Admin UI: Edit Canonical Description (next iteration)
+
+Replace manual DB correction scripts with a governed UI action on the product admin page.
+
+**Workflow:**
+1. Open a product in the admin UI
+2. Display read-only: `description_pl`, `description_en`, rendered `PL / EN`, validation result (PASS / BLOCKED / warnings)
+3. Authorised operator edits `description_pl` and/or `description_en` inline
+4. `validate_description_line()` runs immediately on each keystroke or on blur — shows live PASS / BLOCKED / warnings
+5. Save button enabled only when gate = PASS
+6. On save: updates `product_descriptions` with `source='manual'`, stamps `updated_at`, writes audit event
+7. Future drafts pick up the new values automatically via `get_description_block()`
+8. Historical posted documents (`status IN ('issued','posted','locked')`) are unaffected — their `editable_lines_json` snapshots are immutable
+
+**Scope:** admin route only, behind `require_api_key` or operator-level auth. Not exposed to non-admin proforma UI.
+
+**Why this matters:** Eliminates reliance on one-off database correction scripts. Every description change is operator-confirmed, gate-validated, and auditable. Preserves the single-source architecture established by PR #741.
+
+---
+
 ## Acceptance criteria
 
 - [ ] No posted/issued proforma is auto-modified by this campaign

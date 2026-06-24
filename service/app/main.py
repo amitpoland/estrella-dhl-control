@@ -93,6 +93,7 @@ from .api.routes_master_jewelry import (
     warehouses_router  as mj_warehouses_router,
 )
 from .api.routes_finance_postings import router as finance_postings_router
+from .api.routes_description_admin import router as description_admin_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -512,6 +513,7 @@ app.include_router(mj_warehouses_router)             # Phase 3: warehouses maste
 app.include_router(box_types_router)                 # Phase D: box_types master (WF4.5 / Path-DOC outbound label packaging)
 app.include_router(finance_postings_router)         # Phase 6F.3: read-only breakdown endpoint (no writes, no posting/settlement/FX/wFirma coupling; init_db lazy-on-call)
 app.include_router(settings_router)                # Phase 7: company profile (seller identity + bank details)
+app.include_router(description_admin_router)        # PR #741 follow-up: admin UI for editing canonical description_pl / description_en
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────
@@ -574,6 +576,22 @@ def admin_users_page(request: Request) -> Response:
     if user.get("role") != "admin":
         return RedirectResponse(url="/dashboard", status_code=302)
     file_path = _static_dir / "admin-users.html"
+    content   = file_path.read_bytes()
+    return Response(
+        content=content, media_type="text/html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@app.get("/admin/description-authority", include_in_schema=False)
+def admin_description_authority_page(request: Request) -> Response:
+    """Description authority compliance dashboard — requires admin role."""
+    user = check_session_or_redirect(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=302)
+    if user.get("role") != "admin":
+        return RedirectResponse(url="/dashboard", status_code=302)
+    file_path = _static_dir / "description-authority-admin.html"
     content   = file_path.read_bytes()
     return Response(
         content=content, media_type="text/html",

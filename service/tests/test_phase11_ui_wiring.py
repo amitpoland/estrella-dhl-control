@@ -120,3 +120,53 @@ class TestDescriptionAuthorityAdvisoryBadge:
         posted_ref_pos = content.rfind("posted &&", 0, advisory_pos)
         assert posted_ref_pos != -1, \
             "Advisory badge must be conditional on the 'posted' flag"
+
+
+class TestDescriptionAuthorityAdminPage:
+    """Description authority admin page — static structure checks."""
+
+    def test_admin_page_exists(self):
+        assert (STATIC / "description-authority-admin.html").exists(), \
+            "description-authority-admin.html must exist in /static"
+
+    def test_admin_page_has_review_queue_tab(self):
+        content = _read("description-authority-admin.html")
+        assert 'data-testid="tab-review-queue"' in content
+
+    def test_admin_page_has_status_tab(self):
+        content = _read("description-authority-admin.html")
+        assert 'data-testid="tab-dashboard"' in content
+
+    def test_admin_page_review_queue_table_testid(self):
+        content = _read("description-authority-admin.html")
+        assert 'data-testid="review-queue-table"' in content
+
+    def test_admin_page_save_button_testid_pattern(self):
+        content = _read("description-authority-admin.html")
+        assert 'data-testid={`btn-save-' in content
+
+    def test_admin_page_edit_button_testid_pattern(self):
+        content = _read("description-authority-admin.html")
+        assert 'data-testid={`btn-edit-' in content
+
+
+class TestDescriptionAuthorityAdminRoutes:
+    """Backend route structure checks — import-level verification."""
+
+    def test_routes_admin_imports_ok(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from app.api.routes_admin import router
+        route_paths = [r.path for r in router.routes]
+        # Routes include the full prefix /api/v1/admin/...
+        assert any("description-authority/status"       in p for p in route_paths)
+        assert any("description-authority/review-queue" in p for p in route_paths)
+        # PATCH endpoint uses path param
+        patch_paths = [r.path for r in router.routes if hasattr(r, 'methods') and 'PATCH' in (r.methods or set())]
+        assert any("description-authority" in p for p in patch_paths)
+
+    def test_main_py_has_description_authority_page_route(self):
+        main_path = Path(__file__).parent.parent / "app" / "main.py"
+        content = main_path.read_text(encoding="utf-8")
+        assert '/admin/description-authority' in content
+        assert 'description-authority-admin.html' in content
