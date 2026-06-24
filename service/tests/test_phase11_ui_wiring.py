@@ -96,3 +96,27 @@ class TestPhase11Summary:
         # Confirm frozen files untouched
         assert 'data-wf-id' not in _read("dashboard.html")
         assert 'data-wf-id' not in _read("shipment-detail.html")
+
+
+class TestDescriptionAuthorityAdvisoryBadge:
+    """Advisory badge for posted proformas with operator-written description lines."""
+
+    def test_advisory_badge_present_in_proforma_detail(self):
+        content = _read("proforma-detail-v2.html")
+        assert 'data-testid="historical-description-advisory"' in content, \
+            "Historical description advisory badge must be present in proforma-detail-v2.html"
+
+    def test_advisory_badge_checks_name_pl_source_operator(self):
+        content = _read("proforma-detail-v2.html")
+        assert "name_pl_source === 'operator'" in content, \
+            "Advisory badge must gate on name_pl_source === 'operator'"
+
+    def test_advisory_badge_only_on_posted_proformas(self):
+        content = _read("proforma-detail-v2.html")
+        advisory_block = content[content.find("historical-description-advisory"):]
+        # The advisory should be wrapped in the `posted` condition
+        # Simple heuristic: both tokens appear before the advisory block
+        advisory_pos = content.find("historical-description-advisory")
+        posted_ref_pos = content.rfind("posted &&", 0, advisory_pos)
+        assert posted_ref_pos != -1, \
+            "Advisory badge must be conditional on the 'posted' flag"

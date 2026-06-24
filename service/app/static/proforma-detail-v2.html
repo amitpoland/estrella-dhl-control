@@ -1039,6 +1039,14 @@
                 </div>
               </Card>
 
+              {/* Historical description advisory — advisory only, no gate */}
+              {posted && (draft?.editable_lines||[]).some(l => l.name_pl_source === 'operator') && (
+                <div data-testid="historical-description-advisory" style={{ marginBottom:14, padding:'10px 14px', background:'var(--badge-amber-bg)', color:'var(--badge-amber-text)', border:'1px solid var(--badge-amber-border)', borderRadius:6, fontSize:12, lineHeight:1.5 }}>
+                  <span style={{ fontWeight:700 }}>Advisory:</span>{' '}
+                  This posted proforma contains legacy or operator description text that differs from current product description authority. No automatic change will be made.
+                </div>
+              )}
+
               {/* Party cards */}
               <div className="party-grid" style={{ display:'grid', gridTemplateColumns:draft?.ship_to_override&&Object.keys(draft.ship_to_override).length?'1fr 1fr 1fr':'1fr 1fr', gap:12, marginBottom:14 }}>
                 <Party tid="party-seller" title="Seller" name={company?.company_name||'Estrella Jewels sp. z o.o. sp.k.'} street={company?.address_street} city={company?.address_city} zip={company?.address_postal_code} country={company?.address_country||'PL'} nip={company?.nip} />
