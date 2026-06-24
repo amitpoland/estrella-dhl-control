@@ -371,3 +371,99 @@ def test_shipment_request_body_forwards_product_code(client):
     assert req_arg.receiver_vat_id == "GB123"
     assert req_arg.receiver_eori == "GB987"
     assert req_arg.currency == "USD"
+
+
+# ── GET /api/v1/carrier/services — all 5 product codes present ────────────────
+
+
+def test_list_carrier_services_returns_all_five_codes(client):
+    """Backend must expose all 5 DHL product codes, not just the hardcoded fallback."""
+    resp = client.get("/api/v1/carrier/services", headers={"X-API-Key": "test"})
+    assert resp.status_code == 200
+    codes = {s["code"] for s in resp.json()}
+    assert "P" in codes, "Express Worldwide (P) missing"
+    assert "Y" in codes, "Express 12:00 (Y) missing"
+    assert "K" in codes, "Express 9:00 (K) missing"
+    assert "D" in codes, "Express Worldwide Documents (D) missing"
+    assert "T" in codes, "Express Domestic (T) missing"
+    assert len(codes) >= 5, f"Expected ≥5 product codes, got {len(codes)}"
+
+
+# ── _build_receiver_details — company / contact split ────────────────────────
+
+
+def test_build_receiver_details_company_field_separate():
+    """company key in addr maps to DHL companyName, name key maps to fullName."""
+    addr = {
+        "name": "Jan Kowalski",
+        "company": "Estrella Jewels",
+        "city": "Warsaw", "country_code": "PL",
+        "postal_code": "00-001", "street": "Złota 1",
+    }
+    details = _build_receiver_details(addr)
+    ci = details["contactInformation"]
+    assert ci["fullName"] == "Jan Kowalski"
+    assert ci["companyName"] == "Estrella Jewels"
+
+
+def test_build_receiver_details_company_fallback_to_name():
+    """When no company key, DHL companyName falls back to name (existing behaviour)."""
+    addr = {"name": "Acme Corp", "city": "London", "country_code": "GB"}
+    details = _build_receiver_details(addr)
+    ci = details["contactInformation"]
+    assert ci["fullName"] == "Acme Corp"
+    assert ci["companyName"] == "Acme Corp"
+
+
+def test_build_receiver_details_company_only_uses_company_as_companyname():
+    """When only company is supplied, companyName is populated from company."""
+    addr = {"company": "Only Corp", "city": "Berlin", "country_code": "DE"}
+    details = _build_receiver_details(addr)
+    ci = details["contactInformation"]
+    assert ci["companyName"] == "Only Corp"
+
+
+# ── GET /api/v1/box-types/ — correct response shape ─────────────────────────
+
+
+def test_box_types_endpoint_returns_correct_shape(client):
+    """GET /api/v1/box-types/ must return {count, box_types:[...]} — not a raw array."""
+    resp = client.get("/api/v1/box-types/", headers={"X-API-Key": "test"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "count" in data, "Response missing 'count' key"
+    assert "box_types" in data, "Response missing 'box_types' key"
+    assert isinstance(data["box_types"], list)
+    assert data["count"] == len(data["box_types"])
+
+
+# ── Pending mode — create_shipment returns 503 ───────────────────────────────
+
+
+def test_pending_carrier_status_blocks_create_shipment(client):
+    """POST /carrier/{id}/shipment must return 503 when carrier_api_status=pending."""
+    import os
+    with patch.dict(os.environ, {"CARRIER_API_STATUS": "pending"}, clear=False):
+        # Force settings re-evaluation by patching at the settings level
+        from app.core import config as cfg
+        original = cfg.settings.carrier_api_status
+        try:
+            cfg.settings.carrier_api_status = "pending"
+            resp = client.post(
+                "/api/v1/carrier/BATCH-PENDING/shipment",
+                headers={"X-API-Key": "test"},
+                json={
+                    "shipper_account": "TEST-001",
+                    "recipient_address": {"name": "T", "street": "S", "city": "C",
+                                          "postal_code": "00", "country_code": "PL"},
+                    "declared_value": 100.0,
+                    "currency": "EUR",
+                    "weight_kg": 1.0,
+                    "dimensions": {"length_cm": 10, "width_cm": 10, "height_cm": 10},
+                },
+            )
+        finally:
+            cfg.settings.carrier_api_status = original
+    assert resp.status_code == 503
+    detail = resp.json().get("detail", "")
+    assert "pending" in detail.lower() or "not yet activated" in detail.lower()
