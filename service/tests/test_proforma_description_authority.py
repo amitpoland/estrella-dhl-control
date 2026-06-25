@@ -35,6 +35,7 @@ Coverage:
   19. Source-grep: routes_packing must not contain description_en=_inv_en call pattern
   20. get_description_block for EJL product code without description_en: description_line
       has no PCS/LGD/KT shorthand and no slash separator
+  21. Operator combined "PL / EN" text matching canonical PL + EN → no anomaly (EJL/26-27/327-1)
 """
 from __future__ import annotations
 
@@ -449,7 +450,13 @@ class TestOperatorOverrideMismatch:
     and must NOT fire for lines that lack name_pl_source='operator'.
     """
 
-    def _make_db(self, tmp_path, product_code: str, description_pl: str):
+    def _make_db(
+        self,
+        tmp_path,
+        product_code: str,
+        description_pl: str,
+        description_en: str = "",
+    ):
         """Create a minimal documents.db with one product_descriptions row."""
         import sqlite3
         db = tmp_path / "documents.db"
@@ -457,12 +464,13 @@ class TestOperatorOverrideMismatch:
             con.execute("""
                 CREATE TABLE product_descriptions (
                     product_code TEXT PRIMARY KEY,
-                    description_pl TEXT NOT NULL DEFAULT ''
+                    description_pl TEXT NOT NULL DEFAULT '',
+                    description_en TEXT NOT NULL DEFAULT ''
                 )
             """)
             con.execute(
-                "INSERT INTO product_descriptions VALUES (?,?)",
-                (product_code, description_pl),
+                "INSERT INTO product_descriptions VALUES (?,?,?)",
+                (product_code, description_pl, description_en),
             )
         return db
 
@@ -557,7 +565,8 @@ class TestOperatorOverrideMismatch:
         with sqlite3.connect(str(db)) as con:
             con.execute(
                 "CREATE TABLE product_descriptions "
-                "(product_code TEXT PRIMARY KEY, description_pl TEXT NOT NULL DEFAULT '')"
+                "(product_code TEXT PRIMARY KEY, description_pl TEXT NOT NULL DEFAULT '',"
+                " description_en TEXT NOT NULL DEFAULT '')"
             )
             # No row for EJL/26-27/327-1
 
@@ -571,6 +580,42 @@ class TestOperatorOverrideMismatch:
 
         assert anomalies == [], (
             "No canonical description_pl in DB → no anomaly to surface (nothing to compare)"
+        )
+
+    def test_operator_combined_pl_en_matching_canonical_is_clean(self, tmp_path):
+        """
+        Test 21: operator name_pl = "PL / EN" (combined) where PL matches
+        description_pl and EN matches description_en → no anomaly (no false positive).
+
+        Root case: EJL/26-27/327-1 operator text stored as combined canonical pair
+        after the 2026-06-25 data correction.  The mismatch detector must recognise
+        the slash-split form and compare each part against its authority column.
+        """
+        canonical_pl = (
+            "Pierścionek z 14-karatowego złota (próba 585) wysadzany diamentami "
+            "laboratoryjnymi. Biżuteria do noszenia."
+        )
+        canonical_en = "14KT Gold Ring Set With Laboratory Grown Diamonds. Jewellery."
+        db = self._make_db(
+            tmp_path,
+            "EJL/26-27/327-1",
+            description_pl=canonical_pl,
+            description_en=canonical_en,
+        )
+
+        combined_operator_text = f"{canonical_pl} / {canonical_en}"
+        lines = [{
+            "product_code":   "EJL/26-27/327-1",
+            "name_pl":        combined_operator_text,
+            "name_pl_source": "operator",
+            "line_id":        "ln-01",
+        }]
+        anomalies = self._detect(lines, db)
+
+        assert anomalies == [], (
+            "Operator 'PL / EN' combined text matching canonical description_pl + "
+            "description_en must produce no anomaly. The mismatch detector must split "
+            "on ' / ' and compare each part independently against product_descriptions."
         )
 
 
