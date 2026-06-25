@@ -244,7 +244,7 @@ def _build_shipment_body(request: ShipmentRequest, settings) -> dict:
     if request.customer_reference:
         refs.append({"value": request.customer_reference[:35], "typeCode": "CU"})
     if request.shipment_reference:
-        refs.append({"value": request.shipment_reference[:35], "typeCode": "AAO"})
+        refs.append({"value": request.shipment_reference[:35], "typeCode": "CU"})
     if refs:
         body["customerReferences"] = refs
 

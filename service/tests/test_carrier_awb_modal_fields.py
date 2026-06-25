@@ -174,7 +174,7 @@ def test_build_body_customer_reference_added():
 def test_build_body_shipment_reference_added():
     body = _build_shipment_body(_req(shipment_reference="BATCH-001"), _fake_settings())
     refs = body["customerReferences"]
-    assert any(r["typeCode"] == "AAO" and r["value"] == "BATCH-001" for r in refs)
+    assert any(r["typeCode"] == "CU" and r["value"] == "BATCH-001" for r in refs)
 
 
 def test_build_body_both_references_present():
@@ -184,7 +184,7 @@ def test_build_body_both_references_present():
     )
     codes = {r["typeCode"] for r in body["customerReferences"]}
     assert "CU" in codes
-    assert "AAO" in codes
+    assert "AAO" not in codes
 
 
 def test_build_body_reference_truncated_at_35_chars():
