@@ -101,6 +101,61 @@ def test_vendor_download_script_pins_babel_v7() -> None:
         )
 
 
+def test_all_static_html_babel_refs_are_versioned() -> None:
+    """No service/app/static/**/*.html file may load @babel/standalone without a version pin.
+
+    An unpinned ref resolves to 'latest' on unpkg; when unpkg advanced to Babel 8 the
+    default preset-react runtime flipped from classic to automatic, injecting ESM imports
+    that crash in-browser classic text/babel pipelines.
+    """
+    unversioned = re.compile(r"unpkg\.com/@babel/standalone/babel\.min\.js")
+    failures: list[str] = []
+    for html_file in sorted(_STATIC.rglob("*.html")):
+        try:
+            text = html_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if unversioned.search(text):
+            failures.append(str(html_file.relative_to(_STATIC)))
+    assert not failures, (
+        "Unversioned @babel/standalone CDN reference found in static HTML files "
+        "(must pin to e.g. @7.26.4):\n  " + "\n  ".join(failures)
+    )
+
+
+def test_all_static_html_babel_pins_are_v7() -> None:
+    """Every @babel/standalone pin in static HTML must be 7.x, not 8.x.
+
+    Babel 8 preset-env defaults to ESM module output and preset-react defaults
+    to the automatic JSX runtime.  Both produce `import` statements that cannot
+    be injected as classic <script> blocks, triggering:
+        "Cannot use import statement outside a module"
+    Do NOT bump to 8.x without switching every text/babel tag to runtime:classic
+    (data-presets='["react",{"runtime":"classic"}]') and verifying no preset-env
+    module transform fires.
+    """
+    babel_versioned = re.compile(
+        r"unpkg\.com/@babel/standalone@(?P<ver>[0-9][^/\"'\s]*)/babel\.min\.js"
+    )
+    failures: list[str] = []
+    for html_file in sorted(_STATIC.rglob("*.html")):
+        try:
+            text = html_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in babel_versioned.finditer(text):
+            ver = m.group("ver")
+            major = ver.split(".")[0]
+            if major != "7":
+                rel = str(html_file.relative_to(_STATIC))
+                failures.append(f"{rel}: @babel/standalone@{ver} — only 7.x is safe")
+    assert not failures, (
+        "@babel/standalone pinned to non-7.x in static HTML "
+        "(do NOT use 8.x without switching to runtime:classic):\n  "
+        + "\n  ".join(failures)
+    )
+
+
 def test_v2_shell_has_no_native_esm() -> None:
     """The shell pipeline is classic text/babel only. A `type="module"` script or a
     top-level `import`/`export` would not run through Babel and would crash boot."""
