@@ -2548,20 +2548,43 @@ def fetch_invoice_pdf(invoice_id: str) -> bytes:
     if not (invoice_id or "").strip():
         raise ValueError("invoice_id is required")
     safe_id = _esc(invoice_id).strip()
-    http_status, response_text = _http_request(
-        "GET", "invoices", f"download/{safe_id}", "")
+
+    # PDF download MUST use resp.content (raw bytes), not resp.text.
+    # _http_request returns resp.text which auto-decodes binary through
+    # requests' charset detection; re-encoding corrupts compressed PDF
+    # content streams, producing a structurally valid but blank document.
+    breaker = get_circuit_breaker("wfirma")
+    if breaker.state.value == "open":
+        raise RuntimeError("wFirma circuit open — PDF fetch unavailable")
+    _dl_url = _url("invoices", f"download/{safe_id}")
+    _dl_headers = _headers_for_module("invoices")
+    try:
+        def _do_fetch() -> tuple:
+            _r = _requests.request(
+                "GET", _dl_url, headers=_dl_headers,
+                timeout=(5, breaker.config.call_timeout),
+            )
+            return _r.status_code, _r.content  # bytes, not text
+        http_status, raw_bytes = breaker.call(_do_fetch)
+    except CircuitBreakerError:
+        raise RuntimeError("wFirma circuit open — PDF fetch unavailable")
+    except _requests.exceptions.RequestException as exc:
+        raise ConnectionError(
+            f"invoices/download network error: {exc}") from exc
+
     if http_status == 404:
         raise RuntimeError(
             f"invoices/download: invoice {invoice_id!r} not found")
     if http_status >= 400:
         raise RuntimeError(
-            f"invoices/download HTTP {http_status}: {response_text[:200]}")
+            f"invoices/download HTTP {http_status}: {raw_bytes[:200]!r}")
 
-    # Shape (b): raw PDF bytes streamed directly. ``response_text`` is
-    # whatever requests decoded the body as, but the magic header is
-    # detectable in the first ~16 chars regardless of decoding.
-    if (response_text or "").startswith("%PDF-"):
-        return response_text.encode("latin-1", errors="ignore")
+    # Shape (b): wFirma streams raw PDF bytes directly.
+    if raw_bytes.startswith(b"%PDF-"):
+        return raw_bytes
+
+    # Shape (a): XML envelope — decode as text for XML parsing.
+    response_text = raw_bytes.decode("utf-8", errors="replace")
 
     # Shape (a): XML envelope. Confirm OK first, then hunt for a base64 blob.
     code, desc = _parse_status(response_text)
