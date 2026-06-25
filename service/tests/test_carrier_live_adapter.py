@@ -219,3 +219,64 @@ class TestCredentialCheck:
         adapter = DhlExpressLiveAdapter(config)
         with pytest.raises(CarrierConfigError, match="DHL_EXPRESS_API_SECRET"):
             adapter.create_shipment(_make_request())
+
+
+class TestRegistrationNumbers:
+    """DHL requires issuerCountryCode on every registrationNumbers entry (422 otherwise)."""
+
+    def _make_request_with_regs(self, eori=None, vat=None, country="DE"):
+        from app.services.carrier.models.shipment import ShipmentRequest
+        return ShipmentRequest(
+            batch_id="BATCH-REG",
+            shipper_account="123456789",
+            recipient_address={
+                "name": "Test GmbH",
+                "street": "Hauptstrasse 1",
+                "city": "Berlin",
+                "postal_code": "10115",
+                "country_code": country,
+                "phone": "+4930123456",
+            },
+            declared_value=500.0,
+            currency="EUR",
+            weight_kg=2.0,
+            dimensions={"length_cm": 20, "width_cm": 15, "height_cm": 10},
+            receiver_eori=eori,
+            receiver_vat_id=vat,
+        )
+
+    def _get_body(self, request, tmp_path):
+        from app.services.carrier.adapters.live import _build_shipment_body
+        mock_settings = MagicMock()
+        mock_settings.dhl_express_shipper_name = "Estrella"
+        mock_settings.dhl_express_shipper_address1 = "ul. Sabaly 58"
+        mock_settings.dhl_express_shipper_city = "Warszawa"
+        mock_settings.dhl_express_shipper_postal_code = "02-174"
+        mock_settings.dhl_express_shipper_country_code = "PL"
+        mock_settings.dhl_express_shipper_phone = "+48516081994"
+        return _build_shipment_body(request, mock_settings)
+
+    def test_eori_includes_issuer_country_code_from_prefix(self, tmp_path):
+        req = self._make_request_with_regs(eori="DE123456789012345")
+        body = self._get_body(req, tmp_path)
+        reg = body["customerDetails"]["receiverDetails"]["registrationNumbers"][0]
+        assert reg["typeCode"] == "EOR"
+        assert reg["issuerCountryCode"] == "DE"
+
+    def test_vat_includes_issuer_country_code_from_prefix(self, tmp_path):
+        req = self._make_request_with_regs(vat="PL1234567890")
+        body = self._get_body(req, tmp_path)
+        reg = body["customerDetails"]["receiverDetails"]["registrationNumbers"][0]
+        assert reg["typeCode"] == "EUV"
+        assert reg["issuerCountryCode"] == "PL"
+
+    def test_numeric_prefix_falls_back_to_receiver_country(self, tmp_path):
+        req = self._make_request_with_regs(eori="123456789", country="FR")
+        body = self._get_body(req, tmp_path)
+        reg = body["customerDetails"]["receiverDetails"]["registrationNumbers"][0]
+        assert reg["issuerCountryCode"] == "FR"
+
+    def test_no_reg_numbers_produces_no_key(self, tmp_path):
+        req = self._make_request_with_regs()
+        body = self._get_body(req, tmp_path)
+        assert "registrationNumbers" not in body["customerDetails"]["receiverDetails"]
