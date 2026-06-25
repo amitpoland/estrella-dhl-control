@@ -1214,6 +1214,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // M8 — AWB Generate modal state
   const [showAwbModal, setShowAwbModal] = React.useState(false);
 
+  // Print error banner — set when wFirma PDF fetch fails; cleared on next toolbar action
+  const [printError,   setPrintError]   = React.useState(null);
+
   // M5 — Inline Edit mode state
   const [editMode,         setEditMode]          = React.useState(false);
   const [editFields,       setEditFields]        = React.useState({});
@@ -1982,15 +1985,33 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     || (draft && draft.wfirma_proforma_fullnumber)
     || `Draft #${draft && draft.id}`;
 
-  const handleDownloadPdf = () => {
+  const handleDownloadPdf = async () => {
     const bid = liveDraft.batch_id || (draft && draft.batch_id) || '';
     const cn  = liveDraft.client_name || (draft && draft.client_name) || '';
     if (!bid || !cn) return;
-    // Use anchor-click instead of window.open — never blocked by popup blockers.
+    setPrintError(null);
     const url = `/api/v1/proforma/${encodeURIComponent(bid)}/${encodeURIComponent(cn)}/document.pdf`;
-    const a = document.createElement('a');
-    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    try {
+      const resp = await fetch(url, { credentials: 'include' });
+      if (!resp.ok) {
+        let errMsg = `Print failed (HTTP ${resp.status})`;
+        try {
+          const j = await resp.json();
+          errMsg = (j.detail && j.detail.error) || j.detail || errMsg;
+        } catch (_) {}
+        setPrintError(errMsg);
+        return;
+      }
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = bid + '-proforma.pdf';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+    } catch (e) {
+      setPrintError('PDF download failed — ' + (e.message || 'network error'));
+    }
   };
 
   const handleApprove = () => {
@@ -2369,6 +2390,21 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           ← Back
         </TbBtn>
       </div>
+
+      {printError && (
+        <div data-testid="print-error-banner" style={{
+          margin: '8px 24px 0',
+          padding: '8px 14px',
+          background: 'var(--badge-red-bg)',
+          border: '1px solid var(--badge-red-border)',
+          borderRadius: 6,
+          fontSize: 12,
+          color: 'var(--badge-red-text)',
+          fontWeight: 600,
+        }}>
+          ⚠ {printError}
+        </div>
+      )}
 
       {/* ── PROFORMA STATUS HEADER (Sprint 03.1-A) — persistent, always visible.
           PURE RE-PRESENTATION of existing backend-authoritative props/state
@@ -4036,7 +4072,22 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
     window.PzApi.draftToInvoice(draft.id, {
       confirm: 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA',
     })
-      .then(() => { onSuccess && onSuccess(); })
+      .then(r => {
+        const body = (r && r.data) || null;
+        if (body && body.ok === false) {
+          const reasons = body.blocking_reasons
+            || (body.blockers || []).map(b => b.reason)
+            || [];
+          setApiError(
+            reasons.length
+              ? reasons.join(' · ')
+              : (body.error || 'Conversion blocked — check backend logs.')
+          );
+          setLoading(false);
+        } else {
+          onSuccess && onSuccess();
+        }
+      })
       .catch(e => {
         setApiError((e && e.message) ? e.message : 'Conversion failed — check backend logs.');
         setLoading(false);
