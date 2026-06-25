@@ -177,12 +177,24 @@ def _build_shipment_body(request: ShipmentRequest, settings) -> dict:
 
     receiver_details = _build_receiver_details(request.recipient_address)
 
-    # Attach EORI / VAT registration numbers to receiver if provided
+    # Attach EORI / VAT registration numbers to receiver if provided.
+    # DHL requires issuerCountryCode on every entry; derive it from the
+    # number's 2-char alpha prefix (standard EU EORI/VAT format) and fall
+    # back to the receiver's country code when the prefix is not alpha.
     reg_numbers = []
+    _recv_cc = (request.recipient_address.get("country_code")
+                or request.recipient_address.get("countryCode") or "")
+    def _issuer(num: str) -> str:
+        prefix = num[:2].upper()
+        return prefix if prefix.isalpha() else _recv_cc
     if request.receiver_eori:
-        reg_numbers.append({"number": request.receiver_eori, "typeCode": "EOR"})
+        reg_numbers.append({"number": request.receiver_eori,
+                             "typeCode": "EOR",
+                             "issuerCountryCode": _issuer(request.receiver_eori)})
     if request.receiver_vat_id:
-        reg_numbers.append({"number": request.receiver_vat_id, "typeCode": "EUV"})
+        reg_numbers.append({"number": request.receiver_vat_id,
+                             "typeCode": "EUV",
+                             "issuerCountryCode": _issuer(request.receiver_vat_id)})
     if reg_numbers:
         receiver_details["registrationNumbers"] = reg_numbers
 
