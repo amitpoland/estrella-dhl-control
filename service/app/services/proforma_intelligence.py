@@ -211,29 +211,48 @@ def detect_operator_override_mismatches(
             lid            = str(ln.get("line_id") or ln.get("id") or "")
             operator_name  = str(ln.get("name_pl") or "").strip()
             row = con.execute(
-                "SELECT description_pl FROM product_descriptions WHERE product_code=?",
+                "SELECT description_pl, description_en FROM product_descriptions "
+                "WHERE product_code=?",
                 (pc,),
             ).fetchone()
             if row is None:
                 continue
-            canonical = str(row["description_pl"] or "").strip()
-            if not canonical:
+            canonical_pl = str(row["description_pl"] or "").strip()
+            if not canonical_pl:
                 continue
-            if operator_name != canonical:
-                results.append(LineAnomaly(
-                    line_id=lid,
-                    product_code=pc,
-                    anomaly_type=ANOMALY_OPERATOR_DESCRIPTION_MISMATCH,
-                    severity=SEVERITY_HIGH,
-                    message=(
-                        f"{pc}: operator Polish description differs from canonical customs "
-                        f"description. Operator: {operator_name!r}. "
-                        f"Canonical (customs engine): {canonical!r}. "
-                        "For legal/export finalization: accept canonical or confirm "
-                        "override with explicit reason."
-                    ),
-                    confidence=1.0,
-                ))
+
+            if " / " in operator_name:
+                # Operator stored combined "PL / EN" text — compare each part separately.
+                # This avoids false positives when the operator confirms both the canonical
+                # PL sentence and the canonical EN sentence joined with a slash separator.
+                operator_pl, operator_en = (
+                    p.strip() for p in operator_name.split(" / ", 1)
+                )
+                canonical_en = str(row["description_en"] or "").strip()
+                pl_match = operator_pl == canonical_pl
+                # EN is considered a match if canonical EN is absent (nothing to compare)
+                # or if the operator EN equals the canonical EN exactly.
+                en_match = (not canonical_en) or (operator_en == canonical_en)
+                if pl_match and en_match:
+                    continue
+            else:
+                if operator_name == canonical_pl:
+                    continue
+
+            results.append(LineAnomaly(
+                line_id=lid,
+                product_code=pc,
+                anomaly_type=ANOMALY_OPERATOR_DESCRIPTION_MISMATCH,
+                severity=SEVERITY_HIGH,
+                message=(
+                    f"{pc}: operator Polish description differs from canonical customs "
+                    f"description. Operator: {operator_name!r}. "
+                    f"Canonical (customs engine): {canonical_pl!r}. "
+                    "For legal/export finalization: accept canonical or confirm "
+                    "override with explicit reason."
+                ),
+                confidence=1.0,
+            ))
     except Exception:
         pass
     finally:
