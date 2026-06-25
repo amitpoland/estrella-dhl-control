@@ -343,7 +343,7 @@ class Settings(BaseSettings):
     dhl_express_shipper_address1:     Optional[str] = Field(default=None)
     dhl_express_shipper_city:         Optional[str] = Field(default=None)
     dhl_express_shipper_postal_code:  Optional[str] = Field(default=None)
-    dhl_express_shipper_country_code: str           = Field(default="IN")
+    dhl_express_shipper_country_code: str           = Field(default="PL")
     dhl_express_shipper_phone:        Optional[str] = Field(default=None)
 
     # DHL webhook HMAC secret. None = webhook endpoint returns 503 (never silently open).
