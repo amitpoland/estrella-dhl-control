@@ -13,6 +13,13 @@ DHL_EXPRESS_API_URL is the base URL only (https://express.api.dhl.com).
 Use DHL_EXPRESS_USE_SANDBOX=true to route to the test endpoint — do NOT append
 /mydhlapi/test to DHL_EXPRESS_API_URL; that produces a double-path 404.
 
+Product discovery (DHL-authoritative):
+  Before creating a shipment, GET /rates is called to discover which productCodes DHL
+  has entitled for this (account, origin→destination) combination.  Results are cached
+  per (api_url, account, origin_cc, dest_cc) for 24 hours — entitlements do not change
+  intra-day.  If the rates call fails (network, 4xx, timeout) the requested product_code
+  passes through unchanged so that the shipment creation error surfaces the real reason.
+
 On success: returns ShipmentResult(mode=LIVE, state=SUBMITTED, tracking_ref=<AWB>, simulated=False)
             and saves label PDF (if returned) to carrier_storage_root/labels/{batch_id}-{tracking_ref}.pdf
 
@@ -22,8 +29,9 @@ from __future__ import annotations
 
 import base64
 import logging
+import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import httpx
 
@@ -44,6 +52,17 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# ── product capability cache ──────────────────────────────────────────────────
+# Key: (api_url, account_number, origin_cc, dest_cc)
+# Value: (expires_monotonic, [productCode, ...]) — DHL-ranked, best first
+_product_cache: dict = {}
+_PRODUCT_CACHE_TTL_SECS: float = 86400.0  # 24 hours
+
+
+def clear_product_cache() -> None:
+    """Flush the module-level product cache. Intended for tests only."""
+    _product_cache.clear()
+
 
 class DhlExpressLiveAdapter(AbstractCarrierAdapter):
 
@@ -61,8 +80,33 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
         self._check_credentials()
 
         from ....core.config import settings
+        import datetime
 
-        body = _build_shipment_body(request, settings)
+        planned_date = datetime.date.today().isoformat()
+        origin_cc = settings.dhl_express_shipper_country_code or "PL"
+
+        available = lookup_available_products(
+            api_key=self._config.api_key,
+            api_secret=self._config.api_secret,
+            api_url=self._config.api_url,
+            api_path=self._api_path(),
+            account=self._config.account_number or request.shipper_account,
+            origin_cc=origin_cc,
+            origin_city=settings.dhl_express_shipper_city or "",
+            origin_postal=settings.dhl_express_shipper_postal_code or "",
+            dest_cc=(
+                request.recipient_address.get("country_code")
+                or request.recipient_address.get("countryCode")
+                or ""
+            ),
+            dest_city=request.recipient_address.get("city") or "",
+            dest_postal=request.recipient_address.get("postal_code") or "",
+            weight_kg=request.weight_kg,
+            planned_date=planned_date,
+        )
+        resolved_product = select_product_code(request.product_code or "P", available)
+
+        body = _build_shipment_body(request, settings, product_code=resolved_product)
         key = compute_idempotency_key(request)
 
         with httpx.Client(
@@ -164,11 +208,132 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
             )
 
 
+# ── product discovery ─────────────────────────────────────────────────────────
+
+
+def lookup_available_products(
+    api_key: str,
+    api_secret: str,
+    api_url: str,
+    api_path: str,
+    account: str,
+    origin_cc: str,
+    origin_city: str,
+    origin_postal: str,
+    dest_cc: str,
+    dest_city: str,
+    dest_postal: str,
+    weight_kg: float,
+    planned_date: str,
+) -> List[str]:
+    """
+    Query DHL GET /rates to discover available productCodes for a route.
+
+    Returns a list of productCodes ranked by DHL (best option first).
+    Returns an empty list on any failure — the caller falls back to the
+    operator-supplied product_code in that case.
+
+    Results are cached per (api_url, account, origin_cc, dest_cc) for 24 hours.
+    City and postal are sent to DHL for routing accuracy but are NOT part of
+    the cache key because product entitlements are country-level for international.
+    """
+    cache_key = (api_url, account, origin_cc, dest_cc)
+    entry = _product_cache.get(cache_key)
+    if entry is not None:
+        expires_at, codes = entry
+        if time.monotonic() < expires_at:
+            return codes
+        del _product_cache[cache_key]
+
+    try:
+        with httpx.Client(
+            auth=httpx.BasicAuth(api_key, api_secret),
+            timeout=10.0,
+        ) as client:
+            resp = client.get(
+                f"{api_url.rstrip('/')}{api_path}/rates",
+                params={
+                    "accountNumber": account,
+                    "originCountryCode": origin_cc,
+                    "originCityName": origin_city,
+                    "originPostalCode": origin_postal,
+                    "destinationCountryCode": dest_cc,
+                    "destinationCityName": dest_city,
+                    "destinationPostalCode": dest_postal,
+                    "weight": weight_kg,
+                    "length": 10,
+                    "width": 10,
+                    "height": 10,
+                    "plannedShippingDate": planned_date,
+                    "isCustomsDeclarable": True,
+                    "unitOfMeasurement": "metric",
+                    "nextBusinessDay": False,
+                },
+            )
+        if resp.is_success:
+            products_raw = resp.json().get("products") or []
+            codes = [p["productCode"] for p in products_raw if p.get("productCode")]
+            _product_cache[cache_key] = (
+                time.monotonic() + _PRODUCT_CACHE_TTL_SECS,
+                codes,
+            )
+            log.info(
+                "DHL product discovery %s→%s account=%s: %s",
+                origin_cc, dest_cc, account, codes,
+            )
+            return codes
+        log.warning(
+            "DHL rates lookup %s: %s (non-fatal, falling back to requested product)",
+            resp.status_code,
+            resp.text[:200],
+        )
+        return []
+    except Exception as exc:
+        log.warning("DHL rates lookup error (non-fatal): %s", exc)
+        return []
+
+
+def select_product_code(requested: str, available: List[str]) -> str:
+    """
+    Choose the DHL productCode to use based on what the account can actually send.
+
+    Rules (in priority order):
+      1. If available is empty (rates lookup failed) → use requested unchanged.
+      2. If requested is in available → use requested.
+      3. Otherwise → use DHL's first (highest-ranked) available product and log the change.
+
+    This makes the selection DHL-authoritative: DHL ranks products by suitability
+    for the route so available[0] is always the best alternative.
+    """
+    if not available:
+        return requested
+    if requested in available:
+        return requested
+    chosen = available[0]
+    log.info(
+        "productCode %r not available for this route; "
+        "using DHL-ranked alternative %r (available: %s)",
+        requested,
+        chosen,
+        available,
+    )
+    return chosen
+
+
 # ── DHL request body builder ──────────────────────────────────────────────────
 
 
-def _build_shipment_body(request: ShipmentRequest, settings) -> dict:
-    """Map ShipmentRequest + settings → DHL Express MyDHL API v2 request body."""
+def _build_shipment_body(
+    request: ShipmentRequest,
+    settings,
+    product_code: Optional[str] = None,
+) -> dict:
+    """Map ShipmentRequest + settings → DHL Express MyDHL API v2 request body.
+
+    product_code overrides request.product_code when provided (used by the
+    product-discovery layer to inject the DHL-authoritative product after
+    the GET /rates capability check).
+    """
     import datetime
 
     # Planned shipping: today at 08:00 UTC
@@ -201,7 +366,7 @@ def _build_shipment_body(request: ShipmentRequest, settings) -> dict:
     body: dict = {
         "plannedShippingDateAndTime": planned,
         "pickup": {"isRequested": False},
-        "productCode": request.product_code or "P",
+        "productCode": product_code or request.product_code or "P",
         "accounts": [
             {
                 "typeCode": "shipper",
