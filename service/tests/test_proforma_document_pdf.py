@@ -88,6 +88,9 @@ def _seed_posted_draft(db: Path, *,
 
 _SAMPLE_PDF_BYTES = b"%PDF-1.4\n%fake test pdf\n%%EOF\n"
 
+# Bytes spanning 0x00-0xFF — corrupted by any latin-1 re-encode.
+_MULTI_BYTE_PDF = b"%PDF-1.4\n" + bytes(range(256)) * 4 + b"\n%%EOF\n"
+
 
 def _xml_envelope_with_pdf(pdf_bytes: bytes) -> str:
     """Build a wFirma-shaped XML envelope wrapping a base64-encoded PDF.
@@ -112,6 +115,48 @@ def _xml_envelope_with_pdf(pdf_bytes: bytes) -> str:
     )
 
 
+def _patch_pdf_download(monkeypatch, status_code: int, content: bytes,
+                        captured: dict = None):
+    """Patch _requests.request + circuit breaker for fetch_invoice_pdf tests.
+
+    fetch_invoice_pdf bypasses _http_request and calls _requests.request
+    directly so it receives resp.content (bytes) instead of resp.text
+    (decoded string), preventing binary PDF content-stream corruption.
+    """
+    class _FakeResp:
+        pass
+    _resp = _FakeResp()
+    _resp.status_code = status_code
+    _resp.content = content
+
+    class _FakeState:
+        value = "closed"
+
+    class _FakeConfig:
+        call_timeout = 30
+        name = "wfirma"
+
+    class _FakeBreaker:
+        state = _FakeState()
+        config = _FakeConfig()
+
+        def call(self, fn, *a, **kw):
+            return fn()
+
+    def _fake_request(method, url, **kw):
+        if captured is not None:
+            captured["method"] = method
+            captured["url"] = url
+        return _resp
+
+    monkeypatch.setattr(wfirma_client, "get_circuit_breaker",
+                        lambda _: _FakeBreaker())
+    monkeypatch.setattr(wfirma_client, "_headers_for_module",
+                        lambda _: {"X-Test": "stub"})
+    monkeypatch.setattr(wfirma_client._requests, "request", _fake_request)
+    return _resp
+
+
 # ════════════════════════════════════════════════════════════════════════
 #  fetch_invoice_pdf — service-level tests
 # ════════════════════════════════════════════════════════════════════════
@@ -121,25 +166,20 @@ def test_fetch_pdf_uses_read_only_endpoint(monkeypatch):
     call invoices/add, invoices/edit, invoices/send, invoices/fiscalise,
     or any other write/state-changing endpoint."""
     captured = {}
-
-    def _fake(method, module, action, body=""):
-        captured["method"] = method
-        captured["module"] = module
-        captured["action"] = action
-        captured["body"]   = body
-        return 200, _xml_envelope_with_pdf(_SAMPLE_PDF_BYTES)
-
-    monkeypatch.setattr(wfirma_client, "_http_request", _fake)
+    _patch_pdf_download(
+        monkeypatch, 200,
+        _xml_envelope_with_pdf(_SAMPLE_PDF_BYTES).encode("utf-8"),
+        captured=captured,
+    )
     pdf = wfirma_client.fetch_invoice_pdf("12345")
     assert pdf == _SAMPLE_PDF_BYTES
-    assert captured["method"]            == "GET"
-    assert captured["module"]            == "invoices"
-    assert captured["action"].startswith("download/")
-    assert "12345" in captured["action"]
-    assert captured["body"]              == ""
-    # Defence: forbidden actions never appear.
+    assert captured["method"] == "GET"
+    assert "invoices" in captured["url"]
+    assert "download" in captured["url"]
+    assert "12345" in captured["url"]
+    # Defence: forbidden actions never appear in the URL.
     for forbidden in ("add", "edit", "send", "fiscalise", "delete"):
-        assert forbidden not in captured["action"]
+        assert forbidden not in captured["url"]
 
 
 def test_fetch_pdf_rejects_empty_id():
@@ -150,9 +190,9 @@ def test_fetch_pdf_rejects_empty_id():
 
 
 def test_fetch_pdf_decodes_base64_envelope(monkeypatch):
-    monkeypatch.setattr(
-        wfirma_client, "_http_request",
-        lambda *a, **kw: (200, _xml_envelope_with_pdf(_SAMPLE_PDF_BYTES)),
+    _patch_pdf_download(
+        monkeypatch, 200,
+        _xml_envelope_with_pdf(_SAMPLE_PDF_BYTES).encode("utf-8"),
     )
     out = wfirma_client.fetch_invoice_pdf("9001")
     assert out.startswith(b"%PDF-")
@@ -161,19 +201,35 @@ def test_fetch_pdf_decodes_base64_envelope(monkeypatch):
 
 def test_fetch_pdf_handles_raw_binary_response(monkeypatch):
     """Some wFirma installations stream the PDF directly. Magic header
-    must trigger the bytes branch."""
-    monkeypatch.setattr(
-        wfirma_client, "_http_request",
-        lambda *a, **kw: (200, _SAMPLE_PDF_BYTES.decode("latin-1")),
-    )
+    must trigger the bytes branch — returning raw bytes unchanged."""
+    _patch_pdf_download(monkeypatch, 200, _SAMPLE_PDF_BYTES)
     out = wfirma_client.fetch_invoice_pdf("9001")
-    assert out.startswith(b"%PDF-")
+    assert out == _SAMPLE_PDF_BYTES
+
+
+def test_fetch_pdf_raw_bytes_returned_unchanged(monkeypatch):
+    """Regression: raw PDF bytes must survive the network round-trip intact.
+
+    The old code called _http_request which returned resp.text (decoded
+    string). Requests auto-detected charset; if UTF-8 was chosen, every
+    multi-byte sequence in compressed PDF content streams was corrupted.
+    Re-encoding via .encode('latin-1', errors='ignore') then silently
+    dropped bytes > U+00FF, producing blank white pages.
+
+    This test uses a payload containing every byte value 0x00-0xFF to
+    guarantee that no codec round-trip can occur without data loss."""
+    _patch_pdf_download(monkeypatch, 200, _MULTI_BYTE_PDF)
+    out = wfirma_client.fetch_invoice_pdf("9001")
+    assert out == _MULTI_BYTE_PDF, (
+        "fetch_invoice_pdf must return raw bytes unchanged — "
+        "any codec round-trip corrupts compressed PDF content streams"
+    )
 
 
 def test_fetch_pdf_404(monkeypatch):
-    monkeypatch.setattr(
-        wfirma_client, "_http_request",
-        lambda *a, **kw: (404, "<api><status><code>NOT_FOUND</code></status></api>"),
+    _patch_pdf_download(
+        monkeypatch, 404,
+        b"<api><status><code>NOT_FOUND</code></status></api>",
     )
     with pytest.raises(RuntimeError) as exc:
         wfirma_client.fetch_invoice_pdf("nope")
@@ -181,10 +237,7 @@ def test_fetch_pdf_404(monkeypatch):
 
 
 def test_fetch_pdf_http_500(monkeypatch):
-    monkeypatch.setattr(
-        wfirma_client, "_http_request",
-        lambda *a, **kw: (500, "internal error"),
-    )
+    _patch_pdf_download(monkeypatch, 500, b"internal error")
     with pytest.raises(RuntimeError) as exc:
         wfirma_client.fetch_invoice_pdf("9001")
     assert "HTTP 500" in str(exc.value)
@@ -192,13 +245,10 @@ def test_fetch_pdf_http_500(monkeypatch):
 
 def test_fetch_pdf_wfirma_status_error(monkeypatch):
     err_xml = (
-        '<api><status><code>ERROR</code>'
-        '<description>access denied</description></status></api>'
+        b'<api><status><code>ERROR</code>'
+        b'<description>access denied</description></status></api>'
     )
-    monkeypatch.setattr(
-        wfirma_client, "_http_request",
-        lambda *a, **kw: (200, err_xml),
-    )
+    _patch_pdf_download(monkeypatch, 200, err_xml)
     with pytest.raises(RuntimeError) as exc:
         wfirma_client.fetch_invoice_pdf("9001")
     assert "access denied" in str(exc.value)
@@ -207,13 +257,10 @@ def test_fetch_pdf_wfirma_status_error(monkeypatch):
 def test_fetch_pdf_missing_payload_raises(monkeypatch):
     """OK status but no <file> blob — defensive RuntimeError, not silent."""
     no_blob = (
-        '<api><invoices><invoice><id>9001</id></invoice></invoices>'
-        '<status><code>OK</code></status></api>'
+        b'<api><invoices><invoice><id>9001</id></invoice></invoices>'
+        b'<status><code>OK</code></status></api>'
     )
-    monkeypatch.setattr(
-        wfirma_client, "_http_request",
-        lambda *a, **kw: (200, no_blob),
-    )
+    _patch_pdf_download(monkeypatch, 200, no_blob)
     with pytest.raises(RuntimeError) as exc:
         wfirma_client.fetch_invoice_pdf("9001")
     assert "no base64 PDF payload" in str(exc.value)
@@ -225,30 +272,21 @@ def test_fetch_pdf_decoded_payload_not_a_pdf(monkeypatch):
     bad_xml = (
         f'<api><invoice><file>{junk}</file></invoice>'
         '<status><code>OK</code></status></api>'
-    )
-    monkeypatch.setattr(
-        wfirma_client, "_http_request",
-        lambda *a, **kw: (200, bad_xml),
-    )
+    ).encode("utf-8")
+    _patch_pdf_download(monkeypatch, 200, bad_xml)
     with pytest.raises(RuntimeError) as exc:
         wfirma_client.fetch_invoice_pdf("9001")
     msg = str(exc.value)
-    # New error shape: every candidate tried but none decoded to a PDF.
     assert "no base64 PDF payload" in msg
     assert "not %PDF-" in msg
 
 
 def test_fetch_pdf_unparseable_response(monkeypatch):
-    monkeypatch.setattr(
-        wfirma_client, "_http_request",
-        lambda *a, **kw: (200, "<<not xml at all"),
-    )
+    _patch_pdf_download(monkeypatch, 200, b"<<not xml at all")
     with pytest.raises(RuntimeError) as exc:
         wfirma_client.fetch_invoice_pdf("9001")
-    # The shared _parse_status helper catches malformed XML first and
-    # surfaces it as wFirma status=PARSE_ERROR. Either error path is
-    # acceptable — what matters is that the helper raises RuntimeError
-    # rather than returning bad bytes.
+    # _parse_status catches malformed XML and returns status=PARSE_ERROR,
+    # which triggers the RuntimeError before ET.fromstring is called.
     msg = str(exc.value)
     assert ("neither PDF nor parseable XML" in msg
             or "PARSE_ERROR" in msg)
