@@ -329,7 +329,7 @@ def test_route_returns_pdf_bytes_with_correct_media_type(client, tmp_path, monke
                                   fullnumber="PRO 12_2026")
     monkeypatch.setattr(
         wfirma_client, "fetch_invoice_pdf",
-        lambda invoice_id: _SAMPLE_PDF_BYTES if invoice_id == "WF-9001"
+        lambda invoice_id: _MULTI_BYTE_PDF if invoice_id == "WF-9001"
                             else (_ for _ in ()).throw(AssertionError(
                                 f"unexpected id={invoice_id}")),
     )
@@ -339,7 +339,7 @@ def test_route_returns_pdf_bytes_with_correct_media_type(client, tmp_path, monke
     )
     assert r.status_code == 200, r.text
     assert r.headers["content-type"].startswith("application/pdf")
-    assert r.content == _SAMPLE_PDF_BYTES
+    assert r.content == _MULTI_BYTE_PDF
     # Filename uses fullnumber (sanitised).
     cd = r.headers.get("content-disposition", "")
     assert "PRO 12_2026.pdf" in cd
@@ -350,7 +350,7 @@ def test_route_filename_falls_back_to_wfirma_id(client, tmp_path, monkeypatch):
     posted = _seed_posted_draft(db, wfirma_id="WF-7777", fullnumber="")
     monkeypatch.setattr(
         wfirma_client, "fetch_invoice_pdf",
-        lambda invoice_id: _SAMPLE_PDF_BYTES,
+        lambda invoice_id: _MULTI_BYTE_PDF,
     )
     r = client.get(
         f"/api/v1/proforma/{posted.batch_id}/{posted.client_name}/document.pdf",
@@ -369,7 +369,7 @@ def test_route_filename_sanitises_slashes_in_fullnumber(client, tmp_path, monkey
     posted = _seed_posted_draft(db, wfirma_id="WF-9", fullnumber="PRO 12/2026")
     monkeypatch.setattr(
         wfirma_client, "fetch_invoice_pdf",
-        lambda invoice_id: _SAMPLE_PDF_BYTES,
+        lambda invoice_id: _MULTI_BYTE_PDF,
     )
     r = client.get(
         f"/api/v1/proforma/{posted.batch_id}/{posted.client_name}/document.pdf",
