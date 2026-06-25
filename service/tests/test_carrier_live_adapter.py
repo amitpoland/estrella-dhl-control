@@ -280,3 +280,73 @@ class TestRegistrationNumbers:
         req = self._make_request_with_regs()
         body = self._get_body(req, tmp_path)
         assert "registrationNumbers" not in body["customerDetails"]["receiverDetails"]
+
+
+class TestCustomerReferences:
+    """DHL 7021: AAO is not a valid customerReferences typeCode (must be CU, FF, etc.)."""
+
+    def _get_body(self, request, tmp_path):
+        from app.services.carrier.adapters.live import _build_shipment_body
+        mock_settings = MagicMock()
+        mock_settings.dhl_express_shipper_name = "Estrella"
+        mock_settings.dhl_express_shipper_address1 = "ul. Sabaly 58"
+        mock_settings.dhl_express_shipper_city = "Warszawa"
+        mock_settings.dhl_express_shipper_postal_code = "02-174"
+        mock_settings.dhl_express_shipper_country_code = "PL"
+        mock_settings.dhl_express_shipper_phone = "+48516081994"
+        return _build_shipment_body(request, mock_settings)
+
+    def _make_req(self, customer_ref=None, shipment_ref=None):
+        return ShipmentRequest(
+            batch_id="BATCH-REF",
+            shipper_account="123456789",
+            recipient_address={
+                "name": "Test Co",
+                "street": "Test St 1",
+                "city": "Berlin",
+                "postal_code": "10115",
+                "country_code": "DE",
+                "phone": "+4930000000",
+            },
+            declared_value=100.0,
+            currency="EUR",
+            weight_kg=1.0,
+            dimensions={"length_cm": 10, "width_cm": 10, "height_cm": 10},
+            customer_reference=customer_ref,
+            shipment_reference=shipment_ref,
+        )
+
+    def test_aao_never_emitted(self, tmp_path):
+        req = self._make_req(customer_ref="CUST-001", shipment_ref="SHIP-001")
+        body = self._get_body(req, tmp_path)
+        refs = body.get("customerReferences", [])
+        type_codes = [r.get("typeCode") for r in refs]
+        assert "AAO" not in type_codes, f"AAO must not appear in customerReferences; got {refs}"
+
+    def test_shipment_reference_uses_cu(self, tmp_path):
+        req = self._make_req(shipment_ref="SHIP-REF-001")
+        body = self._get_body(req, tmp_path)
+        refs = body.get("customerReferences", [])
+        assert len(refs) == 1
+        assert refs[0]["typeCode"] == "CU"
+        assert refs[0]["value"] == "SHIP-REF-001"
+
+    def test_customer_reference_uses_cu(self, tmp_path):
+        req = self._make_req(customer_ref="CUST-REF-001")
+        body = self._get_body(req, tmp_path)
+        refs = body.get("customerReferences", [])
+        assert len(refs) == 1
+        assert refs[0]["typeCode"] == "CU"
+        assert refs[0]["value"] == "CUST-REF-001"
+
+    def test_both_references_both_use_cu(self, tmp_path):
+        req = self._make_req(customer_ref="CUST-001", shipment_ref="SHIP-001")
+        body = self._get_body(req, tmp_path)
+        refs = body.get("customerReferences", [])
+        assert len(refs) == 2
+        assert all(r["typeCode"] == "CU" for r in refs)
+
+    def test_no_references_omits_key(self, tmp_path):
+        req = self._make_req()
+        body = self._get_body(req, tmp_path)
+        assert "customerReferences" not in body
