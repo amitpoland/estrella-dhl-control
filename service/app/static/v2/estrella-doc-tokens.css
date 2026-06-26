@@ -99,6 +99,23 @@
   background: linear-gradient(90deg, var(--ej-brand) 0 65%, var(--ej-gold) 65% 100%);
 }
 
+/* Document logo — used by EJDocumentLogo when ESTRELLA_DOCUMENT_LOGO_SRC is set */
+.ej-document-logo {
+  display: block;
+  max-width: 180px;
+  max-height: 56px;
+  object-fit: contain;
+}
+.ej-document-logo--compact {
+  max-width: 140px;
+  max-height: 44px;
+}
+@media print {
+  .ej-document-logo {
+    max-height: 52px;
+  }
+}
+
 /* Bank chip row */
 .ej-bank { border: 1px solid var(--ej-line); border-radius: var(--ej-radius); padding: 10px 12px; background: var(--ej-paper); }
 .ej-bank-cur {

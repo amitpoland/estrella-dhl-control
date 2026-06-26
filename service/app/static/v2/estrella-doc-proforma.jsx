@@ -23,7 +23,13 @@
 // Depends on: estrella-doc-tokens.css (loaded in index.html)
 // Exports: window.EJProformaClassic, window.EJProformaModern
 
-// ── Logo mark (inline SVG — no PNG dependency) ─────────────────────────────
+// ── Logo — single authority ───────────────────────────────────────────────────
+// Set ESTRELLA_DOCUMENT_LOGO_SRC to a real file path once the logo asset is
+// provided (e.g. "/static/assets/estrella-logo.png"). Until then the SVG mark
+// fallback is used.  All six document components (Classic, Modern, Bold, CMR,
+// Packing) import EJDocumentLogo from this file — do NOT copy the SVG inline.
+const ESTRELLA_DOCUMENT_LOGO_SRC = null; // operator: set to "/static/assets/estrella-logo.png" when file is ready
+
 function EJDocMark({ size = 36, mono = false }) {
   return (
     <svg width={size} height={size} viewBox="0 0 36 36" aria-hidden="true">
@@ -42,10 +48,23 @@ function EJDocMark({ size = 36, mono = false }) {
   );
 }
 
-function EJDocLogo({ size = "md", mono = false }) {
+// EJDocumentLogo — THE single logo component used by all V2 document variants.
+// Image-first: renders <img> when ESTRELLA_DOCUMENT_LOGO_SRC is set.
+// SVG fallback: renders inline mark + wordmark until real logo file is provided.
+function EJDocumentLogo({ size = "md", mono = false, className = "" }) {
   const h = size === "lg" ? 48 : size === "sm" ? 26 : 36;
+  if (ESTRELLA_DOCUMENT_LOGO_SRC) {
+    return (
+      <img
+        className={"ej-document-logo" + (className ? " " + className : "")}
+        src={ESTRELLA_DOCUMENT_LOGO_SRC}
+        alt="Estrella Jewels"
+        style={{ maxWidth: 180, maxHeight: h, objectFit: "contain", display: "block" }}
+      />
+    );
+  }
   return (
-    <div className="ej-logo">
+    <div className={"ej-logo" + (className ? " " + className : "")}>
       <EJDocMark size={h} mono={mono}/>
       <div className="ej-logo-text">
         <span className="ej-logo-name" style={mono ? { color: "#fff" } : {}}>
@@ -55,6 +74,8 @@ function EJDocLogo({ size = "md", mono = false }) {
     </div>
   );
 }
+// Backward-compat alias (internal use within this file only)
+const EJDocLogo = EJDocumentLogo;
 
 // ── Address card ─────────────────────────────────────────────────────────────
 function EJDocAddress({ label, party }) {

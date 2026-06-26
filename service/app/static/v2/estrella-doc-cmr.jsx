@@ -119,16 +119,7 @@ function EJCMRClassic({ cmrData }) {
 
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
-          <div className="ej-logo">
-            <svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true">
-              <circle cx="18" cy="18" r="16.5" fill="#0B3D2E"/>
-              <path d="M18 7 L27 18 L18 29 L9 18 Z" fill="none" stroke="#C9A24B" strokeWidth="1.5"/>
-              <path d="M18 12.5 L23.5 18 L18 23.5 L12.5 18 Z" fill="#C9A24B"/>
-            </svg>
-            <div className="ej-logo-text">
-              <span className="ej-logo-name">ESTRELLA JEWELS</span>
-            </div>
-          </div>
+          <EJDocumentLogo size="md"/>
           <div style={{ textAlign: "right" }}>
             <div className="ej-eyebrow ej-eyebrow-gold">International consignment note</div>
             <div className="ej-h1" style={{ marginTop: 2 }}>CMR · Delivery Note</div>
@@ -309,16 +300,7 @@ function EJCMRModern({ cmrData }) {
 
         {/* Top bar */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 28 }}>
-          <div className="ej-logo">
-            <svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true">
-              <circle cx="18" cy="18" r="16.5" fill="#0B3D2E"/>
-              <path d="M18 7 L27 18 L18 29 L9 18 Z" fill="none" stroke="#C9A24B" strokeWidth="1.5"/>
-              <path d="M18 12.5 L23.5 18 L18 23.5 L12.5 18 Z" fill="#C9A24B"/>
-            </svg>
-            <div className="ej-logo-text">
-              <span className="ej-logo-name">ESTRELLA JEWELS</span>
-            </div>
-          </div>
+          <EJDocumentLogo size="md"/>
           <div style={{ display: "flex", gap: 6 }}>
             <span className="ej-pill ej-pill-green">SHIPMENT</span>
             <span className="ej-pill">CMR</span>
