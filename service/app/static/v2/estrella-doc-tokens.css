@@ -229,4 +229,8 @@
   .ej-pattern {
     display: none !important;
   }
+  /* Hide the logo tagline (removed per brand update; belt-and-suspenders) */
+  .ej-logo-tag {
+    display: none !important;
+  }
 }

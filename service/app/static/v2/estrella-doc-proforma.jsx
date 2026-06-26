@@ -3,20 +3,22 @@
 // Adapted from design-canvas prototype (2026-06-06) for real draft data.
 //
 // docData shape (supplied by ProformaDetailPage):
-//   .doc_no       string            proforma number / label
-//   .date         string            issue date (ISO or formatted)
-//   .due          string|null       payment due date
-//   .payment      string            payment terms
-//   .currency     string            draft currency code (e.g. "USD"); labels use this, not a hardcoded EUR
-//   .rate         { eur: number, currency: string, date: string, table: string }  (eur = the PLN rate, mislabelled for legacy)
-//   .charges[]    { type, label, amount: number|null, currency, present }  freight / insurance (present=false → "not set")
-//   .seller       { name, addr, city, vat, email, phone, web }
-//   .buyer        { name, addr, city, country, vat }
-//   .ship_to      { name, addr, city, country } | null   recipient when ship_to_override set
-//   .lines[]      { seq, sku, desc, purity, origin, qty, unitEur, netEur }  (unitEur/netEur named for legacy; carry the DRAFT-currency amount)
-//   .total_eur    number            goods subtotal in the draft currency (legacy name)
-//   .total_pln    number|null
-//   .carrier      { awb, incoterm } | null   optional
+//   .doc_no            string            proforma number / label
+//   .date              string            issue date (ISO or formatted)
+//   .due               string|null       payment due date (used by EJTermsBlock for dynamic sentence)
+//   .payment           string            human-readable payment terms display string
+//   .payment_terms_days number|0         explicit payment window in days — primary authority for EJTermsBlock
+//   .currency          string            draft currency code (e.g. "USD"); labels use this, not a hardcoded EUR
+//   .rate              { eur: number, currency: string, date: string, table: string }  (eur = the PLN rate, mislabelled for legacy)
+//   .charges[]         { type, label, amount: number|null, currency, present }  freight / insurance (present=false → "not set")
+//   .seller            { name, addr, city, vat, email, phone, web }
+//   .buyer             { name, addr, city, country, vat }
+//   .ship_to           { name, addr, city, country } | null   recipient when ship_to_override set
+//   .lines[]           { seq, sku, desc, purity, origin, qty, unitEur, netEur }  (unitEur/netEur named for legacy; carry the DRAFT-currency amount)
+//   .total_eur         number            goods subtotal in the draft currency (legacy name)
+//   .total_pln         number|null
+//   .carrier           { awb, incoterm } | null   optional
+//   .banks[]           { cur, iban, swift, bank }  — adapted from flat iban_eur/usd/pln by proforma-detail.jsx
 //
 // Depends on: estrella-doc-tokens.css (loaded in index.html)
 // Exports: window.EJProformaClassic, window.EJProformaModern
@@ -49,7 +51,6 @@ function EJDocLogo({ size = "md", mono = false }) {
         <span className="ej-logo-name" style={mono ? { color: "#fff" } : {}}>
           ESTRELLA JEWELS
         </span>
-        <span className="ej-logo-tag">Fine Gold · Est. 2014</span>
       </div>
     </div>
   );
@@ -85,7 +86,7 @@ function EJDocBank({ banks }) {
     return (
       <div className="ej-bank">
         <div className="ej-eyebrow" style={{ marginBottom: 4 }}>
-          Bank details · Dane bankowe · Bankové údaje
+          Bank details · Dane bankowe
         </div>
         <div style={{ color: "#94A3B8", fontSize: 10 }}>
           Bank details available on the final invoice.
@@ -96,7 +97,7 @@ function EJDocBank({ banks }) {
   return (
     <div className="ej-bank">
       <div className="ej-eyebrow" style={{ marginBottom: 6 }}>
-        Bank details · Dane bankowe · Bankové údaje
+        Bank details · Dane bankowe
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {banks.map((b, i) => (
@@ -173,6 +174,114 @@ function EJDocCarrierRow({ carrier }) {
   );
 }
 
+// ── Diamond Declaration (Kimberley Process + WDC + WFDB) ─────────────────────
+function EJDiamondDecl() {
+  return (
+    <div style={{ fontSize: 9, color: "#334155", lineHeight: 1.55, marginTop: 14,
+      padding: "10px 12px", background: "#FBF8F1", borderLeft: "3px solid #C9A24B",
+      borderRadius: 2, pageBreakInside: "avoid", breakInside: "avoid" }}>
+      <div style={{ fontSize: 8.5, letterSpacing: "0.14em", textTransform: "uppercase",
+        fontWeight: 600, color: "#B0892F", marginBottom: 5 }}>
+        Diamond Declaration · Deklaracja diamentowa
+      </div>
+      <p style={{ margin: "0 0 5px" }}>
+        (1) The diamonds herein invoiced have been purchased from legitimate sources not involved in funding
+        conflict, in compliance with United Nations Resolutions and the Kimberley Process Certification Scheme
+        (KPCS) and corresponding national laws. The seller hereby guarantees that these diamonds are conflict
+        free and confirm adherence to the WDC SoW Guidelines.
+      </p>
+      <p style={{ margin: "0 0 5px" }}>
+        (2) The diamonds herein invoiced are exclusively of natural origin and untreated based on personal
+        knowledge and/or written guarantees provided by the suppliers of these diamonds. The acceptance of
+        goods herein invoiced will be as per The WFDB guidelines.
+      </p>
+      <p style={{ margin: 0 }}>We declare that diamonds invoiced is not from Russian origin.</p>
+    </div>
+  );
+}
+
+// ── Payment and Ownership Terms ───────────────────────────────────────────────
+// paymentDays: liveDraft.payment_terms_days (integer, may be 0/null)
+// dueDate:     liveDraft due-date string (ISO or "—") — computed from wFirma or invoice_date + days
+// issueDate:   liveDraft.invoice_date / created_at string — only used when both present to compute days
+function EJTermsBlock({ paymentDays, dueDate, issueDate }) {
+  let paymentSentence;
+  const days = Number(paymentDays) || 0;
+  const hasDue = dueDate && dueDate !== "—";
+
+  if (days > 0) {
+    // Authoritative: explicit payment_terms_days from draft
+    paymentSentence = `Payment received within ${days} days from Invoice Date.`;
+  } else if (hasDue && issueDate && issueDate !== "—") {
+    // Derive days from issue → due gap (ISO dates, UTC arithmetic)
+    const msPerDay = 86400000;
+    const iso = (s) => String(s || "").slice(0, 10);
+    const diff = Math.round(
+      (Date.parse(iso(dueDate) + "T00:00:00Z") - Date.parse(iso(issueDate) + "T00:00:00Z")) / msPerDay
+    );
+    if (!isNaN(diff) && diff > 0) {
+      paymentSentence = `Payment received within ${diff} days from Invoice Date.`;
+    } else {
+      paymentSentence = `Payment due by ${dueDate}.`;
+    }
+  } else {
+    // Fallback — no payment_terms_days and no computable due date
+    if (typeof console !== "undefined") {
+      console.warn("[EJTermsBlock] No payment_terms_days or due date — falling back to 30-day default.");
+    }
+    paymentSentence = "Payment received within 30 days from Invoice Date.";
+  }
+
+  return (
+    <div style={{ fontSize: 9, color: "#475569", lineHeight: 1.55, marginTop: 10,
+      pageBreakInside: "avoid", breakInside: "avoid" }}>
+      <div style={{ fontSize: 8.5, letterSpacing: "0.14em", textTransform: "uppercase",
+        fontWeight: 600, color: "#64748B", marginBottom: 4 }}>
+        Warunki płatności / Payment and Ownership Terms
+      </div>
+      {paymentSentence}{" "}Ownership of goods remains with the seller until full
+      payment is received. This transaction is governed by the laws of Poland and recognized under applicable
+      EU and international trade conventions.
+    </div>
+  );
+}
+
+// ── Signature Block — bilingual PL/EN, two-column ─────────────────────────────
+function EJSignatureBlock({ documentType }) {
+  const noun = documentType === "invoice" ? "faktury" : "pro formy";
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginTop: 24,
+      pageBreakInside: "avoid", breakInside: "avoid" }}>
+      <div>
+        <div style={{ borderTop: "1px solid #CBD5E1", height: 36, marginBottom: 6 }}/>
+        <div style={{ fontSize: 9, color: "#334155" }}>Imię i nazwisko osoby uprawnionej</div>
+        <div style={{ fontSize: 9, color: "#334155" }}>do wystawiania {noun}</div>
+        <em style={{ fontSize: 8.5, color: "#64748B" }}>seller's signature</em>
+      </div>
+      <div>
+        <div style={{ borderTop: "1px solid #CBD5E1", height: 36, marginBottom: 6 }}/>
+        <div style={{ fontSize: 9, color: "#334155" }}>Imię i nazwisko osoby uprawnionej</div>
+        <div style={{ fontSize: 9, color: "#334155" }}>do odbioru {noun}</div>
+        <em style={{ fontSize: 8.5, color: "#64748B" }}>buyer's signature</em>
+      </div>
+    </div>
+  );
+}
+
+// ── Official Company Footer ────────────────────────────────────────────────────
+function EJCompanyFooter() {
+  return (
+    <div style={{ marginTop: 14, borderTop: "1px solid #E2E8F0", paddingTop: 8,
+      fontSize: 8.5, color: "#94A3B8", lineHeight: 1.5,
+      pageBreakInside: "avoid", breakInside: "avoid" }}>
+      <strong style={{ color: "#64748B" }}>Estrella Jewels Sp. z o.o., Sp. K.</strong>
+      {" · "}Siedziba: Ul. Wybrzeże Kościuszkowskie 31/33, 00-379 Warszawa, Polska
+      {" · "}Sprzedaż: Ul. Sabały 58, 02-174 Warszawa, Polska
+      {" · "}info@estrellajewels.eu · www.estrellajewels.eu · tel.: 0048 22 2583398
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // VARIANT A — CLASSIC
 // Tall masthead, green/gold band header, formal party blocks, full table
@@ -202,7 +311,7 @@ function EJProformaClassic({ docData }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
           <EJDocLogo size="lg"/>
           <div style={{ textAlign: "right" }}>
-            <div className="ej-eyebrow ej-eyebrow-gold">Pro Forma · Predfaktúra</div>
+            <div className="ej-eyebrow ej-eyebrow-gold">Pro Forma · Faktura proforma</div>
             <div className="ej-h1" style={{ marginTop: 2 }}>Faktura proforma</div>
             <div className="ej-mono" style={{ fontSize: 14, color: "#0B3D2E", fontWeight: 600, marginTop: 4 }}>
               {d.doc_no || "—"}
@@ -232,9 +341,9 @@ function EJProformaClassic({ docData }) {
 
         {/* Party row — ship_to authority: ship_to_override when set, buyer otherwise */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
-          <EJDocAddress label="Sprzedawca · Seller · Predávajúci" party={d.seller}/>
-          <EJDocAddress label="Nabywca · Bill to · Odberateľ"     party={d.buyer}/>
-          <EJDocAddress label="Odbiorca · Ship to · Doručiť na"   party={d.ship_to || d.buyer}/>
+          <EJDocAddress label="Sprzedawca · Seller" party={d.seller}/>
+          <EJDocAddress label="Nabywca · Bill to"  party={d.buyer}/>
+          <EJDocAddress label="Odbiorca · Ship to" party={d.ship_to || d.buyer}/>
         </div>
 
         {/* Carrier row (if AWB known) */}
@@ -245,7 +354,7 @@ function EJProformaClassic({ docData }) {
           <thead>
             <tr>
               <th style={{ width: 22 }}>#</th>
-              <th>Description · Nazwa · Popis</th>
+              <th>Description · Nazwa</th>
               <th style={{ width: 80 }}>SKU / Code</th>
               <th style={{ width: 48 }}>Origin</th>
               <th className="ej-r" style={{ width: 36 }}>Qty</th>
@@ -327,28 +436,17 @@ function EJProformaClassic({ docData }) {
         {/* Compliance */}
         <EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/>
 
-        {/* Signature row */}
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 28, fontSize: 9, color: "#64748B" }}>
-          <div style={{ borderTop: "1px solid #CBD5E1", paddingTop: 4, width: 220 }}>
-            Authorised signatory · Estrella Jewels
-          </div>
-          <div style={{ borderTop: "1px solid #CBD5E1", paddingTop: 4, width: 220, textAlign: "right" }}>
-            Buyer signature
-          </div>
-        </div>
-      </div>
+        {/* Diamond declaration */}
+        <EJDiamondDecl/>
 
-      {/* Footer — ej-proforma-footer class lets @media print unpin this
-          from position:absolute so it flows after content on page 2+ */}
-      <div className="ej-proforma-footer" style={{
-        position: "absolute", bottom: 22, left: 48, right: 48,
-        display: "flex", justifyContent: "space-between",
-        fontSize: 8.5, color: "#94A3B8",
-        borderTop: "1px solid #E2E8F0", paddingTop: 10,
-      }}>
-        <span>{d.seller ? [d.seller.addr, d.seller.city].filter(Boolean).join(", ") : ""}</span>
-        <span>{d.seller && d.seller.email ? d.seller.email : ""}</span>
-        <span>{d.seller && d.seller.phone ? d.seller.phone : ""}</span>
+        {/* Payment and ownership terms */}
+        <EJTermsBlock paymentDays={d.payment_terms_days} dueDate={d.due} issueDate={d.date}/>
+
+        {/* Signature */}
+        <EJSignatureBlock documentType="proforma"/>
+
+        {/* Company footer */}
+        <EJCompanyFooter/>
       </div>
     </div>
   );
@@ -388,7 +486,7 @@ function EJProformaModern({ docData }) {
         {/* Hero doc number */}
         <div style={{ marginBottom: 28 }}>
           <div className="ej-eyebrow" style={{ marginBottom: 6 }}>
-            Pro Forma · Faktura proforma · Predfaktúra
+            Pro Forma · Faktura proforma
           </div>
           <div style={{ display: "flex", alignItems: "baseline", gap: 16 }}>
             <div className="ej-h1" style={{ fontSize: 36, color: "#0B3D2E" }}>{d.doc_no || "—"}</div>
@@ -524,17 +622,18 @@ function EJProformaModern({ docData }) {
 
         {/* Compliance */}
         <EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/>
-      </div>
 
-      <div style={{
-        position: "absolute", bottom: 18, left: 40, right: 40,
-        fontSize: 8.5, color: "#94A3B8",
-        display: "flex", justifyContent: "space-between",
-      }}>
-        {d.rate && d.rate.eur
-          ? <span>FX · NBP {d.rate.table || ""} · 1 {cur} = {Number(d.rate.eur).toFixed(4)} PLN</span>
-          : <span/>}
-        <span>{d.seller && d.seller.email ? `${d.seller.email}  ${d.seller.phone || ""}` : ""}</span>
+        {/* Diamond declaration */}
+        <EJDiamondDecl/>
+
+        {/* Payment and ownership terms */}
+        <EJTermsBlock paymentDays={d.payment_terms_days} dueDate={d.due} issueDate={d.date}/>
+
+        {/* Signature */}
+        <EJSignatureBlock documentType="proforma"/>
+
+        {/* Company footer */}
+        <EJCompanyFooter/>
       </div>
     </div>
   );
@@ -567,7 +666,7 @@ function EJProformaBold({ docData }) {
             Pro Forma
           </div>
           <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.1 }}>{d.doc_no || "—"}</div>
-          <div style={{ fontSize: 10, opacity: 0.75, marginTop: 4 }}>Faktura proforma · Predfaktúra</div>
+          <div style={{ fontSize: 10, opacity: 0.75, marginTop: 4 }}>Faktura proforma</div>
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -675,6 +774,18 @@ function EJProformaBold({ docData }) {
 
         <EJDocBank banks={d.banks || []}/>
         <div style={{ marginTop: 16 }}><EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/></div>
+
+        {/* Diamond declaration */}
+        <EJDiamondDecl/>
+
+        {/* Payment and ownership terms */}
+        <EJTermsBlock paymentDays={d.payment_terms_days} dueDate={d.due} issueDate={d.date}/>
+
+        {/* Signature */}
+        <EJSignatureBlock documentType="proforma"/>
+
+        {/* Company footer */}
+        <EJCompanyFooter/>
       </div>
     </div>
   );

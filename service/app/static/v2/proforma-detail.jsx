@@ -1207,12 +1207,28 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     carrier:  liveDraft.batch_id
       ? { awb: liveDraft.batch_id, incoterm: liveDraft.incoterm || 'DAP' } : null,
     // EUR first — the document currency leads; sort is stable for the rest.
-    banks:    (companyProfile && companyProfile.bank_accounts || []).map(b => ({
-      cur:   b.currency || b.cur || 'EUR',
-      iban:  b.iban || '—',
-      swift: b.bic || b.swift || '',
-      bank:  b.bank_name || b.bank || '',
-    })).sort((a, b) => (b.cur === 'EUR') - (a.cur === 'EUR')),
+    // Backend returns flat iban_eur/iban_usd/iban_pln/swift/bank_name fields (not bank_accounts[]).
+    // Adapt here so EJDocBank receives a normalised array regardless of future schema changes.
+    banks: (() => {
+      if (!companyProfile) return [];
+      // Future shape: bank_accounts[] array
+      if (companyProfile.bank_accounts && companyProfile.bank_accounts.length) {
+        return companyProfile.bank_accounts
+          .map(b => ({
+            cur:   b.currency || b.cur || 'EUR',
+            iban:  b.iban || '—',
+            swift: b.bic || b.swift || '',
+            bank:  b.bank_name || b.bank || '',
+          }))
+          .sort((a, b) => (b.cur === 'EUR') - (a.cur === 'EUR'));
+      }
+      // Current shape: flat iban_eur / iban_usd / iban_pln + shared swift/bank_name
+      return [
+        companyProfile.iban_eur ? { cur: 'EUR', iban: companyProfile.iban_eur, swift: companyProfile.swift || '', bank: companyProfile.bank_name || '' } : null,
+        companyProfile.iban_usd ? { cur: 'USD', iban: companyProfile.iban_usd, swift: companyProfile.swift || '', bank: companyProfile.bank_name || '' } : null,
+        companyProfile.iban_pln ? { cur: 'PLN', iban: companyProfile.iban_pln, swift: companyProfile.swift || '', bank: companyProfile.bank_name || '' } : null,
+      ].filter(Boolean).sort((a, b) => (b.cur === 'EUR') - (a.cur === 'EUR'));
+    })(),
   };
   // ── cmrData for CMR preview (EJCMRClassic / EJCMRModern) ─────────────────
   // No CMR backend route exists — this is client-side preview only.

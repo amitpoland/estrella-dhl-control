@@ -93,7 +93,6 @@ function EJPackingList({ packingData }) {
             </svg>
             <div className="ej-logo-text">
               <span className="ej-logo-name">ESTRELLA JEWELS</span>
-              <span className="ej-logo-tag">Fine Gold · Est. 2014</span>
             </div>
           </div>
           <div style={{ textAlign: 'right' }}>

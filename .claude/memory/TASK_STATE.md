@@ -17,12 +17,24 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
-- **Task:** Proforma draft authority UI (V1) — customer-authority summary above lines (A), canonical product-description display + provenance (B), blocked draft-birth records surfaced (C), V2 inspected/reported not switched (D)
-- **Started:** 2026-06-21
-- **Status:** IN_PROGRESS → CLOSE (PR open)
-- **HOLD reason (if BLOCKED-HOLD):** —
-- **Branch / worktree:** `feat/proforma-authority-ui` @ `C:\PZ-pf-ui` (base origin/main `dc58ad4`)
-- **Notes:** V1 frozen — minimal critical operator-readiness only. Display-only (no wFirma post / valuation change). GATE-6 = JSX compiles (offline Babel, 0 fail) + 46 structural tests; live browser behavioural verify deferred to deploy. reviewer-challenge CLEAR-WITH-CONDITIONS (resolved), frontend-flow findings fixed (testid §8 + token), final-consistency CLEAR. BACKLOG B-012..B-014.
+- **Task:** End-to-end batch reconciliation post-PZ — AWB 9158478722, batch `SHIPMENT_9158478722_2026-06_924c4e59`, PZ 5/6/2026 (doc 189897571). Verify PZ + sales packing + drafts #34–#43 readiness/reservation; backfill `design_product_mapping`; over-bill check; advisory-vs-blocker per (operator-asserted) Lesson N. **No PZ/product/proforma/reservation/wFirma/fiscal writes.**
+- **Started:** 2026-06-23
+- **Status:** BLOCKED-HOLD (local half COMPLETE; live half needs prod)
+- **HOLD reason (if BLOCKED-HOLD):** Missing access (condition #2) — drafts #34–#43, `pz_rows.json`, `audit.json`, `design_product_mapping` live only in prod `C:\PZ`. Re-confirmed: shipment absent from all local DBs; `localhost:47213`→000; public `pz.estrellajewels.eu`→401 (no token, not hunting for one). Live readiness GETs + over-bill (needs pz_rows qty authority) + PZ-exists-in-wFirma can't run here.
+- **Branch / worktree:** `chore/governance-pr719-observe` (Mac) — analysis artifacts only, no code edits.
+- **Notes (KEY mechanism):** `GET /draft/{id}/readiness` SELF-POPULATES `design_product_mapping` (write-on-read, routes_proforma.py:5691 docstring) → steps 4+6 are ONE action; operator's "parse → re-run → mapping self-heals" theory CONFIRMED in code. Drafts bind 1:1 to invoices by client header (all evidence-verified): 34→299 Clear-Diamonds, 35→296 OMARA, 36→294 Dream Rings, 37→293 Panaks, 38→292 Diamond Point, 39→300 Sagar Shah, 40→298 SAS Mayuri, 41→291 Magdalena Kumar/Railing 2, 42→290 MB Adagia, 43→297 Longvé/Signium. 80 real SKU lines, 66 distinct designs, 3 PND advisories (inv299 sr3/7/8 PO LM). PZ arithmetic internally consistent (21×409.03=8589.63; net×1.23=gross; VAT 23%). Bridge: `design_product_bridge.populate_from_packing`; mapping DB=`reservation_queue.db`. Lesson N NOT in CLAUDE.md (stops at M) — flagged for codification. Prod runner: `.claude/campaigns/sales-packing-290-300-reconcile/prod_reconcile.py` (read-only, 10 readiness GETs + pz_rows over-bill). Artifacts in that campaign's `artifacts/`.
+
+### Earlier sub-task (COMPLETE) — Draft #34 sales-packing parse
+
+- 10/10 packing lists parsed; same campaign artifacts (packing_authority.json, reconciliation_input.json). Superseded by this end-to-end task.
+
+### Prior task — DHL DSK/cesja auto-forward VERIFICATION (BLOCKED-HOLD, same AWB)
+
+- Determine failure path (A poll-latency / B ingest-classify / C SMTP-gate / D monitor-not-running). Same access boundary: prod state on `C:\PZ`. Awaiting Kaushal to run `.claude/campaigns/dhl-agency-forward-verify/collect-evidence.ps1`. Shipment operationally UNBLOCKED (manual notify-to-proceed msg `1782120964135130200`, delivered). Send gate = `_smtp_configured()`+`ENV=prod` (`email_sender.py:517`); triggers `active_shipment_monitor.py:1702-1735`.
+
+### Prior task (PR open) — Proforma draft authority UI (V1)
+
+- `feat/proforma-authority-ui` @ `C:\PZ-pf-ui` (base origin/main `dc58ad4`). Display-only customer-authority summary + canonical product-description + blocked draft-birth records; V2 inspected/reported not switched. GATE-6 = JSX compiles (offline Babel) + 46 structural tests; browser verify deferred to deploy. reviewer-challenge + frontend-flow CLEAR. BACKLOG B-012..B-014.
 
 ### Prior task (COMPLETE) — PR-3 Dropdown selection wins
 

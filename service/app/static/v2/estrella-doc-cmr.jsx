@@ -127,7 +127,6 @@ function EJCMRClassic({ cmrData }) {
             </svg>
             <div className="ej-logo-text">
               <span className="ej-logo-name">ESTRELLA JEWELS</span>
-              <span className="ej-logo-tag">Fine Gold · Est. 2014</span>
             </div>
           </div>
           <div style={{ textAlign: "right" }}>
@@ -186,7 +185,7 @@ function EJCMRClassic({ cmrData }) {
               background: "#F8FAFC", fontSize: 9.5,
             }}>
               <span style={{ color: "#475569", fontWeight: 600 }}>Goods: </span>
-              <span>Fine Gold Jewellery · {d.goods_summary}</span>
+              <span>{d.goods_summary}</span>
               <span style={{ marginLeft: 10, color: "#64748B" }}>Country of Origin: India</span>
             </div>
           )}
@@ -318,7 +317,6 @@ function EJCMRModern({ cmrData }) {
             </svg>
             <div className="ej-logo-text">
               <span className="ej-logo-name">ESTRELLA JEWELS</span>
-              <span className="ej-logo-tag">Fine Gold · Est. 2014</span>
             </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
@@ -332,7 +330,7 @@ function EJCMRModern({ cmrData }) {
 
         {/* Hero */}
         <div style={{ marginBottom: 24 }}>
-          <div className="ej-eyebrow">Delivery Note · List przewozowy · Dodací list</div>
+          <div className="ej-eyebrow">Delivery Note · List przewozowy</div>
           <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginTop: 4 }}>
             <div className="ej-h1" style={{ fontSize: 34, color: "#0B3D2E" }}>{d.cmr_no || "—"}</div>
             {carrier && carrier.awb && (
@@ -410,7 +408,7 @@ function EJCMRModern({ cmrData }) {
             border: "1px solid #E2E8F0", borderRadius: 6, marginBottom: 16, fontSize: 10,
           }}>
             <span style={{ fontWeight: 600, color: "#0B3D2E" }}>Goods: </span>
-            <span>Fine Gold Jewellery · {d.goods_summary}</span>
+            <span>{d.goods_summary}</span>
             <span style={{ marginLeft: 10, color: "#64748B" }}>· Country of Origin: India</span>
           </div>
         )}
