@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse, Response, HTMLResponse
 from ..core.config import settings
 from ..core.security import require_api_key
 from ..core.logging import get_logger
+from ..services import cpa_product_service as _cpa
 from ..services import document_db as ddb
 from ..services import packing_db  as pdb
 from ..services import warehouse_db as wdb  # noqa: F401  (kept for cross-DB queries)
@@ -720,7 +721,7 @@ def _build_preview(batch_id: str, client_name: str,
 
     # ── 1. Resolution rows (sales → wFirma product_code) ────────────────────
     resolution_rows = [
-        r for r in ddb.query_sales_to_wfirma(batch_id)
+        r for r in _cpa.query_sales_resolution(batch_id)
         if (r.get("client_name") or "").strip() == client_name
     ]
     if not resolution_rows:
@@ -5652,10 +5653,10 @@ def _derive_draft_readiness(
     duplicate_product_codes: List[Dict[str, Any]] = []
     product_authority_available = True
     try:
-        from ..services.product_authority_resolver import (  # noqa: PLC0415
-            resolve_batch_product_authority as _resolve_authority,
+        from ..services.cpa_product_service import (  # noqa: PLC0415
+            authority_snapshot as _cpa_authority_snapshot,
         )
-        _auth = _resolve_authority(draft.batch_id or "")
+        _auth = _cpa_authority_snapshot(draft.batch_id or "")
         if not _auth.get("authority_available", True):
             # FAIL CLOSED (OQ-PR689-OVERBILL-FAILCLOSED): packing_lines authority
             # could not be READ — we cannot prove product_code validity, available
