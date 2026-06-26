@@ -178,10 +178,27 @@ def query_sales_resolution(batch_id: str) -> List[Dict[str, Any]]:
     return _q(batch_id)
 
 
+def design_to_product_codes(
+    batch_id: str,
+    *,
+    packing_rows: Optional[List[Dict[str, Any]]] = None,
+    packing_db_path: Optional[Path] = None,
+) -> Dict[str, List[str]]:
+    """Canonical {design_no(stripped): [product_code, …]} for the batch.
+
+    Thin delegation to product_authority_resolver.design_to_product_codes.
+    CPA is the single service boundary for product-authority reads; callers
+    must not import product_authority_resolver.design_to_product_codes directly.
+    """
+    from .product_authority_resolver import design_to_product_codes as _f  # noqa: PLC0415
+    return _f(batch_id, packing_rows=packing_rows, packing_db_path=packing_db_path)
+
+
 __all__ = [
     "upsert_product_master_from_packing",
     "authority_snapshot",
     "is_billed_product_code_valid",
     "reconcile_billed",
     "query_sales_resolution",
+    "design_to_product_codes",
 ]
