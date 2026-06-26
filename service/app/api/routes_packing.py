@@ -552,6 +552,27 @@ async def upload_packing_list(
         },
     )
 
+    _parse_warning = None
+    if result["total_rows"] == 0:
+        _diag = result.get("parser_diagnostic") or {}
+        _audit = _diag.get("column_mapping_audit") or []
+        _parse_warning = {
+            "failure_reason": _diag.get("failure_reason"),
+            "unresolved_columns": [
+                m.get("raw_header") for m in _audit if m.get("method") == "unresolved"
+            ],
+            "llm_suggestions": [
+                {
+                    "header":          m.get("raw_header"),
+                    "suggested_field": m.get("canonical_field"),
+                    "confidence":      m.get("score"),
+                    "reason":          m.get("reason"),
+                }
+                for m in _audit if m.get("method") == "llm"
+            ],
+            "llm_auto_triggered": _diag.get("llm_auto_triggered", False),
+        }
+
     return {
         "ok":                   True,
         "batch_id":             batch_id,
@@ -564,6 +585,7 @@ async def upload_packing_list(
         "unmatched_count":  result["unmatched_count"],
         "inserted_count":   inserted,
         "force_reextract":  force_reextract,
+        "parse_warning":    _parse_warning,
     }
 
 

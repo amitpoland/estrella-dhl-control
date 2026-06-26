@@ -447,7 +447,17 @@ _FIELD_ALIASES: Dict[str, str] = {
     "pcs_qty":      "quantity",      "qty_pcs":  "quantity",
     "gross_weight": "gross_weight",  "gross_wt": "gross_weight","gw":  "gross_weight",
     "net_weight":   "net_weight",    "net_wt":   "net_weight",  "nw":  "net_weight",
-    "dia_wt":       "diamond_weight","col_wt":   "color_weight",
+    # Diamond weight — expanded supplier variants
+    "dia_wt":          "diamond_weight",  "diamond_wt":     "diamond_weight",
+    "diamond_weight":  "diamond_weight",  "dia_weight":     "diamond_weight",
+    "diam_wt":         "diamond_weight",  "diamondwt":      "diamond_weight",
+    "d_wt":            "diamond_weight",  "diamt":          "diamond_weight",
+    # Color / colour weight — expanded supplier variants
+    "col_wt":          "color_weight",    "color_weight":   "color_weight",
+    "colour_weight":   "color_weight",    "color_wt":       "color_weight",
+    "colour_wt":       "color_weight",    "col_weight":     "color_weight",
+    "c_wt":            "color_weight",    "colwt":          "color_weight",
+    "colourwt":        "color_weight",
     "qualtity":     "quality_string",  # observed typo in Pkg3806Rpt template
     # metal / karat / colour
     # EJL packing variants: "Kt/Color" combined OR "Kt"+"Col" separate cells.
@@ -465,7 +475,8 @@ _FIELD_ALIASES: Dict[str, str] = {
     "unit_price":  "unit_price",
     "rate_usd":    "unit_price",
     "total_value": "total_value",
-    "size":        "size",
+    "size":        "size",  "ring_size":   "size",  "sz":          "size",
+    "size_mm":     "size",  "finger_size": "size",
     "client_po":   "client_po",      # sales-side PO reference
     "order_no":    "client_po",
     # invoice link (purchase + export references)
@@ -694,7 +705,10 @@ def _find_header_row(rows: List[List[Any]]) -> int:
     def _is_qty_header(h: str) -> bool:
         return h in ("qty", "quantity", "pcs") or "qty" in h or "pcs_qty" == h
     def _is_design_header(h: str) -> bool:
-        return h in ("designno", "design", "design_no", "style", "ctg", "category") or "design" in h
+        return h in (
+            "designno", "design", "design_no", "style", "ctg", "category",
+            "style_no", "styleno", "sku", "item",
+        ) or "design" in h or "style" in h
 
     for idx, row in enumerate(rows[:25]):  # only scan top 25 rows
         norm = [_normalise_header(str(c) if c is not None else "") for c in row]
@@ -1299,6 +1313,23 @@ def process_packing_upload(
     raw_rows, parser_name, parser_version, parser_diagnostic = extract_packing(
         packing_file_path, supplier_id=supplier_id,
     )
+
+    # Auto-run LLM advisory tier when extraction yields 0 rows (XLSX only).
+    # Rows from the second call are DISCARDED — only column_mapping_audit is merged.
+    # build_col_map() already excludes method="llm", so no business records are affected.
+    if not raw_rows and packing_file_path.suffix.lower() in (".xlsx", ".xls"):
+        try:
+            _, _, _, _llm_diag = extract_packing(packing_file_path, llm_fallback=True)
+            parser_diagnostic["column_mapping_audit"] = (
+                _llm_diag.get("column_mapping_audit") or []
+            )
+            parser_diagnostic["llm_auto_triggered"] = True
+            parser_diagnostic["llm_auto_trigger_reason"] = (
+                parser_diagnostic.get("failure_reason") or "zero_rows"
+            )
+        except Exception as _e:
+            parser_diagnostic["llm_auto_triggered"] = False
+            parser_diagnostic["llm_auto_trigger_error"] = str(_e)[:200]
 
     # ── Supplier-specific pipeline (Global Jewellery) ─────────────────────
     if parser_diagnostic.get("supplier") == "global_jewellery":
