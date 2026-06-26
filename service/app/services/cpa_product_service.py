@@ -167,9 +167,21 @@ def reconcile_billed(
     )
 
 
+def query_sales_resolution(batch_id: str) -> List[Dict[str, Any]]:
+    """Sales allocation rows for a batch, via the v_sales_to_wfirma read path.
+
+    Thin delegation to document_db.query_sales_to_wfirma.  CPA is the single
+    service boundary for all product-authority reads; callers must not import
+    document_db.query_sales_to_wfirma directly for authority decisions.
+    """
+    from .document_db import query_sales_to_wfirma as _q  # noqa: PLC0415
+    return _q(batch_id)
+
+
 __all__ = [
     "upsert_product_master_from_packing",
     "authority_snapshot",
     "is_billed_product_code_valid",
     "reconcile_billed",
+    "query_sales_resolution",
 ]
