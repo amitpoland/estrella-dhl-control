@@ -265,13 +265,78 @@ def _setup_db_for_draft(tmp_path: Path, cm: CustomerMaster) -> pildb.ProformaDra
         product_name="Ring",
     )
 
-    # Insert a draft row directly with status='draft' (not 'pending_local') so
-    # the _ensure_drafts_table backfill never reverts draft_state to 'posting'.
+    now = "2026-01-01T00:00:00Z"
+
+    # ── Seed documents.db ────────────────────────────────────────────────────
+    # Must happen BEFORE the draft INSERT so name_pl on the line flows from
+    # product_descriptions (the single authority), not from a hardcoded string.
+    # documents.db is created at app startup via init_document_db(storage_root/).
+    doc_db = tmp_path / "documents.db"
+    _name_pl = ""
+    if doc_db.exists():
+        with sqlite3.connect(str(doc_db)) as doc_conn:
+            # Single authority for Polish customs description.
+            # Seeding here simulates what the customs description pipeline writes;
+            # the draft line reads name_pl FROM this row (see below), not independently.
+            doc_conn.execute(
+                "INSERT OR IGNORE INTO product_descriptions "
+                "(product_code, item_type, name_pl, description_pl, description_en, "
+                " material_pl, purpose_pl, description_block, description_line, "
+                " source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (PRODUCT_CODE, "jewelry",
+                 "Pierścionek złoty",
+                 "Pierścionek z 14-karatowego złota wysadzany diamentami.",
+                 "Ring in 14-carat gold set with diamonds.",
+                 "", "", "", "", "manual", now, now),
+            )
+            # Read back so the draft line value provably comes from product_descriptions,
+            # matching what _birth_resolve_name_pl does in production.
+            row = doc_conn.execute(
+                "SELECT name_pl FROM product_descriptions WHERE product_code=?",
+                (PRODUCT_CODE,),
+            ).fetchone()
+            _name_pl = row[0] if row else ""
+
+            # Seed sales rows so query_sales_to_wfirma returns non-empty
+            # (satisfies the "no sales rows" blocking gate added by PR #683).
+            doc_conn.execute(
+                "INSERT OR IGNORE INTO sales_documents "
+                "(id, batch_id, client_name, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("sdoc-test-1", BATCH, CLIENT, now, now),
+            )
+            doc_conn.execute(
+                "INSERT OR IGNORE INTO sales_packing_lines "
+                "(id, batch_id, sales_document_id, client_name, design_no, "
+                " quantity, unit_price, currency, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("spl-test-1", BATCH, "sdoc-test-1", CLIENT, "R1",
+                 1.0, 100.0, "EUR", now),
+            )
+
+    # ── Seed packing.db ──────────────────────────────────────────────────────
+    # One packing line for PRODUCT_CODE so the over-bill guard sees available >= billed.
+    # packing.db is created at app startup via init_packing_db(storage_root/packing.db).
+    pack_db = tmp_path / "packing.db"
+    if pack_db.exists():
+        with sqlite3.connect(str(pack_db)) as pack_conn:
+            pack_conn.execute(
+                "INSERT OR IGNORE INTO packing_lines "
+                "(id, packing_document_id, batch_id, product_code, design_no, "
+                " quantity, invoice_no, invoice_line_position, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("pl-test-1", "pdoc-test-1", BATCH, PRODUCT_CODE, "R1",
+                 1.0, "INV-001", 1, now, now),
+            )
+
+    # ── Insert the draft ─────────────────────────────────────────────────────
+    # name_pl on the line is derived from product_descriptions above — the single
+    # authority — simulating what _birth_resolve_name_pl stores in production.
     lines_json = json.dumps([{
         "product_code": PRODUCT_CODE, "design_no": "R1",
         "qty": 1.0, "unit_price": 100.0, "currency": "EUR",
+        "name_pl": _name_pl,
     }])
-    now = "2026-01-01T00:00:00Z"
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         pildb._ensure_drafts_table(conn)
@@ -731,8 +796,13 @@ class TestADR027Integration:
     def test_i12_d3_advisory_written_to_audit_wdt_vies_not_valid(
         self, tmp_path, monkeypatch, app_client
     ):
-        """I12: WDT + vat_eu_valid=False → advisory IS written to audit.json
+        """I12: WDT + vat_eu_valid=None → advisory IS written to audit.json
         (type=vies_unverified, channel=advisory_gate) AND post is NOT blocked.
+
+        vat_eu_valid=None (unverified) is the advisory path per the D3 state machine:
+        - None → advisory (does not block)
+        - False → block (requires operator vat_mode override to proceed)
+        This test uses None so the fixture exercises the advisory write path.
 
         This test pins the structured D3 advisory write end-to-end:
         - resolve_vat_context_from_master returns d3_vies_warning=True
@@ -747,19 +817,24 @@ class TestADR027Integration:
             bill_to_name=CLIENT,
             country="FR",
             vat_eu_number="FR12345678",
-            vat_eu_valid=False,   # D3 fires: vat_eu_valid is not True
+            vat_eu_valid=None,    # D3 advisory path: unverified (not False=block)
             vat_mode=None,        # derived path so d3_vies_flag is set from resolver
         )
         self._patch_env(tmp_path, monkeypatch, cm)
         draft = _setup_db_for_draft(tmp_path, cm)
         self._mock_wfirma_http(monkeypatch, vat_code_id="228")
 
-        # Create audit.json so _write_advisory_proposal has a target to write
+        # Create audit.json so _write_advisory_proposal has a target to write.
+        # Include wfirma_pz_doc_id so _check_proforma_export_prerequisites passes.
         audit_dir = tmp_path / "outputs" / BATCH
         audit_dir.mkdir(parents=True, exist_ok=True)
         audit_path = audit_dir / "audit.json"
         audit_path.write_text(
-            _json.dumps({"batch_id": BATCH, "action_proposals": []}),
+            _json.dumps({
+                "batch_id": BATCH,
+                "action_proposals": [],
+                "wfirma_export": {"wfirma_pz_doc_id": "PZ/001/2026"},
+            }),
             encoding="utf-8",
         )
 
@@ -809,11 +884,16 @@ class TestADR027Integration:
         draft = _setup_db_for_draft(tmp_path, cm)
         self._mock_wfirma_http(monkeypatch, vat_code_id="228")
 
+        # Include wfirma_pz_doc_id so _check_proforma_export_prerequisites passes.
         audit_dir = tmp_path / "outputs" / BATCH
         audit_dir.mkdir(parents=True, exist_ok=True)
         audit_path = audit_dir / "audit.json"
         audit_path.write_text(
-            _json.dumps({"batch_id": BATCH, "action_proposals": []}),
+            _json.dumps({
+                "batch_id": BATCH,
+                "action_proposals": [],
+                "wfirma_export": {"wfirma_pz_doc_id": "PZ/001/2026"},
+            }),
             encoding="utf-8",
         )
 
