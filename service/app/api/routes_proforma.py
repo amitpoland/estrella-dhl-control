@@ -5311,7 +5311,7 @@ def _eu_vat_candidate_from_master(cm: Any) -> Optional[Dict[str, str]]:
 # in the single canonical resolver (product_authority_resolver). They are
 # re-exported here under their historical private names so the readiness gate
 # and the existing tests are unchanged. See service/docs/adr/ADR-product-authority.md.
-from ..services.product_authority_resolver import (  # noqa: E402
+from ..services.cpa_product_service import (  # noqa: E402
     reconcile_billed_ambiguity as _reconcile_billed_ambiguity,
     analyze_product_code_billing as _analyze_product_code_billing,
 )

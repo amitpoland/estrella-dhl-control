@@ -194,6 +194,35 @@ def design_to_product_codes(
     return _f(batch_id, packing_rows=packing_rows, packing_db_path=packing_db_path)
 
 
+def reconcile_billed_ambiguity(
+    ambiguous_design_codes: Dict[str, Any],
+    draft_lines: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Reconcile batch-level design_no ambiguity against what is billed.
+
+    Thin delegation to product_authority_resolver.reconcile_billed_ambiguity.
+    CPA is the single service boundary for product-authority logic; callers
+    must not import product_authority_resolver.reconcile_billed_ambiguity directly.
+    """
+    from .product_authority_resolver import reconcile_billed_ambiguity as _f  # noqa: PLC0415
+    return _f(ambiguous_design_codes, draft_lines)
+
+
+def analyze_product_code_billing(
+    draft_lines: List[Dict[str, Any]],
+    available_by_pc: Dict[str, Any],
+    invoice_by_pc: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    """Aggregate billed quantity per product_code vs available quantity.
+
+    Thin delegation to product_authority_resolver.analyze_product_code_billing.
+    CPA is the single service boundary for product-authority logic; callers
+    must not import product_authority_resolver.analyze_product_code_billing directly.
+    """
+    from .product_authority_resolver import analyze_product_code_billing as _f  # noqa: PLC0415
+    return _f(draft_lines, available_by_pc, invoice_by_pc)
+
+
 __all__ = [
     "upsert_product_master_from_packing",
     "authority_snapshot",
@@ -201,4 +230,6 @@ __all__ = [
     "reconcile_billed",
     "query_sales_resolution",
     "design_to_product_codes",
+    "reconcile_billed_ambiguity",
+    "analyze_product_code_billing",
 ]
