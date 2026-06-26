@@ -844,6 +844,29 @@ def get_customer(db_path: Path, bill_to_contractor_id: str) -> Optional[Customer
     return _row_to_customer(row) if row else None
 
 
+def update_vat_eu_result(
+    db_path: Path,
+    bill_to_contractor_id: str,
+    *,
+    vat_eu_valid: Optional[bool],
+    vat_eu_validated_at: Optional[str],
+) -> bool:
+    """Targeted write for VIES validation results.
+
+    Touches only vat_eu_valid and vat_eu_validated_at — no other fields.
+    Returns True if a row was updated, False if the contractor was not found.
+    Caller is responsible for audit logging.
+    """
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute(
+            "UPDATE customer_master "
+            "SET vat_eu_valid=?, vat_eu_validated_at=? "
+            "WHERE bill_to_contractor_id=?",
+            (_to_int(vat_eu_valid), vat_eu_validated_at, bill_to_contractor_id),
+        )
+        return cur.rowcount > 0
+
+
 def list_customers(db_path: Path,
                    country: Optional[str] = None,
                    risk_status: Optional[str] = None,

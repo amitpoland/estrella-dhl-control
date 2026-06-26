@@ -41,6 +41,12 @@ from ..services.customer_master_db import (
     restore_customer,
     hard_delete_customer,
 )
+from ..services.customer_intelligence import (
+    validate_customer_vat,
+    kuke_is_currently_active,
+    get_kuke_risk,
+    HttpViesConnector,
+)
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/customer-master", tags=["customer-master"])
@@ -925,3 +931,94 @@ def restore_customer_endpoint(contractor_id: str, request: Request) -> JSONRespo
     audit_safe("customers", "restore", contractor_id,
                request=request, before=before, after=after)
     return JSONResponse(_customer_to_dict(after))
+
+
+@router.post(
+    "/{contractor_id}/validate-vat",
+    dependencies=[_auth],
+    summary="Run VIES validation and update Customer Master vat_eu_valid field",
+)
+def validate_vat_endpoint(contractor_id: str, request: Request) -> JSONResponse:
+    """Validate the customer's EU VAT number via the EC VIES REST API.
+
+    WHAT THIS DOES
+    - Reads the customer's vat_eu_number from Customer Master.
+    - Calls the EC VIES REST API.
+    - If valid or invalid: updates vat_eu_valid + vat_eu_validated_at in Customer Master.
+    - If unavailable: leaves Customer Master unchanged.
+    - Writes an audit log entry recording the before/after state.
+    - Returns the validation result and current KUKE risk advisory.
+
+    WHEN TO CALL
+    - Manually, by operator, when onboarding a new EU customer.
+    - After updating vat_eu_number.
+    - On periodic compliance review (not on every page load).
+
+    GOVERNANCE
+    - Does NOT change vat_mode, kuke_approved, kyc_status, or fiscal fields.
+    - VIES unavailable is advisory only — never a hard block.
+    - Requires API key. No admin role needed (read + targeted write).
+    """
+    cm_before = get_customer(_DB_PATH, contractor_id)
+    if cm_before is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Customer not found: contractor_id={contractor_id!r}",
+        )
+
+    try:
+        action = validate_customer_vat(
+            _DB_PATH,
+            contractor_id,
+            vies_connector=HttpViesConnector(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        log.error("validate_vat failed contractor_id=%s: %s", contractor_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"VIES validation error: {exc}")
+
+    cm_after = get_customer(_DB_PATH, contractor_id)
+
+    audit_safe(
+        "customers", "update", contractor_id,
+        request=request,
+        before={
+            "vat_eu_valid":        cm_before.vat_eu_valid,
+            "vat_eu_validated_at": cm_before.vat_eu_validated_at,
+        },
+        after={
+            "vat_eu_valid":        action.vat_eu_valid,
+            "vat_eu_validated_at": action.validated_at,
+            "vies_status":         action.vies_status,
+            "source":              action.source,
+        },
+    )
+
+    log.info(
+        "validate_vat contractor_id=%s vies_status=%s cm_updated=%s",
+        contractor_id, action.vies_status, action.cm_updated,
+    )
+
+    kuke_risk = get_kuke_risk(cm_after) if cm_after else None
+
+    return JSONResponse({
+        "contractor_id":     action.contractor_id,
+        "vat_number":        action.vat_number,
+        "vies_status":       action.vies_status,
+        "vat_eu_valid":      action.vat_eu_valid,
+        "cm_updated":        action.cm_updated,
+        "validated_at":      action.validated_at,
+        "source":            action.source,
+        "raw_name":          action.raw_name,
+        "raw_address":       action.raw_address,
+        "advisory":          action.advisory,
+        "d3_cleared":        action.d3_cleared,
+        "d3_blocked":        action.d3_blocked,
+        "kuke_risk": {
+            "code":               kuke_risk.code,
+            "level":              kuke_risk.level,
+            "description":        kuke_risk.description,
+            "recommended_action": kuke_risk.recommended_action,
+        } if kuke_risk else None,
+    })

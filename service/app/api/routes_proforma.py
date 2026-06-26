@@ -5591,11 +5591,24 @@ def _derive_draft_readiness(
                                 "vat_mode to bypass missing VAT data.",
                             )
                     elif getattr(_r_cm, "vat_eu_valid", None) is not True:
-                        warnings.append(
-                            "vies_unverified: buyer vat_eu_number present "
-                            "but VIES validity not confirmed (advisory — "
-                            "does not block; D3 ADR-027)"
-                        )
+                        if getattr(_r_cm, "vat_eu_valid", None) is False:
+                            # VIES confirmed INVALID — block readiness until
+                            # operator sets vat_mode override or corrects VAT.
+                            _add(
+                                "WDT blocked: VIES confirmed EU VAT number "
+                                f"{getattr(_r_cm, 'vat_eu_number', '') or ''!r} "
+                                "is INVALID — WDT 0% is not substantiated.",
+                                "Set vat_mode override on Customer Master to manually "
+                                "apply a different VAT treatment, or obtain a valid "
+                                "EU VAT number and re-run VIES validation "
+                                "(POST /api/v1/customer-master/{id}/validate-vat).",
+                            )
+                        else:
+                            warnings.append(
+                                "vies_unverified: buyer vat_eu_number present "
+                                "but VIES validity not confirmed (advisory — "
+                                "does not block; D3 ADR-027)"
+                            )
         elif _r_contractor:
             warnings.append(
                 "no customer_master record for contractor "
