@@ -2792,6 +2792,199 @@ def link_packing_as_sales(
     }
 
 
+# ── POST /api/v1/packing/{batch_id}/manual-sales-allocation ──────────────────
+
+
+class _ManualAllocationLine(BaseModel):
+    product_code: str = ""
+    design_no: str = ""
+    quantity: float
+    unit_price: float
+    currency: str = "EUR"
+    bag_id: str = ""
+    remarks: str = ""
+
+
+class _ManualSalesAllocationBody(BaseModel):
+    client_name: str
+    client_ref: str = ""
+    client_contractor_id: str = ""
+    lines: List[_ManualAllocationLine]
+
+
+@router.post("/{batch_id}/manual-sales-allocation", dependencies=[_auth])
+def manual_sales_allocation(
+    batch_id: str,
+    body: _ManualSalesAllocationBody,
+) -> Dict[str, Any]:
+    """Write sales_packing_lines without a sales packing XLSX upload.
+
+    Validates each requested line against purchase packing authority, checks
+    over-allocation, then writes via replace_sales_packing_lines (idempotent:
+    re-POST replaces the prior allocation for this batch+client).
+    price_source='manual_allocation' on every written row.
+    """
+    import hashlib as _hl
+    from datetime import datetime as _dt
+
+    output_dir = _validate_batch(batch_id)
+
+    client_name = (body.client_name or "").strip()
+    if not client_name:
+        raise HTTPException(status_code=422, detail="client_name is required")
+    if not body.lines:
+        raise HTTPException(status_code=422, detail="lines must not be empty")
+
+    # 1. Build purchase packing authority index for this batch.
+    packing_lines = pdb.get_packing_lines_for_batch(batch_id) or []
+    purchase_qty: Dict[str, float] = {}
+    design_to_pc: Dict[str, str] = {}
+    pc_to_dn: Dict[str, str] = {}
+    for pl in packing_lines:
+        pc = (pl.get("product_code") or "").strip()
+        dn = (pl.get("design_no") or "").strip()
+        qty = float(pl.get("quantity") or 0)
+        if pc:
+            purchase_qty[pc] = purchase_qty.get(pc, 0.0) + qty
+            if dn:
+                design_to_pc.setdefault(dn.upper(), pc)
+                pc_to_dn.setdefault(pc, dn)
+
+    # 2. Validate and normalise each requested line.
+    validated: List[Dict[str, Any]] = []
+    allocation_by_pc: Dict[str, float] = {}
+
+    for i, ln in enumerate(body.lines):
+        pc = (ln.product_code or "").strip()
+        dn = (ln.design_no or "").strip()
+        qty = ln.quantity
+        unit_price = ln.unit_price
+        currency = (ln.currency or "EUR").upper().strip()
+
+        if qty <= 0:
+            raise HTTPException(status_code=422,
+                detail=f"Line {i}: quantity must be > 0 (got {qty})")
+        if unit_price < 0:
+            raise HTTPException(status_code=422,
+                detail=f"Line {i}: unit_price must be >= 0 (got {unit_price})")
+
+        # Resolve product_code via purchase authority.
+        if not pc and dn:
+            pc = design_to_pc.get(dn.upper(), "")
+        if not pc or pc not in purchase_qty:
+            raw = ln.product_code or ln.design_no or "<blank>"
+            raise HTTPException(status_code=422,
+                detail=f"Line {i}: {raw!r} not found in purchase packing for batch {batch_id!r}")
+
+        effective_dn = dn or pc_to_dn.get(pc, "")
+        allocation_by_pc[pc] = allocation_by_pc.get(pc, 0.0) + qty
+        validated.append({
+            "product_code": pc,
+            "design_no":    effective_dn,
+            "quantity":     qty,
+            "unit_price":   unit_price,
+            "currency":     currency,
+            "total_value":  round(qty * unit_price, 6),
+            "bag_id":       (ln.bag_id or "").strip(),
+            "remarks":      (ln.remarks or "").strip(),
+        })
+
+    # 3. Over-allocation check: requested qty must not exceed purchase qty per product_code.
+    over = [
+        {"product_code": pc, "requested": aq, "available": purchase_qty.get(pc, 0.0)}
+        for pc, aq in allocation_by_pc.items()
+        if aq > purchase_qty.get(pc, 0.0)
+    ]
+    if over:
+        raise HTTPException(status_code=422,
+            detail={"error": "over_allocation", "items": over})
+
+    # 4. Ensure a sales_documents row exists (deterministic id per batch+client).
+    sd_seed = f"{batch_id}\x00manual_allocation\x00{client_name}"
+    sd_id = _hl.sha256(sd_seed.encode()).hexdigest()[:32]
+    client_ref = (body.client_ref or "").strip()
+    client_cid = (body.client_contractor_id or "").strip()
+    now = _dt.utcnow().isoformat()
+
+    docs_db = settings.storage_root / "documents.db"
+    with sqlite3.connect(str(docs_db)) as _con:
+        _con.execute(
+            """INSERT OR IGNORE INTO sales_documents
+               (id, batch_id, document_id, client_name, client_ref,
+                document_type, sales_doc_no, sales_doc_date,
+                source_file_path, extraction_status,
+                client_contractor_id, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (sd_id, batch_id, "", client_name, client_ref,
+             "manual_sales_allocation", "", "", "", "extracted",
+             client_cid, now, now),
+        )
+        _con.execute(
+            """UPDATE sales_documents
+               SET client_name=?, client_ref=?, client_contractor_id=?, updated_at=?
+               WHERE id=?""",
+            (client_name, client_ref, client_cid, now, sd_id),
+        )
+
+    # 5. Build line_records matching the sales_packing_lines INSERT column set.
+    client_ref_val = client_ref
+    line_records = [
+        {
+            "batch_id":             batch_id,
+            "sales_document_id":    sd_id,
+            "client_name":          client_name,
+            "client_ref":           client_ref_val,
+            "product_code":         v["product_code"],
+            "design_no":            v["design_no"],
+            "bag_id":               v["bag_id"],
+            "quantity":             v["quantity"],
+            "unit_price":           v["unit_price"],
+            "currency":             v["currency"],
+            "total_value":          v["total_value"],
+            "price_source":         "manual_allocation",
+            "remarks":              v["remarks"],
+            "client_contractor_id": client_cid,
+        }
+        for v in validated
+    ]
+
+    # 6. Idempotent write: replaces prior manual allocation for same batch+client.
+    write_result = ddb.replace_sales_packing_lines(
+        sales_document_id=sd_id,
+        batch_id=batch_id,
+        lines=line_records,
+    )
+
+    # 7. Proforma draft sync (non-blocking).
+    sync_summary: Dict[str, Any] = {}
+    try:
+        from ..services.proforma_draft_sync import sync_draft_from_packing_upload
+        _pf_db = settings.storage_root / "proforma_links.db"
+        sync_summary = sync_draft_from_packing_upload(
+            batch_id=batch_id,
+            operator="manual_allocation",
+            db_path=_pf_db,
+            audit_path=output_dir / "audit.json",
+            master_db_path=settings.storage_root / "master_data.sqlite",
+        ) or {}
+    except Exception as _pf_exc:
+        log.warning("[%s] manual_allocation: draft sync failed (non-fatal): %s",
+                    batch_id, _pf_exc)
+        sync_summary = {"error": str(_pf_exc)}
+
+    return {
+        "ok":                         True,
+        "batch_id":                   batch_id,
+        "sales_document_id":          sd_id,
+        "client_name":                client_name,
+        "lines_written":              write_result.get("inserted", len(line_records)),
+        "lines_replaced":             write_result.get("deleted", 0),
+        "allocation_by_product_code": allocation_by_pc,
+        "price_source":               "manual_allocation",
+        "draft_sync":                 sync_summary,
+    }
+
+
 # ── GET /api/v1/packing/{batch_id}/barcode ───────────────────────────────────
 
 @router.get("/{batch_id}/barcode", dependencies=[_auth])
