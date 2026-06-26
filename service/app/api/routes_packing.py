@@ -475,6 +475,18 @@ async def upload_packing_list(
 
     inserted = pdb.upsert_packing_lines(line_records, force_reextract=force_reextract)
 
+    # CPA: populate product_master from packing rows (non-blocking).
+    # Runs after packing_lines write succeeds; failures must not block the upload.
+    try:
+        from ..services.cpa_product_service import upsert_product_master_from_packing as _cpa_upsert
+        _cpa_db = settings.storage_root / "reservation_queue.db"
+        _cpa_result = _cpa_upsert(_cpa_db, batch_id, line_records)
+        log.info("[%s] CPA upsert: %s upserted, %s skipped, %s errors",
+                 batch_id, _cpa_result["upserted_count"],
+                 _cpa_result["skipped_count"], _cpa_result["error_count"])
+    except Exception as _cpa_exc:
+        log.warning("[%s] CPA product_master upsert failed (non-fatal): %s", batch_id, _cpa_exc)
+
     # Seed inventory state → PURCHASE_TRANSIT for every line with a scan_code.
     # Idempotent on re-upload; failures must not break this route.
     seed_purchase_transit(batch_id, line_records)
@@ -1077,6 +1089,16 @@ async def reprocess_packing_documents(
                 if line_records:
                     pdb.upsert_packing_lines(line_records)
                     seed_purchase_transit(batch_id, line_records)
+                    # CPA: populate product_master from reprocessed packing rows (non-blocking).
+                    try:
+                        from ..services.cpa_product_service import upsert_product_master_from_packing as _cpa_upsert
+                        _cpa_db = settings.storage_root / "reservation_queue.db"
+                        _cpa_result = _cpa_upsert(_cpa_db, batch_id, line_records)
+                        log.info("[%s] CPA reprocess upsert: %s upserted, %s skipped",
+                                 batch_id, _cpa_result["upserted_count"], _cpa_result["skipped_count"])
+                    except Exception as _cpa_exc:
+                        log.warning("[%s] CPA reprocess product_master failed (non-fatal): %s",
+                                    batch_id, _cpa_exc)
                 result_entry["rows_extracted"] = len(rows_parsed)
                 result_entry["parser_status"]  = "extracted" if rows_parsed else "empty"
                 result_entry["failure_reason"] = diag.get("failure_reason")
