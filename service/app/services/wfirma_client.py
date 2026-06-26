@@ -1889,6 +1889,10 @@ def resolve_vat_context_from_master(cm: Any) -> Dict[str, Any]:
             "blocked":          False,
             "blocked_reason":   "",
             "d3_vies_warning":  _d3,  # True → fire Inbox advisory (not a block)
+            # d3_vies_blocked: True when VIES confirmed INVALID (vat_eu_valid=False).
+            # None (unverified) is advisory-only; only explicit False blocks.
+            # vat_mode override skips this branch entirely (returns at line above).
+            "d3_vies_blocked":  vat_eu_valid is False,
         }
 
     # Non-EU
