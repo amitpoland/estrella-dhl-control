@@ -5591,18 +5591,37 @@ def _derive_draft_readiness(
                                 "vat_mode to bypass missing VAT data.",
                             )
                     elif getattr(_r_cm, "vat_eu_valid", None) is not True:
+                        _vat_mode_override = (
+                            _r_vat.get("decision_source") == "operator_vat_mode"
+                        )
                         if getattr(_r_cm, "vat_eu_valid", None) is False:
-                            # VIES confirmed INVALID — block readiness until
-                            # operator sets vat_mode override or corrects VAT.
-                            _add(
-                                "WDT blocked: VIES confirmed EU VAT number "
-                                f"{getattr(_r_cm, 'vat_eu_number', '') or ''!r} "
-                                "is INVALID — WDT 0% is not substantiated.",
-                                "Set vat_mode override on Customer Master to manually "
-                                "apply a different VAT treatment, or obtain a valid "
-                                "EU VAT number and re-run VIES validation "
-                                "(POST /api/v1/customer-master/{id}/validate-vat).",
-                            )
+                            if not _vat_mode_override:
+                                # VIES confirmed INVALID, no operator override —
+                                # block readiness: WDT 0% is not substantiated.
+                                _add(
+                                    "WDT blocked: VIES confirmed EU VAT number "
+                                    f"{getattr(_r_cm, 'vat_eu_number', '') or ''!r} "
+                                    "is INVALID — WDT 0% is not substantiated.",
+                                    "Obtain a valid EU VAT number and re-run VIES "
+                                    "validation "
+                                    "(POST /api/v1/customer-master/{id}/validate-vat),"
+                                    " or set vat_mode override to apply a different "
+                                    "VAT treatment.",
+                                )
+                            else:
+                                # VIES confirmed INVALID but vat_mode override is
+                                # active — operator has explicitly chosen VAT
+                                # treatment; advisory only, does not block.
+                                warnings.append(
+                                    "vies_invalid_override_active: VIES confirmed "
+                                    "EU VAT number "
+                                    f"{getattr(_r_cm, 'vat_eu_number', '') or ''!r} "
+                                    "is INVALID, but operator vat_mode override is "
+                                    "active — VAT treatment proceeds under operator "
+                                    "authority. Verify the VAT number and re-run "
+                                    "VIES when available. "
+                                    "(advisory — does not block; D3 ADR-027)"
+                                )
                         else:
                             warnings.append(
                                 "vies_unverified: buyer vat_eu_number present "

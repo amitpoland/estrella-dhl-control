@@ -436,8 +436,13 @@ class TestADR027Integration:
         assert data.get("status") == "blocked", \
             f"expected blocked, got: {data}"
 
-    def test_i3_vies_warning_not_block(self, tmp_path, monkeypatch, app_client):
-        """I3: EU customer, vat_eu_valid=False → post succeeds with vat_warnings."""
+    def test_i3_vies_invalid_no_override_blocks(self, tmp_path, monkeypatch, app_client):
+        """I3: vat_eu_valid=False + no vat_mode → readiness blocks with VIES invalid reason.
+
+        Follow-up PR A: confirmed that VIES-invalid without an operator vat_mode
+        override is a hard readiness block, not an advisory. Other blockers from the
+        minimal test setup may also be present; we only assert on the VIES signal.
+        """
         cm = _make_cm(
             bill_to_contractor_id=CONTRACTOR_ID,
             bill_to_name=CLIENT,
@@ -451,12 +456,54 @@ class TestADR027Integration:
         self._mock_wfirma_http(monkeypatch, vat_code_id="228")
 
         resp = _post_draft(app_client, draft.id, draft)
-        assert resp.status_code == 200, resp.text
         data = resp.json()
-        assert data["status"] == "posted"
-        warnings = data.get("vat_warnings") or []
-        assert any("vies_unverified" in w for w in warnings), \
-            f"expected vies_unverified in warnings: {warnings}"
+        assert any(
+            "VIES confirmed" in r and "INVALID" in r
+            for r in (data.get("blocking_reasons") or [])
+        ), f"expected VIES invalid block in blocking_reasons: {data.get('blocking_reasons')}"
+
+    def test_i3b_vies_invalid_with_vat_mode_override_is_advisory(
+        self, tmp_path, monkeypatch, app_client
+    ):
+        """I3b: vat_eu_valid=False + vat_mode=228 → VIES block suppressed; advisory only.
+
+        Follow-up PR A: when operator has set vat_mode (explicit VAT override),
+        the VIES-confirmed-invalid finding must NOT appear in blocking_reasons.
+        Tested via GET /readiness?intent=approve to isolate the VIES/vat_mode
+        logic from unrelated post-path export gates.
+        """
+        cm = _make_cm(
+            bill_to_contractor_id=CONTRACTOR_ID,
+            bill_to_name=CLIENT,
+            country="FR",
+            vat_eu_number="FR12345678",
+            vat_eu_valid=False,
+            vat_mode=228,
+        )
+        self._patch_env(tmp_path, monkeypatch, cm)
+        draft = _setup_db_for_draft(tmp_path, cm)
+
+        resp = app_client.get(
+            f"/api/v1/proforma/draft/{draft.id}/readiness?intent=approve",
+            headers={"X-API-Key": "test-key"},
+        )
+        data = resp.json()
+        vies_blocks = [
+            r for r in (data.get("blocking_reasons") or [])
+            if "VIES confirmed" in r and "INVALID" in r
+        ]
+        assert not vies_blocks, (
+            f"VIES invalid block must be suppressed when vat_mode override is active: "
+            f"{vies_blocks}"
+        )
+        advisory_warns = [
+            w for w in (data.get("warnings") or [])
+            if "vies_invalid_override_active" in w
+        ]
+        assert advisory_warns, (
+            f"expected vies_invalid_override_active advisory in warnings: "
+            f"{data.get('warnings')}"
+        )
 
     def test_i4_vat_freeze_written_to_draft(self, tmp_path, monkeypatch, app_client):
         """I4: after post, draft row has vat_context/vat_code/decision_source set."""
