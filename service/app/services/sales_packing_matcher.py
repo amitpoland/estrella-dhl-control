@@ -119,9 +119,9 @@ def _design_to_product_codes_for_batch(batch_id: str) -> Dict[str, List[str]]:
     # stripped-key (case-preserved) map; this matcher keys by the NORMALISED
     # design_no, so re-key and merge codes for designs that normalise to the same
     # key — preserving the historical behaviour exactly. See ADR-product-authority.
-    from .product_authority_resolver import design_to_product_codes  # noqa: PLC0415
+    from .cpa_product_service import design_to_product_codes as _cpa_dtpc  # noqa: PLC0415
     try:
-        raw = design_to_product_codes(batch_id)
+        raw = _cpa_dtpc(batch_id)
     except Exception as exc:
         log.warning(
             "[%s] sales matcher: batch-scoped lookup failed "

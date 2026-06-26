@@ -66,9 +66,9 @@ def _resolve_product_codes_for_batch(
     # Canonical authority (packing_lines) — single resolver. Returns the same
     # stripped-key, sorted, null-filtered map this function used to derive with
     # its own SELECT DISTINCT. See product_authority_resolver / ADR-product-authority.
-    from .product_authority_resolver import design_to_product_codes  # noqa: PLC0415
+    from .cpa_product_service import design_to_product_codes as _cpa_dtpc  # noqa: PLC0415
     try:
-        return design_to_product_codes(batch_id)
+        return _cpa_dtpc(batch_id)
     except Exception as exc:
         log.warning(
             "[%s] batch-scoped design lookup failed (non-fatal): %s",
