@@ -119,17 +119,7 @@ function EJCMRClassic({ cmrData }) {
 
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
-          <div className="ej-logo">
-            <svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true">
-              <circle cx="18" cy="18" r="16.5" fill="#0B3D2E"/>
-              <path d="M18 7 L27 18 L18 29 L9 18 Z" fill="none" stroke="#C9A24B" strokeWidth="1.5"/>
-              <path d="M18 12.5 L23.5 18 L18 23.5 L12.5 18 Z" fill="#C9A24B"/>
-            </svg>
-            <div className="ej-logo-text">
-              <span className="ej-logo-name">ESTRELLA JEWELS</span>
-              <span className="ej-logo-tag">Fine Gold · Est. 2014</span>
-            </div>
-          </div>
+          <EJDocumentLogo size="md"/>
           <div style={{ textAlign: "right" }}>
             <div className="ej-eyebrow ej-eyebrow-gold">International consignment note</div>
             <div className="ej-h1" style={{ marginTop: 2 }}>CMR · Delivery Note</div>
@@ -186,7 +176,7 @@ function EJCMRClassic({ cmrData }) {
               background: "#F8FAFC", fontSize: 9.5,
             }}>
               <span style={{ color: "#475569", fontWeight: 600 }}>Goods: </span>
-              <span>Fine Gold Jewellery · {d.goods_summary}</span>
+              <span>{d.goods_summary}</span>
               <span style={{ marginLeft: 10, color: "#64748B" }}>Country of Origin: India</span>
             </div>
           )}
@@ -310,17 +300,7 @@ function EJCMRModern({ cmrData }) {
 
         {/* Top bar */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 28 }}>
-          <div className="ej-logo">
-            <svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true">
-              <circle cx="18" cy="18" r="16.5" fill="#0B3D2E"/>
-              <path d="M18 7 L27 18 L18 29 L9 18 Z" fill="none" stroke="#C9A24B" strokeWidth="1.5"/>
-              <path d="M18 12.5 L23.5 18 L18 23.5 L12.5 18 Z" fill="#C9A24B"/>
-            </svg>
-            <div className="ej-logo-text">
-              <span className="ej-logo-name">ESTRELLA JEWELS</span>
-              <span className="ej-logo-tag">Fine Gold · Est. 2014</span>
-            </div>
-          </div>
+          <EJDocumentLogo size="md"/>
           <div style={{ display: "flex", gap: 6 }}>
             <span className="ej-pill ej-pill-green">SHIPMENT</span>
             <span className="ej-pill">CMR</span>
@@ -332,7 +312,7 @@ function EJCMRModern({ cmrData }) {
 
         {/* Hero */}
         <div style={{ marginBottom: 24 }}>
-          <div className="ej-eyebrow">Delivery Note · List przewozowy · Dodací list</div>
+          <div className="ej-eyebrow">Delivery Note · List przewozowy</div>
           <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginTop: 4 }}>
             <div className="ej-h1" style={{ fontSize: 34, color: "#0B3D2E" }}>{d.cmr_no || "—"}</div>
             {carrier && carrier.awb && (
@@ -410,7 +390,7 @@ function EJCMRModern({ cmrData }) {
             border: "1px solid #E2E8F0", borderRadius: 6, marginBottom: 16, fontSize: 10,
           }}>
             <span style={{ fontWeight: 600, color: "#0B3D2E" }}>Goods: </span>
-            <span>Fine Gold Jewellery · {d.goods_summary}</span>
+            <span>{d.goods_summary}</span>
             <span style={{ marginLeft: 10, color: "#64748B" }}>· Country of Origin: India</span>
           </div>
         )}

@@ -99,6 +99,23 @@
   background: linear-gradient(90deg, var(--ej-brand) 0 65%, var(--ej-gold) 65% 100%);
 }
 
+/* Document logo — used by EJDocumentLogo when ESTRELLA_DOCUMENT_LOGO_SRC is set */
+.ej-document-logo {
+  display: block;
+  max-width: 180px;
+  max-height: 56px;
+  object-fit: contain;
+}
+.ej-document-logo--compact {
+  max-width: 140px;
+  max-height: 44px;
+}
+@media print {
+  .ej-document-logo {
+    max-height: 52px;
+  }
+}
+
 /* Bank chip row */
 .ej-bank { border: 1px solid var(--ej-line); border-radius: var(--ej-radius); padding: 10px 12px; background: var(--ej-paper); }
 .ej-bank-cur {
@@ -192,8 +209,16 @@
   /* ── Portrait A4 (Proforma / CMR) ── */
   /* Remove fixed height so content flows naturally to page 2+ */
   .ej-a4 {
+    width: 210mm;
+    min-height: 297mm;
     height: auto !important;
     overflow: visible !important;
+    page-break-after: always;
+    break-after: page;
+  }
+  .ej-a4:last-child {
+    page-break-after: auto;
+    break-after: auto;
   }
   /* Landscape A4 (Packing List): already uses min-height, ensure no clip */
   .ej-a4-landscape {
@@ -202,19 +227,37 @@
     /* Remove fixed width constraint so printer margin maths applies */
     max-width: 100% !important;
   }
-  /* Unpin absolute seller-footer: flows after content on the last page
-     instead of floating at the bottom of page 1 only.
-     The .ej-proforma-footer class is added in estrella-doc-proforma.jsx. */
+
+  /* ── Final stack — keep together, no absolute positioning ── */
+  .ej-final-stack,
+  .ej-diamond-decl,
+  .ej-terms,
+  .ej-sig-block,
+  .ej-company-footer,
   .ej-proforma-footer {
+    break-inside: avoid;
+    page-break-inside: avoid;
     position: static !important;
+  }
+  /* ej-proforma-footer: also reset absolute-positioning offsets (V1 safety guard) */
+  .ej-proforma-footer {
     left: auto !important; right: auto !important; bottom: auto !important;
     margin-top: 24px;
+  }
+  .ej-company-footer {
+    margin-top: 8px;
   }
 
   /* ── Both orientations ── */
   /* Repeat <thead> column labels on every printed page (CSS built-in) */
   .ej-table thead {
     display: table-header-group;
+  }
+  /* table-layout: fixed prevents column width jitter across page breaks */
+  .ej-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
   }
   /* Keep tfoot (totals row) at the very end of the table on the last page */
   .ej-table tfoot {
@@ -227,6 +270,10 @@
   }
   /* Hide decorative watermark dot pattern — reduces ink and avoids artefacts */
   .ej-pattern {
+    display: none !important;
+  }
+  /* Hide the logo tagline (removed per brand update; belt-and-suspenders) */
+  .ej-logo-tag {
     display: none !important;
   }
 }

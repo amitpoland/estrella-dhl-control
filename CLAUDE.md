@@ -467,6 +467,36 @@ Lesson M.
 ### Lesson N — Import, product master, proforma, warehouse receipt, barcode traceability, and sales linkage are SEPARATE authorities (2026-06-22)
 **GATE 1 + reviewer-challenge + frontend-flow-reviewer + backend-safety-reviewer.** Six separate authorities (PRODUCT / PROFORMA / IMPORT_PZ / WAREHOUSE / SALES) each own their own gates. Warning → hard blocker requires: (a) named business rule (accounting/customs/duplicate-write/quantity-risk) AND (b) a regression test. Warehouse receipt = operator quantity confirmation, NOT mandatory per-piece scan (unless `serial_controlled=true`). Full detail: invoke `/engineering-lessons`.
 
+### Lesson N — Advisory-class readiness signals must never block fiscal actions; only true fiscal risk blocks Approve / Post / Convert / Reservation (2026-06-23)
+
+**GATE 1 + reviewer-challenge + readiness-closure.** Origin: operator governance directive asserted 2026-06-23 during the AWB 9158478722 post-PZ reconciliation. The platform had been treating soft, non-fiscal signals (sales linkage, scan state, warehouse confirmation, placeholder-design source rows) as hard gates — blocking legitimate fiscal actions when no money, tax, or duplicate-document risk existed. This lesson codifies the governing principle behind the AWB 9158478722 authority-separation work.
+
+**Binding rule** — readiness signals fall into exactly two classes, and the class determines whether a signal may block a fiscal action (Approve / Post / Convert / Reservation).
+
+**Advisory-only — NEVER block; surface as advisory and let the action proceed:**
+- Sales linkage (sales design ↔ wFirma `product_code` mapping)
+- Missing warehouse scan
+- Missing warehouse confirmation
+- PND / placeholder-design (PND = placeholder-design) source rows
+
+These are informational. They MAY be surfaced as advisories so the operator can correct them, but they MUST NOT prevent Approve / Post / Convert / Reservation. There is no fiscal consequence to proceeding while one of these is unresolved.
+
+**True blockers — the ONLY conditions that may block Approve / Post / Convert / Reservation, because each carries real fiscal, tax, or duplication risk:**
+1. Customer unmatched or ambiguous
+2. Missing price
+3. Over-bill — sales allocated qty > PZ / import authority qty per `product_code`
+4. VAT / WDT fiscal failure
+5. Duplicate document risk
+6. Live write-gate disabled
+7. `product_code` missing for actual posting
+8. Sales allocated qty exceeds PZ / import authority
+
+Anything not on the true-blocker list is advisory. Default-classify a signal as advisory unless it maps to one of the named fiscal / tax / duplication risks above. Adding a new hard gate requires naming which of these fiscal risks it protects against; a gate with no fiscal-risk justification is an advisory wearing a blocker's clothes and must be rejected by reviewer-challenge.
+
+**Where it binds**: every readiness / gating change in `sales-proforma`, `pz-purchase-accounting`, and `readiness-closure` surfaces; every PR that adds, removes, or reclassifies a blocking reason on Approve / Post / Convert / Reservation; every reviewer-challenge on an authority / readiness PR. This aligns with existing code: `service/app/api/routes_proforma.py:1000` already routes the "sales design(s) not mapped to a wFirma product_code" signal to `line_mismatch_advisories` (advisory) rather than `blocking_reasons` when `settings.advisory_gates_enabled` is on — Lesson N makes that the permanent intended default for all advisory-class signals, not a flag-gated exception. A PR that promotes any advisory-class signal to a hard blocker, or demotes any true blocker to advisory, is incomplete by this lesson.
+
+**Reference**: operator governance directive 2026-06-23 (AWB 9158478722 post-PZ reconciliation); `service/app/api/routes_proforma.py:1000` (`advisory_gates_enabled` advisory routing); `.claude/memory/engineering_lessons.md` Lesson N.
+
 ---
 
 ## Frontend Design Standard

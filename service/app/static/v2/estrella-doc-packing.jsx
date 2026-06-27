@@ -85,17 +85,7 @@ function EJPackingList({ packingData }) {
 
         {/* ── Header: logo left, title right ── */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
-          <div className="ej-logo">
-            <svg width="32" height="32" viewBox="0 0 36 36" aria-hidden="true">
-              <circle cx="18" cy="18" r="16.5" fill="#0B3D2E"/>
-              <path d="M18 7 L27 18 L18 29 L9 18 Z" fill="none" stroke="#C9A24B" strokeWidth="1.5"/>
-              <path d="M18 12.5 L23.5 18 L18 23.5 L12.5 18 Z" fill="#C9A24B"/>
-            </svg>
-            <div className="ej-logo-text">
-              <span className="ej-logo-name">ESTRELLA JEWELS</span>
-              <span className="ej-logo-tag">Fine Gold · Est. 2014</span>
-            </div>
-          </div>
+          <EJDocumentLogo size="md"/>
           <div style={{ textAlign: 'right' }}>
             <div className="ej-eyebrow ej-eyebrow-gold">Commercial Packing List</div>
             <div className="ej-h1" style={{ fontSize: 22, marginTop: 2 }}>Packing List</div>
