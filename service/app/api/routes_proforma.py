@@ -1172,22 +1172,6 @@ def _build_preview(batch_id: str, client_name: str,
                             f"{_zero_unit_price} line(s) have zero/missing unit_price "
                             "— import sales prices before approving"
                         )
-                    # Operator-override mismatch advisory: surface before finalization
-                    # so the operator can review, NOT a silent pass-through.
-                    try:
-                        from ..services.proforma_intelligence import (
-                            detect_operator_override_mismatches as _dom,
-                        )
-                        _mismatches = _dom(
-                            _edit_lines,
-                            master_db_path=settings.storage_root / "documents.db",
-                        )
-                        for _mm in _mismatches:
-                            blocking_reasons.append(
-                                f"[ADVISORY] {_mm.message}"
-                            )
-                    except Exception:
-                        pass
     except Exception:
         pass  # non-fatal — preview still works without editable-lines pre-approve check
 
@@ -6028,11 +6012,9 @@ def import_draft_sales_prices(
             or ""
         ).strip()
         if _pd_text:
-            ln["name_pl"]        = _pd_text
-            ln["name_pl_source"] = "product_descriptions.description_pl"
+            ln["name_pl"] = _pd_text
         else:
-            ln["name_pl"]        = ""
-            ln["name_pl_source"] = "missing_product_descriptions"
+            ln["name_pl"] = ""
             ln.setdefault("_warnings", []).append(
                 f"Polish customs description missing for product_code={_pc!r}. "
                 "Generate customs description package first. "
@@ -8532,32 +8514,29 @@ def _build_product_lines_panel(lines: List[Dict[str, Any]]) -> List[Dict[str, An
             except Exception:
                 pass
 
-        name_pl        = str(ln.get("name_pl") or "").strip()
-        name_en        = str(ln.get("name_en") or "").strip()
-        name_pl_source = "line" if name_pl else None
+        name_pl = str(ln.get("name_pl") or "").strip()
+        name_en = str(ln.get("name_en") or "").strip()
         name_en_source = "line" if name_en else None
 
         if pc and pc in _name_lookup:
             if not name_pl and _name_lookup[pc].get("name_pl"):
-                name_pl        = _name_lookup[pc]["name_pl"]
-                name_pl_source = "product_descriptions"
+                name_pl = _name_lookup[pc]["name_pl"]
             if not name_en and _name_lookup[pc].get("name_en"):
                 name_en        = _name_lookup[pc]["name_en"]
                 name_en_source = "product_descriptions"
 
         result.append({
-            "line_id":         ln.get("line_id") or ln.get("id"),
-            "product_code":    pc,
-            "name_pl":         name_pl,
-            "name_en":         name_en,
-            "name_pl_source":  name_pl_source,
-            "name_en_source":  name_en_source,
-            "hs_code":         hs,
-            "hs_source":       hs_source,
-            "origin_country":  origin_country,
-            "unit_price":      ln.get("unit_price"),
-            "qty":             ln.get("qty"),
-            "currency":        ln.get("currency"),
+            "line_id":        ln.get("line_id") or ln.get("id"),
+            "product_code":   pc,
+            "name_pl":        name_pl,
+            "name_en":        name_en,
+            "name_en_source": name_en_source,
+            "hs_code":        hs,
+            "hs_source":      hs_source,
+            "origin_country": origin_country,
+            "unit_price":     ln.get("unit_price"),
+            "qty":            ln.get("qty"),
+            "currency":       ln.get("currency"),
         })
 
     return result

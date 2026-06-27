@@ -1814,91 +1814,6 @@ def list_attention_drafts(
     return results
 
 
-# ── name_pl provenance (Campaign 04 PR4) ────────────────────────────────────
-# The stamped ``name_pl_source`` records HOW each line's name_pl was resolved
-# at birth/reset. It is descriptive provenance, NOT readiness truth.
-NAME_PL_SOURCE_OPERATOR = "operator"             # caller supplied a non-blank value
-NAME_PL_SOURCE_PD       = "product_descriptions"  # filled from PD authority
-NAME_PL_SOURCE_GENERATED = "generated"            # filled from attribute generator
-NAME_PL_SOURCE_BLANK    = "blank"                 # no authority, no attributes
-
-
-def _birth_resolve_name_pl(
-    lines:         List[Dict[str, Any]],
-    lookup_fn:     Optional[Callable[[str], Optional[Dict[str, Any]]]],
-    desc_generate: Optional[Callable[..., Optional[str]]] = None,
-) -> List[Dict[str, Any]]:
-    """Resolve ``name_pl`` for every line and stamp ``name_pl_source``.
-
-    Resolution order — first hit wins; a non-blank name_pl is NEVER
-    overwritten:
-
-      1. ``operator``             — the line already carries a non-blank
-                                    name_pl (operator-confirmed or carried
-                                    from the sales source).
-      2. ``product_descriptions`` — ``lookup_fn`` returns a row whose name_pl
-                                    is non-blank.
-      3. ``generated``            — ``desc_generate`` returns a non-blank name
-                                    from the line's sales-packing attributes
-                                    (the transient ``_gen_attrs`` key); it
-                                    returns ``None`` when those attributes are
-                                    insufficient, so this path NEVER fabricates.
-      4. ``blank``                — none of the above applied; name_pl stays
-                                    blank and the line is born without a
-                                    commercial description (surfaced by the
-                                    birth advisory, not blocked).
-
-    Invariants:
-      * operator-confirmed name_pl preserved verbatim;
-      * a product_descriptions miss never fabricates;
-      * the generator is consulted ONLY on a PD miss and may decline (None);
-      * pricing, currency, price_source and every other field are untouched;
-      * ``lookup_fn=None`` and ``desc_generate=None`` ⇒ blanks stay blank
-        (no DB I/O, no fabrication);
-      * the transient ``_gen_attrs`` key (set by the normaliser) is consumed
-        and removed here so it never persists into ``editable_lines_json``.
-    """
-    # Resolve the PD authority for blank lines in one pass — only blanks are
-    # looked up, and only the name_pl annotation is read back.
-    blank_idx = [i for i, ln in enumerate(lines)
-                 if not str(ln.get("name_pl") or "").strip()]
-    pd_name: Dict[int, str] = {}
-    if lookup_fn is not None and blank_idx:
-        subset = [lines[i] for i in blank_idx]
-        enriched, _hit, _miss = enrich_lines_from_product_descriptions(subset, lookup_fn)
-        for j, i in enumerate(blank_idx):
-            npl = str(enriched[j].get("name_pl") or "").strip()
-            if npl:
-                pd_name[i] = npl
-
-    for i, ln in enumerate(lines):
-        attrs = ln.pop("_gen_attrs", None)  # transient — must not persist
-        current = str(ln.get("name_pl") or "").strip()
-        if current:
-            ln["name_pl"] = current
-            ln["name_pl_source"] = NAME_PL_SOURCE_OPERATOR
-            continue
-        if i in pd_name:
-            ln["name_pl"] = pd_name[i]
-            ln["name_pl_source"] = NAME_PL_SOURCE_PD
-            continue
-        gen: Optional[str] = None
-        if desc_generate is not None and isinstance(attrs, dict):
-            try:
-                gen = desc_generate(
-                    attrs.get("ctg", ""), attrs.get("kt", ""),
-                    attrs.get("col", ""), attrs.get("quality", ""),
-                )
-            except Exception:
-                gen = None
-            gen = str(gen or "").strip() or None
-        if gen:
-            ln["name_pl"] = gen
-            ln["name_pl_source"] = NAME_PL_SOURCE_GENERATED
-        else:
-            ln["name_pl"] = ""
-            ln["name_pl_source"] = NAME_PL_SOURCE_BLANK
-    return lines
 
 
 def _birth_unresolved_lines(
@@ -1908,7 +1823,6 @@ def _birth_unresolved_lines(
     """Non-authoritative birth advisory.
 
     Flags, per line:
-      * ``blank_name_pl``           — name_pl still blank after resolution;
       * ``zero_unit_price``         — unit_price missing or <= 0;
       * ``missing_product_mapping`` — ONLY when ``mapping_lookup`` is supplied
         AND the product has no ``wfirma_product_id``. This mirrors the
@@ -1924,8 +1838,6 @@ def _birth_unresolved_lines(
     out: List[Dict[str, Any]] = []
     for ln in lines:
         reasons: List[str] = []
-        if not str(ln.get("name_pl") or "").strip():
-            reasons.append("blank_name_pl")
         try:
             up = float(ln.get("unit_price", 0) or 0)
         except (TypeError, ValueError):
@@ -2038,19 +1950,7 @@ def auto_create_draft_from_sales_packing(
         row = dict(raw_row)
         # Carry any operator-confirmed/source name_pl through the birth
         # boundary on the EDITABLE copy only. Blank by default;
-        # product_descriptions enrichment (below, when name_pl_lookup is
-        # supplied) fills blanks without overwriting a non-blank value.
         row["name_pl"] = str(ln.get("name_pl") or "").strip()
-        # Transient sales-packing attributes for the generated-name fallback.
-        # Read defensively from both parser keys and product-identity keys.
-        # _birth_resolve_name_pl pops this so it never persists into
-        # editable_lines_json (and it is never added to the source copy).
-        row["_gen_attrs"] = {
-            "ctg":     str(ln.get("ctg") or ln.get("category") or "").strip(),
-            "kt":      str(ln.get("kt") or ln.get("karat") or "").strip(),
-            "col":     str(ln.get("col") or ln.get("metal_color") or "").strip(),
-            "quality": str(ln.get("quality") or ln.get("quality_string") or "").strip(),
-        }
         editable.append(row)
 
     init_db(db_path)
@@ -2107,11 +2007,11 @@ def auto_create_draft_from_sales_packing(
         legacy_status = _normalise_draft_status(_PHASE2_LEGACY_STATUS)
         initial_state = _normalise_draft_state("draft")
 
-        # Fill blank name_pl from the product_descriptions authority (no-op
-        # when name_pl_lookup is None). Then compute the non-authoritative
-        # birth advisory. Both run only on the INSERT path — never on the
-        # idempotent "already exists" early-return above.
-        editable = _birth_resolve_name_pl(editable, name_pl_lookup, desc_generate)
+        # Pop transient _gen_attrs — never persisted to editable_lines_json.
+        # description_pl comes from the canonical description engine (CPA authority),
+        # not from birth-time name_pl resolution.
+        for _ln in editable:
+            _ln.pop("_gen_attrs", None)
         birth_unresolved = _birth_unresolved_lines(editable, product_mapping_lookup)
 
         # source_lines_json gets the raw snapshot; editable_lines_json gets the
@@ -3337,19 +3237,8 @@ def reset_draft_from_sales_packing(
             "name_pl":      (str(r.get("name_pl") or "").strip()
                              or prior_names.get(product_code, "")),
         }
-        # Transient sales-packing attributes for the generated-name fallback
-        # (consumed + removed by _birth_resolve_name_pl; _ensure_line_ids
-        # preserves it via {**ln}). Read defensively from both parser keys
-        # and product-identity keys.
-        rebuilt_row["_gen_attrs"] = {
-            "ctg":     str(r.get("ctg") or r.get("category") or "").strip(),
-            "kt":      str(r.get("kt") or r.get("karat") or "").strip(),
-            "col":     str(r.get("col") or r.get("metal_color") or "").strip(),
-            "quality": str(r.get("quality") or r.get("quality_string") or "").strip(),
-        }
         rebuilt.append(rebuilt_row)
     rebuilt = _ensure_line_ids(rebuilt)
-    rebuilt = _birth_resolve_name_pl(rebuilt, name_pl_lookup, desc_generate)
     reset_unresolved = _birth_unresolved_lines(rebuilt, product_mapping_lookup)
 
     kwargs: Dict[str, Any] = {

@@ -29,9 +29,7 @@ ANOMALY_NEGATIVE_PRICE = "negative_price"
 ANOMALY_MISSING_HS    = "missing_hs_code"
 ANOMALY_MISSING_PC    = "missing_product_code"
 ANOMALY_PRICE_OUTLIER = "price_outlier"
-ANOMALY_MISSING_NAME_PL = "missing_name_pl"
 ANOMALY_MISSING_NAME_EN = "missing_name_en"
-ANOMALY_OPERATOR_DESCRIPTION_MISMATCH = "operator_description_mismatch"
 
 SEVERITY_HIGH   = "high"
 SEVERITY_MEDIUM = "medium"
@@ -85,7 +83,7 @@ def detect_line_anomalies(
 
     Arguments:
         lines: list of editable_line dicts (product_code, unit_price,
-               hs_code, name_pl, name_en, …)
+               hs_code, name_en, …)
         corpus: optional corpus stats used for price-outlier detection
         price_outlier_threshold: flag when line price > N × corpus avg
 
@@ -136,15 +134,6 @@ def detect_line_anomalies(
                 confidence=1.0,
             ))
 
-        # PL name required; EN name strongly recommended
-        if not str(ln.get("name_pl") or "").strip():
-            results.append(LineAnomaly(
-                line_id=lid, product_code=pc,
-                anomaly_type=ANOMALY_MISSING_NAME_PL,
-                severity=SEVERITY_MEDIUM,
-                message=f"{pc}: Polish name (name_pl) is missing.",
-                confidence=1.0,
-            ))
         if not str(ln.get("name_en") or "").strip():
             results.append(LineAnomaly(
                 line_id=lid, product_code=pc,
@@ -169,98 +158,6 @@ def detect_line_anomalies(
                     confidence=0.75,
                 ))
 
-    return results
-
-
-# ── Operator-override mismatch detection ───────────────────────────────────────
-
-def detect_operator_override_mismatches(
-    lines: List[Dict[str, Any]],
-    master_db_path: Optional[Path] = None,
-) -> List[LineAnomaly]:
-    """Check lines where name_pl_source='operator' against canonical
-    product_descriptions.description_pl.
-
-    When an operator has explicitly set name_pl ('operator' source), it must
-    not diverge silently from the customs-engine canonical sentence.  If they
-    differ, surface a HIGH-severity anomaly so the operator must either accept
-    the canonical description or explicitly confirm the override before legal /
-    export finalization.
-
-    Non-fatal: returns [] on any DB error.  Never raises.
-    """
-    if not master_db_path or not Path(master_db_path).exists():
-        return []
-
-    operator_lines = [
-        ln for ln in lines
-        if str(ln.get("name_pl_source") or "").strip() == "operator"
-        and str(ln.get("name_pl") or "").strip()
-        and str(ln.get("product_code") or "").strip()
-    ]
-    if not operator_lines:
-        return []
-
-    results: List[LineAnomaly] = []
-    con: Optional[sqlite3.Connection] = None
-    try:
-        con = sqlite3.connect(str(master_db_path))
-        con.row_factory = sqlite3.Row
-        for ln in operator_lines:
-            pc             = str(ln.get("product_code") or "").strip()
-            lid            = str(ln.get("line_id") or ln.get("id") or "")
-            operator_name  = str(ln.get("name_pl") or "").strip()
-            row = con.execute(
-                "SELECT description_pl, description_en FROM product_descriptions "
-                "WHERE product_code=?",
-                (pc,),
-            ).fetchone()
-            if row is None:
-                continue
-            canonical_pl = str(row["description_pl"] or "").strip()
-            if not canonical_pl:
-                continue
-
-            if " / " in operator_name:
-                # Operator stored combined "PL / EN" text — compare each part separately.
-                # This avoids false positives when the operator confirms both the canonical
-                # PL sentence and the canonical EN sentence joined with a slash separator.
-                operator_pl, operator_en = (
-                    p.strip() for p in operator_name.split(" / ", 1)
-                )
-                canonical_en = str(row["description_en"] or "").strip()
-                pl_match = operator_pl == canonical_pl
-                # EN is considered a match if canonical EN is absent (nothing to compare)
-                # or if the operator EN equals the canonical EN exactly.
-                en_match = (not canonical_en) or (operator_en == canonical_en)
-                if pl_match and en_match:
-                    continue
-            else:
-                if operator_name == canonical_pl:
-                    continue
-
-            results.append(LineAnomaly(
-                line_id=lid,
-                product_code=pc,
-                anomaly_type=ANOMALY_OPERATOR_DESCRIPTION_MISMATCH,
-                severity=SEVERITY_HIGH,
-                message=(
-                    f"{pc}: operator Polish description differs from canonical customs "
-                    f"description. Operator: {operator_name!r}. "
-                    f"Canonical (customs engine): {canonical_pl!r}. "
-                    "For legal/export finalization: accept canonical or confirm "
-                    "override with explicit reason."
-                ),
-                confidence=1.0,
-            ))
-    except Exception:
-        pass
-    finally:
-        if con is not None:
-            try:
-                con.close()
-            except Exception:
-                pass
     return results
 
 
