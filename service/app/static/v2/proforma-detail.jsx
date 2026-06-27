@@ -4168,7 +4168,7 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
             ['Currency',        (disclosure && disclosure.fields_to_write && disclosure.fields_to_write.currency) || currency],
             ['Series',          (disclosure && disclosure.fields_to_write && disclosure.fields_to_write.series_id) || '—'],
             ['FX rate',         detail.fx && detail.fx.rate ? `${detail.fx.rate.toFixed(4)} PLN (table ${detail.fx.table})` : '—'],
-            ['Sale date',       detail.sale_date || '—'],
+            ['Sale date',       detail.sale_date || (disclosure && disclosure.fields_to_write && disclosure.fields_to_write.invoice_date) || '—'],
             ['Payment',         detail.paymentTerms || '—'],
             ['Flag required',   (disclosure && disclosure.flag_required) || 'WFIRMA_CREATE_INVOICE_ALLOWED'],
             [`Total (${currency})`, totalEur.toFixed(2)],
