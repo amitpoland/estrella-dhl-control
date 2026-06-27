@@ -4225,6 +4225,14 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         "status_legacy":         d.status,
         # PR 2C.2 — read-only pricing health flag (no write, no mutation)
         "needs_pricing_refresh": needs_pricing_refresh,
+        # Document display fields — previously missing from API response.
+        # Frontend previewDocData reads these; they must be present for
+        # payment-due derivation, FX display, and carrier incoterm.
+        "invoice_date":          getattr(d, "wfirma_issue_date", None),
+        "wfirma_payment_due":    getattr(d, "wfirma_payment_due", None),
+        "exchange_rate_date":    getattr(d, "fx_rate_date", None),
+        "nbp_table":             getattr(d, "fx_rate_source", None),
+        "incoterm":              getattr(d, "incoterm", None),
     }
 
 
@@ -4449,6 +4457,27 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
     except Exception as exc:
         log.warning("draft %s product_master fallback unavailable "
                     "(non-fatal): %s", draft_id, exc)
+    # Pre-load product_local origin_country index for read-time origin enrichment.
+    # Source: master_data.sqlite / product_local.origin_country (authority: IN default).
+    _pl_origin_index: Dict[str, str] = {}
+    try:
+        from ..services.master_data_db import get_product_local as _get_pl_local
+        _mdb_path = _master_db_path()
+        if _mdb_path.exists():
+            import sqlite3 as _sl3
+            with _sl3.connect(str(_mdb_path)) as _mc:
+                _mc.row_factory = _sl3.Row
+                for _r in _mc.execute(
+                    "SELECT product_code, origin_country FROM product_local"
+                    " WHERE active = 1 OR active IS NULL"
+                ).fetchall():
+                    _pcode = ((_r["product_code"] or "").strip())
+                    if _pcode:
+                        _pl_origin_index[_pcode] = (_r["origin_country"] or "IN") or "IN"
+    except Exception as exc:
+        log.warning("draft %s product_local origin index unavailable "
+                    "(non-fatal): %s", draft_id, exc)
+
     try:
         for ln in (full.get("editable_lines") or []):
             pc = str(ln.get("product_code") or "").strip()
@@ -4464,6 +4493,14 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
                     v = (row.get("name_pl") or "").strip()
                     if v:
                         ln["name_pl"] = v
+                if not (ln.get("description_pl") or "").strip():
+                    v = (row.get("description_pl") or "").strip()
+                    if v:
+                        ln["description_pl"] = v
+                if not (ln.get("description_en") or "").strip():
+                    v = (row.get("description_en") or "").strip()
+                    if v:
+                        ln["description_en"] = v
                 if not (ln.get("description_bilingual") or "").strip():
                     v = ((row.get("description_bilingual") or "").strip()
                          or (row.get("description_block") or "").strip())
@@ -4477,6 +4514,12 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
                     v = (pm.get("item_type") or "").strip()
                     if v:
                         ln["item_type"] = v
+            # Origin enrichment — product_local authority.
+            # Never overwrite an operator-supplied origin; only fill when blank.
+            if not (ln.get("origin") or "").strip():
+                oc = _pl_origin_index.get(pc)
+                if oc:
+                    ln["origin"] = oc
     except Exception as exc:
         log.warning("draft %s read-time enrichment failed (non-fatal): %s",
                     draft_id, exc)
