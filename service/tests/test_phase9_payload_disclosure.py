@@ -98,6 +98,13 @@ class TestInvoiceConvertDisclosure:
         assert d["fields_to_write"]["series_id"] == "777"
         assert "IRREVERSIBLE" in d["warning"]
 
+    def test_invoice_disclosure_has_invoice_date(self):
+        from datetime import date
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        d = build_invoice_convert_disclosure(self._make_snap())
+        assert "invoice_date" in d["fields_to_write"]
+        assert d["fields_to_write"]["invoice_date"] == date.today().isoformat()
+
     def test_invoice_disclosure_shows_lines(self):
         from app.services.payload_disclosure import build_invoice_convert_disclosure
         d = build_invoice_convert_disclosure(self._make_snap())

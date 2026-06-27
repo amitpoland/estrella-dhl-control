@@ -4085,34 +4085,61 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
   const [disclosureLoading, setDisclosureLoading] = React.useState(false);
   const [disclosureError,   setDisclosureError]   = React.useState(null);
 
+  // Operator payment override state; pre-filled from disclosure on load
+  const defaultsApplied = React.useRef(false);
+  const [overrideMethod,   setOverrideMethod]   = React.useState('');
+  const [overrideSaleDate, setOverrideSaleDate] = React.useState(detail.sale_date || '');
+  const [overrideDays,     setOverrideDays]     = React.useState('');
+
   React.useEffect(() => {
     setDisclosureLoading(true);
     window.PzApi.getDisclosureConvert(draft.id)
       .then(r => {
-        if (r && r.data) setDisclosure(r.data);
-        else setDisclosureError((r && r.error) || 'Payload preview unavailable');
+        if (r && r.data) {
+          setDisclosure(r.data);
+          if (!defaultsApplied.current) {
+            defaultsApplied.current = true;
+            const pr = r.data.payment_resolved || {};
+            if (pr.method) setOverrideMethod(pr.method);
+            if (pr.customer_default_days != null) setOverrideDays(String(pr.customer_default_days));
+          }
+        } else {
+          setDisclosureError((r && r.error) || 'Payload preview unavailable');
+        }
       })
       .catch(() => setDisclosureError('Payload preview unavailable'))
       .finally(() => setDisclosureLoading(false));
   }, [draft.id]);
 
+  // Compute payment due date from override inputs
+  const computedPaymentDue = React.useMemo(() => {
+    if (!overrideSaleDate || overrideDays === '') return '';
+    try {
+      const d = new Date(overrideSaleDate);
+      d.setDate(d.getDate() + parseInt(overrideDays, 10));
+      return d.toISOString().slice(0, 10);
+    } catch (ex) { return ''; }
+  }, [overrideSaleDate, overrideDays]);
+
   const handleConvert = () => {
     if (!confirmed || loading) return;
     setLoading(true);
     setApiError(null);
-    window.PzApi.draftToInvoice(draft.id, {
-      confirm: 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA',
-    })
+    const body = { confirm: 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA' };
+    if (overrideMethod)   body.override_payment_method = overrideMethod;
+    if (overrideSaleDate) body.override_sale_date      = overrideSaleDate;
+    if (overrideDays !== '') body.override_payment_days = parseInt(overrideDays, 10);
+    window.PzApi.draftToInvoice(draft.id, body)
       .then(r => {
-        const body = (r && r.data) || null;
-        if (body && body.ok === false) {
-          const reasons = body.blocking_reasons
-            || (body.blockers || []).map(b => b.reason)
+        const data = (r && r.data) || null;
+        if (data && data.ok === false) {
+          const reasons = data.blocking_reasons
+            || (data.blockers || []).map(b => b.reason)
             || [];
           setApiError(
             reasons.length
               ? reasons.join(' · ')
-              : (body.error || 'Conversion blocked — check backend logs.')
+              : (data.error || 'Conversion blocked — check backend logs.')
           );
           setLoading(false);
         } else {
@@ -4127,6 +4154,16 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
 
   const totalEur = detail.lines.reduce((s, l) => s + l.netEur, 0);
   const currency = detail.currency || 'EUR';
+
+  // Resolved display values: override > disclosure > draft fallback
+  const resolvedMethod = overrideMethod
+    || (disclosure && disclosure.payment_resolved && disclosure.payment_resolved.method)
+    || detail.paymentTerms
+    || '—';
+  const resolvedSaleDate = overrideSaleDate || detail.sale_date || '—';
+  const resolvedPaymentDue = computedPaymentDue
+    || (disclosure && disclosure.payment_resolved && disclosure.payment_resolved.payment_date)
+    || '—';
 
   return (
     <div style={{
@@ -4168,8 +4205,9 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
             ['Currency',        (disclosure && disclosure.fields_to_write && disclosure.fields_to_write.currency) || currency],
             ['Series',          (disclosure && disclosure.fields_to_write && disclosure.fields_to_write.series_id) || '—'],
             ['FX rate',         detail.fx && detail.fx.rate ? `${detail.fx.rate.toFixed(4)} PLN (table ${detail.fx.table})` : '—'],
-            ['Sale date',       detail.sale_date || '—'],
-            ['Payment',         detail.paymentTerms || '—'],
+            ['Invoice issue date', resolvedSaleDate || (disclosure && disclosure.fields_to_write && disclosure.fields_to_write.invoice_date) || '—'],
+            ['Payment method',  resolvedMethod],
+            ['Payment due',     resolvedPaymentDue],
             ['Flag required',   (disclosure && disclosure.flag_required) || 'WFIRMA_CREATE_INVOICE_ALLOWED'],
             [`Total (${currency})`, totalEur.toFixed(2)],
           ].map(([k, v]) => (
@@ -4192,6 +4230,61 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
                   </div>
                 ))
               }
+            </div>
+          </div>
+
+          {/* Operator payment overrides */}
+          <div style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-3)', fontWeight: 700, marginBottom: 10, marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+            OPERATOR OVERRIDES · OPTIONAL · AFFECTS THIS CONVERSION ONLY
+          </div>
+          <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', display: 'grid', gap: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: 14, alignItems: 'center', fontSize: 13 }}>
+              <label style={{ color: 'var(--text-3)' }} htmlFor="cti-override-method">Payment method</label>
+              <select
+                id="cti-override-method"
+                value={overrideMethod}
+                onChange={e => setOverrideMethod(e.target.value)}
+                data-testid="convert-modal-override-method"
+                style={{ fontSize: 12, padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', width: '100%' }}
+              >
+                <option value="">— default from proforma —</option>
+                <option value="transfer">transfer (przelew)</option>
+                <option value="cash">cash (gotówka)</option>
+                <option value="card">card (karta)</option>
+                <option value="compensation">compensation (kompensata)</option>
+              </select>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: 14, alignItems: 'center', fontSize: 13 }}>
+              <label style={{ color: 'var(--text-3)' }} htmlFor="cti-override-sale-date">Sale date</label>
+              <input
+                id="cti-override-sale-date"
+                type="date"
+                value={overrideSaleDate}
+                onChange={e => setOverrideSaleDate(e.target.value)}
+                data-testid="convert-modal-override-sale-date"
+                style={{ fontSize: 12, padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)' }}
+              />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: 14, alignItems: 'center', fontSize: 13 }}>
+              <label style={{ color: 'var(--text-3)' }} htmlFor="cti-override-days">Payment days</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <input
+                  id="cti-override-days"
+                  type="number"
+                  min="0"
+                  max="365"
+                  value={overrideDays}
+                  onChange={e => setOverrideDays(e.target.value)}
+                  placeholder="e.g. 30"
+                  data-testid="convert-modal-override-days"
+                  style={{ fontSize: 12, padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', width: 80 }}
+                />
+                {computedPaymentDue && (
+                  <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                    Due: <strong style={{ color: 'var(--text)' }}>{computedPaymentDue}</strong>
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
