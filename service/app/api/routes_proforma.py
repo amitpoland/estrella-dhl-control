@@ -8639,9 +8639,6 @@ def get_proforma_draft_intelligence(draft_id: int) -> JSONResponse:
 
     # Anomaly detection + missing-field inference
     anomalies   = _intel.detect_line_anomalies(lines, corpus=corpus)
-    anomalies  += _intel.detect_operator_override_mismatches(
-        lines, master_db_path=_master_db_path()
-    )
     suggestions = _intel.infer_missing_fields(lines, master_db_path=_master_db_path())
 
     # Confidence scoring
