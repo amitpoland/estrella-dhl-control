@@ -170,20 +170,26 @@ def test_save_cm_button_has_onclick(html):
 # ── Negative invariants — write buttons stay disabled ───────────────────────
 
 
-def test_register_product_button_remains_disabled(html):
-    """btn-setup-product-register-* must NOT have an onClick handler in
-    this PR — wiring is deferred to C25B/C25C per operator brief."""
+def test_register_product_button_is_wired_and_flag_gated(html):
+    """btn-setup-product-register-* is now WIRED to create-and-adopt via
+    handleRegisterMissing (operator brief: 'Fix or properly wire the dead
+    Register button'; supersedes the prior C25B/C25C deferral). Contract:
+    (a) carries an onClick to handleRegisterMissing, (b) is CONDITIONALLY
+    disabled (busy / unknown item_type) — not permanently, (c) stays behind
+    the WFIRMA_CREATE_PRODUCT_ALLOWED flag (rendered inside `{flagOn && (`)."""
     idx = html.index("btn-setup-product-register-")
-    # Look forward 600 chars
-    block = html[idx:idx + 600]
-    # No onClick handler should be wired
-    assert "onClick=" not in block.split("</Btn>")[0], (
-        "btn-setup-product-register-* must remain without an onClick — "
-        "wiring is forbidden in this PR (write behaviour)"
+    block = html[idx:idx + 700].split("</Btn>")[0]
+    assert "onClick={() => handleRegisterMissing(row)}" in block, (
+        "btn-setup-product-register-* must be wired to handleRegisterMissing"
     )
-    # Must remain disabled
-    assert "disabled" in block.split("</Btn>")[0], (
-        "btn-setup-product-register-* must remain disabled"
+    # Conditional disabled expression, NOT a permanent bare `disabled`.
+    assert "disabled={" in block, (
+        "btn-setup-product-register-* disabled must be conditional, not permanent"
+    )
+    # Live create stays gated by the create-product flag.
+    pre = html[max(0, idx - 200):idx]
+    assert "flagOn &&" in pre, (
+        "btn-setup-product-register-* must remain gated by WFIRMA_CREATE_PRODUCT_ALLOWED (flagOn)"
     )
 
 

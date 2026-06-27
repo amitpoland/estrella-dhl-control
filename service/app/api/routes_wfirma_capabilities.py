@@ -1050,6 +1050,92 @@ def create_and_adopt_product(
     })
 
 
+@router.post("/shipment/{batch_id:path}/adopt-pending-found",
+             dependencies=[_auth])
+def adopt_pending_found_for_batch(
+    batch_id: str,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Batch adopt every product_code in THIS batch that was found in wFirma and
+    is awaiting an operator decision (sync_status=='pending_adoption' with a
+    wfirma_product_id) — flip it to 'matched'.
+
+    LOCAL AUTHORITY ONLY. This is NOT a wFirma write: it neither creates nor
+    edits a wFirma good — it only adopts already-existing wFirma products into
+    local 'matched' authority. No feature flag gates it (adoption of an
+    existing product is not a write); create/register stays gated by
+    WFIRMA_CREATE_PRODUCT_ALLOWED on the per-row create-and-adopt path.
+
+    Batch-scoped: only the codes present in this batch's invoice_lines are
+    considered. Note that wfirma_products maps product_code → wFirma good
+    GLOBALLY (one unique row per code — there is no per-batch product mapping),
+    so adopting code X is by design a global authority decision: it asserts
+    "code X maps to wFirma good Y" everywhere, which is correct because the code
+    is the global identity. Batch scoping bounds WHICH codes this call may adopt;
+    it does not (and need not) create per-batch product rows. Operators wanting
+    to eyeball each wFirma name before committing use the per-row Compare +
+    Adopt in the pending modal; batch adopt trusts the discovery (goods/find by
+    code) mapping. Rows that are missing, unlinked, already-matched, or in any
+    other status are SKIPPED with an explicit reason. Idempotent.
+
+    Response: { ok, batch_id, considered, adopted_count, adopted[], skipped[] }
+    """
+    if ".." in batch_id or batch_id.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+    op = _operator_from_header(x_operator)
+
+    from ..services import document_db as _ddb
+    try:
+        invoice_rows = _ddb.get_invoice_lines_for_batch(batch_id) or []
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "error": "invoice_lines read failed: " + str(exc)},
+        )
+
+    codes = sorted({
+        (r.get("product_code") or "").strip()
+        for r in invoice_rows
+        if (r.get("product_code") or "").strip()
+    })
+    cache = wfdb.get_products_batch(codes) if codes else {}
+
+    adopted: List[str] = []
+    skipped: List[dict] = []
+    for pc in codes:
+        row    = cache.get(pc) or {}
+        status = (row.get("sync_status") or "").strip()
+        wfid   = (row.get("wfirma_product_id") or "").strip()
+        if status == "matched" and wfid:
+            skipped.append({"product_code": pc, "reason": "already_matched"})
+        elif status == "pending_adoption" and wfid:
+            if wfdb.adopt_pending_product(pc):
+                adopted.append(pc)
+            else:                       # lost a race / row changed under us
+                skipped.append({"product_code": pc, "reason": "adopt_no_op"})
+        elif not row:
+            skipped.append({"product_code": pc, "reason": "not_resolved_yet"})
+        elif not wfid:
+            skipped.append({"product_code": pc, "reason": "missing_in_wfirma"})
+        else:
+            skipped.append({"product_code": pc, "reason": "status_" + (status or "unknown")})
+
+    log.info(
+        "[%s] adopt-pending-found: adopted=%d skipped=%d (operator=%s)",
+        batch_id, len(adopted), len(skipped), op,
+    )
+    return JSONResponse({
+        "ok":               True,
+        "batch_id":         batch_id,
+        "operator":         op,
+        "considered":       len(codes),
+        "adopted_count":    len(adopted),
+        "adopted":          adopted,
+        "skipped":          skipped,
+        "wfirma_untouched": True,
+    })
+
+
 # ── Batch wFirma product auto-registration (dry-run + write) ───────────────
 #
 # Compose the existing single-product create flow over an entire batch's
