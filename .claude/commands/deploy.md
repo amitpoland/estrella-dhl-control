@@ -111,11 +111,29 @@ Carrier gate POST must return 503 (gate closed).
 
 ---
 
+## Step 8 — Close-condition gate
+
+After all steps above complete, run the reusable verification script to
+confirm all 8 close conditions pass before marking the deploy closed.
+
+```powershell
+cd "C:\PZ-verify"
+.\.claude\manifests\verify_deploy_close.ps1 -ExpectedSHA <SHA>
+```
+
+Exit 0 = all 8 conditions passed — deploy is closed.
+Exit 1 = one or more conditions failed — do not mark closed, investigate output.
+
+Use `-SkipRobocopy` if the robocopy sync was already run in Step 5 and you
+only want to verify the post-deploy state.
+
+---
+
 ## Required output
 
 ```
 Pulled SHA:
-Tests:           PZ [x/160]  Carrier [x/412]
+Tests:           PZ [x/160]  Carrier [x/469]
 Sync result:     robocopy exit [n]
 Service status:  [RUNNING | ERROR]
 Local health:    [200 | ERROR]
