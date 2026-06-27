@@ -3288,6 +3288,9 @@ class _FinalInvoiceConfirmReq(_BaseModel):
     confirm:                str
     operator_description:   Optional[str] = ""
     final_series_id:        Optional[str] = ""   # if blank, copy source proforma series
+    override_payment_method: Optional[str] = ""  # transfer|cash|card|compensation
+    override_sale_date:      Optional[str] = ""  # YYYY-MM-DD; sets invoice_date
+    override_payment_days:   Optional[int] = None  # adds to sale_date → paymentdate
 
 
 @router.post(
@@ -3444,11 +3447,55 @@ def proforma_to_invoice(
                 "client_name":      cn,
                 "blocking_reasons": [str(exc)],
             })
+        # Resolve operator payment overrides
+        _ALLOWED_PM_EN = {"transfer", "cash", "card", "compensation"}
+        _PM_EN_TO_WF   = {"transfer": "przelew", "cash": "gotowka",
+                          "card": "karta", "compensation": "kompensata"}
+        _override_method_en = (body.override_payment_method or "").strip().lower()
+        if _override_method_en and _override_method_en not in _ALLOWED_PM_EN:
+            return JSONResponse({
+                "ok": False, "status": "blocked",
+                "batch_id": batch_id, "client_name": cn,
+                "blocking_reasons": [
+                    f"override_payment_method '{_override_method_en}' not valid. "
+                    f"Must be one of: transfer, cash, card, compensation."
+                ],
+            })
+        _override_method_wf = _PM_EN_TO_WF.get(_override_method_en) if _override_method_en else None
+        _override_sale_date = (body.override_sale_date or "").strip() or None
+        _override_days      = body.override_payment_days  # Optional[int]
+
+        # Compute invoice_date and paymentdate from override fields
+        from datetime import timedelta as _td, datetime as _dt
+        _invoice_date = _warsaw_today()
+        if _override_sale_date:
+            try:
+                _invoice_date = _dt.fromisoformat(_override_sale_date).date()
+            except ValueError:
+                pass
+        _paymentdate = None
+        if _override_days is not None:
+            _paymentdate = (_invoice_date + _td(days=_override_days)).isoformat()
+
+        # Build operator_description; append override annotations for audit trail
+        _op_desc = (body.operator_description or "").strip()
+        _audit_parts = []
+        if _override_method_en:
+            _audit_parts.append(f"payment_method={_override_method_en}")
+        if _override_sale_date:
+            _audit_parts.append(f"sale_date={_override_sale_date}")
+        if _override_days is not None:
+            _audit_parts.append(f"payment_days={_override_days}")
+        if _audit_parts:
+            _op_desc = (_op_desc + " [override: " + ", ".join(_audit_parts) + "]").strip()
+
         plan = p2i.build_final_invoice_plan(
             snap,
             final_series_id      = series_id,
-            invoice_date         = _warsaw_today(),
-            operator_description = (body.operator_description or "").strip(),
+            invoice_date         = _invoice_date,
+            paymentdate          = _paymentdate,
+            paymentmethod        = _override_method_wf,
+            operator_description = _op_desc,
         )
     except p2i.ZeroBillableInvoice as exc:
         # #532: every line priced at zero (packing_promote / non-revenue).
@@ -8876,8 +8923,26 @@ def disclose_proforma_convert(
         ) from exc
 
     operator = (x_operator or "").strip() or "unknown"
+
+    # Fetch customer master defaults for payment pre-fill
+    _cm_method, _cm_days = "", None
+    try:
+        from ..services.customer_master_db import get_customer_master as _get_cm
+        _cm_d = _get_cm(_customer_master_db_path(), snap.contractor_id)
+        if _cm_d:
+            _cm_method = (_cm_d.preferred_payment_method or "").strip()
+            _cm_days   = _cm_d.payment_terms_days
+    except Exception:
+        pass
+
     return JSONResponse(
-        build_invoice_convert_disclosure(snap, final_series_id=final_series_id, operator=operator)
+        build_invoice_convert_disclosure(
+            snap,
+            final_series_id=final_series_id,
+            operator=operator,
+            customer_default_method=_cm_method,
+            customer_default_days=_cm_days,
+        )
     )
 
 
