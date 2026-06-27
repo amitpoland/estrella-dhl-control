@@ -198,7 +198,7 @@ function EJDocCarrierRow({ carrier }) {
 // ── Diamond Declaration (Kimberley Process + WDC + WFDB) ─────────────────────
 function EJDiamondDecl() {
   return (
-    <div style={{ fontSize: 9, color: "#334155", lineHeight: 1.55, marginTop: 14,
+    <div className="ej-diamond-decl" style={{ fontSize: 9, color: "#334155", lineHeight: 1.55, marginTop: 14,
       padding: "10px 12px", background: "#FBF8F1", borderLeft: "3px solid #C9A24B",
       borderRadius: 2, pageBreakInside: "avoid", breakInside: "avoid" }}>
       <div style={{ fontSize: 8.5, letterSpacing: "0.14em", textTransform: "uppercase",
@@ -254,7 +254,7 @@ function EJTermsBlock({ paymentDays, dueDate, issueDate }) {
   }
 
   return (
-    <div style={{ fontSize: 9, color: "#475569", lineHeight: 1.55, marginTop: 10,
+    <div className="ej-terms" style={{ fontSize: 9, color: "#475569", lineHeight: 1.55, marginTop: 10,
       pageBreakInside: "avoid", breakInside: "avoid" }}>
       <div style={{ fontSize: 8.5, letterSpacing: "0.14em", textTransform: "uppercase",
         fontWeight: 600, color: "#64748B", marginBottom: 4 }}>
@@ -271,7 +271,7 @@ function EJTermsBlock({ paymentDays, dueDate, issueDate }) {
 function EJSignatureBlock({ documentType }) {
   const noun = documentType === "invoice" ? "faktury" : "pro formy";
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginTop: 24,
+    <div className="ej-sig-block" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginTop: 24,
       pageBreakInside: "avoid", breakInside: "avoid" }}>
       <div>
         <div style={{ borderTop: "1px solid #CBD5E1", height: 36, marginBottom: 6 }}/>
@@ -292,7 +292,7 @@ function EJSignatureBlock({ documentType }) {
 // ── Official Company Footer ────────────────────────────────────────────────────
 function EJCompanyFooter() {
   return (
-    <div style={{ marginTop: 14, borderTop: "1px solid #E2E8F0", paddingTop: 8,
+    <div className="ej-company-footer" style={{ marginTop: 14, borderTop: "1px solid #E2E8F0", paddingTop: 8,
       fontSize: 8.5, color: "#94A3B8", lineHeight: 1.5,
       pageBreakInside: "avoid", breakInside: "avoid" }}>
       <strong style={{ color: "#64748B" }}>Estrella Jewels Sp. z o.o., Sp. K.</strong>
@@ -454,20 +454,22 @@ function EJProformaClassic({ docData }) {
           <EJDocBank banks={d.banks || []}/>
         </div>
 
-        {/* Compliance */}
-        <EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/>
+        <div className="ej-final-stack">
+          {/* Compliance */}
+          <EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/>
 
-        {/* Diamond declaration */}
-        <EJDiamondDecl/>
+          {/* Diamond declaration */}
+          <EJDiamondDecl/>
 
-        {/* Payment and ownership terms */}
-        <EJTermsBlock paymentDays={d.payment_terms_days} dueDate={d.due} issueDate={d.date}/>
+          {/* Payment and ownership terms */}
+          <EJTermsBlock paymentDays={d.payment_terms_days} dueDate={d.due} issueDate={d.date}/>
 
-        {/* Signature */}
-        <EJSignatureBlock documentType="proforma"/>
+          {/* Signature */}
+          <EJSignatureBlock documentType="proforma"/>
 
-        {/* Company footer */}
-        <EJCompanyFooter/>
+          {/* Company footer */}
+          <EJCompanyFooter/>
+        </div>
       </div>
     </div>
   );
@@ -641,20 +643,22 @@ function EJProformaModern({ docData }) {
           <EJDocBank banks={d.banks || []}/>
         </div>
 
-        {/* Compliance */}
-        <EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/>
+        <div className="ej-final-stack">
+          {/* Compliance */}
+          <EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/>
 
-        {/* Diamond declaration */}
-        <EJDiamondDecl/>
+          {/* Diamond declaration */}
+          <EJDiamondDecl/>
 
-        {/* Payment and ownership terms */}
-        <EJTermsBlock paymentDays={d.payment_terms_days} dueDate={d.due} issueDate={d.date}/>
+          {/* Payment and ownership terms */}
+          <EJTermsBlock paymentDays={d.payment_terms_days} dueDate={d.due} issueDate={d.date}/>
 
-        {/* Signature */}
-        <EJSignatureBlock documentType="proforma"/>
+          {/* Signature */}
+          <EJSignatureBlock documentType="proforma"/>
 
-        {/* Company footer */}
-        <EJCompanyFooter/>
+          {/* Company footer */}
+          <EJCompanyFooter/>
+        </div>
       </div>
     </div>
   );
@@ -794,19 +798,21 @@ function EJProformaBold({ docData }) {
         </div>
 
         <EJDocBank banks={d.banks || []}/>
-        <div style={{ marginTop: 16 }}><EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/></div>
+        <div className="ej-final-stack" style={{ marginTop: 16 }}>
+          <EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/>
 
-        {/* Diamond declaration */}
-        <EJDiamondDecl/>
+          {/* Diamond declaration */}
+          <EJDiamondDecl/>
 
-        {/* Payment and ownership terms */}
-        <EJTermsBlock paymentDays={d.payment_terms_days} dueDate={d.due} issueDate={d.date}/>
+          {/* Payment and ownership terms */}
+          <EJTermsBlock paymentDays={d.payment_terms_days} dueDate={d.due} issueDate={d.date}/>
 
-        {/* Signature */}
-        <EJSignatureBlock documentType="proforma"/>
+          {/* Signature */}
+          <EJSignatureBlock documentType="proforma"/>
 
-        {/* Company footer */}
-        <EJCompanyFooter/>
+          {/* Company footer */}
+          <EJCompanyFooter/>
+        </div>
       </div>
     </div>
   );
