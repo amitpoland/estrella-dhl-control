@@ -134,31 +134,17 @@ function EJDocBank({ banks }) {
   );
 }
 
-// ── Compliance footer ─────────────────────────────────────────────────────────
-function EJDocCompliance({ paymentDays, paymentDueStr }) {
-  const wrapStyle = { fontSize: 10, color: "#334155", lineHeight: 1.5,
-    display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 };
-  // Terms authority: payment_terms_days -> due date -> neutral (issue #6).
-  const hasDue = paymentDueStr && paymentDueStr !== "—";
-  const termsPhrase = paymentDays ? `within ${paymentDays} days of invoice date`
-    : hasDue ? `by ${paymentDueStr}` : "by the due date stated on this document";
+// ── Compliance footer — Privacy / GDPR only ───────────────────────────────────
+// Payment terms are handled by EJTermsBlock (single authority).
+// Returns & Warranty removed — not applicable to B2B trade documents.
+function EJDocCompliance() {
   return (
-    <div style={wrapStyle}>
-      <div>
-        <div className="ej-eyebrow" style={{ marginBottom: 4 }}>Payment terms</div>
-        Payment due {termsPhrase}. Goods remain property of Estrella Jewels
-        until full payment is received.
-      </div>
-      <div>
-        <div className="ej-eyebrow" style={{ marginBottom: 4 }}>Returns &amp; warranty</div>
-        14-day return policy on undamaged goods in original packaging.
-        Warranty: 2 years on manufacturing defects per EU directive 1999/44/EC.
-      </div>
-      <div>
-        <div className="ej-eyebrow" style={{ marginBottom: 4 }}>Privacy · GDPR</div>
-        Data controller: Estrella Jewels Sp. z o.o. Personal data processed solely
-        for contract performance under GDPR Art. 6(1)(b)(c).
-      </div>
+    <div style={{ fontSize: 9, color: "#475569", lineHeight: 1.55, marginTop: 10 }}>
+      <div style={{ fontSize: 8.5, letterSpacing: "0.14em", textTransform: "uppercase",
+        fontWeight: 600, color: "#64748B", marginBottom: 4 }}>Privacy · GDPR</div>
+      Data controller: Estrella Jewels Sp. z o.o., Sp. K. Personal data processed
+      solely for contract performance under GDPR Art. 6(1)(b)(c). Data will not be
+      shared with third parties beyond what is required for customs and shipping compliance.
     </div>
   );
 }
@@ -180,7 +166,10 @@ function EJDocCarrierRow({ carrier }) {
         }}>DHL</span>
         <div style={{ fontSize: 8.5, lineHeight: 1.2 }}>
           <div style={{ fontWeight: 700 }}>EXPRESS</div>
-          {carrier.awb && <div style={{ opacity: 0.75 }}>AWB {carrier.awb}</div>}
+          {carrier.awb
+            ? <div style={{ opacity: 0.75 }}>AWB {carrier.awb}</div>
+            : <div style={{ opacity: 0.55, fontStyle: "italic" }}>AWB pending</div>
+          }
         </div>
       </div>
       <div style={{ padding: "10px 12px", borderRight: "1px solid var(--ej-line)" }}>
@@ -189,7 +178,9 @@ function EJDocCarrierRow({ carrier }) {
       </div>
       <div style={{ padding: "10px 12px" }}>
         <div style={{ fontSize: 8, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--ej-mute)", fontWeight: 600, marginBottom: 3 }}>Shipment ref</div>
-        <div style={{ fontSize: 11, fontWeight: 600, fontFamily: "var(--ej-mono)" }}>{carrier.awb || "—"}</div>
+        <div style={{ fontSize: 11, fontWeight: 600, fontFamily: "var(--ej-mono)" }}>
+          {carrier.awb || (carrier.batch_ref ? `Batch: ${carrier.batch_ref}` : "—")}
+        </div>
       </div>
     </div>
   );
@@ -455,20 +446,13 @@ function EJProformaClassic({ docData }) {
         </div>
 
         <div className="ej-final-stack">
-          {/* Compliance */}
-          <EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/>
-
-          {/* Diamond declaration */}
-          <EJDiamondDecl/>
-
-          {/* Payment and ownership terms */}
           <EJTermsBlock paymentDays={d.payment_terms_days} dueDate={d.due} issueDate={d.date}/>
-
-          {/* Signature */}
-          <EJSignatureBlock documentType="proforma"/>
-
-          {/* Company footer */}
-          <EJCompanyFooter/>
+          <EJDiamondDecl/>
+          <EJDocCompliance/>
+          <div className="ej-signature-footer-lock">
+            <EJSignatureBlock documentType="proforma"/>
+            <EJCompanyFooter/>
+          </div>
         </div>
       </div>
     </div>
@@ -644,20 +628,13 @@ function EJProformaModern({ docData }) {
         </div>
 
         <div className="ej-final-stack">
-          {/* Compliance */}
-          <EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/>
-
-          {/* Diamond declaration */}
-          <EJDiamondDecl/>
-
-          {/* Payment and ownership terms */}
           <EJTermsBlock paymentDays={d.payment_terms_days} dueDate={d.due} issueDate={d.date}/>
-
-          {/* Signature */}
-          <EJSignatureBlock documentType="proforma"/>
-
-          {/* Company footer */}
-          <EJCompanyFooter/>
+          <EJDiamondDecl/>
+          <EJDocCompliance/>
+          <div className="ej-signature-footer-lock">
+            <EJSignatureBlock documentType="proforma"/>
+            <EJCompanyFooter/>
+          </div>
         </div>
       </div>
     </div>
@@ -799,19 +776,13 @@ function EJProformaBold({ docData }) {
 
         <EJDocBank banks={d.banks || []}/>
         <div className="ej-final-stack" style={{ marginTop: 16 }}>
-          <EJDocCompliance paymentDays={d.payment_terms_days} paymentDueStr={d.due}/>
-
-          {/* Diamond declaration */}
-          <EJDiamondDecl/>
-
-          {/* Payment and ownership terms */}
           <EJTermsBlock paymentDays={d.payment_terms_days} dueDate={d.due} issueDate={d.date}/>
-
-          {/* Signature */}
-          <EJSignatureBlock documentType="proforma"/>
-
-          {/* Company footer */}
-          <EJCompanyFooter/>
+          <EJDiamondDecl/>
+          <EJDocCompliance/>
+          <div className="ej-signature-footer-lock">
+            <EJSignatureBlock documentType="proforma"/>
+            <EJCompanyFooter/>
+          </div>
         </div>
       </div>
     </div>
