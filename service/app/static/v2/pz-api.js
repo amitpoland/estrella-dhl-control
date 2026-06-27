@@ -347,7 +347,6 @@
       _postM(`${BASE}/wfirma/reservations/create`,
         { batch_id: batchId, client_name: clientName }),
 
-<<<<<<< HEAD
     // POST /api/v1/carrier/{batch_id}/shipment
     // Creates a DHL Express AWB. Requires CARRIER_API_STATUS=live and credentials.
     // body: { recipient_address, declared_value, currency, weight_kg, dimensions,
