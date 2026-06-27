@@ -154,7 +154,10 @@ if ($SkipRobocopy) {
         Start-Sleep -Seconds 1; $tries++
     }
     sc.exe start PZService | Out-Null
-    Start-Sleep -Seconds 8
+    $tries = 0
+    while ((Get-Service PZService -ErrorAction SilentlyContinue).Status -ne 'Running' -and $tries -lt 30) {
+        Start-Sleep -Seconds 1; $tries++
+    }
 }
 
 # -------------------------------------------------------------
