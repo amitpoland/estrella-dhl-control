@@ -11464,22 +11464,70 @@ function OperatorWorkflowCard({ batchId, onToast }) {
                 {setupProductPreviewErr && (
                   <div style={{ color: 'var(--badge-red-text)' }}>error: {setupProductPreviewErr}</div>
                 )}
-                {setupProductPreview && (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px' }}>
-                    <div style={{ color: 'var(--text-3)' }}>scanned</div>
-                    <div>{setupProductPreview.total_codes != null ? setupProductPreview.total_codes : (setupProductPreview.scanned ?? '—')}</div>
-                    <div style={{ color: 'var(--text-3)' }}>mirrored (mapped)</div>
-                    <div>{setupProductPreview.mirrored_count != null ? setupProductPreview.mirrored_count : (setupProductPreview.matched_count ?? '—')}</div>
-                    <div style={{ color: 'var(--text-3)' }}>missing</div>
-                    <div>{setupProductPreview.missing_count != null ? setupProductPreview.missing_count : (Array.isArray(setupProductPreview.missing) ? setupProductPreview.missing.length : '—')}</div>
-                    {Array.isArray(setupProductPreview.missing) && setupProductPreview.missing.length > 0 && (
-                      <>
-                        <div style={{ color: 'var(--text-3)' }}>missing codes</div>
-                        <div style={{ fontFamily: 'monospace', fontSize: 10 }}>{setupProductPreview.missing.slice(0, 12).join(', ')}{setupProductPreview.missing.length > 12 ? ` … (+${setupProductPreview.missing.length - 12} more)` : ''}</div>
-                      </>
-                    )}
-                  </div>
-                )}
+                {setupProductPreview && (() => {
+                  // Read the CURRENT auto-register-preview response shape:
+                  //   scanned, existing_mapped, pending_adoption, missing (int),
+                  //   created, blocked, failed, errors[], results[].
+                  // Legacy mirrored_count/matched_count/missing_count kept as
+                  // fallbacks so an older response still renders numbers.
+                  const p = setupProductPreview;
+                  const n = (v) => (v == null ? null : Number(v));
+                  const scanned = p.scanned != null ? p.scanned
+                                : (p.total_codes != null ? p.total_codes : '—');
+                  // existing_mapped = already matched locally (done, no action);
+                  // pending_adoption = found in wFirma but awaiting Adopt.
+                  // Shown as SEPARATE rows — they drive different operator actions.
+                  const existing = p.existing_mapped != null ? p.existing_mapped
+                    : (p.mirrored_count != null ? p.mirrored_count
+                       : (p.matched_count != null ? p.matched_count : '—'));
+                  const missing = p.missing_count != null ? p.missing_count
+                    : (typeof p.missing === 'number' ? p.missing
+                       : (Array.isArray(p.missing) ? p.missing.length : '—'));
+                  const errors  = Array.isArray(p.errors)  ? p.errors  : [];
+                  const results = Array.isArray(p.results) ? p.results : [];
+                  const buckets = {};
+                  results.forEach((r) => {
+                    const s = (r && r.status) || 'unknown';
+                    buckets[s] = (buckets[s] || 0) + 1;
+                  });
+                  const lbl = { color: 'var(--text-3)' };
+                  return (
+                    <div data-testid="setup-product-preview-body">
+                      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px' }}>
+                        <div style={lbl}>scanned</div>
+                        <div data-testid="preview-scanned">{scanned}</div>
+                        <div style={lbl}>existing mapped (matched — done)</div>
+                        <div data-testid="preview-existing-mapped">{existing}</div>
+                        <div style={lbl}>pending adoption (Adopt as-is)</div>
+                        <div data-testid="preview-pending">{p.pending_adoption != null ? p.pending_adoption : '—'}</div>
+                        <div style={lbl}>missing</div>
+                        <div data-testid="preview-missing">{missing}</div>
+                        {p.created != null && (<><div style={lbl}>created</div><div data-testid="preview-created">{p.created}</div></>)}
+                        {p.blocked != null && (<><div style={lbl}>blocked</div><div data-testid="preview-blocked">{p.blocked}</div></>)}
+                        {p.failed != null && (<><div style={lbl}>failed</div><div data-testid="preview-failed" style={Number(p.failed) > 0 ? { color: 'var(--badge-red-text)', fontWeight: 600 } : {}}>{p.failed}</div></>)}
+                        {Array.isArray(p.missing) && p.missing.length > 0 && (
+                          <>
+                            <div style={lbl}>missing codes</div>
+                            <div style={{ fontFamily: 'monospace', fontSize: 10 }}>{p.missing.slice(0, 12).join(', ')}{p.missing.length > 12 ? ` … (+${p.missing.length - 12} more)` : ''}</div>
+                          </>
+                        )}
+                      </div>
+                      {errors.length > 0 && (
+                        <div data-testid="preview-errors" style={{ marginTop: 6, color: 'var(--badge-red-text)' }}>
+                          <div style={{ fontWeight: 600 }}>errors ({errors.length}):</div>
+                          <ul style={{ margin: '2px 0 0 16px', padding: 0, fontSize: 10 }}>
+                            {errors.slice(0, 8).map((e, i) => (<li key={i}>{typeof e === 'string' ? e : JSON.stringify(e)}</li>))}
+                          </ul>
+                        </div>
+                      )}
+                      {Object.keys(buckets).length > 0 && (
+                        <div data-testid="preview-result-buckets" style={{ marginTop: 6, fontSize: 10, color: 'var(--text-3)' }}>
+                          per-code: {Object.keys(buckets).map((k) => `${k}=${buckets[k]}`).join(' · ')}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
