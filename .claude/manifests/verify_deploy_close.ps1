@@ -15,7 +15,7 @@
 
 .PARAMETER MinPzTests
     Minimum passing count for the ROOT-LEVEL golden regression:
-      python test_pz_regression.py   (C:\PZ-verify\test_pz_regression.py)
+      python -m pytest test_pz_regression.py   (C:\PZ-verify\test_pz_regression.py)
     Default: 160.
 
     NOTE: This is NOT the same as the service-level PZ suite tracked in
@@ -94,8 +94,9 @@ Add-Result "HEAD" $pass1 $detail1
 # test-baseline.md). This checks the golden import-processor suite (~160).
 # -------------------------------------------------------------
 Write-Host "[2/8] Running PZ regression (root-level golden suite)..."
+$env:PYTHONUTF8 = "1"
 $pzOut = & python "$RootDir\test_pz_regression.py" 2>&1 | Out-String
-$pzMatch = [regex]::Match($pzOut, '(\d+) passed')
+$pzMatch = [regex]::Match($pzOut, '(\d+)/\d+ tests passed')
 $pzCount = if ($pzMatch.Success) { [int]$pzMatch.Groups[1].Value } else { 0 }
 $pass2 = $pzCount -ge $MinPzTests
 $detail2 = "$pzCount passed (min $MinPzTests)"
@@ -105,9 +106,17 @@ Add-Result "PZ regression" $pass2 $detail2
 # Condition 3 - Carrier tests
 # -------------------------------------------------------------
 Write-Host "[3/8] Running carrier tests..."
-Push-Location $ServiceDir
-$carrierOut = & python -m pytest tests/test_carrier_*.py -q 2>&1 | Out-String
-Pop-Location
+$carrierTmp = [System.IO.Path]::GetTempFileName()
+try {
+    $carrierFiles = Get-ChildItem -Path "$ServiceDir\tests" -Filter "test_carrier_*.py" |
+        Select-Object -ExpandProperty FullName
+    Push-Location $ServiceDir
+    & python -m pytest $carrierFiles -q > $carrierTmp 2>&1
+    Pop-Location
+    $carrierOut = Get-Content $carrierTmp -Raw -ErrorAction SilentlyContinue
+} finally {
+    Remove-Item $carrierTmp -ErrorAction SilentlyContinue
+}
 $carrierMatch = [regex]::Match($carrierOut, '(\d+) passed')
 $carrierCount = if ($carrierMatch.Success) { [int]$carrierMatch.Groups[1].Value } else { 0 }
 $pass3 = $carrierCount -ge $MinCarrierTests
@@ -158,27 +167,29 @@ $pass5 = $svcStatus -eq 'Running'
 Add-Result "Service" $pass5 "Status=$svcStatus"
 
 # -------------------------------------------------------------
-# Condition 6 - Local health HTTP 200
+# Condition 6 - Local liveness HTTP 200
+# Uses unauthenticated root path (/) — no API key required.
 # -------------------------------------------------------------
-Write-Host "[6/8] Checking local health endpoint..."
+Write-Host "[6/8] Checking local liveness (http://127.0.0.1:47213/)..."
 try {
-    $r6 = Invoke-WebRequest 'http://127.0.0.1:47213/api/v1/health' -UseBasicParsing -TimeoutSec 10
+    $r6 = Invoke-WebRequest 'http://127.0.0.1:47213/' -UseBasicParsing -TimeoutSec 10
     $pass6 = $r6.StatusCode -eq 200
-    Add-Result "Local health" $pass6 "HTTP $($r6.StatusCode)"
+    Add-Result "Local liveness" $pass6 "HTTP $($r6.StatusCode)"
 } catch {
-    Add-Result "Local health" $false $_.Exception.Message
+    Add-Result "Local liveness" $false $_.Exception.Message
 }
 
 # -------------------------------------------------------------
-# Condition 7 - Public health HTTP 200
+# Condition 7 - Public liveness HTTP 200
+# Uses unauthenticated root path (/) — no API key required.
 # -------------------------------------------------------------
-Write-Host "[7/8] Checking public health endpoint..."
+Write-Host "[7/8] Checking public liveness (https://pz.estrellajewels.eu/)..."
 try {
-    $r7 = Invoke-WebRequest 'https://pz.estrellajewels.eu/api/v1/health' -UseBasicParsing -TimeoutSec 15
+    $r7 = Invoke-WebRequest 'https://pz.estrellajewels.eu/' -UseBasicParsing -TimeoutSec 15
     $pass7 = $r7.StatusCode -eq 200
-    Add-Result "Public health" $pass7 "HTTP $($r7.StatusCode)"
+    Add-Result "Public liveness" $pass7 "HTTP $($r7.StatusCode)"
 } catch {
-    Add-Result "Public health" $false $_.Exception.Message
+    Add-Result "Public liveness" $false $_.Exception.Message
 }
 
 # -------------------------------------------------------------
