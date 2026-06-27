@@ -249,6 +249,13 @@
     draftToInvoice: (draftId, body) =>
       _postM(`${BASE}/proforma/draft/${draftId}/to-invoice`, body || {}),
 
+    // GET /api/v1/proforma/draft/{draft_id}/disclose-convert
+    // Read-only payload preview for the proforma→invoice convert action.
+    // Returns the exact fields that would be sent to wFirma — no write, no invoice created.
+    // 422 if draft has no wfirma_proforma_id (not yet posted). 502 if wFirma unreachable.
+    getDisclosureConvert: (draftId) =>
+      _get(`${BASE}/proforma/draft/${draftId}/disclose-convert`),
+
     // GET /api/v1/proforma/draft/{draft_id}/events
     // Returns event timeline for the draft.
     getDraftEvents: (draftId) =>
@@ -340,7 +347,6 @@
       _postM(`${BASE}/wfirma/reservations/create`,
         { batch_id: batchId, client_name: clientName }),
 
-<<<<<<< HEAD
     // POST /api/v1/carrier/{batch_id}/shipment
     // Creates a DHL Express AWB. Requires CARRIER_API_STATUS=live and credentials.
     // body: { recipient_address, declared_value, currency, weight_kg, dimensions,

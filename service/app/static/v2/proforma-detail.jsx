@@ -4081,6 +4081,21 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
   const [loading,   setLoading]   = React.useState(false);
   const [apiError,  setApiError]  = React.useState(null);
 
+  const [disclosure,        setDisclosure]        = React.useState(null);
+  const [disclosureLoading, setDisclosureLoading] = React.useState(false);
+  const [disclosureError,   setDisclosureError]   = React.useState(null);
+
+  React.useEffect(() => {
+    setDisclosureLoading(true);
+    window.PzApi.getDisclosureConvert(draft.id)
+      .then(r => {
+        if (r && r.data) setDisclosure(r.data);
+        else setDisclosureError((r && r.error) || 'Payload preview unavailable');
+      })
+      .catch(() => setDisclosureError('Payload preview unavailable'))
+      .finally(() => setDisclosureLoading(false));
+  }, [draft.id]);
+
   const handleConvert = () => {
     if (!confirmed || loading) return;
     setLoading(true);
@@ -4137,16 +4152,25 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
           </div>
 
           {/* Payload section */}
-          <div style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-3)', fontWeight: 700, marginBottom: 10, borderTop: '1px solid var(--border)', paddingTop: 14 }}>PAYLOAD</div>
+          <div style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-3)', fontWeight: 700, marginBottom: 10, borderTop: '1px solid var(--border)', paddingTop: 14 }}>PAYLOAD PREVIEW</div>
+
+          {disclosureLoading && (
+            <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '4px 0 8px' }}>Loading invoice payload preview…</div>
+          )}
+          {disclosureError && !disclosureLoading && (
+            <div style={{ fontSize: 11, color: 'var(--text-3)', fontStyle: 'italic', padding: '2px 0 8px' }}>⚠ {disclosureError} — showing draft values</div>
+          )}
 
           {[
             ['Endpoint',        `POST /api/v1/proforma/draft/${draft.id}/to-invoice`],
-            ['Source proforma', detail.wfirma_proforma_fullnumber || '—'],
+            ['Source proforma', (disclosure && disclosure.source_proforma) || detail.wfirma_proforma_fullnumber || '—'],
             ['Customer',        detail.customer.wfirmaName || detail.customer.name || '—'],
-            ['Currency',        currency],
-            ['FX rate',         detail.fx.rate ? `${detail.fx.rate.toFixed(4)} PLN (table ${detail.fx.table})` : '—'],
+            ['Currency',        (disclosure && disclosure.fields_to_write && disclosure.fields_to_write.currency) || currency],
+            ['Series',          (disclosure && disclosure.fields_to_write && disclosure.fields_to_write.series_id) || '—'],
+            ['FX rate',         detail.fx && detail.fx.rate ? `${detail.fx.rate.toFixed(4)} PLN (table ${detail.fx.table})` : '—'],
             ['Sale date',       detail.sale_date || '—'],
             ['Payment',         detail.paymentTerms || '—'],
+            ['Flag required',   (disclosure && disclosure.flag_required) || 'WFIRMA_CREATE_INVOICE_ALLOWED'],
             [`Total (${currency})`, totalEur.toFixed(2)],
           ].map(([k, v]) => (
             <div key={k} style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: 14, padding: '5px 0', fontSize: 13 }}>
