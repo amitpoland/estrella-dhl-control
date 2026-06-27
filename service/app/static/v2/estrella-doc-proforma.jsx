@@ -28,7 +28,7 @@
 // provided (e.g. "/static/assets/estrella-logo.png"). Until then the SVG mark
 // fallback is used.  All six document components (Classic, Modern, Bold, CMR,
 // Packing) import EJDocumentLogo from this file — do NOT copy the SVG inline.
-const ESTRELLA_DOCUMENT_LOGO_SRC = null; // operator: set to "/static/assets/estrella-logo.png" when file is ready
+const ESTRELLA_DOCUMENT_LOGO_SRC = "/v2/assets/estrella-logo.svg";
 
 function EJDocMark({ size = 36, mono = false }) {
   return (
