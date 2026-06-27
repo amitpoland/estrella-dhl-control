@@ -73,14 +73,14 @@ function Add-Result {
 }
 
 Write-Host ""
-Write-Host "━━━ DEPLOY CLOSE CONDITIONS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+Write-Host "--- DEPLOY CLOSE CONDITIONS -----------------------------------"
 Write-Host "  Running checks for expected SHA: $ExpectedSHA"
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+Write-Host "---------------------------------------------------------------"
 Write-Host ""
 
-# ─────────────────────────────────────────────────────────────
-# Condition 1 — HEAD
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
+# Condition 1 - HEAD
+# -------------------------------------------------------------
 Write-Host "[1/8] Checking HEAD commit..."
 $head = (git -C $RootDir rev-parse HEAD 2>&1).Trim()
 $headOk = $head -match '^[0-9a-f]{40}$'
@@ -88,11 +88,11 @@ $pass1 = $headOk -and $head.StartsWith($ExpectedSHA)
 $detail1 = if ($headOk) { "HEAD=$($head.Substring(0,10))  expected=$ExpectedSHA" } else { "git rev-parse failed: $head" }
 Add-Result "HEAD" $pass1 $detail1
 
-# ─────────────────────────────────────────────────────────────
-# Condition 2 — PZ regression (root-level test_pz_regression.py)
+# -------------------------------------------------------------
+# Condition 2 - PZ regression (root-level test_pz_regression.py)
 # Distinct from service/tests/test_pz_*.py (221 tests, tracked in
 # test-baseline.md). This checks the golden import-processor suite (~160).
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 Write-Host "[2/8] Running PZ regression (root-level golden suite)..."
 $pzOut = & python "$RootDir\test_pz_regression.py" 2>&1 | Out-String
 $pzMatch = [regex]::Match($pzOut, '(\d+) passed')
@@ -101,9 +101,9 @@ $pass2 = $pzCount -ge $MinPzTests
 $detail2 = "$pzCount passed (min $MinPzTests)"
 Add-Result "PZ regression" $pass2 $detail2
 
-# ─────────────────────────────────────────────────────────────
-# Condition 3 — Carrier tests
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
+# Condition 3 - Carrier tests
+# -------------------------------------------------------------
 Write-Host "[3/8] Running carrier tests..."
 Push-Location $ServiceDir
 $carrierOut = & python -m pytest tests/test_carrier_*.py -q 2>&1 | Out-String
@@ -114,19 +114,19 @@ $pass3 = $carrierCount -ge $MinCarrierTests
 $detail3 = "$carrierCount passed (min $MinCarrierTests)"
 Add-Result "Carrier tests" $pass3 $detail3
 
-# ─────────────────────────────────────────────────────────────
-# Condition 4 — Robocopy  (skippable via -SkipRobocopy)
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
+# Condition 4 - Robocopy  (skippable via -SkipRobocopy)
+# -------------------------------------------------------------
 if ($SkipRobocopy) {
-    Write-Host "[4/8] Robocopy — SKIPPED (run separately)"
-    Add-Result "Robocopy" $true "skipped — operator confirmed ran separately"
+    Write-Host "[4/8] Robocopy - SKIPPED (run separately)"
+    Add-Result "Robocopy" $true "skipped - operator confirmed ran separately"
 } else {
     Write-Host "[4/8] Running robocopy sync..."
     robocopy "$RootDir\service\app" "C:\PZ\app" /E /XO `
         /XD __pycache__ .pytest_cache storage `
         /XF "*.pyc" "*.pyo" "*.zip"
     if ($LASTEXITCODE -ge 4) {
-        Add-Result "Robocopy" $false "exit=$LASTEXITCODE  (STOP — 4+ is fatal)"
+        Add-Result "Robocopy" $false "exit=$LASTEXITCODE  (STOP - 4+ is fatal)"
         Write-Host ""
         Write-Host "STOP: Robocopy exit $LASTEXITCODE >= 4. Aborting before service restart." -ForegroundColor Red
         foreach ($r in $results) {
@@ -137,7 +137,7 @@ if ($SkipRobocopy) {
     }
     Add-Result "Robocopy" $true "exit=$LASTEXITCODE  (0-3=OK)"
 
-    # ── Service restart (between conditions 4 and 5) ──────────────
+    # -- Service restart (between conditions 4 and 5) --------------
     Write-Host "[*]   Restarting PZService..."
     sc.exe stop PZService | Out-Null
     $tries = 0
@@ -148,18 +148,18 @@ if ($SkipRobocopy) {
     Start-Sleep -Seconds 8
 }
 
-# ─────────────────────────────────────────────────────────────
-# Condition 5 — Service RUNNING
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
+# Condition 5 - Service RUNNING
+# -------------------------------------------------------------
 Write-Host "[5/8] Checking PZService status..."
 $svc = Get-Service PZService -ErrorAction SilentlyContinue
 $svcStatus = if ($svc) { $svc.Status.ToString() } else { "NOT_FOUND" }
 $pass5 = $svcStatus -eq 'Running'
 Add-Result "Service" $pass5 "Status=$svcStatus"
 
-# ─────────────────────────────────────────────────────────────
-# Condition 6 — Local health HTTP 200
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
+# Condition 6 - Local health HTTP 200
+# -------------------------------------------------------------
 Write-Host "[6/8] Checking local health endpoint..."
 try {
     $r6 = Invoke-WebRequest 'http://127.0.0.1:47213/api/v1/health' -UseBasicParsing -TimeoutSec 10
@@ -169,9 +169,9 @@ try {
     Add-Result "Local health" $false $_.Exception.Message
 }
 
-# ─────────────────────────────────────────────────────────────
-# Condition 7 — Public health HTTP 200
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
+# Condition 7 - Public health HTTP 200
+# -------------------------------------------------------------
 Write-Host "[7/8] Checking public health endpoint..."
 try {
     $r7 = Invoke-WebRequest 'https://pz.estrellajewels.eu/api/v1/health' -UseBasicParsing -TimeoutSec 15
@@ -181,9 +181,9 @@ try {
     Add-Result "Public health" $false $_.Exception.Message
 }
 
-# ─────────────────────────────────────────────────────────────
-# Condition 8 — Log tail: no traceback or startup error
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
+# Condition 8 - Log tail: no traceback or startup error
+# -------------------------------------------------------------
 Write-Host "[8/8] Tailing production log for errors..."
 $tail = Get-Content $LogFile -Tail 30 -ErrorAction SilentlyContinue
 if ($null -eq $tail) {
@@ -196,14 +196,14 @@ if ($null -eq $tail) {
     Add-Result "Logs" $pass8 $detail8
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Summary table
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 $passed = ($results | Where-Object { $_.Pass }).Count
 $total  = $results.Count
 
 Write-Host ""
-Write-Host "━━━ RESULTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+Write-Host "--- RESULTS ---------------------------------------------------"
 foreach ($r in $results) {
     if ($r.Pass) {
         $icon = "[OK]"; $color = 'Green'
@@ -212,15 +212,15 @@ foreach ($r in $results) {
     }
     Write-Host ("  {0} {1}  {2}" -f $icon, $r.Name.PadRight(16), $r.Detail) -ForegroundColor $color
 }
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+Write-Host "---------------------------------------------------------------"
 
 if ($anyFail) {
     $failCount = $total - $passed
-    Write-Host "RESULT: $failCount/$total CONDITION(S) FAILED — do not mark deploy closed." -ForegroundColor Red
+    Write-Host "RESULT: $failCount/$total CONDITION(S) FAILED - do not mark deploy closed." -ForegroundColor Red
     Write-Host ""
     exit 1
 } else {
-    Write-Host "RESULT: ALL $total CONDITIONS PASSED — deploy is closed." -ForegroundColor Green
+    Write-Host "RESULT: ALL $total CONDITIONS PASSED - deploy is closed." -ForegroundColor Green
     Write-Host ""
     exit 0
 }
