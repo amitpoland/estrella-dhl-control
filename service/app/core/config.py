@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     auth_secret_key: str = Field(default="")
     auth_db_path: str = ""   # defaults to storage_root/users.db if empty
 
+    # ── Deployment status (read-only endpoint) ───────────────────────────────
+    # Optional path to TASK_STATE.md in the Claude memory directory.
+    # When set, GET /api/v1/deploy/status enriches its response with PR queue,
+    # gate results, and GATE 2 state parsed from the file.
+    # Example: DEPLOY_STATE_MD_PATH=C:\Users\Super Fashion\.claude\projects\C--PZ-verify\memory\TASK_STATE.md
+    deploy_state_md_path: Optional[str] = Field(default=None)
+
     # ── Storage ───────────────────────────────────────────────────────────────
     storage_root: Path = Path(__file__).parent.parent / "storage"
     backup_root: str = "C:\\PZ-backups"

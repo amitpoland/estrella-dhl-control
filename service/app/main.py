@@ -45,6 +45,7 @@ from .api.routes_workflow_intelligence import router as workflow_intelligence_ro
 from .api.routes_operations_intelligence import router as operations_intelligence_router  # Phase 10
 from .api.routes_settings import router as settings_router
 from .api.routes_system import router as system_router
+from .api.routes_deploy_status import router as deploy_status_router
 from .api.routes_agents import router as agents_router
 from .api.routes_packing import router as packing_router, dev_router as packing_dev_router
 from .api.routes_packing_resolution import router as packing_resolution_router
@@ -468,6 +469,7 @@ app.include_router(intelligence_graph_router)     # Phase 8: intelligence graph 
 app.include_router(workflow_intelligence_router)      # Phase 9: workflow intelligence (multi-signal, read-only)
 app.include_router(operations_intelligence_router)    # Phase 10: operations intelligence (cross-batch, read-only)
 app.include_router(system_router)
+app.include_router(deploy_status_router)
 app.include_router(agents_router)
 app.include_router(packing_router)
 app.include_router(packing_dev_router)
