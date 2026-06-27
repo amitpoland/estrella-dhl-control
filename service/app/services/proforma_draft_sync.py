@@ -837,14 +837,7 @@ def sync_draft_from_packing_upload(
         except Exception as _sp_exc:
             log.warning("[%s] scored_pending write failed (non-fatal): %s", batch_id, _sp_exc)
 
-    # Mapping advisory callable. Lazy import keeps the service layer free of
-    # route/parser import cycles.
-    # NOTE: desc_generate is intentionally None — the sales_packing_parser generator
-    # produces short category-code names that diverge from the customs PDF (Lesson N).
-    # Canonical description authority is product_descriptions.description_pl (written
-    # by description_engine.get_description_block). _birth_resolve_name_pl path 4
-    # (blank + birth advisory) is the correct no-authority case — the operator must
-    # run the customs description package first.
+    # Lazy import keeps the service layer free of route/parser import cycles.
     from . import wfirma_db as _wfdb
 
     # ── 3. Per-client sync ────────────────────────────────────────────────────

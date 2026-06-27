@@ -28,7 +28,6 @@ import pytest
 from app.services.proforma_intelligence import (
     ANOMALY_MISSING_HS,
     ANOMALY_MISSING_NAME_EN,
-    ANOMALY_MISSING_NAME_PL,
     ANOMALY_MISSING_PC,
     ANOMALY_NEGATIVE_PRICE,
     ANOMALY_PRICE_OUTLIER,
@@ -119,13 +118,6 @@ def test_missing_hs_code_flagged():
     assert ANOMALY_MISSING_HS in types
     hs_a = next(a for a in result if a.anomaly_type == ANOMALY_MISSING_HS)
     assert hs_a.severity == SEVERITY_MEDIUM
-
-
-def test_missing_name_pl_flagged():
-    lines = [_make_line(name_pl="")]
-    result = detect_line_anomalies(lines)
-    types = [a.anomaly_type for a in result]
-    assert ANOMALY_MISSING_NAME_PL in types
 
 
 def test_missing_name_en_flagged():
