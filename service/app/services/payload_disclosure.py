@@ -21,6 +21,7 @@ Two disclosure types:
 from __future__ import annotations
 
 import logging
+from datetime import date as _date
 from typing import Any, Dict, List, Optional
 
 log = logging.getLogger(__name__)
@@ -151,6 +152,7 @@ def build_invoice_convert_disclosure(
             "contractor_id": contractor_id,
             "currency":      currency,
             "series_id":     series_id,
+            "invoice_date":  _date.today().isoformat(),
             "line_count":    len(source_lines),
             "operator":      operator,
         },

@@ -942,6 +942,25 @@ async def shipment_intake(
                 currency_for_doc = customer_default
                 currency_source  = "customer_default"
 
+            # ── Sales code normalization (DESCRIPTION→design_no, EJL→order_ref) ──
+            # Some client packing lists carry the real design code in the
+            # DESCRIPTION column while PRODUCT is blank or holds an EJL order
+            # reference. Route the real code into design_no (the matcher key)
+            # and the EJL ref into order_ref so sales↔purchase linkage resolves.
+            # Category tokens (PND/...) are never promoted (stay unresolved).
+            # product_code is left untouched — the matcher mints it.
+            from ..services.sales_packing_code_detection import normalize_sales_row_codes
+            _code_norm: Dict[str, int] = {}
+            for _r in sp_rows:
+                if not isinstance(_r, dict):
+                    continue
+                _r, _cls = normalize_sales_row_codes(_r)
+                if _cls != "unchanged":
+                    for _tag in _cls.split("+"):
+                        _code_norm[_tag] = _code_norm.get(_tag, 0) + 1
+            if _code_norm:
+                log.info("[%s] sales code normalization: %s", batch_id, _code_norm)
+
             # ── PND disambiguation (deterministic, gated) ──────────────
             # Build supplier candidates for the same invoice from packing.db
             # joined to invoice_lines (for unit_price). Run only when the
@@ -1031,7 +1050,13 @@ async def shipment_intake(
                         "design_no":    str(r.get("design_no", "") or ""),
                         "bag_id":       str(r.get("bag_id", "") or ""),
                         "quantity":     float(r.get("quantity", 0) or 0),
-                        "remarks":      str(r.get("client_po", "") or r.get("remarks", "") or ""),
+                        # Preserve the EJL order reference separately (never as
+                        # product_code/design_no) so it stays auditable.
+                        "remarks":      (
+                            ("order_ref=" + str(r.get("order_ref")).strip() + "; "
+                             if str(r.get("order_ref", "") or "").strip() else "")
+                            + str(r.get("client_po", "") or r.get("remarks", "") or "")
+                        ).strip().rstrip(";").strip(),
                         # Sales pricing (canonical — never substituted by import cost)
                         "unit_price":   float(r.get("unit_price",  0) or 0),
                         "total_value":  float(r.get("total_value", 0) or 0),
@@ -2170,6 +2195,22 @@ async def sales_packing_reingest(
             currency_for_doc = ""
             currency_source  = "missing"
 
+        # Sales code normalization — same as shipment_intake: route the real
+        # design code from DESCRIPTION into design_no and EJL refs into
+        # order_ref BEFORE PND + matcher, so a reingest of a mixed-column file
+        # (PRODUCT blank / EJL ref, code in DESCRIPTION) resolves linkage.
+        from ..services.sales_packing_code_detection import normalize_sales_row_codes
+        _rc: Dict[str, int] = {}
+        for _r in sp_rows:
+            if not isinstance(_r, dict):
+                continue
+            _r, _cls = normalize_sales_row_codes(_r)
+            if _cls != "unchanged":
+                for _tag in _cls.split("+"):
+                    _rc[_tag] = _rc.get(_tag, 0) + 1
+        if _rc:
+            log.info("[%s] reingest code normalization: %s", batch_id, _rc)
+
         # PND tiebreak — same builder as intake.
         from ..services.sales_pnd_disambiguator import disambiguate_pnd
         inv_no_for_pnd = ""
@@ -2248,8 +2289,12 @@ async def sales_packing_reingest(
                 "design_no":    str(r.get("design_no", "") or ""),
                 "bag_id":       str(r.get("bag_id", "") or ""),
                 "quantity":     float(r.get("quantity", 0) or 0),
-                "remarks":      str(r.get("client_po", "") or
-                                     r.get("remarks", "") or ""),
+                # Preserve EJL order reference separately (never as code).
+                "remarks":      (
+                    ("order_ref=" + str(r.get("order_ref")).strip() + "; "
+                     if str(r.get("order_ref", "") or "").strip() else "")
+                    + str(r.get("client_po", "") or r.get("remarks", "") or "")
+                ).strip().rstrip(";").strip(),
                 "unit_price":   float(r.get("unit_price",  0) or 0),
                 "total_value":  float(r.get("total_value", 0) or 0),
                 "currency":     final_currency,
