@@ -36,6 +36,7 @@ ready_to_create (full gate):
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from collections import Counter, defaultdict
@@ -171,10 +172,40 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
     for spl in all_spl:
         spl_by_doc[spl["sales_document_id"]].append(spl)
 
-    # ── 3. Sales → wFirma product_code resolution ────────────────────────────
+    # ── 2b. Draft Proforma product_code authority (Phase B / C2) ──────────────
+    # When a ProformaDraft exists for this batch, its editable_lines_json is the
+    # commercial authority for product_code.  Draft.design_no (= sales SKU) maps
+    # to Draft.product_code (= invoice line ref = wFirma product symbol).
+    # v_sales_to_wfirma remains the fallback when no Draft exists for a client or
+    # when a sales SKU has no matching line in the Draft.
+    _draft_lines_by_client: Dict[str, Dict[str, str]] = {}
+    try:
+        from .proforma_invoice_link_db import list_drafts_for_batch as _list_drafts  # noqa: PLC0415
+        _pf_db = settings.storage_root / "proforma_links.db"
+        for _draft in _list_drafts(_pf_db, batch_id):
+            _cname = _norm(_draft.client_name or "")
+            if not _cname:
+                continue
+            try:
+                _dlines = json.loads(_draft.editable_lines_json or "[]") or []
+            except Exception:
+                continue
+            _map = _draft_lines_by_client.setdefault(_cname, {})
+            for _dl in _dlines:
+                _dn = _norm(str(_dl.get("design_no") or ""))
+                _pc = str(_dl.get("product_code") or "").strip()
+                if _dn and _pc and _dn not in _map:
+                    _map[_dn] = _pc
+    except Exception as _draft_exc:
+        log.debug(
+            "wfirma_reservation: draft product_code lookup failed (non-fatal): %s",
+            _draft_exc,
+        )
+
+    # ── 3. Sales → wFirma product_code resolution (view fallback) ────────────
     # Pulled from the read-only v_sales_to_wfirma view (document_db).
     # Keyed by (sales_document_id, normalized sales_design_no).
-    # Replaces the previous in-memory dn_to_inv_pc rebuild.
+    # Used when no ProformaDraft line covers a particular SKU (step 2b fallback).
     sales_to_pc: Dict[Tuple[str, str], Optional[str]] = {}
     for v in ddb.query_sales_to_wfirma(batch_id):
         sales_to_pc[(
@@ -306,7 +337,8 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         doc_spl = spl_by_doc.get(doc_id, [])
         for spl_row in doc_spl:
             sku    = _norm(spl_row.get("product_code") or "")
-            inv_pc = sales_to_pc.get((doc_id, sku)) or ""
+            _draft_map = _draft_lines_by_client.get(_norm(client), {})
+            inv_pc = _draft_map.get(sku) or sales_to_pc.get((doc_id, sku)) or ""
             qty    = float(spl_row.get("quantity") or 0)
             dn_raw = spl_row.get("design_no") or spl_row.get("product_code") or ""
 
