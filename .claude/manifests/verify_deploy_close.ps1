@@ -14,8 +14,14 @@
     The git SHA the deployed HEAD must match (7+ characters). Required.
 
 .PARAMETER MinPzTests
-    Minimum passing count for root-level python test_pz_regression.py.
-    Default: 160
+    Minimum passing count for the ROOT-LEVEL golden regression:
+      python test_pz_regression.py   (C:\PZ-verify\test_pz_regression.py)
+    Default: 160.
+
+    NOTE: This is NOT the same as the service-level PZ suite tracked in
+    test-baseline.md (tests/test_pz_*.py, currently 221 tests). That suite
+    covers FastAPI routes. The root-level file covers the PZ import-processor
+    golden constants. Both exist; this script gates on the root-level one.
 
 .PARAMETER MinCarrierTests
     Minimum passing count for service/tests/test_carrier_*.py.
@@ -84,8 +90,10 @@ Add-Result "HEAD" $pass1 $detail1
 
 # ─────────────────────────────────────────────────────────────
 # Condition 2 — PZ regression (root-level test_pz_regression.py)
+# Distinct from service/tests/test_pz_*.py (221 tests, tracked in
+# test-baseline.md). This checks the golden import-processor suite (~160).
 # ─────────────────────────────────────────────────────────────
-Write-Host "[2/8] Running PZ regression (root-level)..."
+Write-Host "[2/8] Running PZ regression (root-level golden suite)..."
 $pzOut = & python "$RootDir\test_pz_regression.py" 2>&1 | Out-String
 $pzMatch = [regex]::Match($pzOut, '(\d+) passed')
 $pzCount = if ($pzMatch.Success) { [int]$pzMatch.Groups[1].Value } else { 0 }
