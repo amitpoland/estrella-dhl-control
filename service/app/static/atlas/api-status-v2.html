@@ -28,6 +28,92 @@
     { id: 'locks',    label: 'Storage locks',    url: '/api/v1/debug/storage/locks',  group: 'Internal' },
   ];
 
+  // Deployment-specific tone: green = closed + gate2 clear; amber = open or gate2 blocked; red = error
+  function deployTone({ loading, error, data }) {
+    if (loading) return 'neutral';
+    if (error) return 'red';
+    if (!data) return 'neutral';
+    if (data.gate_2_blocked) return 'amber';
+    if (data.deployment_status === 'OPEN') return 'amber';
+    if (data.deployment_status === 'CLOSED') return 'green';
+    // Fallback: if we at least have a SHA, assume ok
+    if (data.live_sha && data.live_sha !== 'unknown' && data.live_sha !== 'dev') return 'green';
+    return 'neutral';
+  }
+
+  function DeployStatusCard() {
+    const url = '/api/v1/deploy/status';
+    const { data, error, loading } = useProbe(url);
+    const tone = deployTone({ loading, error, data });
+    const toneLabel = { green: 'Verified', amber: 'Attention', red: 'Error', neutral: 'Loading' }[tone];
+
+    const sha   = data?.live_sha ?? '—';
+    const at    = data?.deployed_at ? data.deployed_at.slice(0, 16).replace('T', ' ') : '—';
+    const impl  = data?.open_impl_pr_count ?? '?';
+    const limit = data?.gate_2_limit ?? 3;
+    const warns = data?.warnings ?? [];
+
+    return (
+      <div className="atlas-card" data-testid="probe-card-deploy-status"
+           style={{ display: 'flex', flexDirection: 'column', gap: 10, gridColumn: '1 / -1' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>Deployment status</div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'monospace', marginTop: 2 }}>{url}</div>
+          </div>
+          <Badge tone={tone} testid="probe-badge-deploy-status">{toneLabel}</Badge>
+        </div>
+
+        {loading && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>loading…</div>}
+        {error   && <div style={{ fontSize: 12, color: 'var(--red)' }}>error: {error}</div>}
+
+        {data && !loading && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+            <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)', borderRadius: 4, padding: '8px 10px' }}>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 2 }}>Live SHA</div>
+              <div style={{ fontSize: 12, fontFamily: 'monospace', fontWeight: 600 }}>{sha}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{at}</div>
+            </div>
+            <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)', borderRadius: 4, padding: '8px 10px' }}>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 2 }}>Deploy state</div>
+              <div style={{ fontSize: 12, fontWeight: 600,
+                color: data.deployment_status === 'CLOSED' ? 'var(--green)' :
+                       data.deployment_status === 'OPEN'   ? 'var(--amber)' : 'var(--text-2)' }}>
+                {data.deployment_status ?? '—'}
+              </div>
+            </div>
+            <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)', borderRadius: 4, padding: '8px 10px' }}>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 2 }}>GATE 2 (impl PRs)</div>
+              <div style={{ fontSize: 12, fontWeight: 600,
+                color: data.gate_2_blocked ? 'var(--amber)' : 'var(--green)' }}>
+                {impl} / {limit} {data.gate_2_blocked ? '⚠ BLOCKED' : '✓ clear'}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {warns.length > 0 && (
+          <div style={{ fontSize: 10.5, color: 'var(--text-3)', fontStyle: 'italic' }}>
+            {warns.map((w, i) => <div key={i}>⚠ {w}</div>)}
+          </div>
+        )}
+
+        {data?.open_impl_prs?.length > 0 && (
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4, fontWeight: 600 }}>
+              Open impl PRs ({data.open_impl_prs.length})
+            </div>
+            {data.open_impl_prs.map(pr => (
+              <div key={pr.number} style={{ fontSize: 10.5, fontFamily: 'monospace', color: 'var(--text-2)', padding: '2px 0' }}>
+                #{pr.number} — {pr.title}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function useProbe(url) {
     const [data, setData]   = React.useState(null);
     const [error, setError] = React.useState(null);
@@ -109,6 +195,11 @@
           actions={actions} />
         <NavStrip current="api_status" />
         <div className="atlas-content">
+          <SectionTitle>Deployment</SectionTitle>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 18 }}>
+            <DeployStatusCard />
+          </div>
+
           <SectionTitle>Internal services</SectionTitle>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 18 }} className="atlas-grid-2">
             {PROBES.map(p => <ProbeCard key={p.id} probe={p} />)}
