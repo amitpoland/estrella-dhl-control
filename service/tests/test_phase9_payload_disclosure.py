@@ -104,6 +104,222 @@ class TestInvoiceConvertDisclosure:
         assert len(d["lines"]) == 1
         assert d["lines"][0]["good_id"] == "G001"
 
+    # ── payment_resolved block ────────────────────────────────────────────────
+
+    def test_payment_resolved_key_present(self):
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        d = build_invoice_convert_disclosure(self._make_snap())
+        assert "payment_resolved" in d
+        pr = d["payment_resolved"]
+        assert "method" in pr
+        assert "payment_date" in pr
+        assert "source" in pr
+
+    def test_payment_resolved_wfirma_polish_mapped_to_english(self):
+        """snap.paymentmethod in wFirma Polish form → English in disclosure."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = {**self._make_snap(), "paymentmethod": "przelew", "paymentdate": "2026-07-28"}
+        d = build_invoice_convert_disclosure(snap)
+        pr = d["payment_resolved"]
+        assert pr["method"] == "transfer"
+        assert pr["payment_date"] == "2026-07-28"
+        assert pr["source"] == "wfirma_proforma"
+
+    def test_payment_resolved_all_polish_forms(self):
+        """All four wFirma payment codes map to their English equivalents."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        mapping = {
+            "przelew": "transfer",
+            "gotowka": "cash",
+            "karta": "card",
+            "kompensata": "compensation",
+        }
+        for wf_form, en_form in mapping.items():
+            snap = {**self._make_snap(), "paymentmethod": wf_form}
+            d = build_invoice_convert_disclosure(snap)
+            assert d["payment_resolved"]["method"] == en_form, \
+                f"Expected {en_form!r} for wFirma form {wf_form!r}"
+
+    def test_payment_resolved_falls_back_to_customer_master(self):
+        """When snap has no paymentmethod, customer_default_method is used."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = {**self._make_snap(), "paymentmethod": "", "paymentdate": ""}
+        d = build_invoice_convert_disclosure(
+            snap, customer_default_method="cash", customer_default_days=14
+        )
+        pr = d["payment_resolved"]
+        assert pr["method"] == "cash"
+        assert pr["source"] == "customer_master"
+        assert pr["customer_default_method"] == "cash"
+        assert pr["customer_default_days"] == 14
+
+    def test_payment_resolved_snap_takes_priority_over_customer_master(self):
+        """wFirma proforma payment method wins over customer master default."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = {**self._make_snap(), "paymentmethod": "kompensata"}
+        d = build_invoice_convert_disclosure(
+            snap, customer_default_method="transfer", customer_default_days=30
+        )
+        pr = d["payment_resolved"]
+        assert pr["method"] == "compensation"
+        assert pr["source"] == "wfirma_proforma"
+
+    def test_payment_resolved_source_not_set_when_no_data(self):
+        """source == 'not_set' when neither snap nor customer master has a method."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = {**self._make_snap(), "paymentmethod": ""}
+        d = build_invoice_convert_disclosure(snap)
+        assert d["payment_resolved"]["source"] == "not_set"
+        assert d["payment_resolved"]["method"] == ""
+
+    def test_payment_method_in_fields_to_write(self):
+        """Resolved payment_method is mirrored into fields_to_write for audit."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = {**self._make_snap(), "paymentmethod": "przelew"}
+        d = build_invoice_convert_disclosure(snap)
+        assert d["fields_to_write"]["payment_method"] == "transfer"
+
+    def test_customer_default_days_exposed(self):
+        """customer_default_days is present in payment_resolved."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        d = build_invoice_convert_disclosure(
+            self._make_snap(), customer_default_days=45
+        )
+        assert d["payment_resolved"]["customer_default_days"] == 45
+
+    def test_pm_maps_roundtrip(self):
+        """_PM_MAP_TO_EN and _PM_MAP_TO_WF are strict inverses of each other."""
+        from app.services.payload_disclosure import _PM_MAP_TO_EN, _PM_MAP_TO_WF
+        assert len(_PM_MAP_TO_EN) == 4
+        assert len(_PM_MAP_TO_WF) == 4
+        for wf, en in _PM_MAP_TO_EN.items():
+            assert _PM_MAP_TO_WF[en] == wf, f"Round-trip failed for {wf!r}"
+
+
+class TestBuildFinalInvoicePlanPaymentMethod:
+    """build_final_invoice_plan — paymentmethod override parameter."""
+
+    def _make_snap(self):
+        """Minimal ProformaSnapshot with one billable line."""
+        from decimal import Decimal
+        from app.services.proforma_to_invoice import ProformaSnapshot, LineItem
+        return ProformaSnapshot(
+            proforma_id="99001",
+            proforma_number="PROF 1/2026",
+            type="proforma",
+            contractor_id="75483443",
+            currency="EUR",
+            price_currency_exchange=None,
+            paymentmethod="przelew",
+            paymentdate="2026-07-28",
+            date="2026-06-28",
+            description="",
+            series_id=None,
+            company_account_id=None,
+            translation_language_id=None,
+            contractor_receiver_id=None,
+            total=Decimal("200.00"),
+            netto=Decimal("200.00"),
+            contents=[
+                LineItem(
+                    name="Test product",
+                    good_id="G001",
+                    unit="szt",
+                    unit_count="2",
+                    price="100.00",
+                    vat_code_id="0",
+                )
+            ],
+        )
+
+    def test_default_uses_snap_paymentmethod(self):
+        """Without override, plan inherits snap.paymentmethod unchanged."""
+        from app.services.proforma_to_invoice import build_final_invoice_plan
+        plan = build_final_invoice_plan(self._make_snap(), final_series_id="")
+        assert plan.paymentmethod == "przelew"
+
+    def test_override_paymentmethod_replaces_snap(self):
+        """When paymentmethod override is provided it wins over snap."""
+        from app.services.proforma_to_invoice import build_final_invoice_plan
+        plan = build_final_invoice_plan(
+            self._make_snap(), final_series_id="", paymentmethod="gotowka"
+        )
+        assert plan.paymentmethod == "gotowka"
+
+    def test_none_override_falls_back_to_snap(self):
+        """Explicit None override still falls back to snap."""
+        from app.services.proforma_to_invoice import build_final_invoice_plan
+        plan = build_final_invoice_plan(
+            self._make_snap(), final_series_id="", paymentmethod=None
+        )
+        assert plan.paymentmethod == "przelew"
+
+    def test_empty_string_override_falls_back_to_snap(self):
+        """Empty-string override falls back to snap (falsy guard)."""
+        from app.services.proforma_to_invoice import build_final_invoice_plan
+        plan = build_final_invoice_plan(
+            self._make_snap(), final_series_id="", paymentmethod=""
+        )
+        assert plan.paymentmethod == "przelew"
+
+    def test_paymentdate_override_independent(self):
+        """paymentdate override works independently of paymentmethod override."""
+        from app.services.proforma_to_invoice import build_final_invoice_plan
+        plan = build_final_invoice_plan(
+            self._make_snap(), final_series_id="", paymentdate="2026-09-01"
+        )
+        assert plan.paymentdate == "2026-09-01"
+        assert plan.paymentmethod == "przelew"
+
+    # ── invoice_date / sale_date separation ───────────────────────────────────
+
+    def test_override_invoice_date_sets_plan_date_independently(self):
+        """override_invoice_date → plan.date; does not affect plan.paymentdate."""
+        from datetime import date
+        from app.services.proforma_to_invoice import build_final_invoice_plan
+        plan = build_final_invoice_plan(
+            self._make_snap(),
+            final_series_id="",
+            invoice_date=date(2026, 9, 1),
+        )
+        assert plan.date == "2026-09-01"
+        # paymentdate unchanged — still the snap's original value
+        assert plan.paymentdate == "2026-07-28"
+
+    def test_override_sale_date_plus_days_computes_paymentdate(self):
+        """Route computes paymentdate = sale_date + payment_days, passes it in.
+        Verify plan stores the computed result correctly."""
+        from datetime import date, timedelta
+        from app.services.proforma_to_invoice import build_final_invoice_plan
+        sale_date = date(2026, 8, 15)
+        days = 30
+        expected_payment = (sale_date + timedelta(days=days)).isoformat()  # 2026-09-14
+        plan = build_final_invoice_plan(
+            self._make_snap(),
+            final_series_id="",
+            paymentdate=expected_payment,
+        )
+        assert plan.paymentdate == "2026-09-14"
+
+    def test_invoice_date_fallback_as_payment_base_when_no_sale_date(self):
+        """When no sale_date override, route uses invoice_date as payment base.
+        i.e. paymentdate = invoice_date + days."""
+        from datetime import date, timedelta
+        from app.services.proforma_to_invoice import build_final_invoice_plan
+        invoice_dt = date(2026, 9, 1)
+        days = 30
+        # Route computes: _payment_base = _invoice_date (no sale_date override)
+        #                 _paymentdate  = _payment_base + days
+        computed_payment = (invoice_dt + timedelta(days=days)).isoformat()  # 2026-10-01
+        plan = build_final_invoice_plan(
+            self._make_snap(),
+            final_series_id="",
+            invoice_date=invoice_dt,
+            paymentdate=computed_payment,
+        )
+        assert plan.date == "2026-09-01"
+        assert plan.paymentdate == "2026-10-01"
+
 
 class TestPreFlightReadiness:
     """check_proforma_post_readiness gate checks."""

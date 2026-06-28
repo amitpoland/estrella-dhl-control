@@ -341,6 +341,7 @@ def build_final_invoice_plan(
     final_series_id:    str,
     invoice_date:       Optional[date] = None,
     paymentdate:        Optional[str]  = None,
+    paymentmethod:      Optional[str]  = None,
     operator_description: Optional[str] = None,
 ) -> FinalInvoicePlan:
     """Project a parsed proforma snapshot into a FinalInvoicePlan.
@@ -355,6 +356,8 @@ def build_final_invoice_plan(
         paymentdate:          Override payment date. Defaults to the proforma's
                               own paymentdate (so the operator may explicitly
                               keep or shift the due date).
+        paymentmethod:        Override payment method (wFirma-native, e.g.
+                              "przelew"). Defaults to snap.paymentmethod.
         operator_description: Optional extra text appended after the back-
                               reference. The back-reference is ALWAYS prepended
                               regardless of this value.
@@ -395,7 +398,7 @@ def build_final_invoice_plan(
         contractor_id           = snap.contractor_id,
         currency                = snap.currency,
         price_currency_exchange = snap.price_currency_exchange,
-        paymentmethod           = snap.paymentmethod,
+        paymentmethod           = paymentmethod or snap.paymentmethod,
         paymentdate             = paymentdate or snap.paymentdate,
         date                    = issue_date.isoformat(),
         description             = description,
