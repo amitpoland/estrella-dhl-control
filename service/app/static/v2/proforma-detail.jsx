@@ -1470,6 +1470,52 @@ function ProformaStatusHeader({
   );
 }
 
+// ── Blocker panel — consolidated "what's blocking" list ───────────────────────
+function ProformaBlockerPanel({ postBlockers, approveBlockers }) {
+  const seen = new Set();
+  const rows = [];
+  const add = (reason, repair, gates) => {
+    if (!reason) return;
+    const key = `${reason}::${gates}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push({ reason, repair: repair || null, gates });
+  };
+  postBlockers.forEach(b => add(b.reason, b.repair_action, 'Post / Convert'));
+  approveBlockers.forEach(b => add(b.reason, b.repair_action, 'Approve'));
+  if (rows.length === 0) return null;
+  const tagColor = g => g.startsWith('Post') ? 'var(--badge-red-text)'
+    : g === 'Approve' ? 'var(--badge-amber-text, var(--text-2))'
+    : 'var(--text-2)';
+  return (
+    <div data-testid="proforma-blocker-panel" style={{
+      background: 'var(--card)',
+      borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+      borderTop: '1px solid var(--border)',
+      padding: '12px 24px',
+    }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>
+        What&rsquo;s blocking — {rows.length} item{rows.length === 1 ? '' : 's'} across approve / post / convert / export
+      </div>
+      {rows.map((r, i) => (
+        <div key={i} data-testid={`proforma-blocker-row-${i}`} style={{ fontSize: 12, marginBottom: 5 }}>
+          <span style={{
+            display: 'inline-block', fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',
+            color: tagColor(r.gates), border: `1px solid var(--border)`, borderRadius: 4,
+            padding: '0 6px', marginRight: 8, verticalAlign: 'middle',
+          }}>{r.gates}</span>
+          <span style={{ color: 'var(--text)' }}>{r.reason}</span>
+          {r.repair && (
+            <div style={{ color: 'var(--text-dim, var(--text))', opacity: 0.75, paddingLeft: 14 }}>
+              Fix: {r.repair}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
@@ -2561,61 +2607,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         draft={draft}
       />
 
-      {/* ── UNIFIED "WHAT'S BLOCKING" PANEL (Sprint 03.1-B) — consolidates the
-          blocker sources that were previously scattered (readiness post-blockers
-          in the main panel + export blockers / blocking reasons surfaced only in
-          the Overview & Reservation tabs), each tagged by the action it gates.
-          PURE RE-PRESENTATION of existing arrays — no new authority, no new
-          computation. The interactive readiness panel below remains for the
-          design-ambiguity resolver (capability preserved). */}
-      {(() => {
-        const seen = new Set();
-        const rows = [];
-        const add = (reason, repair, gates) => {
-          if (!reason) return;
-          const key = `${reason}::${gates}`;
-          if (seen.has(key)) return;
-          seen.add(key);
-          rows.push({ reason, repair: repair || null, gates });
-        };
-        // Canonical readiness only (readinessPost / readinessApprove). The
-        // Reservation / Export rows previously fed from the stale preview are
-        // gone — readinessPost.blockers already carries the reservation + wFirma
-        // PZ/export blockers (post intent), so they appear here under Post/Convert.
-        postBlockers.forEach(b => add(b.reason, b.repair_action, 'Post / Convert'));
-        approveBlockers.forEach(b => add(b.reason, b.repair_action, 'Approve'));
-        if (rows.length === 0) return null;
-        const tagColor = g => g.startsWith('Post') ? 'var(--badge-red-text)'
-          : g === 'Approve' ? 'var(--badge-amber-text, var(--text-2))'
-          : 'var(--text-2)';
-        return (
-          <div data-testid="proforma-blocker-panel" style={{
-            background: 'var(--card)',
-            borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-            borderTop: '1px solid var(--border)',
-            padding: '12px 24px',
-          }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>
-              What&rsquo;s blocking — {rows.length} item{rows.length === 1 ? '' : 's'} across approve / post / convert / export
-            </div>
-            {rows.map((r, i) => (
-              <div key={i} data-testid={`proforma-blocker-row-${i}`} style={{ fontSize: 12, marginBottom: 5 }}>
-                <span style={{
-                  display: 'inline-block', fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',
-                  color: tagColor(r.gates), border: `1px solid var(--border)`, borderRadius: 4,
-                  padding: '0 6px', marginRight: 8, verticalAlign: 'middle',
-                }}>{r.gates}</span>
-                <span style={{ color: 'var(--text)' }}>{r.reason}</span>
-                {r.repair && (
-                  <div style={{ color: 'var(--text-dim, var(--text))', opacity: 0.75, paddingLeft: 14 }}>
-                    Fix: {r.repair}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        );
-      })()}
+      {/* ── UNIFIED "WHAT'S BLOCKING" PANEL — consolidates blocker sources ──── */}
+      <ProformaBlockerPanel
+        postBlockers={postBlockers}
+        approveBlockers={approveBlockers}
+      />
 
       {/* ── READINESS PANEL — single backend authority (split-authority fix) ──
           Renders the SAME gate the backend enforces on approve/post/convert:
