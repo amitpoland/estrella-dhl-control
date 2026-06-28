@@ -117,14 +117,28 @@ def build_proforma_post_disclosure(draft: Any) -> Dict[str, Any]:
 
 # ── Invoice convert disclosure ────────────────────────────────────────────────
 
+_PM_MAP_TO_EN = {
+    "przelew":    "transfer",
+    "gotowka":    "cash",
+    "karta":      "card",
+    "kompensata": "compensation",
+}
+
+_PM_MAP_TO_WF = {v: k for k, v in _PM_MAP_TO_EN.items()}
+
+
 def build_invoice_convert_disclosure(
     proforma_snap: Any,
     final_series_id: str = "",
     operator: str = "",
+    customer_default_method: str = "",
+    customer_default_days: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build the payload disclosure for a proforma→invoice convert (WF2.5).
 
     proforma_snap: a ProformaSnapshot instance or dict (from parse_proforma_xml).
+    customer_default_method: preferred_payment_method from customer_master (English).
+    customer_default_days:   payment_terms_days from customer_master.
     Returns a JSON-serialisable disclosure dict.
     No wFirma call. No DB write.
     """
@@ -141,18 +155,37 @@ def build_invoice_convert_disclosure(
     series_id        = final_series_id or _get("series_id", "")
     source_lines     = _get("lines", []) or []
 
+    # Payment method resolution: wFirma XML (Polish) → English for display/override
+    snap_method_wf   = (_get("paymentmethod", "") or "").strip()
+    snap_method_en   = _PM_MAP_TO_EN.get(snap_method_wf, snap_method_wf)
+    snap_paymentdate = (_get("paymentdate", "") or "").strip()
+    resolved_method  = snap_method_en or customer_default_method or ""
+    resolved_source  = (
+        "wfirma_proforma" if snap_method_en else
+        "customer_master" if customer_default_method else
+        "not_set"
+    )
+
     return {
         "disclosure_type":   "invoice_convert",
         "write_target":      "wFirma invoices/add (type=normal — FINAL INVOICE)",
         "flag_required":     "WFIRMA_CREATE_INVOICE_ALLOWED",
         "source_proforma":   proforma_number,
+        "payment_resolved": {
+            "method":                  resolved_method,
+            "payment_date":            snap_paymentdate,
+            "customer_default_method": customer_default_method or "",
+            "customer_default_days":   customer_default_days,
+            "source":                  resolved_source,
+        },
         "fields_to_write": {
-            "type":          "normal (final invoice)",
-            "contractor_id": contractor_id,
-            "currency":      currency,
-            "series_id":     series_id,
-            "line_count":    len(source_lines),
-            "operator":      operator,
+            "type":           "normal (final invoice)",
+            "contractor_id":  contractor_id,
+            "currency":       currency,
+            "series_id":      series_id,
+            "payment_method": resolved_method,
+            "line_count":     len(source_lines),
+            "operator":       operator,
         },
         "lines": [
             {

@@ -3289,8 +3289,9 @@ class _FinalInvoiceConfirmReq(_BaseModel):
     operator_description:   Optional[str] = ""
     final_series_id:        Optional[str] = ""   # if blank, copy source proforma series
     override_payment_method: Optional[str] = ""  # transfer|cash|card|compensation
-    override_sale_date:      Optional[str] = ""  # YYYY-MM-DD; sets invoice_date
-    override_payment_days:   Optional[int] = None  # adds to sale_date → paymentdate
+    override_invoice_date:   Optional[str] = ""  # YYYY-MM-DD; overrides wFirma invoice issue date
+    override_sale_date:      Optional[str] = ""  # YYYY-MM-DD; base for payment due calculation
+    override_payment_days:   Optional[int] = None  # adds to sale_date (or invoice_date) → paymentdate
 
 
 @router.post(
@@ -3461,27 +3462,37 @@ def proforma_to_invoice(
                     f"Must be one of: transfer, cash, card, compensation."
                 ],
             })
-        _override_method_wf = _PM_EN_TO_WF.get(_override_method_en) if _override_method_en else None
-        _override_sale_date = (body.override_sale_date or "").strip() or None
-        _override_days      = body.override_payment_days  # Optional[int]
+        _override_method_wf   = _PM_EN_TO_WF.get(_override_method_en) if _override_method_en else None
+        _override_invoice_date = (body.override_invoice_date or "").strip() or None
+        _override_sale_date   = (body.override_sale_date or "").strip() or None
+        _override_days        = body.override_payment_days  # Optional[int]
 
         # Compute invoice_date and paymentdate from override fields
         from datetime import timedelta as _td, datetime as _dt
         _invoice_date = _warsaw_today()
+        if _override_invoice_date:
+            try:
+                _invoice_date = _dt.fromisoformat(_override_invoice_date).date()
+            except ValueError:
+                pass
+        # Payment due base: explicit sale date, else invoice date
+        _payment_base = _invoice_date
         if _override_sale_date:
             try:
-                _invoice_date = _dt.fromisoformat(_override_sale_date).date()
+                _payment_base = _dt.fromisoformat(_override_sale_date).date()
             except ValueError:
                 pass
         _paymentdate = None
         if _override_days is not None:
-            _paymentdate = (_invoice_date + _td(days=_override_days)).isoformat()
+            _paymentdate = (_payment_base + _td(days=_override_days)).isoformat()
 
         # Build operator_description; append override annotations for audit trail
         _op_desc = (body.operator_description or "").strip()
         _audit_parts = []
         if _override_method_en:
             _audit_parts.append(f"payment_method={_override_method_en}")
+        if _override_invoice_date:
+            _audit_parts.append(f"invoice_date={_override_invoice_date}")
         if _override_sale_date:
             _audit_parts.append(f"sale_date={_override_sale_date}")
         if _override_days is not None:
