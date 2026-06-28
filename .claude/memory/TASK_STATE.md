@@ -17,6 +17,30 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
+- **Task:** Architecture Review — gate between Phase A and Phase C/D.
+- **Started:** 2026-06-28
+- **Status:** COMPLETE
+- **Branch / worktree:** read-only investigation, no branch needed.
+- **Findings:**
+  1. draft_state='converted' is overwritten by _ensure_drafts_table() backfill (status='issued' → draft_state='posted'). Root cause: 'converted' absent from DRAFT_LIFECYCLE_STATES. Non-blocking because 3 guards use wfirma_invoice_id. Phase C fix: add 'converted' to lifecycle states + backfill guard.
+  2. Two field conflicts: payment_method and payment_days — CM fields exist but route uses wFirma config fallback. Phase C must make CM win.
+  3. Series model: keep flat fields. ADR for mapping table as Phase E future work.
+  4. Write-policy: upsert_identity_only() (wFirma sync) uses COALESCE fill-when-empty — cannot overwrite operator series. upsert_customer() (operator UI) is full write — no guard needed yet. Phase C: advisory on series mismatch at convert-readiness.
+
+### Next task — Phase C (write-policy guards + authority cleanup)
+- **Known inputs from Phase A production verification (2026-06-28):**
+  - SHA: `d3c9bd14e0`, deploy gate 8/8
+  - Draft 52: wfirma_invoice_id=484110947, invoice=FV 12/2026, Convert button disabled ✅
+  - draft_state='posted' (not 'converted') — persist_invoice_to_draft() ran but state column not updated; non-blocking because three guards active (wfirma_invoice_id + proforma_invoice_links row + _link_already_exists())
+  - FV 12/2026: correct WDT VAT code, wrong FV series prefix — KSeF-registered; accounting correction is operator/accounting decision, no automation
+  - Customer Master WDT/export series fields visible in UI ✅
+
+### Prior task — Phase A: COMPLETE, deployed, Tier 1 verified (2026-06-28)
+
+- PR #785 squash-merged as `bb9acf0`, deployed prod SHA `d3c9bd14e0`, gate 8/8. 11 files, 18 tests, zero React/Vite. WDT series resolver + payment date guard + conversion persistence + Convert button guard. Smoke 63/63. Tier 1 (Draft 52) verified: Convert guard active, wfirma_invoice_id=484110947. Accounting issue (FV 12/2026 wrong series prefix, KSeF-registered) — operator/accounting decision, no code action.
+
+### Prior task — AWB 9158478722 reconciliation (BLOCKED-HOLD)
+
 - **Task:** End-to-end batch reconciliation post-PZ — AWB 9158478722, batch `SHIPMENT_9158478722_2026-06_924c4e59`, PZ 5/6/2026 (doc 189897571). Verify PZ + sales packing + drafts #34–#43 readiness/reservation; backfill `design_product_mapping`; over-bill check; advisory-vs-blocker per (operator-asserted) Lesson N. **No PZ/product/proforma/reservation/wFirma/fiscal writes.**
 - **Started:** 2026-06-23
 - **Status:** BLOCKED-HOLD (local half COMPLETE; live half needs prod)
