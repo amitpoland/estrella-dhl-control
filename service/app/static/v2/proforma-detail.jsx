@@ -1410,6 +1410,66 @@ function ProformaActionBar({
   );
 }
 
+// ── Proforma status header — readiness pill, customer chip, shipment chip ─────
+function ProformaStatusHeader({
+  alreadyPosted, readinessPost, postBlocked, postBlockers,
+  approveBlocked, approveBlockers,
+  stateAllowsApprove, alreadyApproved,
+  canPost, canConvert,
+  customer, _cmrTotalPcs, liveDraft, draft,
+}) {
+  const pill = alreadyPosted
+    ? { label: 'Posted', tone: 'green' }
+    : (readinessPost == null)
+      ? { label: 'Checking readiness…', tone: 'neutral' }
+      : (postBlocked
+          ? { label: `Not ready · ${postBlockers.length} blocker${postBlockers.length === 1 ? '' : 's'}`, tone: 'red' }
+          : { label: 'Ready', tone: 'green' });
+  const toneBg = t => t === 'green' ? 'var(--badge-green-bg)' : t === 'red' ? 'var(--badge-red-bg)' : 'var(--bg-subtle)';
+  const toneFg = t => t === 'green' ? 'var(--badge-green-text)' : t === 'red' ? 'var(--badge-red-text)' : 'var(--text-2)';
+  const toneBd = t => t === 'green' ? 'var(--badge-green-border)' : t === 'red' ? 'var(--badge-red-border)' : 'var(--border)';
+  const custMapped = !!customer.wfirmaId;
+  const pieces = (typeof _cmrTotalPcs === 'number' && _cmrTotalPcs > 0) ? _cmrTotalPcs : null;
+  const awb = liveDraft.batch_id || (draft && draft.batch_id) || null;
+  const nextAction = (postBlocked && postBlockers.length)
+    ? postBlockers[0].repair_action
+    : (approveBlocked && approveBlockers.length)
+      ? approveBlockers[0].repair_action
+      : (stateAllowsApprove && !alreadyApproved)
+        ? 'Approve draft'
+        : canPost ? 'Post to wFirma'
+        : canConvert ? 'Convert to invoice'
+        : alreadyPosted ? '— posted; no action required'
+        : 'Review draft';
+  const chip = (testid, label, tone) => (
+    <span data-testid={testid} style={{
+      fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 12,
+      background: toneBg(tone), color: toneFg(tone), border: `1px solid ${toneBd(tone)}`,
+      whiteSpace: 'nowrap',
+    }}>{label}</span>
+  );
+  return (
+    <div data-testid="proforma-status-header" style={{
+      background: 'var(--card)',
+      borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+      borderTop: '1px solid var(--border)',
+      padding: '12px 24px',
+      display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+    }}>
+      {chip('proforma-readiness-pill', pill.label, pill.tone)}
+      {chip('proforma-customer-status-chip',
+        custMapped ? `Customer: ${customer.wfirmaName || customer.name} ✓` : `Customer: ${customer.name} · unmapped`,
+        custMapped ? 'green' : 'neutral')}
+      {chip('proforma-shipment-status-chip',
+        pieces ? `Shipment: ${pieces} pcs${awb ? ` · AWB ${awb}` : ''}` : 'Shipment: pending',
+        pieces ? 'neutral' : 'neutral')}
+      <span data-testid="proforma-next-action" style={{
+        fontSize: 12, color: 'var(--text)', fontWeight: 600, marginLeft: 'auto',
+      }}>Next: {nextAction}</span>
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
@@ -2483,62 +2543,23 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         </div>
       )}
 
-      {/* ── PROFORMA STATUS HEADER (Sprint 03.1-A) — persistent, always visible.
-          PURE RE-PRESENTATION of existing backend-authoritative props/state
-          (readinessPost / customer / pieces / lifecycle). No authority computed
-          here — readiness comes from the backend `ready` field only. */}
-      {(() => {
-        const pill = alreadyPosted
-          ? { label: 'Posted', tone: 'green' }
-          : (readinessPost == null)
-            ? { label: 'Checking readiness…', tone: 'neutral' }
-            : (postBlocked
-                ? { label: `Not ready · ${postBlockers.length} blocker${postBlockers.length === 1 ? '' : 's'}`, tone: 'red' }
-                : { label: 'Ready', tone: 'green' });
-        const toneBg = t => t === 'green' ? 'var(--badge-green-bg)' : t === 'red' ? 'var(--badge-red-bg)' : 'var(--bg-subtle)';
-        const toneFg = t => t === 'green' ? 'var(--badge-green-text)' : t === 'red' ? 'var(--badge-red-text)' : 'var(--text-2)';
-        const toneBd = t => t === 'green' ? 'var(--badge-green-border)' : t === 'red' ? 'var(--badge-red-border)' : 'var(--border)';
-        const custMapped = !!customer.wfirmaId;
-        const pieces = (typeof _cmrTotalPcs === 'number' && _cmrTotalPcs > 0) ? _cmrTotalPcs : null;
-        const awb = liveDraft.batch_id || (draft && draft.batch_id) || null;
-        const nextAction = (postBlocked && postBlockers.length)
-          ? postBlockers[0].repair_action
-          : (approveBlocked && approveBlockers.length)
-            ? approveBlockers[0].repair_action
-            : (stateAllowsApprove && !alreadyApproved)
-              ? 'Approve draft'
-              : canPost ? 'Post to wFirma'
-              : canConvert ? 'Convert to invoice'
-              : alreadyPosted ? '— posted; no action required'
-              : 'Review draft';
-        const chip = (testid, label, tone) => (
-          <span data-testid={testid} style={{
-            fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 12,
-            background: toneBg(tone), color: toneFg(tone), border: `1px solid ${toneBd(tone)}`,
-            whiteSpace: 'nowrap',
-          }}>{label}</span>
-        );
-        return (
-          <div data-testid="proforma-status-header" style={{
-            background: 'var(--card)',
-            borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-            borderTop: '1px solid var(--border)',
-            padding: '12px 24px',
-            display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-          }}>
-            {chip('proforma-readiness-pill', pill.label, pill.tone)}
-            {chip('proforma-customer-status-chip',
-              custMapped ? `Customer: ${customer.wfirmaName || customer.name} ✓` : `Customer: ${customer.name} · unmapped`,
-              custMapped ? 'green' : 'neutral')}
-            {chip('proforma-shipment-status-chip',
-              pieces ? `Shipment: ${pieces} pcs${awb ? ` · AWB ${awb}` : ''}` : 'Shipment: pending',
-              pieces ? 'neutral' : 'neutral')}
-            <span data-testid="proforma-next-action" style={{
-              fontSize: 12, color: 'var(--text)', fontWeight: 600, marginLeft: 'auto',
-            }}>Next: {nextAction}</span>
-          </div>
-        );
-      })()}
+      {/* ── PROFORMA STATUS HEADER — persistent, always visible ───────────────── */}
+      <ProformaStatusHeader
+        alreadyPosted={alreadyPosted}
+        readinessPost={readinessPost}
+        postBlocked={postBlocked}
+        postBlockers={postBlockers}
+        approveBlocked={approveBlocked}
+        approveBlockers={approveBlockers}
+        stateAllowsApprove={stateAllowsApprove}
+        alreadyApproved={alreadyApproved}
+        canPost={canPost}
+        canConvert={canConvert}
+        customer={customer}
+        _cmrTotalPcs={_cmrTotalPcs}
+        liveDraft={liveDraft}
+        draft={draft}
+      />
 
       {/* ── UNIFIED "WHAT'S BLOCKING" PANEL (Sprint 03.1-B) — consolidates the
           blocker sources that were previously scattered (readiness post-blockers
