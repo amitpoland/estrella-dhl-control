@@ -1190,6 +1190,226 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   );
 }
 
+// ── Action toolbar — owns all 17 toolbar buttons ──────────────────────────────
+function ProformaActionBar({
+  editMode, editSaving, handleSaveEdit, handleCancelEdit,
+  canEdit, handleEnterEdit,
+  canCancel, setShowCancelModal, draftState,
+  canPurge, setShowPurgeModal, purgeDisabledReason,
+  handleDuplicate, cloning,
+  handleApprove, canApprove, approving, approveDisabledReason, approveError,
+  canPost, setShowPostModal, postDisabledReason,
+  canConvert, setShowConvertModal, convertDisabledReason,
+  setShowPreview,
+  handleDownloadPdf, canPrint,
+  setShowSendModal, canSend, sendDisabledReason,
+  batchId, setShowAwbModal,
+  contractorId, setShowInvoiceHistory,
+  proformaLabel, onBack,
+}) {
+  return (
+    <div style={{
+      padding: '12px 16px', background: 'var(--card)',
+      border: '1px solid var(--border)', borderRadius: '12px 12px 0 0', borderBottom: 0,
+      display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap',
+    }}>
+
+      {/* Group 1 — CRUD */}
+      {editMode ? (
+        <React.Fragment>
+          <TbBtn
+            onClick={handleSaveEdit}
+            disabled={editSaving}
+            title="Save changes to draft header fields"
+            data-testid="tb-edit-save"
+          >
+            {editSaving ? '⏳ Saving…' : '✓ Save'}
+          </TbBtn>
+          <TbBtn
+            onClick={handleCancelEdit}
+            disabled={editSaving}
+            title="Discard changes and exit edit mode"
+            data-testid="tb-edit-cancel"
+          >
+            ✕ Cancel Edit
+          </TbBtn>
+        </React.Fragment>
+      ) : canEdit ? (
+        <TbBtn
+          onClick={handleEnterEdit}
+          title="Edit draft header fields (remarks, currency, payment terms, exchange rate)"
+          data-testid="tb-edit"
+        >
+          ✎ Edit
+        </TbBtn>
+      ) : null}
+      <TbBtn
+        onClick={() => canCancel && setShowCancelModal(true)}
+        disabled={!canCancel}
+        title={canCancel
+          ? 'Cancel this draft — soft-cancel, no data deleted'
+          : (draftState === 'cancelled' ? 'Already cancelled' : 'Cannot cancel in current state')}
+        data-testid="tb-delete"
+      >
+        🗑 Cancel Draft
+      </TbBtn>
+      {draftState === 'cancelled' && (
+        <TbBtn
+          onClick={() => canPurge && setShowPurgeModal(true)}
+          disabled={!canPurge}
+          title={canPurge ? 'Permanently delete this local-only cancelled draft' : purgeDisabledReason}
+          data-testid="tb-purge"
+        >
+          ⛔ Delete permanently
+        </TbBtn>
+      )}
+      <TbBtn
+        onClick={handleDuplicate}
+        disabled={cloning}
+        title="Clone this draft as a new unposted draft"
+        data-testid="tb-duplicate"
+      >
+        {cloning ? '⏳' : '⎘'} {cloning ? 'Cloning…' : 'Duplicate'}
+      </TbBtn>
+      <TbBtn
+        onClick={handleApprove}
+        disabled={!canApprove || approving}
+        title={canApprove
+          ? 'Mark this draft as approved — locks lines before posting to wFirma'
+          : approveDisabledReason}
+        data-testid="tb-approve"
+      >
+        {approving ? '⏳ Approving…' : '✓ Approve'}
+      </TbBtn>
+      {approveError && (
+        <span style={{ color: 'var(--badge-red-text)', fontSize: 11, maxWidth: 180 }}>{approveError}</span>
+      )}
+
+      <TbSep />
+
+      {/* Group 2 — wFirma write actions */}
+      <TbBtn
+        onClick={() => setShowPostModal(true)}
+        disabled={!canPost}
+        title={canPost
+          ? 'Post this draft to wFirma as a proforma invoice'
+          : postDisabledReason}
+        data-testid="tb-post"
+      >
+        ↑ Post to wFirma
+      </TbBtn>
+      <TbBtn
+        warn
+        onClick={() => canConvert && setShowConvertModal(true)}
+        disabled={!canConvert}
+        title={canConvert
+          ? 'Convert this posted proforma to a wFirma invoice'
+          : convertDisabledReason}
+        data-testid="tb-convert"
+      >
+        ⚠ Convert to Invoice
+      </TbBtn>
+
+      <TbSep />
+
+      {/* Group 3 — Output */}
+      <TbBtn
+        onClick={() => setShowPreview(true)}
+        title="Preview print layout — Proforma or CMR · Classic / Modern / Bold"
+        data-testid="tb-preview"
+      >
+        ◫ Preview
+      </TbBtn>
+      <TbBtn
+        onClick={handleDownloadPdf}
+        disabled={!canPrint}
+        title={canPrint
+          ? 'Open wFirma proforma PDF in new tab'
+          : 'PDF only available after posting to wFirma'}
+        data-testid="proforma-detail-download-pdf"
+      >
+        ⎙ Print
+      </TbBtn>
+      <TbBtn
+        onClick={() => setShowSendModal(true)}
+        disabled={!canSend}
+        title={canSend
+          ? 'Send proforma PDF to customer via email'
+          : (sendDisabledReason || 'Email send not available')}
+        data-testid="tb-send"
+      >
+        ➤ Send
+      </TbBtn>
+      <TbBtn
+        disabled
+        title={
+          'Document-package generation (proforma PDF · packing list · CMR · CN23) is not yet wired — ' +
+          'backend gap M4: POST /api/v1/proforma/draft/{id}/generate-documents (see BACKEND_GAP_REGISTER.md §2, priority LOW). ' +
+          'For now use ◫ Preview to view the layouts and ⎙ Print for the wFirma proforma PDF.'
+        }
+        data-testid="tb-generate"
+      >
+        ⚙ Generate ▾
+      </TbBtn>
+      {/* M8 — DHL Express AWB generation. WIRED: POST /api/v1/carrier/{batch_id}/shipment.
+          Requires CARRIER_API_STATUS=live + DHL credentials in environment. */}
+      <TbBtn
+        onClick={() => setShowAwbModal(true)}
+        disabled={!batchId}
+        title={batchId
+          ? 'Generate DHL Express AWB — opens shipment form'
+          : 'No batch loaded — open a proforma with a batch to generate AWB'}
+        data-testid="tb-awb-generate"
+      >
+        ⚡ AWB Generate
+      </TbBtn>
+
+      <TbSep />
+
+      {/* Group 4 — History / Intelligence */}
+      <TbBtn
+        onClick={() => contractorId && setShowInvoiceHistory(true)}
+        disabled={!contractorId}
+        title={contractorId
+          ? 'View prior invoice history from wFirma for this customer'
+          : 'Backend/customer mapping pending: wFirma contractor ID missing'}
+        data-testid="tb-invoice-history"
+      >
+        📋 Prior Invoices
+      </TbBtn>
+      <TbBtn
+        disabled
+        title="More actions"
+        data-testid="tb-more"
+      >
+        ⋯
+      </TbBtn>
+
+      {/* Spacer */}
+      <div style={{ flexGrow: 1, minWidth: 12 }} />
+
+      {/* Proforma label + status */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>
+          {proformaLabel}
+        </div>
+        <ProformaStatusChip status={draftState} />
+      </div>
+
+      <TbSep />
+
+      <TbBtn
+        onClick={onBack}
+        title="Back to proforma list"
+        data-testid="tb-back"
+        style={{ fontWeight: 600 }}
+      >
+        ← Back
+      </TbBtn>
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
@@ -1487,18 +1707,23 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const fxRate = liveDraft.exchange_rate ? parseFloat(liveDraft.exchange_rate) : null;
 
   // payment_terms_json shape is { method?: string, days?: number } (routes_proforma.py).
-  // Known keys render human-readable; unknown extras keep k: v so nothing is hidden.
+  // wFirma XML keys (paymentmethod, paymentdate, saledate) also accepted.
+  // Fallback: wfirma_payment_method column (written by post-posting enrichment).
   const rawPt = liveDraft.payment_terms;
   const paymentTermsDisplay = (() => {
-    if (!rawPt) return '—';
+    if (!rawPt || (typeof rawPt === 'object' && Object.keys(rawPt).length === 0)) {
+      return liveDraft.wfirma_payment_method || '—';
+    }
     if (typeof rawPt !== 'object') return String(rawPt);
     const parts = [];
-    if (rawPt.method) parts.push(String(rawPt.method));
-    if (rawPt.days)   parts.push(`${rawPt.days} days`);
+    if (rawPt.method)        parts.push(String(rawPt.method));
+    if (rawPt.paymentmethod) parts.push(String(rawPt.paymentmethod));
+    if (rawPt.days)          parts.push(`${rawPt.days} days`);
     Object.entries(rawPt).forEach(([k, v]) => {
-      if (k !== 'method' && k !== 'days' && v) parts.push(`${k}: ${v}`);
+      if (!['method', 'paymentmethod', 'days', 'saledate', 'paymentdate'].includes(k) && v)
+        parts.push(`${k}: ${v}`);
     });
-    return parts.join(' · ') || '—';
+    return parts.join(' · ') || liveDraft.wfirma_payment_method || '—';
   })();
 
   // SELLER from company profile (GET /api/v1/settings/company-profile)
@@ -1562,6 +1787,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     lines,
     paymentTerms: paymentTermsDisplay,
     incoterm:     liveDraft.incoterm || '—',
+    // sale_date: API returns from payment_terms_json.saledate; fallback to rawPt.saledate
+    // for operator-edited payment_terms that include the wFirma XML key.
+    sale_date: liveDraft.sale_date || (rawPt && typeof rawPt === 'object' && rawPt.saledate) || null,
   };
   // ── Country code → full name (ISO 3166-1 alpha-2) for proforma display ──────
   const PROFORMA_COUNTRY_NAMES = {
@@ -2221,205 +2449,24 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     <div data-testid="proforma-detail-root" style={{ flex: 1, overflowY: 'auto', background: 'var(--bg)', padding: '20px 24px 60px' }}>
 
       {/* ── Action toolbar ──────────────────────────────────────────────── */}
-      <div style={{
-        padding: '12px 16px', background: 'var(--card)',
-        border: '1px solid var(--border)', borderRadius: '12px 12px 0 0', borderBottom: 0,
-        display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap',
-      }}>
-
-        {/* Group 1 — CRUD */}
-        {editMode ? (
-          <React.Fragment>
-            <TbBtn
-              onClick={handleSaveEdit}
-              disabled={editSaving}
-              title="Save changes to draft header fields"
-              data-testid="tb-edit-save"
-            >
-              {editSaving ? '⏳ Saving…' : '✓ Save'}
-            </TbBtn>
-            <TbBtn
-              onClick={handleCancelEdit}
-              disabled={editSaving}
-              title="Discard changes and exit edit mode"
-              data-testid="tb-edit-cancel"
-            >
-              ✕ Cancel Edit
-            </TbBtn>
-          </React.Fragment>
-        ) : canEdit ? (
-          <TbBtn
-            onClick={handleEnterEdit}
-            title="Edit draft header fields (remarks, currency, payment terms, exchange rate)"
-            data-testid="tb-edit"
-          >
-            ✎ Edit
-          </TbBtn>
-        ) : null}
-        <TbBtn
-          onClick={() => canCancel && setShowCancelModal(true)}
-          disabled={!canCancel}
-          title={canCancel
-            ? 'Cancel this draft — soft-cancel, no data deleted'
-            : (draftState === 'cancelled' ? 'Already cancelled' : 'Cannot cancel in current state')}
-          data-testid="tb-delete"
-        >
-          🗑 Cancel Draft
-        </TbBtn>
-        {draftState === 'cancelled' && (
-          <TbBtn
-            onClick={() => canPurge && setShowPurgeModal(true)}
-            disabled={!canPurge}
-            title={canPurge ? 'Permanently delete this local-only cancelled draft' : purgeDisabledReason}
-            data-testid="tb-purge"
-          >
-            ⛔ Delete permanently
-          </TbBtn>
-        )}
-        <TbBtn
-          onClick={handleDuplicate}
-          disabled={cloning}
-          title="Clone this draft as a new unposted draft"
-          data-testid="tb-duplicate"
-        >
-          {cloning ? '⏳' : '⎘'} {cloning ? 'Cloning…' : 'Duplicate'}
-        </TbBtn>
-        <TbBtn
-          onClick={handleApprove}
-          disabled={!canApprove || approving}
-          title={canApprove
-            ? 'Mark this draft as approved — locks lines before posting to wFirma'
-            : approveDisabledReason}
-          data-testid="tb-approve"
-        >
-          {approving ? '⏳ Approving…' : '✓ Approve'}
-        </TbBtn>
-        {approveError && (
-          <span style={{ color: 'var(--badge-red-text)', fontSize: 11, maxWidth: 180 }}>{approveError}</span>
-        )}
-
-        <TbSep />
-
-        {/* Group 2 — wFirma write actions */}
-        <TbBtn
-          onClick={() => setShowPostModal(true)}
-          disabled={!canPost}
-          title={canPost
-            ? 'Post this draft to wFirma as a proforma invoice'
-            : postDisabledReason}
-          data-testid="tb-post"
-        >
-          ↑ Post to wFirma
-        </TbBtn>
-        <TbBtn
-          warn
-          onClick={() => canConvert && setShowConvertModal(true)}
-          disabled={!canConvert}
-          title={canConvert
-            ? 'Convert this posted proforma to a wFirma invoice'
-            : convertDisabledReason}
-          data-testid="tb-convert"
-        >
-          ⚠ Convert to Invoice
-        </TbBtn>
-
-        <TbSep />
-
-        {/* Group 3 — Output */}
-        <TbBtn
-          onClick={() => setShowPreview(true)}
-          title="Preview print layout — Proforma or CMR · Classic / Modern / Bold"
-          data-testid="tb-preview"
-        >
-          ◫ Preview
-        </TbBtn>
-        <TbBtn
-          onClick={handleDownloadPdf}
-          disabled={!canPrint}
-          title={canPrint
-            ? 'Open wFirma proforma PDF in new tab'
-            : 'PDF only available after posting to wFirma'}
-          data-testid="proforma-detail-download-pdf"
-        >
-          ⎙ Print
-        </TbBtn>
-        <TbBtn
-          onClick={() => setShowSendModal(true)}
-          disabled={!canSend}
-          title={canSend
-            ? 'Send proforma PDF to customer via email'
-            : (sendDisabledReason || 'Email send not available')}
-          data-testid="tb-send"
-        >
-          ➤ Send
-        </TbBtn>
-        <TbBtn
-          disabled
-          title={
-            'Document-package generation (proforma PDF · packing list · CMR · CN23) is not yet wired — ' +
-            'backend gap M4: POST /api/v1/proforma/draft/{id}/generate-documents (see BACKEND_GAP_REGISTER.md §2, priority LOW). ' +
-            'For now use ◫ Preview to view the layouts and ⎙ Print for the wFirma proforma PDF.'
-          }
-          data-testid="tb-generate"
-        >
-          ⚙ Generate ▾
-        </TbBtn>
-        {/* M8 — DHL Express AWB generation. WIRED: POST /api/v1/carrier/{batch_id}/shipment.
-            Requires CARRIER_API_STATUS=live + DHL credentials in environment. */}
-        <TbBtn
-          onClick={() => setShowAwbModal(true)}
-          disabled={!batchId}
-          title={batchId
-            ? 'Generate DHL Express AWB — opens shipment form'
-            : 'No batch loaded — open a proforma with a batch to generate AWB'}
-          data-testid="tb-awb-generate"
-        >
-          ⚡ AWB Generate
-        </TbBtn>
-
-        <TbSep />
-
-        {/* Group 4 — History / Intelligence */}
-        <TbBtn
-          onClick={() => contractorId && setShowInvoiceHistory(true)}
-          disabled={!contractorId}
-          title={contractorId
-            ? 'View prior invoice history from wFirma for this customer'
-            : 'Backend/customer mapping pending: wFirma contractor ID missing'}
-          data-testid="tb-invoice-history"
-        >
-          📋 Prior Invoices
-        </TbBtn>
-        <TbBtn
-          disabled
-          title="More actions"
-          data-testid="tb-more"
-        >
-          ⋯
-        </TbBtn>
-
-        {/* Spacer */}
-        <div style={{ flexGrow: 1, minWidth: 12 }} />
-
-        {/* Proforma label + status */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>
-            {proformaLabel}
-          </div>
-          <ProformaStatusChip status={draftState} />
-        </div>
-
-        <TbSep />
-
-        <TbBtn
-          onClick={onBack}
-          title="Back to proforma list"
-          data-testid="tb-back"
-          style={{ fontWeight: 600 }}
-        >
-          ← Back
-        </TbBtn>
-      </div>
+      <ProformaActionBar
+        editMode={editMode} editSaving={editSaving}
+        handleSaveEdit={handleSaveEdit} handleCancelEdit={handleCancelEdit}
+        canEdit={canEdit} handleEnterEdit={handleEnterEdit}
+        canCancel={canCancel} setShowCancelModal={setShowCancelModal} draftState={draftState}
+        canPurge={canPurge} setShowPurgeModal={setShowPurgeModal} purgeDisabledReason={purgeDisabledReason}
+        handleDuplicate={handleDuplicate} cloning={cloning}
+        handleApprove={handleApprove} canApprove={canApprove} approving={approving}
+        approveDisabledReason={approveDisabledReason} approveError={approveError}
+        canPost={canPost} setShowPostModal={setShowPostModal} postDisabledReason={postDisabledReason}
+        canConvert={canConvert} setShowConvertModal={setShowConvertModal} convertDisabledReason={convertDisabledReason}
+        setShowPreview={setShowPreview}
+        handleDownloadPdf={handleDownloadPdf} canPrint={canPrint}
+        setShowSendModal={setShowSendModal} canSend={canSend} sendDisabledReason={sendDisabledReason}
+        batchId={batchId} setShowAwbModal={setShowAwbModal}
+        contractorId={contractorId} setShowInvoiceHistory={setShowInvoiceHistory}
+        proformaLabel={proformaLabel} onBack={onBack}
+      />
 
       {printError && (
         <div data-testid="print-error-banner" style={{
@@ -4161,9 +4208,22 @@ function PostToWFirmaModal({ draft, liveDraft, onClose, onSuccess }) {
 // WIRED: POST /api/v1/proforma/draft/{id}/to-invoice
 // confirm_token: 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA'
 function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
-  const [confirmed, setConfirmed] = React.useState(false);
-  const [loading,   setLoading]   = React.useState(false);
-  const [apiError,  setApiError]  = React.useState(null);
+  const [confirmed,    setConfirmed]    = React.useState(false);
+  const [loading,      setLoading]      = React.useState(false);
+  const [apiError,     setApiError]     = React.useState(null);
+  const [disclose,     setDisclose]     = React.useState(null);
+  const [disclosing,   setDisclosing]   = React.useState(true);
+  const [disclosureErr,setDisclosureErr]= React.useState(null);
+
+  React.useEffect(() => {
+    window.PzApi.getDraftDiscloseConvert(draft.id)
+      .then(r => {
+        if (r && r.ok) setDisclose(r.data);
+        else setDisclosureErr((r && r.error) || 'Preview unavailable');
+        setDisclosing(false);
+      })
+      .catch(e => { setDisclosureErr(e.message || 'Preview unavailable'); setDisclosing(false); });
+  }, [draft.id]);
 
   const [disclosure,        setDisclosure]        = React.useState(null);
   const [disclosureLoading, setDisclosureLoading] = React.useState(false);
@@ -4379,6 +4439,55 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
               }
             </div>
           </div>
+
+          {/* wFirma payload disclosure — live fetch from disclose-convert */}
+          <div style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-3)', fontWeight: 700, marginBottom: 10, marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>WFIRMA INVOICE PREVIEW</div>
+          {disclosing ? (
+            <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '6px 0' }}>⏳ Loading invoice payload preview…</div>
+          ) : disclosureErr ? (
+            <div style={{ fontSize: 12, color: 'var(--badge-amber-text)', padding: '6px 10px', background: 'var(--badge-amber-bg)', borderRadius: 4 }}>
+              Preview unavailable: {disclosureErr}
+            </div>
+          ) : disclose ? (() => {
+            const fw = disclose.fields_to_write || {};
+            return (
+              <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 14px', fontSize: 12 }}>
+                {[
+                  ['Source proforma', disclose.source_proforma || '—'],
+                  ['Write target',    disclose.write_target    || '—'],
+                  ['Flag required',   disclose.flag_required   || '—'],
+                  ['Type',            fw.type                  || '—'],
+                  ['Contractor ID',   fw.contractor_id         || '—'],
+                  ['Currency',        fw.currency              || '—'],
+                  ['Series',          fw.series_id             || '(wFirma contractor default)'],
+                  ['Lines',           fw.line_count != null ? `${fw.line_count} line(s)` : '—'],
+                ].map(([k, v]) => (
+                  <div key={k} style={{ display: 'flex', gap: 12, padding: '3px 0', borderBottom: '1px dashed var(--border)' }}>
+                    <span style={{ color: 'var(--text-3)', width: 130, flexShrink: 0 }}>{k}</span>
+                    <span style={{ fontFamily: 'monospace', wordBreak: 'break-word' }}>{v}</span>
+                  </div>
+                ))}
+                {disclose.warning && (
+                  <div style={{ marginTop: 8, padding: '6px 8px', background: 'var(--badge-amber-bg)', borderRadius: 4, color: 'var(--badge-amber-text)', lineHeight: 1.4 }}>
+                    {disclose.warning}
+                  </div>
+                )}
+                {(disclose.lines || []).length > 0 && (
+                  <details style={{ marginTop: 8 }}>
+                    <summary style={{ cursor: 'pointer', color: 'var(--text-3)', fontSize: 11 }}>Show invoice lines ({disclose.lines.length})</summary>
+                    <div style={{ marginTop: 6 }}>
+                      {disclose.lines.map((l, i) => (
+                        <div key={i} style={{ display: 'flex', gap: 12, padding: '3px 0', borderBottom: '1px dashed var(--border)', fontSize: 11 }}>
+                          <span style={{ color: 'var(--text-3)', width: 80, flexShrink: 0 }}>good_id: {l.good_id || '—'}</span>
+                          <span style={{ fontFamily: 'monospace' }}>{l.qty} pc × {l.unit_price} {l.currency}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </div>
+            );
+          })() : null}
 
           {/* Audit section */}
           <div style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-3)', fontWeight: 700, marginBottom: 10, marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>AUDIT</div>
