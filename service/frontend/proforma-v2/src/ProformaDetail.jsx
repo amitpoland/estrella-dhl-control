@@ -7,6 +7,9 @@ import { createPortal } from 'react-dom'
 import { PzApi } from './api/pz-api.js'
 import { PzState } from './hooks/pz-state.js'
 import { Btn, Badge, Card, Select, Modal, InfoRow, ProformaStatusChip } from './components/shared.jsx'
+import { EJProformaClassic, EJProformaModern, EJProformaBold } from './doc-renderers/EJDocProforma.jsx'
+import { EJCMRClassic, EJCMRModern } from './doc-renderers/EJDocCMR.jsx'
+import { EJPackingList } from './doc-renderers/EJDocPacking.jsx'
 
 // Standalone fetch shim replacing window.EstrellaShared.apiFetch.
 // Redirects to /login on 401/403 (same as original), throws on other errors.
@@ -146,7 +149,7 @@ function ProformaPartyCard({ title, name, lines, footer, footerMuted, warn, warn
 
 // ── Print-preview modal ────────────────────────────────────────────────────────
 // READ-ONLY. Never mutates draft state. Uses real docData/cmrData from ProformaDetailPage.
-// Requires: estrella-doc-tokens.css + estrella-doc-proforma.jsx + estrella-doc-cmr.jsx loaded in index.html.
+// Requires: estrella-doc-tokens.css (loaded in index.html). Renderers imported as ES modules.
 function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, packingData, onClose }) {
   // Portrait A4 (794px) → 0.88 fits 900px wrap.
   // Landscape A4 (1123px) → 0.87 fits 1200px wrap.
@@ -159,18 +162,16 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
                        : activeType === 'packing'  ? ['classic']
                        : ['classic', 'modern', 'bold'];
 
-  // Component resolution
+  // Component resolution — ES module imports replace window.EJ* globals from Babel version
   let DocVariant = null;
   if (activeType === 'cmr') {
-    DocVariant = variant === 'modern'
-      ? null
-      : null;
+    DocVariant = variant === 'modern' ? EJCMRModern : EJCMRClassic;
   } else if (activeType === 'packing') {
-    DocVariant = null;
+    DocVariant = EJPackingList;
   } else {
-    DocVariant = variant === 'modern' ? null
-               : variant === 'bold'   ? null
-               : null;
+    DocVariant = variant === 'modern' ? EJProformaModern
+               : variant === 'bold'   ? EJProformaBold
+               : EJProformaClassic;
   }
 
   // Trap Escape key
