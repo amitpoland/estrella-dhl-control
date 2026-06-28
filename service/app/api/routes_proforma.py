@@ -45,6 +45,7 @@ from ..services.proforma_draft_governance import (
 from ..services.customer_master import (
     pick_freight, compute_insurance_suggestion,
     pick_proforma_series_id, pick_invoice_series_id,
+    pick_invoice_series_id_for_vat_context,
 )
 from ..services.master_data_db import get_company_profile
 from ..services import name_normalization
@@ -3129,11 +3130,24 @@ def _build_conversion_plan(proforma_id: str, *, operator: str
     # Default series id = preserve source proforma's series. Operator
     # may pass an override at execute time via the request body if
     # they need to change series (e.g. WDT vs proforma).
-    # Fallback chain: proforma XML series → customer master preferred_invoice_series_id.
+    # Fallback chain: VAT context (WDT always forces WDT series) →
+    # customer master preferred_invoice_series_id.
     series_id = (snap.series_id or "").strip()
     if not series_id or series_id == "0":
         _cm_inv = get_customer_master(_customer_master_db_path(), snap.contractor_id)
-        series_id = pick_invoice_series_id(_cm_inv) or "" if _cm_inv else ""
+        if _cm_inv:
+            _vat_ctx_preview = (snap.vat_code or "").lower() if hasattr(snap, "vat_code") else ""
+            if _vat_ctx_preview == "wdt":
+                _vat_ctx_preview = "wdt"
+            elif _vat_ctx_preview == "export":
+                _vat_ctx_preview = "export"
+            else:
+                _vat_ctx_preview = "domestic"
+            series_id = pick_invoice_series_id_for_vat_context(
+                _cm_inv, _vat_ctx_preview,
+            ) or ""
+        else:
+            series_id = ""
     plan = p2i.build_final_invoice_plan(
         snap,
         final_series_id      = series_id or "0",   # validated below if "0"
@@ -3425,7 +3439,26 @@ def proforma_to_invoice(
         series_id = (body.final_series_id or "").strip()
         if not series_id or series_id == "0":
             _cm_inv2 = get_customer_master(_customer_master_db_path(), snap.contractor_id)
-            series_id = (pick_invoice_series_id(_cm_inv2) or "") if _cm_inv2 else ""
+            if _cm_inv2:
+                # WDT VAT context always forces the WDT invoice series (Lesson N).
+                # Source: draft.vat_context (frozen at creation) beats snap.vat_code.
+                _vat_ctx_exec = (
+                    (_cv_draft.vat_context or "").lower()
+                    if _cv_draft else ""
+                ) or (
+                    (snap.vat_code or "").lower() if hasattr(snap, "vat_code") else ""
+                )
+                if _vat_ctx_exec == "wdt":
+                    _vat_ctx_exec = "wdt"
+                elif _vat_ctx_exec == "export":
+                    _vat_ctx_exec = "export"
+                else:
+                    _vat_ctx_exec = "domestic"
+                series_id = pick_invoice_series_id_for_vat_context(
+                    _cm_inv2, _vat_ctx_exec,
+                ) or ""
+            else:
+                series_id = ""
         if series_id == "0":
             series_id = ""  # normalise wFirma sentinel to empty
         # series_id may now be empty → build_final_invoice_xml omits <series>
@@ -3496,22 +3529,28 @@ def proforma_to_invoice(
                 _invoice_date = _dt.fromisoformat(_draft_invoice_date_str).date()
             except ValueError:
                 pass
-        # Payment due base: modal override > draft sale_date > invoice_date
-        _payment_base = _invoice_date
+        # Payment due: base = max(sale_date, invoice_date) so due is never
+        # before the invoice date (fixes OMARA sale_date < invoice_date bug).
+        _sale_date_for_payment = None
         if _override_sale_date:
             try:
-                _payment_base = _dt.fromisoformat(_override_sale_date).date()
+                _sale_date_for_payment = _dt.fromisoformat(_override_sale_date).date()
             except ValueError:
                 pass
         elif _draft_sale_date_str:
             try:
-                _payment_base = _dt.fromisoformat(_draft_sale_date_str).date()
+                _sale_date_for_payment = _dt.fromisoformat(_draft_sale_date_str).date()
             except ValueError:
                 pass
         _effective_days = _override_days if _override_days is not None else _draft_days
         _paymentdate = None
         if _effective_days is not None:
-            _paymentdate = (_payment_base + _td(days=_effective_days)).isoformat()
+            from ..services.payment_date_resolver import compute_payment_due as _cpd
+            _paymentdate = _cpd(
+                invoice_date=_invoice_date,
+                sale_date=_sale_date_for_payment,
+                payment_days=_effective_days,
+            ).isoformat()
 
         # Build operator_description; append modal override annotations for audit trail
         _op_desc = (body.operator_description or "").strip()
@@ -3866,6 +3905,25 @@ def proforma_to_invoice(
         log.warning("[%s] proforma->invoice link mark_issued failed: %s",
                     batch_id, exc)
 
+    # 7b. Persist wFirma invoice identity to draft table so the UI can
+    # hide the Convert button and show the invoice number after reload.
+    # Runs only when mark_issued succeeded; non-fatal on error.
+    if link_marked_issued and _cv_draft is not None:
+        try:
+            from ..services.conversion_persistence import persist_invoice_to_draft as _pid
+            _pid(
+                db_path               = _proforma_db_path(),
+                draft_id              = int(_cv_draft.id),
+                wfirma_invoice_id     = wfirma_inv_id,
+                wfirma_invoice_number = wfirma_inv_num,
+                sale_date             = _paymentdate and _sale_date_for_payment.isoformat()
+                                        if _sale_date_for_payment else None,
+                payment_due           = _paymentdate,
+                payment_method        = _effective_method_en or None,
+            )
+        except Exception as _pe:
+            log.warning("[%s] persist_invoice_to_draft skipped: %s", batch_id, _pe)
+
     # 8. Append-only audit hardening: emit a `proforma_converted_to_invoice`
     # timeline event so audit.json carries proof of the manual conversion.
     # Fires ONLY after the live invoice was created AND the link row was
@@ -3975,6 +4033,10 @@ def _draft_to_summary(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         # Derived from editable_lines_json (same source as _draft_to_full).
         # Never mutates any customs value.
         "line_count":                 _line_count(d.editable_lines_json or ""),
+        # Post-conversion identity — set by conversion_persistence after invoices/add.
+        "wfirma_invoice_id":          getattr(d, "wfirma_invoice_id", None) or "",
+        "wfirma_invoice_number":      getattr(d, "wfirma_invoice_number", None) or "",
+        "converted_at":               getattr(d, "converted_at", None) or "",
     }
 
 

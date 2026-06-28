@@ -359,6 +359,50 @@ def pick_invoice_series_id(c: CustomerMaster, default: Optional[str] = None) -> 
     return c.preferred_invoice_series_id or default
 
 
+def pick_invoice_series_id_for_vat_context(
+    c: CustomerMaster,
+    vat_context: str,
+) -> str:
+    """
+    Select invoice series from Customer Master based on VAT/commercial context.
+
+    Customer Master is the ONLY authority. wFirma config is never used as
+    a source here — it may only populate empty CM fields during initial sync.
+
+    vat_context == 'wdt'    → c.preferred_wdt_invoice_series_id   (EU WDT, 0% VAT)
+    vat_context == 'export' → c.preferred_export_invoice_series_id (non-EU export)
+    any other               → c.preferred_invoice_series_id         (domestic / FV)
+
+    Raises ValueError if the required Customer Master series is not set.
+    Conversion must be blocked before reaching wFirma if the CM is missing a series.
+    """
+    name = c.bill_to_name or c.bill_to_contractor_id or "unknown customer"
+    if vat_context == "wdt":
+        series = c.preferred_wdt_invoice_series_id
+        if not series:
+            raise ValueError(
+                f"WDT invoice series not configured in Customer Master for {name!r}. "
+                f"Set preferred_wdt_invoice_series_id on the customer record."
+            )
+        return series
+    if vat_context == "export":
+        series = c.preferred_export_invoice_series_id
+        if not series:
+            raise ValueError(
+                f"Export invoice series not configured in Customer Master for {name!r}. "
+                f"Set preferred_export_invoice_series_id on the customer record."
+            )
+        return series
+    # domestic / FV / any other context
+    series = c.preferred_invoice_series_id
+    if not series:
+        raise ValueError(
+            f"Domestic invoice series not configured in Customer Master for {name!r}. "
+            f"Set preferred_invoice_series_id on the customer record."
+        )
+    return series
+
+
 def pick_proforma_series_id(c: CustomerMaster, default: Optional[str] = None) -> Optional[str]:
     """Customer's preferred proforma series beats default."""
     return c.preferred_proforma_series_id or default

@@ -68,12 +68,14 @@ class CustomerMaster:
     ship_to_contractor_id:   Optional[str] = None
 
     # Commercial defaults (optional, used by proforma resolver if set)
-    default_currency:              Optional[str] = None      # PLN | USD | EUR
-    default_language_id:           Optional[str] = None      # wFirma translation_language_id
-    preferred_proforma_series_id:  Optional[str] = None      # wFirma series id for proformas
-    preferred_invoice_series_id:   Optional[str] = None      # wFirma series id for final invoices
-    preferred_payment_method:      Optional[str] = None      # wFirma payment method: transfer|cash|card|compensation
-    vat_mode:                      Optional[int] = None      # 222 | 228 | 229
+    default_currency:                   Optional[str] = None  # PLN | USD | EUR
+    default_language_id:                Optional[str] = None  # wFirma translation_language_id
+    preferred_proforma_series_id:       Optional[str] = None  # wFirma series id for proformas
+    preferred_invoice_series_id:        Optional[str] = None  # domestic/FV invoice series
+    preferred_wdt_invoice_series_id:    Optional[str] = None  # EU WDT (0% VAT) invoice series
+    preferred_export_invoice_series_id: Optional[str] = None  # non-EU export invoice series
+    preferred_payment_method:           Optional[str] = None  # transfer|cash|card|compensation
+    vat_mode:                           Optional[int] = None  # 222 | 228 | 229
 
     # Freight defaults
     freight_service_id:      Optional[str] = "13002743"   # wFirma good_id (Fedex Courier)
@@ -288,12 +290,14 @@ def init_db(db_path: Path) -> None:
                 ship_to_email            TEXT,
                 ship_to_contractor_id    TEXT,
 
-                default_currency               TEXT,
-                default_language_id            TEXT,
-                preferred_proforma_series_id   TEXT,
-                preferred_invoice_series_id    TEXT,
-                preferred_payment_method       TEXT,
-                vat_mode                       INTEGER,
+                default_currency                    TEXT,
+                default_language_id                TEXT,
+                preferred_proforma_series_id       TEXT,
+                preferred_invoice_series_id        TEXT,
+                preferred_wdt_invoice_series_id    TEXT,
+                preferred_export_invoice_series_id TEXT,
+                preferred_payment_method           TEXT,
+                vat_mode                           INTEGER,
 
                 freight_service_id        TEXT DEFAULT '13002743',
                 freight_last_amount       TEXT,
@@ -339,9 +343,11 @@ def init_db(db_path: Path) -> None:
 
         # Migration — add new columns to legacy DBs that pre-date them
         _migrate_add_columns(conn, [
-            ("preferred_proforma_series_id", "TEXT"),
-            ("preferred_invoice_series_id",  "TEXT"),
-            ("vat_mode",                     "INTEGER"),
+            ("preferred_proforma_series_id",       "TEXT"),
+            ("preferred_invoice_series_id",        "TEXT"),
+            ("preferred_wdt_invoice_series_id",    "TEXT"),
+            ("preferred_export_invoice_series_id", "TEXT"),
+            ("vat_mode",                           "INTEGER"),
             ("freight_service_id",           "TEXT DEFAULT '13002743'"),
             ("freight_last_amount",          "TEXT"),
             ("freight_avg_amount",           "TEXT"),
@@ -466,9 +472,11 @@ def _row_to_customer(row: sqlite3.Row) -> CustomerMaster:
         ship_to_contractor_id         = row["ship_to_contractor_id"],
         default_currency              = row["default_currency"],
         default_language_id           = row["default_language_id"],
-        preferred_proforma_series_id  = _row_get(row, "preferred_proforma_series_id"),
-        preferred_invoice_series_id   = _row_get(row, "preferred_invoice_series_id"),
-        preferred_payment_method      = _row_get(row, "preferred_payment_method"),
+        preferred_proforma_series_id       = _row_get(row, "preferred_proforma_series_id"),
+        preferred_invoice_series_id        = _row_get(row, "preferred_invoice_series_id"),
+        preferred_wdt_invoice_series_id    = _row_get(row, "preferred_wdt_invoice_series_id"),
+        preferred_export_invoice_series_id = _row_get(row, "preferred_export_invoice_series_id"),
+        preferred_payment_method           = _row_get(row, "preferred_payment_method"),
         vat_mode                      = _row_get(row, "vat_mode"),
         freight_service_id            = _row_get(row, "freight_service_id", "13002743"),
         freight_last_amount           = _str_to_dec(_row_get(row, "freight_last_amount")),
@@ -580,9 +588,11 @@ def upsert_customer(db_path: Path, c: CustomerMaster) -> int:
         "ship_to_contractor_id":   c.ship_to_contractor_id,
         "default_currency":             c.default_currency,
         "default_language_id":          c.default_language_id,
-        "preferred_proforma_series_id": c.preferred_proforma_series_id,
-        "preferred_invoice_series_id":  c.preferred_invoice_series_id,
-        "preferred_payment_method":     c.preferred_payment_method,
+        "preferred_proforma_series_id":       c.preferred_proforma_series_id,
+        "preferred_invoice_series_id":        c.preferred_invoice_series_id,
+        "preferred_wdt_invoice_series_id":    c.preferred_wdt_invoice_series_id,
+        "preferred_export_invoice_series_id": c.preferred_export_invoice_series_id,
+        "preferred_payment_method":           c.preferred_payment_method,
         "vat_mode":                     int(c.vat_mode) if c.vat_mode is not None else None,
         "freight_service_id":           c.freight_service_id,
         "freight_last_amount":          _dec_to_str(c.freight_last_amount),

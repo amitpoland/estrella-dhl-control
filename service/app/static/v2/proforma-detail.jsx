@@ -2590,8 +2590,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const approveBlocked  = !!(readinessApprove && readinessApprove.ready === false);
   const postBlocked     = !!(readinessPost    && readinessPost.ready    === false);
   const stateAllowsPost    = ['draft', 'pending_local', 'approved', 'post_failed'].includes(draftState);
-  const stateAllowsConvert = draftState === 'posted' || draftState === 'ready';
-  const stateAllowsApprove = ['draft', 'editing', 'post_failed'].includes(draftState);
+  const alreadyConverted    = !!(liveDraft.wfirma_invoice_id) || draftState === 'converted';
+  const stateAllowsConvert  = (draftState === 'posted' || draftState === 'ready') && !alreadyConverted;
+  const stateAllowsApprove  = ['draft', 'editing', 'post_failed'].includes(draftState);
   const canPost       = stateAllowsPost && !postBlocked;
   const canConvert    = stateAllowsConvert && !postBlocked;
   const isBlocked     = draftState === 'post_failed' || draftState === 'convert_blocked';
@@ -2609,7 +2610,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     ? (alreadyPosted ? 'Already posted to wFirma' : `Cannot post in '${draftState}' state`)
     : (postBlocked ? `Blocked: ${_firstBlockerText(postBlockers)}` : '');
   const convertDisabledReason = !stateAllowsConvert
-    ? (isBlocked ? 'Conversion blocked — see Reservation tab' : 'Post to wFirma first, then convert')
+    ? (alreadyConverted
+        ? `Already converted — invoice ${liveDraft.wfirma_invoice_number || liveDraft.wfirma_invoice_id || 'created'}`
+        : (isBlocked ? 'Conversion blocked — see Reservation tab' : 'Post to wFirma first, then convert'))
     : (postBlocked ? `Blocked: ${_firstBlockerText(postBlockers)}` : '');
 
   // M5 — Edit mode: enabled when draft is in an editable state
@@ -3513,6 +3516,31 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+      {/* Invoice identity card — shown after successful conversion */}
+      {detail.wfirma_invoice_id && (
+        <div style={{
+          padding: '12px 16px',
+          background: 'var(--badge-green-bg)',
+          border: '2px solid var(--badge-green-border, var(--accent))',
+          borderRadius: 8,
+          display: 'flex', alignItems: 'center', gap: 12,
+        }} data-testid="invoice-identity-card">
+          <span style={{ fontSize: 20 }}>✅</span>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--badge-green-text, var(--accent))' }}>
+              Invoice Created
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>
+              {detail.wfirma_invoice_number
+                ? <span>wFirma invoice <strong style={{ fontFamily: 'monospace' }}>{detail.wfirma_invoice_number}</strong></span>
+                : <span>wFirma invoice ID <strong style={{ fontFamily: 'monospace' }}>{detail.wfirma_invoice_id}</strong></span>
+              }
+              {detail.converted_at && <span style={{ marginLeft: 8 }}>· {(detail.converted_at || '').slice(0, 10)}</span>}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Edit mode banner */}
       {editMode && (

@@ -463,6 +463,10 @@ class ProformaDraft:
     sales_price_authority_total_eur: Optional[float] = None
     sales_price_imported_at:         Optional[str]   = None
     sales_price_invoice_ref:         Optional[str]   = None
+    # ── Post-conversion invoice identity (set by conversion_persistence) ────
+    wfirma_invoice_id:     Optional[str] = None   # wFirma invoice id after conversion
+    wfirma_invoice_number: Optional[str] = None   # full invoice number e.g. WDT 1/2026
+    converted_at:          Optional[str] = None   # UTC ISO timestamp of conversion
     # ── Contractor-at-birth projection (PR-2) — additive reference only ───
     client_contractor_id:            str             = ""
 
@@ -1100,6 +1104,10 @@ def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
         sales_price_invoice_ref         = _opt("sales_price_invoice_ref"),
         # ── Contractor-at-birth projection (PR-2) ─────────────────────────
         client_contractor_id            = (_opt("client_contractor_id") or ""),
+        # ── Post-conversion invoice identity ──────────────────────────────
+        wfirma_invoice_id               = _opt("wfirma_invoice_id"),
+        wfirma_invoice_number           = _opt("wfirma_invoice_number"),
+        converted_at                    = _opt("converted_at"),
     )
 
 

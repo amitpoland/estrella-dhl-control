@@ -1,57 +1,124 @@
 # service/tests/test_wdt_series_authority.py
 """
-Tests for WDT invoice series authority.
-These tests MUST FAIL before the fix is applied (Task 6).
+Invoice series authority tests — Customer Master is the ONLY source.
+
+Each context (WDT / domestic / export) reads from its own CM field.
+Missing CM field blocks conversion before reaching wFirma.
+
 Run: cd service && pytest tests/test_wdt_series_authority.py -v
 """
 import pytest
 from unittest.mock import MagicMock
 
 
-OMARA_WDT_SERIES_ID = "15827921"   # WDT series in wFirma
-OMARA_FV_SERIES_ID  = "15827088"   # Generic FV series — must NOT be used for WDT
+OMARA_FV_SERIES     = "15827088"   # domestic / FV series
+OMARA_WDT_SERIES    = "15827921"   # EU WDT series (Faktury WDT)
+OMARA_EXPORT_SERIES = "15900001"   # non-EU export series (example)
 
 
-def _make_customer_master(invoice_series_id=OMARA_FV_SERIES_ID):
+def _make_cm(
+    *,
+    invoice_series=None,
+    wdt_series=None,
+    export_series=None,
+    name="Test Customer",
+):
     cm = MagicMock()
-    cm.preferred_invoice_series_id = invoice_series_id
-    cm.vat_mode = 228
-    cm.country = "CZ"
-    cm.vat_eu_valid = True
+    cm.bill_to_name = name
+    cm.bill_to_contractor_id = "99999999"
+    cm.preferred_invoice_series_id = invoice_series
+    cm.preferred_wdt_invoice_series_id = wdt_series
+    cm.preferred_export_invoice_series_id = export_series
     return cm
 
 
-def test_wdt_context_must_not_use_fv_series():
+# ── WDT context ──────────────────────────────────────────────────────────────
+
+def test_wdt_context_reads_from_cm_wdt_field():
     from app.services.customer_master import pick_invoice_series_id_for_vat_context
-    cm = _make_customer_master(invoice_series_id=OMARA_FV_SERIES_ID)
-    result = pick_invoice_series_id_for_vat_context(cm, vat_context="wdt",
-                                                     wdt_series_id=OMARA_WDT_SERIES_ID)
-    assert result != OMARA_FV_SERIES_ID, (
-        f"WDT context must not return FV series {OMARA_FV_SERIES_ID}, got {result!r}"
+    cm = _make_cm(invoice_series=OMARA_FV_SERIES, wdt_series=OMARA_WDT_SERIES)
+    result = pick_invoice_series_id_for_vat_context(cm, vat_context="wdt")
+    assert result == OMARA_WDT_SERIES
+
+
+def test_wdt_context_must_not_return_fv_series():
+    from app.services.customer_master import pick_invoice_series_id_for_vat_context
+    cm = _make_cm(invoice_series=OMARA_FV_SERIES, wdt_series=OMARA_WDT_SERIES)
+    result = pick_invoice_series_id_for_vat_context(cm, vat_context="wdt")
+    assert result != OMARA_FV_SERIES, (
+        f"WDT context must NOT return FV series {OMARA_FV_SERIES!r}, got {result!r}"
     )
 
 
-def test_wdt_context_returns_wdt_series():
+def test_wdt_context_missing_cm_wdt_series_blocks():
     from app.services.customer_master import pick_invoice_series_id_for_vat_context
-    cm = _make_customer_master(invoice_series_id=OMARA_FV_SERIES_ID)
-    result = pick_invoice_series_id_for_vat_context(cm, vat_context="wdt",
-                                                     wdt_series_id=OMARA_WDT_SERIES_ID)
-    assert result == OMARA_WDT_SERIES_ID, (
-        f"WDT context must return WDT series {OMARA_WDT_SERIES_ID}, got {result!r}"
+    cm = _make_cm(invoice_series=OMARA_FV_SERIES, wdt_series=None)
+    with pytest.raises(ValueError, match="WDT invoice series not configured"):
+        pick_invoice_series_id_for_vat_context(cm, vat_context="wdt")
+
+
+# ── Domestic / FV context ────────────────────────────────────────────────────
+
+def test_domestic_context_reads_from_cm_invoice_field():
+    from app.services.customer_master import pick_invoice_series_id_for_vat_context
+    cm = _make_cm(invoice_series=OMARA_FV_SERIES, wdt_series=OMARA_WDT_SERIES)
+    result = pick_invoice_series_id_for_vat_context(cm, vat_context="domestic")
+    assert result == OMARA_FV_SERIES
+
+
+def test_domestic_context_missing_cm_series_blocks():
+    from app.services.customer_master import pick_invoice_series_id_for_vat_context
+    cm = _make_cm(invoice_series=None, wdt_series=OMARA_WDT_SERIES)
+    with pytest.raises(ValueError, match="Domestic invoice series not configured"):
+        pick_invoice_series_id_for_vat_context(cm, vat_context="domestic")
+
+
+# ── Export context ───────────────────────────────────────────────────────────
+
+def test_export_context_reads_from_cm_export_field():
+    from app.services.customer_master import pick_invoice_series_id_for_vat_context
+    cm = _make_cm(invoice_series=OMARA_FV_SERIES, export_series=OMARA_EXPORT_SERIES)
+    result = pick_invoice_series_id_for_vat_context(cm, vat_context="export")
+    assert result == OMARA_EXPORT_SERIES
+
+
+def test_export_context_missing_cm_series_blocks():
+    from app.services.customer_master import pick_invoice_series_id_for_vat_context
+    cm = _make_cm(invoice_series=OMARA_FV_SERIES, export_series=None)
+    with pytest.raises(ValueError, match="Export invoice series not configured"):
+        pick_invoice_series_id_for_vat_context(cm, vat_context="export")
+
+
+# ── Isolation: each context reads only its own field ─────────────────────────
+
+def test_wdt_context_ignores_domestic_and_export_fields():
+    from app.services.customer_master import pick_invoice_series_id_for_vat_context
+    cm = _make_cm(
+        invoice_series=OMARA_FV_SERIES,
+        wdt_series=OMARA_WDT_SERIES,
+        export_series=OMARA_EXPORT_SERIES,
     )
+    result = pick_invoice_series_id_for_vat_context(cm, vat_context="wdt")
+    assert result == OMARA_WDT_SERIES
+    assert result != OMARA_FV_SERIES
+    assert result != OMARA_EXPORT_SERIES
 
 
-def test_domestic_context_uses_customer_preferred():
+def test_export_context_ignores_domestic_and_wdt_fields():
     from app.services.customer_master import pick_invoice_series_id_for_vat_context
-    cm = _make_customer_master(invoice_series_id=OMARA_FV_SERIES_ID)
-    result = pick_invoice_series_id_for_vat_context(cm, vat_context="domestic",
-                                                     wdt_series_id=OMARA_WDT_SERIES_ID)
-    assert result == OMARA_FV_SERIES_ID
+    cm = _make_cm(
+        invoice_series=OMARA_FV_SERIES,
+        wdt_series=OMARA_WDT_SERIES,
+        export_series=OMARA_EXPORT_SERIES,
+    )
+    result = pick_invoice_series_id_for_vat_context(cm, vat_context="export")
+    assert result == OMARA_EXPORT_SERIES
+    assert result != OMARA_FV_SERIES
+    assert result != OMARA_WDT_SERIES
 
 
-def test_wdt_context_missing_wdt_series_id_raises():
+def test_domestic_missing_does_not_fall_back_to_wdt():
     from app.services.customer_master import pick_invoice_series_id_for_vat_context
-    cm = _make_customer_master(invoice_series_id=OMARA_FV_SERIES_ID)
-    with pytest.raises(ValueError, match="WDT series"):
-        pick_invoice_series_id_for_vat_context(cm, vat_context="wdt",
-                                                wdt_series_id=None)
+    cm = _make_cm(invoice_series=None, wdt_series=OMARA_WDT_SERIES)
+    with pytest.raises(ValueError):
+        pick_invoice_series_id_for_vat_context(cm, vat_context="domestic")
