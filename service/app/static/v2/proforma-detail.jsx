@@ -4257,7 +4257,7 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
   const [disclosureErr,setDisclosureErr]= React.useState(null);
 
   React.useEffect(() => {
-    window.PzApi.getDraftDiscloseConvert(draft.id)
+    window.PzApi.getDisclosureConvert(draft.id)
       .then(r => {
         if (r && r.ok) setDisclose(r.data);
         else setDisclosureErr((r && r.error) || 'Preview unavailable');
