@@ -2062,13 +2062,17 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // M5 — Edit mode handlers
   const handleEnterEdit = () => {
     if (!canEdit) return;
+    const _pt = (liveDraft.payment_terms && typeof liveDraft.payment_terms === 'object')
+      ? liveDraft.payment_terms : {};
     setEditFields({
-      remarks:       liveDraft.remarks || '',
-      payment_terms: typeof liveDraft.payment_terms === 'object'
-        ? JSON.stringify(liveDraft.payment_terms) : (liveDraft.payment_terms || ''),
-      currency:      liveDraft.currency || 'EUR',
-      exchange_rate: liveDraft.exchange_rate || '',
-      incoterm:      liveDraft.incoterm || '',
+      remarks:          liveDraft.remarks || '',
+      currency:         liveDraft.currency || 'EUR',
+      exchange_rate:    liveDraft.exchange_rate || '',
+      incoterm:         liveDraft.incoterm || '',
+      pt_method:        _pt.method || '',
+      pt_days:          _pt.days != null ? String(_pt.days) : '',
+      pt_invoice_date:  _pt.invoice_date || '',
+      pt_sale_date:     _pt.sale_date || '',
     });
     setEditError(null);
     setEditMode(true);
@@ -2092,13 +2096,23 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       patch.exchange_rate = editFields.exchange_rate;
     if (editFields.incoterm !== (liveDraft.incoterm || ''))
       patch.incoterm = editFields.incoterm;
-    // payment_terms: try to parse as JSON object, fallback to string
-    const origPt = typeof liveDraft.payment_terms === 'object'
-      ? JSON.stringify(liveDraft.payment_terms) : (liveDraft.payment_terms || '');
-    if (editFields.payment_terms !== origPt) {
-      let ptVal = editFields.payment_terms;
-      try { ptVal = JSON.parse(ptVal); } catch (_) { /* keep as string */ }
-      patch.payment_terms = ptVal;
+    // payment_terms: compare individual pt_* fields against saved values
+    const _origPt = (liveDraft.payment_terms && typeof liveDraft.payment_terms === 'object')
+      ? liveDraft.payment_terms : {};
+    const _ptChanged = (
+      (editFields.pt_method        || '') !== (_origPt.method        || '') ||
+      (editFields.pt_days          || '') !== (_origPt.days != null ? String(_origPt.days) : '') ||
+      (editFields.pt_invoice_date  || '') !== (_origPt.invoice_date  || '') ||
+      (editFields.pt_sale_date     || '') !== (_origPt.sale_date     || '')
+    );
+    if (_ptChanged) {
+      const newPt = {};
+      if (editFields.pt_method)       newPt.method       = editFields.pt_method;
+      const _ptDaysNum = editFields.pt_days !== '' ? parseInt(editFields.pt_days, 10) : null;
+      if (_ptDaysNum != null && !isNaN(_ptDaysNum)) newPt.days = _ptDaysNum;
+      if (editFields.pt_invoice_date) newPt.invoice_date = editFields.pt_invoice_date;
+      if (editFields.pt_sale_date)    newPt.sale_date    = editFields.pt_sale_date;
+      patch.payment_terms = newPt;
     }
     if (Object.keys(patch).length === 0) {
       // No changes
@@ -3395,6 +3409,18 @@ function EditableKvItem({ k, value, onChange, type }) {
 // ── Overview tab ──────────────────────────────────────────────────────────────
 function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingReasons, exportBlockers, editMode, editFields, onEditField, editError }) {
   const totalEur = lines.reduce((s, l) => s + l.netEur, 0);
+  // Computed payment due in edit mode: sale_date (or invoice_date) + payment_days
+  const _editComputedDue = (() => {
+    if (!editMode) return null;
+    const base = editFields.pt_sale_date || editFields.pt_invoice_date;
+    const days = editFields.pt_days !== '' ? parseInt(editFields.pt_days, 10) : null;
+    if (!base || days == null || isNaN(days)) return null;
+    try {
+      const d = new Date(base + 'T00:00:00Z');
+      d.setUTCDate(d.getUTCDate() + days);
+      return d.toISOString().slice(0, 10);
+    } catch (e) { return null; }
+  })();
   const currency = detail.currency || 'EUR';
 
   return (
@@ -3441,13 +3467,71 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
         <KvItem k="Shipment" v={detail.batch_id} mono />
         <KvItem k="KSeF" v={detail.ksef_number} muted={!detail.ksef_number} />
         {editMode
-          ? <EditableKvItem k="Payment terms" value={editFields.payment_terms || ''} onChange={v => onEditField('payment_terms', v)} />
+          ? (
+            <div data-testid="edit-pt-method-container">
+              <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, marginBottom: 4 }}>Payment method</div>
+              <select
+                value={editFields.pt_method || ''}
+                onChange={e => onEditField('pt_method', e.target.value)}
+                data-testid="edit-pt-method"
+                style={{ width: '100%', padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12 }}
+              >
+                <option value="">— not set —</option>
+                <option value="transfer">transfer</option>
+                <option value="cash">cash</option>
+                <option value="card">card</option>
+                <option value="compensation">compensation</option>
+              </select>
+              <div style={{ marginTop: 6 }}>
+                <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, marginBottom: 2 }}>Payment days</div>
+                <input
+                  type="number" min="0" max="365"
+                  value={editFields.pt_days || ''}
+                  onChange={e => onEditField('pt_days', e.target.value)}
+                  data-testid="edit-pt-days"
+                  placeholder="e.g. 30"
+                  style={{ width: '100%', padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12 }}
+                />
+              </div>
+            </div>
+          )
           : <KvItem k="Payment method" v={detail.paymentTerms} />
         }
 
-        <KvItem k="Issue date" v={detail.created_at ? detail.created_at.slice(0, 10) : null} mono />
-        <KvItem k="Payment due" v={detail.payment_due_date} mono />
-        <KvItem k="Sale date" v={detail.sale_date} mono />
+        {editMode
+          ? (
+            <div data-testid="edit-pt-invoice-date-container">
+              <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, marginBottom: 4 }}>Invoice issue date</div>
+              <input
+                type="date"
+                value={editFields.pt_invoice_date || ''}
+                onChange={e => onEditField('pt_invoice_date', e.target.value)}
+                data-testid="edit-pt-invoice-date"
+                style={{ width: '100%', padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12 }}
+              />
+            </div>
+          )
+          : <KvItem k="Issue date" v={detail.created_at ? detail.created_at.slice(0, 10) : null} mono />
+        }
+        {editMode
+          ? <KvItem k="Payment due" v={_editComputedDue || '—'} mono />
+          : <KvItem k="Payment due" v={detail.payment_due_date} mono />
+        }
+        {editMode
+          ? (
+            <div data-testid="edit-pt-sale-date-container">
+              <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, marginBottom: 4 }}>Sale date</div>
+              <input
+                type="date"
+                value={editFields.pt_sale_date || ''}
+                onChange={e => onEditField('pt_sale_date', e.target.value)}
+                data-testid="edit-pt-sale-date"
+                style={{ width: '100%', padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12 }}
+              />
+            </div>
+          )
+          : <KvItem k="Sale date" v={detail.sale_date} mono />
+        }
         <KvItem k="Paid" v={`0.00 ${currency}`} muted />
 
         <KvItem k="Amount due" v={`${totalEur.toFixed(2)} ${currency}`} />
@@ -4101,8 +4185,12 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
           if (!defaultsApplied.current) {
             defaultsApplied.current = true;
             const pr = r.data.payment_resolved || {};
-            if (pr.method) setOverrideMethod(pr.method);
-            if (pr.customer_default_days != null) setOverrideDays(String(pr.customer_default_days));
+            // Pre-fill from draft saved values (via disclosure) — operator edits these in Overview panel
+            if (pr.method)       setOverrideMethod(pr.method);
+            if (pr.invoice_date) setOverrideInvoiceDate(pr.invoice_date);
+            if (pr.sale_date)    setOverrideSaleDate(pr.sale_date);
+            if (pr.payment_days != null)          setOverrideDays(String(pr.payment_days));
+            else if (pr.customer_default_days != null) setOverrideDays(String(pr.customer_default_days));
           }
         } else {
           setDisclosureError((r && r.error) || 'Payload preview unavailable');
@@ -4217,8 +4305,9 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
             </div>
           ))}
 
-          {/* Operator payment overrides */}
-          <div style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-3)', fontWeight: 700, marginBottom: 10, marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>OPERATOR OVERRIDES</div>
+          {/* Operator payment overrides — pre-filled from Overview panel draft values */}
+          <div style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-3)', fontWeight: 700, marginBottom: 4, marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>EMERGENCY OVERRIDE (optional)</div>
+          <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 10 }}>Pre-filled from Overview panel. Edit payment fields in the Overview panel to change them permanently.</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16, padding: '12px 14px', background: 'var(--bg-subtle)', borderRadius: 8, border: '1px solid var(--border)' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: 14, alignItems: 'center', fontSize: 13 }}>
               <label style={{ color: 'var(--text-3)' }}>Payment method</label>
