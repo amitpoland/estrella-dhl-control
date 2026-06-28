@@ -6,7 +6,7 @@ import React from 'react'
 import { createPortal } from 'react-dom'
 import { PzApi } from './api/pz-api.js'
 import { PzState } from './hooks/pz-state.js'
-import { Btn, Badge, Card, Select, Modal, InfoRow } from './components/shared.jsx'
+import { Btn, Badge, Card, Select, Modal, InfoRow, ProformaStatusChip } from './components/shared.jsx'
 
 // Standalone fetch shim replacing window.EstrellaShared.apiFetch.
 // Redirects to /login on 401/403 (same as original), throws on other errors.

@@ -89,6 +89,31 @@ export function Select({ value, onChange, children, style: s }) {
   )
 }
 
+const STATUS_CHIP = {
+  draft:              { label: 'Draft',       bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+  editing:            { label: 'Editing',     bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+  approved:           { label: 'Approved',    bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+  posting:            { label: 'Posting...', bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+  posted:             { label: 'Posted',      bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+  post_failed:        { label: 'Post Failed', bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+  adopted_from_audit: { label: 'Adopted',     bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  cancelled:          { label: 'Cancelled',   bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+}
+
+export function ProformaStatusChip({ status }) {
+  const s = STATUS_CHIP[status] || { label: status || 'Unknown', bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' }
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      padding: '3px 10px', borderRadius: 4,
+      background: s.bg, color: s.text, border: `1px solid ${s.border}`,
+      fontSize: 10.5, fontWeight: 600, letterSpacing: '0.02em',
+    }}>
+      {s.label}
+    </span>
+  )
+}
+
 export function InfoRow({ label, value, mono }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
