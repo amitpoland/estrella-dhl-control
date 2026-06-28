@@ -1190,6 +1190,656 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   );
 }
 
+// ── Action toolbar — owns all 17 toolbar buttons ──────────────────────────────
+function ProformaActionBar({
+  editMode, editSaving, handleSaveEdit, handleCancelEdit,
+  canEdit, handleEnterEdit,
+  canCancel, setShowCancelModal, draftState,
+  canPurge, setShowPurgeModal, purgeDisabledReason,
+  handleDuplicate, cloning,
+  handleApprove, canApprove, approving, approveDisabledReason, approveError,
+  canPost, setShowPostModal, postDisabledReason,
+  canConvert, setShowConvertModal, convertDisabledReason,
+  setShowPreview,
+  handleDownloadPdf, canPrint,
+  setShowSendModal, canSend, sendDisabledReason,
+  batchId, setShowAwbModal,
+  contractorId, setShowInvoiceHistory,
+  proformaLabel, onBack,
+}) {
+  return (
+    <div style={{
+      padding: '12px 16px', background: 'var(--card)',
+      border: '1px solid var(--border)', borderRadius: '12px 12px 0 0', borderBottom: 0,
+      display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap',
+    }}>
+
+      {/* Group 1 — CRUD */}
+      {editMode ? (
+        <React.Fragment>
+          <TbBtn
+            onClick={handleSaveEdit}
+            disabled={editSaving}
+            title="Save changes to draft header fields"
+            data-testid="tb-edit-save"
+          >
+            {editSaving ? '⏳ Saving…' : '✓ Save'}
+          </TbBtn>
+          <TbBtn
+            onClick={handleCancelEdit}
+            disabled={editSaving}
+            title="Discard changes and exit edit mode"
+            data-testid="tb-edit-cancel"
+          >
+            ✕ Cancel Edit
+          </TbBtn>
+        </React.Fragment>
+      ) : canEdit ? (
+        <TbBtn
+          onClick={handleEnterEdit}
+          title="Edit draft header fields (remarks, currency, payment terms, exchange rate)"
+          data-testid="tb-edit"
+        >
+          ✎ Edit
+        </TbBtn>
+      ) : null}
+      <TbBtn
+        onClick={() => canCancel && setShowCancelModal(true)}
+        disabled={!canCancel}
+        title={canCancel
+          ? 'Cancel this draft — soft-cancel, no data deleted'
+          : (draftState === 'cancelled' ? 'Already cancelled' : 'Cannot cancel in current state')}
+        data-testid="tb-delete"
+      >
+        🗑 Cancel Draft
+      </TbBtn>
+      {draftState === 'cancelled' && (
+        <TbBtn
+          onClick={() => canPurge && setShowPurgeModal(true)}
+          disabled={!canPurge}
+          title={canPurge ? 'Permanently delete this local-only cancelled draft' : purgeDisabledReason}
+          data-testid="tb-purge"
+        >
+          ⛔ Delete permanently
+        </TbBtn>
+      )}
+      <TbBtn
+        onClick={handleDuplicate}
+        disabled={cloning}
+        title="Clone this draft as a new unposted draft"
+        data-testid="tb-duplicate"
+      >
+        {cloning ? '⏳' : '⎘'} {cloning ? 'Cloning…' : 'Duplicate'}
+      </TbBtn>
+      <TbBtn
+        onClick={handleApprove}
+        disabled={!canApprove || approving}
+        title={canApprove
+          ? 'Mark this draft as approved — locks lines before posting to wFirma'
+          : approveDisabledReason}
+        data-testid="tb-approve"
+      >
+        {approving ? '⏳ Approving…' : '✓ Approve'}
+      </TbBtn>
+      {approveError && (
+        <span style={{ color: 'var(--badge-red-text)', fontSize: 11, maxWidth: 180 }}>{approveError}</span>
+      )}
+
+      <TbSep />
+
+      {/* Group 2 — wFirma write actions */}
+      <TbBtn
+        onClick={() => setShowPostModal(true)}
+        disabled={!canPost}
+        title={canPost
+          ? 'Post this draft to wFirma as a proforma invoice'
+          : postDisabledReason}
+        data-testid="tb-post"
+      >
+        ↑ Post to wFirma
+      </TbBtn>
+      <TbBtn
+        warn
+        onClick={() => canConvert && setShowConvertModal(true)}
+        disabled={!canConvert}
+        title={canConvert
+          ? 'Convert this posted proforma to a wFirma invoice'
+          : convertDisabledReason}
+        data-testid="tb-convert"
+      >
+        ⚠ Convert to Invoice
+      </TbBtn>
+
+      <TbSep />
+
+      {/* Group 3 — Output */}
+      <TbBtn
+        onClick={() => setShowPreview(true)}
+        title="Preview print layout — Proforma or CMR · Classic / Modern / Bold"
+        data-testid="tb-preview"
+      >
+        ◫ Preview
+      </TbBtn>
+      <TbBtn
+        onClick={handleDownloadPdf}
+        disabled={!canPrint}
+        title={canPrint
+          ? 'Open wFirma proforma PDF in new tab'
+          : 'PDF only available after posting to wFirma'}
+        data-testid="proforma-detail-download-pdf"
+      >
+        ⎙ Print
+      </TbBtn>
+      <TbBtn
+        onClick={() => setShowSendModal(true)}
+        disabled={!canSend}
+        title={canSend
+          ? 'Send proforma PDF to customer via email'
+          : (sendDisabledReason || 'Email send not available')}
+        data-testid="tb-send"
+      >
+        ➤ Send
+      </TbBtn>
+      <TbBtn
+        disabled
+        title={
+          'Document-package generation (proforma PDF · packing list · CMR · CN23) is not yet wired — ' +
+          'backend gap M4: POST /api/v1/proforma/draft/{id}/generate-documents (see BACKEND_GAP_REGISTER.md §2, priority LOW). ' +
+          'For now use ◫ Preview to view the layouts and ⎙ Print for the wFirma proforma PDF.'
+        }
+        data-testid="tb-generate"
+      >
+        ⚙ Generate ▾
+      </TbBtn>
+      {/* M8 — DHL Express AWB generation. WIRED: POST /api/v1/carrier/{batch_id}/shipment.
+          Requires CARRIER_API_STATUS=live + DHL credentials in environment. */}
+      <TbBtn
+        onClick={() => setShowAwbModal(true)}
+        disabled={!batchId}
+        title={batchId
+          ? 'Generate DHL Express AWB — opens shipment form'
+          : 'No batch loaded — open a proforma with a batch to generate AWB'}
+        data-testid="tb-awb-generate"
+      >
+        ⚡ AWB Generate
+      </TbBtn>
+
+      <TbSep />
+
+      {/* Group 4 — History / Intelligence */}
+      <TbBtn
+        onClick={() => contractorId && setShowInvoiceHistory(true)}
+        disabled={!contractorId}
+        title={contractorId
+          ? 'View prior invoice history from wFirma for this customer'
+          : 'Backend/customer mapping pending: wFirma contractor ID missing'}
+        data-testid="tb-invoice-history"
+      >
+        📋 Prior Invoices
+      </TbBtn>
+      <TbBtn
+        disabled
+        title="More actions"
+        data-testid="tb-more"
+      >
+        ⋯
+      </TbBtn>
+
+      {/* Spacer */}
+      <div style={{ flexGrow: 1, minWidth: 12 }} />
+
+      {/* Proforma label + status */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>
+          {proformaLabel}
+        </div>
+        <ProformaStatusChip status={draftState} />
+      </div>
+
+      <TbSep />
+
+      <TbBtn
+        onClick={onBack}
+        title="Back to proforma list"
+        data-testid="tb-back"
+        style={{ fontWeight: 600 }}
+      >
+        ← Back
+      </TbBtn>
+    </div>
+  );
+}
+
+// ── Proforma status header — readiness pill, customer chip, shipment chip ─────
+function ProformaStatusHeader({
+  alreadyPosted, readinessPost, postBlocked, postBlockers,
+  approveBlocked, approveBlockers,
+  stateAllowsApprove, alreadyApproved,
+  canPost, canConvert,
+  customer, _cmrTotalPcs, liveDraft, draft,
+}) {
+  const pill = alreadyPosted
+    ? { label: 'Posted', tone: 'green' }
+    : (readinessPost == null)
+      ? { label: 'Checking readiness…', tone: 'neutral' }
+      : (postBlocked
+          ? { label: `Not ready · ${postBlockers.length} blocker${postBlockers.length === 1 ? '' : 's'}`, tone: 'red' }
+          : { label: 'Ready', tone: 'green' });
+  const toneBg = t => t === 'green' ? 'var(--badge-green-bg)' : t === 'red' ? 'var(--badge-red-bg)' : 'var(--bg-subtle)';
+  const toneFg = t => t === 'green' ? 'var(--badge-green-text)' : t === 'red' ? 'var(--badge-red-text)' : 'var(--text-2)';
+  const toneBd = t => t === 'green' ? 'var(--badge-green-border)' : t === 'red' ? 'var(--badge-red-border)' : 'var(--border)';
+  const custMapped = !!customer.wfirmaId;
+  const pieces = (typeof _cmrTotalPcs === 'number' && _cmrTotalPcs > 0) ? _cmrTotalPcs : null;
+  const awb = liveDraft.batch_id || (draft && draft.batch_id) || null;
+  const nextAction = (postBlocked && postBlockers.length)
+    ? postBlockers[0].repair_action
+    : (approveBlocked && approveBlockers.length)
+      ? approveBlockers[0].repair_action
+      : (stateAllowsApprove && !alreadyApproved)
+        ? 'Approve draft'
+        : canPost ? 'Post to wFirma'
+        : canConvert ? 'Convert to invoice'
+        : alreadyPosted ? '— posted; no action required'
+        : 'Review draft';
+  const chip = (testid, label, tone) => (
+    <span data-testid={testid} style={{
+      fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 12,
+      background: toneBg(tone), color: toneFg(tone), border: `1px solid ${toneBd(tone)}`,
+      whiteSpace: 'nowrap',
+    }}>{label}</span>
+  );
+  return (
+    <div data-testid="proforma-status-header" style={{
+      background: 'var(--card)',
+      borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+      borderTop: '1px solid var(--border)',
+      padding: '12px 24px',
+      display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+    }}>
+      {chip('proforma-readiness-pill', pill.label, pill.tone)}
+      {chip('proforma-customer-status-chip',
+        custMapped ? `Customer: ${customer.wfirmaName || customer.name} ✓` : `Customer: ${customer.name} · unmapped`,
+        custMapped ? 'green' : 'neutral')}
+      {chip('proforma-shipment-status-chip',
+        pieces ? `Shipment: ${pieces} pcs${awb ? ` · AWB ${awb}` : ''}` : 'Shipment: pending',
+        pieces ? 'neutral' : 'neutral')}
+      <span data-testid="proforma-next-action" style={{
+        fontSize: 12, color: 'var(--text)', fontWeight: 600, marginLeft: 'auto',
+      }}>Next: {nextAction}</span>
+    </div>
+  );
+}
+
+// ── Blocker panel — consolidated "what's blocking" list ───────────────────────
+function ProformaBlockerPanel({ postBlockers, approveBlockers }) {
+  const seen = new Set();
+  const rows = [];
+  const add = (reason, repair, gates) => {
+    if (!reason) return;
+    const key = `${reason}::${gates}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push({ reason, repair: repair || null, gates });
+  };
+  postBlockers.forEach(b => add(b.reason, b.repair_action, 'Post / Convert'));
+  approveBlockers.forEach(b => add(b.reason, b.repair_action, 'Approve'));
+  if (rows.length === 0) return null;
+  const tagColor = g => g.startsWith('Post') ? 'var(--badge-red-text)'
+    : g === 'Approve' ? 'var(--badge-amber-text, var(--text-2))'
+    : 'var(--text-2)';
+  return (
+    <div data-testid="proforma-blocker-panel" style={{
+      background: 'var(--card)',
+      borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+      borderTop: '1px solid var(--border)',
+      padding: '12px 24px',
+    }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>
+        What&rsquo;s blocking — {rows.length} item{rows.length === 1 ? '' : 's'} across approve / post / convert / export
+      </div>
+      {rows.map((r, i) => (
+        <div key={i} data-testid={`proforma-blocker-row-${i}`} style={{ fontSize: 12, marginBottom: 5 }}>
+          <span style={{
+            display: 'inline-block', fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',
+            color: tagColor(r.gates), border: `1px solid var(--border)`, borderRadius: 4,
+            padding: '0 6px', marginRight: 8, verticalAlign: 'middle',
+          }}>{r.gates}</span>
+          <span style={{ color: 'var(--text)' }}>{r.reason}</span>
+          {r.repair && (
+            <div style={{ color: 'var(--text-dim, var(--text))', opacity: 0.75, paddingLeft: 14 }}>
+              Fix: {r.repair}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Readiness + overbill panels — pure display of backend gate state ──────────
+function ProformaReadinessPanel({
+  readinessPost, linesByCode,
+  resolvingDesign, resolveError, doResolveAmbiguity,
+  savingVat, vatSaveError, doSaveEuVat,
+}) {
+  return (
+    <React.Fragment>
+      {readinessPost && !readinessPost.ready && (
+        <div data-testid="readiness-panel" style={{
+          background: 'var(--card)',
+          borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+          borderTop: '1px solid var(--border)',
+          padding: '12px 24px',
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 6 }}>
+            ⛔ Not ready — {(readinessPost.blockers || []).length} blocking reason{(readinessPost.blockers || []).length === 1 ? '' : 's'} · Approve / Post / Convert stay gated until resolved
+          </div>
+          {(readinessPost.blockers || []).map((b, i) => (
+            <div key={i} style={{ fontSize: 12, marginBottom: 4 }} data-testid={`readiness-blocker-${i}`}>
+              <span style={{ color: 'var(--badge-red-text)' }}>• {b.reason}</span>
+              <div style={{ color: 'var(--text-dim, var(--text))', opacity: 0.75, paddingLeft: 14 }}>
+                Fix: {b.repair_action}
+              </div>
+            </div>
+          ))}
+          {readinessPost.vat_resolution && readinessPost.vat_resolution.needs_save_to_master && (
+            <div data-testid="readiness-vat-resolver"
+                 style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--border)',
+                          borderRadius: 6, background: 'var(--bg)' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>
+                EU VAT for WDT — confirm &amp; save to Customer Master
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-2, var(--text))', opacity: 0.85, marginBottom: 6 }}>
+                {'Tax number '}
+                <strong style={{ fontFamily: 'monospace' }}>{readinessPost.vat_resolution.candidate_vat}</strong>
+                {' is on file (nip) but the canonical EU-VAT field is blank. WDT (intra-EU 0%) requires it in Customer Master. This does not change vat_mode or bypass the rule — it saves the VAT into vat_eu_number so VIES can verify it.'}
+              </div>
+              <button
+                data-testid="btn-save-eu-vat"
+                disabled={savingVat}
+                onClick={() => doSaveEuVat(readinessPost.vat_resolution)}
+                style={{ background: 'var(--accent, #c9a456)', color: '#1a1a1a', border: 'none',
+                         borderRadius: 4, fontSize: 12, fontWeight: 600, padding: '5px 12px',
+                         cursor: savingVat ? 'default' : 'pointer', opacity: savingVat ? 0.6 : 1 }}
+              >
+                {savingVat ? '⏳ Saving…'
+                  : `Save EU VAT ${readinessPost.vat_resolution.candidate_vat} to Customer Master`}
+              </button>
+              {vatSaveError && (
+                <div data-testid="readiness-vat-save-error"
+                     style={{ color: 'var(--badge-red-text)', fontSize: 11, marginTop: 4 }}>
+                  {vatSaveError}
+                </div>
+              )}
+            </div>
+          )}
+          {Object.keys(readinessPost.ambiguous_designs || {}).length > 0 && (
+            <div style={{ marginTop: 8 }} data-testid="readiness-ambiguity-resolver">
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text)' }}>
+                Resolve design ambiguity — click the exact product_code to bill:
+              </div>
+              {Object.entries(readinessPost.ambiguous_designs).map(([design, codes]) => (
+                <div key={design} data-testid={`ambiguity-row-${design}`}
+                     style={{ marginBottom: 8, paddingBottom: 6, borderBottom: '1px dashed var(--border)' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-2, var(--text))', marginBottom: 4 }}>
+                    {'design '}
+                    <span style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{design}</span>
+                    {' — pick the line to bill:'}
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {(codes || []).map(c => {
+                      const ev = linesByCode[c];
+                      return (
+                        <button
+                          key={c}
+                          data-testid={`ambiguity-choice-${design}-${c}`}
+                          disabled={!!resolvingDesign}
+                          onClick={() => doResolveAmbiguity(design, c)}
+                          title={ev ? `${ev.name || ''} · qty ${ev.qty} · ${ev.value.toFixed(2)} ${ev.currency}` : 'no line evidence on draft'}
+                          style={{ background: 'var(--card)', color: 'var(--text)',
+                                   border: '1px solid var(--border)', borderRadius: 6,
+                                   fontSize: 12, padding: '4px 8px', textAlign: 'left',
+                                   cursor: resolvingDesign ? 'default' : 'pointer',
+                                   opacity: resolvingDesign && resolvingDesign !== design ? 0.5 : 1 }}
+                        >
+                          <div style={{ fontFamily: 'monospace', fontWeight: 600 }}>{c}</div>
+                          {ev && (
+                            <div style={{ fontSize: 10, color: 'var(--text-2, var(--text))', opacity: 0.8 }}>
+                              {(ev.name ? ev.name + ' · ' : '')}{`qty ${ev.qty} · ${ev.value.toFixed(2)} ${ev.currency}`}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                    {resolvingDesign === design && (
+                      <span style={{ fontSize: 11, color: 'var(--text)', alignSelf: 'center' }}>⏳ saving…</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {resolveError && (
+                <div style={{ color: 'var(--badge-red-text)', fontSize: 11 }} data-testid="readiness-resolve-error">
+                  {resolveError}
+                </div>
+              )}
+            </div>
+          )}
+          {(readinessPost.warnings || []).length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              {readinessPost.warnings.map((w, i) => (
+                <div key={i} style={{ fontSize: 11, color: 'var(--badge-amber-text, var(--text))' }}>⚠ {w}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {readinessPost && (readinessPost.duplicate_product_codes || []).length > 0 && (
+        <div data-testid="overbill-evidence-panel" style={{
+          background: 'var(--card)',
+          borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+          borderTop: '1px solid var(--border)',
+          padding: '12px 24px',
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>
+            Product-code billing — purchase lots billed across multiple lines
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text)', opacity: 0.7, marginBottom: 8 }}>
+            {'A product_code is one purchase-invoice lot and may legitimately span several designs. Billing within the available packing quantity is fine; an over-bill (billed > available) is a double-bill and blocks Approve / Post / Convert.'}
+          </div>
+          {(readinessPost.duplicate_product_codes || []).map((d) => {
+            const over = !!d.over_billed;
+            const designs = d.design_nos || [];
+            const tid = String(d.product_code || '').replace(/[^a-zA-Z0-9_-]/g, '-');
+            return (
+              <div key={d.product_code} data-testid={`overbill-row-${tid}`}
+                   style={{ marginBottom: 8, paddingBottom: 6, borderBottom: '1px dashed var(--border)' }}>
+                <div style={{ fontSize: 12, color: over ? 'var(--badge-red-text)' : 'var(--text)' }}>
+                  {over ? '⛔ ' : '• '}
+                  <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{d.product_code}</span>
+                  {d.invoice_no ? <span style={{ opacity: 0.7 }}>{` · invoice ${d.invoice_no}`}</span> : null}
+                </div>
+                <div style={{ fontSize: 11, marginTop: 2 }}>
+                  <span style={{ color: over ? 'var(--badge-red-text)' : 'var(--text)', fontWeight: over ? 600 : 400 }}>
+                    {`billed ${+d.billed_qty} / available ${+d.available_qty}`}
+                  </span>
+                  <span style={{ color: 'var(--text)', opacity: 0.7 }}>
+                    {`  ·  ${d.line_count} line${d.line_count === 1 ? '' : 's'}  ·  ${designs.length} design${designs.length === 1 ? '' : 's'}`}
+                  </span>
+                  {over && (
+                    <span data-testid={`overbill-flag-${tid}`}
+                          style={{ color: 'var(--badge-red-text)', fontWeight: 600 }}>
+                      {'  ·  OVER-BILLED — see blocker above'}
+                    </span>
+                  )}
+                </div>
+                {designs.length > 0 && (
+                  <div data-testid={`overbill-designs-${tid}`}
+                       style={{ fontSize: 10, color: 'var(--text)', opacity: 0.65, marginTop: 2, fontFamily: 'monospace' }}>
+                    {designs.slice(0, 12).join(', ')}{designs.length > 12 ? ` +${designs.length - 12} more` : ''}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </React.Fragment>
+  );
+}
+
+// ── Party cards + address authority bar ───────────────────────────────────────
+function ProformaPartyCards({
+  exporter, customer, shipTo,
+  bo, canEdit, liveDraft, draft, draftHook,
+  addrApplying, addrApplyError, handleApplyCustomerAddress,
+  setBuyerEditFields, setBuyerEditError, setBuyerEditOpen,
+  draftState,
+}) {
+  const lockedForEdit = !canEdit;
+  const addrSource = bo._source === 'customer_master' ? 'customer_master'
+    : (bo.name || bo.street) ? 'manual' : 'none';
+  const addrSourceLabel = addrSource === 'customer_master'
+    ? { text: 'Customer Master', color: 'var(--accent)' }
+    : addrSource === 'manual'
+    ? { text: 'Manual', color: 'var(--text-2)' }
+    : { text: 'Not set', color: 'var(--text-3, #aaa)' };
+  const hasOverride = !!(bo.name || bo.street);
+  return (
+    <React.Fragment>
+      {/* Party cards grid */}
+      <div style={{
+        background: 'var(--card)',
+        borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+        padding: '22px 24px 12px',
+        display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16,
+      }}>
+        <div style={{ display: 'contents' }}>
+          <ProformaPartyCard
+            title="SELLER"
+            name={exporter.name}
+            lines={[exporter.address, exporter.country]}
+            footer={`VAT EU: ${exporter.vatEu}`}
+            data-testid="party-seller"
+          />
+          <ProformaPartyCard
+            title="BUYER"
+            name={customer.name}
+            lines={[customer.address, customer.country]}
+            footer={customer.vatEuFromNip
+              ? `VAT EU: ${customer.vatEu} · on file (not yet saved as EU VAT)`
+              : `VAT EU: ${customer.vatEu}`}
+            warn={!customer.wfirmaId}
+            warnMsg={!customer.wfirmaId ? 'Not mapped to wFirma customer' : null}
+            mappedMsg={customer.wfirmaId
+              ? (customer.wfirmaName ? `✓ Mapped: ${customer.wfirmaName}` : '✓ Mapped to wFirma')
+              : null}
+            data-testid="party-buyer"
+          />
+          <ProformaPartyCard
+            title="RECIPIENT"
+            name={shipTo.name}
+            lines={[shipTo.address, shipTo.country]}
+            footer={liveDraft.ship_to_override && liveDraft.ship_to_override.name
+              ? 'Ship-to override' : 'Same as Buyer'}
+            footerMuted
+            data-testid="party-recipient"
+          />
+        </div>
+      </div>
+
+      {/* Address authority bar */}
+      <div data-testid="address-authority-bar" style={{
+        background: 'var(--card)',
+        borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+        borderBottom: '1px solid var(--border)',
+        padding: '8px 24px',
+        display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+      }}>
+        <span style={{ fontSize: 12, color: 'var(--text-2)', marginRight: 4 }}>Address authority:</span>
+        <span data-testid="addr-source-badge" style={{
+          fontSize: 11, fontWeight: 700, color: addrSourceLabel.color,
+          background: 'var(--bg)', border: '1px solid var(--border)',
+          borderRadius: 4, padding: '1px 7px',
+        }}>{addrSourceLabel.text}</span>
+
+        <button
+          data-testid="btn-load-from-cm"
+          disabled={lockedForEdit || addrApplying}
+          title={lockedForEdit
+            ? `Cannot apply Customer Master: draft is in '${draftState}' state`
+            : 'Apply billing/shipping address from Customer Master to this draft'}
+          onClick={handleApplyCustomerAddress}
+          style={{
+            fontSize: 12, padding: '3px 10px', marginLeft: 4,
+            background: lockedForEdit ? 'var(--bg)' : 'var(--accent)',
+            color: lockedForEdit ? 'var(--text-2)' : '#fff',
+            border: '1px solid var(--border)', borderRadius: 4,
+            cursor: lockedForEdit ? 'not-allowed' : 'pointer',
+            opacity: lockedForEdit ? 0.5 : 1,
+          }}
+        >{addrApplying ? '⏳ Applying…' : '↓ Load from Customer Master'}</button>
+
+        <button
+          data-testid="btn-edit-bill-to"
+          disabled={lockedForEdit}
+          title={lockedForEdit
+            ? `Cannot edit: draft is in '${draftState}' state`
+            : 'Manually edit bill-to fields'}
+          onClick={() => {
+            setBuyerEditFields({
+              name:    bo.name    || '',
+              street:  bo.street  || '',
+              city:    bo.city    || '',
+              zip:     bo.zip     || '',
+              country: bo.country || '',
+              vat_id:  bo.vat_id  || '',
+            });
+            setBuyerEditError(null);
+            setBuyerEditOpen(true);
+          }}
+          style={{
+            fontSize: 12, padding: '3px 10px',
+            background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
+            border: '1px solid var(--border)', borderRadius: 4,
+            cursor: lockedForEdit ? 'not-allowed' : 'pointer',
+            opacity: lockedForEdit ? 0.5 : 1,
+          }}
+        >✎ Edit Bill-to</button>
+
+        {hasOverride && (
+          <button
+            data-testid="btn-clear-buyer-override"
+            disabled={lockedForEdit}
+            title={lockedForEdit
+              ? `Cannot clear: draft is in '${draftState}' state`
+              : 'Clear buyer address override — revert to draft client name only'}
+            onClick={() => {
+              if (lockedForEdit) return;
+              const id = liveDraft.id || (draft && draft.id);
+              const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+              window.PzApi.patchDraft(id, { buyer_override: {} }, updatedAt)
+                .then(r => r && r.ok && draftHook && draftHook.reload && draftHook.reload());
+            }}
+            style={{
+              fontSize: 12, padding: '3px 10px',
+              background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
+              border: '1px solid var(--border)', borderRadius: 4,
+              cursor: lockedForEdit ? 'not-allowed' : 'pointer',
+              opacity: lockedForEdit ? 0.5 : 1,
+            }}
+          >✕ Clear override</button>
+        )}
+
+        {addrApplyError && (
+          <span data-testid="addr-apply-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginLeft: 4 }}>
+            {addrApplyError}
+          </span>
+        )}
+      </div>
+    </React.Fragment>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
@@ -1487,18 +2137,23 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const fxRate = liveDraft.exchange_rate ? parseFloat(liveDraft.exchange_rate) : null;
 
   // payment_terms_json shape is { method?: string, days?: number } (routes_proforma.py).
-  // Known keys render human-readable; unknown extras keep k: v so nothing is hidden.
+  // wFirma XML keys (paymentmethod, paymentdate, saledate) also accepted.
+  // Fallback: wfirma_payment_method column (written by post-posting enrichment).
   const rawPt = liveDraft.payment_terms;
   const paymentTermsDisplay = (() => {
-    if (!rawPt) return '—';
+    if (!rawPt || (typeof rawPt === 'object' && Object.keys(rawPt).length === 0)) {
+      return liveDraft.wfirma_payment_method || '—';
+    }
     if (typeof rawPt !== 'object') return String(rawPt);
     const parts = [];
-    if (rawPt.method) parts.push(String(rawPt.method));
-    if (rawPt.days)   parts.push(`${rawPt.days} days`);
+    if (rawPt.method)        parts.push(String(rawPt.method));
+    if (rawPt.paymentmethod) parts.push(String(rawPt.paymentmethod));
+    if (rawPt.days)          parts.push(`${rawPt.days} days`);
     Object.entries(rawPt).forEach(([k, v]) => {
-      if (k !== 'method' && k !== 'days' && v) parts.push(`${k}: ${v}`);
+      if (!['method', 'paymentmethod', 'days', 'saledate', 'paymentdate'].includes(k) && v)
+        parts.push(`${k}: ${v}`);
     });
-    return parts.join(' · ') || '—';
+    return parts.join(' · ') || liveDraft.wfirma_payment_method || '—';
   })();
 
   // SELLER from company profile (GET /api/v1/settings/company-profile)
@@ -1562,6 +2217,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     lines,
     paymentTerms: paymentTermsDisplay,
     incoterm:     liveDraft.incoterm || '—',
+    // sale_date: API returns from payment_terms_json.saledate; fallback to rawPt.saledate
+    // for operator-edited payment_terms that include the wFirma XML key.
+    sale_date: liveDraft.sale_date || (rawPt && typeof rawPt === 'object' && rawPt.saledate) || null,
   };
   // ── Country code → full name (ISO 3166-1 alpha-2) for proforma display ──────
   const PROFORMA_COUNTRY_NAMES = {
@@ -2221,205 +2879,24 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     <div data-testid="proforma-detail-root" style={{ flex: 1, overflowY: 'auto', background: 'var(--bg)', padding: '20px 24px 60px' }}>
 
       {/* ── Action toolbar ──────────────────────────────────────────────── */}
-      <div style={{
-        padding: '12px 16px', background: 'var(--card)',
-        border: '1px solid var(--border)', borderRadius: '12px 12px 0 0', borderBottom: 0,
-        display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap',
-      }}>
-
-        {/* Group 1 — CRUD */}
-        {editMode ? (
-          <React.Fragment>
-            <TbBtn
-              onClick={handleSaveEdit}
-              disabled={editSaving}
-              title="Save changes to draft header fields"
-              data-testid="tb-edit-save"
-            >
-              {editSaving ? '⏳ Saving…' : '✓ Save'}
-            </TbBtn>
-            <TbBtn
-              onClick={handleCancelEdit}
-              disabled={editSaving}
-              title="Discard changes and exit edit mode"
-              data-testid="tb-edit-cancel"
-            >
-              ✕ Cancel Edit
-            </TbBtn>
-          </React.Fragment>
-        ) : canEdit ? (
-          <TbBtn
-            onClick={handleEnterEdit}
-            title="Edit draft header fields (remarks, currency, payment terms, exchange rate)"
-            data-testid="tb-edit"
-          >
-            ✎ Edit
-          </TbBtn>
-        ) : null}
-        <TbBtn
-          onClick={() => canCancel && setShowCancelModal(true)}
-          disabled={!canCancel}
-          title={canCancel
-            ? 'Cancel this draft — soft-cancel, no data deleted'
-            : (draftState === 'cancelled' ? 'Already cancelled' : 'Cannot cancel in current state')}
-          data-testid="tb-delete"
-        >
-          🗑 Cancel Draft
-        </TbBtn>
-        {draftState === 'cancelled' && (
-          <TbBtn
-            onClick={() => canPurge && setShowPurgeModal(true)}
-            disabled={!canPurge}
-            title={canPurge ? 'Permanently delete this local-only cancelled draft' : purgeDisabledReason}
-            data-testid="tb-purge"
-          >
-            ⛔ Delete permanently
-          </TbBtn>
-        )}
-        <TbBtn
-          onClick={handleDuplicate}
-          disabled={cloning}
-          title="Clone this draft as a new unposted draft"
-          data-testid="tb-duplicate"
-        >
-          {cloning ? '⏳' : '⎘'} {cloning ? 'Cloning…' : 'Duplicate'}
-        </TbBtn>
-        <TbBtn
-          onClick={handleApprove}
-          disabled={!canApprove || approving}
-          title={canApprove
-            ? 'Mark this draft as approved — locks lines before posting to wFirma'
-            : approveDisabledReason}
-          data-testid="tb-approve"
-        >
-          {approving ? '⏳ Approving…' : '✓ Approve'}
-        </TbBtn>
-        {approveError && (
-          <span style={{ color: 'var(--badge-red-text)', fontSize: 11, maxWidth: 180 }}>{approveError}</span>
-        )}
-
-        <TbSep />
-
-        {/* Group 2 — wFirma write actions */}
-        <TbBtn
-          onClick={() => setShowPostModal(true)}
-          disabled={!canPost}
-          title={canPost
-            ? 'Post this draft to wFirma as a proforma invoice'
-            : postDisabledReason}
-          data-testid="tb-post"
-        >
-          ↑ Post to wFirma
-        </TbBtn>
-        <TbBtn
-          warn
-          onClick={() => canConvert && setShowConvertModal(true)}
-          disabled={!canConvert}
-          title={canConvert
-            ? 'Convert this posted proforma to a wFirma invoice'
-            : convertDisabledReason}
-          data-testid="tb-convert"
-        >
-          ⚠ Convert to Invoice
-        </TbBtn>
-
-        <TbSep />
-
-        {/* Group 3 — Output */}
-        <TbBtn
-          onClick={() => setShowPreview(true)}
-          title="Preview print layout — Proforma or CMR · Classic / Modern / Bold"
-          data-testid="tb-preview"
-        >
-          ◫ Preview
-        </TbBtn>
-        <TbBtn
-          onClick={handleDownloadPdf}
-          disabled={!canPrint}
-          title={canPrint
-            ? 'Open wFirma proforma PDF in new tab'
-            : 'PDF only available after posting to wFirma'}
-          data-testid="proforma-detail-download-pdf"
-        >
-          ⎙ Print
-        </TbBtn>
-        <TbBtn
-          onClick={() => setShowSendModal(true)}
-          disabled={!canSend}
-          title={canSend
-            ? 'Send proforma PDF to customer via email'
-            : (sendDisabledReason || 'Email send not available')}
-          data-testid="tb-send"
-        >
-          ➤ Send
-        </TbBtn>
-        <TbBtn
-          disabled
-          title={
-            'Document-package generation (proforma PDF · packing list · CMR · CN23) is not yet wired — ' +
-            'backend gap M4: POST /api/v1/proforma/draft/{id}/generate-documents (see BACKEND_GAP_REGISTER.md §2, priority LOW). ' +
-            'For now use ◫ Preview to view the layouts and ⎙ Print for the wFirma proforma PDF.'
-          }
-          data-testid="tb-generate"
-        >
-          ⚙ Generate ▾
-        </TbBtn>
-        {/* M8 — DHL Express AWB generation. WIRED: POST /api/v1/carrier/{batch_id}/shipment.
-            Requires CARRIER_API_STATUS=live + DHL credentials in environment. */}
-        <TbBtn
-          onClick={() => setShowAwbModal(true)}
-          disabled={!batchId}
-          title={batchId
-            ? 'Generate DHL Express AWB — opens shipment form'
-            : 'No batch loaded — open a proforma with a batch to generate AWB'}
-          data-testid="tb-awb-generate"
-        >
-          ⚡ AWB Generate
-        </TbBtn>
-
-        <TbSep />
-
-        {/* Group 4 — History / Intelligence */}
-        <TbBtn
-          onClick={() => contractorId && setShowInvoiceHistory(true)}
-          disabled={!contractorId}
-          title={contractorId
-            ? 'View prior invoice history from wFirma for this customer'
-            : 'Backend/customer mapping pending: wFirma contractor ID missing'}
-          data-testid="tb-invoice-history"
-        >
-          📋 Prior Invoices
-        </TbBtn>
-        <TbBtn
-          disabled
-          title="More actions"
-          data-testid="tb-more"
-        >
-          ⋯
-        </TbBtn>
-
-        {/* Spacer */}
-        <div style={{ flexGrow: 1, minWidth: 12 }} />
-
-        {/* Proforma label + status */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>
-            {proformaLabel}
-          </div>
-          <ProformaStatusChip status={draftState} />
-        </div>
-
-        <TbSep />
-
-        <TbBtn
-          onClick={onBack}
-          title="Back to proforma list"
-          data-testid="tb-back"
-          style={{ fontWeight: 600 }}
-        >
-          ← Back
-        </TbBtn>
-      </div>
+      <ProformaActionBar
+        editMode={editMode} editSaving={editSaving}
+        handleSaveEdit={handleSaveEdit} handleCancelEdit={handleCancelEdit}
+        canEdit={canEdit} handleEnterEdit={handleEnterEdit}
+        canCancel={canCancel} setShowCancelModal={setShowCancelModal} draftState={draftState}
+        canPurge={canPurge} setShowPurgeModal={setShowPurgeModal} purgeDisabledReason={purgeDisabledReason}
+        handleDuplicate={handleDuplicate} cloning={cloning}
+        handleApprove={handleApprove} canApprove={canApprove} approving={approving}
+        approveDisabledReason={approveDisabledReason} approveError={approveError}
+        canPost={canPost} setShowPostModal={setShowPostModal} postDisabledReason={postDisabledReason}
+        canConvert={canConvert} setShowConvertModal={setShowConvertModal} convertDisabledReason={convertDisabledReason}
+        setShowPreview={setShowPreview}
+        handleDownloadPdf={handleDownloadPdf} canPrint={canPrint}
+        setShowSendModal={setShowSendModal} canSend={canSend} sendDisabledReason={sendDisabledReason}
+        batchId={batchId} setShowAwbModal={setShowAwbModal}
+        contractorId={contractorId} setShowInvoiceHistory={setShowInvoiceHistory}
+        proformaLabel={proformaLabel} onBack={onBack}
+      />
 
       {printError && (
         <div data-testid="print-error-banner" style={{
@@ -2436,449 +2913,60 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         </div>
       )}
 
-      {/* ── PROFORMA STATUS HEADER (Sprint 03.1-A) — persistent, always visible.
-          PURE RE-PRESENTATION of existing backend-authoritative props/state
-          (readinessPost / customer / pieces / lifecycle). No authority computed
-          here — readiness comes from the backend `ready` field only. */}
-      {(() => {
-        const pill = alreadyPosted
-          ? { label: 'Posted', tone: 'green' }
-          : (readinessPost == null)
-            ? { label: 'Checking readiness…', tone: 'neutral' }
-            : (postBlocked
-                ? { label: `Not ready · ${postBlockers.length} blocker${postBlockers.length === 1 ? '' : 's'}`, tone: 'red' }
-                : { label: 'Ready', tone: 'green' });
-        const toneBg = t => t === 'green' ? 'var(--badge-green-bg)' : t === 'red' ? 'var(--badge-red-bg)' : 'var(--bg-subtle)';
-        const toneFg = t => t === 'green' ? 'var(--badge-green-text)' : t === 'red' ? 'var(--badge-red-text)' : 'var(--text-2)';
-        const toneBd = t => t === 'green' ? 'var(--badge-green-border)' : t === 'red' ? 'var(--badge-red-border)' : 'var(--border)';
-        const custMapped = !!customer.wfirmaId;
-        const pieces = (typeof _cmrTotalPcs === 'number' && _cmrTotalPcs > 0) ? _cmrTotalPcs : null;
-        const awb = liveDraft.batch_id || (draft && draft.batch_id) || null;
-        const nextAction = (postBlocked && postBlockers.length)
-          ? postBlockers[0].repair_action
-          : (approveBlocked && approveBlockers.length)
-            ? approveBlockers[0].repair_action
-            : (stateAllowsApprove && !alreadyApproved)
-              ? 'Approve draft'
-              : canPost ? 'Post to wFirma'
-              : canConvert ? 'Convert to invoice'
-              : alreadyPosted ? '— posted; no action required'
-              : 'Review draft';
-        const chip = (testid, label, tone) => (
-          <span data-testid={testid} style={{
-            fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 12,
-            background: toneBg(tone), color: toneFg(tone), border: `1px solid ${toneBd(tone)}`,
-            whiteSpace: 'nowrap',
-          }}>{label}</span>
-        );
-        return (
-          <div data-testid="proforma-status-header" style={{
-            background: 'var(--card)',
-            borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-            borderTop: '1px solid var(--border)',
-            padding: '12px 24px',
-            display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-          }}>
-            {chip('proforma-readiness-pill', pill.label, pill.tone)}
-            {chip('proforma-customer-status-chip',
-              custMapped ? `Customer: ${customer.wfirmaName || customer.name} ✓` : `Customer: ${customer.name} · unmapped`,
-              custMapped ? 'green' : 'neutral')}
-            {chip('proforma-shipment-status-chip',
-              pieces ? `Shipment: ${pieces} pcs${awb ? ` · AWB ${awb}` : ''}` : 'Shipment: pending',
-              pieces ? 'neutral' : 'neutral')}
-            <span data-testid="proforma-next-action" style={{
-              fontSize: 12, color: 'var(--text)', fontWeight: 600, marginLeft: 'auto',
-            }}>Next: {nextAction}</span>
-          </div>
-        );
-      })()}
+      {/* ── PROFORMA STATUS HEADER — persistent, always visible ───────────────── */}
+      <ProformaStatusHeader
+        alreadyPosted={alreadyPosted}
+        readinessPost={readinessPost}
+        postBlocked={postBlocked}
+        postBlockers={postBlockers}
+        approveBlocked={approveBlocked}
+        approveBlockers={approveBlockers}
+        stateAllowsApprove={stateAllowsApprove}
+        alreadyApproved={alreadyApproved}
+        canPost={canPost}
+        canConvert={canConvert}
+        customer={customer}
+        _cmrTotalPcs={_cmrTotalPcs}
+        liveDraft={liveDraft}
+        draft={draft}
+      />
 
-      {/* ── UNIFIED "WHAT'S BLOCKING" PANEL (Sprint 03.1-B) — consolidates the
-          blocker sources that were previously scattered (readiness post-blockers
-          in the main panel + export blockers / blocking reasons surfaced only in
-          the Overview & Reservation tabs), each tagged by the action it gates.
-          PURE RE-PRESENTATION of existing arrays — no new authority, no new
-          computation. The interactive readiness panel below remains for the
-          design-ambiguity resolver (capability preserved). */}
-      {(() => {
-        const seen = new Set();
-        const rows = [];
-        const add = (reason, repair, gates) => {
-          if (!reason) return;
-          const key = `${reason}::${gates}`;
-          if (seen.has(key)) return;
-          seen.add(key);
-          rows.push({ reason, repair: repair || null, gates });
-        };
-        // Canonical readiness only (readinessPost / readinessApprove). The
-        // Reservation / Export rows previously fed from the stale preview are
-        // gone — readinessPost.blockers already carries the reservation + wFirma
-        // PZ/export blockers (post intent), so they appear here under Post/Convert.
-        postBlockers.forEach(b => add(b.reason, b.repair_action, 'Post / Convert'));
-        approveBlockers.forEach(b => add(b.reason, b.repair_action, 'Approve'));
-        if (rows.length === 0) return null;
-        const tagColor = g => g.startsWith('Post') ? 'var(--badge-red-text)'
-          : g === 'Approve' ? 'var(--badge-amber-text, var(--text-2))'
-          : 'var(--text-2)';
-        return (
-          <div data-testid="proforma-blocker-panel" style={{
-            background: 'var(--card)',
-            borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-            borderTop: '1px solid var(--border)',
-            padding: '12px 24px',
-          }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>
-              What&rsquo;s blocking — {rows.length} item{rows.length === 1 ? '' : 's'} across approve / post / convert / export
-            </div>
-            {rows.map((r, i) => (
-              <div key={i} data-testid={`proforma-blocker-row-${i}`} style={{ fontSize: 12, marginBottom: 5 }}>
-                <span style={{
-                  display: 'inline-block', fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',
-                  color: tagColor(r.gates), border: `1px solid var(--border)`, borderRadius: 4,
-                  padding: '0 6px', marginRight: 8, verticalAlign: 'middle',
-                }}>{r.gates}</span>
-                <span style={{ color: 'var(--text)' }}>{r.reason}</span>
-                {r.repair && (
-                  <div style={{ color: 'var(--text-dim, var(--text))', opacity: 0.75, paddingLeft: 14 }}>
-                    Fix: {r.repair}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        );
-      })()}
+      {/* ── UNIFIED "WHAT'S BLOCKING" PANEL — consolidates blocker sources ──── */}
+      <ProformaBlockerPanel
+        postBlockers={postBlockers}
+        approveBlockers={approveBlockers}
+      />
 
-      {/* ── READINESS PANEL — single backend authority (split-authority fix) ──
-          Renders the SAME gate the backend enforces on approve/post/convert:
-          every blocker with its exact repair action (Lesson M), plus the
-          design-ambiguity selector (operator picks the exact product_code per
-          design_no — persisted batch-scoped and audited; requirement 4). */}
-      {readinessPost && !readinessPost.ready && (
-        <div data-testid="readiness-panel" style={{
-          background: 'var(--card)',
-          borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-          borderTop: '1px solid var(--border)',
-          padding: '12px 24px',
-        }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 6 }}>
-            ⛔ Not ready — {(readinessPost.blockers || []).length} blocking reason{(readinessPost.blockers || []).length === 1 ? '' : 's'} · Approve / Post / Convert stay gated until resolved
-          </div>
-          {(readinessPost.blockers || []).map((b, i) => (
-            <div key={i} style={{ fontSize: 12, marginBottom: 4 }} data-testid={`readiness-blocker-${i}`}>
-              <span style={{ color: 'var(--badge-red-text)' }}>• {b.reason}</span>
-              <div style={{ color: 'var(--text-dim, var(--text))', opacity: 0.75, paddingLeft: 14 }}>
-                Fix: {b.repair_action}
-              </div>
-            </div>
-          ))}
-          {/* WDT EU-VAT repair — explicit "save to Customer Master" action. The
-              VAT is on file (nip) but blank in the canonical vat_eu_number field
-              the WDT gate reads; this writes it there on operator confirm. The
-              gate stays blocked until saved — no tax bypass. */}
-          {readinessPost.vat_resolution && readinessPost.vat_resolution.needs_save_to_master && (
-            <div data-testid="readiness-vat-resolver"
-                 style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--border)',
-                          borderRadius: 6, background: 'var(--bg)' }}>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>
-                EU VAT for WDT — confirm &amp; save to Customer Master
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--text-2, var(--text))', opacity: 0.85, marginBottom: 6 }}>
-                {'Tax number '}
-                <strong style={{ fontFamily: 'monospace' }}>{readinessPost.vat_resolution.candidate_vat}</strong>
-                {' is on file (nip) but the canonical EU-VAT field is blank. WDT (intra-EU 0%) requires it in Customer Master. This does not change vat_mode or bypass the rule — it saves the VAT into vat_eu_number so VIES can verify it.'}
-              </div>
-              <button
-                data-testid="btn-save-eu-vat"
-                disabled={savingVat}
-                onClick={() => doSaveEuVat(readinessPost.vat_resolution)}
-                style={{ background: 'var(--accent, #c9a456)', color: '#1a1a1a', border: 'none',
-                         borderRadius: 4, fontSize: 12, fontWeight: 600, padding: '5px 12px',
-                         cursor: savingVat ? 'default' : 'pointer', opacity: savingVat ? 0.6 : 1 }}
-              >
-                {savingVat ? '⏳ Saving…'
-                  : `Save EU VAT ${readinessPost.vat_resolution.candidate_vat} to Customer Master`}
-              </button>
-              {vatSaveError && (
-                <div data-testid="readiness-vat-save-error"
-                     style={{ color: 'var(--badge-red-text)', fontSize: 11, marginTop: 4 }}>
-                  {vatSaveError}
-                </div>
-              )}
-            </div>
-          )}
-          {Object.keys(readinessPost.ambiguous_designs || {}).length > 0 && (
-            <div style={{ marginTop: 8 }} data-testid="readiness-ambiguity-resolver">
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text)' }}>
-                Resolve design ambiguity — click the exact product_code to bill:
-              </div>
-              {Object.entries(readinessPost.ambiguous_designs).map(([design, codes]) => (
-                <div key={design} data-testid={`ambiguity-row-${design}`}
-                     style={{ marginBottom: 8, paddingBottom: 6, borderBottom: '1px dashed var(--border)' }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-2, var(--text))', marginBottom: 4 }}>
-                    {'design '}
-                    <span style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{design}</span>
-                    {' — pick the line to bill:'}
-                  </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {(codes || []).map(c => {
-                      const ev = linesByCode[c];
-                      return (
-                        <button
-                          key={c}
-                          data-testid={`ambiguity-choice-${design}-${c}`}
-                          disabled={!!resolvingDesign}
-                          onClick={() => doResolveAmbiguity(design, c)}
-                          title={ev ? `${ev.name || ''} · qty ${ev.qty} · ${ev.value.toFixed(2)} ${ev.currency}` : 'no line evidence on draft'}
-                          style={{ background: 'var(--card)', color: 'var(--text)',
-                                   border: '1px solid var(--border)', borderRadius: 6,
-                                   fontSize: 12, padding: '4px 8px', textAlign: 'left',
-                                   cursor: resolvingDesign ? 'default' : 'pointer',
-                                   opacity: resolvingDesign && resolvingDesign !== design ? 0.5 : 1 }}
-                        >
-                          <div style={{ fontFamily: 'monospace', fontWeight: 600 }}>{c}</div>
-                          {ev && (
-                            <div style={{ fontSize: 10, color: 'var(--text-2, var(--text))', opacity: 0.8 }}>
-                              {(ev.name ? ev.name + ' · ' : '')}{`qty ${ev.qty} · ${ev.value.toFixed(2)} ${ev.currency}`}
-                            </div>
-                          )}
-                        </button>
-                      );
-                    })}
-                    {resolvingDesign === design && (
-                      <span style={{ fontSize: 11, color: 'var(--text)', alignSelf: 'center' }}>⏳ saving…</span>
-                    )}
-                  </div>
-                </div>
-              ))}
-              {resolveError && (
-                <div style={{ color: 'var(--badge-red-text)', fontSize: 11 }} data-testid="readiness-resolve-error">
-                  {resolveError}
-                </div>
-              )}
-            </div>
-          )}
-          {(readinessPost.warnings || []).length > 0 && (
-            <div style={{ marginTop: 6 }}>
-              {readinessPost.warnings.map((w, i) => (
-                <div key={i} style={{ fontSize: 11, color: 'var(--badge-amber-text, var(--text))' }}>⚠ {w}</div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      {/* ── READINESS + OVERBILL PANELS ─────────────────────────────────────── */}
+      <ProformaReadinessPanel
+        readinessPost={readinessPost}
+        linesByCode={linesByCode}
+        resolvingDesign={resolvingDesign}
+        resolveError={resolveError}
+        doResolveAmbiguity={doResolveAmbiguity}
+        savingVat={savingVat}
+        vatSaveError={vatSaveError}
+        doSaveEuVat={doSaveEuVat}
+      />
 
-      {/* ── Product-code billing evidence (display-only, surfaces #686) ────────
-          Renders the readiness gate's duplicate_product_codes: every purchase lot
-          (product_code) billed across >1 draft line, with billed vs available
-          packing quantity. A product_code is ONE purchase-invoice lot that may
-          legitimately span several designs/pieces — billing within the available
-          quantity is fine (shown here for transparency, never hidden); billing
-          MORE than available is an over-bill (double-bill) which the backend gate
-          ALSO raises as a blocker above. Pure reflection of the backend authority
-          — no local computation, no write actions (Lesson F rule 5). */}
-      {readinessPost && (readinessPost.duplicate_product_codes || []).length > 0 && (
-        <div data-testid="overbill-evidence-panel" style={{
-          background: 'var(--card)',
-          borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-          borderTop: '1px solid var(--border)',
-          padding: '12px 24px',
-        }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>
-            Product-code billing — purchase lots billed across multiple lines
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--text)', opacity: 0.7, marginBottom: 8 }}>
-            {'A product_code is one purchase-invoice lot and may legitimately span several designs. Billing within the available packing quantity is fine; an over-bill (billed > available) is a double-bill and blocks Approve / Post / Convert.'}
-          </div>
-          {(readinessPost.duplicate_product_codes || []).map((d) => {
-            const over = !!d.over_billed;
-            const designs = d.design_nos || [];
-            // product_code can contain '/' (e.g. EJL/26-27/299-2) — slugify for a
-            // selector-safe data-testid; the React key keeps the raw value.
-            const tid = String(d.product_code || '').replace(/[^a-zA-Z0-9_-]/g, '-');
-            return (
-              <div key={d.product_code} data-testid={`overbill-row-${tid}`}
-                   style={{ marginBottom: 8, paddingBottom: 6, borderBottom: '1px dashed var(--border)' }}>
-                <div style={{ fontSize: 12, color: over ? 'var(--badge-red-text)' : 'var(--text)' }}>
-                  {over ? '⛔ ' : '• '}
-                  <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{d.product_code}</span>
-                  {d.invoice_no ? <span style={{ opacity: 0.7 }}>{` · invoice ${d.invoice_no}`}</span> : null}
-                </div>
-                <div style={{ fontSize: 11, marginTop: 2 }}>
-                  <span style={{ color: over ? 'var(--badge-red-text)' : 'var(--text)', fontWeight: over ? 600 : 400 }}>
-                    {`billed ${+d.billed_qty} / available ${+d.available_qty}`}
-                  </span>
-                  <span style={{ color: 'var(--text)', opacity: 0.7 }}>
-                    {`  ·  ${d.line_count} line${d.line_count === 1 ? '' : 's'}  ·  ${designs.length} design${designs.length === 1 ? '' : 's'}`}
-                  </span>
-                  {over && (
-                    <span data-testid={`overbill-flag-${tid}`}
-                          style={{ color: 'var(--badge-red-text)', fontWeight: 600 }}>
-                      {'  ·  OVER-BILLED — see blocker above'}
-                    </span>
-                  )}
-                </div>
-                {designs.length > 0 && (
-                  <div data-testid={`overbill-designs-${tid}`}
-                       style={{ fontSize: 10, color: 'var(--text)', opacity: 0.65, marginTop: 2, fontFamily: 'monospace' }}>
-                    {designs.slice(0, 12).join(', ')}{designs.length > 12 ? ` +${designs.length - 12} more` : ''}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* ── Party cards (SELLER / BUYER / RECIPIENT) ────────────────────── */}
-      <div style={{
-        background: 'var(--card)',
-        borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-        padding: '22px 24px 12px',
-        display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16,
-      }}>
-        <div style={{ display: 'contents' }}>
-
-          {/* SELLER — authority: GET /api/v1/settings/company-profile */}
-          <ProformaPartyCard
-            title="SELLER"
-            name={exporter.name}
-            lines={[exporter.address, exporter.country]}
-            footer={`VAT EU: ${exporter.vatEu}`}
-            data-testid="party-seller"
-          />
-
-          {/* BUYER — authority: draft buyer_override (name/vat_id/address) */}
-          <ProformaPartyCard
-            title="BUYER"
-            name={customer.name}
-            lines={[customer.address, customer.country]}
-            footer={customer.vatEuFromNip
-              ? `VAT EU: ${customer.vatEu} · on file (not yet saved as EU VAT)`
-              : `VAT EU: ${customer.vatEu}`}
-            warn={!customer.wfirmaId}
-            warnMsg={!customer.wfirmaId ? 'Not mapped to wFirma customer' : null}
-            mappedMsg={customer.wfirmaId
-              ? (customer.wfirmaName ? `✓ Mapped: ${customer.wfirmaName}` : '✓ Mapped to wFirma')
-              : null}
-            data-testid="party-buyer"
-          />
-
-          {/* RECIPIENT — ship_to_override if set, otherwise same as buyer */}
-          <ProformaPartyCard
-            title="RECIPIENT"
-            name={shipTo.name}
-            lines={[shipTo.address, shipTo.country]}
-            footer={liveDraft.ship_to_override && liveDraft.ship_to_override.name
-              ? 'Ship-to override' : 'Same as Buyer'}
-            footerMuted
-            data-testid="party-recipient"
-          />
-        </div>
-      </div>
-
-      {/* ── Address authority bar ──────────────────────────────────────────── */}
-      {(() => {
-        const addrSource = bo._source === 'customer_master' ? 'customer_master'
-          : (bo.name || bo.street) ? 'manual' : 'none';
-        const addrSourceLabel = addrSource === 'customer_master'
-          ? { text: 'Customer Master', color: 'var(--accent)' }
-          : addrSource === 'manual'
-          ? { text: 'Manual', color: 'var(--text-2)' }
-          : { text: 'Not set', color: 'var(--text-3, #aaa)' };
-        const lockedForEdit = !canEdit;
-        const hasOverride = !!(bo.name || bo.street);
-        return (
-          <div data-testid="address-authority-bar" style={{
-            background: 'var(--card)',
-            borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-            borderBottom: '1px solid var(--border)',
-            padding: '8px 24px',
-            display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
-          }}>
-            <span style={{ fontSize: 12, color: 'var(--text-2)', marginRight: 4 }}>Address authority:</span>
-            <span data-testid="addr-source-badge" style={{
-              fontSize: 11, fontWeight: 700, color: addrSourceLabel.color,
-              background: 'var(--bg)', border: '1px solid var(--border)',
-              borderRadius: 4, padding: '1px 7px',
-            }}>{addrSourceLabel.text}</span>
-
-            <button
-              data-testid="btn-load-from-cm"
-              disabled={lockedForEdit || addrApplying}
-              title={lockedForEdit
-                ? `Cannot apply Customer Master: draft is in '${draftState}' state`
-                : 'Apply billing/shipping address from Customer Master to this draft'}
-              onClick={handleApplyCustomerAddress}
-              style={{
-                fontSize: 12, padding: '3px 10px', marginLeft: 4,
-                background: lockedForEdit ? 'var(--bg)' : 'var(--accent)',
-                color: lockedForEdit ? 'var(--text-2)' : '#fff',
-                border: '1px solid var(--border)', borderRadius: 4,
-                cursor: lockedForEdit ? 'not-allowed' : 'pointer',
-                opacity: lockedForEdit ? 0.5 : 1,
-              }}
-            >{addrApplying ? '⏳ Applying…' : '↓ Load from Customer Master'}</button>
-
-            <button
-              data-testid="btn-edit-bill-to"
-              disabled={lockedForEdit}
-              title={lockedForEdit
-                ? `Cannot edit: draft is in '${draftState}' state`
-                : 'Manually edit bill-to fields'}
-              onClick={() => {
-                setBuyerEditFields({
-                  name:    bo.name    || '',
-                  street:  bo.street  || '',
-                  city:    bo.city    || '',
-                  zip:     bo.zip     || '',
-                  country: bo.country || '',
-                  vat_id:  bo.vat_id  || '',
-                });
-                setBuyerEditError(null);
-                setBuyerEditOpen(true);
-              }}
-              style={{
-                fontSize: 12, padding: '3px 10px',
-                background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
-                border: '1px solid var(--border)', borderRadius: 4,
-                cursor: lockedForEdit ? 'not-allowed' : 'pointer',
-                opacity: lockedForEdit ? 0.5 : 1,
-              }}
-            >✎ Edit Bill-to</button>
-
-            {hasOverride && (
-              <button
-                data-testid="btn-clear-buyer-override"
-                disabled={lockedForEdit}
-                title={lockedForEdit
-                  ? `Cannot clear: draft is in '${draftState}' state`
-                  : 'Clear buyer address override — revert to draft client name only'}
-                onClick={() => {
-                  if (lockedForEdit) return;
-                  const id = liveDraft.id || (draft && draft.id);
-                  const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
-                  window.PzApi.patchDraft(id, { buyer_override: {} }, updatedAt)
-                    .then(r => r && r.ok && draftHook && draftHook.reload && draftHook.reload());
-                }}
-                style={{
-                  fontSize: 12, padding: '3px 10px',
-                  background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
-                  border: '1px solid var(--border)', borderRadius: 4,
-                  cursor: lockedForEdit ? 'not-allowed' : 'pointer',
-                  opacity: lockedForEdit ? 0.5 : 1,
-                }}
-              >✕ Clear override</button>
-            )}
-
-            {addrApplyError && (
-              <span data-testid="addr-apply-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginLeft: 4 }}>
-                {addrApplyError}
-              </span>
-            )}
-          </div>
-        );
-      })()}
+      {/* ── Party cards + address authority bar ─────────────────────────── */}
+      <ProformaPartyCards
+        exporter={exporter}
+        customer={customer}
+        shipTo={shipTo}
+        bo={bo}
+        canEdit={canEdit}
+        liveDraft={liveDraft}
+        draft={draft}
+        draftHook={draftHook}
+        addrApplying={addrApplying}
+        addrApplyError={addrApplyError}
+        handleApplyCustomerAddress={handleApplyCustomerAddress}
+        setBuyerEditFields={setBuyerEditFields}
+        setBuyerEditError={setBuyerEditError}
+        setBuyerEditOpen={setBuyerEditOpen}
+        draftState={draftState}
+      />
 
       {/* ── Tab strip ──────────────────────────────────────────────────────── */}
       <div style={{
@@ -4161,9 +4249,22 @@ function PostToWFirmaModal({ draft, liveDraft, onClose, onSuccess }) {
 // WIRED: POST /api/v1/proforma/draft/{id}/to-invoice
 // confirm_token: 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA'
 function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
-  const [confirmed, setConfirmed] = React.useState(false);
-  const [loading,   setLoading]   = React.useState(false);
-  const [apiError,  setApiError]  = React.useState(null);
+  const [confirmed,    setConfirmed]    = React.useState(false);
+  const [loading,      setLoading]      = React.useState(false);
+  const [apiError,     setApiError]     = React.useState(null);
+  const [disclose,     setDisclose]     = React.useState(null);
+  const [disclosing,   setDisclosing]   = React.useState(true);
+  const [disclosureErr,setDisclosureErr]= React.useState(null);
+
+  React.useEffect(() => {
+    window.PzApi.getDraftDiscloseConvert(draft.id)
+      .then(r => {
+        if (r && r.ok) setDisclose(r.data);
+        else setDisclosureErr((r && r.error) || 'Preview unavailable');
+        setDisclosing(false);
+      })
+      .catch(e => { setDisclosureErr(e.message || 'Preview unavailable'); setDisclosing(false); });
+  }, [draft.id]);
 
   const [disclosure,        setDisclosure]        = React.useState(null);
   const [disclosureLoading, setDisclosureLoading] = React.useState(false);
@@ -4379,6 +4480,55 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
               }
             </div>
           </div>
+
+          {/* wFirma payload disclosure — live fetch from disclose-convert */}
+          <div style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-3)', fontWeight: 700, marginBottom: 10, marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>WFIRMA INVOICE PREVIEW</div>
+          {disclosing ? (
+            <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '6px 0' }}>⏳ Loading invoice payload preview…</div>
+          ) : disclosureErr ? (
+            <div style={{ fontSize: 12, color: 'var(--badge-amber-text)', padding: '6px 10px', background: 'var(--badge-amber-bg)', borderRadius: 4 }}>
+              Preview unavailable: {disclosureErr}
+            </div>
+          ) : disclose ? (() => {
+            const fw = disclose.fields_to_write || {};
+            return (
+              <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 14px', fontSize: 12 }}>
+                {[
+                  ['Source proforma', disclose.source_proforma || '—'],
+                  ['Write target',    disclose.write_target    || '—'],
+                  ['Flag required',   disclose.flag_required   || '—'],
+                  ['Type',            fw.type                  || '—'],
+                  ['Contractor ID',   fw.contractor_id         || '—'],
+                  ['Currency',        fw.currency              || '—'],
+                  ['Series',          fw.series_id             || '(wFirma contractor default)'],
+                  ['Lines',           fw.line_count != null ? `${fw.line_count} line(s)` : '—'],
+                ].map(([k, v]) => (
+                  <div key={k} style={{ display: 'flex', gap: 12, padding: '3px 0', borderBottom: '1px dashed var(--border)' }}>
+                    <span style={{ color: 'var(--text-3)', width: 130, flexShrink: 0 }}>{k}</span>
+                    <span style={{ fontFamily: 'monospace', wordBreak: 'break-word' }}>{v}</span>
+                  </div>
+                ))}
+                {disclose.warning && (
+                  <div style={{ marginTop: 8, padding: '6px 8px', background: 'var(--badge-amber-bg)', borderRadius: 4, color: 'var(--badge-amber-text)', lineHeight: 1.4 }}>
+                    {disclose.warning}
+                  </div>
+                )}
+                {(disclose.lines || []).length > 0 && (
+                  <details style={{ marginTop: 8 }}>
+                    <summary style={{ cursor: 'pointer', color: 'var(--text-3)', fontSize: 11 }}>Show invoice lines ({disclose.lines.length})</summary>
+                    <div style={{ marginTop: 6 }}>
+                      {disclose.lines.map((l, i) => (
+                        <div key={i} style={{ display: 'flex', gap: 12, padding: '3px 0', borderBottom: '1px dashed var(--border)', fontSize: 11 }}>
+                          <span style={{ color: 'var(--text-3)', width: 80, flexShrink: 0 }}>good_id: {l.good_id || '—'}</span>
+                          <span style={{ fontFamily: 'monospace' }}>{l.qty} pc × {l.unit_price} {l.currency}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </div>
+            );
+          })() : null}
 
           {/* Audit section */}
           <div style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-3)', fontWeight: 700, marginBottom: 10, marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>AUDIT</div>
