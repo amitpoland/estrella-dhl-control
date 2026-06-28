@@ -39,6 +39,7 @@ def persist_invoice_to_draft(
             "wfirma_invoice_number TEXT",
             "payment_due TEXT",
             "payment_method TEXT",
+            "sale_date TEXT",
             "converted_at TEXT",
         ]:
             try:
@@ -54,6 +55,7 @@ def persist_invoice_to_draft(
                 wfirma_invoice_number  = ?,
                 payment_due            = COALESCE(?, payment_due),
                 payment_method         = COALESCE(?, payment_method),
+                sale_date              = COALESCE(?, sale_date),
                 converted_at           = ?
             WHERE id = ?
             """,
@@ -62,6 +64,7 @@ def persist_invoice_to_draft(
                 wfirma_invoice_number,
                 payment_due,
                 payment_method,
+                sale_date,
                 _converted_at,
                 draft_id,
             ),

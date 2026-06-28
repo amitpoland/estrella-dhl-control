@@ -121,3 +121,60 @@ def test_convert_readiness_blocks_when_invoice_id_present():
     result = compute_convert_readiness(draft)
     assert result["convert_available"] is False
     assert result.get("wfirma_invoice_id") == "INV_123"
+
+
+def test_sale_date_persisted(tmp_path):
+    """
+    Regression: sale_date was in function signature but not in the SQL UPDATE.
+    After fix: sale_date column exists and is populated.
+    """
+    from app.services.conversion_persistence import persist_invoice_to_draft
+
+    db_path = _create_draft_db(tmp_path)
+    persist_invoice_to_draft(
+        db_path=db_path,
+        draft_id=52,
+        wfirma_invoice_id="INV_456",
+        wfirma_invoice_number="FV WDT 2/2026",
+        sale_date="2026-06-27",
+        converted_at="2026-06-28T12:00:00",
+    )
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT sale_date FROM proforma_drafts WHERE id=52"
+    ).fetchone()
+    conn.close()
+    assert row is not None, "draft row missing"
+    assert row[0] == "2026-06-27", f"sale_date not persisted, got {row[0]!r}"
+
+
+def test_reconciliation_does_not_overwrite_payment_with_none(tmp_path):
+    """
+    When reconciling an already-converted draft, a second call with
+    payment_method=None must not clear an existing payment_method.
+    """
+    from app.services.conversion_persistence import persist_invoice_to_draft
+
+    db_path = _create_draft_db(tmp_path)
+    persist_invoice_to_draft(
+        db_path=db_path,
+        draft_id=52,
+        wfirma_invoice_id="INV_789",
+        wfirma_invoice_number="FV 3/2026",
+        payment_method="transfer",
+    )
+    # Second call without payment_method — must not clear stored value
+    persist_invoice_to_draft(
+        db_path=db_path,
+        draft_id=52,
+        wfirma_invoice_id="INV_789",
+        wfirma_invoice_number="FV 3/2026",
+        payment_method=None,
+    )
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT payment_method, draft_state FROM proforma_drafts WHERE id=52"
+    ).fetchone()
+    conn.close()
+    assert row[0] == "transfer", f"payment_method wiped, got {row[0]!r}"
+    assert row[1] == "converted"
