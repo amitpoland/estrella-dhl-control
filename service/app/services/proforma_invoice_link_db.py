@@ -391,6 +391,7 @@ DRAFT_LIFECYCLE_STATES = (
     "draft", "editing", "approved",
     "posting", "posted", "post_failed",
     "cancelled", "superseded",
+    "converted",
 )
 
 
@@ -614,9 +615,13 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         ("failed",        "post_failed"),
         ("pending_local", "posting"),
     ):
+        # 'converted' is a terminal state set by conversion_persistence.py.
+        # Guard it explicitly so subsequent _ensure_drafts_table() calls do
+        # not overwrite draft_state='converted' back to 'posted' when the
+        # legacy status column still reads 'issued'.
         conn.execute(
             "UPDATE proforma_drafts SET draft_state=? "
-            "WHERE status=? AND draft_state<>?",
+            "WHERE status=? AND draft_state<>? AND draft_state<>'converted'",
             (new, legacy, new),
         )
 

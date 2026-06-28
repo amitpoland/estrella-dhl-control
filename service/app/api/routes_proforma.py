@@ -3421,6 +3421,7 @@ def proforma_to_invoice(
                 "readiness_intent": "convert",
             })
 
+    _series_advisories: list = []  # Phase C Fix 3: populated inside try block
     # 3+4. Fetch + parse + plan
     try:
         from ..services import proforma_to_invoice as p2i
@@ -3429,36 +3430,53 @@ def proforma_to_invoice(
 
         proforma_xml = wfirma_client.fetch_invoice_xml(pid)
         snap = p2i.parse_proforma_xml(proforma_xml)
+
+        # Phase C — Fix 2: fetch CM once for all field resolution
+        # (series, payment method, payment days). This replaces the
+        # conditional fetch that was inside the series block.
+        _cm_inv2 = get_customer_master(_customer_master_db_path(), snap.contractor_id)
+
+        # VAT context drives series selection and advisory surfacing.
+        # draft.vat_context (frozen at creation) beats snap.vat_code.
+        _vat_ctx_exec = (
+            (_cv_draft.vat_context or "").lower()
+            if _cv_draft else ""
+        ) or (
+            (snap.vat_code or "").lower() if hasattr(snap, "vat_code") else ""
+        )
+        if _vat_ctx_exec not in ("wdt", "export"):
+            _vat_ctx_exec = "domestic"
+
+        # What CM would choose for this vat_context (used for series
+        # selection and for Fix 3 series-mismatch advisory).
+        _cm_series_for_ctx = (
+            pick_invoice_series_id_for_vat_context(_cm_inv2, _vat_ctx_exec) or ""
+        ) if _cm_inv2 else ""
+
         # ADR-027 D6 — invoice series precedence (WF3):
         #   1. body.final_series_id (operator-chosen)  — wins if provided
-        #   2. customer_master.preferred_invoice_series_id — SSOT
+        #   2. customer_master series for vat_context  — SSOT
         #   3. empty → <series> omitted; wFirma contractor default applies
         # NOTE: snap.series_id (the proforma's own series) is intentionally
         # NOT in the fallback chain — a proforma series (e.g. "PROF/2026")
         # must not be reused for a final invoice.
-        series_id = (body.final_series_id or "").strip()
-        if not series_id or series_id == "0":
-            _cm_inv2 = get_customer_master(_customer_master_db_path(), snap.contractor_id)
-            if _cm_inv2:
-                # WDT VAT context always forces the WDT invoice series (Lesson N).
-                # Source: draft.vat_context (frozen at creation) beats snap.vat_code.
-                _vat_ctx_exec = (
-                    (_cv_draft.vat_context or "").lower()
-                    if _cv_draft else ""
-                ) or (
-                    (snap.vat_code or "").lower() if hasattr(snap, "vat_code") else ""
-                )
-                if _vat_ctx_exec == "wdt":
-                    _vat_ctx_exec = "wdt"
-                elif _vat_ctx_exec == "export":
-                    _vat_ctx_exec = "export"
-                else:
-                    _vat_ctx_exec = "domestic"
-                series_id = pick_invoice_series_id_for_vat_context(
-                    _cm_inv2, _vat_ctx_exec,
-                ) or ""
-            else:
-                series_id = ""
+        _operator_series_in = (body.final_series_id or "").strip()
+        series_id = _operator_series_in if (_operator_series_in and _operator_series_in != "0") else _cm_series_for_ctx
+
+        # Phase C — Fix 3: series-mismatch advisory (never blocks).
+        _series_advisories: list = []
+        if not _cm_series_for_ctx:
+            _series_advisories.append(
+                f"Customer Master has no preferred invoice series for "
+                f"vat_context='{_vat_ctx_exec}'; "
+                "wFirma contractor default will apply"
+            )
+        elif _operator_series_in and _operator_series_in != "0" and _operator_series_in != _cm_series_for_ctx:
+            _series_advisories.append(
+                f"Operator-provided series '{_operator_series_in}' differs from "
+                f"Customer Master preferred series '{_cm_series_for_ctx}' "
+                f"for vat_context='{_vat_ctx_exec}' (advisory — conversion continues)"
+            )
         if series_id == "0":
             series_id = ""  # normalise wFirma sentinel to empty
         # series_id may now be empty → build_final_invoice_xml omits <series>
@@ -3543,6 +3561,15 @@ def proforma_to_invoice(
             except ValueError:
                 pass
         _effective_days = _override_days if _override_days is not None else _draft_days
+
+        # Phase C — Fix 2: Customer Master is payment authority.
+        # CM fields fill in when no modal override and no saved draft value.
+        if not _effective_method_en and _cm_inv2 and (_cm_inv2.preferred_payment_method or "").strip():
+            _effective_method_en = (_cm_inv2.preferred_payment_method or "").strip().lower()
+            _effective_method_wf = _PM_EN_TO_WF.get(_effective_method_en) if _effective_method_en else None
+        if _effective_days is None and _cm_inv2 and _cm_inv2.payment_terms_days is not None:
+            _effective_days = _cm_inv2.payment_terms_days
+
         _paymentdate = None
         if _effective_days is not None:
             from ..services.payment_date_resolver import compute_payment_due as _cpd
@@ -3968,6 +3995,9 @@ def proforma_to_invoice(
         "excluded_line_count":      len(plan.excluded_lines),
         "excluded_line_names":      [l.name for l in plan.excluded_lines],
         "operator":                 operator,
+        # Phase C — Fix 3: series-mismatch advisories (non-blocking).
+        # Empty list in the normal case (CM series matched and was used).
+        "convert_advisories":       _series_advisories,
     })
 
 
