@@ -2657,7 +2657,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const stateAllowsConvert = draftState === 'posted' || draftState === 'ready';
   const stateAllowsApprove = ['draft', 'editing', 'post_failed'].includes(draftState);
   const canPost       = stateAllowsPost && !postBlocked;
-  const canConvert    = stateAllowsConvert && !postBlocked;
+  const alreadyConverted = !!(liveDraft.wfirma_invoice_id || (draft && draft.wfirma_invoice_id));
+  const canConvert    = stateAllowsConvert && !postBlocked && !alreadyConverted;
   const isBlocked     = draftState === 'post_failed' || draftState === 'convert_blocked';
   const alreadyPosted = draftState === 'posted' || draftState === 'invoiced';
   const canPrint      = !!(liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id));
@@ -2672,9 +2673,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const postDisabledReason = !stateAllowsPost
     ? (alreadyPosted ? 'Already posted to wFirma' : `Cannot post in '${draftState}' state`)
     : (postBlocked ? `Blocked: ${_firstBlockerText(postBlockers)}` : '');
-  const convertDisabledReason = !stateAllowsConvert
-    ? (isBlocked ? 'Conversion blocked — see Reservation tab' : 'Post to wFirma first, then convert')
-    : (postBlocked ? `Blocked: ${_firstBlockerText(postBlockers)}` : '');
+  const convertDisabledReason = alreadyConverted
+    ? `Already converted — invoice ${liveDraft.wfirma_invoice_number || (draft && draft.wfirma_invoice_number) || liveDraft.wfirma_invoice_id || (draft && draft.wfirma_invoice_id) || ''}`
+    : !stateAllowsConvert
+      ? (isBlocked ? 'Conversion blocked — see Reservation tab' : 'Post to wFirma first, then convert')
+      : (postBlocked ? `Blocked: ${_firstBlockerText(postBlockers)}` : '');
 
   // M5 — Edit mode: enabled when draft is in an editable state
   const canEdit       = ['draft', 'editing', 'post_failed'].includes(draftState);

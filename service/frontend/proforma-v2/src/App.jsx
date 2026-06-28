@@ -10,7 +10,7 @@ function parseParams() {
   return {
     batchId:    p.get('batch_id')    || '',
     clientName: p.get('client_name') || '',
-    draftId:    p.get('draft_id')    || null,
+    draftId:    p.get('draft_id') || p.get('draft') || null,
   }
 }
 
@@ -28,7 +28,7 @@ export default function App() {
           if (!r.ok) throw new Error(`HTTP ${r.status}`)
           return r.json()
         })
-        .then(data => { setDraft(data); setLoading(false) })
+        .then(data => { setDraft(data.draft); setLoading(false) })
         .catch(e => { setError(e.message); setLoading(false) })
     } else if (params.batchId && params.clientName) {
       // Batch+client path: load drafts list and pick the first
