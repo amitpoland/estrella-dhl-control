@@ -385,7 +385,7 @@ function CancelDraftModal({ draft, liveDraft, onClose, onSuccess }) {
 }
 
 // ── Purge Draft Modal ─────────────────────────────────────────────────────────
-// WIRED: DELETE /api/v1/proforma/draft/{id} — uses PzApi.deleteDraft
+// WIRED: DELETE /api/v1/proforma/draft/{id} — uses PzApi.purgeDraft
 // Only for cancelled local-only drafts (no wFirma ID, no PROF number).
 function PurgeDraftModal({ draft, onClose, onSuccess }) {
   const [loading,  setLoading]  = React.useState(false);
@@ -395,7 +395,7 @@ function PurgeDraftModal({ draft, onClose, onSuccess }) {
     if (loading) return;
     setLoading(true);
     setApiError(null);
-    window.PzApi.deleteDraft(draft.id)
+    window.PzApi.purgeDraft(draft.id)
       .then(r => {
         if (r && r.ok) {
           onSuccess && onSuccess();
@@ -2069,6 +2069,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       currency:         liveDraft.currency || 'EUR',
       exchange_rate:    liveDraft.exchange_rate || '',
       incoterm:         liveDraft.incoterm || '',
+      payment_terms:    _pt,
       pt_method:        _pt.method || '',
       pt_days:          _pt.days != null ? String(_pt.days) : '',
       pt_invoice_date:  _pt.invoice_date || '',
@@ -2096,9 +2097,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       patch.exchange_rate = editFields.exchange_rate;
     if (editFields.incoterm !== (liveDraft.incoterm || ''))
       patch.incoterm = editFields.incoterm;
-    // payment_terms: compare individual pt_* fields against saved values
-    const _origPt = (liveDraft.payment_terms && typeof liveDraft.payment_terms === 'object')
-      ? liveDraft.payment_terms : {};
+    // payment_terms: stored in editFields.payment_terms; detect changes via pt_* sub-fields
+    const _origPt = (editFields.payment_terms && typeof editFields.payment_terms === 'object')
+      ? editFields.payment_terms : {};
     const _ptChanged = (
       (editFields.pt_method        || '') !== (_origPt.method        || '') ||
       (editFields.pt_days          || '') !== (_origPt.days != null ? String(_origPt.days) : '') ||
@@ -2355,12 +2356,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         </TbBtn>
         <TbBtn
           disabled
+          data-testid="tb-cmr"
+          title="CMR print is not yet available — no backend PDF generation route for CMR documents (see BACKEND_GAP_REGISTER.md)."
+        >
+          📄 CMR
+        </TbBtn>
+        <TbBtn
+          disabled
+          data-testid="tb-generate"
           title={
-            'Document-package generation (proforma PDF · packing list · CMR · CN23) is not yet wired — ' +
+            'Document generation not yet available — ' +
             'backend gap M4: POST /api/v1/proforma/draft/{id}/generate-documents (see BACKEND_GAP_REGISTER.md §2, priority LOW). ' +
             'For now use ◫ Preview to view the layouts and ⎙ Print for the wFirma proforma PDF.'
           }
-          data-testid="tb-generate"
         >
           ⚙ Generate ▾
         </TbBtn>
