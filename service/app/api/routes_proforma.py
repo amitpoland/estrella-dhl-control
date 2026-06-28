@@ -3467,7 +3467,23 @@ def proforma_to_invoice(
         _override_sale_date   = (body.override_sale_date or "").strip() or None
         _override_days        = body.override_payment_days  # Optional[int]
 
-        # Compute invoice_date and paymentdate from override fields
+        # Read saved draft payment fields (lower priority than modal overrides, higher than snap)
+        import json as _djson
+        _draft_pt = {}
+        try:
+            _draft_pt = _djson.loads((_cv_draft.payment_terms_json if _cv_draft else None) or "{}") or {}
+        except Exception:
+            pass
+        _draft_method_en        = (_draft_pt.get("method") or "").strip()
+        _draft_invoice_date_str = (_draft_pt.get("invoice_date") or "").strip() or None
+        _draft_sale_date_str    = (_draft_pt.get("sale_date") or "").strip() or None
+        _draft_days             = _draft_pt.get("days")  # Optional[int]
+
+        # Effective payment method: modal override > draft saved > snap (via build_final_invoice_plan)
+        _effective_method_en = _override_method_en or _draft_method_en
+        _effective_method_wf = _PM_EN_TO_WF.get(_effective_method_en) if _effective_method_en else None
+
+        # Compute invoice_date and paymentdate: modal override > draft > today/snap
         from datetime import timedelta as _td, datetime as _dt
         _invoice_date = _warsaw_today()
         if _override_invoice_date:
@@ -3475,18 +3491,29 @@ def proforma_to_invoice(
                 _invoice_date = _dt.fromisoformat(_override_invoice_date).date()
             except ValueError:
                 pass
-        # Payment due base: explicit sale date, else invoice date
+        elif _draft_invoice_date_str:
+            try:
+                _invoice_date = _dt.fromisoformat(_draft_invoice_date_str).date()
+            except ValueError:
+                pass
+        # Payment due base: modal override > draft sale_date > invoice_date
         _payment_base = _invoice_date
         if _override_sale_date:
             try:
                 _payment_base = _dt.fromisoformat(_override_sale_date).date()
             except ValueError:
                 pass
+        elif _draft_sale_date_str:
+            try:
+                _payment_base = _dt.fromisoformat(_draft_sale_date_str).date()
+            except ValueError:
+                pass
+        _effective_days = _override_days if _override_days is not None else _draft_days
         _paymentdate = None
-        if _override_days is not None:
-            _paymentdate = (_payment_base + _td(days=_override_days)).isoformat()
+        if _effective_days is not None:
+            _paymentdate = (_payment_base + _td(days=_effective_days)).isoformat()
 
-        # Build operator_description; append override annotations for audit trail
+        # Build operator_description; append modal override annotations for audit trail
         _op_desc = (body.operator_description or "").strip()
         _audit_parts = []
         if _override_method_en:
@@ -3505,7 +3532,7 @@ def proforma_to_invoice(
             final_series_id      = series_id,
             invoice_date         = _invoice_date,
             paymentdate          = _paymentdate,
-            paymentmethod        = _override_method_wf,
+            paymentmethod        = _effective_method_wf,
             operator_description = _op_desc,
         )
     except p2i.ZeroBillableInvoice as exc:
@@ -8946,11 +8973,27 @@ def disclose_proforma_convert(
     except Exception:
         pass
 
+    # Read saved draft payment fields (operator authority — highest priority for modal pre-fill)
+    _draft_method, _draft_days, _draft_invoice_date, _draft_sale_date = "", None, None, None
+    try:
+        import json as _json_d
+        _draft_pt = _json_d.loads(d.payment_terms_json or "{}") or {}
+        _draft_method       = (_draft_pt.get("method") or "").strip()
+        _draft_days         = _draft_pt.get("days")
+        _draft_invoice_date = (_draft_pt.get("invoice_date") or "").strip() or None
+        _draft_sale_date    = (_draft_pt.get("sale_date") or "").strip() or None
+    except Exception:
+        pass
+
     return JSONResponse(
         build_invoice_convert_disclosure(
             snap,
             final_series_id=final_series_id,
             operator=operator,
+            draft_method=_draft_method,
+            draft_days=_draft_days,
+            draft_invoice_date=_draft_invoice_date,
+            draft_sale_date=_draft_sale_date,
             customer_default_method=_cm_method,
             customer_default_days=_cm_days,
         )

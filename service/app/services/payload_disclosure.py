@@ -131,6 +131,10 @@ def build_invoice_convert_disclosure(
     proforma_snap: Any,
     final_series_id: str = "",
     operator: str = "",
+    draft_method: str = "",
+    draft_days: Optional[int] = None,
+    draft_invoice_date: Optional[str] = None,
+    draft_sale_date: Optional[str] = None,
     customer_default_method: str = "",
     customer_default_days: Optional[int] = None,
 ) -> Dict[str, Any]:
@@ -155,12 +159,13 @@ def build_invoice_convert_disclosure(
     series_id        = final_series_id or _get("series_id", "")
     source_lines     = _get("lines", []) or []
 
-    # Payment method resolution: wFirma XML (Polish) → English for display/override
+    # Payment method resolution: draft saved > wFirma XML (Polish) > customer master
     snap_method_wf   = (_get("paymentmethod", "") or "").strip()
     snap_method_en   = _PM_MAP_TO_EN.get(snap_method_wf, snap_method_wf)
     snap_paymentdate = (_get("paymentdate", "") or "").strip()
-    resolved_method  = snap_method_en or customer_default_method or ""
+    resolved_method  = draft_method or snap_method_en or customer_default_method or ""
     resolved_source  = (
+        "draft_saved"    if draft_method else
         "wfirma_proforma" if snap_method_en else
         "customer_master" if customer_default_method else
         "not_set"
@@ -174,6 +179,9 @@ def build_invoice_convert_disclosure(
         "payment_resolved": {
             "method":                  resolved_method,
             "payment_date":            snap_paymentdate,
+            "invoice_date":            draft_invoice_date,
+            "sale_date":               draft_sale_date,
+            "payment_days":            draft_days,
             "customer_default_method": customer_default_method or "",
             "customer_default_days":   customer_default_days,
             "source":                  resolved_source,

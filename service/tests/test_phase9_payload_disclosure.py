@@ -321,6 +321,81 @@ class TestBuildFinalInvoicePlanPaymentMethod:
         assert plan.paymentdate == "2026-10-01"
 
 
+class TestDraftPaymentFieldsAuthority:
+    """Draft saved payment_terms fields take priority over snap and customer master."""
+
+    def _make_snap(self) -> dict:
+        return {
+            "proforma_number": "PROF 10/2026",
+            "contractor_id":   "99001",
+            "currency":        "EUR",
+            "series_id":       "555",
+            "lines": [],
+        }
+
+    def test_draft_method_beats_snap_in_disclosure(self):
+        """draft_method wins over wFirma snap paymentmethod."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = {**self._make_snap(), "paymentmethod": "przelew"}
+        d = build_invoice_convert_disclosure(snap, draft_method="cash")
+        pr = d["payment_resolved"]
+        assert pr["method"] == "cash"
+        assert pr["source"] == "draft_saved"
+
+    def test_draft_method_beats_customer_master(self):
+        """draft_method wins over customer_default_method when snap is blank."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = {**self._make_snap(), "paymentmethod": ""}
+        d = build_invoice_convert_disclosure(
+            snap, draft_method="compensation", customer_default_method="transfer"
+        )
+        pr = d["payment_resolved"]
+        assert pr["method"] == "compensation"
+        assert pr["source"] == "draft_saved"
+
+    def test_snap_wins_when_no_draft_method(self):
+        """Without draft_method, snap still takes priority over customer master."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = {**self._make_snap(), "paymentmethod": "karta"}
+        d = build_invoice_convert_disclosure(
+            snap, draft_method="", customer_default_method="transfer"
+        )
+        pr = d["payment_resolved"]
+        assert pr["method"] == "card"
+        assert pr["source"] == "wfirma_proforma"
+
+    def test_draft_invoice_date_in_payment_resolved(self):
+        """draft_invoice_date surfaces in payment_resolved.invoice_date."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = self._make_snap()
+        d = build_invoice_convert_disclosure(snap, draft_invoice_date="2026-09-01")
+        assert d["payment_resolved"]["invoice_date"] == "2026-09-01"
+
+    def test_draft_sale_date_in_payment_resolved(self):
+        """draft_sale_date surfaces in payment_resolved.sale_date."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = self._make_snap()
+        d = build_invoice_convert_disclosure(snap, draft_sale_date="2026-08-15")
+        assert d["payment_resolved"]["sale_date"] == "2026-08-15"
+
+    def test_draft_days_in_payment_resolved(self):
+        """draft_days surfaces in payment_resolved.payment_days."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = self._make_snap()
+        d = build_invoice_convert_disclosure(snap, draft_days=30)
+        assert d["payment_resolved"]["payment_days"] == 30
+
+    def test_no_draft_fields_yields_none_in_payment_resolved(self):
+        """When no draft fields provided, invoice_date/sale_date/payment_days are None."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = self._make_snap()
+        d = build_invoice_convert_disclosure(snap)
+        pr = d["payment_resolved"]
+        assert pr["invoice_date"] is None
+        assert pr["sale_date"] is None
+        assert pr["payment_days"] is None
+
+
 class TestPreFlightReadiness:
     """check_proforma_post_readiness gate checks."""
 
