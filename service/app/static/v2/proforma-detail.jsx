@@ -1687,6 +1687,159 @@ function ProformaReadinessPanel({
   );
 }
 
+// ── Party cards + address authority bar ───────────────────────────────────────
+function ProformaPartyCards({
+  exporter, customer, shipTo,
+  bo, canEdit, liveDraft, draft, draftHook,
+  addrApplying, addrApplyError, handleApplyCustomerAddress,
+  setBuyerEditFields, setBuyerEditError, setBuyerEditOpen,
+  draftState,
+}) {
+  const lockedForEdit = !canEdit;
+  const addrSource = bo._source === 'customer_master' ? 'customer_master'
+    : (bo.name || bo.street) ? 'manual' : 'none';
+  const addrSourceLabel = addrSource === 'customer_master'
+    ? { text: 'Customer Master', color: 'var(--accent)' }
+    : addrSource === 'manual'
+    ? { text: 'Manual', color: 'var(--text-2)' }
+    : { text: 'Not set', color: 'var(--text-3, #aaa)' };
+  const hasOverride = !!(bo.name || bo.street);
+  return (
+    <React.Fragment>
+      {/* Party cards grid */}
+      <div style={{
+        background: 'var(--card)',
+        borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+        padding: '22px 24px 12px',
+        display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16,
+      }}>
+        <div style={{ display: 'contents' }}>
+          <ProformaPartyCard
+            title="SELLER"
+            name={exporter.name}
+            lines={[exporter.address, exporter.country]}
+            footer={`VAT EU: ${exporter.vatEu}`}
+            data-testid="party-seller"
+          />
+          <ProformaPartyCard
+            title="BUYER"
+            name={customer.name}
+            lines={[customer.address, customer.country]}
+            footer={customer.vatEuFromNip
+              ? `VAT EU: ${customer.vatEu} · on file (not yet saved as EU VAT)`
+              : `VAT EU: ${customer.vatEu}`}
+            warn={!customer.wfirmaId}
+            warnMsg={!customer.wfirmaId ? 'Not mapped to wFirma customer' : null}
+            mappedMsg={customer.wfirmaId
+              ? (customer.wfirmaName ? `✓ Mapped: ${customer.wfirmaName}` : '✓ Mapped to wFirma')
+              : null}
+            data-testid="party-buyer"
+          />
+          <ProformaPartyCard
+            title="RECIPIENT"
+            name={shipTo.name}
+            lines={[shipTo.address, shipTo.country]}
+            footer={liveDraft.ship_to_override && liveDraft.ship_to_override.name
+              ? 'Ship-to override' : 'Same as Buyer'}
+            footerMuted
+            data-testid="party-recipient"
+          />
+        </div>
+      </div>
+
+      {/* Address authority bar */}
+      <div data-testid="address-authority-bar" style={{
+        background: 'var(--card)',
+        borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+        borderBottom: '1px solid var(--border)',
+        padding: '8px 24px',
+        display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+      }}>
+        <span style={{ fontSize: 12, color: 'var(--text-2)', marginRight: 4 }}>Address authority:</span>
+        <span data-testid="addr-source-badge" style={{
+          fontSize: 11, fontWeight: 700, color: addrSourceLabel.color,
+          background: 'var(--bg)', border: '1px solid var(--border)',
+          borderRadius: 4, padding: '1px 7px',
+        }}>{addrSourceLabel.text}</span>
+
+        <button
+          data-testid="btn-load-from-cm"
+          disabled={lockedForEdit || addrApplying}
+          title={lockedForEdit
+            ? `Cannot apply Customer Master: draft is in '${draftState}' state`
+            : 'Apply billing/shipping address from Customer Master to this draft'}
+          onClick={handleApplyCustomerAddress}
+          style={{
+            fontSize: 12, padding: '3px 10px', marginLeft: 4,
+            background: lockedForEdit ? 'var(--bg)' : 'var(--accent)',
+            color: lockedForEdit ? 'var(--text-2)' : '#fff',
+            border: '1px solid var(--border)', borderRadius: 4,
+            cursor: lockedForEdit ? 'not-allowed' : 'pointer',
+            opacity: lockedForEdit ? 0.5 : 1,
+          }}
+        >{addrApplying ? '⏳ Applying…' : '↓ Load from Customer Master'}</button>
+
+        <button
+          data-testid="btn-edit-bill-to"
+          disabled={lockedForEdit}
+          title={lockedForEdit
+            ? `Cannot edit: draft is in '${draftState}' state`
+            : 'Manually edit bill-to fields'}
+          onClick={() => {
+            setBuyerEditFields({
+              name:    bo.name    || '',
+              street:  bo.street  || '',
+              city:    bo.city    || '',
+              zip:     bo.zip     || '',
+              country: bo.country || '',
+              vat_id:  bo.vat_id  || '',
+            });
+            setBuyerEditError(null);
+            setBuyerEditOpen(true);
+          }}
+          style={{
+            fontSize: 12, padding: '3px 10px',
+            background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
+            border: '1px solid var(--border)', borderRadius: 4,
+            cursor: lockedForEdit ? 'not-allowed' : 'pointer',
+            opacity: lockedForEdit ? 0.5 : 1,
+          }}
+        >✎ Edit Bill-to</button>
+
+        {hasOverride && (
+          <button
+            data-testid="btn-clear-buyer-override"
+            disabled={lockedForEdit}
+            title={lockedForEdit
+              ? `Cannot clear: draft is in '${draftState}' state`
+              : 'Clear buyer address override — revert to draft client name only'}
+            onClick={() => {
+              if (lockedForEdit) return;
+              const id = liveDraft.id || (draft && draft.id);
+              const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+              window.PzApi.patchDraft(id, { buyer_override: {} }, updatedAt)
+                .then(r => r && r.ok && draftHook && draftHook.reload && draftHook.reload());
+            }}
+            style={{
+              fontSize: 12, padding: '3px 10px',
+              background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
+              border: '1px solid var(--border)', borderRadius: 4,
+              cursor: lockedForEdit ? 'not-allowed' : 'pointer',
+              opacity: lockedForEdit ? 0.5 : 1,
+            }}
+          >✕ Clear override</button>
+        )}
+
+        {addrApplyError && (
+          <span data-testid="addr-apply-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginLeft: 4 }}>
+            {addrApplyError}
+          </span>
+        )}
+      </div>
+    </React.Fragment>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
@@ -2796,155 +2949,24 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         doSaveEuVat={doSaveEuVat}
       />
 
-      {/* ── Party cards (SELLER / BUYER / RECIPIENT) ────────────────────── */}
-      <div style={{
-        background: 'var(--card)',
-        borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-        padding: '22px 24px 12px',
-        display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16,
-      }}>
-        <div style={{ display: 'contents' }}>
-
-          {/* SELLER — authority: GET /api/v1/settings/company-profile */}
-          <ProformaPartyCard
-            title="SELLER"
-            name={exporter.name}
-            lines={[exporter.address, exporter.country]}
-            footer={`VAT EU: ${exporter.vatEu}`}
-            data-testid="party-seller"
-          />
-
-          {/* BUYER — authority: draft buyer_override (name/vat_id/address) */}
-          <ProformaPartyCard
-            title="BUYER"
-            name={customer.name}
-            lines={[customer.address, customer.country]}
-            footer={customer.vatEuFromNip
-              ? `VAT EU: ${customer.vatEu} · on file (not yet saved as EU VAT)`
-              : `VAT EU: ${customer.vatEu}`}
-            warn={!customer.wfirmaId}
-            warnMsg={!customer.wfirmaId ? 'Not mapped to wFirma customer' : null}
-            mappedMsg={customer.wfirmaId
-              ? (customer.wfirmaName ? `✓ Mapped: ${customer.wfirmaName}` : '✓ Mapped to wFirma')
-              : null}
-            data-testid="party-buyer"
-          />
-
-          {/* RECIPIENT — ship_to_override if set, otherwise same as buyer */}
-          <ProformaPartyCard
-            title="RECIPIENT"
-            name={shipTo.name}
-            lines={[shipTo.address, shipTo.country]}
-            footer={liveDraft.ship_to_override && liveDraft.ship_to_override.name
-              ? 'Ship-to override' : 'Same as Buyer'}
-            footerMuted
-            data-testid="party-recipient"
-          />
-        </div>
-      </div>
-
-      {/* ── Address authority bar ──────────────────────────────────────────── */}
-      {(() => {
-        const addrSource = bo._source === 'customer_master' ? 'customer_master'
-          : (bo.name || bo.street) ? 'manual' : 'none';
-        const addrSourceLabel = addrSource === 'customer_master'
-          ? { text: 'Customer Master', color: 'var(--accent)' }
-          : addrSource === 'manual'
-          ? { text: 'Manual', color: 'var(--text-2)' }
-          : { text: 'Not set', color: 'var(--text-3, #aaa)' };
-        const lockedForEdit = !canEdit;
-        const hasOverride = !!(bo.name || bo.street);
-        return (
-          <div data-testid="address-authority-bar" style={{
-            background: 'var(--card)',
-            borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-            borderBottom: '1px solid var(--border)',
-            padding: '8px 24px',
-            display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
-          }}>
-            <span style={{ fontSize: 12, color: 'var(--text-2)', marginRight: 4 }}>Address authority:</span>
-            <span data-testid="addr-source-badge" style={{
-              fontSize: 11, fontWeight: 700, color: addrSourceLabel.color,
-              background: 'var(--bg)', border: '1px solid var(--border)',
-              borderRadius: 4, padding: '1px 7px',
-            }}>{addrSourceLabel.text}</span>
-
-            <button
-              data-testid="btn-load-from-cm"
-              disabled={lockedForEdit || addrApplying}
-              title={lockedForEdit
-                ? `Cannot apply Customer Master: draft is in '${draftState}' state`
-                : 'Apply billing/shipping address from Customer Master to this draft'}
-              onClick={handleApplyCustomerAddress}
-              style={{
-                fontSize: 12, padding: '3px 10px', marginLeft: 4,
-                background: lockedForEdit ? 'var(--bg)' : 'var(--accent)',
-                color: lockedForEdit ? 'var(--text-2)' : '#fff',
-                border: '1px solid var(--border)', borderRadius: 4,
-                cursor: lockedForEdit ? 'not-allowed' : 'pointer',
-                opacity: lockedForEdit ? 0.5 : 1,
-              }}
-            >{addrApplying ? '⏳ Applying…' : '↓ Load from Customer Master'}</button>
-
-            <button
-              data-testid="btn-edit-bill-to"
-              disabled={lockedForEdit}
-              title={lockedForEdit
-                ? `Cannot edit: draft is in '${draftState}' state`
-                : 'Manually edit bill-to fields'}
-              onClick={() => {
-                setBuyerEditFields({
-                  name:    bo.name    || '',
-                  street:  bo.street  || '',
-                  city:    bo.city    || '',
-                  zip:     bo.zip     || '',
-                  country: bo.country || '',
-                  vat_id:  bo.vat_id  || '',
-                });
-                setBuyerEditError(null);
-                setBuyerEditOpen(true);
-              }}
-              style={{
-                fontSize: 12, padding: '3px 10px',
-                background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
-                border: '1px solid var(--border)', borderRadius: 4,
-                cursor: lockedForEdit ? 'not-allowed' : 'pointer',
-                opacity: lockedForEdit ? 0.5 : 1,
-              }}
-            >✎ Edit Bill-to</button>
-
-            {hasOverride && (
-              <button
-                data-testid="btn-clear-buyer-override"
-                disabled={lockedForEdit}
-                title={lockedForEdit
-                  ? `Cannot clear: draft is in '${draftState}' state`
-                  : 'Clear buyer address override — revert to draft client name only'}
-                onClick={() => {
-                  if (lockedForEdit) return;
-                  const id = liveDraft.id || (draft && draft.id);
-                  const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
-                  window.PzApi.patchDraft(id, { buyer_override: {} }, updatedAt)
-                    .then(r => r && r.ok && draftHook && draftHook.reload && draftHook.reload());
-                }}
-                style={{
-                  fontSize: 12, padding: '3px 10px',
-                  background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
-                  border: '1px solid var(--border)', borderRadius: 4,
-                  cursor: lockedForEdit ? 'not-allowed' : 'pointer',
-                  opacity: lockedForEdit ? 0.5 : 1,
-                }}
-              >✕ Clear override</button>
-            )}
-
-            {addrApplyError && (
-              <span data-testid="addr-apply-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginLeft: 4 }}>
-                {addrApplyError}
-              </span>
-            )}
-          </div>
-        );
-      })()}
+      {/* ── Party cards + address authority bar ─────────────────────────── */}
+      <ProformaPartyCards
+        exporter={exporter}
+        customer={customer}
+        shipTo={shipTo}
+        bo={bo}
+        canEdit={canEdit}
+        liveDraft={liveDraft}
+        draft={draft}
+        draftHook={draftHook}
+        addrApplying={addrApplying}
+        addrApplyError={addrApplyError}
+        handleApplyCustomerAddress={handleApplyCustomerAddress}
+        setBuyerEditFields={setBuyerEditFields}
+        setBuyerEditError={setBuyerEditError}
+        setBuyerEditOpen={setBuyerEditOpen}
+        draftState={draftState}
+      />
 
       {/* ── Tab strip ──────────────────────────────────────────────────────── */}
       <div style={{
