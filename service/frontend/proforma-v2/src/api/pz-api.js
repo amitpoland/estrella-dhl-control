@@ -195,7 +195,7 @@ export const cloneDraft = (draftId) =>
 export const draftToInvoice = (draftId, body) =>
   _postM(`${BASE}/proforma/draft/${draftId}/to-invoice`, body || {})
 
-export const getDraftDiscloseConvert = (draftId) =>
+export const getDisclosureConvert = (draftId) =>
   _get(`${BASE}/proforma/draft/${draftId}/disclose-convert`)
 
 export const getDraftEvents = (draftId) =>
@@ -400,7 +400,7 @@ export const PzApi = Object.freeze({
   addDraftLine, deleteDraftLine, addServiceCharge, deleteServiceCharge,
   deleteDraft, approveDraft, reopenDraft, cancelDraft, sendProformaEmail,
   resetDraftFromSalesPacking, postDraftToWfirma, cloneDraft, draftToInvoice,
-  getDraftDiscloseConvert, getDraftEvents, getDraftReadiness,
+  getDisclosureConvert, getDraftEvents, getDraftReadiness,
   resolveDraftAmbiguity, listCustomerMaster, getCustomerMaster, saveCustomerMaster,
   previewWfirmaSyncCustomer, applyWfirmaSyncCustomer, getCustomerDictionaries,
   refreshCustomerDictionaries, getPackingDocuments, linkAsSales,
