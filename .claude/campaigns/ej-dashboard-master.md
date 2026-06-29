@@ -108,7 +108,7 @@ No jumping between unrelated tracks unless the task is a production hotfix. Ever
 |---|---|---|
 | Phase 1 — Webhook Capture | ✅ COMPLETE | PR #794 / deployed |
 | Phase 2A.1 — Processing + Snapshots | ✅ COMPLETE | PR #795 / `c3f1229a` |
-| Phase 2A.2 — Diagnostics endpoint | ✅ COMPLETE | PR #796 / pending merge+deploy |
+| Phase 2A.2 — Diagnostics endpoint | ✅ COMPLETE | PR #796 / `57aaa2d7` |
 | Phase 2B — Safe Enrichment (3 fields) | ⏳ PENDING | — |
 | Phase 3 — Customer Sync | ⏳ PENDING | — |
 | Phase 4 — Payment Sync | ⏳ PENDING | — |
@@ -363,7 +363,7 @@ _Append-only. Every deployed phase goes here with production SHA and date._
 | D3 — Editable fields | A | #792 | `8332f02a` | 2026-06-29 | Incoterm + insurance_eur operator edit |
 | Phase 1 — Webhook Capture | B | #794 | — | 2026-06-29 | wFirma webhook receiver + immutable event log |
 | Phase 2A.1 — Snapshots | B | #795 | `c3f1229a` | 2026-06-29 | Background scheduler + snapshot pipeline |
-| Phase 2A.2 — Diagnostics | B | #796 | pending | — | `/api/v1/webhooks/wfirma/status` endpoint |
+| Phase 2A.2 — Diagnostics | B | #796 | `57aaa2d7` | 2026-06-29 | `/api/v1/webhooks/wfirma/status` endpoint |
 | Phase 2B — Safe Enrichment | B | — | pending | — | 3-field enrichment from snapshot → proforma |
 
 ---
