@@ -356,6 +356,9 @@ class Settings(BaseSettings):
     # DHL webhook HMAC secret. None = webhook endpoint returns 503 (never silently open).
     dhl_webhook_secret: Optional[str] = Field(default=None)
 
+    # wFirma inbound webhook shared key. None = endpoint returns 503 (never silently open).
+    wfirma_webhook_key: Optional[str] = Field(default=None)
+
     # Carrier file storage root. None = defaults to storage_root / "carrier" at runtime.
     carrier_storage_root: Optional[Path] = Field(default=None)
 
