@@ -141,13 +141,19 @@ def _query_status(db_path: Path) -> dict:
     except Exception:
         pass
 
+    received      = by_state.get("RECEIVED", 0)
+    fetching      = by_state.get("FETCHING", 0)
+    retry_pending = by_state.get("RETRY_PENDING", 0)
+    snapshotted   = by_state.get("SNAPSHOTTED", 0)
+    dead_letter   = by_state.get("DEAD_LETTER", 0)
     return {
         "queue": {
-            "received":      by_state.get("RECEIVED", 0),
-            "fetching":      by_state.get("FETCHING", 0),
-            "retry_pending": by_state.get("RETRY_PENDING", 0),
-            "snapshotted":   by_state.get("SNAPSHOTTED", 0),
-            "dead_letter":   by_state.get("DEAD_LETTER", 0),
+            "total":         received + fetching + retry_pending + snapshotted + dead_letter,
+            "received":      received,
+            "fetching":      fetching,
+            "retry_pending": retry_pending,
+            "snapshotted":   snapshotted,
+            "dead_letter":   dead_letter,
         },
         "snapshots": {
             "total":              stats.get("total_snapshots", 0),
@@ -177,8 +183,8 @@ def wfirma_webhook_status(
         return JSONResponse({
             "service": service,
             "queue": {
-                "received": 0, "fetching": 0, "retry_pending": 0,
-                "snapshotted": 0, "dead_letter": 0,
+                "total": 0, "received": 0, "fetching": 0,
+                "retry_pending": 0, "snapshotted": 0, "dead_letter": 0,
             },
             "snapshots": {"total": 0, "latest_snapshot_at": None},
             "recent_dead_letters": [],

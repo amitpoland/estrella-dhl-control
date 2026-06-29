@@ -110,7 +110,7 @@ def test_status_queue_keys():
     with patch("app.api.routes_webhooks_wfirma_status._get_proc_db_path", return_value=None):
         r = client.get("/api/v1/webhooks/wfirma/status")
     queue = r.json()["queue"]
-    assert set(queue.keys()) >= {"received", "fetching", "retry_pending", "snapshotted", "dead_letter"}
+    assert set(queue.keys()) >= {"total", "received", "fetching", "retry_pending", "snapshotted", "dead_letter"}
 
 
 def test_status_snapshots_keys():
@@ -213,6 +213,7 @@ def test_query_status_state_counts(tmp_path: Path):
     assert result["queue"]["received"] == 1
     assert result["queue"]["snapshotted"] == 1
     assert result["queue"]["dead_letter"] == 1
+    assert result["queue"]["total"] == 3  # received + snapshotted + dead_letter
     assert result["snapshots"]["total"] == 1
 
 
