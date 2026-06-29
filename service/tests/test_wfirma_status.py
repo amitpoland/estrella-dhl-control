@@ -445,8 +445,8 @@ def test_scheduler_health_stopped_when_not_running():
     assert _scheduler_health(False, "2026-06-29T10:00:00+00:00", 30) == "stopped"
 
 
-def test_scheduler_health_degraded_when_running_no_tick():
-    assert _scheduler_health(True, None, 30) == "degraded"
+def test_scheduler_health_late_when_running_no_tick():
+    assert _scheduler_health(True, None, 30) == "late"
 
 
 def test_scheduler_health_healthy_when_tick_is_recent():
@@ -455,12 +455,12 @@ def test_scheduler_health_healthy_when_tick_is_recent():
     assert _scheduler_health(True, recent, 30) == "healthy"
 
 
-def test_scheduler_health_degraded_when_tick_is_stale():
-    assert _scheduler_health(True, "2020-01-01T00:00:00+00:00", 30) == "degraded"
+def test_scheduler_health_late_when_tick_is_stale():
+    assert _scheduler_health(True, "2020-01-01T00:00:00+00:00", 30) == "late"
 
 
-def test_scheduler_health_degraded_on_bad_timestamp():
-    assert _scheduler_health(True, "not-a-date", 30) == "degraded"
+def test_scheduler_health_late_on_bad_timestamp():
+    assert _scheduler_health(True, "not-a-date", 30) == "late"
 
 
 def test_scheduler_health_boundary_exactly_2x_interval():

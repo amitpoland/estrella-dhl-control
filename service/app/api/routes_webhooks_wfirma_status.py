@@ -75,12 +75,12 @@ def _scheduler_health(running: bool, last_tick_at: Optional[str], interval_secon
     if not running:
         return "stopped"
     if last_tick_at is None:
-        return "degraded"
+        return "late"
     try:
         age = (datetime.now(timezone.utc) - datetime.fromisoformat(last_tick_at)).total_seconds()
-        return "healthy" if age <= interval_seconds * 2 else "degraded"
+        return "healthy" if age <= interval_seconds * 2 else "late"
     except Exception:
-        return "degraded"
+        return "late"
 
 
 def _uptime_seconds(started_at: Optional[str]) -> Optional[int]:
