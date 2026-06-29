@@ -5,13 +5,12 @@ Endpoint
 --------
   GET /api/v1/webhooks/wfirma/status
       Read-only operational view of the wFirma webhook pipeline.
-      Returns scheduler heartbeat, queue state, snapshot totals,
-      and recent dead-letter events.
+      Returns service version, scheduler heartbeat, queue state,
+      snapshot totals, and recent dead-letter events.
 
 Security
 --------
-  Session-cookie auth (get_current_user). Admin or any authenticated user
-  can access; this is internal operational data, not customer data.
+  Session-cookie auth (get_current_user).
 
 Constraints
 -----------
@@ -19,9 +18,15 @@ Constraints
   - No business-table reads (proforma_drafts, wfirma.db, customer master).
   - No schema changes.
   - No scheduler logic changes.
+
+Version
+-------
+  Set PZ_VERSION environment variable to the deployed git SHA (e.g. "c3f1229a")
+  so the endpoint reflects the running code version. Falls back to "unknown".
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from typing import Optional
@@ -33,8 +38,14 @@ from ..auth.dependencies import get_current_user
 
 router = APIRouter(prefix="/api/v1/webhooks", tags=["webhooks-wfirma"])
 
+TICK_INTERVAL_SECONDS = 30
+
 
 # ── helpers ────────────────────────────────────────────────────────────────────
+
+
+def _get_service_version() -> str:
+    return os.environ.get("PZ_VERSION", "unknown")
 
 
 def _get_proc_db_path() -> Optional[Path]:
@@ -45,10 +56,27 @@ def _get_proc_db_path() -> Optional[Path]:
         return None
 
 
+def _build_service_block() -> dict:
+    """Merge version + scheduler state into a single 'service' section."""
+    try:
+        from ..services.wfirma_webhook_scheduler import get_scheduler_status
+        sched = get_scheduler_status()
+    except Exception:
+        sched = {"running": False, "last_tick": None, "next_tick": None}
+
+    return {
+        "version":               _get_service_version(),
+        "scheduler_running":     sched.get("running", False),
+        "last_tick_at":          sched.get("last_tick"),
+        "next_tick_at":          sched.get("next_tick"),
+        "tick_interval_seconds": TICK_INTERVAL_SECONDS,
+    }
+
+
 def _query_status(db_path: Path) -> dict:
     """
     Run all read queries against wfirma_processing.db.
-    Returns structured status data; never raises (returns {} on error).
+    Never raises; returns safe defaults on error.
     """
     try:
         from ..services.wfirma_processing_db import get_processing_stats
@@ -111,20 +139,15 @@ def wfirma_webhook_status(
     """
     Read-only diagnostics for the wFirma webhook pipeline.
 
-    Returns scheduler heartbeat, processing queue state counts,
+    Returns service version, scheduler heartbeat, processing queue state counts,
     snapshot totals, and the five most recent dead-letter events.
     """
-    try:
-        from ..services.wfirma_webhook_scheduler import get_scheduler_status
-        scheduler = get_scheduler_status()
-    except Exception:
-        scheduler = {"running": False, "last_tick": None, "next_tick": None}
-
+    service = _build_service_block()
     db_path = _get_proc_db_path()
 
     if db_path is None or not db_path.exists():
         return JSONResponse({
-            "scheduler": scheduler,
+            "service": service,
             "queue": {
                 "received": 0, "fetching": 0, "retry_pending": 0,
                 "snapshotted": 0, "dead_letter": 0,
@@ -134,5 +157,5 @@ def wfirma_webhook_status(
         })
 
     status = _query_status(db_path)
-    status["scheduler"] = scheduler
+    status["service"] = service
     return JSONResponse(status)

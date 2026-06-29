@@ -6,17 +6,22 @@ No live DB, no live scheduler, no live wFirma API.
 """
 from __future__ import annotations
 
-import json
+import os
 import sqlite3
 from pathlib import Path
-from typing import Optional
 from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app.api.routes_webhooks_wfirma_status import router, _query_status
+from app.api.routes_webhooks_wfirma_status import (
+    router,
+    _query_status,
+    _build_service_block,
+    _get_service_version,
+    TICK_INTERVAL_SECONDS,
+)
 from app.auth.dependencies import get_current_user
 from app.services.wfirma_processing_db import (
     init_db,
@@ -75,17 +80,26 @@ def test_status_response_has_required_top_level_keys():
     with patch("app.api.routes_webhooks_wfirma_status._get_proc_db_path", return_value=None):
         r = client.get("/api/v1/webhooks/wfirma/status")
     data = r.json()
-    assert set(data.keys()) >= {"scheduler", "queue", "snapshots", "recent_dead_letters"}
+    assert set(data.keys()) >= {"service", "queue", "snapshots", "recent_dead_letters"}
 
 
-def test_status_scheduler_keys():
+def test_status_service_keys():
     client = _app_authed()
     with patch("app.api.routes_webhooks_wfirma_status._get_proc_db_path", return_value=None):
         r = client.get("/api/v1/webhooks/wfirma/status")
-    sched = r.json()["scheduler"]
-    assert "running" in sched
-    assert "last_tick" in sched
-    assert "next_tick" in sched
+    svc = r.json()["service"]
+    assert "version" in svc
+    assert "scheduler_running" in svc
+    assert "last_tick_at" in svc
+    assert "next_tick_at" in svc
+    assert "tick_interval_seconds" in svc
+
+
+def test_status_tick_interval_is_30():
+    client = _app_authed()
+    with patch("app.api.routes_webhooks_wfirma_status._get_proc_db_path", return_value=None):
+        r = client.get("/api/v1/webhooks/wfirma/status")
+    assert r.json()["service"]["tick_interval_seconds"] == 30
 
 
 def test_status_queue_keys():
@@ -112,6 +126,28 @@ def test_status_recent_dead_letters_is_list():
     assert isinstance(r.json()["recent_dead_letters"], list)
 
 
+# ── version env var ───────────────────────────────────────────────────────────
+
+
+def test_version_reads_pz_version_env():
+    with patch.dict(os.environ, {"PZ_VERSION": "abc12345"}):
+        assert _get_service_version() == "abc12345"
+
+
+def test_version_unknown_when_env_not_set():
+    env = {k: v for k, v in os.environ.items() if k != "PZ_VERSION"}
+    with patch.dict(os.environ, env, clear=True):
+        assert _get_service_version() == "unknown"
+
+
+def test_version_appears_in_response():
+    client = _app_authed()
+    with patch("app.api.routes_webhooks_wfirma_status._get_proc_db_path", return_value=None), \
+         patch.dict(os.environ, {"PZ_VERSION": "c3f1229a"}):
+        r = client.get("/api/v1/webhooks/wfirma/status")
+    assert r.json()["service"]["version"] == "c3f1229a"
+
+
 # ── no-db fallback ────────────────────────────────────────────────────────────
 
 
@@ -136,7 +172,6 @@ def _seed_db(db: Path) -> None:
     set_state(db, "evt-snap", "SNAPSHOTTED", extra={"snapshotted_at": _NOW})
     ensure_processing_row(db, "evt-dl", "OBJ-3", _NOW)
     mark_dead_letter(db, "evt-dl", _NOW)
-    # Insert a snapshot for evt-snap
     insert_snapshot(
         db,
         snapshot_id="snap-001",
@@ -249,3 +284,21 @@ def test_last_tick_updates_on_tick(tmp_path: Path):
         sched._events_db_path = orig_events
         sched._proc_db_path = orig_proc
         sched._last_tick_at = orig_tick
+
+
+# ── build_service_block ───────────────────────────────────────────────────────
+
+
+def test_build_service_block_shape():
+    block = _build_service_block()
+    assert set(block.keys()) >= {"version", "scheduler_running", "last_tick_at", "next_tick_at", "tick_interval_seconds"}
+
+
+def test_build_service_block_tick_interval():
+    block = _build_service_block()
+    assert block["tick_interval_seconds"] == TICK_INTERVAL_SECONDS
+
+
+def test_build_service_block_scheduler_running_type():
+    block = _build_service_block()
+    assert isinstance(block["scheduler_running"], bool)
