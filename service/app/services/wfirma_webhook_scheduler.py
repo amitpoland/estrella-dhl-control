@@ -30,8 +30,9 @@ log = logging.getLogger(__name__)
 _scheduler = None          # module-level singleton (BackgroundScheduler)
 _events_db_path: Optional[Path] = None
 _proc_db_path: Optional[Path] = None
-_last_tick_at: Optional[str] = None   # set at the start of every tick
-_started_at: Optional[str] = None     # set once when the scheduler starts
+_links_db_path: Optional[Path] = None   # proforma_links.db — Phase 2B enrichment target
+_last_tick_at: Optional[str] = None     # set at the start of every tick
+_started_at: Optional[str] = None       # set once when the scheduler starts
 
 
 def _now_utc() -> str:
@@ -195,16 +196,59 @@ def _run_processing_tick() -> None:
             else:
                 mark_retry_pending(_proc_db_path, event_id)
 
+    # ── Step 3: enrich SNAPSHOTTED events (Phase 2B) ──────────────────────────
+    _run_enrichment_tick()
+
+
+def _run_enrichment_tick() -> None:
+    """
+    Phase 2B enrichment step — called at the end of every processing tick.
+
+    Picks up SNAPSHOTTED events and attempts to enrich each one by matching
+    snapshot.object_id to proforma_drafts.wfirma_proforma_id and writing
+    the three approved fields via write_postposting_enrichment().
+
+    State transitions (MATCHED / ENRICHED / COMPLETED / UNMATCHED) are
+    written to wfirma_processing.db by enrich_snapshot().
+    """
+    if _proc_db_path is None or _links_db_path is None:
+        return
+
+    from .wfirma_processing_db import get_snapshotted_events
+    from .wfirma_enrichment_processor import enrich_snapshot
+
+    pending = get_snapshotted_events(_proc_db_path)
+    if not pending:
+        return
+
+    now = _now_utc()
+    for row in pending:
+        event_id:  str           = row["event_id"]
+        object_id: Optional[str] = row.get("object_id") or ""
+
+        result = enrich_snapshot(
+            event_id=event_id,
+            object_id=object_id,
+            proc_db=_proc_db_path,
+            links_db=_links_db_path,
+            now=now,
+        )
+        log.info(
+            "wfirma_scheduler: enrichment=%s event_id=%s object_id=%s",
+            result, event_id, object_id,
+        )
+
 
 def start_wfirma_scheduler(storage_root: Path) -> None:
     """
     Initialise the processing DB and start the APScheduler background job.
     Call once during FastAPI lifespan startup. Non-fatal if APScheduler is absent.
     """
-    global _scheduler, _events_db_path, _proc_db_path
+    global _scheduler, _events_db_path, _proc_db_path, _links_db_path
 
     _events_db_path = Path(storage_root) / "wfirma_webhook_events.db"
     _proc_db_path   = Path(storage_root) / "wfirma_processing.db"
+    _links_db_path  = Path(storage_root) / "proforma_links.db"
 
     from .wfirma_processing_db import init_db
     init_db(_proc_db_path)
