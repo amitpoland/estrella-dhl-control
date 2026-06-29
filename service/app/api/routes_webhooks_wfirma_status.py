@@ -41,8 +41,8 @@ router = APIRouter(prefix="/api/v1/webhooks", tags=["webhooks-wfirma"])
 TICK_INTERVAL_SECONDS = 30
 
 # Written by verify_deploy_close.ps1 after robocopy. Two levels above app/:
-#   production: C:\PZ\git_sha.txt  (parents[2] of C:\PZ\app\api\<file>)
-_SHA_FILE = Path(__file__).parents[2] / "git_sha.txt"
+#   production: C:\PZ\version.txt  (parents[2] of C:\PZ\app\api\<file>)
+_SHA_FILE = Path(__file__).parents[2] / "version.txt"
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────

@@ -135,7 +135,7 @@ def test_version_reads_pz_version_env():
 
 
 def test_version_env_takes_priority_over_sha_file(tmp_path: Path):
-    sha_file = tmp_path / "git_sha.txt"
+    sha_file = tmp_path / "version.txt"
     sha_file.write_text("deadbeef11", encoding="utf-8")
     with patch("app.api.routes_webhooks_wfirma_status._SHA_FILE", sha_file), \
          patch.dict(os.environ, {"PZ_VERSION": "env-wins"}):
@@ -143,7 +143,7 @@ def test_version_env_takes_priority_over_sha_file(tmp_path: Path):
 
 
 def test_version_reads_git_sha_txt_when_no_env(tmp_path: Path):
-    sha_file = tmp_path / "git_sha.txt"
+    sha_file = tmp_path / "version.txt"
     sha_file.write_text("abc1234567890", encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k != "PZ_VERSION"}
     with patch("app.api.routes_webhooks_wfirma_status._SHA_FILE", sha_file), \
@@ -153,7 +153,7 @@ def test_version_reads_git_sha_txt_when_no_env(tmp_path: Path):
 
 def test_version_unknown_when_neither_env_nor_file():
     env = {k: v for k, v in os.environ.items() if k != "PZ_VERSION"}
-    missing = Path("/nonexistent/git_sha.txt")
+    missing = Path("/nonexistent/version.txt")
     with patch("app.api.routes_webhooks_wfirma_status._SHA_FILE", missing), \
          patch.dict(os.environ, env, clear=True):
         assert _get_service_version() == "unknown"
