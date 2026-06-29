@@ -18,6 +18,23 @@ Build a single event-driven ERP platform where:
 
 ---
 
+## Program Dashboard
+
+_Update counts and bar every time a phase is marked complete._
+
+| Track | Name | Done / Total | Progress |
+|---|---|---|---|
+| A | React / Proforma | 3 / 9 | `███░░░░░░░` 33% |
+| B | wFirma Integration | 3 / 10 | `███░░░░░░░░░░░` 30% |
+| C | Customer Master | 0 / 7 | `░░░░░░░░░░` 0% |
+| D | Warehouse & Inventory | 0 / 6 | `░░░░░░░░░░` 0% |
+| E | Customs & Shipping | 0 / 6 | `░░░░░░░░░░` 0% |
+| F | Finance & Reporting | 0 / 6 | `░░░░░░░░░░` 0% |
+| G | AI & Automation | 0 / 6 | `░░░░░░░░░░` 0% |
+| **Total** | | **6 / 50** | **`██░░░░░░░░░░░░░░░░░░` 12%** |
+
+---
+
 ## Architecture Rules (Locked — permanent)
 
 These rules apply to every PR, every sprint, every session. A change that violates a rule is
@@ -228,9 +245,60 @@ Use this to answer "what must be done first?" and "what does this phase unlock?"
 
 ---
 
+## Definition of Done
+
+### Universal gates (every phase, no exceptions)
+
+| Gate | Criterion |
+|---|---|
+| 1 | All named phase deliverables implemented |
+| 2 | No cross-authority boundary violations (architecture rules 1–10) |
+| 3 | Tests pass: unit + integration + smoke |
+| 4 | Production deployed and verified — `verify_deploy_close.ps1` all 8 conditions ✅ |
+| 5 | Live endpoint or feature manually confirmed in production (curl / browser) |
+| 6 | `TASK_STATE.md` updated with SHA, deploy date, and test counts |
+| 7 | Campaign dashboard updated — progress counts + phase marked ✅ |
+| 8 | No open HIGH or CRITICAL findings from the deploy gate |
+
+**"Implementation complete" is not Done. "Merged" is not Done.**  
+Done = production verified + records updated.
+
+### Phase-specific additions
+
+**Phase 2B — Safe Enrichment**
+- [ ] Only `wfirma_issue_date`, `wfirma_payment_due`, `wfirma_payment_method` written
+- [ ] Write path is exclusively `write_postposting_enrichment()` at `proforma_invoice_link_db.py:1427`
+- [ ] No operator-entered override fields touched
+- [ ] Regression test confirms no other fields mutated
+- [ ] State transitions logged: SNAPSHOTTED → MATCHED → ENRICHED → COMPLETED
+- [ ] Replay test: reprocessing the same snapshot produces identical output
+
+**Phase 3 — Customer Sync**
+- [ ] Contractor match uses existing dedup logic — no new duplicate records created
+- [ ] No operator-entered customer fields overwritten
+
+**Phase 4 — Payment Sync**
+- [ ] Payment state derived from wFirma events only — no operator field mutated
+- [ ] Idempotent: same payment event processed twice produces the same result
+
+**Phase 5 — KSeF Sync**
+- [ ] KSeF number written only after confirmed receipt from wFirma
+- [ ] No writes on unconfirmed / pending KSeF state
+
+**Track D — Warehouse Authority**
+- [ ] Stock goods and Customer Goods separated at DB level (distinct table or `ownership` column)
+- [ ] No wFirma write triggered by warehouse event
+
+**All enrichment phases (2B, 3, 4, 5, 6, 7)**
+- [ ] Replay test: reprocessing any historical snapshot produces identical enrichment output
+- [ ] Zero writes on RECEIVED or FETCHING state — only on SNAPSHOTTED or later
+
+---
+
 ## Changelog
 
 | Date | Change |
 |---|---|
 | 2026-06-29 | Campaign adopted; Track A D1–D3 and Track B Phases 1–2A.2 marked complete |
 | 2026-06-29 | Dependencies Matrix added |
+| 2026-06-29 | Program Dashboard and Definition of Done added |
