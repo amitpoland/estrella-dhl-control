@@ -274,6 +274,8 @@ Every architectural decision that cannot be changed without a campaign amendment
 | ADR-008 | Background processing only — webhook handler returns 200 immediately | Prevents duplicate delivery from wFirma retries; all processing happens async in APScheduler | Locked |
 | ADR-009 | Track G (AI) blocked until Tracks A–F have stable authority boundaries | AI layer must operate on clean data with clear ownership — unstable authorities produce untrustworthy AI output | Locked |
 | ADR-010 | Phase 2B fields split into Category A (pure wFirma authority) and Category B (shared authority) | Category A fields (`wfirma_issue_date`, `wfirma_payment_due`, `wfirma_payment_method`) have no override metadata — enrichment writes freely. Category B fields get `operator_override`, `operator_override_at`, `authority_source`, `authority_updated_at` columns. Phase 2B operates entirely in Category A. | Locked |
+| ADR-011 | Phase 2B match key priority: `wfirma_proforma_id` → `object_id` → `invoice_number` (diagnostic only) | Invoice numbers change across series and formatting. IDs are stable. `invoice_number` is never used for automatic matching — only as a diagnostic fallback when IDs are absent. | Locked |
+| ADR-012 | `UNMATCHED` is a valid terminal state in Phase 2B, not a failure | A SNAPSHOTTED event with no matching local proforma draft is operationally expected (e.g. wFirma invoice has no Atlas counterpart yet). UNMATCHED is observable and replayable; it must not trigger retry or dead-letter logic. State path: SNAPSHOTTED → UNMATCHED. | Locked |
 
 _To propose an amendment: open a governance PR against this file with the new ADR entry and a rationale. Changes to Locked decisions require operator approval before implementation begins._
 
@@ -375,4 +377,4 @@ _Append-only. Every deployed phase goes here with production SHA and date._
 | 2026-06-29 | Program Dashboard and Definition of Done added |
 | 2026-06-29 | Program Risks register added; Architecture Decision Log (ADR-001–009) added |
 | 2026-06-29 | Dual-write race resolved → Mitigated (operator_override design); Key rotation → Monitored (runbook defined) |
-| 2026-06-29 | ADR-010 added: Phase 2B field categorization (Category A / Category B); Release History added; Session Startup formalized to 4 mandatory steps |
+| 2026-06-29 | ADR-010–012 added: field categorization, match key priority, UNMATCHED state. Campaign now stable. |
