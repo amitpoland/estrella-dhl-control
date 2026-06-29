@@ -168,21 +168,25 @@ def _query_status(db_path: Path) -> dict:
     retry_pending = by_state.get("RETRY_PENDING", 0)
     snapshotted   = by_state.get("SNAPSHOTTED", 0)
     dead_letter   = by_state.get("DEAD_LETTER", 0)
-
-    # enrichment states (Phase 2B) — returns 0 until 2B is deployed
-    enrichment_success = (
-        by_state.get("MATCHED", 0) + by_state.get("ENRICHED", 0) + by_state.get("COMPLETED", 0)
-    )
+    matched       = by_state.get("MATCHED", 0)
+    enriched      = by_state.get("ENRICHED", 0)
+    unmatched     = by_state.get("UNMATCHED", 0)
+    completed     = by_state.get("COMPLETED", 0)
     enrichment_failed = by_state.get("ENRICHMENT_FAILED", 0)
 
     return {
         "queue": {
-            "total":         received + fetching + retry_pending + snapshotted + dead_letter,
-            "received":      received,
-            "fetching":      fetching,
-            "retry_pending": retry_pending,
-            "snapshotted":   snapshotted,
-            "dead_letter":   dead_letter,
+            "total":              sum(by_state.values()),
+            "received":           received,
+            "fetching":           fetching,
+            "retry_pending":      retry_pending,
+            "snapshotted":        snapshotted,
+            "matched":            matched,
+            "enriched":           enriched,
+            "unmatched":          unmatched,
+            "completed":          completed,
+            "dead_letter":        dead_letter,
+            "enrichment_failed":  enrichment_failed,
         },
         "snapshots": {
             "total":              total_snapshots,
@@ -193,7 +197,9 @@ def _query_status(db_path: Path) -> dict:
             "snapshots_created":  total_snapshots,
             "duplicates":         duplicates,
             "fetch_failures":     dead_letter,
-            "enrichment_success": enrichment_success,
+            "matched":            matched,
+            "unmatched":          unmatched,
+            "enrichment_success": completed,
             "enrichment_failed":  enrichment_failed,
         },
         "recent_dead_letters": recent_dead_letters,
@@ -221,12 +227,15 @@ def wfirma_webhook_status(
             "service": service,
             "queue": {
                 "total": 0, "received": 0, "fetching": 0,
-                "retry_pending": 0, "snapshotted": 0, "dead_letter": 0,
+                "retry_pending": 0, "snapshotted": 0,
+                "matched": 0, "enriched": 0, "unmatched": 0,
+                "completed": 0, "dead_letter": 0, "enrichment_failed": 0,
             },
             "snapshots": {"total": 0, "latest_snapshot_at": None},
             "metrics": {
                 "webhooks_received": 0, "snapshots_created": 0, "duplicates": 0,
-                "fetch_failures": 0, "enrichment_success": 0, "enrichment_failed": 0,
+                "fetch_failures": 0, "matched": 0, "unmatched": 0,
+                "enrichment_success": 0, "enrichment_failed": 0,
             },
             "recent_dead_letters": [],
         })

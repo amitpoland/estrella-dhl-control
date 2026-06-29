@@ -84,12 +84,34 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _apply_phase2b_migration(conn: sqlite3.Connection) -> None:
+    """
+    Add Phase 2B enrichment timestamp columns to wfirma_webhook_processing.
+    Idempotent — safe to call on an already-migrated database.
+    """
+    new_cols = [
+        "matched_at   TEXT",
+        "enriched_at  TEXT",
+        "unmatched_at TEXT",
+    ]
+    for col_def in new_cols:
+        col_name = col_def.split()[0]
+        try:
+            conn.execute(
+                f"ALTER TABLE wfirma_webhook_processing ADD COLUMN {col_def}"
+            )
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+
+
 def init_db(db_path: Path) -> None:
     """Create both tables and indexes if they do not exist."""
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect(db_path) as conn:
         conn.executescript(_DDL)
+        _apply_phase2b_migration(conn)
 
 
 # ── Processing table ───────────────────────────────────────────────────────────
@@ -270,6 +292,25 @@ def insert_snapshot(
             ),
         )
     return cur.rowcount == 1
+
+
+def get_snapshotted_events(db_path: Path, limit: int = 20) -> List[dict]:
+    """
+    Return up to `limit` rows in SNAPSHOTTED state, ordered oldest-first.
+    These are the Phase 2B enrichment candidates.
+    """
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT event_id, object_id
+            FROM wfirma_webhook_processing
+            WHERE processing_state = 'SNAPSHOTTED'
+            ORDER BY snapshotted_at ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_snapshot_by_event(db_path: Path, event_id: str) -> Optional[dict]:
