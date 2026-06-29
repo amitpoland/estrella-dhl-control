@@ -180,8 +180,57 @@ at `proforma_invoice_link_db.py:1427` — `wfirma_issue_date`, `wfirma_payment_d
 
 ---
 
+## Dependencies Matrix
+
+Use this to answer "what must be done first?" and "what does this phase unlock?"
+
+| Phase | Depends On | Blocks |
+|---|---|---|
+| **Track A** | | |
+| D4 | D3 ✅ | D5 |
+| D5 | D4 | D6 |
+| D6 | D5 | Workflow Completion |
+| Workflow Completion | D6 | Track F Dashboards |
+| **Track B** | | |
+| Phase 2B — Enrichment | Phase 2A.2 ✅ | Phase 3 (Customer Sync), Phase 4 (Payment Sync) |
+| Phase 3 — Customer Sync | Phase 2B | Track C Customer Defaults, Payment Sync |
+| Phase 4 — Payment Sync | Phase 2B, Phase 3 | Track C Statements, Phase 5 (KSeF) |
+| Phase 5 — KSeF Sync | Phase 2B | Phase 6 (Credit Notes) |
+| Phase 6 — Credit Notes | Phase 5 | Track F Financial Metrics |
+| Phase 7 — Inventory Sync | Track D Warehouse Authority | Phase 8 (Event Bus) |
+| Phase 8 — Full Event Bus | Phases 3–7 | Track G AI & Automation |
+| **Track C** | | |
+| Customer Defaults | Phase 3 (Customer Sync) | Payment Terms Authority |
+| Payment Terms Authority | Customer Defaults | Outstanding Balance |
+| Outstanding Balance | Payment Terms | Customer Statements |
+| Customer Statements | Outstanding Balance | Credit Control |
+| Credit Control | Customer Statements | Track F Management Reports |
+| **Track D** | | |
+| Warehouse Authority | — (no hard deps) | Phase 7 (Inventory Sync), Shipment Lifecycle |
+| Shipment Lifecycle | Warehouse Authority | Track E Shipment Status |
+| Inventory Synchronization | Warehouse Authority, Phase 7 | Track F Operational Metrics |
+| **Track E** | | |
+| DHL | Shipment Lifecycle | Shipment Status, Export Lifecycle |
+| Shipment Status | DHL, Customs | Track F Operational Metrics |
+| Export Lifecycle | CMR, Packing, Customs | Track F Audit Reports |
+| **Track F** | | |
+| Operational Metrics | Track D + Track E stable | Dashboards, KPIs |
+| Financial Metrics | Track C stable, Phase 4 (Payment Sync) | Management Reports |
+| Dashboards | Operational + Financial Metrics | Track G Predictive Alerts |
+| Management Reports | Dashboards, Financial Metrics | — |
+| **Track G** | | |
+| All AI & Automation | Tracks A–F mature | — |
+
+**Reading rules:**
+- A phase with all Depends-On marked ✅ is eligible to start now.
+- A phase blocked on a pending item cannot start until that item deploys to production.
+- "No hard deps" means the phase can be scoped and started independently, but must not create authority conflicts with in-progress tracks.
+
+---
+
 ## Changelog
 
 | Date | Change |
 |---|---|
 | 2026-06-29 | Campaign adopted; Track A D1–D3 and Track B Phases 1–2A.2 marked complete |
+| 2026-06-29 | Dependencies Matrix added |
