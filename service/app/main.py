@@ -64,6 +64,7 @@ from .api.routes_tracking_db import router as tracking_db_router
 from .api.routes_correction_registry import router as correction_registry_router
 from .api.routes_ledgers import router as ledgers_router
 from .api.routes_carrier_webhook import router as carrier_webhook_router
+from .api.routes_webhooks_wfirma import router as webhooks_wfirma_router
 from .api.routes_carrier_shadow import router as carrier_shadow_router
 from .api.routes_carrier_actions import router as carrier_actions_router
 from .api.routes_inventory import router as inventory_router
@@ -489,6 +490,7 @@ app.include_router(tracking_db_router)  # /events/* before tracking_router's /{t
 app.include_router(correction_registry_router)
 app.include_router(ledgers_router)
 app.include_router(carrier_webhook_router)
+app.include_router(webhooks_wfirma_router)
 app.include_router(carrier_shadow_router)   # static paths (shadow/log, status) before dynamic
 app.include_router(carrier_actions_router)  # dynamic paths ({batch_id}/shipment)
 app.include_router(inventory_router)        # GET /api/v1/inventory/stage2/aggregate (read-only)
