@@ -26,6 +26,7 @@ unconditional block.
 | Test | Tracking | Reason |
 |------|----------|--------|
 | `test_pz_batch.py::test_save_json_csv_ui_round_trip` | Issue #613 | Windows `csv.writer` CRLF / `splitlines()` round-trip artifact (asserts 8 == 4). Proven pre-existing on clean `origin/main`; not a regression. |
+| `test_ai_gateway_contract.py::test_call_returns_model_response_text` | Issue #798 | Live-API test patches `app.services.ai_redactor` which is not a real attribute; fails without a production Anthropic key. Confirmed pre-existing via `git stash` test (5 failures in baseline). Not introduced by any recent PR. |
 
 The PZ suite reports `1 failed, 257 passed` (258 collected). The gate accepts **only** this
 one documented failure. When #613 is fixed: remove this row and bump the PZ required count to 258.
