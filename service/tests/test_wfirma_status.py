@@ -21,6 +21,7 @@ from app.api.routes_webhooks_wfirma_status import (
     _build_service_block,
     _get_service_version,
     _uptime_seconds,
+    _scheduler_health,
     TICK_INTERVAL_SECONDS,
 )
 from app.auth.dependencies import get_current_user
@@ -93,6 +94,7 @@ def test_status_service_keys():
     assert "started_at" in svc
     assert "uptime_seconds" in svc
     assert "scheduler_running" in svc
+    assert "scheduler_health" in svc
     assert "last_tick_at" in svc
     assert "next_tick_at" in svc
     assert "tick_interval_seconds" in svc
@@ -316,7 +318,8 @@ def test_build_service_block_shape():
     block = _build_service_block()
     assert set(block.keys()) >= {
         "version", "started_at", "uptime_seconds",
-        "scheduler_running", "last_tick_at", "next_tick_at", "tick_interval_seconds",
+        "scheduler_running", "scheduler_health",
+        "last_tick_at", "next_tick_at", "tick_interval_seconds",
     }
 
 
@@ -353,3 +356,36 @@ def test_uptime_seconds_recent_timestamp_is_small():
 
 def test_uptime_seconds_returns_none_on_bad_input():
     assert _uptime_seconds("not-a-timestamp") is None
+
+
+# ── _scheduler_health ─────────────────────────────────────────────────────────
+
+
+def test_scheduler_health_stopped_when_not_running():
+    assert _scheduler_health(False, None, 30) == "stopped"
+    assert _scheduler_health(False, "2026-06-29T10:00:00+00:00", 30) == "stopped"
+
+
+def test_scheduler_health_degraded_when_running_no_tick():
+    assert _scheduler_health(True, None, 30) == "degraded"
+
+
+def test_scheduler_health_healthy_when_tick_is_recent():
+    from datetime import datetime, timezone, timedelta
+    recent = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+    assert _scheduler_health(True, recent, 30) == "healthy"
+
+
+def test_scheduler_health_degraded_when_tick_is_stale():
+    assert _scheduler_health(True, "2020-01-01T00:00:00+00:00", 30) == "degraded"
+
+
+def test_scheduler_health_degraded_on_bad_timestamp():
+    assert _scheduler_health(True, "not-a-date", 30) == "degraded"
+
+
+def test_scheduler_health_boundary_exactly_2x_interval():
+    from datetime import datetime, timezone, timedelta
+    # exactly 60s ago with interval=30 → healthy (≤ 2×)
+    boundary = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+    assert _scheduler_health(True, boundary, 30) == "healthy"

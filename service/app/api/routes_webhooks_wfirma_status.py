@@ -71,6 +71,18 @@ def _get_proc_db_path() -> Optional[Path]:
         return None
 
 
+def _scheduler_health(running: bool, last_tick_at: Optional[str], interval_seconds: int) -> str:
+    if not running:
+        return "stopped"
+    if last_tick_at is None:
+        return "degraded"
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(last_tick_at)).total_seconds()
+        return "healthy" if age <= interval_seconds * 2 else "degraded"
+    except Exception:
+        return "degraded"
+
+
 def _uptime_seconds(started_at: Optional[str]) -> Optional[int]:
     if not started_at:
         return None
@@ -89,13 +101,16 @@ def _build_service_block() -> dict:
     except Exception:
         sched = {"running": False, "started_at": None, "last_tick": None, "next_tick": None}
 
-    started_at = sched.get("started_at")
+    started_at   = sched.get("started_at")
+    running      = sched.get("running", False)
+    last_tick_at = sched.get("last_tick")
     return {
         "version":               _get_service_version(),
         "started_at":            started_at,
         "uptime_seconds":        _uptime_seconds(started_at),
-        "scheduler_running":     sched.get("running", False),
-        "last_tick_at":          sched.get("last_tick"),
+        "scheduler_running":     running,
+        "scheduler_health":      _scheduler_health(running, last_tick_at, TICK_INTERVAL_SECONDS),
+        "last_tick_at":          last_tick_at,
         "next_tick_at":          sched.get("next_tick"),
         "tick_interval_seconds": TICK_INTERVAL_SECONDS,
     }
