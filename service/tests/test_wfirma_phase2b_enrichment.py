@@ -38,22 +38,41 @@ def _make_proc_db(tmp_path: Path) -> Path:
 
 
 def _make_links_db(tmp_path: Path) -> Path:
-    """Create proforma_links.db using the production table DDL (via _ensure_drafts_table)."""
+    """Create proforma_links.db using the production DDL + post-conversion columns.
+
+    conversion_persistence.py adds wfirma_invoice_id / wfirma_invoice_number /
+    converted_at at runtime via idempotent ALTER TABLE; mirror that here so
+    tests that exercise invoice-ID matching have a realistic schema.
+    """
     db = tmp_path / "proforma_links.db"
     from app.services.proforma_invoice_link_db import _ensure_drafts_table
     with sqlite3.connect(str(db)) as conn:
         _ensure_drafts_table(conn)
+        for col_def in [
+            "wfirma_invoice_id TEXT",
+            "wfirma_invoice_number TEXT",
+            "converted_at TEXT",
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE proforma_drafts ADD COLUMN {col_def}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
     return db
 
 
-def _insert_draft(links_db: Path, wfirma_proforma_id: str) -> int:
+def _insert_draft(
+    links_db: Path,
+    wfirma_proforma_id: str,
+    wfirma_invoice_id: str | None = None,
+) -> int:
     with sqlite3.connect(str(links_db)) as conn:
         cur = conn.execute(
             "INSERT INTO proforma_drafts "
             "(batch_id, client_name, status, currency, source_lines_json, "
-            " created_at, updated_at, wfirma_proforma_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ("BATCH_TEST", "TEST_CLIENT", "draft", "EUR", "[]", NOW, NOW, wfirma_proforma_id),
+            " created_at, updated_at, wfirma_proforma_id, wfirma_invoice_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("BATCH_TEST", "TEST_CLIENT", "draft", "EUR", "[]", NOW, NOW,
+             wfirma_proforma_id, wfirma_invoice_id),
         )
         return cur.lastrowid
 
@@ -308,3 +327,136 @@ def test_enrichment_failed_on_write_error(tmp_path, monkeypatch):
     after = _get_all_draft_fields(links_db, draft_id)
     for col in before:
         assert before[col] == after[col], f"Column {col!r} must not change on failure"
+
+
+# ── test 6: match by wfirma_invoice_id (primary match) ───────────────────────
+
+
+def test_match_by_invoice_id(tmp_path):
+    """
+    Faktury.Dodanie carries the wFirma invoice ID as object_id.
+    A draft with wfirma_invoice_id matching object_id must be found
+    and enriched even when wfirma_proforma_id is different.
+    """
+    proc_db  = _make_proc_db(tmp_path)
+    links_db = _make_links_db(tmp_path)
+
+    proforma_id = "482638499"
+    invoice_id  = "484110947"   # the real invoice ID from Faktury.Dodanie
+    draft_id = _insert_draft(links_db, proforma_id, wfirma_invoice_id=invoice_id)
+
+    event_id = str(uuid.uuid4())
+    # object_id is the invoice ID — NOT the proforma ID
+    _insert_event(proc_db, event_id, invoice_id)
+    _insert_snapshot_row(proc_db, event_id, invoice_id,
+                         issue_date="2026-06-10",
+                         payment_due="2026-07-10",
+                         payment_method="transfer")
+
+    result = enrich_snapshot(
+        event_id=event_id,
+        object_id=invoice_id,
+        proc_db=proc_db,
+        links_db=links_db,
+        now=NOW,
+    )
+
+    assert result == "COMPLETED", f"Expected COMPLETED, got {result}"
+    assert _get_proc_state(proc_db, event_id) == "COMPLETED"
+
+    draft = _get_draft(links_db, draft_id)
+    assert draft["wfirma_issue_date"]     == "2026-06-10"
+    assert draft["wfirma_payment_due"]    == "2026-07-10"
+    assert draft["wfirma_payment_method"] == "transfer"
+
+
+# ── test 7: wfirma_proforma_id fallback still works ──────────────────────────
+
+
+def test_proforma_id_fallback_when_no_invoice_id(tmp_path):
+    """
+    When a draft has no wfirma_invoice_id, the match must fall back to
+    wfirma_proforma_id.  Existing behaviour must be preserved.
+    """
+    proc_db  = _make_proc_db(tmp_path)
+    links_db = _make_links_db(tmp_path)
+
+    proforma_id = "482638627"
+    # no invoice_id — wfirma_invoice_id is NULL
+    draft_id = _insert_draft(links_db, proforma_id, wfirma_invoice_id=None)
+
+    event_id = str(uuid.uuid4())
+    _insert_event(proc_db, event_id, proforma_id)
+    _insert_snapshot_row(proc_db, event_id, proforma_id)
+
+    result = enrich_snapshot(
+        event_id=event_id,
+        object_id=proforma_id,
+        proc_db=proc_db,
+        links_db=links_db,
+        now=NOW,
+    )
+
+    assert result == "COMPLETED", f"Expected COMPLETED via proforma_id fallback, got {result}"
+    draft = _get_draft(links_db, draft_id)
+    assert draft["wfirma_issue_date"] == "2026-06-01"
+
+
+# ── test 8: invoice_id wins when both columns could match ────────────────────
+
+
+def test_invoice_id_wins_over_proforma_id(tmp_path):
+    """
+    If draft A has wfirma_invoice_id=X and draft B has wfirma_proforma_id=X,
+    object_id=X must match draft A (invoice_id takes priority).
+    """
+    proc_db  = _make_proc_db(tmp_path)
+    links_db = _make_links_db(tmp_path)
+
+    shared_id = "500000001"
+
+    # Draft A: invoice_id matches the shared value (different client to satisfy UNIQUE)
+    with sqlite3.connect(str(links_db)) as conn:
+        cur = conn.execute(
+            "INSERT INTO proforma_drafts "
+            "(batch_id, client_name, status, currency, source_lines_json, "
+            " created_at, updated_at, wfirma_proforma_id, wfirma_invoice_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("BATCH_TEST", "CLIENT_A", "draft", "EUR", "[]", NOW, NOW, "999000001", shared_id),
+        )
+        draft_a = cur.lastrowid
+    # Draft B: proforma_id matches the same value, different client
+    with sqlite3.connect(str(links_db)) as conn:
+        cur = conn.execute(
+            "INSERT INTO proforma_drafts "
+            "(batch_id, client_name, status, currency, source_lines_json, "
+            " created_at, updated_at, wfirma_proforma_id, wfirma_invoice_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("BATCH_TEST", "CLIENT_B", "draft", "EUR", "[]", NOW, NOW, shared_id, None),
+        )
+        draft_b = cur.lastrowid
+
+    event_id = str(uuid.uuid4())
+    _insert_event(proc_db, event_id, shared_id)
+    _insert_snapshot_row(proc_db, event_id, shared_id,
+                         issue_date="2026-06-25",
+                         payment_due="2026-07-25",
+                         payment_method="card")
+
+    result = enrich_snapshot(
+        event_id=event_id,
+        object_id=shared_id,
+        proc_db=proc_db,
+        links_db=links_db,
+        now=NOW,
+    )
+
+    assert result == "COMPLETED"
+
+    # Draft A (invoice_id match) must be enriched
+    a = _get_draft(links_db, draft_a)
+    assert a["wfirma_issue_date"] == "2026-06-25", "Draft A (invoice_id match) must be enriched"
+
+    # Draft B (proforma_id match) must be untouched
+    b = _get_draft(links_db, draft_b)
+    assert b["wfirma_issue_date"] is None, "Draft B (proforma_id match) must not be enriched"
