@@ -142,15 +142,14 @@ def _run_processing_tick() -> None:
             processor.process(event_id, object_id, payload_json, now)
 
             set_state(
-                _proc_db_path, event_id, "COMPLETED",
+                _proc_db_path, event_id, "SNAPSHOTTED",
                 extra={
                     "fetched_at": now,
                     "snapshotted_at": now,
-                    "completed_at": now,
                 },
             )
             log.info(
-                "wfirma_scheduler: completed event_id=%s object_id=%s",
+                "wfirma_scheduler: snapshotted event_id=%s object_id=%s",
                 event_id, object_id,
             )
 

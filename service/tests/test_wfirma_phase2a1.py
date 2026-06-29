@@ -170,9 +170,9 @@ def test_get_processable_events_returns_retry_pending(proc_db: Path) -> None:
     assert any(r["event_id"] == "evt-002" for r in rows)
 
 
-def test_get_processable_events_skips_completed(proc_db: Path) -> None:
+def test_get_processable_events_skips_snapshotted(proc_db: Path) -> None:
     ensure_processing_row(proc_db, "evt-done", "INV-003", _NOW)
-    set_state(proc_db, "evt-done", "COMPLETED", extra={"completed_at": _NOW})
+    set_state(proc_db, "evt-done", "SNAPSHOTTED", extra={"snapshotted_at": _NOW})
     rows = get_processable_events(proc_db)
     assert not any(r["event_id"] == "evt-done" for r in rows)
 
@@ -487,7 +487,7 @@ def test_scheduler_tick_creates_processing_row(tmp_path: Path) -> None:
         sched._run_processing_tick()
 
     rows = get_processable_events(proc_db)
-    # Should be empty — event was processed to COMPLETED
+    # Should be empty — event is SNAPSHOTTED, not re-processable by Phase 2A.1
     assert not any(r["event_id"] == "evt-001" for r in rows)
 
     with sqlite3.connect(str(proc_db)) as conn:
@@ -495,10 +495,10 @@ def test_scheduler_tick_creates_processing_row(tmp_path: Path) -> None:
             "SELECT processing_state FROM wfirma_webhook_processing WHERE event_id='evt-001'"
         ).fetchone()
     assert row is not None
-    assert row[0] == "COMPLETED"
+    assert row[0] == "SNAPSHOTTED"
 
 
-def test_scheduler_tick_marks_completed_on_success(tmp_path: Path) -> None:
+def test_scheduler_tick_marks_snapshotted_on_success(tmp_path: Path) -> None:
     events_db, proc_db = _setup_tick(tmp_path)
 
     import app.services.wfirma_webhook_scheduler as sched
