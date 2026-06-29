@@ -146,6 +146,9 @@ if ($SkipRobocopy) {
     }
     Add-Result "Robocopy" $true "exit=$LASTEXITCODE  (0-3=OK)"
 
+    # -- Write version.txt for /api/v1/webhooks/wfirma/status version field --
+    $head | Out-File -FilePath "C:\PZ\version.txt" -Encoding utf8 -NoNewline
+
     # -- Service restart (between conditions 4 and 5) --------------
     Write-Host "[*]   Restarting PZService..."
     sc.exe stop PZService | Out-Null
