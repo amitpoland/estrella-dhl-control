@@ -245,6 +245,27 @@ Use this to answer "what must be done first?" and "what does this phase unlock?"
 
 ---
 
+## Architecture Decision Log
+
+Every architectural decision that cannot be changed without a campaign amendment.
+"Locked" means the decision is binding on all future phases — deviation requires operator approval and a new ADR entry.
+
+| ADR | Decision | Rationale | Status |
+|---|---|---|---|
+| ADR-001 | Immutable event log | Enables replay, audit trail, and safe reprocessing without data loss | Locked |
+| ADR-002 | Snapshot before enrichment | Decouples wFirma API availability from business logic — enrichment runs from stored snapshot, not live API | Locked |
+| ADR-003 | Single authority per domain | Eliminates competing sources of truth; each field has exactly one system allowed to write it | Locked |
+| ADR-004 | Replay-first architecture | Any event can be reprocessed from Layer 1 without side effects; snapshots are append-only | Locked |
+| ADR-005 | No business writes in Phase 2A | Validates the snapshot pipeline in production before touching business tables; reduces blast radius | Locked |
+| ADR-006 | `operator_override` flag on enrichment fields | Makes dual-write race deterministic: if `operator_override=true`, enrichment logs and skips — operator always wins | Locked |
+| ADR-007 | Webhook key rotation via maintenance window (no dual-key) | Simplest safe path; auth layer rejects mismatched key (safe fail); rotation documented in ops runbook | Locked |
+| ADR-008 | Background processing only — webhook handler returns 200 immediately | Prevents duplicate delivery from wFirma retries; all processing happens async in APScheduler | Locked |
+| ADR-009 | Track G (AI) blocked until Tracks A–F have stable authority boundaries | AI layer must operate on clean data with clear ownership — unstable authorities produce untrustworthy AI output | Locked |
+
+_To propose an amendment: open a governance PR against this file with the new ADR entry and a rationale. Changes to Locked decisions require operator approval before implementation begins._
+
+---
+
 ## Program Risks
 
 _Review this table at the start of any session that touches a risk-adjacent area._
@@ -257,9 +278,9 @@ _Review this table at the start of any session that touches a risk-adjacent area
 | Scheduler outage — APScheduler stops, events accumulate | **Monitored** | Phase 2A.2 diagnostics endpoint | `scheduler_health` field returns `late` / `stopped`; dead-letter count visible in `/wfirma/status` |
 | Dead-letter accumulation — events permanently fail | **Monitored** | Phase 2A.2 diagnostics endpoint | `recent_dead_letters` list in status response; `fetch_failures` counter; alerts can be wired to this endpoint |
 | External API change — wFirma changes XML schema | **Open** | wFirma integration | Snapshots store raw XML alongside parsed JSON; parser failures land in dead-letter, not silently corrupt data; schema version field planned for Phase 3 |
-| wFirma webhook key rotation — HMAC key changed without updating Dashboard | **Open** | Ops / deployment | Key stored in config; rotation procedure not yet documented; Phase 1 auth layer will reject if key mismatches (safe fail) |
+| wFirma webhook key rotation — HMAC key changed without updating Dashboard | **Monitored (Runbook defined)** | Ops / deployment | Rotation procedure: (1) generate new key → (2) update production config → (3) update wFirma → (4) monitor auth failures for one tick cycle → (5) remove old key → (6) record rotation timestamp in ops log. Safe fail: auth layer rejects mismatched key, no silent corruption. |
 | Phase 2B scope creep — enrichment field list grows beyond 3 | **Mitigated** | Campaign DoD + reviewer-challenge | Field whitelist locked in this document and in phase-specific DoD; reviewer-challenge blocks any PR that adds a fourth field without a campaign amendment |
-| Dual-write race — operator edits a field while enrichment is writing | **Open** | Phase 2B implementation | Conflict resolution strategy not yet defined; planned: enrichment skips if `operator_override` flag is set on the target field |
+| Dual-write race — operator edits a field while enrichment is writing | **Mitigated (Design)** | Phase 2B implementation | Enrichment fields carry `last_authority`, `last_updated_at`, `operator_override`, `operator_override_at`. If `operator_override=true`, enrichment logs a warning and skips — never overwrites. Race is deterministic: operator wins. |
 | Schema drift — processing DB schema diverges across deploys | **Mitigated** | Immutable event log (rule 2) | Raw events always replayable from Layer 1; worst case is replay, not data loss |
 
 **Status legend:** Mitigated = risk controlled by existing architecture or code. Monitored = risk visible via tooling, not yet eliminated. Open = acknowledged, no mitigation yet — needs a plan before the relevant phase starts.
@@ -323,4 +344,5 @@ Done = production verified + records updated.
 | 2026-06-29 | Campaign adopted; Track A D1–D3 and Track B Phases 1–2A.2 marked complete |
 | 2026-06-29 | Dependencies Matrix added |
 | 2026-06-29 | Program Dashboard and Definition of Done added |
-| 2026-06-29 | Program Risks register added (10 risks: 6 Mitigated, 2 Monitored, 2 Open) |
+| 2026-06-29 | Program Risks register added; Architecture Decision Log (ADR-001–009) added |
+| 2026-06-29 | Dual-write race resolved → Mitigated (operator_override design); Key rotation → Monitored (runbook defined) |
