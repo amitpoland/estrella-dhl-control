@@ -30,10 +30,32 @@ log = logging.getLogger(__name__)
 _scheduler = None          # module-level singleton (BackgroundScheduler)
 _events_db_path: Optional[Path] = None
 _proc_db_path: Optional[Path] = None
+_last_tick_at: Optional[str] = None  # set at the start of every tick
 
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def get_scheduler_status() -> dict:
+    """
+    Return a snapshot of scheduler state for the diagnostics endpoint.
+    Safe to call from any thread; never raises.
+    """
+    running = _scheduler is not None and getattr(_scheduler, "running", False)
+    next_tick: Optional[str] = None
+    if running:
+        try:
+            job = _scheduler.get_job("wfirma_webhook_processor")
+            if job and job.next_run_time:
+                next_tick = job.next_run_time.isoformat()
+        except Exception:
+            pass
+    return {
+        "running": running,
+        "last_tick": _last_tick_at,
+        "next_tick": next_tick,
+    }
 
 
 def _read_payload(event_id: str) -> str:
@@ -59,9 +81,12 @@ def _run_processing_tick() -> None:
               processing row yet, create one (INSERT OR IGNORE, state=RECEIVED).
 
     Step 2 — process: find RECEIVED / RETRY_PENDING rows and attempt to fetch
-              XML + store a snapshot for each. On success → COMPLETED.
+              XML + store a snapshot for each. On success → SNAPSHOTTED.
               On failure → FAILED + retry_count++; after MAX_RETRIES → DEAD_LETTER.
     """
+    global _last_tick_at
+    _last_tick_at = _now_utc()
+
     if _events_db_path is None or _proc_db_path is None:
         return
 
