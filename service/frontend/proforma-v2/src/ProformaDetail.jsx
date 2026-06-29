@@ -2795,6 +2795,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       currency:      liveDraft.currency || 'EUR',
       exchange_rate: liveDraft.exchange_rate || '',
       incoterm:      liveDraft.incoterm || '',
+      insurance_eur: liveDraft.insurance_eur != null ? String(liveDraft.insurance_eur) : '',
     });
     setEditError(null);
     setEditMode(true);
@@ -2818,6 +2819,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       patch.exchange_rate = editFields.exchange_rate;
     if (editFields.incoterm !== (liveDraft.incoterm || ''))
       patch.incoterm = editFields.incoterm;
+    const origIns = liveDraft.insurance_eur != null ? String(liveDraft.insurance_eur) : '';
+    if (editFields.insurance_eur !== origIns && editFields.insurance_eur !== '')
+      patch.insurance_eur = parseFloat(editFields.insurance_eur) || 0;
     // payment_terms: try to parse as JSON object, fallback to string
     const origPt = typeof liveDraft.payment_terms === 'object'
       ? JSON.stringify(liveDraft.payment_terms) : (liveDraft.payment_terms || '');
@@ -3623,6 +3627,15 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
         {editMode
           ? <EditableKvItem k="Currency" value={editFields.currency || ''} onChange={v => onEditField('currency', v)} />
           : <KvItem k="Source" v={detail.clone_source || detail.source_description || detail.source || '—'} />
+        }
+
+        {editMode
+          ? <EditableKvItem k="Incoterm" value={editFields.incoterm || ''} onChange={v => onEditField('incoterm', v)} />
+          : <KvItem k="Incoterm" v={detail.incoterm} />
+        }
+        {editMode
+          ? <EditableKvItem k="Insurance EUR" value={editFields.insurance_eur || ''} onChange={v => onEditField('insurance_eur', v)} />
+          : <KvItem k="Insurance EUR" v={detail.insurance_eur != null ? String(detail.insurance_eur) : '—'} muted={detail.insurance_eur == null} />
         }
       </div>
 
