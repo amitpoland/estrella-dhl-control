@@ -322,14 +322,20 @@ def test_processing_stats_counts_states(proc_db: Path) -> None:
 # ── _extract_object_id ────────────────────────────────────────────────────────
 
 
+def test_extract_object_id_from_object_id_field() -> None:
+    payload = json.dumps({"object_id": "99999", "event_type": "Faktury.Dodanie"})
+    assert _extract_object_id(payload) == "99999"
+
+
 def test_extract_object_id_from_invoice_id_field() -> None:
     payload = json.dumps({"invoice_id": "482638499", "event_type": "Faktury.Dodanie"})
     assert _extract_object_id(payload) == "482638499"
 
 
-def test_extract_object_id_from_object_id_field() -> None:
-    payload = json.dumps({"object_id": "99999", "event_type": "Faktury.Dodanie"})
-    assert _extract_object_id(payload) == "99999"
+def test_extract_object_id_priority_object_id_over_invoice_id() -> None:
+    """object_id is canonical — must win when both fields are present."""
+    payload = json.dumps({"object_id": "111", "invoice_id": "222"})
+    assert _extract_object_id(payload) == "111"
 
 
 def test_extract_object_id_from_faktury_id_field() -> None:

@@ -83,8 +83,8 @@ def _extract_object_id(payload_json: str) -> Optional[str]:
     if not isinstance(payload, dict):
         return None
     return (
-        payload.get("invoice_id")
-        or payload.get("object_id")
+        payload.get("object_id")
+        or payload.get("invoice_id")
         or payload.get("faktury_id")
         or None
     )
