@@ -82,7 +82,7 @@ def test_status_response_has_required_top_level_keys():
     with patch("app.api.routes_webhooks_wfirma_status._get_proc_db_path", return_value=None):
         r = client.get("/api/v1/webhooks/wfirma/status")
     data = r.json()
-    assert set(data.keys()) >= {"service", "queue", "snapshots", "recent_dead_letters"}
+    assert set(data.keys()) >= {"service", "queue", "snapshots", "metrics", "recent_dead_letters"}
 
 
 def test_status_service_keys():
@@ -175,6 +175,17 @@ def test_version_appears_in_response():
 # ── no-db fallback ────────────────────────────────────────────────────────────
 
 
+def test_status_metrics_keys():
+    client = _app_authed()
+    with patch("app.api.routes_webhooks_wfirma_status._get_proc_db_path", return_value=None):
+        r = client.get("/api/v1/webhooks/wfirma/status")
+    m = r.json()["metrics"]
+    assert set(m.keys()) >= {
+        "webhooks_received", "snapshots_created", "duplicates",
+        "fetch_failures", "enrichment_success", "enrichment_failed",
+    }
+
+
 def test_status_returns_zeros_when_db_not_initialised():
     client = _app_authed()
     with patch("app.api.routes_webhooks_wfirma_status._get_proc_db_path", return_value=None):
@@ -182,6 +193,7 @@ def test_status_returns_zeros_when_db_not_initialised():
     data = r.json()
     assert data["queue"]["received"] == 0
     assert data["snapshots"]["total"] == 0
+    assert data["metrics"]["webhooks_received"] == 0
     assert data["recent_dead_letters"] == []
 
 
@@ -256,6 +268,73 @@ def test_query_status_dead_letters_capped_at_five(tmp_path: Path):
         mark_dead_letter(db, eid, _NOW)
     result = _query_status(db)
     assert len(result["recent_dead_letters"]) == 5
+
+
+# ── metrics ───────────────────────────────────────────────────────────────────
+
+
+def test_metrics_keys_present(tmp_path: Path):
+    db = tmp_path / "proc.db"
+    _seed_db(db)
+    result = _query_status(db)
+    assert set(result["metrics"].keys()) >= {
+        "webhooks_received", "snapshots_created", "duplicates",
+        "fetch_failures", "enrichment_success", "enrichment_failed",
+    }
+
+
+def test_metrics_webhooks_received_equals_total_queue(tmp_path: Path):
+    db = tmp_path / "proc.db"
+    _seed_db(db)
+    result = _query_status(db)
+    # seeded: 1 received + 1 snapshotted + 1 dead_letter = 3
+    assert result["metrics"]["webhooks_received"] == result["queue"]["total"]
+
+
+def test_metrics_snapshots_created(tmp_path: Path):
+    db = tmp_path / "proc.db"
+    _seed_db(db)
+    result = _query_status(db)
+    assert result["metrics"]["snapshots_created"] == result["snapshots"]["total"]
+
+
+def test_metrics_fetch_failures_equals_dead_letter(tmp_path: Path):
+    db = tmp_path / "proc.db"
+    _seed_db(db)
+    result = _query_status(db)
+    assert result["metrics"]["fetch_failures"] == result["queue"]["dead_letter"]
+
+
+def test_metrics_duplicates_zero_when_all_first_version(tmp_path: Path):
+    db = tmp_path / "proc.db"
+    _seed_db(db)
+    result = _query_status(db)
+    # _seed_db inserts one snapshot at version 1 — no duplicates
+    assert result["metrics"]["duplicates"] == 0
+
+
+def test_metrics_duplicates_counts_version_gt_1(tmp_path: Path):
+    db = tmp_path / "proc.db"
+    init_db(db)
+    # Insert two snapshots for the same object_id (versions 1 and 2)
+    for i, eid in enumerate(["evt-a", "evt-b"]):
+        ensure_processing_row(db, eid, "OBJ-SAME", _NOW)
+        insert_snapshot(
+            db, snapshot_id=f"snap-{i}", event_id=eid,
+            object_id="OBJ-SAME", fetched_at=_NOW,
+            raw_xml="<api/>", parsed={}, raw_payload="{}",
+        )
+    result = _query_status(db)
+    # version 1 and version 2: one row has version > 1
+    assert result["metrics"]["duplicates"] == 1
+
+
+def test_metrics_enrichment_zero_before_phase2b(tmp_path: Path):
+    db = tmp_path / "proc.db"
+    _seed_db(db)
+    result = _query_status(db)
+    assert result["metrics"]["enrichment_success"] == 0
+    assert result["metrics"]["enrichment_failed"] == 0
 
 
 # ── scheduler status ──────────────────────────────────────────────────────────
