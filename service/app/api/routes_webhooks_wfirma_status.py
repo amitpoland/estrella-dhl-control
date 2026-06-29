@@ -40,12 +40,26 @@ router = APIRouter(prefix="/api/v1/webhooks", tags=["webhooks-wfirma"])
 
 TICK_INTERVAL_SECONDS = 30
 
+# Written by verify_deploy_close.ps1 after robocopy. Two levels above app/:
+#   production: C:\PZ\git_sha.txt  (parents[2] of C:\PZ\app\api\<file>)
+_SHA_FILE = Path(__file__).parents[2] / "git_sha.txt"
+
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 
 def _get_service_version() -> str:
-    return os.environ.get("PZ_VERSION", "unknown")
+    """Return deployed SHA via priority chain: PZ_VERSION env → git_sha.txt → 'unknown'."""
+    v = os.environ.get("PZ_VERSION")
+    if v:
+        return v
+    try:
+        sha = _SHA_FILE.read_text(encoding="utf-8").strip()
+        if sha:
+            return sha
+    except Exception:
+        pass
+    return "unknown"
 
 
 def _get_proc_db_path() -> Optional[Path]:
