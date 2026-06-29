@@ -57,16 +57,28 @@ Cross-reference: `service/docs/production_deployment_rule.md`, `CLAUDE.md §Engi
 
 ---
 
-## Execution Strategy (per session)
+## Session Startup (mandatory — every session)
 
-1. Read this document.
-2. Identify the next incomplete phase on the active track.
-3. Complete that phase end-to-end (code → tests → PR → deploy → verify).
-4. Update the roadmap below.
-5. Move to the next phase.
+```
+1. Read .claude/campaigns/ej-dashboard-master.md     ← this file
+2. Read TASK_STATE.md                                ← current phase + GATE 2 state
+3. Verify current production SHA matches last release entry below
+4. Continue only the highest-priority unlocked phase from the Dependencies Matrix
+```
 
-No jumping between unrelated tracks unless the task is a production hotfix.
-Every phase ends with a verified production deploy — not a merged PR.
+Development is campaign-driven, not chat-driven. A session that skips this startup has no authoritative context and must not begin implementation work.
+
+## Execution Strategy (per phase)
+
+1. Confirm all Depends-On phases are ✅ in the Dependencies Matrix.
+2. Write the phase scope and Definition of Done criteria before any code.
+3. Implement → tests → PR → merge → `verify_deploy_close.ps1` → production confirm.
+4. Update Program Dashboard counts and mark phase ✅ in the track table.
+5. Update TASK_STATE.md with SHA and test counts.
+6. Log the release in Release History below.
+7. Move to the next unlocked phase.
+
+No jumping between unrelated tracks unless the task is a production hotfix. Every phase ends with a verified production deploy — not a merged PR.
 
 ---
 
@@ -261,6 +273,7 @@ Every architectural decision that cannot be changed without a campaign amendment
 | ADR-007 | Webhook key rotation via maintenance window (no dual-key) | Simplest safe path; auth layer rejects mismatched key (safe fail); rotation documented in ops runbook | Locked |
 | ADR-008 | Background processing only — webhook handler returns 200 immediately | Prevents duplicate delivery from wFirma retries; all processing happens async in APScheduler | Locked |
 | ADR-009 | Track G (AI) blocked until Tracks A–F have stable authority boundaries | AI layer must operate on clean data with clear ownership — unstable authorities produce untrustworthy AI output | Locked |
+| ADR-010 | Phase 2B fields split into Category A (pure wFirma authority) and Category B (shared authority) | Category A fields (`wfirma_issue_date`, `wfirma_payment_due`, `wfirma_payment_method`) have no override metadata — enrichment writes freely. Category B fields get `operator_override`, `operator_override_at`, `authority_source`, `authority_updated_at` columns. Phase 2B operates entirely in Category A. | Locked |
 
 _To propose an amendment: open a governance PR against this file with the new ADR entry and a rationale. Changes to Locked decisions require operator approval before implementation begins._
 
@@ -337,6 +350,22 @@ Done = production verified + records updated.
 
 ---
 
+## Release History
+
+_Append-only. Every deployed phase goes here with production SHA and date._
+
+| Release | Track | PR | Production SHA | Date | What |
+|---|---|---|---|---|---|
+| D1 — Atlas shell | A | #791 | `1619009b` | 2026-06-28 | React shell, routing, component scaffold |
+| D2 — Renderer parity | A | #789 | `1e1ff9f3` | 2026-06-29 | Full proforma field rendering in React |
+| D3 — Editable fields | A | #792 | `8332f02a` | 2026-06-29 | Incoterm + insurance_eur operator edit |
+| Phase 1 — Webhook Capture | B | #794 | — | 2026-06-29 | wFirma webhook receiver + immutable event log |
+| Phase 2A.1 — Snapshots | B | #795 | `c3f1229a` | 2026-06-29 | Background scheduler + snapshot pipeline |
+| Phase 2A.2 — Diagnostics | B | #796 | pending | — | `/api/v1/webhooks/wfirma/status` endpoint |
+| Phase 2B — Safe Enrichment | B | — | pending | — | 3-field enrichment from snapshot → proforma |
+
+---
+
 ## Changelog
 
 | Date | Change |
@@ -346,3 +375,4 @@ Done = production verified + records updated.
 | 2026-06-29 | Program Dashboard and Definition of Done added |
 | 2026-06-29 | Program Risks register added; Architecture Decision Log (ADR-001–009) added |
 | 2026-06-29 | Dual-write race resolved → Mitigated (operator_override design); Key rotation → Monitored (runbook defined) |
+| 2026-06-29 | ADR-010 added: Phase 2B field categorization (Category A / Category B); Release History added; Session Startup formalized to 4 mandatory steps |
