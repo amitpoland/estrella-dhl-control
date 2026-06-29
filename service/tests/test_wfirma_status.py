@@ -20,6 +20,7 @@ from app.api.routes_webhooks_wfirma_status import (
     _query_status,
     _build_service_block,
     _get_service_version,
+    _uptime_seconds,
     TICK_INTERVAL_SECONDS,
 )
 from app.auth.dependencies import get_current_user
@@ -89,6 +90,8 @@ def test_status_service_keys():
         r = client.get("/api/v1/webhooks/wfirma/status")
     svc = r.json()["service"]
     assert "version" in svc
+    assert "started_at" in svc
+    assert "uptime_seconds" in svc
     assert "scheduler_running" in svc
     assert "last_tick_at" in svc
     assert "next_tick_at" in svc
@@ -310,7 +313,10 @@ def test_last_tick_updates_on_tick(tmp_path: Path):
 
 def test_build_service_block_shape():
     block = _build_service_block()
-    assert set(block.keys()) >= {"version", "scheduler_running", "last_tick_at", "next_tick_at", "tick_interval_seconds"}
+    assert set(block.keys()) >= {
+        "version", "started_at", "uptime_seconds",
+        "scheduler_running", "last_tick_at", "next_tick_at", "tick_interval_seconds",
+    }
 
 
 def test_build_service_block_tick_interval():
@@ -321,3 +327,28 @@ def test_build_service_block_tick_interval():
 def test_build_service_block_scheduler_running_type():
     block = _build_service_block()
     assert isinstance(block["scheduler_running"], bool)
+
+
+# ── _uptime_seconds ───────────────────────────────────────────────────────────
+
+
+def test_uptime_seconds_none_when_no_started_at():
+    assert _uptime_seconds(None) is None
+
+
+def test_uptime_seconds_returns_int_for_valid_timestamp():
+    result = _uptime_seconds("2026-01-01T00:00:00+00:00")
+    assert isinstance(result, int)
+    assert result > 0
+
+
+def test_uptime_seconds_recent_timestamp_is_small():
+    from datetime import datetime, timezone, timedelta
+    recent = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    result = _uptime_seconds(recent)
+    assert result is not None
+    assert 0 <= result <= 30  # allow a little clock slack
+
+
+def test_uptime_seconds_returns_none_on_bad_input():
+    assert _uptime_seconds("not-a-timestamp") is None

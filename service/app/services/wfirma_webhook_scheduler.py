@@ -30,7 +30,8 @@ log = logging.getLogger(__name__)
 _scheduler = None          # module-level singleton (BackgroundScheduler)
 _events_db_path: Optional[Path] = None
 _proc_db_path: Optional[Path] = None
-_last_tick_at: Optional[str] = None  # set at the start of every tick
+_last_tick_at: Optional[str] = None   # set at the start of every tick
+_started_at: Optional[str] = None     # set once when the scheduler starts
 
 
 def _now_utc() -> str:
@@ -52,9 +53,10 @@ def get_scheduler_status() -> dict:
         except Exception:
             pass
     return {
-        "running": running,
-        "last_tick": _last_tick_at,
-        "next_tick": next_tick,
+        "running":    running,
+        "started_at": _started_at,
+        "last_tick":  _last_tick_at,
+        "next_tick":  next_tick,
     }
 
 
@@ -215,6 +217,9 @@ def start_wfirma_scheduler(storage_root: Path) -> None:
             "Install with: pip install 'apscheduler>=3.10.0'"
         )
         return
+
+    global _started_at
+    _started_at = _now_utc()
 
     _scheduler = BackgroundScheduler(daemon=True)
     _scheduler.add_job(

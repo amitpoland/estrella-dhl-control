@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -70,16 +71,29 @@ def _get_proc_db_path() -> Optional[Path]:
         return None
 
 
+def _uptime_seconds(started_at: Optional[str]) -> Optional[int]:
+    if not started_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(started_at)
+        return int((datetime.now(timezone.utc) - dt).total_seconds())
+    except Exception:
+        return None
+
+
 def _build_service_block() -> dict:
     """Merge version + scheduler state into a single 'service' section."""
     try:
         from ..services.wfirma_webhook_scheduler import get_scheduler_status
         sched = get_scheduler_status()
     except Exception:
-        sched = {"running": False, "last_tick": None, "next_tick": None}
+        sched = {"running": False, "started_at": None, "last_tick": None, "next_tick": None}
 
+    started_at = sched.get("started_at")
     return {
         "version":               _get_service_version(),
+        "started_at":            started_at,
+        "uptime_seconds":        _uptime_seconds(started_at),
         "scheduler_running":     sched.get("running", False),
         "last_tick_at":          sched.get("last_tick"),
         "next_tick_at":          sched.get("next_tick"),
