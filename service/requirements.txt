@@ -27,3 +27,4 @@ rapidfuzz>=3.0.0       # Fuzzy string matching for AI column mapping
 xlsxwriter>=3.0.0      # XLSX generation (reports, exports)
 python-dateutil>=2.9.0 # Robust date parsing across Excel date formats
 chardet>=5.0.0         # Byte-stream charset detection for uploaded files
+apscheduler>=3.10.0    # Background scheduler for wFirma webhook processing (Phase 2A.1)

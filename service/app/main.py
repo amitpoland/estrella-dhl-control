@@ -388,8 +388,24 @@ async def lifespan(app: FastAPI):
     except Exception as _arv_exc:
         log.warning("ActionRegistry startup validation skipped: %s", _arv_exc)
 
+    # ── wFirma webhook scheduler (Phase 2A.1) ─────────────────────────────────
+    # Polls for RECEIVED events every 30s, fetches XML, stores immutable snapshots.
+    # Non-fatal: missing apscheduler or DB error logs a warning and continues.
+    try:
+        from .services.wfirma_webhook_scheduler import start_wfirma_scheduler
+        start_wfirma_scheduler(_root)
+    except Exception as _wfirma_sched_exc:
+        log.warning("wfirma_webhook_scheduler startup failed (non-fatal): %s", _wfirma_sched_exc)
+
     yield
     log.info("Estrella PZ Service shutting down.")
+
+    # ── wFirma webhook scheduler clean shutdown ────────────────────────────────
+    try:
+        from .services.wfirma_webhook_scheduler import stop_wfirma_scheduler
+        stop_wfirma_scheduler()
+    except Exception as _wfirma_stop_exc:
+        log.warning("wfirma_webhook_scheduler stop failed (non-fatal): %s", _wfirma_stop_exc)
 
     # ── DHL orchestrator clean shutdown ────────────────────────────────────
     try:
