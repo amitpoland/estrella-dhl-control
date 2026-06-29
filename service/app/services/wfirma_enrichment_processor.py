@@ -25,14 +25,21 @@ log = logging.getLogger(__name__)
 
 def _find_draft_id(links_db: Path, object_id: str) -> Optional[int]:
     """
-    Return proforma_drafts.id where wfirma_proforma_id = object_id, or None.
+    Return proforma_drafts.id for the given wFirma object_id, or None.
+
+    Faktury.Dodanie carries the invoice ID as object_id, so wfirma_invoice_id
+    is checked first.  wfirma_proforma_id is the fallback for invoices that
+    were created directly without a proforma conversion step.
     Never raises.
     """
     try:
         with sqlite3.connect(str(links_db)) as conn:
             row = conn.execute(
-                "SELECT id FROM proforma_drafts WHERE wfirma_proforma_id = ?",
-                (str(object_id),),
+                "SELECT id FROM proforma_drafts "
+                "WHERE wfirma_invoice_id = ? OR wfirma_proforma_id = ? "
+                "ORDER BY CASE WHEN wfirma_invoice_id = ? THEN 0 ELSE 1 END "
+                "LIMIT 1",
+                (str(object_id), str(object_id), str(object_id)),
             ).fetchone()
         return int(row[0]) if row else None
     except Exception as exc:
