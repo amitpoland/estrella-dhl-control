@@ -245,6 +245,27 @@ Use this to answer "what must be done first?" and "what does this phase unlock?"
 
 ---
 
+## Program Risks
+
+_Review this table at the start of any session that touches a risk-adjacent area._
+
+| Risk | Status | Owner | Mitigation |
+|---|---|---|---|
+| Authority conflict — two systems write the same field | **Mitigated** | Architecture rules 1 + 6 | One-authority-per-domain rule enforced at PR review; enrichment whitelist locks Phase 2B to 3 fields |
+| Data overwrite — automatic sync clobbers operator-entered values | **Mitigated** | Enrichment layer (rule 6) | `write_postposting_enrichment()` writes only whitelisted fields; operator overrides never touched |
+| Replay failure — reprocessing produces different output | **Mitigated** | Immutable event log + snapshots (rules 2, 3, 7) | Events and snapshots are append-only; replay test mandatory for every enrichment phase |
+| Scheduler outage — APScheduler stops, events accumulate | **Monitored** | Phase 2A.2 diagnostics endpoint | `scheduler_health` field returns `late` / `stopped`; dead-letter count visible in `/wfirma/status` |
+| Dead-letter accumulation — events permanently fail | **Monitored** | Phase 2A.2 diagnostics endpoint | `recent_dead_letters` list in status response; `fetch_failures` counter; alerts can be wired to this endpoint |
+| External API change — wFirma changes XML schema | **Open** | wFirma integration | Snapshots store raw XML alongside parsed JSON; parser failures land in dead-letter, not silently corrupt data; schema version field planned for Phase 3 |
+| wFirma webhook key rotation — HMAC key changed without updating Dashboard | **Open** | Ops / deployment | Key stored in config; rotation procedure not yet documented; Phase 1 auth layer will reject if key mismatches (safe fail) |
+| Phase 2B scope creep — enrichment field list grows beyond 3 | **Mitigated** | Campaign DoD + reviewer-challenge | Field whitelist locked in this document and in phase-specific DoD; reviewer-challenge blocks any PR that adds a fourth field without a campaign amendment |
+| Dual-write race — operator edits a field while enrichment is writing | **Open** | Phase 2B implementation | Conflict resolution strategy not yet defined; planned: enrichment skips if `operator_override` flag is set on the target field |
+| Schema drift — processing DB schema diverges across deploys | **Mitigated** | Immutable event log (rule 2) | Raw events always replayable from Layer 1; worst case is replay, not data loss |
+
+**Status legend:** Mitigated = risk controlled by existing architecture or code. Monitored = risk visible via tooling, not yet eliminated. Open = acknowledged, no mitigation yet — needs a plan before the relevant phase starts.
+
+---
+
 ## Definition of Done
 
 ### Universal gates (every phase, no exceptions)
@@ -302,3 +323,4 @@ Done = production verified + records updated.
 | 2026-06-29 | Campaign adopted; Track A D1–D3 and Track B Phases 1–2A.2 marked complete |
 | 2026-06-29 | Dependencies Matrix added |
 | 2026-06-29 | Program Dashboard and Definition of Done added |
+| 2026-06-29 | Program Risks register added (10 risks: 6 Mitigated, 2 Monitored, 2 Open) |
