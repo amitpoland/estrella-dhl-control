@@ -223,6 +223,16 @@
     refreshCustomerDictionaries: () =>
       _postM(`${BASE}/customer-master/dictionaries/refresh`, {}),
 
+    // ── wFirma contractor scan (Phase 3B) ────────────────────────────────────
+
+    // GET /api/v1/wfirma/contractors/scan/status — canonical 11-field status shape
+    getContractorScanStatus: () =>
+      _get(`${BASE}/wfirma/contractors/scan/status`),
+
+    // POST /api/v1/wfirma/contractors/scan — Run Now (bypasses 6-hour cooldown)
+    runContractorScan: () =>
+      _post(`${BASE}/wfirma/contractors/scan`),
+
     // ── Proforma — extended lifecycle (Sprint 26) ────────────────────────────
 
     // POST /api/v1/proforma/draft/{draft_id}/post
