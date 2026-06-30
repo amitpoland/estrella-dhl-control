@@ -241,10 +241,67 @@
     );
   }
 
+  // ── ScanStatusPanel ───────────────────────────────────────────────────────
+
+  function ScanStatusPanel({ status, onRefresh }) {
+    if (!status) return null;
+    const fmtTs = s => s ? s.replace('T', ' ').slice(0, 19) + ' UTC' : '—';
+    const healthColor = status.healthy ? 'var(--badge-green-text)' : 'var(--badge-red-text)';
+    const healthBg    = status.healthy ? 'var(--badge-green-bg)'   : 'var(--badge-red-bg)';
+    const healthBdr   = status.healthy ? 'var(--badge-green-border)' : 'var(--badge-red-border)';
+    return (
+      <div data-testid="scan-status-panel" style={{
+        background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+        borderRadius: 7, padding: '10px 14px', marginBottom: 14, fontSize: 12,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <span style={{ fontWeight: 600, color: 'var(--text-2)', fontSize: 11 }}>
+            Full Contractor Scan
+          </span>
+          {status.running ? (
+            <span className="tag tag-amber" data-testid="scan-badge-running">⏳ running</span>
+          ) : (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', padding: '2px 7px',
+              borderRadius: 20, fontSize: 10, fontWeight: 600, border: '1px solid',
+              background: healthBg, color: healthColor, borderColor: healthBdr,
+            }} data-testid="scan-badge-health">
+              {status.healthy ? '✅ healthy' : '⚠ error'}
+            </span>
+          )}
+          <button
+            onClick={onRefresh}
+            style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', fontSize: 12, padding: '2px 5px' }}
+            title="Refresh scan status"
+            data-testid="btn-scan-status-refresh"
+          >↻</button>
+        </div>
+        <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+          <div><span style={{ color: 'var(--text-3)' }}>Last run</span> <strong>{fmtTs(status.last_completed_at)}</strong></div>
+          <div><span style={{ color: 'var(--text-3)' }}>Processed</span> <strong data-testid="scan-stat-processed">{status.processed ?? '—'}</strong></div>
+          <div><span style={{ color: 'var(--badge-green-text)' }}>Created</span> <strong data-testid="scan-stat-created">{status.created ?? '—'}</strong></div>
+          <div><span style={{ color: 'var(--badge-blue-text)' }}>Updated</span> <strong data-testid="scan-stat-updated">{status.updated ?? '—'}</strong></div>
+          <div><span style={{ color: 'var(--text-3)' }}>Skipped</span> <strong data-testid="scan-stat-skipped">{status.skipped ?? '—'}</strong></div>
+          {status.errors > 0 && (
+            <div><span style={{ color: 'var(--badge-red-text)' }}>Errors</span> <strong data-testid="scan-stat-errors">{status.errors}</strong></div>
+          )}
+        </div>
+        {status.last_error && (
+          <div style={{ marginTop: 6, color: 'var(--badge-red-text)', fontSize: 11 }} data-testid="scan-last-error">
+            {status.last_error}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // ── CustomerList ──────────────────────────────────────────────────────────
 
   function CustomerList({ onSync }) {
     const [filters, setFilters] = useState({ active: 'true' });
+    const [scanStatus, setScanStatus] = useState(null);
+    const [scanRunning, setScanRunning] = useState(false);
+
     const apiParams = {};
     if (filters.country) apiParams.country = filters.country;
     if (filters.risk_status) apiParams.risk_status = filters.risk_status;
@@ -253,6 +310,23 @@
 
     const { data, loading, error, reload } = State.useCustomerList(apiParams);
     const customers = data?.customers || [];
+
+    const loadScanStatus = useCallback(async () => {
+      const res = await Api.getContractorScanStatus();
+      if (res.ok) setScanStatus(res.data.scan);
+    }, []);
+
+    useEffect(() => { loadScanStatus(); }, [loadScanStatus]);
+
+    const runFullScan = useCallback(async () => {
+      setScanRunning(true);
+      const res = await Api.runContractorScan();
+      setScanRunning(false);
+      if (res.ok) {
+        setScanStatus(res.data.scan);
+        reload();
+      }
+    }, [reload]);
 
     // Client-side name/NIP filter (API doesn't support text search)
     const q = (filters.q || '').toLowerCase().trim();
@@ -277,6 +351,14 @@
             ⟳ Sync from wFirma
           </Btn>
           <Btn
+            variant="primary"
+            onClick={runFullScan}
+            disabled={scanRunning}
+            data-testid="btn-full-contractor-scan"
+          >
+            {scanRunning ? '⏳ Scanning…' : '⇅ Full Scan'}
+          </Btn>
+          <Btn
             variant="ghost"
             onClick={reload}
             data-testid="btn-refresh-list"
@@ -284,6 +366,8 @@
             ↻
           </Btn>
         </div>
+
+        <ScanStatusPanel status={scanStatus} onRefresh={loadScanStatus} />
 
         <FilterBar filters={filters} onChange={setFilters} />
 
