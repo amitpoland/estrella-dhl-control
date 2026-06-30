@@ -32,6 +32,8 @@ _events_db_path: Optional[Path] = None
 _proc_db_path: Optional[Path] = None
 _links_db_path: Optional[Path] = None   # proforma_links.db — Phase 2B enrichment target
 _cm_db_path: Optional[Path] = None      # customer_master.sqlite — Phase 3 customer sync
+_payment_db_path: Optional[Path] = None           # payment_state.db — Phase 4A payment sync
+_contractor_poll_db_path: Optional[Path] = None   # contractor_poll.db — Phase 3B contractor scan
 _last_tick_at: Optional[str] = None     # set at the start of every tick
 _started_at: Optional[str] = None       # set once when the scheduler starts
 
@@ -205,6 +207,12 @@ def _run_processing_tick() -> None:
     # ── Step 4: sync customer from terminal events (Phase 3) ──────────────────
     _run_customer_sync_tick()
 
+    # ── Step 5: snapshot payments per contractor (Phase 4A) ───────────────────
+    _run_payment_sync_tick()
+
+    # ── Step 6: proactive contractor master sync from wFirma list (Phase 3B) ──
+    _run_contractor_poll_tick()
+
 
 def _run_enrichment_tick() -> None:
     """
@@ -284,20 +292,117 @@ def _run_customer_sync_tick() -> None:
         )
 
 
+def _run_payment_sync_tick() -> None:
+    """
+    Phase 4A payment snapshot step — called at the end of every processing tick.
+
+    Reads known contractor_ids from customer_master, determines which are due
+    for sync (cooldown: 1 hour per contractor), fetches wFirma payments for
+    each, and stores immutable snapshots in payment_state.db.
+
+    No writes to business tables. No modifications to existing Track B stages.
+    """
+    if _payment_db_path is None or _cm_db_path is None:
+        return
+
+    try:
+        with sqlite3.connect(str(_cm_db_path)) as conn:
+            rows = conn.execute(
+                "SELECT bill_to_contractor_id FROM customer_master "
+                "WHERE bill_to_contractor_id IS NOT NULL AND bill_to_contractor_id != ''"
+            ).fetchall()
+    except Exception as exc:
+        log.warning("wfirma_scheduler: cannot read customer_master for payment sync: %s", exc)
+        return
+
+    contractor_ids = [r[0] for r in rows]
+    if not contractor_ids:
+        return
+
+    from .wfirma_payment_db import get_contractors_due_for_sync, mark_contractor_synced
+    from .wfirma_payment_sync_processor import sync_payments_for_contractor
+
+    now = _now_utc()
+    due = get_contractors_due_for_sync(_payment_db_path, contractor_ids, now)
+    if not due:
+        return
+
+    for cid in due:
+        new_count, existing_count, error = sync_payments_for_contractor(
+            contractor_id=cid,
+            payment_db=_payment_db_path,
+            now=now,
+        )
+        mark_contractor_synced(_payment_db_path, cid, now, new_count)
+        log.info(
+            "wfirma_scheduler: payment_sync contractor_id=%s new=%d existing=%d error=%s",
+            cid, new_count, existing_count, error,
+        )
+
+
+def _run_contractor_poll_tick() -> None:
+    """
+    Phase 3B contractor scan step — called at the end of every processing tick.
+
+    Paginates through the full wFirma contractor list and upserts every
+    contractor into customer_master (fill-when-empty semantics).  Only
+    runs when the 6-hour cooldown has elapsed since the last completed scan.
+
+    No writes to wfirma_processing.db or any Track B stage.
+    No modifications to existing webhook pipeline stages.
+    """
+    if _contractor_poll_db_path is None or _cm_db_path is None:
+        return
+
+    from .wfirma_contractor_poll_db import (
+        is_scan_due, mark_scan_started, mark_scan_completed
+    )
+    from .wfirma_contractor_poll_processor import scan_contractors_into_master
+
+    now = _now_utc()
+    if not is_scan_due(_contractor_poll_db_path, now):
+        return
+
+    mark_scan_started(_contractor_poll_db_path, now)
+    total, new_count, updated_count, error = scan_contractors_into_master(
+        cm_db=_cm_db_path,
+        now=now,
+    )
+    mark_scan_completed(
+        _contractor_poll_db_path, now,
+        contractor_count=total,
+        new_count=new_count,
+        updated_count=updated_count,
+        error=error,
+    )
+    log.info(
+        "wfirma_scheduler: contractor_poll total=%d new=%d updated=%d error=%s",
+        total, new_count, updated_count, error,
+    )
+
+
 def start_wfirma_scheduler(storage_root: Path) -> None:
     """
     Initialise the processing DB and start the APScheduler background job.
     Call once during FastAPI lifespan startup. Non-fatal if APScheduler is absent.
     """
-    global _scheduler, _events_db_path, _proc_db_path, _links_db_path, _cm_db_path
+    global _scheduler, _events_db_path, _proc_db_path, _links_db_path, _cm_db_path, _payment_db_path, _contractor_poll_db_path
 
-    _events_db_path = Path(storage_root) / "wfirma_webhook_events.db"
-    _proc_db_path   = Path(storage_root) / "wfirma_processing.db"
-    _links_db_path  = Path(storage_root) / "proforma_links.db"
-    _cm_db_path     = Path(storage_root) / "customer_master.sqlite"
+    _events_db_path  = Path(storage_root) / "wfirma_webhook_events.db"
+    _proc_db_path    = Path(storage_root) / "wfirma_processing.db"
+    _links_db_path   = Path(storage_root) / "proforma_links.db"
+    _cm_db_path      = Path(storage_root) / "customer_master.sqlite"
+    _payment_db_path          = Path(storage_root) / "payment_state.db"
+    _contractor_poll_db_path  = Path(storage_root) / "contractor_poll.db"
 
     from .wfirma_processing_db import init_db
     init_db(_proc_db_path)
+
+    from .wfirma_payment_db import init_payment_db
+    init_payment_db(_payment_db_path)
+
+    from .wfirma_contractor_poll_db import init_contractor_poll_db
+    init_contractor_poll_db(_contractor_poll_db_path)
 
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
