@@ -15,6 +15,11 @@ wfirma_invoice_snapshots
     Immutable, append-only. One row per event (event_id UNIQUE).
     Multiple snapshots per object_id are expected — versioned by COUNT.
 
+wfirma_customer_snapshots
+    Immutable, append-only. One row per event (event_id UNIQUE).
+    Stores the contractor profile fetched from wFirma at the time of the
+    webhook event. Source of truth for what wFirma returned — never mutated.
+
 Design rules
 ------------
 - Never ALTER wfirma_webhook_events.
@@ -24,11 +29,15 @@ Design rules
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+log = logging.getLogger(__name__)
+
 MAX_RETRIES = 3
+MAX_CUSTOMER_SYNC_ATTEMPTS = 3
 
 _DDL = """
 PRAGMA journal_mode=WAL;
@@ -75,6 +84,31 @@ CREATE TABLE IF NOT EXISTS wfirma_invoice_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_snap_event  ON wfirma_invoice_snapshots (event_id);
 CREATE INDEX IF NOT EXISTS idx_snap_object ON wfirma_invoice_snapshots (object_id);
+
+CREATE TABLE IF NOT EXISTS wfirma_customer_snapshots (
+    snapshot_id    TEXT PRIMARY KEY,
+    event_id       TEXT NOT NULL UNIQUE,
+    contractor_id  TEXT NOT NULL,
+    name           TEXT,
+    nip            TEXT,
+    country        TEXT,
+    email          TEXT,
+    phone          TEXT,
+    mobile         TEXT,
+    street         TEXT,
+    city           TEXT,
+    zip_code       TEXT,
+    regon          TEXT,
+    bank_account   TEXT,
+    payment_days   TEXT,
+    language_id    TEXT,
+    raw_json       TEXT NOT NULL,
+    fetched_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cust_snap_event
+    ON wfirma_customer_snapshots (event_id);
+CREATE INDEX IF NOT EXISTS idx_cust_snap_contractor
+    ON wfirma_customer_snapshots (contractor_id);
 """
 
 
@@ -95,7 +129,26 @@ def _apply_phase2b_migration(conn: sqlite3.Connection) -> None:
         "unmatched_at TEXT",
     ]
     for col_def in new_cols:
-        col_name = col_def.split()[0]
+        try:
+            conn.execute(
+                f"ALTER TABLE wfirma_webhook_processing ADD COLUMN {col_def}"
+            )
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+
+
+def _apply_phase3_migration(conn: sqlite3.Connection) -> None:
+    """
+    Add Phase 3 customer-sync tracking columns to wfirma_webhook_processing.
+    Idempotent — safe to call on an already-migrated database.
+    """
+    new_cols = [
+        "customer_synced_at     TEXT",
+        "customer_sync_error    TEXT",
+        "customer_sync_attempts INTEGER NOT NULL DEFAULT 0",
+    ]
+    for col_def in new_cols:
         try:
             conn.execute(
                 f"ALTER TABLE wfirma_webhook_processing ADD COLUMN {col_def}"
@@ -106,12 +159,13 @@ def _apply_phase2b_migration(conn: sqlite3.Connection) -> None:
 
 
 def init_db(db_path: Path) -> None:
-    """Create both tables and indexes if they do not exist."""
+    """Create all tables and indexes; apply all schema migrations."""
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect(db_path) as conn:
         conn.executescript(_DDL)
         _apply_phase2b_migration(conn)
+        _apply_phase3_migration(conn)
 
 
 # ── Processing table ───────────────────────────────────────────────────────────
@@ -346,3 +400,133 @@ def get_processing_stats(db_path: Path) -> dict:
         "by_state": {r["processing_state"]: r["cnt"] for r in state_rows},
         "total_snapshots": total_snapshots,
     }
+
+
+# ── Customer snapshot table (Phase 3) ─────────────────────────────────────────
+
+
+def insert_customer_snapshot(
+    db_path: Path,
+    *,
+    snapshot_id: str,
+    event_id: str,
+    contractor_id: str,
+    fetched_at: str,
+    raw_json: str,
+    fields: dict,
+) -> bool:
+    """
+    Insert an immutable customer snapshot row.
+    Returns True if inserted, False if a snapshot for this event_id already exists.
+    """
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO wfirma_customer_snapshots (
+                snapshot_id, event_id, contractor_id,
+                name, nip, country,
+                email, phone, mobile,
+                street, city, zip_code,
+                regon, bank_account, payment_days, language_id,
+                raw_json, fetched_at
+            ) VALUES (
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?
+            )
+            """,
+            (
+                snapshot_id, event_id, contractor_id,
+                fields.get("name"), fields.get("nip"), fields.get("country"),
+                fields.get("email"), fields.get("phone"), fields.get("mobile"),
+                fields.get("street"), fields.get("city"), fields.get("zip"),
+                fields.get("regon"), fields.get("bank_account"),
+                fields.get("payment_days"), fields.get("language_id"),
+                raw_json, fetched_at,
+            ),
+        )
+    return cur.rowcount == 1
+
+
+def get_customer_sync_pending_events(
+    db_path: Path, limit: int = 20
+) -> List[dict]:
+    """
+    Return up to `limit` events that are in a terminal processing state
+    (COMPLETED / UNMATCHED / ENRICHMENT_FAILED), have an invoice snapshot,
+    have not been customer-synced yet (customer_synced_at IS NULL), and
+    have not exhausted their retry budget.
+    """
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT p.event_id, p.object_id
+            FROM wfirma_webhook_processing p
+            JOIN wfirma_invoice_snapshots s ON s.event_id = p.event_id
+            WHERE p.processing_state IN ('COMPLETED', 'UNMATCHED', 'ENRICHMENT_FAILED')
+              AND p.customer_synced_at IS NULL
+              AND COALESCE(p.customer_sync_attempts, 0) < ?
+            ORDER BY p.snapshotted_at ASC
+            LIMIT ?
+            """,
+            (MAX_CUSTOMER_SYNC_ATTEMPTS, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_customer_sync_success(
+    db_path: Path,
+    event_id: str,
+    now: str,
+    *,
+    skipped: bool = False,
+) -> None:
+    """
+    Mark customer sync as complete (or intentionally skipped) for event_id.
+    Skipped events use a "SKIPPED:<timestamp>" marker so they are still
+    excluded from future sync attempts while being distinguishable from
+    genuinely synced events.
+    """
+    marker = f"SKIPPED:{now}" if skipped else now
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE wfirma_webhook_processing
+            SET customer_synced_at = ?, customer_sync_error = NULL
+            WHERE event_id = ?
+            """,
+            (marker, event_id),
+        )
+
+
+def increment_customer_sync_attempts(
+    db_path: Path, event_id: str, error: str, now: str
+) -> int:
+    """
+    Increment customer_sync_attempts and record the latest error string.
+    Returns the new attempt count. Never raises.
+    """
+    try:
+        with _connect(db_path) as conn:
+            conn.execute(
+                """
+                UPDATE wfirma_webhook_processing
+                SET customer_sync_attempts = COALESCE(customer_sync_attempts, 0) + 1,
+                    customer_sync_error    = ?
+                WHERE event_id = ?
+                """,
+                (error[:300], event_id),
+            )
+            row = conn.execute(
+                "SELECT customer_sync_attempts FROM wfirma_webhook_processing WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+        return int(row["customer_sync_attempts"]) if row else 0
+    except Exception as exc:
+        log.warning(
+            "increment_customer_sync_attempts failed event_id=%s: %s", event_id, exc
+        )
+        return 0
