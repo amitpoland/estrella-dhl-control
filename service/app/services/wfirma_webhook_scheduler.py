@@ -31,6 +31,7 @@ _scheduler = None          # module-level singleton (BackgroundScheduler)
 _events_db_path: Optional[Path] = None
 _proc_db_path: Optional[Path] = None
 _links_db_path: Optional[Path] = None   # proforma_links.db — Phase 2B enrichment target
+_cm_db_path: Optional[Path] = None      # customer_master.sqlite — Phase 3 customer sync
 _last_tick_at: Optional[str] = None     # set at the start of every tick
 _started_at: Optional[str] = None       # set once when the scheduler starts
 
@@ -199,6 +200,9 @@ def _run_processing_tick() -> None:
     # ── Step 3: enrich SNAPSHOTTED events (Phase 2B) ──────────────────────────
     _run_enrichment_tick()
 
+    # ── Step 4: sync customer from terminal events (Phase 3) ──────────────────
+    _run_customer_sync_tick()
+
 
 def _run_enrichment_tick() -> None:
     """
@@ -239,16 +243,56 @@ def _run_enrichment_tick() -> None:
         )
 
 
+def _run_customer_sync_tick() -> None:
+    """
+    Phase 3 customer sync step — called at the end of every processing tick.
+
+    Picks up terminal events (COMPLETED / UNMATCHED / ENRICHMENT_FAILED) whose
+    invoice snapshot exists but customer sync hasn't run yet, fetches the
+    contractor profile from wFirma, and upserts approved fields into
+    customer_master (fill-when-empty semantics via upsert_identity_only).
+
+    customer_synced_at is set on success or intentional skip.
+    customer_sync_attempts is incremented on failure; events that hit
+    MAX_CUSTOMER_SYNC_ATTEMPTS are excluded from future ticks.
+    """
+    if _proc_db_path is None or _cm_db_path is None:
+        return
+
+    from .wfirma_processing_db import get_customer_sync_pending_events
+    from .wfirma_customer_sync_processor import sync_customer_from_snapshot
+
+    pending = get_customer_sync_pending_events(_proc_db_path)
+    if not pending:
+        return
+
+    now = _now_utc()
+    for row in pending:
+        event_id: str = row["event_id"]
+
+        result = sync_customer_from_snapshot(
+            event_id=event_id,
+            proc_db=_proc_db_path,
+            cm_db=_cm_db_path,
+            now=now,
+        )
+        log.info(
+            "wfirma_scheduler: customer_sync=%s event_id=%s",
+            result, event_id,
+        )
+
+
 def start_wfirma_scheduler(storage_root: Path) -> None:
     """
     Initialise the processing DB and start the APScheduler background job.
     Call once during FastAPI lifespan startup. Non-fatal if APScheduler is absent.
     """
-    global _scheduler, _events_db_path, _proc_db_path, _links_db_path
+    global _scheduler, _events_db_path, _proc_db_path, _links_db_path, _cm_db_path
 
     _events_db_path = Path(storage_root) / "wfirma_webhook_events.db"
     _proc_db_path   = Path(storage_root) / "wfirma_processing.db"
     _links_db_path  = Path(storage_root) / "proforma_links.db"
+    _cm_db_path     = Path(storage_root) / "customer_master.sqlite"
 
     from .wfirma_processing_db import init_db
     init_db(_proc_db_path)

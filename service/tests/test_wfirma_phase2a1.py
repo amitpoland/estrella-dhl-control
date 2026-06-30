@@ -452,8 +452,12 @@ def test_processor_does_not_write_business_tables(proc_db: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-    # Only the two Phase 2A.1 tables — no business tables
-    assert tables == {"wfirma_webhook_processing", "wfirma_invoice_snapshots"}
+    # Only the wfirma_processing.db tables — no business tables
+    assert tables == {
+        "wfirma_webhook_processing",
+        "wfirma_invoice_snapshots",
+        "wfirma_customer_snapshots",  # Phase 3 — same DB, still no business tables
+    }
 
 
 # ── Scheduler tick (state machine) ────────────────────────────────────────────
