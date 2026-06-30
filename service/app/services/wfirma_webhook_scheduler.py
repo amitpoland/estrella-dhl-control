@@ -127,75 +127,77 @@ def _run_processing_tick() -> None:
         )
 
     # ── Step 2: process pending rows ──────────────────────────────────────────
+    # NOTE: Steps 3 and 4 must run even when pending is empty — terminal-state
+    # events (COMPLETED / UNMATCHED / ENRICHMENT_FAILED) have nothing left for
+    # Step 2 but still need enrichment (Phase 2B) and customer sync (Phase 3).
     pending = get_processable_events(_proc_db_path)
-    if not pending:
-        return
 
-    processor = InvoiceSnapshotProcessor(_proc_db_path)
+    if pending:
+        processor = InvoiceSnapshotProcessor(_proc_db_path)
 
-    for row in pending:
-        event_id: str = row["event_id"]
-        object_id: Optional[str] = row.get("object_id")
-        current_retry: int = row.get("retry_count", 0)
+        for row in pending:
+            event_id: str = row["event_id"]
+            object_id: Optional[str] = row.get("object_id")
+            current_retry: int = row.get("retry_count", 0)
 
-        if not object_id:
-            log.warning(
-                "wfirma_scheduler: no object_id for event_id=%s (retry %d)",
-                event_id, current_retry,
-            )
-            new_count = increment_retry(
-                _proc_db_path, event_id, "no_object_id_in_payload", now
-            )
-            if new_count >= MAX_RETRIES:
-                mark_dead_letter(_proc_db_path, event_id, now)
-                log.error(
-                    "wfirma_scheduler: dead_letter event_id=%s (no object_id after %d retries)",
-                    event_id, MAX_RETRIES,
+            if not object_id:
+                log.warning(
+                    "wfirma_scheduler: no object_id for event_id=%s (retry %d)",
+                    event_id, current_retry,
                 )
-            else:
-                mark_retry_pending(_proc_db_path, event_id)
-            continue
-
-        payload_json = _read_payload(event_id)
-
-        try:
-            set_state(
-                _proc_db_path, event_id, "FETCHING",
-                extra={
-                    "fetch_pending_at": now,
-                    "fetching_at": now,
-                    "last_attempted_at": now,
-                },
-            )
-
-            processor.process(event_id, object_id, payload_json, now)
-
-            set_state(
-                _proc_db_path, event_id, "SNAPSHOTTED",
-                extra={
-                    "fetched_at": now,
-                    "snapshotted_at": now,
-                },
-            )
-            log.info(
-                "wfirma_scheduler: snapshotted event_id=%s object_id=%s",
-                event_id, object_id,
-            )
-
-        except Exception as exc:
-            log.warning(
-                "wfirma_scheduler: failed event_id=%s object_id=%s: %s",
-                event_id, object_id, exc,
-            )
-            new_count = increment_retry(_proc_db_path, event_id, str(exc), now)
-            if new_count >= MAX_RETRIES:
-                mark_dead_letter(_proc_db_path, event_id, now)
-                log.error(
-                    "wfirma_scheduler: dead_letter event_id=%s after %d retries",
-                    event_id, MAX_RETRIES,
+                new_count = increment_retry(
+                    _proc_db_path, event_id, "no_object_id_in_payload", now
                 )
-            else:
-                mark_retry_pending(_proc_db_path, event_id)
+                if new_count >= MAX_RETRIES:
+                    mark_dead_letter(_proc_db_path, event_id, now)
+                    log.error(
+                        "wfirma_scheduler: dead_letter event_id=%s (no object_id after %d retries)",
+                        event_id, MAX_RETRIES,
+                    )
+                else:
+                    mark_retry_pending(_proc_db_path, event_id)
+                continue
+
+            payload_json = _read_payload(event_id)
+
+            try:
+                set_state(
+                    _proc_db_path, event_id, "FETCHING",
+                    extra={
+                        "fetch_pending_at": now,
+                        "fetching_at": now,
+                        "last_attempted_at": now,
+                    },
+                )
+
+                processor.process(event_id, object_id, payload_json, now)
+
+                set_state(
+                    _proc_db_path, event_id, "SNAPSHOTTED",
+                    extra={
+                        "fetched_at": now,
+                        "snapshotted_at": now,
+                    },
+                )
+                log.info(
+                    "wfirma_scheduler: snapshotted event_id=%s object_id=%s",
+                    event_id, object_id,
+                )
+
+            except Exception as exc:
+                log.warning(
+                    "wfirma_scheduler: failed event_id=%s object_id=%s: %s",
+                    event_id, object_id, exc,
+                )
+                new_count = increment_retry(_proc_db_path, event_id, str(exc), now)
+                if new_count >= MAX_RETRIES:
+                    mark_dead_letter(_proc_db_path, event_id, now)
+                    log.error(
+                        "wfirma_scheduler: dead_letter event_id=%s after %d retries",
+                        event_id, MAX_RETRIES,
+                    )
+                else:
+                    mark_retry_pending(_proc_db_path, event_id)
 
     # ── Step 3: enrich SNAPSHOTTED events (Phase 2B) ──────────────────────────
     _run_enrichment_tick()
