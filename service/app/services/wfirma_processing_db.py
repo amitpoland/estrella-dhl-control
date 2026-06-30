@@ -29,9 +29,12 @@ Design rules
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+log = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
 MAX_CUSTOMER_SYNC_ATTEMPTS = 3
@@ -523,8 +526,7 @@ def increment_customer_sync_attempts(
             ).fetchone()
         return int(row["customer_sync_attempts"]) if row else 0
     except Exception as exc:
-        log_warn = logging.getLogger(__name__)
-        log_warn.warning(
+        log.warning(
             "increment_customer_sync_attempts failed event_id=%s: %s", event_id, exc
         )
         return 0
