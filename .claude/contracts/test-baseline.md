@@ -26,6 +26,7 @@ unconditional block.
 | Test | Tracking | Reason |
 |------|----------|--------|
 | `test_pz_batch.py::test_save_json_csv_ui_round_trip` | Issue #613 | Windows `csv.writer` CRLF / `splitlines()` round-trip artifact (asserts 8 == 4). Proven pre-existing on clean `origin/main`; not a regression. |
+| `test_ai_gateway_contract.py::test_call_returns_model_response_text` | Issue #802 | `AttributeError: app.services.ai_redactor` — patch target mismatch. `ai_gateway.py` imports `ai_redactor` with a local binding (`from . import ai_redactor as redactor`); the patch targets module-level attribute on `app.services` which does not exist. Pre-existing on `origin/main`; not introduced by any Phase 2/3 PR. |
 
 The PZ suite reports `1 failed, 257 passed` (258 collected). The gate accepts **only** this
 one documented failure. When #613 is fixed: remove this row and bump the PZ required count to 258.
