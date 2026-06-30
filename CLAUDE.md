@@ -402,6 +402,112 @@ context.
 
 ---
 
+## Business Feature Completeness Standard (permanent)
+
+A business capability cannot be marked **Complete** until it provides all four layers.
+This is a design standard, not a gate — it applies to every feature from first commit
+to close, not just at review time.
+
+```
+Scheduler / Webhook
+        │
+        ▼
+run_<capability>()        ← the ONE shared function
+        ▲
+        │
+POST /api/v1/.../action   ← Business Service (FastAPI endpoint)
+        ▲
+        │
+[ Run Now ] button        ← Business UI (operator-facing)
+```
+
+The scheduler is ONE caller of the shared function. The API endpoint is another caller of
+the same function. They must not diverge into "Logic A" and "Logic B" — a single
+`run_<capability>()` function is the authority for how the operation executes.
+
+### The four mandatory layers
+
+| Layer | Required | Exception |
+|---|---|---|
+| **Automation** | Scheduler or webhook triggers `run_<capability>()` | Only if the operation is inherently manual |
+| **Business API** | `POST /api/v1/.../action` calls the same `run_<capability>()` | None |
+| **Business UI** | Button or toolbar action calls the Business API | None |
+| **Observability** | Status endpoint + panel answer the four questions below | None |
+
+Exception requires an explicit ADR (Architectural Decision Record) in `docs/decisions/`.
+"Not built yet" is not an exception — it is an incomplete feature.
+
+### The four questions every sync screen must answer
+
+When an operator opens a screen, all four must be immediately visible:
+
+1. **What is the current state?** (running / healthy / error)
+2. **When did it last run?** (`last_completed_at`)
+3. **What happened?** (processed / created / updated / skipped / errors)
+4. **Can I run it now?** (Run Now button, always enabled)
+
+### Canonical status API response shape
+
+All `GET /api/v1/.../status` endpoints return this structure:
+
+```json
+{
+  "healthy":           true,
+  "running":           false,
+  "last_started_at":   "2026-06-30T09:15:00+00:00",
+  "last_completed_at": "2026-06-30T09:15:04+00:00",
+  "duration_ms":       4123,
+  "processed":         64,
+  "created":           3,
+  "updated":           7,
+  "skipped":           54,
+  "errors":            0,
+  "last_error":        null
+}
+```
+
+Field mapping to DB state layers: `processed` = total seen, `created` = new inserts,
+`updated` = COALESCE fills, `skipped` = rejected (bad country/name/etc.), `errors` = exception count.
+`running` is derived from `last_started_at > last_completed_at`.
+
+### Canonical UI layout (Client Master as reference)
+
+```
+Customers
++ New Client   ↻ Sync from wFirma   ⇅ Full Contractor Scan
+
+Status
+──────────────────────────────────────────────
+Last automatic scan   30 Jun 09:15   ✅ healthy
+Last manual scan      30 Jun 08:42
+Contractors imported  3
+Updated               7
+Skipped               54
+Errors                0
+[View Log]
+```
+
+### Applying this standard to existing phases
+
+Features that are Automation-complete but Business-incomplete (as of 2026-06-30):
+
+| Feature | Missing layers |
+|---|---|
+| Phase 3 — Customer Sync | Business API + UI + Observability |
+| Phase 3B — Full Contractor Scan | Business API + UI + Observability |
+| Phase 4A — Payment Sync | Business API + UI + Observability |
+
+These phases are not closed. Their PR status reflects scheduler implementation only.
+Close requires all four layers.
+
+### Enforcement
+
+`reviewer-challenge` and `frontend-flow-reviewer` must flag any PR that claims
+"feature complete" but has no corresponding `POST /api/v1/.../action` endpoint and
+no status panel. A scheduler-only implementation is a draft, not a shipped feature.
+
+---
+
 ## Engineering Lessons (permanent)
 
 Append-only — do not delete prior lessons; supersede with a new dated entry.
