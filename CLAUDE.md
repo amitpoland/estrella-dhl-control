@@ -404,38 +404,86 @@ context.
 
 ## Business Feature Completeness Standard (permanent)
 
-A business capability cannot be marked **Complete** until it provides all four layers.
-This is a design standard, not a gate — it applies to every feature from first commit
-to close, not just at review time.
+A business capability cannot be marked **Production Complete** until all seven requirements
+are satisfied and signed off by the named Business Owner. This governs every module:
+Customer Master, Accounting, Product Master, DHL, Inventory, KSeF, Reports, AI.
 
 ```
 Scheduler / Webhook
         │
         ▼
-run_<capability>()        ← the ONE shared function
+run_<capability>()        ← the ONE shared function (Shared Service)
         ▲
         │
-POST /api/v1/.../action   ← Business Service (FastAPI endpoint)
+POST /api/v1/.../action   ← Business API (FastAPI endpoint)
         ▲
         │
 [ Run Now ] button        ← Business UI (operator-facing)
 ```
 
-The scheduler is ONE caller of the shared function. The API endpoint is another caller of
-the same function. They must not diverge into "Logic A" and "Logic B" — a single
-`run_<capability>()` function is the authority for how the operation executes.
+The scheduler, the API endpoint, and the UI button all call the **same**
+`run_<capability>()` function. Diverging into "Logic A" and "Logic B" is forbidden.
 
-### The four mandatory layers
+### The seven requirements
 
-| Layer | Required | Exception |
+| # | Requirement | Mandatory |
 |---|---|---|
-| **Automation** | Scheduler or webhook triggers `run_<capability>()` | Only if the operation is inherently manual |
-| **Business API** | `POST /api/v1/.../action` calls the same `run_<capability>()` | None |
-| **Business UI** | Button or toolbar action calls the Business API | None |
-| **Observability** | Status endpoint + panel answer the four questions below | None |
+| 1 | **Automation** | Scheduler or webhook triggers `run_<capability>()` automatically |
+| 2 | **Shared Service** | One `run_<capability>()` function reused by scheduler, API, and UI button |
+| 3 | **Business API** | `POST /api/v1/.../action` + `GET .../status` |
+| 4 | **Business UI** | Operator button + status panel — no developer intervention needed |
+| 5 | **Observability** | Last run / processed / created / updated / skipped / errors visible |
+| 6 | **Browser Verification** | End-to-end test in a real browser with real production data |
+| 7 | **Business Verification** | Named Business Owner confirms workflow is usable without developer help |
 
-Exception requires an explicit ADR (Architectural Decision Record) in `docs/decisions/`.
+Requirements 1–5 are implementation requirements. Requirements 6–7 are acceptance gates.
+Exception to any requirement requires an explicit ADR in `docs/decisions/`.
 "Not built yet" is not an exception — it is an incomplete feature.
+
+### Feature lifecycle (seven stages)
+
+A feature moves through these stages in order. No stage may be skipped.
+
+```
+Design
+    ↓
+Implementation          ← code written, tests passing, PR open
+    ↓
+Technical Complete      ← requirements 1–5 satisfied; PR merged to main
+    ↓
+Deployed                ← running in production; endpoints respond; scheduler fires
+    ↓
+Browser Verified        ← requirement 6 satisfied; happy path + idempotency confirmed
+    ↓
+Business Verified       ← requirement 7 satisfied; Business Owner sign-off recorded
+    ↓
+Production Complete     ← all seven requirements satisfied; feature is closed
+```
+
+A feature can be Technical Complete but not yet Deployed (still in PR).
+A feature can be Deployed but not yet Browser Verified (not yet validated).
+These are distinct states — the lifecycle makes that unambiguous.
+
+**"Scheduler written" = Technical Complete at best. "Tests pass" = Implementation.
+Neither is "done."**
+
+### Business Owner registry
+
+The Business Owner signs off on requirement 7. Without a named owner, Business
+Verification cannot happen.
+
+| Module | Business Owner |
+|---|---|
+| Customer Master | Operations |
+| Accounting | Finance |
+| DHL Shipping | Shipping |
+| Inventory | Warehouse |
+| Product Master | Product Team |
+| KSeF | Finance / Compliance |
+| Reports | Operations + Finance |
+| AI | Operations |
+
+When a feature reaches Business Verified, record: date, Business Owner name, and conditions.
 
 ### The four questions every sync screen must answer
 
@@ -466,8 +514,6 @@ All `GET /api/v1/.../status` endpoints return this structure:
 }
 ```
 
-Field mapping to DB state layers: `processed` = total seen, `created` = new inserts,
-`updated` = COALESCE fills, `skipped` = rejected (bad country/name/etc.), `errors` = exception count.
 `running` is derived from `last_started_at > last_completed_at`.
 
 ### Canonical UI layout (Client Master as reference)
@@ -487,24 +533,19 @@ Errors                0
 [View Log]
 ```
 
-### Applying this standard to existing phases
+### Current feature lifecycle status (as of 2026-06-30)
 
-Features that are Automation-complete but Business-incomplete (as of 2026-06-30):
-
-| Feature | Missing layers |
+| Feature | Lifecycle Stage |
 |---|---|
-| Phase 3 — Customer Sync | Business API + UI + Observability |
-| Phase 3B — Full Contractor Scan | Business API + UI + Observability |
-| Phase 4A — Payment Sync | Business API + UI + Observability |
-
-These phases are not closed. Their PR status reflects scheduler implementation only.
-Close requires all four layers.
+| Phase 3B — Contractor Poll (#805) | Implementation (PR open) |
+| Phase 3B — Business Layers (#807) | Implementation (PR open) |
+| Phase 4A — Accounting Sync (#804) | Implementation (HOLD) |
 
 ### Enforcement
 
-`reviewer-challenge` and `frontend-flow-reviewer` must flag any PR that claims
-"feature complete" but has no corresponding `POST /api/v1/.../action` endpoint and
-no status panel. A scheduler-only implementation is a draft, not a shipped feature.
+`reviewer-challenge` and `frontend-flow-reviewer` must flag any PR claiming "feature
+complete" or "Production Complete" that has not passed all seven requirements. A
+scheduler-only implementation is at most Technical Complete — never Production Complete.
 
 ---
 
