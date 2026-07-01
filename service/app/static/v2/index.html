@@ -662,17 +662,6 @@ function App() {
             </>
           )}
 
-          {/* Action Proposals */}
-          {!viewerDoc && page === 'proposals' && (
-            <>
-              <PageHeader title="Action Proposals" subtitle="Cross-batch AI suggestions awaiting operator review and approval"
-                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small>Filter: Pending</Btn><Btn variant="outline" small>↓ Export</Btn></div>}
-              />
-              <SubTabStrip active={page} onNav={handleNav} />
-              <ActionProposalsPage />
-            </>
-          )}
-
           {/* Intelligence Hub — wired to live intelligence + invoice-learning authority (Sprint 34) */}
           {!viewerDoc && page === 'intelligence' && (
             <>
@@ -688,15 +677,6 @@ function App() {
               <PageHeader title="Automation Center" subtitle="Cowork task queue, results, errors, capabilities, and prompt templates" />
               <SubTabStrip active={page} onNav={handleNav} />
               <AiBridgePage />
-            </>
-          )}
-
-          {/* Shipping Operations — future-planned carrier module */}
-          {!viewerDoc && page === 'shipping' && (
-            <>
-              <PageHeader title="Label & Print Ops" subtitle="Carrier shipment & label operations — DHL Express · FedEx · multi-package · print queue · returns. Wireframe only — no live carrier integrations." />
-              <SubTabStrip active={page} onNav={handleNav} />
-              <ShippingOpsPage />
             </>
           )}
 
@@ -773,57 +753,12 @@ function App() {
                   : null
           )}
 
-          {/* Action Center */}
-          {!viewerDoc && page === 'actions' && (
-            <>
-              <PageHeader title="Action Center" subtitle="Operator queue — approvals, executes, and risk-gated writes" />
-              <SubTabStrip active={page} onNav={handleNav} />
-              <ActionCenterPage />
-            </>
-          )}
-
           {/* Coverage Map — authority: /openapi.json */}
           {!viewerDoc && page === 'coverage' && (
             <>
               <PageHeader title="Coverage Map" subtitle="Live route registry from OpenAPI spec — every route registered in the running backend" />
               <SubTabStrip active={page} onNav={handleNav} />
               <CoverageMapPage />
-            </>
-          )}
-
-          {/* Identity / Mapping */}
-          {!viewerDoc && page === 'identity' && (
-            <><PageHeader title="Identity / Mapping" subtitle="Two-way mapping between supplier SKUs, internal designs, and customer SKUs" /><SubTabStrip active={page} onNav={handleNav} /><IdentityMappingPage /></>
-          )}
-          {/* Move Stock */}
-          {!viewerDoc && page === 'move_stock' && (
-            <><PageHeader title="Move Stock" subtitle="Move identified items from Temp Warehouse → Final Stock" /><SubTabStrip active={page} onNav={handleNav} /><MoveStockPage /></>
-          )}
-          {/* Sample Out */}
-          {!viewerDoc && page === 'sample_out' && (
-            <><PageHeader title="Sample Out" subtitle="Release samples to clients for evaluation" /><SubTabStrip active={page} onNav={handleNav} /><SampleOutPage /></>
-          )}
-          {/* Sample Return */}
-          {!viewerDoc && page === 'sample_return' && (
-            <><PageHeader title="Sample Return" subtitle="Receive samples back into Final Stock or convert to a sale" /><SubTabStrip active={page} onNav={handleNav} /><SampleReturnPage /></>
-          )}
-          {/* Goods Return from Client */}
-          {!viewerDoc && page === 'goods_return' && (
-            <><PageHeader title="Goods Return from Client" subtitle="Post-sale RMA — receive returns, generate credit notes" /><SubTabStrip active={page} onNav={handleNav} /><GoodsReturnPage /></>
-          )}
-          {/* Return to Producer */}
-          {!viewerDoc && page === 'return_prod' && (
-            <><PageHeader title="Return to Producer" subtitle="Send goods back to original supplier — debit-note request" /><SubTabStrip active={page} onNav={handleNav} /><ReturnToProducerPage /></>
-          )}
-
-          {/* Email Queue */}
-          {!viewerDoc && page === 'email_queue' && (
-            <>
-              <PageHeader title="Email Queue" subtitle="Inbound, outbound, and pending emails — DHL, customs, and system notifications"
-                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small>Retry Failed</Btn><Btn variant="outline" small>↻ Refresh</Btn></div>}
-              />
-              <SubTabStrip active={page} onNav={handleNav} />
-              <EmailQueuePage onViewShipment={handleViewShipment} />
             </>
           )}
 
@@ -842,24 +777,6 @@ function App() {
             <>
               <PageHeader title="Master Data" subtitle="Create and edit all master records — clients, suppliers, products, designs, HS codes, FX, users, roles" />
               <MasterPage />
-            </>
-          )}
-
-          {/* Warehouse Scanner — POST /api/v1/warehouse/scan */}
-          {!viewerDoc && page === 'scanner' && (
-            <>
-              <PageHeader title="Warehouse Scanner" subtitle="Scan / move / dispatch — mobile-safe operator interface" />
-              <SubTabStrip active={page} onNav={handleNav} />
-              <WarehouseScannerPage />
-            </>
-          )}
-
-          {/* Reservation Cell — Warehouse Audit + Sales Linkage + wFirma Preview */}
-          {!viewerDoc && page === 'reservation' && (
-            <>
-              <PageHeader title="Reservation Cell" subtitle="Three-stage gate — warehouse audit · sales linkage · wFirma preview" />
-              <SubTabStrip active={page} onNav={handleNav} />
-              <ReservationCellPage />
             </>
           )}
 

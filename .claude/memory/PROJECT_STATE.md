@@ -5724,6 +5724,40 @@ CONSEQUENCE: the dead ReportsPage body and its registration line are excised fro
 SCOPE: pages-v2.jsx ReportsPage definition is untouched and remains the live
   authority. Only the shadowed dead copy in pages.jsx is removed.
 
+### 2026-07-02 — slice-04: disposition of 12 shadow-redirected V2 nav slugs (Split: A×5, B×7)
+PROVENANCE: all 12 slugs suppressed since birth — PR #423 (16b54f0e, 2026-06-02) created
+them shadow-redirected as MOCK design placeholders; never promoted; clean provenance
+(unrelated to the 2026-06-04 incident); no prior formal disposition — this entry is the first.
+Only dhl ever received the promotion playbook (Sprint 31, a5a4e5e7).
+
+GROUP A — CANCELLED-CONSOLIDATED (5): mock render blocks removed; capability homes:
+- actions, proposals -> Inbox (InboxPage scope; routes_action_proposals.py / routes_proposals.py)
+- email_queue -> Inbox (V2 target); current operational surface = V1 dashboard email-queue card + admin endpoints
+- reservation -> wFirma Setup (WfirmaMappingPage reservation-gate readiness) + Proforma-detail reservation tab (routes_wfirma_reservation.py)
+- shipping -> capability delivered via live carrier work (CarriersPage wired, DHL Express production-live); "Label & Print Ops" wireframe superseded
+
+GROUP B — ACTIVE-PLANNED FOR REBUILD (7): mock render blocks removed (zero salvage; stub
+endpoint names were FICTIONAL and are superseded by this entry). Each to be rebuilt as a
+gated V2 slice per the dhl/Sprint-31 promotion playbook (wire read-only -> NAV_TREE ->
+remove redirect -> WIRED_PAGES -> pin with test), against these REAL registered routes:
+- move_stock: POST /api/v1/inventory/pieces/{id}/location (routes_inventory_writes.py)
+- sample_out: /pieces/{id}/sample-out (routes_inventory_sample.py)
+- sample_return: /pieces/{id}/sample-return (routes_inventory_sample.py)
+- goods_return, return_prod: /pieces/{id}/return-* (routes_inventory_returns.py)
+- identity: backend partial (design/product mapping services); scope its API in the rebuild slice
+- scanner: POST /api/v1/warehouse/scan; CURRENT WORKING AUTHORITY = V1 warehouse.html
+  (still linked from V1 sidebar); V2 re-surface via rebuild slice, V1 stays authoritative until then
+NOTE: v2/pz-api.js has no transport methods for pieces/location/sample/returns; each rebuild
+slice adds its own.
+
+MECHANICS: 12 dead render blocks removed from v2/index.html (they could never render —
+ROUTE_REDIRECTS intercepts at both router entry points). ROUTE_REDIRECTS entries KEPT
+(stale-URL insurance; test_atlas_v2_sprint1 + test_sprint31 require block presence+parse).
+pz-design-v2.js NOT touched (6 live loaders; coupled to legacy-page retirement).
+Pre-excision index.html blob: 9c9e80fb4ef2de29b97d517d8ae0e6a900ca53aa
+REVERSAL: git checkout 9c9e80fb4ef2de29b97d517d8ae0e6a900ca53aa -- service/app/static/v2/index.html
+No deploy until render verification passes. No push.
+
 ## Authority-Model Separation — six separate authorities (2026-06-22)
 
 - **Binding (operator-approved, permanent, no flag):** import, product master, proforma,
