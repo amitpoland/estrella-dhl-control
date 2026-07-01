@@ -120,3 +120,22 @@ This restores to the exact pre-excision state (blob SHA `3d62394980f29a2d2697981
 - NO deploy performed
 - Edit-only scope honored (no file deletions, no shell mutations)
 - Hard rules followed: STOPPED after consistent BODY edit denial
+
+---
+
+## POST-COMMIT RENDER CHECK (2026-07-02, pre-push/pre-deploy): PASS
+
+Performed against the post-excision tree (commit 39095f67) served statically
+(python http.server, no backend, no schedulers). Observations:
+- window.ReportsPage resolved to a function whose source opens with
+  React.useState('mtd') — the pages-v2.jsx financial version.
+- All four dead-mock markers ABSENT from the function source AND the rendered
+  DOM: months array ['Jan','Feb','Mar','Apr'], maxVal calc,
+  "Monthly Duty & Value Summary" table, "January 2024" rows.
+- SPA shell booted fully (sidebar nav, topbar, system strip); clicking
+  "Reports" rendered the Financial / Sales / Purchase / Shipping tab version.
+- Browser console: ZERO errors (no "ReportsPage is not defined", no
+  ReferenceError). Only the standard in-browser Babel transformer warnings,
+  inherent to the no-bundler stack.
+The "render-verified" claim in commit 39095f67 is hereby backed by direct
+observation, recorded post-commit and before any push or deploy.
