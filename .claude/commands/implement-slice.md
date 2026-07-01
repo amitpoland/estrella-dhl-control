@@ -1,32 +1,25 @@
 ---
+description: >
+  Run slice-03 (Reports dedup) via reports-authority-implementer. Edit-only excision of the
+  dead duplicate ReportsPage from pages.jsx, guarded (line-ending agnostic). Requires
+  EJ_IMPLEMENT=1, EJ_CENSUS unset, and NOT plan mode.
 allowed-tools: Task, Read, Grep, Glob
-description: >-
-  Run ONE gated mutation slice (slice-01 shipment-authority) via the implementer
-  subagent, read back its slice-record, print summary + reversal command, STOP.
-  Orchestrator holds no write/shell tools; the subagent mutates under implement-guard.
 ---
 
-# /implement-slice — one gated slice, then hard stop
+Preconditions (verify before dispatch; if any fails, STOP and tell the operator):
+- EJ_IMPLEMENT=1 set and EJ_CENSUS unset (guard dual-mode fail-closed).
+- Not in plan mode (plan mode is incompatible with the guard edit path).
+- verify_guard.py reported ALL PASS in this environment.
+- A live guard probe on the box showed a legitimate pages.jsx Edit is now PERMITTED
+  (v1 wrongly blocked LF old_string against the CRLF working tree; v2 fixes this).
+- pages.jsx tracked and clean at HEAD (the agent re-asserts as step 1).
 
-You are the slice ORCHESTRATOR. You dispatch ONE implementer subagent and then read
-and summarize its record. You hold no Edit/Write/shell tools — you cannot mutate. All
-mutation happens inside the subagent, confined by implement-guard.py.
+Dispatch EXACTLY ONE Task to subagent_type "reports-authority-implementer":
+"Execute slice-03 per your specification: assert-clean, declare ReportsPage canonical
+(pages-v2.jsx) in PROJECT_STATE.md DECISIONS, excise the dead duplicate from pages.jsx via
+the two Edits (BODY + REG), write the slice-record. Edit-only. No commit, no deploy. STOP.
+Report honestly - do not describe a blocked step as completed."
 
-## Preconditions (state them; if unmet, stop and tell the operator)
-- This session must be launched with EJ_IMPLEMENT=1 and EJ_CENSUS UNSET.
-  (If EJ_CENSUS is also set, the guard fails closed and nothing will run — restart.)
-- cwd = C:\PZ-verify (not a worktree).
-- NOT in plan mode. Plan mode needs a plan-file write that implement-guard denies
-  (same deadlock as census). If in plan mode: instruct the operator to Shift+Tab out,
-  then re-invoke. Do not try to write a plan file.
-
-## Run
-1. Dispatch the `shipment-authority-implementer` subagent via Task, instructing it to
-   execute slice-01 per its contract (assert-clean -> declare -> delete -> slice-record),
-   hard-stop after the slice, and abort with an ABORT-RECORD if assert-clean fails.
-2. When it returns, Read the slice-record (or ABORT-RECORD) it wrote under
-   reports/implement/<UTC>/.
-3. Print a summary: outcome (COMPLETED | ABORTED), the DECISIONS entry, the two blob
-   SHAs, the two deleted paths, and the exact reversal command.
-4. STOP. Do not commit. Do not deploy. Do not start another slice. Deploy to C:\PZ
-   remains a separate manual operator step.
+Do not dispatch any other agent. Do not commit or deploy. After the agent returns, surface
+its four-step report and slice-record path, and STOP. Commit is a separate operator step in
+a plain shell with both mode flags unset.
