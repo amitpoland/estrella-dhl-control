@@ -1,0 +1,17 @@
+{
+  "_comment": "Census-mode hook additions — source template. Merge PreToolUse entry into .claude/settings.json. Change python3 to python for Windows.",
+  "_merge_instructions": "Append the hooks entry below into the existing PreToolUse array alongside the Edit|Write matcher hooks (pz-frozen-file-guard, pz-deploy-guard). Do NOT replace existing hooks — append.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/census-guard.py"
+          }
+        ]
+      }
+    ]
+  }
+}
