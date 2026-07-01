@@ -6433,6 +6433,10 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - ~~**Reconcile `4c797e4` with origin/main**~~ — **DONE 2026-05-13T16:00Z** via PR #77 (SHA `1ee83e52`). `4c797e4` confirmed as ancestor of origin/main (swept in via PR #76 branch). JSONL updated: `PENDING_RETROACTIVE` → reconciliation-close record appended. `local-commit-deploys.jsonl` + `lesson-d-local-commit-only-deploys.md` both updated. Lead coordinator backstop added.
 - ~~**All known issues resolved on main**~~ — **DONE 2026-05-19** (Campaign V6). #223/#224 CLOSED. Pydantic: 0 warnings. ZC429 tab-mount tests: FIXED (31/31 pass). P2 flag correction: `P2_LIVE_ENABLED=true` + `shadow_mode=true`. 160/160 golden, 340+ tests PASS. No outstanding code issues on local main.
 
+### 2026-07-01 — CLAUDE.md trimmed to 41,875 chars + Frontend Authority Constitution added
+
+§3 hard rules (PATH GUARD, 6 Gates, 6 Observation rules, Anti-HOLD, BFC mandate, Lessons A-N, Financial, Verification) preserved byte-identical (32/32 diff PASS). §4 prose compressed (C-1..C-8); Lesson N triplication fixed; stale BFC phase table removed. Floor is ~42k: hard-rule set is genuinely that large; further reduction requires deleting a rule (prohibited). 40k target is a soft advisory, accepted over.
+
 ---
 
 # ASSUMPTIONS
