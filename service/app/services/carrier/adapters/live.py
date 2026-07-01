@@ -85,6 +85,12 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
         planned_date = datetime.date.today().isoformat()
         origin_cc = settings.dhl_express_shipper_country_code or "PL"
 
+        dest_cc = (
+            request.recipient_address.get("country_code")
+            or request.recipient_address.get("countryCode")
+            or ""
+        ).upper()
+
         available = lookup_available_products(
             api_key=self._config.api_key,
             api_secret=self._config.api_secret,
@@ -94,11 +100,7 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
             origin_cc=origin_cc,
             origin_city=settings.dhl_express_shipper_city or "",
             origin_postal=settings.dhl_express_shipper_postal_code or "",
-            dest_cc=(
-                request.recipient_address.get("country_code")
-                or request.recipient_address.get("countryCode")
-                or ""
-            ),
+            dest_cc=dest_cc,
             dest_city=request.recipient_address.get("city") or "",
             dest_postal=request.recipient_address.get("postal_code") or "",
             weight_kg=request.weight_kg,
@@ -109,14 +111,15 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
         body = _build_shipment_body(request, settings, product_code=resolved_product)
         key = compute_idempotency_key(request)
 
+        shipment_url = f"{self._config.api_url.rstrip('/')}{self._api_path()}/shipments"
+        if dest_cc == "BR":
+            shipment_url += "?bypassPLTError=true"
+
         with httpx.Client(
             auth=httpx.BasicAuth(self._config.api_key, self._config.api_secret),
             timeout=30.0,
         ) as client:
-            resp = client.post(
-                f"{self._config.api_url.rstrip('/')}{self._api_path()}/shipments",
-                json=body,
-            )
+            resp = client.post(shipment_url, json=body)
 
         if not resp.is_success:
             _raise_dhl_error(resp)
@@ -417,6 +420,10 @@ def _build_shipment_body(
         body["specialServices"] = [
             {"serviceCode": "PT", "specialServiceDescription": request.special_instructions}
         ]
+
+    # Brazil: WY (Paperless Trade) required alongside bypassPLTError URL param (DHL CFIT 2026-07-01)
+    if _recv_cc.upper() == "BR":
+        body["valueAddedServices"] = [{"serviceCode": "WY"}]
 
     return body
 
