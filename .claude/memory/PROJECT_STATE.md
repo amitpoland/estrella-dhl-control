@@ -5709,6 +5709,21 @@ CONSEQUENCE: the two dead versioned JSX files are retired and DELETED in this sl
 SCOPE: this DECISION does NOT resolve the /dashboard/shipment-detail.html V1
   direct-link surface (decision D-3, still open). Only the two dead .v?.jsx files.
 
+### 2026-07-02 — ReportsPage canonical authority declared (slice-03)
+DECISION: service/app/static/v2/pages-v2.jsx is the sole canonical authority for
+  the ReportsPage component.
+BASIS: pages-v2.jsx is loaded SECOND in v2/index.html after pages.jsx; its
+  window.ReportsPage assignment wins by last-write, permanently overriding the copy
+  in pages.jsx. The pages.jsx definition is never executed in the live application.
+  The duplicate was identified during the authority census (slice-03 scope).
+CONSEQUENCE: the dead ReportsPage body and its registration line are excised from
+  service/app/static/v2/pages.jsx in this slice (C:\PZ-verify only; no commit,
+  no deploy).
+  Pre-excision blob SHA of pages.jsx: 3d62394980f29a2d2697981595dd520a735daea6
+  Reversal command: git checkout 3d62394980f29a2d2697981595dd520a735daea6 -- service/app/static/v2/pages.jsx
+SCOPE: pages-v2.jsx ReportsPage definition is untouched and remains the live
+  authority. Only the shadowed dead copy in pages.jsx is removed.
+
 ## Authority-Model Separation — six separate authorities (2026-06-22)
 
 - **Binding (operator-approved, permanent, no flag):** import, product master, proforma,
