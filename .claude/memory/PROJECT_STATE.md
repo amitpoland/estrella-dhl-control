@@ -6178,6 +6178,33 @@ the verbatim constitution once provided):
      MM (#1) and contractor_id (#2)). Research rule §19 applies: no capability
      guessing.
 
+### 2026-07-03 — C-1b.1 micro-slice: reservations router registration (GATE-4 finding closed)
+Origin: the C-1b GATE-4 finding (task_d6fdfca9) — `routes_reservations` router was
+NEVER registered in `service/app/main.py`, so ALL reservation endpoints (queue,
+import-sales-packing, process-pending, reset, and the V6 sync-by-codes) were
+unreachable in production (404, or 405 where the wfirma_capabilities catch-all
+`PUT /wfirma/products/{product_code:path}` shadowed the path). This was the root
+cause of the 6 pre-existing `test_reservation_queue.py::test_api_*` failures.
+FIX (R1 list = main.py + test_reservation_queue.py + PROJECT_STATE): registered
+`reservations_router` in main.py IMMEDIATELY BEFORE `wfirma_capabilities_router`
+(so the concrete POST route resolves before the catch-all; comment explains the
+ordering) + added an HTTP-level registration-regression smoke test
+(`test_reservations_router_is_registered_and_http_reachable`).
+ROUTE-TABLE PROOF: all 6 reservation paths resolve to their handlers; the
+capabilities catch-all `PUT /wfirma/products/{product_code:path}` is INTACT; NO
+duplicate (path, method) under /api/v1.
+BASELINE UPDATE: the 6 `test_api_*` failures previously recorded as "pre-existing"
+(C-1b evidence + the C-1b DECISIONS note above) are now GREEN — full
+test_reservation_queue.py 21/21; smoke + golden 160/160 unaffected. (The C-1b
+evidence report's "pre-existing" wording was accurate AT C-1b time and is left as
+historical record; test-baseline.md never listed these — no contract change.)
+SINGLE-LANE GOVERNANCE: the parallel task session (branch `claude/eager-swirles-*`,
+task_d6fdfca9) is superseded — this fix was reimplemented on deploy/latest. That
+branch must be ABANDONED / NOT merged. I did NOT delete its worktree/branch (it is
+a separate, possibly-active session — deleting it could corrupt that session); the
+operator / that session should discard it uncommitted. Pin unaffected: precise
+consumption baseline stays at 4 (this slice touched no product-authority read site).
+
 ### 2026-07-03 — Phase C QUEUE REORDER (operator) + MASTER-FIRST RULE (verbatim)
 QUEUE (operator, verbatim order): C-0 Authority Cleanup (read-only) → C-1
 Product Master Authority → C-2 Customer Master Authority → C-3 Sample/Returns

@@ -649,3 +649,42 @@ def test_duplicate_queue_key_is_idempotent(db_path):
     assert len(our_rows) == 1
     # qty updated
     assert our_rows[0]["qty"] == 10.0
+
+
+# ── C-1b.1 regression: the reservations router MUST be registered in main.py ──
+# Guards against the router being dropped from app.include_router (the original
+# defect: every reservation endpoint 404/405 in production — task_d6fdfca9). It
+# also pins the ordering fix — the concrete POST route must resolve and NOT be
+# shadowed by the wfirma_capabilities catch-all PUT /wfirma/products/{code:path}.
+
+def test_reservations_router_is_registered_and_http_reachable(client, tmp_storage):
+    db = tmp_storage / "reservation_queue.db"
+    rdb.init_reservation_db(db)
+    rdb.upsert_product_master(db, "EJL/REG/SMOKE/001", "D-REG-SMOKE-001")
+
+    from app.services.wfirma_client import WFirmaProduct
+    mock_product = WFirmaProduct(
+        wfirma_id="WF-REG-001", name="Test", code="EJL/REG/SMOKE/001",
+    )
+    with patch("app.api.routes_reservations._ensure_db", return_value=db):
+        with patch("app.services.wfirma_client.get_product_by_code",
+                   return_value=mock_product):
+            r = client.post(
+                "/api/v1/wfirma/products/sync-by-codes",
+                json={"product_codes": ["EJL/REG/SMOKE/001"]},
+                headers=_auth(),
+            )
+    # The regression manifested as 405 (catch-all shadow) or 404 (unregistered).
+    assert r.status_code == 200, (
+        f"reservations router not reachable ({r.status_code}) — is it registered "
+        f"in main.py BEFORE wfirma_capabilities_router?"
+    )
+    # And the concrete POST route is present in the app route table.
+    from app.main import app as _app
+    registered = any(
+        getattr(rt, "path", "") == "/api/v1/wfirma/products/sync-by-codes"
+        and "POST" in (getattr(rt, "methods", None) or set())
+        for rt in _app.routes
+    )
+    assert registered, \
+        "POST /api/v1/wfirma/products/sync-by-codes missing from app.routes"

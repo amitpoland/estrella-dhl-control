@@ -59,6 +59,7 @@ from .api.routes_warehouse_receipt import router as warehouse_receipt_router
 from .api.routes_wfirma_capabilities import router as wfirma_capabilities_router
 from .api.routes_wfirma_reservation import router as wfirma_reservation_router
 from .api.routes_wfirma_contractors import router as wfirma_contractors_router
+from .api.routes_reservations import router as reservations_router
 from .api.routes_dhl_readiness import router as dhl_readiness_router
 from .api.routes_batch_readiness import router as batch_readiness_router
 from .api.routes_tracking_db import router as tracking_db_router
@@ -500,6 +501,12 @@ app.include_router(proforma_adopt_router)
 app.include_router(warehouse_router)
 app.include_router(warehouse_audit_router)
 app.include_router(warehouse_receipt_router)  # WAREHOUSE authority: receipt qty confirmation
+# reservations_router (prefix /api/v1) MUST be registered BEFORE
+# wfirma_capabilities_router: the latter owns the catch-all
+# PUT /api/v1/wfirma/products/{product_code:path}, which otherwise shadows this
+# router's POST /api/v1/wfirma/products/sync-by-codes and yields 405. Registering
+# the concrete POST route first makes the match unambiguous (C-1b.1 regression).
+app.include_router(reservations_router)
 app.include_router(wfirma_capabilities_router)
 app.include_router(wfirma_reservation_router)
 app.include_router(wfirma_contractors_router)   # Phase 3B: contractor scan API + status
