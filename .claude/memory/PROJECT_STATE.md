@@ -6176,6 +6176,20 @@ baseline = 3 (proforma-write, capabilities, wfirma). ADDED RESIDUAL (DEVIATION,
 needs ruling): routes_wfirma reads(5)+writes(3) — not in the named C-1c scope;
 fold its reads into C-1c or give it its own slice. Evidence:
 reports/implement/2026-07-03T234500Z/c1c-stage0-pin-refinement.md.
+STAGE 1 DONE (1a-1c): 1a dashboard `eafc5504` (readiness→Master status), 1b packing
+`d284f9ab` (lane-readiness→get_product_master_statuses accessor), 1c capabilities
+`feeb1fbe` (3 separable diagnostic searches→sync-layer passthrough; inseparable
+pre-write reads LEFT per R3). Pin 5→4→3. 1d proforma reads STOPPED (fiscal): the
+~12 reads dominantly produce wfirma_product_id (good_id) that flows into the
+INVOICE/proforma PAYLOAD, and the MIRROR is incomplete by construction (the legacy
+write paths — capabilities create/adopt, proforma write@4527, routes_wfirma
+upsert — write wfirma_products but NOT the mirror), so routing proforma reads to
+the mirror now would CHANGE payload good_ids → output-equivalence gate FAILS.
+ORDERING CORRECTION: fiscal-payload reads must migrate AFTER the write slices make
+the mirror the complete authority. STAGE 2 RESIDUAL (pin xfail=3): C-1w1 proforma
+write@4527, C-1w2 capabilities write path (+inseparable reads), routes_wfirma
+reads+writes; then 1d proforma reads (output-equivalence-gated) LAST → C-1d.
+Evidence: reports/implement/2026-07-04T001500Z/c1c-stage1-2-migration-and-residual.md.
 
 ### 2026-07-03 — Phase-C Constitution RECORDED verbatim (replaces the DEFERRED marker)
 The operator provided the verbatim "EJ Dashboard Phase-C Constitution (Final)"
