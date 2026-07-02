@@ -21,13 +21,13 @@ Rules and boundary vs PROJECT_STATE.md:
 - **Status:** NOT_STARTED
 - **HOLD reason (if BLOCKED-HOLD):** —
 
-### Prior task (COMPLETE) — Row #7 Show DHL AWB number on V2 shipment overview page (PR #716)
+### Prior task (CLOSED — not merged) — Row #7 Show DHL AWB number on V2 shipment overview page (PR #716)
 
 - **Started:** 2026-06-21
-- **Status:** COMPLETE
-- **Branch:** `feat/v2-dhl-awb-display` (commit `c88a829`)
-- **PR:** #716 (draft, awaiting operator browser verification + merge)
-- **Notes:** deriveDetail now reads `audit.tracking_no`. Sub-header uses `d.awb` with testid. OverviewTab DHL Clearance InfoBlock gains first row `AWB / Tracking` (mono). 5 contract tests + 63 smoke pass. PR-005 PASS. GATE 6 deferred to operator (remote container).
+- **Status:** CLOSED WITHOUT MERGE (operator closed PR #716 on 2026-07-02)
+- **Branch:** `feat/v2-dhl-awb-display` (commit `ed0e069`) — retained locally; PR closed, not deleted
+- **PR:** #716 (CLOSED, not merged). Do NOT reopen or open a new PR for this change unless the operator explicitly asks.
+- **Notes:** Implementation was complete (deriveDetail reads `audit.tracking_no`; sub-header uses `d.awb` w/ testid; OverviewTab DHL Clearance InfoBlock first row `AWB / Tracking` mono; 5 contract tests + 63 smoke pass; PR-005 PASS). Operator closed the PR without merging — reason unknown to this session; treat the change as not adopted. GATE 2 slot released (back to 0/3).
 
 ### Prior task (COMPLETE) — Proforma draft authority UI (PR #677)
 
@@ -56,6 +56,7 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## History (most recent first)
 
+- 2026-07-02 — Row #7 PR #716 CLOSED WITHOUT MERGE by operator. Session unsubscribed. Change not adopted; branch `feat/v2-dhl-awb-display` retained locally. Not to be reopened without explicit operator request.
 - 2026-06-21 — Row #7 COMPLETE: PR #716 draft (DHL AWB on V2 overview page). 3 JSX edits, 5 contract tests, smoke 63/63. Scorecard pending.
 - 2026-06-21 — Task #4 COMPLETE: PR #687 updated (intake diagnostics, IntakeDiagnosticsCard, T12–T15)
 - 2026-06-21 — Task #3 COMPLETE: PR #687 updated (proforma draft blocker visibility in V2 proforma tab)
