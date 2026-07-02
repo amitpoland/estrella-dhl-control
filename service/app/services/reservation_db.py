@@ -20,10 +20,13 @@ Design rules
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+log = logging.getLogger("reservation_db")
 
 _DDL = """
 PRAGMA journal_mode=WAL;
@@ -387,6 +390,220 @@ def backfill_product_authority(
             result["local_folded"] += cur.rowcount
 
     return result
+
+
+# ── C-1b — Master-first product write path (sync-layer helpers) ─────────────────
+# These are the ONLY entry points a BUSINESS module uses to touch wFirma product
+# data (MASTER CONSUMPTION RULE / LAYER RESPONSIBILITIES). Business routes call
+# these instead of importing wfirma_client or reading the mirror tables directly.
+# The write GATE (settings.wfirma_create_product_allowed) stays in the CALLING
+# route — these helpers assume the caller has already decided the push is allowed
+# ("unchanged in gating"). reservation_db is the whitelisted sync layer; the
+# wfirma_client imports are function-local to keep import-time coupling minimal.
+
+def lookup_wfirma_product(product_code: str):
+    """Read-only wFirma goods lookup by code, via the sync layer. Returns the
+    WFirmaProduct (or None). Business routes call THIS instead of importing
+    wfirma_client.get_product_by_code directly (V6 + batch-resolve read)."""
+    from .wfirma_client import get_product_by_code
+    return get_product_by_code(product_code)
+
+
+def wfirma_product_sync_client():
+    """Return a thin client exposing get_product_by_code(code) for
+    reservation_worker.sync_wfirma_products_by_codes, so business routes never
+    import wfirma_client themselves (V6). The forbidden identifier lives here in
+    the whitelisted sync layer, not in the business route."""
+    from .wfirma_client import get_product_by_code as _get
+
+    class _ProductSyncClient:
+        @staticmethod
+        def get_product_by_code(code):
+            return _get(code)
+
+    return _ProductSyncClient()
+
+
+def set_product_master_status(
+    db_path: Path,
+    product_code: str,
+    status: str,
+    *,
+    is_active: Optional[int] = None,
+) -> int:
+    """Set product_master.status (and optionally is_active) for an already-minted
+    code. Returns rows updated. Reflects sync state: 'mapping_required' before the
+    wFirma push, 'mapped' after a confirmed wfirma_id is mirrored."""
+    now = _now()
+    with _connect(db_path) as con:
+        if is_active is None:
+            cur = con.execute(
+                "UPDATE product_master SET status=?, updated_at=? WHERE product_code=?",
+                (status, now, product_code),
+            )
+        else:
+            cur = con.execute(
+                "UPDATE product_master SET status=?, is_active=?, updated_at=? "
+                "WHERE product_code=?",
+                (status, int(is_active), now, product_code),
+            )
+        return cur.rowcount
+
+
+def upsert_product_mirror(
+    db_path: Path,
+    *,
+    wfirma_id: str,
+    product_code: str,
+    name: str = "",
+    also_set_master_status: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Write the code→wfirma_id sync identity into wfirma_product_mirror — the
+    ONLY place sync identity is written (LAYER RESPONSIBILITIES). Collision-safe
+    on the UNIQUE(wfirma_id) invariant: if a DIFFERENT product_code already owns
+    this non-empty wfirma_id (a one-good-two-codes data problem), the linkage is
+    REFUSED (returned collision=True, owner=<code>) rather than breaking the
+    invariant — the caller surfaces it. The UNIQUE constraint is the true
+    enforcement boundary: a TOCTOU race that slips past the pre-check is caught
+    as an IntegrityError and reported as a collision, so a mirror write never
+    raises for a duplicate wfirma_id. Bumps sync_version + refreshes last_sync +
+    hash on an existing row; inserts otherwise. When ``also_set_master_status``
+    is given, the product_master.status flip runs in the SAME transaction as the
+    mirror write, so the mirror and the master status can never diverge."""
+    import hashlib
+
+    now = _now()
+    wfirma_id = (wfirma_id or "").strip()
+    with _connect(db_path) as con:
+        if wfirma_id:
+            owner = con.execute(
+                "SELECT product_code FROM wfirma_product_mirror "
+                "WHERE wfirma_id=? AND wfirma_id!=''",
+                (wfirma_id,),
+            ).fetchone()
+            if owner is not None and owner["product_code"] != product_code:
+                return {"written": False, "collision": True, "owner": owner["product_code"]}
+        h = hashlib.sha256(
+            f"{wfirma_id}|{product_code}|{name}".encode("utf-8")
+        ).hexdigest()[:32]
+        existing = con.execute(
+            "SELECT product_code FROM wfirma_product_mirror WHERE product_code=?",
+            (product_code,),
+        ).fetchone()
+        try:
+            if existing:
+                con.execute(
+                    "UPDATE wfirma_product_mirror SET wfirma_id=?, last_sync=?, hash=?, "
+                    "sync_version=sync_version+1 WHERE product_code=?",
+                    (wfirma_id, now, h, product_code),
+                )
+            else:
+                con.execute(
+                    "INSERT INTO wfirma_product_mirror "
+                    "(wfirma_id, product_code, sync_version, last_sync, hash, deleted_flag) "
+                    "VALUES (?,?,?,?,?,0)",
+                    (wfirma_id, product_code, 1, now, h),
+                )
+        except sqlite3.IntegrityError:
+            # Lost the UNIQUE(wfirma_id) race to a concurrent writer — the
+            # constraint is the real boundary; report the actual current owner.
+            owner_row = con.execute(
+                "SELECT product_code FROM wfirma_product_mirror "
+                "WHERE wfirma_id=? AND wfirma_id!=''",
+                (wfirma_id,),
+            ).fetchone()
+            owner = owner_row["product_code"] if owner_row else product_code
+            return {"written": False, "collision": True, "owner": owner}
+        if also_set_master_status:
+            con.execute(
+                "UPDATE product_master SET status=?, updated_at=? WHERE product_code=?",
+                (also_set_master_status, now, product_code),
+            )
+    return {"written": True, "collision": False, "owner": product_code}
+
+
+def create_wfirma_product_via_master(
+    db_path: Path,
+    *,
+    product_code: str,
+    name: str,
+    unit: str = "szt.",
+    netto: float = 0.0,
+    vat_code_id: Optional[str] = None,
+    description: str = "",
+):
+    """Master-first product CREATE (write-sequence steps 2+3). The caller has
+    ALREADY written the product_master row and confirmed the write gate is ON.
+    This performs the wFirma push via the existing client call and, on a
+    CONFIRMED wfirma_id, writes the MIRROR (sync identity) + flips
+    product_master.status to 'mapped'. Returns (WFirmaProduct, mirror_result).
+    On an id-less result the caller keeps the Master (sync-pending)."""
+    from .wfirma_client import create_product
+    result = create_product(
+        product_code=product_code,
+        name=name,
+        unit=unit,
+        netto=netto,
+        vat_code_id=vat_code_id,
+        description=description,
+    )
+    mirror = {"written": False, "collision": False, "owner": product_code}
+    if result is not None and (getattr(result, "wfirma_id", "") or "").strip():
+        try:
+            # Mirror write + master.status='mapped' happen atomically in one
+            # transaction (also_set_master_status) so they never diverge.
+            mirror = upsert_product_mirror(
+                db_path,
+                wfirma_id=result.wfirma_id,
+                product_code=product_code,
+                name=name,
+                also_set_master_status="mapped",
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            # wFirma good was created but the local mirror write failed; keep the
+            # successful create signal and report the mirror problem for repair.
+            log.warning(
+                "create_wfirma_product_via_master: wFirma good %s created but "
+                "mirror write failed for %s: %s", result.wfirma_id, product_code, exc,
+            )
+            mirror = {"written": False, "collision": False,
+                      "owner": product_code, "error": str(exc)}
+    return result, mirror
+
+
+def edit_wfirma_product_via_master(
+    db_path: Path,
+    *,
+    product_code: str,
+    wfirma_product_id: str,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+):
+    """Master-first product EDIT: pushes the name/description change via the
+    existing gated client call (gate checked by caller) and, on success, bumps
+    the MIRROR sync fields for this code — PRESERVING the existing
+    code→wfirma_id mapping. Returns (edit_result_dict, mirror_result)."""
+    from .wfirma_client import edit_product
+    result = edit_product(
+        wfirma_product_id=wfirma_product_id,
+        name=name,
+        description=description,
+    )
+    try:
+        mirror = upsert_product_mirror(
+            db_path, wfirma_id=wfirma_product_id, product_code=product_code, name=name or ""
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        # The wFirma edit already committed remotely; a mirror-write failure must
+        # not masquerade as an edit failure. Preserve the edit result + report.
+        log.warning(
+            "edit_wfirma_product_via_master: wFirma good %s edited but mirror "
+            "write failed for %s: %s — manual reconciliation needed",
+            wfirma_product_id, product_code, exc,
+        )
+        mirror = {"written": False, "collision": False,
+                  "owner": product_code, "error": str(exc)}
+    return result, mirror
 
 
 # ── product_master ─────────────────────────────────────────────────────────────

@@ -6090,6 +6090,65 @@ deploy; DB file-copy backup before every migration):
   C-1d VERIFICATION (completion audit; Inventory→Master-only greps; pin fully
     green; census appended; success criteria answered line-by-line).
 
+### 2026-07-03 — C-1a COMPLETE + C-1b RULING (write-path reroute, operator-approved)
+C-1a DONE @ `6c2fde43` (feat(c1a-product-authority)): wfirma_product_mirror
+(exactly 6 cols) + product_master authority cols + product_local fold + collision-
+safe idempotent backfill (verify tree: mirror_rows=4, status_set=0, local_folded=0,
+1 real wfirma_id collision surfaced). Standing pin `test_master_consumption_rule.py`
++ golden 160/160. Discovery @ `a4720dd3`.
+
+C-1b MEASURED FACT (reports/inspection/2026-07-03T-c1b-writepath-discovery.md): the
+C-1a baseline of 8 was LOOSE — the current pin flags only 6 REAL business files;
+routes_master_data.py + routes_admin.py were PHANTOMS (they contain zero forbidden
+patterns, only `product_master` which is not forbidden). Crude(substring) and
+precise(access-only) pins flag the IDENTICAL 6-file set.
+
+C-1b OPERATOR RULING (2026-07-03): **Path B + honest baseline 4.**
+- Path B: reroute ONLY the 3 real wFirma client calls (get_product_by_code /
+  create_product / edit_product) through Master-first reservation_db sync-layer
+  helpers; the write GATE (`settings.wfirma_create_product_allowed`) STAYS in the
+  route (honors operator constraint "unchanged in gating"). Rejected Path A
+  (crude-pin literal-drain: would force the gate control-flow into a persistence
+  module + rename endpoints + scrub docstrings = layering regression, high churn).
+- Pin REFINED (in-scope per R1 "the consumption pin"): `_FORBIDDEN` crude substrings
+  → precise access (strip comments+docstrings; match `.get_product_by_code(` /
+  `.create_product(` / `.edit_product(` / def/import get_product_by_code /
+  table-context wfirma_products|_mapping|_mirror) + a POSITIVE-CONTROL test proving a
+  synthetic `wfirma_client.create_product(` / `FROM wfirma_products` is still flagged.
+  Provably NOT a file-set loosening (crude≡precise set today); it only drops
+  false-positive reasons (the gate-flag name, function identifiers, prose).
+- BASELINE corrected to reality: KNOWN = the real remaining offenders after C-1b =
+  {routes_dashboard, routes_packing, routes_proforma, routes_wfirma_capabilities}
+  = **4** (phantoms routes_master_data + routes_admin dropped as never-offended;
+  the 2 rerouted files leave). count pin 8→4. Trajectory to 0 by C-1d.
+
+C-1b WRITE-SEQUENCE SEMANTICS (operator verbatim, recorded):
+App-initiated create/edit: (1) MASTER row written FIRST (local business authority;
+status 'mapping_required'); (2) wFirma push via the EXISTING gated client call,
+gating UNCHANGED; (3) on wFirma success: MIRROR written (wfirma_id, hash,
+sync_version, last_sync) — the ONLY place sync identity is written — + master.status
+→ 'mapped'; (4) on failure/flag-off: MASTER remains (sync-pending), MIRROR untouched,
+response honest. Sync-initiated (poll/webhook): Mirror first, Master resolved second.
+Old split-table writes at these sites are REDIRECTED not duplicated — no dual-writes.
+V6: routes_reservations product read → Master accessor (reservation_db); no direct
+wfirma_* / get_product_by_code remains in the file.
+R1 file list: routes_wfirma.py, routes_reservations.py, reservation_db.py, the two
+route test files + the consumption pin, PROJECT_STATE. No deploy.
+
+C-1b REVIEW OUTCOME (pre-commit 4-lens adversarial workflow): 12 must-fix
+confirmed → 11 fixed in-scope (mirror TOCTOU/IntegrityError-safe; create/edit
+mirror-failure defensive-wrapped; resolve surfaces mirror-collision as
+failed_detail; create mirror+status atomic in one txn; sync_names _reservation_db
+hoisted; resolve tests 3/4/5 strengthened with DB-readback; pin comment-stripper
+tab-hash; V6/edit test assertions). Build record:
+reports/implement/2026-07-03T210000Z/c1b-writepath-reroute.md. GATE-4 salvage
+finding (out of R1 scope): routes_reservations router is NOT registered in
+service/app/main.py → all reservation endpoints (incl. V6 sync-by-codes) are dead
+in production (404/405); PRE-EXISTING (root cause of the 6 test_api_* failures).
+Disposition = SCHEDULED via task chip task_d6fdfca9 ("Register routes_reservations
+router in main.py"). The V6 authority reroute is correct regardless; registration
+is a separate reachability bug.
+
 ### 2026-07-03 — Phase C QUEUE REORDER (operator) + MASTER-FIRST RULE (verbatim)
 QUEUE (operator, verbatim order): C-0 Authority Cleanup (read-only) → C-1
 Product Master Authority → C-2 Customer Master Authority → C-3 Sample/Returns

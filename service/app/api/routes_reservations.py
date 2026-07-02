@@ -155,19 +155,22 @@ async def get_reservation_queue(
 @router.post("/wfirma/products/sync-by-codes", dependencies=[_auth])
 async def sync_products_by_codes(body: SyncByCodesBody) -> JSONResponse:
     """
-    Exact-code search in wFirma for each product_code.
-    Updates wfirma_product_mapping. Never creates products in wFirma.
+    Exact-code search in wFirma for each product_code, via the sync layer.
+    Updates the product mapping. Never creates products in wFirma. The response
+    is augmented with each matched code's Product Master status — business
+    modules read the Master, not wFirma directly (C-1b / V6).
     """
-    from ..services.wfirma_client import get_product_by_code as _get
-
-    class _ClientShim:
-        """Thin shim so the worker can call client.get_product_by_code()."""
-        @staticmethod
-        def get_product_by_code(code: str):
-            return _get(code)
-
     db     = _ensure_db()
-    result = rworker.sync_wfirma_products_by_codes(db, _ClientShim(), body.product_codes)
+    result = rworker.sync_wfirma_products_by_codes(
+        db, rdb.wfirma_product_sync_client(), body.product_codes
+    )
+    # V6: surface Master fields for the matched codes (Master read via accessor).
+    master_status: Dict[str, Any] = {}
+    for code in result.get("matched", []):
+        row = rdb.get_product_master(db, code)
+        if row is not None:
+            master_status[code] = row.get("status")
+    result["master_status"] = master_status
     return JSONResponse(result)
 
 

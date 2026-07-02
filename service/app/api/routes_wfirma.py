@@ -68,6 +68,7 @@ from ..services.wfirma_pz_notes import build_wfirma_pz_notes
 from ..services import description_engine as deng
 from ..services import wfirma_client
 from ..services import wfirma_db
+from ..services import reservation_db as rdb
 from ..services import suppliers_db as _sdb
 from ..services import warehouse_receipt as _wrcpt
 from ..utils.io import write_json_atomic
@@ -1827,6 +1828,15 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
     })
 
 
+def _reservation_db() -> Path:
+    """Path to reservation_queue.db (the Product Master + mirror authority),
+    ensuring the schema exists. Business product writes flow through the
+    reservation_db sync-layer helpers, not wfirma_client directly (C-1b)."""
+    db = settings.storage_root / "reservation_queue.db"
+    rdb.init_reservation_db(db)
+    return db
+
+
 @router.post("/shipment/{batch_id}/wfirma/products/resolve", dependencies=[_auth])
 async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
     """
@@ -1907,6 +1917,9 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
     # instead of O(N) individual get_product() calls (C6 T6 hardening).
     _local_cache: Dict[str, Any] = wfirma_db.get_products_batch(list(seen.keys()))
 
+    # C-1b: the reservation_queue.db Product Master + mirror authority handle.
+    _rdb = _reservation_db()
+
     for pc, meta in seen.items():
         # ── 1. Check local table first ────────────────────────────────────────
         local = _local_cache.get(pc)
@@ -1921,9 +1934,9 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
                 drift_codes.append(pc)
             continue
 
-        # ── 2. Live goods/find ────────────────────────────────────────────────
+        # ── 2. Live goods/find (via the sync layer, not wfirma_client direct) ──
         try:
-            found = wfirma_client.get_product_by_code(pc)
+            found = rdb.lookup_wfirma_product(pc)
         except Exception as exc:
             failed_details.append({"product_code": pc, "error": f"goods/find: {exc}"})
             continue
@@ -1940,7 +1953,20 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
             found_and_mapped += 1
             continue
 
-        # ── 3a. Missing + gate off ────────────────────────────────────────────
+        # ── Master-first (write-sequence step 1): this code is not yet mapped
+        #    in wFirma, so it needs a Product Master row REGARDLESS of the write
+        #    gate (the Master is the local business authority). Status reflects
+        #    sync state — 'mapping_required' until a confirmed wfirma_id mirrors.
+        rdb.upsert_product_master(
+            _rdb,
+            product_code = pc,
+            design_no    = "",
+            description  = (meta.get("description_en") or ""),
+            item_type    = (meta.get("item_type") or ""),
+        )
+        rdb.set_product_master_status(_rdb, pc, "mapping_required")
+
+        # ── 3a. Missing + gate off → Master remains (sync-pending), no push ───
         if not settings.wfirma_create_product_allowed:
             missing_codes.append(pc)
             continue
@@ -2000,7 +2026,12 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
             authority_source  = "description_engine_fallback"
 
         try:
-            result_product = wfirma_client.create_product(
+            # C-1b: Master-first create — the Master row is written above; this
+            # pushes to wFirma via the sync layer and, on a confirmed wfirma_id,
+            # writes the MIRROR + flips status to 'mapped'. The write gate was
+            # already checked in this route (3a) — gating unchanged.
+            result_product, _mirror = rdb.create_wfirma_product_via_master(
+                _rdb,
                 product_code = pc,
                 name         = wf_name,
                 unit         = "szt.",
@@ -2011,6 +2042,18 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
         except Exception as exc:
             log.warning("[%s] products/resolve: goods/add failed for %r: %s", batch_id, pc, exc)
             failed_details.append({"product_code": pc, "error": f"goods/add: {exc}"})
+            continue
+
+        # C-1b: a mirror collision means the wFirma good was created but its
+        # wfirma_id is already claimed by another product_code — surface it as a
+        # failure (do NOT write the legacy cache) so the operator resolves the
+        # duplicate-ownership before this code is treated as mapped.
+        if _mirror.get("collision"):
+            failed_details.append({
+                "product_code":   pc,
+                "error":          "mirror_collision",
+                "existing_owner": _mirror.get("owner"),
+            })
             continue
 
         if not result_product.wfirma_id:
@@ -2264,6 +2307,10 @@ async def wfirma_products_sync_names(
     failed_details: List[Dict[str, Any]] = []
     before_after:   List[Dict[str, Any]] = []
 
+    # C-1b: reservation_queue.db Product Master + mirror authority handle,
+    # resolved ONCE for the batch (not per product row).
+    _rdb = _reservation_db()
+
     # Deduplicate by product_code — multiple rows may share one code in
     # principle; only process the first occurrence per code per run.
     seen_codes: set = set()
@@ -2317,7 +2364,12 @@ async def wfirma_products_sync_names(
             continue
 
         try:
-            edit_result = wfirma_client.edit_product(
+            # C-1b: edit via the sync layer — PRESERVES the code→wfirma_id
+            # mapping and bumps the MIRROR sync fields on success. The write gate
+            # was already checked at the top of this endpoint — gating unchanged.
+            edit_result, _mirror = rdb.edit_wfirma_product_via_master(
+                _rdb,
+                product_code      = pc,
                 wfirma_product_id = wfirma_id,
                 name              = new_name,
                 description       = new_description,

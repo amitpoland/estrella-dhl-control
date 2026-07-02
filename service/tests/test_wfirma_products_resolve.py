@@ -27,6 +27,20 @@ _svc = Path(__file__).parent.parent
 if str(_svc) not in sys.path:
     sys.path.insert(0, str(_svc))
 
+import sqlite3
+from app.services import reservation_db as _rdb
+
+
+def _mirror_row(db, code):
+    """Read a wfirma_product_mirror row (or None) for DB-readback assertions."""
+    con = sqlite3.connect(str(db))
+    con.row_factory = sqlite3.Row
+    row = con.execute(
+        "SELECT * FROM wfirma_product_mirror WHERE product_code=?", (code,)
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
 
 # ── Shared fixtures ────────────────────────────────────────────────────────────
 
@@ -117,6 +131,11 @@ def test_already_mapped_product_skipped():
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
         patch("app.api.routes_wfirma.wfirma_db.get_product",
               return_value={"wfirma_product_id": "48611875"}),
+        # resolve reads the already-mapped cache via get_products_batch (batched),
+        # not get_product — mock the batched accessor the code actually calls.
+        patch("app.api.routes_wfirma.wfirma_db.get_products_batch",
+              return_value={"EJL/26-27/013-1": {"wfirma_product_id": "48611875",
+                                                "product_name": "Wisiorek"}}),
         patch("app.api.routes_wfirma.wfirma_db.list_products",
               return_value=[{"product_code": "EJL/26-27/013-1", "wfirma_product_id": "48611875"}]),
         patch("app.api.routes_wfirma.wfirma_client.get_product_by_code") as mock_find,
@@ -154,7 +173,9 @@ def test_goods_find_match_saved_to_db():
         patch("app.api.routes_wfirma._read_audit", return_value=_AUDIT),
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
-        patch("app.api.routes_wfirma.wfirma_db.get_product", return_value=None),
+        # resolve reads the local cache via get_products_batch — an EMPTY cache
+        # forces the goods/find path (get_product was dead here).
+        patch("app.api.routes_wfirma.wfirma_db.get_products_batch", return_value={}),
         patch("app.api.routes_wfirma.wfirma_db.upsert_product", side_effect=fake_upsert),
         patch("app.api.routes_wfirma.wfirma_db.list_products",
               return_value=[{"product_code": "EJL/26-27/013-1", "wfirma_product_id": "48611875"}]),
@@ -177,7 +198,7 @@ def test_goods_find_match_saved_to_db():
 
 # ── Test 4: Missing + gate off → reported in missing_codes ────────────────────
 
-def test_missing_gate_off_reported_not_created():
+def test_missing_gate_off_reported_not_created(tmp_path):
     """
     When goods/find returns None and WFIRMA_CREATE_PRODUCT_ALLOWED=False,
     the code must appear in missing_codes and goods/add must never be called.
@@ -198,6 +219,8 @@ def test_missing_gate_off_reported_not_created():
         mock_settings.wfirma_create_product_allowed = False
         mock_settings.wfirma_supplier_contractor_id = "38142296"
         mock_settings.wfirma_warehouse_id = "347088"
+        # C-1b: the Master-first write path needs a real reservation_queue.db.
+        mock_settings.storage_root = tmp_path
         from app.api.routes_wfirma import wfirma_products_resolve
         import asyncio
         result = asyncio.get_event_loop().run_until_complete(
@@ -209,11 +232,17 @@ def test_missing_gate_off_reported_not_created():
     assert "EJL/26-27/013-UNKNOWN" in body["missing_codes"]
     assert body["missing"] == 1
     assert body["ready_for_pz"] is False
+    # C-1b invariant: Master written (sync-pending) even with the gate off; and
+    # NO mirror linkage while the sync is pending.
+    _db = tmp_path / "reservation_queue.db"
+    _m = _rdb.get_product_master(_db, "EJL/26-27/013-UNKNOWN")
+    assert _m is not None and _m["status"] == "mapping_required"
+    assert _mirror_row(_db, "EJL/26-27/013-UNKNOWN") is None
 
 
 # ── Test 5: Missing + gate on → creates product ────────────────────────────────
 
-def test_missing_gate_on_creates_product():
+def test_missing_gate_on_creates_product(tmp_path):
     """
     When goods/find returns None and WFIRMA_CREATE_PRODUCT_ALLOWED=True,
     create_product must be called and the mapping upserted on success.
@@ -245,6 +274,8 @@ def test_missing_gate_on_creates_product():
         mock_settings.wfirma_create_product_allowed = True
         mock_settings.wfirma_supplier_contractor_id = "38142296"
         mock_settings.wfirma_warehouse_id = "347088"
+        # C-1b: the Master-first write path needs a real reservation_queue.db.
+        mock_settings.storage_root = tmp_path
         from app.api.routes_wfirma import wfirma_products_resolve
         import asyncio
         result = asyncio.get_event_loop().run_until_complete(
@@ -257,11 +288,16 @@ def test_missing_gate_on_creates_product():
     assert body["missing_codes"] == []
     assert len(upserted) == 1
     assert upserted[0]["wfirma_product_id"] == "99999999"
+    # C-1b invariant: mirror linkage written + master.status flipped to 'mapped'.
+    _db = tmp_path / "reservation_queue.db"
+    assert _rdb.get_product_master(_db, "EJL/26-27/013-NEW")["status"] == "mapped"
+    _mr = _mirror_row(_db, "EJL/26-27/013-NEW")
+    assert _mr is not None and _mr["wfirma_id"] == "99999999"
 
 
 # ── Test 6: goods/add failure writes no mapping ────────────────────────────────
 
-def test_create_failure_writes_no_mapping():
+def test_create_failure_writes_no_mapping(tmp_path):
     """
     When create_product raises an exception, no fake mapping must be written
     to wfirma_products. The code appears in failed_details, not missing_codes.
@@ -291,6 +327,8 @@ def test_create_failure_writes_no_mapping():
         mock_settings.wfirma_create_product_allowed = True
         mock_settings.wfirma_supplier_contractor_id = "38142296"
         mock_settings.wfirma_warehouse_id = "347088"
+        # C-1b: the Master-first write path needs a real reservation_queue.db.
+        mock_settings.storage_root = tmp_path
         from app.api.routes_wfirma import wfirma_products_resolve
         import asyncio
         result = asyncio.get_event_loop().run_until_complete(
@@ -331,6 +369,11 @@ def test_idempotent_rerun_increments_already_mapped():
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
         patch("app.api.routes_wfirma.wfirma_db.get_product", side_effect=fake_get_product),
+        patch("app.api.routes_wfirma.wfirma_db.get_products_batch",
+              return_value={
+                  "EJL/26-27/013-1": {"wfirma_product_id": "48611875", "product_name": "Wisiorek"},
+                  "EJL/26-27/013-2": {"wfirma_product_id": "48612067", "product_name": "Wisiorek"},
+              }),
         patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=db_entries),
         patch("app.api.routes_wfirma.wfirma_client.get_product_by_code") as mock_find,
         patch("app.api.routes_wfirma.wfirma_client.create_product") as mock_create,
@@ -352,7 +395,7 @@ def test_idempotent_rerun_increments_already_mapped():
 
 # ── Test 8: ready_for_pz=true when all products mapped ────────────────────────
 
-def test_ready_for_pz_true_when_all_mapped():
+def test_ready_for_pz_true_when_all_mapped(tmp_path):
     """
     After resolve succeeds for all product_codes, ready_for_pz must be True
     and unresolved_product_codes must be empty.
@@ -378,6 +421,11 @@ def test_ready_for_pz_true_when_all_mapped():
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
         patch("app.api.routes_wfirma.wfirma_db.get_product", side_effect=fake_get_product),
+        patch("app.api.routes_wfirma.wfirma_db.get_products_batch",
+              return_value={
+                  "EJL/26-27/013-1": {"wfirma_product_id": "48611875", "product_name": "Wisiorek"},
+                  "EJL/26-27/013-2": {"wfirma_product_id": "48612067", "product_name": "Wisiorek"},
+              }),
         patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=db_entries),
         patch("app.api.routes_wfirma.wfirma_client.get_product_by_code") as mock_find,
         patch("app.api.routes_wfirma.settings") as mock_settings,
@@ -386,6 +434,8 @@ def test_ready_for_pz_true_when_all_mapped():
         mock_settings.wfirma_supplier_contractor_id = "38142296"
         mock_settings.wfirma_warehouse_id = "347088"
         mock_settings.wfirma_create_product_allowed = False
+        # C-1b: resolve initialises the reservation_queue.db handle up front.
+        mock_settings.storage_root = tmp_path
 
         from app.api.routes_wfirma import wfirma_products_resolve
         import asyncio
