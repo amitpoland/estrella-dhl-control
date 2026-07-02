@@ -6019,6 +6019,11 @@ continuity with the trigger this path has always written to
 inventory_state_events, and it names the origin distinctly vs
 pz_created/pz_generated; source="dhl_delivery_bridge" disambiguates
 further.
+RULING (operator, 2026-07-03): dev_seed_inventory_state EXEMPT from
+Note-minting per operator ruling 2026-07-03: repair tool, not a movement;
+prod-gated (pinned by test); if ever promoted to a production backfill
+mechanism, convert with trigger='legacy_backfill' first. Phase A backend
+movement authority COMPLETE; backend FROZEN for the inventory phase.
 
 ### 2026-07-03 — wFirma MM: BUSINESS model answered; API capability still open
 OPERATOR ANSWER (verbatim): "wFirma MM answer: yes, consignment issue

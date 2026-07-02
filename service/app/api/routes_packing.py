@@ -3242,6 +3242,13 @@ def dev_seed_inventory_state(body: _SeedBatchBody) -> Dict[str, Any]:
     No global backfill. Operator-triggered, batch-scoped, idempotent.
     Walks each scan_code through legal transitions only — never demotes,
     never overwrites a state row that's already at or beyond the target.
+
+    EXEMPT from Stock-Promotion-Note minting per operator ruling 2026-07-03
+    (PROJECT_STATE DECISIONS "BE-2b" RULING): this is a REPAIR TOOL, not a
+    movement — dev-gated (404 outside dev; gate pinned by
+    test_dev_seed_backfill_variable_promotion_stays_dev_gated). If ever
+    promoted to a production backfill mechanism, convert to a
+    run_stock_promotion caller with trigger='legacy_backfill' FIRST.
     """
     if settings.environment != "dev":
         raise HTTPException(status_code=404, detail="Not found.")
