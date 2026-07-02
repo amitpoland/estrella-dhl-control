@@ -6056,6 +6056,18 @@ components exposed to the same collision (grep spread-rest in static/v2)
 — candidates include the Button emitting the observed
 ['children','onClick','disabled','title','warn','style'] list.
 
+### 2026-07-03 — PERMANENT RULE: authority-first for inventory features (operator-ratified, verbatim)
+"No new inventory feature may be implemented until Claude Code first
+identifies which existing authority it extends: Product Mirror, Customer
+Master, Inventory V2, or wFirma. If no authority exists, STOP and ask before
+writing code."
+Phase C gate-0 = the Integration Architecture Audit
+(reports/inspection/2026-07-03T-integration-architecture-audit.md) — the
+frozen-architecture proposal (authority map, canonical mirror set, per-object
+sync strategy, ordered Phase-C queue) + the consolidated OPERATOR-INPUT list
+(§E-merged). No inventory code proceeds until the audit's authority map is
+operator-approved.
+
 ### 2026-07-03 — Phase B B1: Overview KPI tile polish (operator ruling "c")
 OPERATOR RULING (verbatim): "DEFER Sample/Returns to Phase C. Do B1 KPI polish
 now. No pending-scaffold tabs. No fake read data. Sample/Returns read
