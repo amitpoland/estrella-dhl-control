@@ -495,3 +495,105 @@ class TestBuildShipmentBodyProductOverride:
         req = _make_request(product_code="K")
         body = _build_shipment_body(req, self._fake_settings(), product_code=None)
         assert body["productCode"] == "K"
+
+
+# ── TestBrazilPLTBypass ───────────────────────────────────────────────────────
+
+
+class TestBrazilPLTBypass:
+    """Brazil routes require bypassPLTError=true in the POST URL and WY in valueAddedServices."""
+
+    def _fake_settings(self):
+        mock = MagicMock()
+        mock.dhl_express_shipper_name = "Estrella Jewels"
+        mock.dhl_express_shipper_address1 = "ul. Sabaly 58"
+        mock.dhl_express_shipper_city = "Warszawa"
+        mock.dhl_express_shipper_postal_code = "02-174"
+        mock.dhl_express_shipper_country_code = "PL"
+        mock.dhl_express_shipper_phone = "+48516081994"
+        return mock
+
+    def _run(
+        self,
+        tmp_path,
+        dest_cc: str,
+        dest_city: str = "Sao Paulo",
+        dest_postal: str = "01001-001",
+    ):
+        config = _make_config()
+        adapter = DhlExpressLiveAdapter(config)
+        request = _make_request(dest_cc=dest_cc, dest_city=dest_city, dest_postal=dest_postal)
+
+        with _mock_settings(tmp_path), patch("httpx.Client") as mock_cls:
+            mock_client = mock_cls.return_value.__enter__.return_value
+            mock_client.get.return_value = _rates_error()
+            mock_client.post.return_value = _ship_resp("AWB-TEST")
+            adapter.create_shipment(request)
+
+        return mock_client
+
+    # ── POST URL ──────────────────────────────────────────────────────────────
+
+    def test_br_post_url_contains_bypass_plt_error(self, tmp_path):
+        """POST URL must include ?bypassPLTError=true for BR destination."""
+        client = self._run(tmp_path, dest_cc="BR")
+        url = client.post.call_args[0][0]
+        assert "bypassPLTError=true" in url
+
+    def test_de_post_url_has_no_bypass_plt_error(self, tmp_path):
+        """DE (EU) route must NOT have bypassPLTError in POST URL."""
+        client = self._run(tmp_path, dest_cc="DE", dest_city="Hamburg", dest_postal="20457")
+        url = client.post.call_args[0][0]
+        assert "bypassPLTError" not in url
+
+    def test_ch_post_url_has_no_bypass_plt_error(self, tmp_path):
+        """CH (non-EU, non-BR) route must NOT have bypassPLTError in POST URL."""
+        client = self._run(tmp_path, dest_cc="CH", dest_city="Basel", dest_postal="4000")
+        url = client.post.call_args[0][0]
+        assert "bypassPLTError" not in url
+
+    def test_us_post_url_has_no_bypass_plt_error(self, tmp_path):
+        """US route must NOT have bypassPLTError in POST URL."""
+        client = self._run(tmp_path, dest_cc="US", dest_city="New York", dest_postal="10001")
+        url = client.post.call_args[0][0]
+        assert "bypassPLTError" not in url
+
+    # ── POST body ─────────────────────────────────────────────────────────────
+
+    def test_br_body_contains_wy_service(self, tmp_path):
+        """WY must be in valueAddedServices for BR destination."""
+        client = self._run(tmp_path, dest_cc="BR")
+        body = client.post.call_args[1]["json"]
+        assert body.get("valueAddedServices") == [{"serviceCode": "WY"}]
+
+    def test_de_body_has_no_wy_service(self, tmp_path):
+        """DE body must NOT have WY injected by BR PLT logic."""
+        client = self._run(tmp_path, dest_cc="DE", dest_city="Hamburg", dest_postal="20457")
+        body = client.post.call_args[1]["json"]
+        assert "valueAddedServices" not in body
+
+    def test_ch_body_has_no_wy_service(self, tmp_path):
+        """CH body must NOT have WY injected by BR PLT logic."""
+        client = self._run(tmp_path, dest_cc="CH", dest_city="Basel", dest_postal="4000")
+        body = client.post.call_args[1]["json"]
+        assert "valueAddedServices" not in body
+
+    # ── _build_shipment_body() unit ───────────────────────────────────────────
+
+    def test_build_body_br_includes_wy(self):
+        """_build_shipment_body() adds WY to valueAddedServices for BR."""
+        req = _make_request(dest_cc="BR", dest_city="Sao Paulo", dest_postal="01001-001")
+        body = _build_shipment_body(req, self._fake_settings())
+        assert body.get("valueAddedServices") == [{"serviceCode": "WY"}]
+
+    def test_build_body_de_no_wy(self):
+        """_build_shipment_body() does NOT add WY for DE routes."""
+        req = _make_request(dest_cc="DE", dest_city="Hamburg", dest_postal="20457")
+        body = _build_shipment_body(req, self._fake_settings())
+        assert "valueAddedServices" not in body
+
+    def test_build_body_ch_no_wy(self):
+        """_build_shipment_body() does NOT add WY for CH routes."""
+        req = _make_request(dest_cc="CH", dest_city="Basel", dest_postal="4000")
+        body = _build_shipment_body(req, self._fake_settings())
+        assert "valueAddedServices" not in body
