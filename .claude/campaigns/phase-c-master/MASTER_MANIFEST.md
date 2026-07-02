@@ -26,8 +26,8 @@ Move-Location fold `0cee8173`.
 
 | Wave | Name | Scope (slices) | Budget | Status |
 |---|---|---|---|---|
-| Phase 0 | Research + validation | Populate registers; OI evidence pass; KNOWLEDGE.md | — | PENDING |
-| **Wave 1** | Master Authority Completion | C-1w2 · C-1e · C-1f · C-1d · C-2a · C-2b · C-2c | 8h | PENDING |
+| Phase 0 | Research + validation | Populate registers; OI evidence pass; KNOWLEDGE.md | — | **COMPLETE 2026-07-03** |
+| **Wave 1** | Master Authority Completion | C-1w2 · C-1e · C-1f · C-1d · C-2a · C-2b · C-2c | 8h | **ACTIVE** |
 | **Wave 2** | Sample/Returns Reads + Inventory Parity | C-3a · C-3b · C-3c · C-3d · C-3e | 11h | PENDING |
 | **Wave 3** | Consignment + Invoice-from-Consignment | C-4a · C-4b · C-4c · C-4d · C-5a · C-6a | 6h | PENDING |
 | **Wave 4** | MM Sync + Webhook Synchronization | C-7a · C-8a · C-8b · C-8c · C-9a | 5h | PENDING |
@@ -93,23 +93,23 @@ here immediately; the current wave finishes only unaffected slices.
 
 ### Wave 1
 - **W1-A1** — Frozen architecture per integration audit (`b9f5664c` + amendment) holds; no
-  new authority violations since. — State: [Phase 0]
+  new authority violations since. — State: **VALID** (Phase 0: pin 8/8, baseline = declared 3-file residual)
 - **W1-A2** — C-1b/C-1w1 write-sequence semantics (operator rulings, PROJECT_STATE) remain
-  the pattern for C-1w2/C-1e; transitional dual-write accepted. — State: [Phase 0]
+  the pattern for C-1w2/C-1e; transitional dual-write accepted. — State: **VALID** (Phase 0: rulings in PROJECT_STATE)
 - **W1-A3** — customer_master.sqlite is the identity/VAT/commercial authority;
   `contractor_id` stable across wFirma responses (OI-13 — if unstable, C-2a keying
-  changes). — State: [Phase 0 / OI-13]
-- **W1-A4** — Wave 1 has no wFirma API dependency (app-side only). — State: [Phase 0]
+  changes). — State: **VALID** (Phase 0: bill_to_contractor_id already REQUIRED in customer_master_db.py:46,175; production reliance) — OI-13 stays OPEN for formal confirmation
+- **W1-A4** — Wave 1 has no wFirma API dependency (app-side only). — State: **VALID** (Phase 0)
 
 ### Wave 2 (operator amendment wording: "sample/returns event tables sufficient for reads, movement model per audit, MM answer state")
-- **W2-A1** — `sample_out_events` table sufficient for Sample reads. — State: [Phase 0]
-- **W2-A2** — returns_events migration draft is apply-safe (deploy-gated). — State: [Phase 0]
+- **W2-A1** — `sample_out_events` table sufficient for Sample reads. — State: **VALID** (Phase 0: schema in warehouse_db.py; writer + piece-view readers on disk)
+- **W2-A2** — returns_events migration draft is apply-safe (deploy-gated). — State: **VALID** as draft (Phase 0: draft_20260512_175238 on disk; apply-safety re-proven at C-3a under CP4)
 - **W2-A3** — Movement model per audit: inventory_state_engine single-writer discipline
   intact after Wave 1. — State: [verify at Wave-1 boundary]
 - **W2-A4** — MM answer state: OPEN is acceptable for Wave 2 (no MM dependency in
-  Wave-2 scope). — State: [Phase 0]
+  Wave-2 scope). — State: **VALID** (Phase 0)
 - **W2-A5** — Wireframe authority unchanged (docs/design/estrella-dashboard-wireframe.html,
-  sha256:f7dd5e3889…). — State: [Phase 0]
+  sha256:f7dd5e3889660fdc1ef76da0f1424a11cad512e7202650db10c031a57799699a). — State: **VALID** (Phase 0: hashed)
 
 ### Wave 3 (operator amendment wording: "Wave-2 reads live, wireframe unchanged")
 - **W3-A1** — Wave-2 sample/returns reads deployed and live. — State: [verify at Wave-2 boundary]

@@ -113,9 +113,33 @@ all Wave 4 (OI-1/3/4/7/9/10/11).
 
 ---
 
-## Phase 0 findings (append here during the Phase 0 run)
+## Phase 0 findings (run 2026-07-03, platform commit 575bb3f3)
 
-(pending)
+- **Regression baseline GREEN:** root golden suite 160/160 (`test_pz_regression.py`,
+  PYTHONUTF8=1; `make` binary absent from session PATH — underlying TEST target run
+  directly, equivalent).
+- **Consumption pin GREEN 8/8:** `test_master_consumption_rule.py` — mirror schema
+  exactly six columns; no new product-direct violations; baseline = 3 files
+  (routes_wfirma_capabilities.py, routes_proforma.py, routes_wfirma.py) — matches the
+  declared C-1c residual exactly (targets: C-1w2, C-1f, C-1e).
+- **Wireframe hash (full, for W2-A5/W3-A2 boundary checks):**
+  `f7dd5e3889660fdc1ef76da0f1424a11cad512e7202650db10c031a57799699a`
+  (docs/design/estrella-dashboard-wireframe.html).
+- **sample_out_events confirmed on disk:** written by inventory_sample_writer.py,
+  schema in warehouse_db.py, read by inventory_piece_view.py → W2-A1 VALID.
+- **returns_events migration draft confirmed:**
+  `service/app/db/migrations/draft_20260512_175238_returns_events.py.draft` — apply
+  remains CP4 deploy-gated (C-3a) → W2-A2 VALID as draft (apply-safety verified at
+  slice time).
+- **contractor_id already load-bearing in Customer Master:**
+  `bill_to_contractor_id` is a REQUIRED field (customer_master_db.py:46,175) and
+  Phase 3/3B sync fetches contractors by id in production without reported breakage →
+  W1-A3 VALID (production reliance), OI-13 stays OPEN for formal wFirma confirmation of
+  stability in webhook payloads/invoice blocks.
+- **Git reconcile:** HEAD `575bb3f3` (platform launch commit); RUNTIME completed-slice
+  ledger matches git log — no unrecorded slices found.
+- **OI evidence pass:** no OI answerable from repo evidence beyond OI-1's business half
+  (already ANSWERED) — OIs 1..18 states unchanged; full ledger in OPEN_ITEMS.md.
 
 ## Wave-boundary updates (append at each boundary)
 

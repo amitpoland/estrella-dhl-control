@@ -5,11 +5,12 @@
 
 ## Current State
 
-- **Phase:** Phase 0 (pending)
-- **Current slice:** — (Phase 0 not yet run)
-- **Slice state:** —
-- **Next:** Phase 0 → CP1 → Wave 1 (C-1w2)
-- **Blocked by:** —
+- **Phase:** Wave 1 — Master Authority Completion (Phase 0 COMPLETE 2026-07-03; CP1 issued)
+- **Current slice:** C-1w2 — capabilities write path (+ inseparable reads)
+- **Slice state:** IN_PROGRESS
+- **Next:** C-2a (customer mirror consolidation) — C-1e awaits operator ruling (OI-18);
+  C-1f requires C-1w2+C-1e complete
+- **Blocked by:** — (C-1e/C-1f deferred within wave per OI-18; unblocked slices remain)
 
 ## Completed Slices (append-only ledger)
 
@@ -41,9 +42,9 @@ Pre-launch (recorded at platform creation from git log + PROJECT_STATE):
 
 ## Architecture Confidence (mirror of MASTER_MANIFEST §3 states)
 
-- Wave 1: [Phase 0 pending]
-- Wave 2: [Phase 0 pending]
-- Wave 3: AT-RISK (W3-A3 OI-CONSIGNMENT-MODEL open; W3-A5 OI-1 open — fallback exists)
+- Wave 1: VALID (Phase 0: pin 8/8, regression 160/160, contractor_id load-bearing)
+- Wave 2: VALID (A1/A2/A4/A5 evidenced Phase 0; A3 re-verified at Wave-1 boundary)
+- Wave 3: AT-RISK (W3-A3 OI-17 open; W3-A5 OI-1 open — fallback exists)
 - Wave 4: AT-RISK (W4-A1 OI-7/9/10/11 open)
 
 ## Open OI Blockers (abbreviated — full ledger in OPEN_ITEMS.md)
