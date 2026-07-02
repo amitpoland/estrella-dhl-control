@@ -7286,6 +7286,51 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 §3 hard rules (PATH GUARD, 6 Gates, 6 Observation rules, Anti-HOLD, BFC mandate, Lessons A-N, Financial, Verification) preserved byte-identical (32/32 diff PASS). §4 prose compressed (C-1..C-8); Lesson N triplication fixed; stale BFC phase table removed. Floor is ~42k: hard-rule set is genuinely that large; further reduction requires deleting a rule (prohibited). 40k target is a soft advisory, accepted over.
 
+### 2026-07-03 — Phase-C Inventory Master Campaign LAUNCHED (verbatim R4 operator ruling)
+
+OPERATOR RULING (verbatim):
+"Launch Master Campaign. Campaign auto-continues through successive waves only
+while the validated architecture remains consistent with the next wave. If evidence
+invalidates the assumptions of a future wave, the campaign stops, proposes a manifest
+amendment, and waits for that architectural decision before proceeding."
+
+ARCHITECTURE CONFIDENCE GATE (operator, verbatim, FINAL PRE-LAUNCH AMENDMENT item 1):
+"Continue automatically only while the architecture assumptions required for the
+next wave remain valid."
+
+BUDGET (operator, verbatim item 3, initial estimates, amendable): Wave 1: 8h ·
+Wave 2: 11h · Wave 3: 6h · Wave 4: 5h. Health checks record Consumed/Remaining/Forecast
+per wave; >1.5x → self-assessment ledger entry (scope-vs-estimate); >2x →
+manifest-revision proposal at next boundary. Budget overrun alone is never a silent
+scope cut.
+
+PLATFORM: `.claude/campaigns/phase-c-master/` — eight documents: CAMPAIGN_OS.md ·
+MASTER_MANIFEST.md · RUNTIME.md · DECISIONS.md · OPEN_ITEMS.md · SELF_ASSESSMENT.md ·
+KNOWLEDGE.md · WIREFRAME_AUTHORITY.md. Authored fresh in-session under explicit operator
+authorization ("Author the platform here", 2026-07-03) — the R1–R3 design rounds have no
+record on this machine (verified: tree, git history all branches, session transcripts,
+upload channel). All content cites repo evidence (audit b9f5664c+b48b9f1c, wireframe
+inspection 2026-07-02, this DECISIONS section, git log); underivable slices marked
+"TBD — populate from Phase 0".
+
+WAVE SCOPE: Wave 1 = C-1 remainder (C-1w2, C-1e [needs ruling — OI-18], C-1f, C-1d) +
+C-2 Customer Authority (C-2a/b/c). Wave 2 = Sample/Returns reads + SALES_TRANSIT +
+merchandising columns (C-3a..C-3e). Wave 3 = Consignment + invoice-from-consignment
+(C-4a..C-6a; OI-1/OI-17 gated). Wave 4 = MM sync + webhooks (C-7a..C-9a; OI-gated).
+WAVE ASSUMPTIONS register (operator item 1): MASTER_MANIFEST.md §3 — Wave 2:
+sample/returns event tables sufficient for reads, movement model per audit, MM answer
+state; Wave 3: Wave-2 reads live, wireframe unchanged; Wave 4: webhook/API capabilities
+per Phase 0 findings.
+
+EXECUTION: Load Platform (eight documents) → Phase 0 (research first, validate
+knowledge, populate registers) → Wave 1 → auto-continue per the Confidence Gate. Commit
+every slice; update RUNTIME.md. Stop only at hard stops, CP3/CP4, invalidated wave
+assumptions, or campaign end. Chat contact: hard stops · CP1/CP2 skeleton+status ·
+wave-boundary confidence stops (with amendment proposal) · CP3 screenshots · CP4
+pre-execution · unresolvable OI · campaign end.
+
+Cross-reference: `.claude/campaigns/phase-c-master/DECISIONS.md` · MASTER_MANIFEST.md §5.
+
 ---
 
 # ASSUMPTIONS
