@@ -242,6 +242,8 @@ def test_note_write_failure_does_not_fail_promotion(db):
     # STATE TRUTH > DOCUMENT: promotions stand, no exception escaped
     assert result["promoted"] == 2
     assert result["note_no"] == ""
+    # Verify-pass hardening: the failure is a programmatic signal too
+    assert result.get("note_failed") is True
     counts = ise.count_by_state(batch_id="BATCH_NOTE")
     assert counts[ise.WAREHOUSE_STOCK] == 2
 

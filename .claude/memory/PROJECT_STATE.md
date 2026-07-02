@@ -5937,6 +5937,103 @@ ROTATION: NSSM online rotation at 10MB absorbs the stream (no new
 mechanism). RETENTION: access lines join pz_stdout.log and its accepted
 pruning posture (finding #8).
 
+### 2026-07-03 — GOVERNANCE: authority-first rule + business principle + inventory phase roadmap (operator-ratified, verbatim)
+PERMANENT RULE: "Before implementing any feature: 1. Find the existing
+business authority. 2. Find the existing V2 page. 3. Find the existing
+backend authority. 4. Extend that authority only. 5. Never create another
+page, React app, HTML page, route, or frontend authority. If the existing
+authority cannot support the feature: STOP. Explain why. Request operator
+approval before creating anything new."
+BUSINESS PRINCIPLE: "The software must follow the business workflow. The
+business must never be changed to fit the software. Customer Master =
+single customer authority. Inventory = single inventory authority.
+Proforma/Invoice = single document authority. Scanner optional, never
+mandatory. Documents drive inventory, not the other way around. Every
+inventory movement has exactly one document trail."
+PHASE ROADMAP: A = BE-2b (this slice) completes backend movement authority,
+backend then FROZEN for the inventory phase; B = UI parity into the
+existing Inventory authority only (NOTE recorded: operator's Phase-B rules
+imply folding Move Location into the Inventory page and retiring the
+standalone page — requires its own pre-flight + explicit operator approval
+at Phase-B start); C = wFirma.
+
+### 2026-07-03 — BE-2b: receipt-path promotions produce Stock Promotion Notes (operator GO)
+OPERATOR DECISION (verbatim): "BE-2b. Reason: it closes the business rule
+first: Every stock movement must produce a document. UI parity should come
+after, so the page can show complete backend truth, not a partial document
+trail."
+IMPLEMENTATION: dhl_delivery_bridge.execute_goods_received converts its
+direct per-row ise.transition loop (the last PURCHASE_TRANSIT →
+WAREHOUSE_STOCK writer outside the shared authority) into a
+run_stock_promotion() caller (trigger="warehouse_receive",
+source="dhl_delivery_bridge", goods_received note preserved as
+reason_note). The receipt path thereby gains the idempotent skip, audit
+mirrors, and the Stock Promotion Note for free. Return contract preserved
+(transitioned=promoted count, errors list; note_no added, additive).
+BOUNDARY (by design, pinned): sample_return (SAMPLE_OUT→WAREHOUSE_STOCK)
+and return_from_producer_to_stock (RETURNED_TO_PRODUCER→WAREHOUSE_STOCK)
+remain DIRECT engine transitions — returns to stock are NOT Temp
+Warehouse→Final Stock promotions and produce no Promotion Note under the
+operator contract.
+DISCLOSED (pre-existing, unchanged): no production dispatcher invokes
+execute_goods_received yet — the delivered→confirm proposal is emitted but
+the Inbox approval executor is not wired to it; BE-2b makes the path
+Note-complete for when it wires. DEPENDENCY (disclosed): the shared
+function derives pieces from packing lines, so the bridge now requires
+packing_db initialised (service startup does this; bridge tests init it).
+VERIFY PASS (2026-07-03, 2-lens adversarial workflow): lens-2 refuted=false;
+lens-1's refuted=true traces entirely to the DISCLOSED error-format delta
+(old per-scan-code strings → one aggregated count string; no production
+parser exists) — its primary attack (piece-set divergence between the old
+inventory_state SELECT and the packing-lines-driven loop) found nothing.
+Four hardenings applied pre-commit: (1) run_stock_promotion sets
+note_failed=True when pieces promote but the Note write fails (programmatic
+signal, not just a log; bridge surfaces it into errors[]); (2) bridge
+result gains skipped so a REPLAY (transitioned=0, skipped>0) is
+distinguishable from an empty batch (0,0) — future-dispatcher requirement;
+(3) partial-failure shape pinned (the aggregated error string is the
+documented contract); (4) boundary comments added in-code at both returns
+writers' WAREHOUSE_STOCK transitions (returns ≠ promotions, no Note by
+design). RESIDUALS accepted: run_stock_promotion "errors" is an INT counter
+(documented in its docstring; bridge maps to strings); note_no is additive
+on the bridge result — when the dispatcher is wired, its response shape
+must include it deliberately.
+STEP-0 SITE VERIFICATION AT HEAD (per the BE-2b build instruction): the
+PURCHASE_TRANSIT→WAREHOUSE_STOCK writer set outside run_stock_promotion is
+(1) dhl_delivery_bridge.execute_goods_received — the ONE production
+receipt path ("DHL bridge" and "direct physical-receipt confirm" from the
+prior scoping are the SAME function) — CONVERTED in this slice; and
+(2) DIVERGENCE, held per the STOP clause: routes_packing.py:3237
+dev_seed_inventory_state (POST /inventory-state/seed-batch, dev_router,
+hard-gated settings.environment!="dev" → 404) promotes PT→WS through a
+VARIABLE target (chain planner, :3303-3310) — invisible to literal greps.
+It is a dev-only legacy-batch backfill/repair tool with dry_run semantics;
+converting it is non-trivial (dry_run has no shared-function equivalent)
+and whether legacy backfills should mint Notes is a BUSINESS question —
+NOT edited; held for operator ruling (exempt-as-repair-tool + recorded
+boundary, vs convert-with-Note trigger "legacy_backfill"). Its dev gate is
+now PINNED (test) so it cannot silently reach production unruled.
+TRIGGER NAMING: kept trigger="warehouse_receive" for the receipt path
+(instruction's "receipt_confirmed"/"dhl_delivered" were examples) —
+continuity with the trigger this path has always written to
+inventory_state_events, and it names the origin distinctly vs
+pz_created/pz_generated; source="dhl_delivery_bridge" disambiguates
+further.
+
+### 2026-07-03 — wFirma MM: BUSINESS model answered; API capability still open
+OPERATOR ANSWER (verbatim): "wFirma MM answer: yes, consignment issue
+should use MM from MAIN STOCK to CONSIGNMENT STOCK, not WZ."
+This settles the BUSINESS model (consignment issue = MM internal transfer
+between MAIN and CONSIGNMENT warehouses; never a sale WZ; invoice consumes
+CONSIGNMENT-warehouse stock — the double-stock-out guard stands). It does
+NOT yet settle the API VEHICLE: MM remains absent from wfirma_client's
+registry, python-wfirma's documented types, and all repo docs (scope
+6d6d9d64 §B) — the wFirma-support confirmation / sandbox probe from the §E
+checklist is still the gating item for the consignment build.
+BACKUP (operator, verbatim): "Backup task still needs to be done before any
+risky cleanup." — OQ-INFRA-BACKUP-TASK remains OPEN; findings #5/#7 stay
+blocked behind it.
+
 ## Authority-Model Separation — six separate authorities (2026-06-22)
 
 - **Binding (operator-approved, permanent, no flag):** import, product master, proforma,
@@ -6685,7 +6782,7 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Impact if unanswered**: no automated backup of any production DB; Guardian backup_freshness stays degraded; findings #5 (off-box copy) and #7 (debris cleanup) stay blocked behind it.
 - **Candidate path to closure**: Amit confirms task created + first manifest verified → DECISIONS record + Guardian green confirmation → #5 unblocks.
 
-## OQ-WFIRMA-MM-ANSWER: does the wFirma API support MM inter-warehouse transfer? (2026-07-03, OPEN — gates consignment/BE-1c)
+## OQ-WFIRMA-MM-ANSWER: does the wFirma API support MM inter-warehouse transfer? (2026-07-03, HALF-ANSWERED — business model settled (MM Main→Consignment, operator verbatim in DECISIONS); the API-capability question is STILL OPEN and still gates the consignment build)
 
 - **Question**: MM (przesunięcie międzymagazynowe) is absent from the client registry, python-wfirma's types, and all repo docs (scope 6d6d9d64 §B). Amit asks wFirma support: is MM available via API? Also from §E: WZ add via API vs invoice-auto-WZ; consignment warehouse existence; sandbox availability.
 - **Who can answer**: Amit via wFirma support; §E checklist persisted at reports/inspection/2026-07-03T-wfirma-section-e-operator-checklist.md.

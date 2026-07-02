@@ -77,7 +77,12 @@ def run_stock_promotion(
 ) -> Dict[str, Any]:
     """Promote every PURCHASE_TRANSIT piece of *batch_id* to WAREHOUSE_STOCK.
 
-    Returns {"batch_id", "trigger", "source", "promoted", "skipped", "errors"}.
+    Returns {"batch_id", "trigger", "source", "promoted", "skipped",
+    "errors", "note_no"} — the three counters are INTS (callers needing
+    per-line detail read the audit-mirror events, not this dict); "note_no"
+    is the Stock Promotion Note ('' when nothing moved); "note_failed": True
+    appears ONLY when pieces were promoted but the derivative Note write
+    failed (state truth stands; reconcile from inventory_state_events).
     Never raises; see module docstring for the full contract.
     """
     result: Dict[str, Any] = {
@@ -191,6 +196,10 @@ def run_stock_promotion(
                 wfirma_pz_doc_id = _read_wfirma_pz_doc_id(batch_id),
             )
         except Exception as _note_exc:
+            # Programmatic signal (BE-2b verify-pass hardening): callers must
+            # be able to distinguish "promoted with document" from "promoted
+            # but the derivative Note failed" without reading logs.
+            result["note_failed"] = True
             log.error(
                 "[%s] STOCK PROMOTION NOTE WRITE FAILED — %d piece(s) were "
                 "promoted but carry NO note document (reconcile from "

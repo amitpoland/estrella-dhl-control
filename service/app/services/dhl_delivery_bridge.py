@@ -5,8 +5,10 @@ When DHL reports a shipment as "delivered", this module raises a
 "confirm received" inbox proposal. The proposal asks the operator to
 confirm: person / date / location of physical receipt.
 
-On operator confirmation, inventory_state_engine.transition() is called
-to move scan_codes from PURCHASE_TRANSIT → WAREHOUSE_STOCK.
+On operator confirmation, the shared stock-promotion authority
+(stock_promotion.run_stock_promotion) moves scan_codes from
+PURCHASE_TRANSIT → WAREHOUSE_STOCK and writes the Stock Promotion Note
+(BE-2b — every stock movement produces a document).
 
 Architecture:
 - This module is READ-ONLY w.r.t. DHL — it reads tracking status from audit.
@@ -171,6 +173,8 @@ def execute_goods_received(
     Returns a result dict with:
       - transitioned: int (count of scan_codes moved)
       - errors: List[str]
+      - note_no: str — the Stock Promotion Note documenting this receipt
+        ('' when nothing moved; BE-2b)
     """
     received_by  = (resolution.get("received_by") or "").strip()
     received_at  = (resolution.get("received_at") or "").strip()
@@ -181,11 +185,11 @@ def execute_goods_received(
             "received_by and received_at are required to confirm goods receipt"
         )
 
-    result: Dict[str, Any] = {"transitioned": 0, "errors": []}
+    result: Dict[str, Any] = {"transitioned": 0, "errors": [], "note_no": ""}
 
     try:
-        from . import inventory_state_engine as ise
         from . import warehouse_db as wdb
+        from .stock_promotion import run_stock_promotion
 
         warehouse_db_path = storage_root / "warehouse.db"
         if not warehouse_db_path.exists():
@@ -194,33 +198,43 @@ def execute_goods_received(
 
         wdb.init_warehouse_db(warehouse_db_path)
 
-        # Find scan_codes in PURCHASE_TRANSIT for this batch
-        import sqlite3
-        conn = sqlite3.connect(str(warehouse_db_path))
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT scan_code FROM inventory_state "
-            "WHERE batch_id=? AND state=?",
-            (batch_id, ise.PURCHASE_TRANSIT),
-        ).fetchall()
-        conn.close()
-
         note = (
             f"goods_received: by={received_by!r} at={received_at!r} "
             f"location={location!r} operator={operator!r}"
         )
-        for row in rows:
-            try:
-                ise.transition(
-                    scan_code      = row["scan_code"],
-                    to_state       = ise.WAREHOUSE_STOCK,
-                    trigger        = "warehouse_receive",
-                    operator       = operator,
-                    note           = note,
-                )
-                result["transitioned"] += 1
-            except Exception as exc:
-                result["errors"].append(f"{row['scan_code']}: {exc}")
+        # BE-2b (PROJECT_STATE DECISIONS 2026-07-03): the receipt path was
+        # the LAST PURCHASE_TRANSIT → WAREHOUSE_STOCK writer outside the
+        # shared authority — its direct per-row transition loop is replaced
+        # by run_stock_promotion(), so operator-confirmed receipts gain the
+        # same idempotent skip, audit mirrors, and Stock Promotion Note as
+        # the PZ-created / generation paths ("every stock movement must
+        # produce a document"). Dependency: the shared function derives the
+        # piece set from packing lines — packing_db must be initialised
+        # (service startup does this; tests init it in fixtures).
+        promo = run_stock_promotion(
+            batch_id,
+            trigger  = "warehouse_receive",
+            source   = "dhl_delivery_bridge",
+            operator = operator,
+            note     = note,
+        )
+        result["transitioned"] = int(promo.get("promoted", 0))
+        # skipped surfaced so a caller can distinguish a REPLAY (already
+        # promoted: transitioned=0, skipped>0) from an empty batch
+        # (transitioned=0, skipped=0) — verify-pass hardening for the
+        # future Inbox dispatcher.
+        result["skipped"]      = int(promo.get("skipped", 0))
+        result["note_no"]      = str(promo.get("note_no", "") or "")
+        if promo.get("errors"):
+            result["errors"].append(
+                f"{promo['errors']} line(s) failed to promote "
+                "(see audit timeline inventory_transition_failed events)"
+            )
+        if promo.get("note_failed"):
+            result["errors"].append(
+                "stock promotion note write FAILED — pieces were promoted "
+                "without a document; reconcile from inventory_state_events"
+            )
 
     except Exception as exc:
         result["errors"].append(f"execute_goods_received failed: {exc}")

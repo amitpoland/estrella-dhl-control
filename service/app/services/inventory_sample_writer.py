@@ -287,6 +287,9 @@ def sample_return(
     # State transition — back to WAREHOUSE_STOCK. No evidence gate on
     # this side (transition rules allow SAMPLE_OUT → WAREHOUSE_STOCK
     # unconditionally; we just need operator + scan_code).
+    # Direct transition BY DESIGN — a sample RETURN to stock is not a
+    # Temp Warehouse → Final Stock promotion: no Stock Promotion Note
+    # (PROJECT_STATE DECISIONS "BE-2b" boundary).
     inventory_state_engine.transition(
         scan_code=scan_code,
         to_state=WAREHOUSE_STOCK,
