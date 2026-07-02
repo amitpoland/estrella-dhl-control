@@ -409,6 +409,127 @@ def lookup_wfirma_product(product_code: str):
     return get_product_by_code(product_code)
 
 
+# ── C-1w2: sync-layer write + transitional-cache-read passthroughs ───────────
+# Business routes (routes_wfirma_capabilities.py) call these instead of
+# wfirma_client.create_product / edit_product directly, keeping the forbidden
+# identifiers inside the whitelisted sync layer only.
+
+def create_wfirma_product(
+    product_code: str,
+    name: str,
+    unit: str = "szt.",
+    netto: float = 0.0,
+    vat_code_id: Optional[str] = None,
+    warehouse_type: str = "simple",
+    description: str = "",
+):
+    """Thin passthrough to wfirma_client.create_product (C-1w2: sync-layer
+    passthrough — forbidden identifier lives here, not in the business route).
+    Signature mirrors wfirma_client.create_product exactly."""
+    from .wfirma_client import create_product  # C-1w2: sync-layer passthrough (create), not a direct wfirma_client call in a business route.
+    return create_product(
+        product_code=product_code,
+        name=name,
+        unit=unit,
+        netto=netto,
+        vat_code_id=vat_code_id,
+        warehouse_type=warehouse_type,
+        description=description,
+    )
+
+
+def edit_wfirma_product(
+    wfirma_product_id: str,
+    *,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+):
+    """Thin passthrough to wfirma_client.edit_product (C-1w2: sync-layer
+    passthrough — forbidden identifier lives here, not in the business route).
+    Signature mirrors wfirma_client.edit_product exactly."""
+    from .wfirma_client import edit_product  # C-1w2: sync-layer passthrough (edit), not a direct wfirma_client call in a business route.
+    return edit_product(
+        wfirma_product_id=wfirma_product_id,
+        name=name,
+        description=description,
+    )
+
+
+def get_cached_product(product_code: str) -> Optional[Dict[str, Any]]:
+    """Transitional cache read passthrough to wfirma_db.get_product (C-1w2).
+    Removed after 1d re-points reads to the mirror / Product Master."""
+    from . import wfirma_db as _wfdb  # C-1w2: transitional cache read passthrough, removed after 1d.
+    return _wfdb.get_product(product_code)
+
+
+def get_cached_products_batch(codes: List[str]) -> Dict[str, Any]:
+    """Transitional cache batch-read passthrough to wfirma_db.get_products_batch
+    (C-1w2). Removed after 1d re-points reads to the mirror / Product Master."""
+    from . import wfirma_db as _wfdb  # C-1w2: transitional cache read passthrough, removed after 1d.
+    return _wfdb.get_products_batch(codes)
+
+
+def list_cached_products(sync_status: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Transitional list passthrough to wfirma_db.list_products (C-1w2).
+    Removed after 1d re-points reads to the mirror / Product Master."""
+    from . import wfirma_db as _wfdb  # C-1w2: transitional cache read passthrough, removed after 1d.
+    return _wfdb.list_products(sync_status=sync_status)
+
+
+def register_product_identity(
+    db_path: Path,
+    *,
+    wfirma_id: str,
+    product_code: str,
+    name: str = "",
+    also_set_master_status: Optional[str] = None,
+    cache_kwargs: dict,
+) -> Dict[str, Any]:
+    """C-1w1 dual-write sequence for routes_wfirma_capabilities (C-1w2).
+
+    Step 1 (MIRROR FIRST): upsert_product_mirror — collision-safe. On
+    collision, returns immediately WITHOUT writing the cache, so the cache
+    can never diverge from the mirror on a collision path.
+
+    Step 2 (CACHE LAST): wfirma_db.upsert_product(**cache_kwargs) — the
+    transitional dual-write kept until slice 1d migrates all proforma reads.
+    Removed when 1d removes the legacy wfirma_products cache dependency.
+
+    When wfirma_id is empty/None (pure local mapping with no confirmed wFirma
+    id at the call site), the mirror write is SKIPPED and only the cache is
+    written — mirror rows must only hold confirmed wFirma ids (C-1w1 ruling).
+
+    Returns a dict with collision/owner fields from the mirror result merged
+    with cache_row_id on non-collision success."""
+    from . import wfirma_db as _wfdb  # C-1w2: transitional dual-write, cache kept until 1d.
+
+    effective_id = (wfirma_id or "").strip()
+
+    if effective_id:
+        # Mirror FIRST — collision-safe (LAYER RESPONSIBILITIES).
+        mirror_result = upsert_product_mirror(
+            db_path,
+            wfirma_id=effective_id,
+            product_code=product_code,
+            name=name,
+            also_set_master_status=also_set_master_status,
+        )
+        if mirror_result.get("collision"):
+            # Surface collision upstream; do NOT write the cache (no divergence).
+            return mirror_result
+    else:
+        # No confirmed wFirma id — skip mirror (mirror rows must hold real ids).
+        mirror_result = {"written": False, "collision": False, "owner": product_code}
+
+    # Cache LAST — transitional dual-write (kept until 1d).
+    cache_row_id = _wfdb.upsert_product(**cache_kwargs)
+    return {
+        **mirror_result,
+        "collision":    False,
+        "cache_row_id": cache_row_id,
+    }
+
+
 def wfirma_product_sync_client():
     """Return a thin client exposing get_product_by_code(code) for
     reservation_worker.sync_wfirma_products_by_codes, so business routes never

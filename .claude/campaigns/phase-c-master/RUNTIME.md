@@ -6,10 +6,9 @@
 ## Current State
 
 - **Phase:** Wave 1 — Master Authority Completion (Phase 0 COMPLETE 2026-07-03; CP1 issued)
-- **Current slice:** C-1w2 — capabilities write path (+ inseparable reads)
+- **Current slice:** C-2a — customer mirror consolidation
 - **Slice state:** IN_PROGRESS
-- **Next:** C-2a (customer mirror consolidation) — C-1e awaits operator ruling (OI-18);
-  C-1f requires C-1w2+C-1e complete
+- **Next:** C-2b → C-2c; C-1e awaits operator ruling (OI-18); C-1f requires C-1e
 - **Blocked by:** — (C-1e/C-1f deferred within wave per OI-18; unblocked slices remain)
 
 ## Completed Slices (append-only ledger)
@@ -31,11 +30,19 @@ Pre-launch (recorded at platform creation from git log + PROJECT_STATE):
 | 2026-07-02 | V2-wide spread-rest collision sweep | `98628d92` |
 | 2026-07-02 | Move Location fold → Inventory Move Stock modal (Lesson M) | `0cee8173` |
 
+Campaign slices:
+
+| Date | Slice | Commit |
+|---|---|---|
+| 2026-07-03 | Platform launch (docs-only; 8 documents + PROJECT_STATE ruling) | `575bb3f3` |
+| 2026-07-03 | Phase 0 evidence pass (registers populated; W1/W2 VALID) | `be0783c8` |
+| 2026-07-03 | C-1w2 capabilities write path + inseparable reads → sync layer; pin 3→2; golden 160/160; capabilities 69+2 pre-existing | see git log `feat(c1w2-…)` |
+
 ## Budget Tracking (live; boundary snapshots go to MASTER_MANIFEST §4)
 
 | Wave | Consumed | Budget | Forecast |
 |---|---|---|---|
-| Wave 1 | 0h | 8h | — |
+| Wave 1 | 0.5h (C-1w2) | 8h | within budget |
 | Wave 2 | 0h | 11h | — |
 | Wave 3 | 0h | 6h | — |
 | Wave 4 | 0h | 5h | — |

@@ -72,18 +72,18 @@ _REAL_ACCESS_PATTERNS = {
     "api:edit_product":        re.compile(r"\.edit_product\s*\("),
 }
 
-# BASELINE known violations (files) as of C-1c STAGE 0 — the HONEST real-access
+# BASELINE known violations (files) as of C-1w2 — the HONEST real-access
 # set measured by the refined detector. This SHRINKS across C-1c STAGE 1 (read
 # migrations) and reaches the declared residual (the write slices) by C-1d.
 # NOTE: routes_wfirma.py re-appears here — C-1b removed its wFirma CLIENT calls
 # but intentionally LEFT its wfirma_db accessor reads/writes as the
 # "C-1c-deprecating reader path"; the refined detector now measures them.
 KNOWN_PRODUCT_VIOLATION_FILES = {
-    "routes_wfirma_capabilities.py",  # reads + writes (create/adopt) — write slice
-    "routes_proforma.py",             # ~12 reads (C-1c) + 1 write @4527 (write slice)
-    "routes_wfirma.py",               # 5 wfdb reads + 3 upsert writes (residual)
-    # routes_dashboard.py — MIGRATED to the Product Master in C-1c STAGE 1a.
-    # routes_packing.py  — MIGRATED to the Product Master in C-1c STAGE 1b.
+    "routes_proforma.py",  # ~12 reads (C-1c) + 1 write @4527 (write slice)
+    "routes_wfirma.py",    # 5 wfdb reads + 3 upsert writes (residual)
+    # routes_dashboard.py          — MIGRATED to the Product Master in C-1c STAGE 1a.
+    # routes_packing.py            — MIGRATED to the Product Master in C-1c STAGE 1b.
+    # routes_wfirma_capabilities.py — MIGRATED in C-1w2 (write path + cache reads).
 }
 
 
@@ -175,13 +175,12 @@ def test_reservations_router_stays_clean():
 
 
 def test_known_violation_baseline_is_documented_and_shrinking():
-    """C-1c STAGE 0 honest baseline = 5 files with REAL product-authority access.
-    STAGE 1 read-migrations shrink this (update the set + this count); the end
-    state is the declared residual (proforma write, capabilities write path,
-    routes_wfirma reads+writes)."""
-    assert len(KNOWN_PRODUCT_VIOLATION_FILES) == 3, (
+    """C-1w2 migrated routes_wfirma_capabilities.py — baseline now 2 files.
+    The next shrink (C-1d) migrates proforma reads and removes routes_proforma.py
+    + routes_wfirma.py from this set."""
+    assert len(KNOWN_PRODUCT_VIOLATION_FILES) == 2, (
         "KNOWN_PRODUCT_VIOLATION_FILES changed — update this count as C-1c STAGE 1 "
-        "migrates proforma reads (dashboard 1a + packing 1b done)."
+        "migrates proforma reads (dashboard 1a + packing 1b done, capabilities C-1w2 done)."
     )
 
 
