@@ -109,6 +109,12 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
             or ""
         ).upper()
 
+        # The rates query MUST ask for the same dutiable class the shipment
+        # will actually be posted with — a dutiable PL→LT query returns [P, 8]
+        # while the non-dutiable shipment only accepts [C, T, U, 7, B, W]
+        # (DHL 1001 incident, 2026-07-03).
+        is_dutiable = not _is_intra_eu(origin_cc, dest_cc)
+
         available = lookup_available_products(
             api_key=self._config.api_key,
             api_secret=self._config.api_secret,
@@ -123,6 +129,7 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
             dest_postal=request.recipient_address.get("postal_code") or "",
             weight_kg=request.weight_kg,
             planned_date=planned_date,
+            is_customs_declarable=is_dutiable,
         )
         resolved_product = select_product_code(request.product_code or "P", available)
 
@@ -231,6 +238,12 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
 
 # ── product discovery ─────────────────────────────────────────────────────────
 
+# When the requested product is not entitled on a route, prefer its business
+# equivalent over DHL's raw list order (which can lead with unrelated
+# products, e.g. C = Medical Express on non-dutiable EU lanes).
+# P (Express Worldwide) → U (Express Worldwide EU) → W (Economy Select).
+_PRODUCT_EQUIVALENTS: dict = {"P": ("U", "W")}
+
 
 def lookup_available_products(
     api_key: str,
@@ -246,19 +259,26 @@ def lookup_available_products(
     dest_postal: str,
     weight_kg: float,
     planned_date: str,
+    is_customs_declarable: bool = True,
 ) -> List[str]:
     """
     Query DHL GET /rates to discover available productCodes for a route.
 
+    is_customs_declarable MUST match the dutiable class the shipment will be
+    posted with — DHL entitles different products per class on the same route
+    (dutiable PL→LT: [P, 8]; non-dutiable: [C, T, U, 7, B, W]).
+
     Returns a list of productCodes ranked by DHL (best option first).
     Returns an empty list on any failure — the caller falls back to the
-    operator-supplied product_code in that case.
+    operator-supplied product_code in that case. Empty results are NOT
+    cached: a transient empty answer must not poison the route for 24h.
 
-    Results are cached per (api_url, account, origin_cc, dest_cc) for 24 hours.
-    City and postal are sent to DHL for routing accuracy but are NOT part of
-    the cache key because product entitlements are country-level for international.
+    Results are cached per (api_url, account, origin_cc, dest_cc, declarable)
+    for 24 hours. City and postal are sent to DHL for routing accuracy but are
+    NOT part of the cache key because product entitlements are country-level
+    for international.
     """
-    cache_key = (api_url, account, origin_cc, dest_cc)
+    cache_key = (api_url, account, origin_cc, dest_cc, is_customs_declarable)
     entry = _product_cache.get(cache_key)
     if entry is not None:
         expires_at, codes = entry
@@ -286,7 +306,7 @@ def lookup_available_products(
                     "width": 10,
                     "height": 10,
                     "plannedShippingDate": planned_date,
-                    "isCustomsDeclarable": True,
+                    "isCustomsDeclarable": is_customs_declarable,
                     "unitOfMeasurement": "metric",
                     "nextBusinessDay": False,
                 },
@@ -294,13 +314,14 @@ def lookup_available_products(
         if resp.is_success:
             products_raw = resp.json().get("products") or []
             codes = [p["productCode"] for p in products_raw if p.get("productCode")]
-            _product_cache[cache_key] = (
-                time.monotonic() + _PRODUCT_CACHE_TTL_SECS,
-                codes,
-            )
+            if codes:
+                _product_cache[cache_key] = (
+                    time.monotonic() + _PRODUCT_CACHE_TTL_SECS,
+                    codes,
+                )
             log.info(
-                "DHL product discovery %s→%s account=%s: %s",
-                origin_cc, dest_cc, account, codes,
+                "DHL product discovery %s→%s declarable=%s account=%s: %s",
+                origin_cc, dest_cc, is_customs_declarable, account, codes,
             )
             return codes
         log.warning(
@@ -321,15 +342,22 @@ def select_product_code(requested: str, available: List[str]) -> str:
     Rules (in priority order):
       1. If available is empty (rates lookup failed) → use requested unchanged.
       2. If requested is in available → use requested.
-      3. Otherwise → use DHL's first (highest-ranked) available product and log the change.
-
-    This makes the selection DHL-authoritative: DHL ranks products by suitability
-    for the route so available[0] is always the best alternative.
+      3. If the requested product has a known equivalent in available, use it
+         (P → U → W: Express Worldwide's non-dutiable/EU counterparts — the
+         raw rates list can lead with unrelated products like C/Medical Express).
+      4. Otherwise → use DHL's first available product and log the change.
     """
     if not available:
         return requested
     if requested in available:
         return requested
+    for equivalent in _PRODUCT_EQUIVALENTS.get(requested, ()):
+        if equivalent in available:
+            log.info(
+                "productCode %r not available; using equivalent %r (available: %s)",
+                requested, equivalent, available,
+            )
+            return equivalent
     chosen = available[0]
     log.info(
         "productCode %r not available for this route; "
