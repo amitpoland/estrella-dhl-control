@@ -6025,6 +6025,37 @@ prod-gated (pinned by test); if ever promoted to a production backfill
 mechanism, convert with trigger='legacy_backfill' first. Phase A backend
 movement authority COMPLETE; backend FROZEN for the inventory phase.
 
+### 2026-07-03 — Phase B slices B2+B3 (existing authorities extended only)
+Phase B slices B2 (Promotion Notes panel — the BE-2 v1 viewer as a sixth
+InvPanel on the existing Inventory page, GETs promotion-notes/{batch_id} +
+promotion-note/{note_no:path}) + B3 (proforma-detail :2542 prefers
+persisted client_po; falls back to legacy expression ONLY for
+pre-494c4665 rows where the column is ''). Move Location disposition
+pending operator word — B2/B3 are disposition-independent. Transport note:
+note_no contains slashes (SPN/NNN/YYYY) — the JS transport encodes PER
+SEGMENT (split('/') → encodeURIComponent each → join('/')) so segment
+contents are safe while slashes stay literal path separators for the
+:path route converter; pinned with SPN/001/2026 round-trip.
+DEFECT FOUND BY THE B2 RENDER CHECK (pre-existing, PRODUCTION-AFFECTING,
+page-wide class): Babel-standalone hoists compiled destructure helpers
+(`var _excluded = [...prop names...]`) OUTSIDE each file's IIFE into
+GLOBAL scope; every later-loaded V2 script OVERWRITES the earlier ones.
+Any component using JSX spread-rest destructuring in an earlier-loaded
+file can therefore leak "excluded" props into its spread — proven live:
+window._excluded held another file's Button prop-list, InvInput's rest
+kept onChange, the raw state setter landed on the <input>, and the FIRST
+keystroke into ANY Inventory-hub panel stored the event object into state
+("batchId.trim is not a function") and unmounted the tree. UNTOUCHED
+AuditPanel (Sprint 30) crashed identically — NOT introduced by B2; the
+Inventory hub's typed panels are plausibly broken in production today.
+FIXED IN THIS SLICE for inventory-page.jsx (spread-rest removed from
+InvInput/InvFetchBtn via explicit 'data-testid' destructuring; call sites
+and sprint-30 source pins byte-identical; drop-can't-return pin added).
+FOLLOW-UP REQUIRED (own slice): sweep ALL v2 files for spread-rest
+components exposed to the same collision (grep spread-rest in static/v2)
+— candidates include the Button emitting the observed
+['children','onClick','disabled','title','warn','style'] list.
+
 ### 2026-07-03 — wFirma MM: BUSINESS model answered; API capability still open
 OPERATOR ANSWER (verbatim): "wFirma MM answer: yes, consignment issue
 should use MM from MAIN STOCK to CONSIGNMENT STOCK, not WZ."

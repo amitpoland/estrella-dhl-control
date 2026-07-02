@@ -2539,7 +2539,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // authority; number them sequentially.
         sr:           i + 1,
         ctg:          _cmrItemLabel(ln.item_type || pk.item_type),  // Pendant / Ring / Earrings
-        client_po:    pk.invoice_no || ln.client_ref || '',
+        // Phase B slice B3 (PROJECT_STATE DECISIONS "Phase B slices B2+B3"):
+        // client_po is PERSISTED since 494c4665 — prefer the real column;
+        // the invoice_no||client_ref expression is the legacy FALLBACK only
+        // for pre-fix rows where the column backfilled to ''.
+        client_po:    pk.client_po || pk.invoice_no || ln.client_ref || '',
         product_code: ln.product_code || pk.product_code || '—',
         design:       ln.design_no    || pk.design_no    || '—',
         kt:           (pk.metal || '').split('/')[0] || '', // "14KT"

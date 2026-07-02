@@ -394,6 +394,21 @@
     getInventoryState: (batchId) =>
       _get(`${BASE}/inventory/state/${encodeURIComponent(batchId)}`),
 
+    // -- Inventory: Stock Promotion Notes (Phase B slice B2) --------------
+    // GET /api/v1/inventory/promotion-notes/{batch_id}
+    // { batch_id, total, notes:[header…] } — honest-empty: total=0.
+    getPromotionNotes: (batchId) =>
+      _get(`${BASE}/inventory/promotion-notes/${encodeURIComponent(batchId)}`),
+
+    // GET /api/v1/inventory/promotion-note/{note_no:path}
+    // note_no contains SLASHES (SPN/NNN/YYYY) and the backend route uses a
+    // :path converter — encode PER SEGMENT so segment contents stay safe
+    // while the slashes remain literal path separators. Do NOT
+    // encodeURIComponent the whole id (that would send %2F).
+    // 404 -> { detail: { code: "NOTE_NOT_FOUND", … } }.
+    getPromotionNote: (noteNo) =>
+      _get(`${BASE}/inventory/promotion-note/${String(noteNo).split('/').map(encodeURIComponent).join('/')}`),
+
     // POST /api/v1/inventory/pieces/{piece_id}/location
     //   body: { to_location, operator, idempotency_key, note? }
     // LOCAL metadata-only write — moves physical location; does NOT change

@@ -184,20 +184,33 @@ function DocumentViewerPage({ doc, onBack }) {
     return <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 6 }}>{children}</div>;
   }
 
-  function InvInput({ value, onChange, placeholder, type, ...rest }) {
+  // NO spread-rest here — Babel-standalone hoists the compiled destructure
+  // helper's `_excluded` prop-list to a GLOBAL var OUTSIDE this IIFE, and a
+  // later-loaded script's own `_excluded` OVERWRITES it, leaking onChange
+  // into the spread and putting the raw state setter on the <input> (typing
+  // then stores the event object into state → "batchId.trim is not a
+  // function", the whole tree unmounts). Found by the B2 render check
+  // 2026-07-03; pre-existing (AuditPanel crashed identically). Explicit
+  // 'data-testid' destructuring keeps call sites byte-identical and makes
+  // this file immune to the helper collision. Page-wide class recorded in
+  // PROJECT_STATE DECISIONS — other files' spread-rest components remain
+  // exposed until their own slice.
+  function InvInput({ value, onChange, placeholder, type, 'data-testid': testid }) {
     return (
       <input type={type || 'text'} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
         style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12, fontFamily: 'monospace', outline: 'none' }}
-        {...rest}
+        data-testid={testid}
       />
     );
   }
 
-  function InvFetchBtn({ onClick, loading, label, disabled, ...rest }) {
+  // NO spread-rest — same global `_excluded` helper-collision immunity as
+  // InvInput above.
+  function InvFetchBtn({ onClick, loading, label, disabled, 'data-testid': testid }) {
     return (
       <button onClick={onClick} disabled={disabled || loading}
         style={{ padding: '7px 14px', borderRadius: 6, border: '1px solid var(--accent-border)', background: loading ? 'var(--bg-subtle)' : 'var(--accent-subtle)', color: loading ? 'var(--text-3)' : 'var(--accent-text)', fontSize: 12, fontWeight: 600, cursor: disabled || loading ? 'not-allowed' : 'pointer', opacity: disabled ? 0.45 : 1 }}
-        {...rest}
+        data-testid={testid}
       >
         {loading ? '…' : label}
       </button>
@@ -668,6 +681,110 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // ── Promotion Notes panel (Phase B slice B2 — the BE-2 v1 document viewer;
+  //    PROJECT_STATE DECISIONS "Phase B slices B2+B3") ─────────────────────────
+  //    Read-only viewer over the Stock Promotion Note document trail
+  //    (BE-1/BE-2/BE-2b: every production Temp→Final promotion yields exactly
+  //    one Note). Transports live in pz-api.js (getPromotionNotes /
+  //    getPromotionNote — note_no is slash-bearing, encoded per segment).
+
+  function PromotionNotesPanel() {
+    const [batchId, setBatchId]         = useState('');
+    const [loading, setLoading]         = useState(false);
+    const [data, setData]               = useState(null);
+    const [error, setError]             = useState(null);
+    const [openNote, setOpenNote]       = useState(null);
+    const [noteLoading, setNoteLoading] = useState('');
+
+    const fetchNotes = useCallback(async () => {
+      if (!batchId.trim()) return;
+      setLoading(true); setData(null); setError(null); setOpenNote(null);
+      const r = await window.PzApi.getPromotionNotes(batchId.trim());
+      setLoading(false);
+      if (!r.ok) { setError(r.error || ('HTTP ' + r.status)); return; }
+      setData(r.data || null);
+    }, [batchId]);
+
+    const toggleNote = useCallback(async (noteNo) => {
+      if (openNote && openNote.note_no === noteNo) { setOpenNote(null); return; }
+      setNoteLoading(noteNo);
+      const r = await window.PzApi.getPromotionNote(noteNo);
+      setNoteLoading('');
+      if (r.ok) setOpenNote(r.data || null);
+      else setError(r.error || ('HTTP ' + r.status));
+    }, [openNote]);
+
+    const th = { textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em', padding: '6px 8px', borderBottom: '1px solid var(--border)' };
+    const td = { fontSize: 12, color: 'var(--text)', padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' };
+
+    return (
+      <InvPanel title="Promotion notes" subtitle="Stock Promotion Note document trail — one Note per Temp→Final movement (SPN series)" testid="panel-promotion-notes">
+        <InvLabel>Batch ID</InvLabel>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+          <div style={{ flex: 1 }}><InvInput value={batchId} onChange={setBatchId} placeholder="e.g. SHIPMENT_…" data-testid="input-notes-batch-id" /></div>
+          <InvFetchBtn onClick={fetchNotes} loading={loading} label="Load notes" disabled={!batchId.trim()} data-testid="btn-notes-fetch" />
+        </div>
+        {error && <div style={{ color: 'var(--badge-red-text)', fontSize: 12 }}>{error}</div>}
+        {data && data.total === 0 && (
+          <div data-testid="notes-empty" style={{ padding: '12px', border: '1px dashed var(--border)', borderRadius: 6, fontSize: 12, color: 'var(--text-3)' }}>
+            No promotion notes for this batch — no Temp→Final movement has been documented yet (honest empty).
+          </div>
+        )}
+        {data && data.total > 0 && (
+          <table style={{ width: '100%', borderCollapse: 'collapse' }} data-testid="notes-table">
+            <thead>
+              <tr>
+                <th style={th}>Note no</th><th style={th}>Trigger</th><th style={th}>Pieces</th>
+                <th style={th}>Operator</th><th style={th}>Created</th><th style={th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.notes.map(n => (
+                <React.Fragment key={n.note_no}>
+                  <tr data-testid="notes-row">
+                    <td style={{ ...td, fontFamily: 'ui-monospace, monospace', fontWeight: 700 }}>{n.note_no}</td>
+                    <td style={td}>{n.trigger}</td>
+                    <td style={td}>{n.piece_count}</td>
+                    <td style={td}>{n.operator || '—'}</td>
+                    <td style={{ ...td, color: 'var(--text-3)' }}>{(n.created_at || '').slice(0, 19)}</td>
+                    <td style={td}>
+                      <button onClick={() => toggleNote(n.note_no)} data-testid="btn-note-expand"
+                        style={{ fontSize: 11, border: '1px solid var(--border)', background: 'transparent', borderRadius: 4, padding: '2px 8px', cursor: 'pointer', color: 'var(--text-2)' }}>
+                        {noteLoading === n.note_no ? '…' : (openNote && openNote.note_no === n.note_no ? 'Hide' : 'Lines')}
+                      </button>
+                    </td>
+                  </tr>
+                  {openNote && openNote.note_no === n.note_no && (
+                    <tr>
+                      <td colSpan={6} style={{ padding: '4px 8px 12px' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse' }} data-testid="notes-lines">
+                          <thead>
+                            <tr><th style={th}>Scan code</th><th style={th}>Design</th><th style={th}>Before</th><th style={th}>After</th></tr>
+                          </thead>
+                          <tbody>
+                            {(openNote.lines || []).map(l => (
+                              <tr key={l.scan_code}>
+                                <td style={{ ...td, fontFamily: 'ui-monospace, monospace' }}>{l.scan_code}</td>
+                                <td style={td}>{l.design_no || '—'}</td>
+                                <td style={td}>{l.state_before}</td>
+                                <td style={td}>{l.state_after}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <div style={{ marginTop: 12, fontSize: 10, color: 'var(--text-3)' }}>Read-only. No write calls are made from this panel.</div>
+      </InvPanel>
+    );
+  }
+
   // ── InventoryPage — shell entry point ───────────────────────────────────────
 
   function InventoryPage({ openViewer }) {  // openViewer accepted; inventory is read-only so unused
@@ -680,13 +797,15 @@ function DocumentViewerPage({ doc, onBack }) {
         <PiecePanel />
         <LocationPanel />
         <AuditPanel />
+        <PromotionNotesPanel />
 
         <div style={{ marginTop: 8, padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
           <strong style={{ color: 'var(--text-2)' }}>Read-only endpoints:</strong>{' '}
           /inventory/stage2/aggregate &middot; /inventory/state/&#123;batch_id&#125; &middot;
           /inventory/pieces/&#123;piece_id&#125; &middot; /warehouse/inventory/&#123;scan_code&#125; &middot;
           /warehouse/locations &middot; /warehouse/locations/&#123;code&#125;/inventory &middot;
-          /warehouse/audit-summary/&#123;batch_id&#125; &middot; /warehouse/audit/&#123;batch_id&#125;
+          /warehouse/audit-summary/&#123;batch_id&#125; &middot; /warehouse/audit/&#123;batch_id&#125; &middot;
+          /inventory/promotion-notes/&#123;batch_id&#125; &middot; /inventory/promotion-note/&#123;note_no&#125;
         </div>
       </div>
     );
