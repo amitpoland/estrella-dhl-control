@@ -6149,6 +6149,34 @@ Disposition = SCHEDULED via task chip task_d6fdfca9 ("Register routes_reservatio
 router in main.py"). The V6 authority reroute is correct regardless; registration
 is a separate reachability bug.
 
+### 2026-07-03 — C-1c RULING (operator, verbatim R4) + 3-stage resumed plan
+OPERATOR RULING (verbatim): "Q1 refine. Q2 migrate all three real read surfaces:
+packing, dashboard, proforma. Q3 out. Q4 separate. Refine the pin so it measures
+real product authority access: SQL reads of wfirma_products, wfdb.get_product*,
+wfdb.list_products, direct wFirma product API calls. Do not count prose strings or
+status messages. C-1c should migrate real reads only. Proforma cache write at 4527
+is a separate write slice. routes_wfirma_capabilities write path is a separate
+slice. No string-gaming. No mutation before refined pin + declared scope. No deploy."
+ANTI-GAMING RULE (recorded): editing string literals / prose / status keys to
+change pin counts is FORBIDDEN — the refined pin makes it pointless (prose is not
+measured), and the rule makes it a violation.
+PLAN: STAGE 0 = pin refinement + honest baseline (commit alone) → STAGE 1 = read
+migration in risk order (1a dashboard, 1b packing, 1c capabilities READS where
+separable from write control-flow, 1d proforma READS output-equivalence-gated) →
+STAGE 2 = residual declaration (the two follow-up write slices: C-1w1
+proforma-write @4527, C-1w2 capabilities-write path). Scoping evidence: 011c5db2.
+STAGE 0 RESULT (refined pin, honest baseline): the real-access detector measures
+5 files, not 4 — routes_wfirma.py RE-APPEARS (8 wfirma_db accessor sites: 5 reads
++ 3 upsert writes) because C-1b removed its wFirma CLIENT calls but LEFT its
+wfirma_db accessor reads/writes as the C-1c-deprecating reader path; the refined
+pin now measures that honestly. KNOWN baseline = {routes_wfirma_capabilities,
+routes_proforma, routes_wfirma, routes_dashboard, routes_packing} = 5. STAGE 1
+migrates the 3 NAMED read surfaces (dashboard, packing, proforma) → post-STAGE-1
+baseline = 3 (proforma-write, capabilities, wfirma). ADDED RESIDUAL (DEVIATION,
+needs ruling): routes_wfirma reads(5)+writes(3) — not in the named C-1c scope;
+fold its reads into C-1c or give it its own slice. Evidence:
+reports/implement/2026-07-03T234500Z/c1c-stage0-pin-refinement.md.
+
 ### 2026-07-03 — Phase-C Constitution RECORDED verbatim (replaces the DEFERRED marker)
 The operator provided the verbatim "EJ Dashboard Phase-C Constitution (Final)"
 text. It is now recorded VERBATIM (R4 — not reconstructed, not paraphrased) as the
