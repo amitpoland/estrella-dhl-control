@@ -6191,6 +6191,33 @@ write@4527, C-1w2 capabilities write path (+inseparable reads), routes_wfirma
 reads+writes; then 1d proforma reads (output-equivalence-gated) LAST → C-1d.
 Evidence: reports/implement/2026-07-04T001500Z/c1c-stage1-2-migration-and-residual.md.
 
+### 2026-07-04 — C-1w1 RULING (operator, verbatim R4) + sequence lock
+OPERATOR RULING (verbatim): "Proceed with C-1w1 first" + sequence lock:
+C-1w1 → C-1w2 → routes_wfirma → 1d proforma reads → C-1d verification. Proforma
+READS stay untouched until all product write paths populate the mirror.
+C-1w1 SEMANTICS (operator): the write at routes_proforma.py:4527 becomes
+Master-first + mirror-writing (same sequence C-1b proved: Master row → gated
+wFirma push unchanged in gating → on confirmed id, mirror upsert collision-safe +
+status flip). Legacy wfirma_products cache write at this site: redirected, no
+dual-write left (grep-prove). Customs-value-freeze: identity/sync fields only,
+ZERO value recomputation. OUTPUT-EQUIVALENCE GATE required (regenerate proforma
+XML/payloads for known verify-DB drafts before/after — byte-identical value fields
++ good_ids; any change = STOP/revert/report). R1 = routes_proforma.py (4527 region
+ONLY) + reservation_db.py (C-1b helper reuse; additive only if missing) + affected
+tests + consumption pin (residual update) + PROJECT_STATE + DECISIONS.
+C-1w1 CONTRADICTION + RULING (operator, 2026-07-04): site 4527 registers the
+service-charge (freight/insurance) → wFirma-product-id mapping in the
+wfirma_products cache, and that cache is READ by the not-yet-migrated proforma
+payload builder (wfdb.get_product(ct) @1385/4464/1558/7845 → the service-charge
+line good_id). So "redirect the cache write / no dual-write" is INCOMPATIBLE with
+the output-equivalence gate (removing the cache write → good_id vanishes → payload
+changes → FAIL), because the reads are deferred to 1d. Operator RULING =
+**Transitional dual-write**: add Master-first + mirror write at 4527, KEEP the
+wfirma_products cache write (un-migrated reads stay intact → output-equivalence
+PASSES + mirror becomes complete); the cache write is removed as a CLEANUP AFTER
+1d migrates the reads. Disclosed as a DEVIATION from "no dual-write" (the phased
+write-both → migrate-reads → drop-old-write sequence).
+
 ### 2026-07-03 — Phase-C Constitution RECORDED verbatim (replaces the DEFERRED marker)
 The operator provided the verbatim "EJ Dashboard Phase-C Constitution (Final)"
 text. It is now recorded VERBATIM (R4 — not reconstructed, not paraphrased) as the

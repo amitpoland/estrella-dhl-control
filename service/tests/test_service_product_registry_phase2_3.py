@@ -375,6 +375,53 @@ class TestPutServiceProduct:
         assert body["wfirma_product_id"] == "12345"
         assert body["status"] == "mapped"
 
+    def test_c1w1_registration_populates_mirror_not_master(self, client, tmp_path, monkeypatch):
+        # C-1w1: registering a service product writes the MIRROR (code→wfirma_id
+        # sync identity) so it is complete for slice 1d — but does NOT create a
+        # Product Master row (service charges are not products; a master row would
+        # pollute the product picker). Legacy cache write kept (transitional
+        # dual-write); response unchanged.
+        monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
+        monkeypatch.setattr(wfdb, "upsert_product", lambda code, **kw: None)
+        monkeypatch.setattr(
+            wfdb, "get_product",
+            lambda code: {"wfirma_product_id": "77777", "product_name_pl": "Fracht",
+                          "vat_rate": "23", "unit": "szt."},
+        )
+        r = self._put(client, "freight",
+                      {"wfirma_product_id": "77777", "product_name": "Fracht"})
+        assert r.status_code == 200 and r.json()["wfirma_product_id"] == "77777"
+
+        import sqlite3
+        from app.services import reservation_db as _rdb
+        db = tmp_path / "reservation_queue.db"
+        con = sqlite3.connect(str(db)); con.row_factory = sqlite3.Row
+        mrow = con.execute(
+            "SELECT wfirma_id FROM wfirma_product_mirror WHERE product_code='freight'"
+        ).fetchone()
+        con.close()
+        assert mrow is not None and mrow["wfirma_id"] == "77777", \
+            "C-1w1: mirror must carry the freight->wfirma_id sync identity"
+        assert _rdb.get_product_master(db, "freight") is None, \
+            "C-1w1: a service charge must NOT create a Product Master row"
+
+    def test_c1w1_wfirma_id_collision_returns_409(self, client, tmp_path, monkeypatch):
+        # Two charge types cannot claim the same wfirma_id — the second is a 409,
+        # not a silent 200 with an unwritten mirror (the divergence 1d would trip on).
+        monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
+        monkeypatch.setattr(wfdb, "upsert_product", lambda code, **kw: None)
+        monkeypatch.setattr(
+            wfdb, "get_product",
+            lambda code: {"wfirma_product_id": "SHARED", "product_name_pl": "",
+                          "vat_rate": "23", "unit": "szt."},
+        )
+        assert self._put(client, "freight",
+                         {"wfirma_product_id": "SHARED"}).status_code == 200
+        r2 = self._put(client, "insurance", {"wfirma_product_id": "SHARED"})
+        assert r2.status_code == 409
+        assert r2.json()["detail"]["error"] == "wfirma_id_collision"
+        assert r2.json()["detail"]["owner_product_code"] == "freight"
+
     def test_registers_insurance_successfully(self, client, monkeypatch):
         _captured = {}
 

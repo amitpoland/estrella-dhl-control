@@ -4524,6 +4524,34 @@ def register_service_product(
             status_code=503,
             detail="wfirma_db not initialised — check storage_root",
         )
+    # C-1w1: populate the Product MIRROR (the code→wfirma_id sync identity) so it
+    # becomes the COMPLETE authority for slice 1d's read migration. Written FIRST,
+    # before the wfirma_products cache write, so a mirror failure or collision can
+    # never leave the cache written but the mirror empty (no divergence window).
+    # A service charge type is NOT a Product Master product (a master row would
+    # pollute the product-options picker), so ONLY the mirror is written — no
+    # master row. No wFirma push here (the operator supplies an existing
+    # wfirma_product_id). Identity/sync only; ZERO value recomputation
+    # (customs-value-freeze).
+    from ..services import reservation_db as _rdb
+    _rdb_path = settings.storage_root / "reservation_queue.db"
+    try:
+        _rdb.init_reservation_db(_rdb_path)
+        _mres = _rdb.upsert_product_mirror(_rdb_path, wfirma_id=pid, product_code=ct)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("service-product %s: mirror write failed: %s", ct, exc)
+        raise HTTPException(status_code=500, detail="mirror_write_failed")
+    if _mres.get("collision"):
+        # One wFirma product id must map to one code — surface the conflict
+        # instead of silently returning 200 with an unwritten mirror.
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "wfirma_id_collision", "wfirma_id": pid,
+                    "owner_product_code": _mres.get("owner")},
+        )
+    # Transitional DUAL-WRITE: the legacy wfirma_products cache write is KEPT until
+    # 1d migrates the proforma service-charge reads (removing it now would change
+    # the un-migrated reads' good_id and fail output-equivalence). Cache write LAST.
     wfdb.upsert_product(
         ct,
         wfirma_product_id = pid,
