@@ -12,6 +12,18 @@ and uses mock data throughout. Parity slices port its STRUCTURE and VISUAL
 LANGUAGE into the live `service/app/static/v2/inventory-page.jsx`, wired to real
 backend authorities, never faking data (Lesson M five-state honesty).
 
-Provenance note: the full app wireframe is `Estrella Dashboard.html` in the
-same design bundle (not copied — large; reference by path). This directory
-holds only the Inventory-relevant design source.
+## Canonical wireframe of record
+
+`estrella-dashboard-wireframe.html` (1.67 MB, compiled standalone) is the
+operator's canonical dropped authority file (2026-07-03). It is the SAME
+design bundle as `inventory-page.design.jsx` — same 11-tab Inventory model
+(Temp Purchase/Warehouse/Sale · Consignment · Final Stock · Sample Out/Return
+· Client/Producer returns · Identity/Mapping), same Move Stock modal, same
+`stock_unit_id` / `trace_barcode` truth model — just compiled to one HTML.
+The `.design.jsx` is the readable extract used for element-level parity
+citation; the `.html` is the authority-of-record the operator handed over.
+
+The Inventory mapping gate
+(`reports/inspection/2026-07-03T150000Z-inventory-mapping-gate.md`, commit
+af397e27) was produced against the `.jsx` extract and STANDS unchanged against
+this canonical HTML (verified same design signatures on copy-in).

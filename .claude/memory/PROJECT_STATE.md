@@ -6061,9 +6061,12 @@ Three permanent rules for all V2 UI work, effective now:
 1. DESIGN-IN-HAND PRECONDITION: no Inventory (or any wireframed-surface) UI
    slice starts until the design authority is on the box and read. The
    Inventory design authority is durable at
-   docs/design/inventory-page.design.jsx (copied 2026-07-03 from the
-   estrella-dashboard bundle). "The builder has never seen the design" was
-   the root cause of the engineer-form UI; it is now fixed.
+   docs/design/inventory-page.design.jsx (readable extract) +
+   docs/design/estrella-dashboard-wireframe.html (the operator's canonical
+   dropped authority-of-record, 2026-07-03 — same design bundle, compiled
+   standalone; the mapping gate stands against it unchanged). "The builder
+   has never seen the design" was the root cause of the engineer-form UI; it
+   is now fixed.
 2. SPEC-BY-REFERENCE: parity slices cite the design element they port
    (file+component/tab in docs/design/), not a re-described spec — the
    wireframe is the single UI authority, existing V2 Inventory is the single
