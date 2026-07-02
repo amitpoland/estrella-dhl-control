@@ -1,10 +1,10 @@
 """
 test_v2_components_rest_prop_forwarding.py — Source-grep tests pinning that
-shared V2 primitives in components.jsx forward rest props (data-testid, title,
-aria-*) to their underlying DOM elements.
+shared V2 primitives in components.jsx forward the DOM passthrough attrs
+(data-testid, title, aria-label) to their underlying DOM elements.
 
 Workflow class (Lesson I): shared V2 primitives that destructure a fixed prop
-list silently swallow every extra attribute. Confirmed production impact
+list silently swallow extra attributes. Confirmed production impact
 2026-06-10: client-detail.jsx passed data-testid="cd-save" /
 "cd-confirm-save" to Btn and neither attribute reached the DOM, breaking
 browser-verification selectors and the frontend-design rule "Every interactive
@@ -12,11 +12,18 @@ element needs a data-testid". master-page.jsx additionally lost the Lesson M
 disabled-reason `title` tooltips on Btn, plus data-testid on Input
 ("master-search") and Card ("error-state" / "loading-state").
 
-Contract pinned here (mirrors the Btn in v2/dashboard-shared.js):
-  - Btn, Card and Input accept `...rest` in their parameter destructuring
-  - each spreads `{...rest}` onto its root DOM element
-  - the spread sits BEFORE the style prop so the computed style object stays
-    authoritative (style itself is destructured out and can never be in rest)
+MECHANISM CHANGE 2026-07-03 (PROJECT_STATE DECISIONS "V2-wide spread-rest
+collision sweep"): the original fix used `...rest` + `{...rest}`, but
+Babel-standalone hoists the compiled `_excluded` prop-list to GLOBAL scope
+and a later-loaded V2 script overwrites it — leaking excluded props
+(onChange) into the spread and crashing typing (the B2 render-check defect;
+collider = TbBtn in proforma-detail.jsx). Spread-rest is now FORBIDDEN in V2
+JSX (guarded by test_v2_no_spread_rest.py). The Lesson-I CONTRACT is
+unchanged — the passthrough attrs still reach the DOM — only the mechanism
+is now EXPLICIT named destructuring (census-complete):
+  - Btn destructures 'data-testid'/title/'aria-label' and applies each on
+    <button>; Card and Input destructure 'data-testid' and apply it.
+  - style stays authoritative (computed style object last / destructured out).
 
 Target: service/app/static/v2/components.jsx
 """
@@ -36,6 +43,13 @@ def _read() -> str:
     return COMPONENTS.read_text(encoding="utf-8")
 
 
+def _strip_comments(block: str) -> str:
+    """Drop // comment lines — a following function's leading comment can
+    bleed into this block and legitimately mention `...rest` (DECISIONS
+    citations), which must not trip the no-spread-rest asserts."""
+    return "\n".join(l for l in block.splitlines() if not l.lstrip().startswith("//"))
+
+
 def _function_block(src: str, name: str) -> str:
     """Return the source of `function <name>(...) { ... }` up to the next
     top-level `function` declaration (good enough for source-grep pinning)."""
@@ -51,22 +65,26 @@ def _function_block(src: str, name: str) -> str:
 # =============================================================================
 
 class TestBtnForwardsRestProps:
-    def test_btn_accepts_rest(self):
+    def test_btn_no_spread_rest(self):
         block = _function_block(_read(), "Btn")
-        assert "...rest" in block.split("{", 2)[1], \
-            "Btn must accept ...rest in its destructured props"
+        assert "...rest" not in _strip_comments(block), \
+            "Btn must NOT use spread-rest (Babel _excluded global collision)"
 
-    def test_btn_spreads_rest_on_button(self):
+    def test_btn_destructures_passthrough_attrs(self):
         block = _function_block(_read(), "Btn")
-        m = re.search(r"<button[^>]*\{\.\.\.rest\}", block, flags=re.DOTALL)
-        assert m, "Btn must spread {...rest} onto the <button> element"
+        head = block[:block.index("{", block.index("("))] if "{" in block else block
+        sig = block.split(")", 1)[0]
+        assert "'data-testid': testid" in sig, "Btn must destructure data-testid"
+        assert "title" in sig, "Btn must destructure title"
+        assert "'aria-label': ariaLabel" in sig, "Btn must destructure aria-label"
 
-    def test_btn_spread_before_style(self):
-        """{...rest} must come before style= so computed style stays last."""
+    def test_btn_applies_passthrough_on_button_before_style(self):
         block = _function_block(_read(), "Btn")
         btn_tag = block[block.index("<button"):]
-        assert btn_tag.index("{...rest}") < btn_tag.index("style="), \
-            "Btn must spread {...rest} before the style prop"
+        for attr in ("data-testid={testid}", "title={title}", "aria-label={ariaLabel}"):
+            assert attr in btn_tag, f"Btn must apply {attr} on <button>"
+            assert btn_tag.index(attr) < btn_tag.index("style="), \
+                f"{attr} must precede style= so computed style stays last"
 
 
 # =============================================================================
@@ -74,15 +92,18 @@ class TestBtnForwardsRestProps:
 # =============================================================================
 
 class TestCardForwardsRestProps:
-    def test_card_accepts_rest(self):
+    def test_card_no_spread_rest(self):
         block = _function_block(_read(), "Card")
-        assert "...rest" in block.split("{", 2)[1], \
-            "Card must accept ...rest in its destructured props"
+        assert "...rest" not in _strip_comments(block), \
+            "Card must NOT use spread-rest (Babel _excluded global collision)"
 
-    def test_card_spreads_rest(self):
+    def test_card_applies_testid_on_div(self):
         block = _function_block(_read(), "Card")
-        m = re.search(r"<div[^>]*\{\.\.\.rest\}", block, flags=re.DOTALL)
-        assert m, "Card must spread {...rest} onto its root <div>"
+        assert "'data-testid': testid" in block.split(")", 1)[0], \
+            "Card must destructure data-testid"
+        div_tag = block[block.index("<div"):]
+        assert "data-testid={testid}" in div_tag[:div_tag.index(">")], \
+            "Card must apply data-testid={testid} on its root <div>"
 
 
 # =============================================================================
@@ -90,15 +111,18 @@ class TestCardForwardsRestProps:
 # =============================================================================
 
 class TestInputForwardsRestProps:
-    def test_input_accepts_rest(self):
+    def test_input_no_spread_rest(self):
         block = _function_block(_read(), "Input")
-        assert "...rest" in block.split("{", 2)[1], \
-            "Input must accept ...rest in its destructured props"
+        assert "...rest" not in _strip_comments(block), \
+            "Input must NOT use spread-rest (Babel _excluded global collision)"
 
-    def test_input_spreads_rest(self):
+    def test_input_applies_testid_on_input(self):
         block = _function_block(_read(), "Input")
-        m = re.search(r"<input[^>]*\{\.\.\.rest\}", block, flags=re.DOTALL)
-        assert m, "Input must spread {...rest} onto the <input> element"
+        assert "'data-testid': testid" in block.split(")", 1)[0], \
+            "Input must destructure data-testid"
+        input_tag = block[block.index("<input"):]
+        assert "data-testid={testid}" in input_tag[:input_tag.index("/>")], \
+            "Input must apply data-testid={testid} on the <input> element"
 
 
 # =============================================================================

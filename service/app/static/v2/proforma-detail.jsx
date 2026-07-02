@@ -19,16 +19,20 @@ const PROFORMA_TABS = [
 ];
 
 // ── Toolbar button ────────────────────────────────────────────────────────────
-function TbBtn({ children, onClick, disabled, title, warn, style: xs, ...rest }) {
+// The COLLIDER from the B2 render-check defect: this file loads 27th, and its
+// hoisted `_excluded` (['children','onClick','disabled','title','warn','style'])
+// overwrote earlier files' helpers. Explicit 'data-testid' destructuring, NOT
+// spread-rest (PROJECT_STATE DECISIONS "V2-wide spread-rest collision sweep").
+function TbBtn({ children, onClick, disabled, title, warn, style: xs, 'data-testid': testid }) {
   const [hov, setHov] = React.useState(false);
   return (
     <button
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
       title={title}
+      data-testid={testid}
       onMouseEnter={() => !disabled && setHov(true)}
       onMouseLeave={() => setHov(false)}
-      {...rest}
       style={{
         background: (hov && !disabled)
           ? (warn ? 'var(--badge-amber-bg)' : 'var(--row-hover)')

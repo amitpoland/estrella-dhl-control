@@ -6056,6 +6056,35 @@ components exposed to the same collision (grep spread-rest in static/v2)
 — candidates include the Button emitting the observed
 ['children','onClick','disabled','title','warn','style'] list.
 
+### 2026-07-03 — V2-wide spread-rest collision sweep (Babel _excluded global hoist)
+MECHANISM (so no future session rediscovers it): Babel-standalone compiles
+JSX object-REST destructuring `function C({ a, b, ...rest })` by hoisting a
+`var _excluded = ['a','b']` to the transformed script's top level. V2 loads
+each *.jsx as a classic <script type="text/babel"> with NO module wrapper,
+so every file's `_excluded`/`_excluded2`/… land in the SHARED global scope
+and the LAST-loaded script wins for that name. A component's compiled body
+closes over the bare global `_excluded`, so a later file's list silently
+replaces an earlier component's — leaking "excluded" props (e.g. onChange)
+into `{...rest}`, which then lands the raw state setter on a DOM input; the
+first keystroke stores the SyntheticEvent into state and crashes the tree
+(the B2 render-check defect; the collider was TbBtn in proforma-detail.jsx
+:22, loaded 27th, whose list ['children','onClick','disabled','title',
+'warn','style'] was observed in window._excluded). NB: plain object-literal
+spreads (`{...prev}`, `...style`) are NOT this — they compile to idempotent
+_extends and are safe.
+CENSUS: 4 rest-destructure components across 2 files — components.jsx Card
+(:379), Btn (:393), Input (:453) [loaded 4th]; proforma-detail.jsx TbBtn
+(:22) [loaded 27th, the collider] — PLUS inventory-page.jsx InvInput/
+InvFetchBtn already fixed in 0602ddd3.
+FIX IDIOM (the 0602ddd3 idiom, applied V2-wide): replace `...rest` with
+EXPLICIT named destructuring of the exact forwarded attrs (census-complete:
+Btn←data-testid/title/aria-label, Card/Input/TbBtn←data-testid) and apply
+them as explicit JSX attributes. Zero behavior change; no `_excluded`
+emitted.
+RULE (pinned): spread-rest destructuring is FORBIDDEN in V2 JSX
+(Babel-standalone hoists helpers globally; last-loaded wins). Drop-can't-
+return pin greps all v2/*.jsx for `...rest`/`...props` destructures.
+
 ### 2026-07-03 — wFirma MM: BUSINESS model answered; API capability still open
 OPERATOR ANSWER (verbatim): "wFirma MM answer: yes, consignment issue
 should use MM from MAIN STOCK to CONSIGNMENT STOCK, not WZ."

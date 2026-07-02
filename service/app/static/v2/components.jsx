@@ -376,9 +376,13 @@ function PageHeader({ title, subtitle, actions }) {
   );
 }
 
-function Card({ children, style, onClick, ...rest }) {
+// No spread-rest (PROJECT_STATE DECISIONS "V2-wide spread-rest collision
+// sweep"): Babel-standalone hoists `_excluded` to global scope and a
+// later-loaded file overwrites it. Explicit 'data-testid' destructuring is
+// census-complete (Card only ever receives data-testid) and collision-safe.
+function Card({ children, style, onClick, 'data-testid': testid }) {
   return (
-    <div onClick={onClick} {...rest} style={{
+    <div onClick={onClick} data-testid={testid} style={{
       background: 'var(--card)', borderRadius: 8,
       border: '1px solid var(--border)',
       boxShadow: '0 1px 3px var(--shadow)',
@@ -387,10 +391,13 @@ function Card({ children, style, onClick, ...rest }) {
   );
 }
 
-// Forwards `...rest` (data-testid, title, aria-*) to the <button> element —
-// same contract as the Btn in v2/dashboard-shared.js. Without this, every
-// data-testid placed on a Btn usage silently vanishes from the rendered DOM.
-function Btn({ children, onClick, variant = 'default', small, disabled, style: extraStyle, ...rest }) {
+// Forwards data-testid / title / aria-label to the <button> — same contract
+// as the Btn in v2/dashboard-shared.js (without which a data-testid on a Btn
+// usage silently vanishes). Explicit destructuring, NOT spread-rest: the
+// _excluded global-hoist collision (DECISIONS "V2-wide spread-rest collision
+// sweep") forbids `...rest` in V2 JSX; the census confirms these three attrs
+// are the complete forwarded set.
+function Btn({ children, onClick, variant = 'default', small, disabled, style: extraStyle, 'data-testid': testid, title, 'aria-label': ariaLabel }) {
   const variants = {
     default: { background: 'var(--text)', color: 'var(--card)', border: '1px solid var(--text)' },
     // `primary` = alias for gold/accent (C20A parity with the Btn in v2/dashboard-shared.js).
@@ -404,7 +411,7 @@ function Btn({ children, onClick, variant = 'default', small, disabled, style: e
   };
   const v = variants[variant] || variants.default;
   return (
-    <button onClick={onClick} disabled={disabled} {...rest} style={{
+    <button onClick={onClick} disabled={disabled} data-testid={testid} title={title} aria-label={ariaLabel} style={{
       ...v, borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer',
       padding: small ? '4px 10px' : '7px 14px',
       fontSize: small ? 11 : 12, fontWeight: 600,
@@ -450,9 +457,11 @@ function FormField({ label, children, hint }) {
   );
 }
 
-function Input({ value, onChange, placeholder, type = 'text', style: s, ...rest }) {
+// Explicit 'data-testid' destructuring, NOT spread-rest (DECISIONS "V2-wide
+// spread-rest collision sweep"). Census: Input only receives data-testid.
+function Input({ value, onChange, placeholder, type = 'text', style: s, 'data-testid': testid }) {
   return (
-    <input value={value} onChange={onChange} placeholder={placeholder} type={type} {...rest} style={{
+    <input value={value} onChange={onChange} placeholder={placeholder} type={type} data-testid={testid} style={{
       width: '100%', padding: '8px 10px', borderRadius: 6,
       border: '1px solid var(--border)', fontSize: 12, color: 'var(--text)',
       background: 'var(--bg-subtle)', outline: 'none', boxSizing: 'border-box', ...s,
