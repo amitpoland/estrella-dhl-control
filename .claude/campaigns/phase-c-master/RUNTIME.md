@@ -6,9 +6,9 @@
 ## Current State
 
 - **Phase:** Wave 1 — Master Authority Completion (Phase 0 COMPLETE 2026-07-03; CP1 issued)
-- **Current slice:** C-2c — customer verification sweep
-- **Slice state:** IN_PROGRESS
-- **Next:** C-1e (awaits operator ruling OI-18) → C-1f → C-1d
+- **Current slice:** — (C-2 COMPLETE; Wave-1 remainder C-1e/C-1f/C-1d all gated on OI-18)
+- **Slice state:** BLOCKED — unresolvable-OI contact (CAMPAIGN_OS §7.13): no unblocked Wave-1 slice remains
+- **Next:** C-1e on operator ruling (OI-18) → C-1f → C-1d → Wave-1 boundary (CP2)
 - **Blocked by:** — (C-1e/C-1f deferred within wave per OI-18; unblocked slices remain)
 
 ## Completed Slices (append-only ledger)
@@ -38,13 +38,14 @@ Campaign slices:
 | 2026-07-03 | Phase 0 evidence pass (registers populated; W1/W2 VALID) | `be0783c8` |
 | 2026-07-03 | C-1w2 capabilities write path + inseparable reads → sync layer; pin 3→2; golden 160/160; capabilities 69+2 pre-existing | `3833627c` |
 | 2026-07-03 | C-2a wfirma_customer_mirror schema (contractor_id PK) + collision-safe upsert + idempotent 2-source backfill; pin 9/9; golden 160/160 | `18fb89ad` |
-| 2026-07-03 | C-2b V4/V5/V7 customer call-path reroute → Customer Master passthroughs; pin 10/10; smoke 63; golden 160/160 | see git log `feat(c2b-…)` |
+| 2026-07-03 | C-2b V4/V5/V7 customer call-path reroute → Customer Master passthroughs; pin 10/10; smoke 63; golden 160/160 | `60a34f9e` |
+| 2026-07-03 | C-2c customer verification sweep — full-app pin (zero business violations); pin 11/11; C-2 COMPLETE | see git log `test(c2c-…)` |
 
 ## Budget Tracking (live; boundary snapshots go to MASTER_MANIFEST §4)
 
 | Wave | Consumed | Budget | Forecast |
 |---|---|---|---|
-| Wave 1 | 1.5h (C-1w2, C-2a, C-2b) | 8h | within budget |
+| Wave 1 | 2h (C-1w2, C-2a, C-2b, C-2c) | 8h | within budget |
 | Wave 2 | 0h | 11h | — |
 | Wave 3 | 0h | 6h | — |
 | Wave 4 | 0h | 5h | — |
@@ -60,6 +61,7 @@ Campaign slices:
 
 - OI-1 MM-via-API — gates C-4b (fallback exists), C-7a
 - OI-CONSIGNMENT-MODEL — gates C-4a (Wave 3)
-- OI-13 contractor_id stability — affects C-2a keying (Wave 1)
+- OI-13 contractor_id stability — C-2a shipped with contractor_id PK; formal confirmation still open
+- OI-18 C-1e ruling — NOW BLOCKING the Wave-1 remainder (C-1e→C-1f→C-1d)
 - OI-3 WZ add-vs-auto — gates C-6a, C-8c
 - OI-7/9/10/11 webhook config — gate Wave 4

@@ -281,3 +281,54 @@ def test_no_direct_wfirma_customer_calls_in_v4_v5_v7_routes():
         f"C-2b VIOLATION — direct wfirma_client customer calls found in business "
         f"routes (must route via customer_master_db passthroughs): {violations}"
     )
+
+
+# ── C-2c: full-sweep customer rule (all business modules, not just V4/V5/V7) ─
+
+# The customer sync/integration layer — the ONLY code allowed to touch wFirma
+# customer APIs. Everything else must consume the Customer Master
+# (Constitution §3 + MASTER CONSUMPTION RULE). Analog of _SYNC_WHITELIST.
+_CUSTOMER_SYNC_WHITELIST = {
+    "wfirma_client.py", "wfirma_db.py", "customer_master_db.py",
+    "reservation_db.py",
+    # customer auto-resolve is the customer analog of wfirma_product_auto_register
+    # (sync machinery, one gated create path):
+    "wfirma_customer_auto_resolve.py",
+    # the Master's OWN sync surface (authority doing its job — V7 design-debt
+    # note, audit §Q3-amend):
+    "routes_customer_master.py",
+    # wFirma-setup / diagnostic surface (probes + operator sync tooling — audit:
+    # "wFirma-facing by purpose, NOT counted as violations"):
+    "routes_wfirma_capabilities.py",
+}
+
+_CUSTOMER_API_PATTERNS = [
+    re.compile(r"\.search_customer\s*\("),
+    re.compile(r"\.fetch_contractor_by_id\s*\("),
+    re.compile(r"\.create_customer\s*\("),
+]
+
+
+def test_no_business_module_calls_wfirma_customer_apis():
+    """C-2c standing pin (full sweep): NO business module anywhere under app/
+    may call the wFirma customer APIs (search_customer / fetch_contractor_by_id /
+    create_customer) directly. Only the customer sync layer
+    (_CUSTOMER_SYNC_WHITELIST) may. Comment/docstring-stripped."""
+    violations: dict = {}
+    for fpath in sorted(_APP.rglob("*.py")):
+        if fpath.name in _CUSTOMER_SYNC_WHITELIST:
+            continue
+        code = _strip_comments_and_docstrings(
+            fpath.read_text(encoding="utf-8", errors="replace")
+        )
+        hits = []
+        for rx in _CUSTOMER_API_PATTERNS:
+            for m in rx.finditer(code):
+                start = max(0, m.start() - 60)
+                hits.append(code[start: m.end() + 20].strip())
+        if hits:
+            violations[str(fpath.relative_to(_APP))] = hits
+    assert not violations, (
+        f"C-2c VIOLATION — direct wFirma customer API calls outside the customer "
+        f"sync whitelist (route via Customer Master instead): {violations}"
+    )
