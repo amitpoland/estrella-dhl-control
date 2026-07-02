@@ -5814,6 +5814,68 @@ MIGRATION_PENDING message (inventory_location_writer.py:100) still says
 "draft_20260512_002516_idempotency_key" — cosmetic, error-path-only; follow-up
 candidate, not changed in this rework (out of instructed scope).
 
+### 2026-07-02 — slice B×7-1b BE-1: auto stock promotion on PZ creation (operator decision (a))
+OPERATOR DECISION (a) (verbatim): "App-pipeline PZs only for now. Direct wFirma
+PZ bookings should not block BE-1. Record direct-wFirma PZ auto-promotion as
+BE-1c / future extension. Rule: If PZ is created through Atlas/EJ pipeline,
+auto-promote PURCHASE_TRANSIT → WAREHOUSE_STOCK. If PZ is created directly
+inside wFirma, it remains manual/exception handling until webhook/poll
+extension is approved."
+SCOPE (operator, verbatim): no UI; no deploy; additive backend hook only;
+idempotent skip required; both PZ writers must call shared
+run_stock_promotion(); double promotion must no-op cleanly; receipt-first
+then PZ and PZ-first then receipt orderings must be tested.
+IMPLEMENTATION: new shared authority service/app/services/stock_promotion.py
+→ run_stock_promotion(batch_id, trigger=, source=, operator=) (Business
+Feature Completeness: the ONE shared function). Callers:
+(1) routes_wfirma.wfirma_pz_create success path (trigger="pz_created",
+source="wfirma_pz_create") after EV_WFIRMA_PZ_CREATED, inside the pz_write
+lock, result surfaced as "stock_promotion" in the create response;
+(2) global_pz_push correction push (trigger="pz_created",
+source="correction_push") after its EV_WFIRMA_PZ_CREATED, errors surfaced in
+PushResult warnings; (3) PRE-EXISTING routes_upload._promote_to_warehouse_stock
+(internal PZ generation) now DELEGATES to the shared function
+(trigger="pz_generated", source="pz_pipeline") — discovered during BE-1
+scoping: promotion already fired at internal-PZ-generation time; the
+one-shared-function rule forbids Logic A / Logic B divergence, so the existing
+loop is EXTRACTED behavior-preserving and stays pinned by the pre-existing
+test_warehouse_stock_promotion.py suite (9 tests, must stay green unmodified).
+BEHAVIOR DELTA (disclosed): generation-path transition events now carry
+trigger="pz_generated" + operator="system" (previously empty trigger); the
+summary mirror detail gains skipped/errors/trigger keys (additive; the
+financial-key ban on mirror payloads is unchanged and still pinned).
+BE-1c (PARKED, future extension): direct-wFirma PZ auto-promotion via
+webhook/poll — requires wFirma warehouse-document event ingestion that the
+Track B scheduler does not carry today. Until approved, direct-booked PZs are
+manual/exception handling. OQ-B71B-DIRECT-WFIRMA-PZ answered (a) 2026-07-02.
+OBSERVED ADJACENT PATH (not hooked, disclosed): PZ ADOPT
+(EV_WFIRMA_PZ_ADOPTED — recording an EXISTING wFirma document) is a third
+terminal path that does NOT auto-promote under BE-1; whether adoption should
+promote is a separate business question, not assumed.
+VERIFY PASS (2026-07-02, 3-lens adversarial workflow — unsafe-writes /
+idempotency-replay / scope-authority — all three lenses refuted=false): two
+hardenings applied same day before commit — (1) the wfirma_pz_create hook
+moved OUTSIDE _pz_write_lock (promotion is idempotent and needs none of the
+lock's guarantees; in-lock placement widened the 409 PZ_WRITE_LOCKED window
+by N engine transitions and left stock_promotion latently unbound if a
+pre-assignment statement raised); (2) benign-race recheck in
+run_stock_promotion (a concurrent promoter winning between get_state and
+transition now counts as skipped, not a false-positive error; no failure
+mirror emitted; pinned by test_benign_race_counts_as_skipped_not_error).
+Residuals ACCEPTED, documented, no code change: (a) the already_created
+fast path returns before the hook, so a crash between audit patch and
+promotion leaves stragglers to the receipt path / next generation run;
+(b) global_pz_push crash-before-push-record replay can duplicate the wFirma
+document — pre-existing gap, unchanged by BE-1 (promotion itself no-ops
+cleanly on replay); (c) single-writer invariant independently confirmed
+(only inventory_state_engine.transition() writes inventory_state).
+BE-1 ASSUMPTION recorded (operator may reverse with one word): auto-promotion
+fires on APP-PIPELINE PZ creation only (three writers hooked via shared
+run_stock_promotion). PZs booked directly inside wFirma are NOT seen today —
+webhook/poll extension PARKED on the decision-list as candidate slice BE-1c.
+Until then, direct-booked PZs promote via physical-receipt confirm or the
+future manual exception page.
+
 ## Authority-Model Separation — six separate authorities (2026-06-22)
 
 - **Binding (operator-approved, permanent, no flag):** import, product master, proforma,
@@ -6554,6 +6616,13 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ---
 
 # OPEN QUESTIONS
+
+## OQ-B71B-DIRECT-WFIRMA-PZ: should a PZ booked directly inside wFirma auto-promote stock? (2026-07-02, ANSWERED (a) — CLOSED same day; see DECISIONS "slice B×7-1b BE-1")
+
+- **Question**: BE-1 (auto-promotion hook, slice B×7-1b) fires `run_stock_promotion()` from the two app-pipeline PZ writers (`routes_wfirma.py:2738`, `global_pz_push.py:619` — both emit EV_WFIRMA_PZ_CREATED). A PZ booked DIRECTLY in wFirma (bypassing Atlas, e.g. operator working in wFirma UI) is invisible today — the webhook scheduler carries no warehouse-document events. Option (a): app-pipeline PZs only for now; direct-wFirma PZs handled manually via the future exception page; poll/webhook extension parked as BE-1c. Option (b): the extension is required before the feature counts as done. Advisor lean: (a).
+- **Who can answer**: Operator (Amit) — business call on whether direct-wFirma PZ booking is a real workflow that must promote automatically.
+- **Impact if unanswered**: BE-1 build prompt is held; the auto-promotion slice cannot lock scope.
+- **Candidate path to closure**: Amit answers (a) or (b) → advisor ships the BE-1 build prompt same turn → decision recorded in DECISIONS with the honest note that direct-booked PZs won't promote yet (if (a)).
 
 ## OQ-PR726-MERGE: PR #726 (import PZ / sales-authority split) awaiting merge (2026-06-22, OPEN)
 

@@ -624,6 +624,26 @@ def push_correction_to_wfirma(
         "source":           "correction_push",
     })
 
+    # ── B×7-1b BE-1 (PROJECT_STATE DECISIONS, operator decision (a)):
+    # Atlas/EJ-pipeline PZ booked → auto-promote this batch's PURCHASE_TRANSIT
+    # pieces to WAREHOUSE_STOCK via the shared authority. Best-effort +
+    # idempotent skip: a promotion failure must never fail the push — the
+    # wFirma document already exists. Direct-wFirma PZ bookings are OUT of
+    # scope (BE-1c, parked).
+    from .stock_promotion import run_stock_promotion
+    stock_promotion = run_stock_promotion(
+        batch_id,
+        trigger  = "pz_created",
+        source   = "correction_push",
+        operator = "system",
+    )
+    if stock_promotion.get("errors"):
+        warnings.append(
+            f"stock promotion: {stock_promotion['errors']} line(s) failed to promote "
+            "PURCHASE_TRANSIT → WAREHOUSE_STOCK (see audit timeline "
+            "inventory_transition_failed events)."
+        )
+
     # 3. Write idempotency record (after successful wFirma + audit write)
     push_record: Dict[str, Any] = {
         "batch_id":            batch_id,

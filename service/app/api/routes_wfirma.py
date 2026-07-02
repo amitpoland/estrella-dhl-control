@@ -2547,6 +2547,8 @@ async def wfirma_pz_create(
     wfirma_pz_doc_id  wFirma warehouse_document id (on created/already_created)
     planned_lines     per-line preview with good_id and price_pln (on created)
     line_count        number of lines submitted (on created)
+    stock_promotion   {promoted, skipped, errors, trigger, source} — B×7-1b
+                      BE-1 auto-promotion summary (on created; best-effort)
     error             wFirma error message (on failed)
     """
     # ── Guard 1: feature gate ─────────────────────────────────────────────────
@@ -2786,6 +2788,26 @@ async def wfirma_pz_create(
             log.warning("[%s] pz_create: auto-mapping skipped: %s",
                         batch_id, _exc)
 
+    # ── B×7-1b BE-1 (PROJECT_STATE DECISIONS, operator decision (a)):
+    # Atlas/EJ-pipeline PZ booked → auto-promote this batch's PURCHASE_TRANSIT
+    # pieces to WAREHOUSE_STOCK via the shared authority. Runs AFTER the
+    # pz_write lock is released — promotion is idempotent and needs none of
+    # the lock's guarantees; holding the lock through N engine transitions
+    # widened the 409 PZ_WRITE_LOCKED window and left this name latently
+    # unbound on exception paths (verify-pass hardening, 2026-07-02).
+    # Best-effort: a promotion failure must never fail the PZ response — the
+    # wFirma document already exists. Idempotent skip inside the shared
+    # function (pieces promoted earlier by the PZ-generation or receipt paths
+    # no-op cleanly). Direct-wFirma PZ bookings are OUT of scope (BE-1c,
+    # parked).
+    from ..services.stock_promotion import run_stock_promotion
+    stock_promotion = run_stock_promotion(
+        batch_id,
+        trigger  = "pz_created",
+        source   = "wfirma_pz_create",
+        operator = operator,
+    )
+
     if audit_write_error:
         # wFirma succeeded but audit didn't reflect it — return 500 with
         # actionable warning, not 200.  The doc_id is included so the
@@ -2803,6 +2825,7 @@ async def wfirma_pz_create(
                 "audit_error":       audit_write_error,
                 "planned_lines":     planned,
                 "line_count":        len(planned),
+                "stock_promotion":   stock_promotion,
                 "quantity_normalization_review": [
                     {
                         "product_code":       e.product_code,
@@ -2822,6 +2845,7 @@ async def wfirma_pz_create(
         "wfirma_pz_doc_id": pz_result.wfirma_pz_doc_id,
         "planned_lines":    planned,
         "line_count":       len(planned),
+        "stock_promotion":  stock_promotion,
         "quantity_normalization_review": [
             {
                 "product_code":       e.product_code,
