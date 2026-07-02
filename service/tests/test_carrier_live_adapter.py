@@ -170,6 +170,64 @@ class TestCreateShipmentDhlError:
             with pytest.raises(CarrierGateError, match="DHL API 503"):
                 adapter.create_shipment(request)
 
+    def _raise_with_body(self, tmp_path, body: dict, status_code: int = 400) -> str:
+        """Run create_shipment against a mocked DHL error body; return the message."""
+        config = _make_config()
+        adapter = DhlExpressLiveAdapter(config)
+        request = _make_request()
+
+        resp = MagicMock()
+        resp.is_success = False
+        resp.status_code = status_code
+        resp.json.return_value = body
+        resp.text = str(body)
+
+        with _mock_settings(tmp_path), patch("httpx.Client") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__enter__.return_value
+            mock_client.post.return_value = resp
+            with pytest.raises(CarrierGateError) as exc_info:
+                adapter.create_shipment(request)
+        return str(exc_info.value)
+
+    def test_dhl_422_additional_details_strings_all_surfaced(self, tmp_path):
+        """Every string entry in additionalDetails appears in the raised error."""
+        msg = self._raise_with_body(tmp_path, {
+            "detail": "Multiple problems found, see Additional Details",
+            "additionalDetails": [
+                "#/content/declaredValue: is not allowed for non dutiable shipment",
+                "#/customerDetails/receiverDetails/postalAddress/postalCode: invalid format",
+                "997: The requested product is not available",
+            ],
+        }, status_code=422)
+
+        assert "DHL API 422" in msg
+        assert "Multiple problems found" in msg
+        assert "declaredValue: is not allowed" in msg
+        assert "postalCode: invalid format" in msg
+        assert "997: The requested product is not available" in msg
+
+    def test_dhl_422_additional_details_dict_entries_surfaced(self, tmp_path):
+        """Dict-form entries surface code, path and message fields."""
+        msg = self._raise_with_body(tmp_path, {
+            "detail": "Multiple problems found, see Additional Details",
+            "additionalDetails": [
+                {"code": "7121", "path": "#/content/exportDeclaration",
+                 "message": "exportDeclaration is mandatory when product is dutiable"},
+            ],
+        }, status_code=422)
+
+        assert "7121" in msg
+        assert "#/content/exportDeclaration" in msg
+        assert "exportDeclaration is mandatory" in msg
+
+    def test_dhl_error_without_additional_details_unchanged(self, tmp_path):
+        """Simple DHL errors keep the original single-line message shape."""
+        msg = self._raise_with_body(
+            tmp_path, {"detail": "Invalid shipper address"}, status_code=400
+        )
+        assert msg == "DHL API 400: Invalid shipper address"
+        assert "Additional details" not in msg
+
 
 class TestAllowlist:
     def test_wildcard_allows_any_batch_id(self, tmp_path):
