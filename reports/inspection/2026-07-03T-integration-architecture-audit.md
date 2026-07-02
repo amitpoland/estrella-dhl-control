@@ -229,3 +229,119 @@ the single highest-value next backend slice.
 
 These merge into and extend the §E checklist
 (reports/inspection/2026-07-03T-wfirma-section-e-operator-checklist.md).
+
+---
+
+# AMENDMENT (2026-07-03) — Single-application model + authority violations
+
+Added atop the original audit (b9f5664c) per operator direction. Governs the
+APPLICATION AUTHORITY RULE (CLAUDE.md constitution + PROJECT_STATE DECISIONS):
+**one application = EJ Dashboard**; every module reaches wFirma only via
+`<module> → EJ Dashboard <Master> → Mirror → wFirma`; direct wFirma
+product/customer maps and module-grown masters are violations.
+
+**PROPOSED-NOT-DONE / QUESTIONS-STOPPED-ON / DEVIATIONS-DISCLOSED:** this
+amendment is READ-ONLY analysis. The canonical mirrors, the Product Master
+consolidation, and every violation fix below are PROPOSALS — none is
+implemented. No file/path/table containing "PZ" is renamed (R1 scope note).
+Nothing here touches code. Any fix is a separate operator-approved slice.
+
+## Q0 — EJ Dashboard authority census
+
+One application authority (EJ Dashboard). Verdicts reuse b9f5664c evidence.
+
+| Authority | Canonical files | Canonical API | Canonical DB | Dependents / integrations | Verdict |
+|---|---|---|---|---|---|
+| **Product Master** | product_authority_resolver.py, reservation_db.py (product_master, design_product_mapping) | resolve_batch_product_authority() | reservation_queue.db (product_master advisory) | proforma_draft_sync, sales_packing_matcher, design_product_bridge, routes_wfirma product-resolve | **FRAGMENTED** — no single Product Master: design linkage is clean (one resolver) but wFirma-goods identity is SPLIT across wfirma_products (wfirma.db) + wfirma_product_mapping (reservation.db), and product_master is advisory-only. A single canonical Product Master does not exist yet. |
+| **Customer Master** | customer_master_db.py | upsert_customer / upsert_identity_only | customer_master.sqlite | proforma resolver, ledgers, suppliers, dashboard, contractor-projection | **REAL but FRAGMENTED** — customer_master.sqlite is the identity/VAT/commercial authority, but two name-keyed caches (wfirma_customers in wfirma.db, wfirma_customer_mapping in reservation.db) fragment it and the invoice XML sources wfirma_customer_id from a cache. |
+| **Inventory** | inventory_state_engine.py + warehouse_db.py | transition() (single-writer) | warehouse.db | PZ promotion, sample/returns writers, Move Stock modal, location reads | **REAL** — single-writer discipline; the strongest authority. |
+| **Packing** | packing_db.py | get_packing_lines_for_batch, resolver feed | packing.db (packing_lines) | product resolver, PZ rows, sales matcher | **REAL**. |
+| **PZ** | routes_wfirma.py (pz_create) + stock_promotion.py | POST /wfirma/pz/create, run_stock_promotion() | audit.json (wfirma_export) + inventory_state | import pipeline, DHL bridge | **REAL** (live-proven, gated). |
+| **WZ** | — (registered string only) | none (no create fn) | none | operator lifecycle rule references it | **ABSENT** — registered in _WAREHOUSE_MODULES, no create fn, SALES_TRANSIT never fired. |
+| **Invoice** | routes_proforma.py + wfirma_client (invoices/*) | create_proforma_draft, to-invoice conversion | proforma_links.db + wfirma_invoice_snapshots | webhook pipeline, customer sync | **REAL**. |
+| **Sample** | inventory_sample_writer.py + routes_inventory_sample.py | POST sample-out / sample-return | warehouse.db (sample_out_events) | inventory_state_engine | **REAL but WRITE-ONLY** (no read/list endpoint — the Phase-C gap). |
+| **Consignment** | client-kyc-and-consignment.jsx (unmounted stub) | none | none (aggregator hardcodes not_available) | nothing (stub loaded, mounted nowhere) | **ABSENT** — no state, table, or route. |
+| **Returns** | inventory_returns_writer.py + routes_inventory_returns.py | POST return-from-client / to-producer / from-producer | warehouse.db (returns_events; migration not applied in prod) | inventory_state_engine | **REAL but WRITE-ONLY** (no read/list; returns migration pending). |
+
+## Q3-amend — Violation inspection (direct wFirma product/customer maps)
+
+Exact call sites that bypass an EJ Dashboard master and map DIRECTLY to wFirma
+(read-only grep; cited). The Customer Master's OWN sync (routes_customer_master
+pulling wFirma to fill itself) is the authority doing its job — but it still
+maps direct-to-wFirma without a mirror layer (design-debt, listed as V7).
+
+- **Fragment tables (module-grown masters):** wfirma_customers (wfirma_db.py:62)
+  + wfirma_customer_mapping (reservation_db.py:76) — two client_name-keyed
+  customer caches; wfirma_products (wfirma_db.py:79) + wfirma_product_mapping
+  (reservation_db.py:60) — two split product mirrors.
+- **routes_ledgers.py:155,288** — `wfirma_client.fetch_contractor_by_id` direct.
+- **routes_proforma.py:1500,1529,7767,7800** (`search_customer` live) + **:1877,
+  3637,8067** (`fetch_contractor_by_id`) — direct customer fallback bypassing
+  Customer Master.
+- **routes_suppliers.py:396** — `fetch_contractor_by_id` direct.
+- **routes_reservations.py:161** — `get_product_by_code` shim direct.
+- **routes_wfirma.py:1926,2003,2320** — product resolve/create/edit direct (no
+  Product Master upstream).
+- **routes_wfirma_capabilities.py:279,310,373,440,515** — customer/product probes
+  (read-only diagnostic; wFirma-facing by purpose — lower risk).
+
+## AUTHORITY VIOLATIONS (cleanup list, ordered by risk)
+
+```
+V1  Product write path (routes_wfirma.py:2003 create_product / :2320 edit_product)
+    -> wFirma goods, with NO single Product Master upstream
+    Status: AUTHORITY VIOLATION (write, highest risk)
+    Correct path: Product module -> EJ Dashboard Product Master -> Mirror -> wFirma
+
+V2  Two product mirrors: wfirma_products (wfirma_db) + wfirma_product_mapping (reservation_db)
+    -> split product↔wFirma identity across two DBs, both carry business fields
+    Status: AUTHORITY VIOLATION (fragmented master)
+    Correct path: one canonical Product Master + one wfirma_product_mirror(product_code+design)
+
+V3  Two customer caches: wfirma_customers (wfirma_db) + wfirma_customer_mapping (reservation_db)
+    -> client_name-keyed masters that duplicate Customer Master; invoice XML sources id from a cache
+    Status: AUTHORITY VIOLATION (fragmented master, mutable key)
+    Correct path: Customer Master -> one wfirma_customer_mirror(contractor_id) -> wFirma
+
+V4  routes_proforma customer fallback (:1500/1529/7767/7800/1877/3637/8067)
+    -> wfirma_client.search_customer / fetch_contractor_by_id direct
+    Status: AUTHORITY VIOLATION (module bypasses Customer Master)
+    Correct path: Proforma -> Customer Master -> Mirror -> wFirma
+
+V5  routes_ledgers.py:155,288 -> fetch_contractor_by_id direct
+    Status: AUTHORITY VIOLATION (module bypasses Customer Master)
+    Correct path: Ledgers -> Customer Master -> Mirror -> wFirma
+
+V6  routes_reservations.py:161 -> get_product_by_code direct
+    Status: AUTHORITY VIOLATION (module bypasses Product Master)
+    Correct path: Reservations -> Product Master -> Mirror -> wFirma
+
+V7  routes_suppliers.py:396 + routes_customer_master.py:498,699 -> direct wFirma contractor calls
+    Status: AUTHORITY VIOLATION (supplier module direct; Customer Master maps
+    direct without a mirror layer — design-debt, lowest risk)
+    Correct path: <module> -> Master -> Mirror -> wFirma
+```
+
+Diagnostic wFirma-capabilities probes (routes_wfirma_capabilities.py) are
+wFirma-facing by design (read-only) — NOT counted as violations.
+
+## Phase-C queue, reframed under the single-application model
+
+The original queue holds; reframed so every item names its EJ Dashboard
+authority (no new applications, no new masters):
+
+1. **Sample/Returns READ endpoints** — extends the **Inventory authority**
+   (reads inventory_state + sample_out_events/returns_events; clients via
+   Customer Master). Zero wFirma. Buildable now (freeze-exception). **← Part 2.**
+2. **SALES_TRANSIT write path** — extends the **Inventory authority** (fires the
+   invoice_issued transition from the Invoice authority). App-side.
+3. **Mirror consolidation** — collapses V2+V3 into the canonical **Product
+   Master** + **Customer Master** mirror layer; fixes V1/V4/V5/V6 routing.
+4. **Consignment** — new capability under the **Inventory authority**
+   (allocation model) + **wFirma** (MM). BLOCKED on the MM answer.
+5. **Invoice-from-consignment** — **Invoice authority** consuming
+   consignment-warehouse stock.
+6. **MM sync / WZ** — **wFirma authority**; WFIRMA-GATED.
+
+No item creates a new application or master; each extends an existing EJ
+Dashboard authority. Buildable without operator-input: (1), (2).

@@ -99,6 +99,30 @@ Elaboration: `service/docs/ops/working-tree-convention.md` (rule 6).
 
 ---
 
+## APPLICATION AUTHORITY RULE (permanent, operator-ratified 2026-07-03)
+
+There is only ONE application: **EJ Dashboard**. Every module belongs to EJ
+Dashboard. "PZ App" is NOT an application. "PZ" is only one workflow/module
+inside EJ Dashboard. Claude Code must never create architecture that treats
+PZ, Inventory, Sample, Consignment or Returns as separate applications.
+Everything extends the existing EJ Dashboard authority.
+
+**Companion rule (start every feature with this question):** *"मैं EJ
+Dashboard के किस existing module को extend कर रहा हूँ?"* ("Which existing EJ
+Dashboard module am I extending?") — no answer = **STOP**. No new page, no new
+authority, no new master, no direct wFirma mapping. Every module reaches wFirma
+only through: `<module> → EJ Dashboard <Master> → Mirror → wFirma`. A module
+that calls wFirma product/customer APIs directly, or grows its own
+customer/product table, is an **AUTHORITY VIOLATION**.
+
+**Scope note (this rule is architectural, not a rename mandate):** it governs
+architecture decisions and documents going forward. It does NOT authorize
+renaming files, paths, services, or tables containing "PZ" — any such rename
+is a separate operator-approved slice. The violation cleanup list lives in
+`reports/inspection/2026-07-03T-integration-architecture-audit.md` (amendment).
+
+---
+
 ## MANDATORY GOVERNANCE GATES
 
 These gates apply to ALL implementation work in this repository.

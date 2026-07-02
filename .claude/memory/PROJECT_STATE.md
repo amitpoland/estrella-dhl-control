@@ -6056,6 +6056,28 @@ components exposed to the same collision (grep spread-rest in static/v2)
 — candidates include the Button emitting the observed
 ['children','onClick','disabled','title','warn','style'] list.
 
+### 2026-07-03 — PERMANENT RULE: APPLICATION AUTHORITY (one application = EJ Dashboard; operator-ratified, verbatim)
+"There is only ONE application. EJ Dashboard. Every module belongs to EJ
+Dashboard. 'PZ App' is NOT an application. 'PZ' is only one workflow/module
+inside EJ Dashboard. Claude Code must never create architecture that treats
+PZ, Inventory, Sample, Consignment or Returns as separate applications.
+Everything extends the existing EJ Dashboard authority."
+COMPANION (verbatim): every future feature begins with "मैं EJ Dashboard के
+किस existing module को extend कर रहा हूँ?" — no answer = STOP. No new page, no
+new authority, no new master, no direct wFirma mapping.
+SCOPE NOTE (R1): this rule changes architecture decisions and documents going
+forward. It does NOT authorize renaming files/paths/services/tables containing
+"PZ" — any rename is a separate operator-approved slice.
+Also recorded in the CLAUDE.md constitution ("APPLICATION AUTHORITY RULE").
+The Q0 EJ-Dashboard authority census + the authority-violation cleanup list
+are appended to the Integration Architecture Audit
+(reports/inspection/2026-07-03T-integration-architecture-audit.md, amendment
+atop b9f5664c): Product Master = FRAGMENTED (split tables, no single
+authority), Consignment/WZ = ABSENT, Sample/Returns = REAL-but-write-only,
+Customer Master = REAL-but-fragmented (2 name-keyed caches). 7 authority
+violations catalogued (worst: 2 customer caches + 2 product mirrors =
+module-grown masters keyed by mutable client_name / split across DBs).
+
 ### 2026-07-03 — PERMANENT RULE: authority-first for inventory features (operator-ratified, verbatim)
 "No new inventory feature may be implemented until Claude Code first
 identifies which existing authority it extends: Product Mirror, Customer
