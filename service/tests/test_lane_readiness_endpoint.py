@@ -113,8 +113,11 @@ def _json_for_seed_lines(s):
 
 
 def _seed_wfirma_ready(tmp: Path, codes) -> None:
-    """Seed wfirma_products rows with sync_status='created' for *codes*."""
+    """Seed wfirma_products sync_status='created' AND the Product Master
+    status='mapped' for *codes* — C-1c: purchase-lane readiness now reads the
+    Master ('ready in wFirma' == Master status 'mapped')."""
     from app.services import wfirma_db as wfdb
+    from app.services import reservation_db as rdb
     wfdb.init_wfirma_db(tmp / "wfirma.db")
     db = tmp / "wfirma.db"
     with _s.connect(str(db)) as conn:
@@ -129,6 +132,11 @@ def _seed_wfirma_ready(tmp: Path, codes) -> None:
                  "created", now, now),
             )
         conn.commit()
+    # C-1c: reflect readiness in the Product Master authority.
+    rdb.init_reservation_db(tmp / "reservation_queue.db")
+    for code in codes:
+        rdb.upsert_product_master(tmp / "reservation_queue.db", code, "")
+        rdb.set_product_master_status(tmp / "reservation_queue.db", code, "mapped")
 
 
 def _seed_packing(tmp: Path, bid: str, codes: list) -> None:
@@ -219,6 +227,13 @@ def _seed_wfirma_products(tmp: Path, mapping: dict,
         conn.commit()
     if also_seed_master:
         _seed_product_master(tmp, mapping.keys(), batch_id=batch_id)
+        # C-1c: readiness now reads the Master — mark 'created'/'ready' codes
+        # 'mapped' so the purchase-lane readiness count matches intent.
+        from app.services import reservation_db as rdb
+        for code, status in mapping.items():
+            if status in ("created", "ready"):
+                rdb.set_product_master_status(
+                    tmp / "reservation_queue.db", code, "mapped")
 
 
 # ── Shape + read-only ─────────────────────────────────────────────────────

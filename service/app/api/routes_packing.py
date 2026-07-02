@@ -2094,30 +2094,24 @@ def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
         union_pcs = purch_pcs | draft_pcs
         if union_pcs:
             try:
-                from ..services import wfirma_db as _wfdb  # noqa: F401
-                wfdb_path = settings.storage_root / "wfirma.db"
-                if wfdb_path.exists():
-                    with sqlite3.connect(str(wfdb_path)) as _wcon:
-                        _wcon.row_factory = sqlite3.Row
-                        placeholders = ",".join(["?"] * len(union_pcs))
-                        rows = _wcon.execute(
-                            f"SELECT product_code, sync_status "
-                            f"FROM wfirma_products "
-                            f"WHERE product_code IN ({placeholders})",
-                            list(union_pcs),
-                        ).fetchall()
-                        for r in rows:
-                            pc = (r["product_code"] or "").strip()
-                            status = (r["sync_status"] or "").strip()
-                            if status in ("created", "ready"):
-                                wfirma_ready_pcs.add(pc)
-                        # Existing legacy count is over the purchase-side
-                        # only — preserve back-compat semantics.
-                        ready_count = sum(
-                            1 for pc in purch_pcs if pc in wfirma_ready_pcs
-                        )
+                # C-1c: purchase-lane readiness via the Product Master
+                # (status='mapped' = the code has its confirmed wFirma good), not
+                # a direct SELECT on the wfirma_db split cache (§2). The legacy
+                # wfirma_products cache is a dead-read here.
+                from ..services import reservation_db as _rdb
+                rdb_path = settings.storage_root / "reservation_queue.db"
+                # Read-only: the accessor tolerates a missing DB/table (returns {}).
+                statuses = _rdb.get_product_master_statuses(rdb_path, union_pcs)
+                for pc, status in statuses.items():
+                    if status == "mapped":
+                        wfirma_ready_pcs.add((pc or "").strip())
+                # Existing legacy count is over the purchase-side
+                # only — preserve back-compat semantics.
+                ready_count = sum(
+                    1 for pc in purch_pcs if pc in wfirma_ready_pcs
+                )
             except Exception as exc:
-                log.warning("[%s] lane-readiness wfirma cache lookup failed "
+                log.warning("[%s] lane-readiness Product Master lookup failed "
                             "(non-fatal): %s", batch_id, exc)
         purchase["products_ready"]   = ready_count
         purchase["products_missing"] = max(

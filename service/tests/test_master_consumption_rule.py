@@ -82,8 +82,8 @@ KNOWN_PRODUCT_VIOLATION_FILES = {
     "routes_wfirma_capabilities.py",  # reads + writes (create/adopt) — write slice
     "routes_proforma.py",             # ~12 reads (C-1c) + 1 write @4527 (write slice)
     "routes_wfirma.py",               # 5 wfdb reads + 3 upsert writes (residual)
-    "routes_packing.py",              # 1 SQL read — C-1c STAGE 1b
     # routes_dashboard.py — MIGRATED to the Product Master in C-1c STAGE 1a.
+    # routes_packing.py  — MIGRATED to the Product Master in C-1c STAGE 1b.
 }
 
 
@@ -179,9 +179,9 @@ def test_known_violation_baseline_is_documented_and_shrinking():
     STAGE 1 read-migrations shrink this (update the set + this count); the end
     state is the declared residual (proforma write, capabilities write path,
     routes_wfirma reads+writes)."""
-    assert len(KNOWN_PRODUCT_VIOLATION_FILES) == 4, (
+    assert len(KNOWN_PRODUCT_VIOLATION_FILES) == 3, (
         "KNOWN_PRODUCT_VIOLATION_FILES changed — update this count as C-1c STAGE 1 "
-        "migrates packing/proforma reads (dashboard done in 1a)."
+        "migrates proforma reads (dashboard 1a + packing 1b done)."
     )
 
 

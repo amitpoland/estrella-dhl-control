@@ -809,6 +809,30 @@ def list_product_masters(
     return [dict(r) for r in rows]
 
 
+def get_product_master_statuses(db_path: Path, product_codes) -> Dict[str, str]:
+    """Batch read of product_master.status for a set of codes → {code: status}.
+    Additive read accessor (C-1c) so business modules do readiness checks against
+    the Product Master authority instead of the wfirma_db split cache. Missing
+    codes are simply absent from the returned map."""
+    codes = [c for c in {(pc or "").strip() for pc in product_codes} if c]
+    # Read-only + side-effect-free: never create the DB file; tolerate a missing
+    # product_master table (returns {} → callers treat those codes as unmapped).
+    if not codes or not Path(db_path).exists():
+        return {}
+    out: Dict[str, str] = {}
+    try:
+        with _connect(db_path) as con:
+            ph = ",".join("?" * len(codes))
+            for row in con.execute(
+                f"SELECT product_code, status FROM product_master WHERE product_code IN ({ph})",
+                codes,
+            ):
+                out[row["product_code"]] = row["status"]
+    except sqlite3.OperationalError:
+        return {}
+    return out
+
+
 # ── design_product_mapping ────────────────────────────────────────────────────
 
 def upsert_design_mapping(
