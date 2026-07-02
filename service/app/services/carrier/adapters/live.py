@@ -64,6 +64,24 @@ def clear_product_cache() -> None:
     _product_cache.clear()
 
 
+# EU-27 member states (ISO 3166-1 alpha-2). Intra-EU shipments are
+# customs-free: isCustomsDeclarable=false and no exportDeclaration
+# (DHL 7121 rejects dutiable shipments without an export declaration).
+_EU_COUNTRIES: frozenset = frozenset({
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
+    "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+    "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+})
+
+
+def _is_intra_eu(origin_cc: str, dest_cc: str) -> bool:
+    """True when both origin and destination are EU member states."""
+    return (
+        origin_cc.strip().upper() in _EU_COUNTRIES
+        and dest_cc.strip().upper() in _EU_COUNTRIES
+    )
+
+
 class DhlExpressLiveAdapter(AbstractCarrierAdapter):
 
     def __init__(self, config: "CarrierConfig") -> None:
@@ -366,6 +384,11 @@ def _build_shipment_body(
     if reg_numbers:
         receiver_details["registrationNumbers"] = reg_numbers
 
+    # Intra-EU shipments are customs-free (no exportDeclaration exists yet,
+    # so a dutiable intra-EU request would fail DHL validation 7121).
+    origin_cc = (settings.dhl_express_shipper_country_code or "PL")
+    is_dutiable = not _is_intra_eu(origin_cc, _recv_cc)
+
     body: dict = {
         "plannedShippingDateAndTime": planned,
         "pickup": {"isRequested": False},
@@ -398,7 +421,7 @@ def _build_shipment_body(
                     },
                 }
             ],
-            "isCustomsDeclarable": True,
+            "isCustomsDeclarable": is_dutiable,
             "declaredValue": request.declared_value,
             "declaredValueCurrency": request.currency,
             "incoterm": "DAP",

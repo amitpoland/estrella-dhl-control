@@ -597,3 +597,104 @@ class TestBrazilPLTBypass:
         req = _make_request(dest_cc="CH", dest_city="Basel", dest_postal="4000")
         body = _build_shipment_body(req, self._fake_settings())
         assert "valueAddedServices" not in body
+
+
+# ── TestEuCustomsDeclarable ───────────────────────────────────────────────────
+
+
+class TestEuCustomsDeclarable:
+    """Intra-EU shipments are customs-free: isCustomsDeclarable=false, no
+    exportDeclaration. Non-EU destinations stay dutiable (DHL 7121 fix).
+    Shipper origin is PL in all cases (settings mock)."""
+
+    def _fake_settings(self, country_code: str = "PL"):
+        mock = MagicMock()
+        mock.dhl_express_shipper_name = "Estrella Jewels"
+        mock.dhl_express_shipper_address1 = "ul. Sabaly 58"
+        mock.dhl_express_shipper_city = "Warszawa"
+        mock.dhl_express_shipper_postal_code = "02-174"
+        mock.dhl_express_shipper_country_code = country_code
+        mock.dhl_express_shipper_phone = "+48516081994"
+        return mock
+
+    def _body(self, dest_cc, dest_city, dest_postal, origin_cc="PL"):
+        req = _make_request(dest_cc=dest_cc, dest_city=dest_city, dest_postal=dest_postal)
+        return _build_shipment_body(req, self._fake_settings(origin_cc))
+
+    # ── EU→EU: customs-free ───────────────────────────────────────────────────
+
+    def test_pl_to_lt_not_customs_declarable(self):
+        body = self._body("LT", "Vilnius", "01000")
+        assert body["content"]["isCustomsDeclarable"] is False
+
+    def test_pl_to_de_not_customs_declarable(self):
+        body = self._body("DE", "Hamburg", "20457")
+        assert body["content"]["isCustomsDeclarable"] is False
+
+    def test_eu_to_eu_has_no_export_declaration(self):
+        body = self._body("LT", "Vilnius", "01000")
+        assert "exportDeclaration" not in body["content"]
+
+    def test_eu_dest_lowercase_country_code_still_customs_free(self):
+        """Country-code comparison is case-insensitive."""
+        body = self._body("lt", "Vilnius", "01000")
+        assert body["content"]["isCustomsDeclarable"] is False
+
+    # ── non-EU: dutiable ──────────────────────────────────────────────────────
+
+    def test_pl_to_ch_customs_declarable(self):
+        body = self._body("CH", "Basel", "4000")
+        assert body["content"]["isCustomsDeclarable"] is True
+
+    def test_pl_to_us_customs_declarable(self):
+        body = self._body("US", "New York", "10001")
+        assert body["content"]["isCustomsDeclarable"] is True
+
+    def test_pl_to_br_customs_declarable_and_keeps_wy(self):
+        """BR stays dutiable AND keeps the WY valueAddedServices injection."""
+        body = self._body("BR", "Sao Paulo", "01001-001")
+        assert body["content"]["isCustomsDeclarable"] is True
+        assert body.get("valueAddedServices") == [{"serviceCode": "WY"}]
+
+    # ── BR integration: bypassPLTError URL param unaffected ──────────────────
+
+    def test_br_url_still_has_bypass_plt_error(self, tmp_path):
+        """The EU flag change does not disturb the BR bypassPLTError URL param."""
+        config = _make_config()
+        adapter = DhlExpressLiveAdapter(config)
+        request = _make_request(dest_cc="BR", dest_city="Sao Paulo", dest_postal="01001-001")
+
+        with _mock_settings(tmp_path), patch("httpx.Client") as mock_cls:
+            mock_client = mock_cls.return_value.__enter__.return_value
+            mock_client.get.return_value = _rates_error()
+            mock_client.post.return_value = _ship_resp("AWB-BR")
+            adapter.create_shipment(request)
+
+        url = mock_client.post.call_args[0][0]
+        assert "bypassPLTError=true" in url
+        body = mock_client.post.call_args[1]["json"]
+        assert body["content"]["isCustomsDeclarable"] is True
+
+    # ── preserved fields regression ───────────────────────────────────────────
+
+    def test_eu_body_preserves_references_and_registration(self):
+        """CU references and issuerCountryCode logic unaffected by EU flag."""
+        req = ShipmentRequest(
+            batch_id="BATCH-EU-1",
+            shipper_account="427294774",
+            recipient_address={
+                "name": "Test", "street": "Gedimino 1", "city": "Vilnius",
+                "postal_code": "01000", "country_code": "LT", "phone": "+37060000000",
+            },
+            declared_value=500.0, currency="EUR", weight_kg=1.5,
+            dimensions={"length_cm": 20, "width_cm": 15, "height_cm": 10},
+            product_code="U",
+            customer_reference="REF-EU-1",
+            receiver_vat_id="LT100001738313",
+        )
+        body = _build_shipment_body(req, self._fake_settings())
+        assert body["customerReferences"] == [{"value": "REF-EU-1", "typeCode": "CU"}]
+        regs = body["customerDetails"]["receiverDetails"]["registrationNumbers"]
+        assert regs == [{"number": "LT100001738313", "typeCode": "EUV",
+                         "issuerCountryCode": "LT"}]
+        assert body["content"]["isCustomsDeclarable"] is False
