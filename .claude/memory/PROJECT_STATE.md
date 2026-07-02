@@ -6149,6 +6149,35 @@ Disposition = SCHEDULED via task chip task_d6fdfca9 ("Register routes_reservatio
 router in main.py"). The V6 authority reroute is correct regardless; registration
 is a separate reachability bug.
 
+### 2026-07-03 — Phase-C Constitution recording DEFERRED (verbatim text not provided) + advisor reconciliation
+PART A of a two-part run instructed recording the operator's "EJ Dashboard
+Phase-C Constitution (Final)" — all 20 sections + the Application Authority Rule
+— VERBATIM (R4) in CLAUDE.md (as the standing Phase-C preamble) and in DECISIONS.
+**BLOCK (honest):** the verbatim 20-section text was NOT provided in this
+session's messages, is NOT present in the transcript as an operator paste (the
+scattered §1–§9/§16/§19/§20 markers there are unrelated Slice-02/03 scoping-report
+headers + the CLAUDE-trim inventory, NOT a constitution), and is NOT on disk /
+not an upload. Per R4 + the no-fabrication rule, the 20-section constitution will
+NOT be reconstructed or paraphrased. The CLAUDE.md Phase-C preamble recording is
+DEFERRED pending the operator pasting the verbatim text. (The Application
+Authority Rule half is ALREADY recorded — CLAUDE.md "APPLICATION AUTHORITY RULE"
+section + DECISIONS 2026-07-03 — so that portion of PART A is satisfied.)
+
+ADVISOR RECONCILIATION (operator-provided in the PART A message; marked as
+advisor reconciliation, NOT operator constitution text — to be recorded ALONGSIDE
+the verbatim constitution once provided):
+ (a) §6 reading — ASSUMPTION: §6 = the LOGICAL view of the product authority; the
+     physical layering stays as ratified and built (Mirror = the 6 sync fields
+     only; Master = business fields incl. status / is_active). Reversible on
+     operator word.
+ (b) §16 mapping: locked order step 1 (Product) = C-1a..C-1d; step 2 (Customer) =
+     C-2; steps 3–10 renumber the old queue; MM = step 9; Webhook Sync = step 10.
+ (c) §4/§5 intake: Design Number custom-field sync = NEW scope, gated on
+     OPERATOR-INPUT (field created in wFirma + its API name + whether the goods
+     API returns custom fields — added as item #3 on the wFirma email list, after
+     MM (#1) and contractor_id (#2)). Research rule §19 applies: no capability
+     guessing.
+
 ### 2026-07-03 — Phase C QUEUE REORDER (operator) + MASTER-FIRST RULE (verbatim)
 QUEUE (operator, verbatim order): C-0 Authority Cleanup (read-only) → C-1
 Product Master Authority → C-2 Customer Master Authority → C-3 Sample/Returns
