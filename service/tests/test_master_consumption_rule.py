@@ -79,11 +79,11 @@ _REAL_ACCESS_PATTERNS = {
 # but intentionally LEFT its wfirma_db accessor reads/writes as the
 # "C-1c-deprecating reader path"; the refined detector now measures them.
 KNOWN_PRODUCT_VIOLATION_FILES = {
-    "routes_proforma.py",  # ~12 reads (C-1c) + 1 write @4527 (write slice)
-    "routes_wfirma.py",    # 5 wfdb reads + 3 upsert writes (residual)
+    "routes_proforma.py",  # ~12 reads (C-1c) + 1 write @4527 (write slice) — residual until C-1d/C-1f
     # routes_dashboard.py          — MIGRATED to the Product Master in C-1c STAGE 1a.
     # routes_packing.py            — MIGRATED to the Product Master in C-1c STAGE 1b.
     # routes_wfirma_capabilities.py — MIGRATED in C-1w2 (write path + cache reads).
+    # routes_wfirma.py             — MIGRATED in C-1e (5 reads + 3 writes → rdb sync layer).
 }
 
 
@@ -198,12 +198,12 @@ def test_reservations_router_stays_clean():
 
 
 def test_known_violation_baseline_is_documented_and_shrinking():
-    """C-1w2 migrated routes_wfirma_capabilities.py — baseline now 2 files.
-    The next shrink (C-1d) migrates proforma reads and removes routes_proforma.py
-    + routes_wfirma.py from this set."""
-    assert len(KNOWN_PRODUCT_VIOLATION_FILES) == 2, (
-        "KNOWN_PRODUCT_VIOLATION_FILES changed — update this count as C-1c STAGE 1 "
-        "migrates proforma reads (dashboard 1a + packing 1b done, capabilities C-1w2 done)."
+    """C-1e migrated routes_wfirma.py (5 reads + 3 writes) — baseline now 1 file.
+    The next shrink (C-1d/C-1f) migrates proforma reads and removes routes_proforma.py
+    from this set, reaching the zero-violation target."""
+    assert len(KNOWN_PRODUCT_VIOLATION_FILES) == 1, (
+        "KNOWN_PRODUCT_VIOLATION_FILES changed — update this count as C-1d/C-1f "
+        "migrates remaining proforma reads (routes_proforma.py is the last residual)."
     )
 
 

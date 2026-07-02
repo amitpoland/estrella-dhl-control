@@ -6,8 +6,7 @@
 ## Current State
 
 - **Phase:** Wave 1 — Master Authority Completion (Phase 0 COMPLETE 2026-07-03; CP1 issued)
-- **Current slice:** C-1e — routes_wfirma reads(5)+writes(3) migration (OI-18 ANSWERED:
-  Option (a), operator verdict 2026-07-03)
+- **Current slice:** Mirror Completeness Proof (ruled sequence, after C-1e)
 - **Slice state:** IN_PROGRESS
 - **Next:** Mirror Completeness Proof → C-1f (output-equivalence) → C-1d → **STOP-LINE:
   operator ratification of the restored Wave 2–4 plan (no auto-entry into Wave 2)**
@@ -41,13 +40,15 @@ Campaign slices:
 | 2026-07-03 | C-1w2 capabilities write path + inseparable reads → sync layer; pin 3→2; golden 160/160; capabilities 69+2 pre-existing | `3833627c` |
 | 2026-07-03 | C-2a wfirma_customer_mirror schema (contractor_id PK) + collision-safe upsert + idempotent 2-source backfill; pin 9/9; golden 160/160 | `18fb89ad` |
 | 2026-07-03 | C-2b V4/V5/V7 customer call-path reroute → Customer Master passthroughs; pin 10/10; smoke 63; golden 160/160 | `60a34f9e` |
-| 2026-07-03 | C-2c customer verification sweep — full-app pin (zero business violations); pin 11/11; C-2 COMPLETE | see git log `test(c2c-…)` |
+| 2026-07-03 | C-2c customer verification sweep — full-app pin (zero business violations); pin 11/11; C-2 COMPLETE | `0d0bf78d` |
+| 2026-07-03 | Operator verdict recorded (6 rulings + stop-line); waves restored; platform doc #9 | `a4231850` |
+| 2026-07-03 | C-1e routes_wfirma 5 reads + 3 mirror-first dual-writes → sync layer; pin 2→1; resolve suite 10/10 (7 stale patch targets repaired); smoke 63; golden green | see git log `feat(c1e-…)` |
 
 ## Budget Tracking (live; boundary snapshots go to MASTER_MANIFEST §4)
 
 | Wave | Consumed | Budget | Forecast |
 |---|---|---|---|
-| Wave 1 | 2h (C-1w2, C-2a, C-2b, C-2c) | 8h | within budget |
+| Wave 1 | 2.5h (C-1w2, C-2a, C-2b, C-2c, C-1e) | 8h | within budget |
 | Wave 2 | 0h | 11h | — |
 | Wave 3 | 0h | 6h | — |
 | Wave 4 | 0h | 5h | — |
