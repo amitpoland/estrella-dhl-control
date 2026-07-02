@@ -258,6 +258,18 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _connect(db_path: Path) -> sqlite3.Connection:
+    """Tuned connection — WAL + busy_timeout per the dhl_thread_lock idiom
+    (dhl_thread_lock.py:126-129; infra health pass d67d3722 finding #2):
+    this DB has FastAPI-handler AND APScheduler writers, so every connection
+    must wait out a competing writer (busy_timeout FIRST, so the WAL flip
+    itself waits) instead of failing 'database is locked' immediately."""
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
 def init_db(db_path: Path) -> None:
     """Create the customer_master table. Idempotent.
 
@@ -267,7 +279,7 @@ def init_db(db_path: Path) -> None:
     skipped via try/except)."""
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS customer_master (
                 id                       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -657,7 +669,7 @@ def upsert_customer(db_path: Path, c: CustomerMaster) -> int:
         "updated_at":              now,
     }
 
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         existing = conn.execute(
             "SELECT id FROM customer_master WHERE bill_to_contractor_id = ?",
@@ -759,7 +771,7 @@ def upsert_identity_only(
 
     init_db(db_path)
     now = _now_iso()
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         existing = conn.execute(
             "SELECT id FROM customer_master WHERE bill_to_contractor_id = ?",
@@ -845,7 +857,7 @@ def get_customer(db_path: Path, bill_to_contractor_id: str) -> Optional[Customer
     """Read by wFirma contractor id. Returns None if absent."""
     if not Path(db_path).is_file():
         return None
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT * FROM customer_master WHERE bill_to_contractor_id = ?",
@@ -867,7 +879,7 @@ def update_vat_eu_result(
     Returns True if a row was updated, False if the contractor was not found.
     Caller is responsible for audit logging.
     """
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute(
             "UPDATE customer_master "
             "SET vat_eu_valid=?, vat_eu_validated_at=? "
@@ -906,7 +918,7 @@ def list_customers(db_path: Path,
         sql += " AND active = ?"; params.append(1 if active else 0)
     sql += " ORDER BY datetime(updated_at) DESC, id DESC LIMIT ?"
     params.append(int(limit))
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(sql, params).fetchall()
@@ -926,7 +938,7 @@ def delete_customer(db_path: Path, bill_to_contractor_id: str) -> bool:
     """
     if not Path(db_path).is_file():
         return False
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute(
             "DELETE FROM customer_master WHERE bill_to_contractor_id = ?",
             (bill_to_contractor_id,),
@@ -943,7 +955,7 @@ def soft_delete_customer(db_path: Path, bill_to_contractor_id: str) -> bool:
     if not Path(db_path).is_file():
         return False
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute(
             "UPDATE customer_master SET active = 0, deleted_at = ?, updated_at = ? "
             "WHERE bill_to_contractor_id = ?",
@@ -957,7 +969,7 @@ def restore_customer(db_path: Path, bill_to_contractor_id: str) -> bool:
     if not Path(db_path).is_file():
         return False
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute(
             "UPDATE customer_master SET active = 1, deleted_at = NULL, updated_at = ? "
             "WHERE bill_to_contractor_id = ?",

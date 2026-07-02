@@ -5908,6 +5908,15 @@ follow-up slice; gap recorded, not silent. View: v0 = note_no in audit
 timeline (free); v1 Stock Hub panel + print component = separate pre-flighted
 slices.
 
+### 2026-07-03 — infra hardening per health pass d67d3722
+(a) WAL + busy_timeout=10000 set at init in proforma_links/payment_state/
+contractor_poll/customer_master DB modules (dhl_thread_lock idiom; these 4
+have handler AND APScheduler writers with no lock protection).
+(b) routes_dhl_clearance write_json_atomic NameError fixed (observed live
+WARNING 2026-07-02 14:06 — lane-a status write failing silently in prod).
+Backup scheduling (#1) = operator task, recorded separately once confirmed
+running.
+
 ## Authority-Model Separation — six separate authorities (2026-06-22)
 
 - **Binding (operator-approved, permanent, no flag):** import, product master, proforma,
