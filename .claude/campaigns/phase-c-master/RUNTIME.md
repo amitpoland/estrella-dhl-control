@@ -6,9 +6,11 @@
 ## Current State
 
 - **Phase:** Wave 1 — Master Authority Completion (Phase 0 COMPLETE 2026-07-03; CP1 issued)
-- **Current slice:** — (C-2 COMPLETE; Wave-1 remainder C-1e/C-1f/C-1d all gated on OI-18)
-- **Slice state:** BLOCKED — unresolvable-OI contact (CAMPAIGN_OS §7.13): no unblocked Wave-1 slice remains
-- **Next:** C-1e on operator ruling (OI-18) → C-1f → C-1d → Wave-1 boundary (CP2)
+- **Current slice:** C-1e — routes_wfirma reads(5)+writes(3) migration (OI-18 ANSWERED:
+  Option (a), operator verdict 2026-07-03)
+- **Slice state:** IN_PROGRESS
+- **Next:** Mirror Completeness Proof → C-1f (output-equivalence) → C-1d → **STOP-LINE:
+  operator ratification of the restored Wave 2–4 plan (no auto-entry into Wave 2)**
 - **Blocked by:** — (C-1e/C-1f deferred within wave per OI-18; unblocked slices remain)
 
 ## Completed Slices (append-only ledger)
@@ -62,6 +64,6 @@ Campaign slices:
 - OI-1 MM-via-API — gates C-4b (fallback exists), C-7a
 - OI-CONSIGNMENT-MODEL — gates C-4a (Wave 3)
 - OI-13 contractor_id stability — C-2a shipped with contractor_id PK; formal confirmation still open
-- OI-18 C-1e ruling — NOW BLOCKING the Wave-1 remainder (C-1e→C-1f→C-1d)
+- OI-18 C-1e ruling — ANSWERED 2026-07-03 (Option (a)); Wave-1 remainder unblocked
 - OI-3 WZ add-vs-auto — gates C-6a, C-8c
 - OI-7/9/10/11 webhook config — gate Wave 4

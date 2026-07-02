@@ -39,6 +39,7 @@ Every campaign session loads, in order, before any task work:
 6. `KNOWLEDGE.md` — Phase-0 validated architecture facts
 7. `WIREFRAME_AUTHORITY.md` — UI authority map (mandatory before any UI slice)
 8. `DECISIONS.md` — campaign decision ledger
+9. `LESSONS_LEARNED.md` — operator-ratified campaign lessons (durability, tree protection)
 
 **Do not begin implementation until all eight documents are loaded.** A session that
 skips the load is operating without authoritative context.
@@ -111,6 +112,19 @@ Mechanics:
   wave is gated.
 - On operator ruling: record in DECISIONS.md + PROJECT_STATE.md `# DECISIONS`, update
   MASTER_MANIFEST.md + RUNTIME.md, then resume.
+
+## §5a PERMANENT RATIFICATION RULE (operator, verbatim, 2026-07-03)
+
+> "Whenever the manifest is authored or materially reconstructed from
+> repository evidence instead of an already-ratified manifest, the next wave
+> requires operator ratification before execution."
+
+Applies NOW: this platform's manifest was reconstructed from repo evidence
+(575bb3f3), so every wave entry (Wave 2, 3, 4) requires operator ratification at
+the preceding boundary — auto-continue applies only within a ratified wave.
+Operator stop-line (2026-07-03, verbatim): "After C-1d, STOP for operator
+ratification of the restored Wave 2-4 plan. Do not enter Wave 2 automatically
+because the manifest was reconstructed from repo evidence."
 
 ## §6 CP STATUS SUMMARY (30-second read)
 
@@ -189,8 +203,21 @@ Type to chat ONLY at (operator amendment item 5):
 Do NOT type to chat for: progress inside a slice (update RUNTIME.md instead), routine
 slice completions within a wave, budget tracking below the 1.5× threshold.
 
+### §8a Governance durability acknowledgment (operator, 2026-07-03)
+
+Every governance-bearing order is ACKNOWLEDGED by naming the artifact + SHA it
+produced. An order without its artifact is treated as never received.
+(LESSONS_LEARNED.md #1: "Every governance change must create a durable artifact.
+If the artifact does not exist, the governance change did not happen.")
+
 ## §9 Execution Discipline
 
+- **Dirty-Tree Protection (operator, verbatim, 2026-07-03):** "Agent must never
+  execute: git stash, git clean, git reset --hard unless explicitly authorized."
+  Every slice pre-flight: "Dirty Tree Protection — Record: modified files,
+  untracked files. Restore verification before commit." Every write-capable
+  subagent prompt carries the explicit negative scope (Lesson K). Paid cost:
+  the 46-entry stash incident during C-1w2 (LESSONS_LEARNED.md #2).
 - Run `make verify` before every implementation slice; stop on RED.
 - Commit every slice on `deploy/latest` (existing Phase-C convention:
   `feat(<slice-id>-…)` / `docs(<slice-id>-…)`), staging only slice-scope files.

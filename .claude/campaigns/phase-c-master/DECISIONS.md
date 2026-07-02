@@ -49,6 +49,57 @@ Effect: MASTER_MANIFEST.md §4 · SELF_ASSESSMENT.md triggers · RUNTIME.md live
 
 ---
 
+### 2026-07-03 — OPERATOR VERDICT: six rulings + stop-line (verbatim R4)
+
+**Ruling 1 — OI-18 resolved = Option (a).** C-1e proceeds as its own slice
+(C-1w1/C-1w2 pattern; mirror-first transitional dual-write ×3, Master/passthrough
+reads ×5; pin 2 → 1). Sequence: C-1e → Mirror Completeness Proof (grep evidence,
+the ratified check) → C-1f (1d proforma fiscal reads, output-equivalence) → C-1d audit.
+
+**Ruling 2 — WAVE STRUCTURE RESTORED (verbatim):**
+"Wave 1 Authority · Wave 2 Backend · Wave 3 Entire UI · Wave 4 Synchronization.
+UI is never merged into backend. Backend complete first. UI exactly once."
+MASTER_MANIFEST amended at the current boundary: Wave 2 = ALL inventory backend
+(sample/returns reads, movement, merchandising/batch reads, consignment MODEL where
+OI permits, document trails) — ZERO UI; Wave 3 = the complete wireframe UI built once
+(CP3 recognition gate); Wave 4 = MM integration + webhook synchronization. Assumption
+registers + budgets re-derived; parity/UI items formerly inside Wave 2 moved to Wave 3.
+
+**Ruling 3 — PERMANENT RATIFICATION RULE (verbatim, → CAMPAIGN_OS §5a):**
+"Whenever the manifest is authored or materially reconstructed from repository
+evidence instead of an already-ratified manifest, the next wave requires operator
+ratification before execution."
+
+**Ruling 4 — GOVERNANCE DURABILITY LESSON (verbatim, → LESSONS_LEARNED.md #1):**
+"Problem: Governance prompts never reached disk. Why: Chat transport silently dropped
+long prompts. Rule: Every governance change must create a durable artifact. If the
+artifact does not exist, the governance change did not happen."
+Companion mechanic (→ CAMPAIGN_OS §8a): every governance-bearing order is ACKNOWLEDGED
+by naming the artifact + SHA it produced; an order without its artifact is treated as
+never received.
+
+**Ruling 5 — DIRTY-TREE PROTECTION (verbatim, → CAMPAIGN_OS §9):**
+"Agent must never execute: git stash, git clean, git reset --hard unless explicitly
+authorized." Slice pre-flight addition: "Dirty Tree Protection — Record: modified
+files, untracked files. Restore verification before commit."
+(Paid cost cited: the 46-entry stash incident during C-1w2, recovered by stash pop.)
+
+**Ruling 6 — Continue per the OS:** C-1e now → C-1f → C-1d.
+
+**OPERATOR STOP-LINE (verbatim, binding):**
+"After C-1d, STOP for operator ratification of the restored Wave 2-4 plan. Do not
+enter Wave 2 automatically because the manifest was reconstructed from repo evidence."
+The C-1d CP status presents the full restored Wave 2–4 plan (scope, slices,
+assumptions, budgets); the campaign HOLDS there for the operator's word. Hard stops
+and silence discipline unchanged.
+
+Source: operator verdict 2026-07-03 (verbatim R4). Recorded also in
+PROJECT_STATE.md `# DECISIONS`. Artifacts: this entry · CAMPAIGN_OS §5a/§8a/§9 ·
+LESSONS_LEARNED.md · MASTER_MANIFEST restored-wave amendment · OPEN_ITEMS OI-18
+ANSWERED (commit SHA named in the acknowledgment per Ruling 4).
+
+---
+
 ### 2026-07-03 — Platform authored in-session (operator authorization)
 
 DECISION: the eight-document platform was authored fresh in this session from repo

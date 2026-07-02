@@ -106,7 +106,8 @@ Cons.ID/Client/Design/Qty/Value/Issued/Due Back/Days Out/Proforma.
 **OI-18 — C-1e ruling** (routes_wfirma reads+writes migration)
 Question: PROJECT_STATE marks C-1e "ADDED RESIDUAL (DEVIATION, needs ruling)" — confirm
 scope before the slice starts.
-State: **OPEN** — operator ruling · Gates: C-1e (Wave 1). Wave 1 order puts C-1w2 first;
-if still OPEN when C-1w2 completes, this becomes an unresolvable-OI contact per
-CAMPAIGN_OS §7.13 unless other Wave-1 slices remain unblocked (C-2a/C-2b/C-2c can
-proceed; C-1f cannot — it requires C-1e complete).
+State: **ANSWERED** (operator verdict 2026-07-03, Ruling 1 = Option (a)): C-1e proceeds
+as its own slice, C-1w1/C-1w2 pattern — mirror-first transitional dual-write ×3,
+Master/passthrough reads ×5, pin 2 → 1. Sequence: C-1e → Mirror Completeness Proof
+(grep evidence) → C-1f (output-equivalence) → C-1d audit. Citation: DECISIONS.md
+"OPERATOR VERDICT: six rulings" entry.
