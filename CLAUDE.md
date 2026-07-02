@@ -121,6 +121,19 @@ renaming files, paths, services, or tables containing "PZ" — any such rename
 is a separate operator-approved slice. The violation cleanup list lives in
 `reports/inspection/2026-07-03T-integration-architecture-audit.md` (amendment).
 
+**MASTER-FIRST RULE (permanent, operator-ratified 2026-07-03):** कोई भी नया
+module या API बनाने से पहले Claude Code यह सिद्ध करेगा कि वह किस existing EJ
+Dashboard Master को consume कर रहा है। यदि Product या Customer की जानकारी
+चाहिए, तो केवल EJ Dashboard **Product Master** या **Customer Master** से
+मिलेगी। Inventory, Sample, Returns, Consignment, Invoice, Packing, PZ और WZ
+में **direct wFirma queries निषिद्ध हैं।** यदि किसी feature के लिए existing
+Master पर्याप्त नहीं है, तो **STOP** करके Master Authority बढ़ाई जाएगी।
+Feature उस Master को bypass करके नहीं बनेगा। (In short: prove which Master you
+consume before building; Product/Customer facts come only from the Product
+Master / Customer Master; direct wFirma queries from any module are
+forbidden; if the Master is insufficient, STOP and extend the Master — never
+bypass it.)
+
 ---
 
 ## MANDATORY GOVERNANCE GATES

@@ -6056,6 +6056,29 @@ components exposed to the same collision (grep spread-rest in static/v2)
 — candidates include the Button emitting the observed
 ['children','onClick','disabled','title','warn','style'] list.
 
+### 2026-07-03 — Phase C QUEUE REORDER (operator) + MASTER-FIRST RULE (verbatim)
+QUEUE (operator, verbatim order): C-0 Authority Cleanup (read-only) → C-1
+Product Master Authority → C-2 Customer Master Authority → C-3 Sample/Returns
+READ endpoints → C-4 Consignment → C-5 Invoice Selection → C-6 MM Integration.
+Part 2 (Sample/Returns READ) SUPERSEDED — it becomes C-3 (build masters
+first, or the reads get built on the fragmented structure and need refactor).
+RATIONALE (operator, verbatim): "अगर अभी Sample READ API बना देंगे, तो वह भी
+fragmented Product/Customer structure पर बनेगी। मतलब बाद में फिर refactor
+करना पड़ेगा।"
+MASTER-FIRST RULE (operator, verbatim — also in CLAUDE.md constitution):
+"कोई भी नया module या API बनाने से पहले Claude Code यह सिद्ध करेगा कि वह किस
+existing EJ Dashboard Master को consume कर रहा है। यदि Product या Customer की
+जानकारी चाहिए, तो केवल EJ Dashboard Product Master या Customer Master से
+मिलेगी। Inventory, Sample, Returns, Consignment, Invoice, Packing, PZ और WZ
+में direct wFirma queries निषिद्ध हैं। यदि किसी feature के लिए existing Master
+पर्याप्त नहीं है, तो STOP करके Master Authority बढ़ाई जाएगी। Feature उस Master
+को bypass करके नहीं बनेगा।"
+C-0 PLAN (this run): reports/inspection/2026-07-03T-master-authority-cleanup-plan.md
+— V1-V7→slice map, C-1 Product Master + C-2 Customer Master target designs,
+migration mechanics, ready-to-run C-1/C-2 pre-flight slice specs. C-0 audit
+half already done (b48b9f1c). All PROPOSED-NOT-DONE; awaiting operator
+ratification of C-1 before any mutation.
+
 ### 2026-07-03 — PERMANENT RULE: APPLICATION AUTHORITY (one application = EJ Dashboard; operator-ratified, verbatim)
 "There is only ONE application. EJ Dashboard. Every module belongs to EJ
 Dashboard. 'PZ App' is NOT an application. 'PZ' is only one workflow/module
