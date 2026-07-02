@@ -19,15 +19,13 @@ const NAV_TREE = [
   { id: 'proforma',  label: 'Pro Forma', icon: '📋' },
   { id: 'documents', label: 'Documents', icon: '📄' },
   { id: 'accounting', label: 'Accounting', icon: '⊞', badge: 'NEW' },
-  // B×7-1 (2026-07-02, PROJECT_STATE DECISIONS "slice B×7-1"): Inventory becomes
-  // a NAV_TREE group so promoted inventory tools (move_location first; more B-slices
-  // follow) sit as SubTabStrip siblings of the read-only hub. defaultId keeps
-  // /v2/inventory as the landing page. id: 'inventory' remains present as a
-  // child, preserving existing nav pins that assert its membership.
-  { id: 'g_inventory', label: 'Inventory', icon: '◫', defaultId: 'inventory', children: [
-    { id: 'inventory',  label: 'Stock Hub' },
-    { id: 'move_location', label: 'Move Location' },
-  ]},
+  // Phase B FOLD (2026-07-03, PROJECT_STATE DECISIONS "Phase B FOLD"): the
+  // g_inventory NAV group (Stock Hub + Move Location) is COLLAPSED back to a
+  // single flat Inventory entry — Move Location was folded into the Inventory
+  // page as the Move Stock modal (Lesson M relocation), so there is no second
+  // inventory sibling to group. The wireframe's Inventory is one nav entry
+  // with tabs/actions inside.
+  { id: 'inventory', label: 'Inventory', icon: '◫' },
   { id: 'reports',   label: 'Reports',   icon: '≡' },
 
   { id: 'g_setup', label: 'Setup', icon: '⚙', defaultId: 'admin', children: [

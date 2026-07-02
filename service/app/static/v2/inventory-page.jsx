@@ -785,13 +785,228 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // ── Move Stock modal (Phase B FOLD — Lesson M relocation of Move Location
+  //    into the Inventory authority; PROJECT_STATE DECISIONS "Phase B FOLD").
+  //    Ported from the wireframe MoveStockModal (design/inventory-page.design.jsx
+  //    lines 1023-1142), RESTYLED to that modal. The wireframe's stock_unit
+  //    PASTE input is FORBIDDEN by the operator rule (no raw internal-ID
+  //    paste) — replaced by the only non-paste live feed: source-location
+  //    SELECT → pieces-at-location CHECKBOX list → destination-location SELECT.
+  //    Behavior carried from move-location-page: sequential per-piece moves,
+  //    per-piece results, five error states, synthetic-disable. Pending-badged
+  //    (backend-pending — Phase C): unlocated-stock selection + Stage transition.
+
+  const MS_ERROR_HINTS = {
+    INVALID_INPUT:     '400 INVALID_INPUT — a required field (piece, destination, operator, idempotency key) was missing or blank',
+    PIECE_NOT_FOUND:   '404 PIECE_NOT_FOUND — piece unknown to inventory_state / packing_lines',
+    WRONG_STATE:       '409 WRONG_STATE — piece not in WAREHOUSE_STOCK, cannot move',
+    DB_UNAVAILABLE:    '503 DB_UNAVAILABLE — warehouse DB not initialised on the server',
+    MIGRATION_PENDING: '503 MIGRATION_PENDING — idempotency migration not applied: operator must run 20260512_002516_idempotency_key against warehouse.db',
+  };
+  function msClassifyError(res) {
+    const txt = String((res && res.error) || '');
+    for (const code of Object.keys(MS_ERROR_HINTS)) if (txt.includes(code)) return code;
+    if (res && res.status === 400) return 'INVALID_INPUT';
+    if (res && res.status === 404) return 'PIECE_NOT_FOUND';
+    if (res && res.status === 409) return 'WRONG_STATE';
+    if (res && res.status === 503) return 'DB_UNAVAILABLE';
+    return 'UNKNOWN';
+  }
+
+  function MoveStockModal({ onClose }) {
+    const [moveType, setMoveType]   = useState('wh-wh');   // wh-wh | stage(pending)
+    const [locs, setLocs]           = useState(null);
+    const [locErr, setLocErr]       = useState('');
+    const [source, setSource]       = useState('');
+    const [pieces, setPieces]       = useState(null);
+    const [pieceErr, setPieceErr]   = useState('');
+    const [loadingPieces, setLoadingPieces] = useState(false);
+    const [selected, setSelected]   = useState({});        // scan_code -> true
+    const [dest, setDest]           = useState('');
+    const [note, setNote]           = useState('');
+    const [moving, setMoving]       = useState(false);
+    const [results, setResults]     = useState(null);
+
+    useEffect(() => {
+      window.PzApi.getWarehouseLocations().then(r => {
+        if (!r.ok) { setLocErr(r.error || ('HTTP ' + r.status)); return; }
+        setLocs((r.data && r.data.locations) || []);
+      });
+    }, []);
+
+    const loadPieces = useCallback((code) => {
+      setSource(code); setSelected({}); setResults(null); setPieces(null); setPieceErr('');
+      if (!code) return;
+      setLoadingPieces(true);
+      window.PzApi.getLocationInventory(code).then(r => {
+        setLoadingPieces(false);
+        if (!r.ok) { setPieceErr(r.error || ('HTTP ' + r.status)); return; }
+        setPieces((r.data && r.data.items) || []);
+      });
+    }, []);
+
+    const toggle = (sc) => setSelected(s => ({ ...s, [sc]: !s[sc] }));
+    const selectedCodes = Object.keys(selected).filter(k => selected[k]);
+    const canMove = moveType === 'wh-wh' && selectedCodes.length > 0 && dest.trim() && dest !== source && !moving;
+
+    const submit = async () => {
+      if (!canMove) return;
+      setMoving(true); setResults([]);
+      const rows = [];
+      for (const code of selectedCodes) {
+        const r = await window.PzApi.movePieceLocation(code, {
+          toLocation: dest.trim(), idempotencyKey: crypto.randomUUID(), note,
+        });
+        if (r.ok) rows.push({ scan_code: code, outcome: (r.data && r.data.status) || 'moved', code: '', hint: '', detail: (r.data && r.data.to_location) || '' });
+        else { const ec = msClassifyError(r); rows.push({ scan_code: code, outcome: 'failed', code: ec, hint: MS_ERROR_HINTS[ec] || ('HTTP ' + r.status), detail: r.error || '' }); }
+        setResults(rows.slice());
+      }
+      setMoving(false);
+    };
+
+    const fld = { width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12, color: 'var(--text)', background: 'var(--card)', outline: 'none', fontFamily: 'inherit' };
+    const lbl = { display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--text-2)', marginBottom: 5, letterSpacing: '0.06em', textTransform: 'uppercase' };
+    const locName = (l) => `${l.location_code}${l.warehouse ? ' — ' + l.warehouse : ''}`;
+
+    return (
+      <window.Modal title="Move Stock" onClose={onClose} wide>
+        <div data-testid="move-stock-modal">
+          {/* Move-type toggle — wh→wh wired; stage transition pending (Phase C) */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16, padding: 4, background: 'var(--bg-subtle)', borderRadius: 8, border: '1px solid var(--border)' }}>
+            {[
+              { id: 'wh-wh', testid: 'ms-type-wh-wh', title: 'Warehouse → Warehouse', desc: 'Physical location transfer', pending: false },
+              { id: 'stage', testid: 'ms-type-stage', title: 'Stage transition', desc: 'Main → Sample / Consignment / RTP', pending: true },
+            ].map(opt => (
+              <button key={opt.id} data-testid={opt.testid} onClick={() => !opt.pending && setMoveType(opt.id)}
+                disabled={opt.pending}
+                title={opt.pending ? 'backend-pending — Phase C' : ''}
+                style={{ padding: '12px 14px', textAlign: 'left', borderRadius: 6, cursor: opt.pending ? 'not-allowed' : 'pointer',
+                  opacity: opt.pending ? 0.55 : 1,
+                  background: moveType === opt.id ? 'var(--card)' : 'transparent',
+                  border: moveType === opt.id ? '1px solid var(--accent)' : '1px solid transparent' }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {opt.title}
+                  {opt.pending && <span style={{ fontSize: 8.5, fontWeight: 700, padding: '1px 5px', borderRadius: 3, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', border: '1px solid var(--badge-amber-border)' }}>BACKEND-PENDING · PHASE C</span>}
+                </div>
+                <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 2 }}>{opt.desc}</div>
+              </button>
+            ))}
+          </div>
+
+          {/* Honest-mechanics banner */}
+          <div data-testid="ms-banner" style={{ marginBottom: 14, padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11.5, color: 'var(--text-2)' }}>
+            Batch = sequential single-piece moves (backend is per-piece). Metadata-only write — lifecycle state is not changed. Selection is from the source-location list (no ID paste).
+          </div>
+
+          {/* Source location select */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+            <div>
+              <label style={lbl}>Source location</label>
+              {locErr && <div style={{ fontSize: 11, color: 'var(--badge-red-text)' }}>{locErr}</div>}
+              <select data-testid="ms-source" value={source} onChange={e => loadPieces(e.target.value)} style={fld}>
+                <option value="">— select a location —</option>
+                {(locs || []).map(l => <option key={l.location_code} value={l.location_code}>{locName(l)}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={lbl}>Destination location</label>
+              <select data-testid="ms-destination" value={dest} onChange={e => setDest(e.target.value)} style={fld}>
+                <option value="">— select a destination —</option>
+                {(locs || []).filter(l => l.location_code !== source).map(l => <option key={l.location_code} value={l.location_code}>{locName(l)}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Pieces at source */}
+          {loadingPieces && <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }}>Loading pieces…</div>}
+          {pieceErr && <div style={{ fontSize: 12, color: 'var(--badge-red-text)', marginBottom: 12 }}>{pieceErr}</div>}
+          {pieces && pieces.length === 0 && (
+            <div data-testid="ms-empty" style={{ marginBottom: 12, padding: 12, border: '1px dashed var(--border)', borderRadius: 6, fontSize: 12, color: 'var(--text-3)' }}>
+              No pieces at this location (honest empty — inventory_current_location has no rows here).
+            </div>
+          )}
+          {pieces && pieces.length > 0 && (
+            <table data-testid="ms-table" style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 14 }}>
+              <thead><tr>
+                {['', 'Piece (scan_code)', 'Design', 'Product code', 'Status'].map(h => (
+                  <th key={h} style={{ padding: '6px 8px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em', textAlign: 'left', borderBottom: '1px solid var(--border)' }}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {pieces.map(p => {
+                  const synthetic = !!p.synthetic;
+                  const sc = p.scan_code;
+                  return (
+                    <tr key={sc}>
+                      <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                        <input type="checkbox" data-testid="ms-row-checkbox" checked={!!selected[sc]} disabled={synthetic}
+                          title={synthetic ? 'projection — not movable (would 409 WRONG_STATE)' : ''} onChange={() => toggle(sc)} />
+                      </td>
+                      <td style={{ padding: '6px 8px', fontSize: 12, fontFamily: 'ui-monospace, monospace', borderBottom: '1px solid var(--border-subtle)' }}>{sc}</td>
+                      <td style={{ padding: '6px 8px', fontSize: 12, borderBottom: '1px solid var(--border-subtle)' }}>{p.design_no || '—'}</td>
+                      <td style={{ padding: '6px 8px', fontSize: 12, borderBottom: '1px solid var(--border-subtle)' }}>{p.product_code || '—'}</td>
+                      <td style={{ padding: '6px 8px', fontSize: 12, color: 'var(--text-3)', borderBottom: '1px solid var(--border-subtle)' }}>{p.current_status || '—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+
+          {/* Note */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={lbl}>Reason / note</label>
+            <textarea data-testid="ms-note" value={note} onChange={e => setNote(e.target.value)} rows="2" style={{ ...fld, resize: 'vertical' }} placeholder="Optional — recorded on each piece's movement event" />
+          </div>
+
+          {/* Pending-badge: unlocated stock selection has no non-paste feed yet */}
+          <div data-testid="ms-pending-unlocated" style={{ marginBottom: 16, padding: '10px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-amber-text)' }}>
+            <strong>Backend-pending — Phase C.</strong> Moving freshly-received stock not yet placed at a location is not available here — that needs a non-paste by-stage picker (no ID-paste box by design).
+          </div>
+
+          {results && (
+            <div data-testid="ms-results" style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>Per-piece results ({results.length}/{selectedCodes.length})</div>
+              {results.map(r => (
+                <div key={r.scan_code} data-testid="ms-result-row" style={{ padding: '6px 8px', fontSize: 12, borderBottom: '1px solid var(--border-subtle)', display: 'flex', gap: 10 }}>
+                  <span style={{ fontFamily: 'ui-monospace, monospace' }}>{r.scan_code}</span>
+                  <span style={{ fontWeight: 700, color: r.outcome === 'failed' ? 'var(--badge-red-text)' : 'var(--badge-green-text)' }}>{r.outcome}</span>
+                  {r.code && <span style={{ color: 'var(--badge-red-text)' }}>{r.hint}</span>}
+                  {!r.code && r.detail && <span style={{ color: 'var(--text-3)' }}>→ {r.detail}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <window.Btn variant="outline" onClick={onClose} data-testid="ms-cancel">Cancel</window.Btn>
+            <window.Btn variant="gold" onClick={submit} disabled={!canMove} data-testid="ms-submit">
+              {moving ? 'Moving…' : `Move ${selectedCodes.length} piece(s) → location`}
+            </window.Btn>
+          </div>
+        </div>
+      </window.Modal>
+    );
+  }
+
   // ── InventoryPage — shell entry point ───────────────────────────────────────
 
-  function InventoryPage({ openViewer }) {  // openViewer accepted; inventory is read-only so unused
+  function InventoryPage({ openViewer }) {  // openViewer accepted; read panels are read-only
     // Title + subtitle are provided by the shell <PageHeader> (index.html inventory route).
-    // This component renders the read-only panel body only — no duplicate title block.
+    // The read panels below make no write calls; the ONLY write surface is the
+    // Move Stock modal (Phase B FOLD — Lesson M relocation of Move Location).
+    const [showMove, setShowMove] = useState(false);
     return (
       <div style={{ maxWidth: 980, margin: '0 auto', padding: '28px 24px' }} data-testid="inventory-hub-root">
+        {/* Move Stock action — the folded Move Location capability (no standalone page) */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+          <button data-testid="btn-open-move-stock" onClick={() => setShowMove(true)}
+            style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid var(--accent)', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            ⇄ Move Stock
+          </button>
+        </div>
+        {showMove && <MoveStockModal onClose={() => setShowMove(false)} />}
+
         <Stage2Panel />
         <BatchPanel />
         <PiecePanel />

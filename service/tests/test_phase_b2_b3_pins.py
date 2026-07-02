@@ -104,8 +104,14 @@ def test_panel_uses_pzapi_transports_and_reads_only():
     src = _read("inventory-page.jsx")
     assert "window.PzApi.getPromotionNotes" in src
     assert "window.PzApi.getPromotionNote" in src
+    # Slice ONLY the PromotionNotesPanel body. The Move Stock modal (Phase B
+    # FOLD) now sits between this panel and InventoryPage and legitimately
+    # calls movePieceLocation — end the read-only slice at MoveStockModal.
     k = src.index("function PromotionNotesPanel")
-    body = src[k:src.index("function InventoryPage")]
+    end_marker = src.find("const MS_ERROR_HINTS", k)
+    if end_marker == -1:
+        end_marker = src.index("function InventoryPage")
+    body = src[k:end_marker]
     for forbidden in ("method: 'POST'", 'method: "POST"', "_post", "movePieceLocation"):
         assert forbidden not in body, f"read-only panel must not contain {forbidden!r}"
     assert "Read-only. No write calls are made from this panel." in body

@@ -6056,6 +6056,36 @@ components exposed to the same collision (grep spread-rest in static/v2)
 — candidates include the Button emitting the observed
 ['children','onClick','disabled','title','warn','style'] list.
 
+### 2026-07-03 — Phase B FOLD: Move Location → Inventory Move Stock modal (Lesson M relocation)
+OPERATOR RULES (verbatim): "Fold Move Location into existing V2 Inventory. No
+standalone Move Location page. No duplicate Inventory authority. Existing V2
+Inventory remains code authority. Wireframe remains UI/UX authority. Implement
+the modal/action exactly from the wireframe. Retire move-location-page.jsx
+only after parity is proven. No raw internal-ID paste inputs. No fake backend
+data. Pending tabs allowed only with honest 'backend-pending — Phase C' badge.
+No deploy."
+LESSON M RELOCATION: the Move Location capability is RELOCATED into the
+Inventory authority as a Move Stock modal/action; the standalone page is
+retired parity-gated. Operator approval: the "fold" word 2026-07-03 + Phase-B
+rule "No Move Location page" + prior screenshot rejection of the engineer-form
+page. Net page count DECREASES by one; zero new pages/routes.
+DESIGN-TENSION RESOLUTION (load-bearing, recorded so it isn't re-litigated):
+the wireframe MoveStockModal (design lines 1023-1142) selects a stock_unit by
+a PASTE input + qty — which the operator rule "no raw internal-ID paste"
+FORBIDS. The only non-paste live selection feed is BY-LOCATION
+(GET /warehouse/locations → GET /warehouse/locations/{code}/inventory; the
+location feed carries scan_code, compatible with movePieceLocation). So the
+fold selects: source-location SELECT → pieces-at-location CHECKBOX list →
+destination-location SELECT → note → sequential per-piece movePieceLocation
+→ per-piece results + five error states + synthetic-disable (ALL behavior
+carried from move-location-page, restyled to the wireframe modal). PENDING-
+BADGED (backend-pending — Phase C, never a paste box): (a) selecting
+freshly-received stock not yet placed at a location (old page's batch-loader
+paste box; the non-paste feed for this is net-new), (b) the wireframe's
+"Stage transition" move-type (needs promotion/sample/return write UIs).
+PARITY GATE can FAIL: if the render check cannot demonstrate a real
+located→located move, the page STAYS and this is reported (not retired).
+
 ### 2026-07-03 — UI DEVELOPMENT RULE (operator-ratified; rides with the Inventory mapping gate)
 Three permanent rules for all V2 UI work, effective now:
 1. DESIGN-IN-HAND PRECONDITION: no Inventory (or any wireframed-surface) UI

@@ -394,6 +394,20 @@
     getInventoryState: (batchId) =>
       _get(`${BASE}/inventory/state/${encodeURIComponent(batchId)}`),
 
+    // -- Warehouse: locations + per-location inventory (Phase B fold) -----
+    // The NON-PASTE selection feed for the Move Stock modal (operator rule:
+    // no raw internal-ID paste; select from lists). Both GET, read-only.
+    // GET /api/v1/warehouse/locations  → { count, locations:[{location_code,
+    //   warehouse, active, …}] }
+    getWarehouseLocations: () =>
+      _get(`${BASE}/warehouse/locations`),
+
+    // GET /api/v1/warehouse/locations/{code}/inventory → { location_code,
+    //   count, items:[{scan_code, design_no, product_code, batch_id,
+    //   current_status, …}] } — items carry scan_code (movePieceLocation key).
+    getLocationInventory: (locationCode) =>
+      _get(`${BASE}/warehouse/locations/${String(locationCode).split('/').map(encodeURIComponent).join('/')}/inventory`),
+
     // -- Inventory: Stock Promotion Notes (Phase B slice B2) --------------
     // GET /api/v1/inventory/promotion-notes/{batch_id}
     // { batch_id, total, notes:[header…] } — honest-empty: total=0.

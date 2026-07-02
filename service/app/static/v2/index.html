@@ -303,7 +303,6 @@ window.EstrellaShared = {
 <script type="text/babel" src="client-detail.jsx"></script>
 <script type="text/babel" src="master-page.jsx"></script>
 <script type="text/babel" src="inventory-page.jsx"></script>
-<script type="text/babel" src="move-location-page.jsx"></script>
 <script type="text/babel" src="ledgers-page.jsx"></script>
 <script type="text/babel" src="client-kyc-and-consignment.jsx"></script>
 <script type="text/babel" src="wireframe-update.jsx"></script>
@@ -358,13 +357,13 @@ function App() {
   // Sprint 31: the 'dhl: shipments' redirect was removed — DHL is now a
   // discoverable top-level page (NAV_TREE entry + page === 'dhl' route).
   // Routing 'dhl' to 'shipments' would silently bypass the live DHL Hub.
-  // B×7-1 (2026-07-02, reworked per operator decision (i)): the page built in
-  // this slice was RENAMED move_stock → move_location — it is a physical
-  // location (shelf/zone) metadata helper, not the business stage promotion.
-  // 'move_stock' therefore RETURNS to the redirect map (12 entries):
-  // Move Stock = ACTIVE-PLANNED business promotion (Temp Warehouse → Final
-  // Stock + Stock Promotion Note), scoped as slice B×7-1b — see PROJECT_STATE
-  // DECISIONS. The redirects are stale-URL insurance for unpromoted slugs.
+  // B×7-1 → Phase B FOLD (2026-07-03): the move page (move_stock renamed
+  // move_location) is RETIRED — its capability folded into the Inventory page
+  // as the Move Stock modal (Lesson M relocation; PROJECT_STATE DECISIONS
+  // "Phase B FOLD"). BOTH slugs now redirect to inventory (stale-URL
+  // insurance): move_stock (also reserved for the future PZ-event promotion)
+  // and move_location (the retired page). The redirects are stale-URL
+  // insurance for unpromoted / retired slugs.
   const ROUTE_REDIRECTS = {
     actions:       'inbox',
     proposals:     'inbox',
@@ -378,6 +377,7 @@ function App() {
     goods_return:  'inventory',
     return_prod:   'inventory',
     move_stock:    'inventory',
+    move_location: 'inventory',
   };
 
   // Parse /v2/<page>[?query] → { page, search }
@@ -670,18 +670,10 @@ function App() {
             </>
           )}
 
-          {/* Move Location — live write page (B×7-1, renamed per operator
-              decision (i)). Physical location (shelf/zone) metadata helper.
-              Manual multi-select; scanner optional, NEVER required.
-              Multi-select executes SEQUENTIAL single-piece moves (backend is
-              per-piece) — no atomic-batch claim. */}
-          {!viewerDoc && page === 'move_location' && (
-            <>
-              <PageHeader title="Move Location" subtitle="Physical location move (shelf/zone) — metadata only, does NOT change inventory state. Multi-select runs sequential per-piece moves." />
-              <SubTabStrip active={page} onNav={handleNav} />
-              <MoveLocationPage />
-            </>
-          )}
+          {/* Move Location render block RETIRED (Phase B FOLD, 2026-07-03):
+              the capability is folded into the Inventory page as the Move
+              Stock modal (Lesson M relocation). /v2/move_location now
+              redirects to inventory (ROUTE_REDIRECTS, stale-URL insurance). */}
 
           {/* Intelligence Hub — wired to live intelligence + invoice-learning authority (Sprint 34) */}
           {!viewerDoc && page === 'intelligence' && (
