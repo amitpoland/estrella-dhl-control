@@ -6056,6 +6056,29 @@ components exposed to the same collision (grep spread-rest in static/v2)
 — candidates include the Button emitting the observed
 ['children','onClick','disabled','title','warn','style'] list.
 
+### 2026-07-03 — UI DEVELOPMENT RULE (operator-ratified; rides with the Inventory mapping gate)
+Three permanent rules for all V2 UI work, effective now:
+1. DESIGN-IN-HAND PRECONDITION: no Inventory (or any wireframed-surface) UI
+   slice starts until the design authority is on the box and read. The
+   Inventory design authority is durable at
+   docs/design/inventory-page.design.jsx (copied 2026-07-03 from the
+   estrella-dashboard bundle). "The builder has never seen the design" was
+   the root cause of the engineer-form UI; it is now fixed.
+2. SPEC-BY-REFERENCE: parity slices cite the design element they port
+   (file+component/tab in docs/design/), not a re-described spec — the
+   wireframe is the single UI authority, existing V2 Inventory is the single
+   code authority, no duplicate page.
+3. PARITY GATE THAT CAN FAIL: a UI slice is not done until a render check
+   against the design passes (cold origin, real data via throwaway storage);
+   the gate may FAIL and block the slice. No deploy until render/parity passes.
+Mapping gate for Inventory: reports/inspection/2026-07-03T150000Z-inventory-mapping-gate.md
+(design = 11-tab merchandising screen; V2 = 6-panel read-only hub; most of the
+gap is FROZEN behind Phase-C backend; buildable now = B1 KPI polish, the fold
+(step 6, wireframe-confirmed as MoveStockModal), Sample/Returns tabs). B2/B3
+already shipped (0602ddd3). Disposition (i) FOLD confirmed by the design
+(no standalone move page exists in the wireframe). AWAITING operator: slice
+order + fold retirement-scope confirmation + tab-adoption strategy.
+
 ### 2026-07-03 — V2-wide spread-rest collision sweep (Babel _excluded global hoist)
 MECHANISM (so no future session rediscovers it): Babel-standalone compiles
 JSX object-REST destructuring `function C({ a, b, ...rest })` by hoisting a
