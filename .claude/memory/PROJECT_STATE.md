@@ -5890,6 +5890,24 @@ invoice_no||client_ref) to prefer the real column in the UI parity slice.
 Pin test: parse→persist→readback both fields, legacy-row '' default,
 drop-can't-return INSERT pin. Backend only, zero UI files, no deploy.
 
+### 2026-07-02 — BE-2 Stock Promotion Note (document layer)
+BE-2 Stock Promotion Note: header+lines tables on warehouse.db
+(packing_documents precedent), series SPN/NNN/YYYY = first local document
+series (BEGIN IMMEDIATE + MAX+1/year + UNIQUE retry — the precedent for all
+future local series). Note written best-effort inside run_stock_promotion
+after the loop: auto (pz_created), generation, and future manual paths produce
+identical Notes. Operator contract fields verbatim: source stage, destination
+stage, packing list / import reference (packing_document_id + invoice_no),
+design numbers, batch numbers, piece count, operator, timestamp, reason/note,
+before/after inventory state per piece. client_po does NOT apply (purchase-
+side receipt; premise corrected in scope 6d6d9d64). No-op promotions produce
+NO Note; partial promotions produce ONE Note covering the moved subset only.
+DECIDED — BE-2b (receipt-path promotions via DHL bridge / direct receive
+currently bypass run_stock_promotion and carry NO Note): planned as the next
+follow-up slice; gap recorded, not silent. View: v0 = note_no in audit
+timeline (free); v1 Stock Hub panel + print component = separate pre-flighted
+slices.
+
 ## Authority-Model Separation — six separate authorities (2026-06-22)
 
 - **Binding (operator-approved, permanent, no flag):** import, product master, proforma,

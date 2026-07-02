@@ -87,3 +87,36 @@ def get_inventory_state_for_batch(
     """
     validated = _validate_as_of(as_of)
     return get_batch_state(batch_id, as_of=validated)
+
+
+# ── BE-2: Stock Promotion Notes (PROJECT_STATE DECISIONS "BE-2 Stock
+# Promotion Note", 2026-07-02). Read-only — the Notes are WRITTEN solely by
+# run_stock_promotion() via stock_promotion_note_db. GET only, per this
+# file's contract.
+
+@router.get("/promotion-notes/{batch_id}")
+def list_promotion_notes(batch_id: str) -> dict:
+    """Note headers for a batch, newest first.
+
+    Honest empty: unknown batch_id yields an empty list (HTTP 200).
+    """
+    from ..services.stock_promotion_note_db import list_notes
+    notes = list_notes(batch_id)
+    return {"batch_id": batch_id, "total": len(notes), "notes": notes}
+
+
+@router.get("/promotion-note/{note_no:path}")
+def get_promotion_note(note_no: str) -> dict:
+    """One Note, header + lines. note_no contains slashes (SPN/NNN/YYYY) —
+    the :path converter follows the routes_warehouse location_code:path
+    precedent. Unknown note_no → 404 NOTE_NOT_FOUND.
+    """
+    from ..services.stock_promotion_note_db import get_note
+    note = get_note(note_no)
+    if note is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NOTE_NOT_FOUND",
+                    "detail": f"promotion note {note_no!r} not found"},
+        )
+    return note

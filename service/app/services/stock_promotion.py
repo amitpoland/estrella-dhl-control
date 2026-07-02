@@ -54,6 +54,19 @@ from ..core import timeline as tl
 log = logging.getLogger(__name__)
 
 
+def _read_wfirma_pz_doc_id(batch_id: str) -> str:
+    """Best-effort audit read — '' when unbooked (pz_generated fires before
+    the wFirma PZ exists) or when the audit is unreadable. Never raises."""
+    try:
+        import json
+        from .batch_service import get_output_dir
+        audit_path = get_output_dir(batch_id) / "audit.json"
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        return str((audit.get("wfirma_export") or {}).get("wfirma_pz_doc_id") or "")
+    except Exception:
+        return ""
+
+
 def run_stock_promotion(
     batch_id: str,
     *,
@@ -74,7 +87,10 @@ def run_stock_promotion(
         "promoted": 0,
         "skipped":  0,
         "errors":   0,
+        "note_no":  "",
     }
+    # BE-2: the moved subset, captured in-loop for the Stock Promotion Note.
+    moved: list = []
     try:
         lines = pdb.get_packing_lines_for_batch(batch_id)
         for line in lines:
@@ -98,6 +114,15 @@ def run_stock_promotion(
                     note      = note,
                 )
                 result["promoted"] += 1
+                moved.append({
+                    "scan_code":           sc,
+                    "design_no":           str(line.get("design_no", "") or ""),
+                    "batch_no":            str(line.get("batch_no", "") or ""),
+                    "invoice_no":          str(line.get("invoice_no", "") or ""),
+                    "packing_document_id": str(line.get("packing_document_id", "") or ""),
+                    "state_before":        str(st.get("state") or ""),
+                    "state_after":         ise.WAREHOUSE_STOCK,
+                })
             except Exception as _row_exc:
                 # Benign-race recheck (verify-pass hardening, 2026-07-02):
                 # between get_state and transition a concurrent promoter
@@ -146,6 +171,33 @@ def run_stock_promotion(
         log.warning("[%s] stock promotion best-effort failure: %s",
                     batch_id, _outer)
 
+    # ── BE-2: Stock Promotion Note (PROJECT_STATE DECISIONS "BE-2 Stock
+    # Promotion Note") — ONE Note covering exactly the moved subset; a no-op
+    # promotion (nothing moved) produces NO Note. Best-effort by doctrine:
+    # STATE TRUTH > DOCUMENT — the transitions above are already committed
+    # and must never be rolled back or failed because the derivative
+    # document could not be written; a miss is reconcilable from
+    # inventory_state_events, so we log LOUDLY and continue.
+    if moved:
+        try:
+            from .stock_promotion_note_db import write_promotion_note
+            result["note_no"] = write_promotion_note(
+                batch_id         = batch_id,
+                moved            = moved,
+                trigger          = trigger,
+                source           = source,
+                operator         = operator,
+                reason_note      = note,
+                wfirma_pz_doc_id = _read_wfirma_pz_doc_id(batch_id),
+            )
+        except Exception as _note_exc:
+            log.error(
+                "[%s] STOCK PROMOTION NOTE WRITE FAILED — %d piece(s) were "
+                "promoted but carry NO note document (reconcile from "
+                "inventory_state_events): %s",
+                batch_id, len(moved), _note_exc,
+            )
+
     # ── Best-effort per-batch summary mirror — never breaks the caller ───────
     try:
         from .batch_service import get_output_dir as _get_output_dir
@@ -161,6 +213,7 @@ def run_stock_promotion(
                 "skipped":  result["skipped"],
                 "errors":   result["errors"],
                 "trigger":  trigger,
+                "note_no":  result["note_no"],
             },
         )
     except Exception as _tl_exc:
