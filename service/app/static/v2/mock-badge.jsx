@@ -56,7 +56,14 @@
 //   count, invoice count, and the activity timeline now render from the audit; missing
 //   fields show '—'. Write actions remain visible+disabled (Lesson M) on their domain
 //   pages. WIRED_PAGES = 18/18.
-const WIRED_PAGES = ['proforma', 'proforma_search', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard', 'api_status', 'diagnostics', 'coverage', 'detail'];
+// B×7-1 (2026-07-02): 'move_location' added — first inventory-family promotion
+//   (manual multi-select; sequential single-piece moves against
+//   POST /api/v1/inventory/pieces/{id}/location). Built as 'move_stock',
+//   renamed per operator decision (i): it is a physical location (shelf/zone)
+//   metadata helper; the 'move_stock' name is reserved for the business stage
+//   promotion (slice B×7-1b) and redirects to 'inventory' until built.
+//   WIRED_PAGES = 19/19.
+const WIRED_PAGES = ['proforma', 'proforma_search', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard', 'api_status', 'diagnostics', 'coverage', 'detail', 'move_location'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;

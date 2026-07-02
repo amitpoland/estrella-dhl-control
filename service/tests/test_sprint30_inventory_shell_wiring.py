@@ -246,12 +246,17 @@ def test_mock_banner_not_shown_for_inventory():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _inventory_route_block(src: str) -> str:
-    """Extract the `page === 'inventory'` JSX block from index.html."""
+    """Extract the `page === 'inventory'` JSX block from index.html.
+
+    B×7-1 (2026-07-02, PROJECT_STATE DECISIONS "slice B×7-1"): the original end
+    anchors rotted — 'identity' was removed by slice-04, and the promoted
+    sibling route (built as 'move_stock', renamed 'move_location' per operator
+    decision (i)) has its own comment this pin must not swallow. The block now
+    ends at the next JSX route comment marker after the inventory conditional,
+    which is boundary-stable regardless of which sibling route follows.
+    """
     idx = src.index("page === 'inventory'")
-    # The block ends at the next sibling route comment/condition
-    end = src.find("page === 'identity'", idx)
-    if end < 0:
-        end = src.find("page === 'move_stock'", idx)
+    end = src.find("{/*", idx)
     return src[idx:end] if end > idx else src[idx:idx + 1500]
 
 

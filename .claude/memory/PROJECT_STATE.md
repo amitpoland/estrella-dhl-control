@@ -5758,6 +5758,62 @@ Pre-excision index.html blob: 9c9e80fb4ef2de29b97d517d8ae0e6a900ca53aa
 REVERSAL: git checkout 9c9e80fb4ef2de29b97d517d8ae0e6a900ca53aa -- service/app/static/v2/index.html
 No deploy until render verification passes. No push.
 
+### 2026-07-02 — slice B×7-1: Move Stock page foundation (first inventory-family promotion)
+OPERATOR UX RULE (ratified, verbatim): "Move Stock supports three input methods, built
+in separate slices: 1. Manual selection with checkboxes. 2. Excel upload by design
+number / batch / piece count — FUTURE SLICE. 3. Optional barcode scanner — NEVER
+required. Business workflow first. Software scanning second. No mandatory scan gate."
+NAV DECISION: (a) new g_inventory NAV_TREE group (defaultId 'inventory'); inventory hub
+becomes group child (label 'Stock Hub'); move_stock added as sibling; nav-pin test
+updates (if any break) land in the same commit citing this entry.
+BACKEND TRUTHS: move path is SINGLE-PIECE-ONLY (move_piece takes one scan_code; no
+batch input anywhere in routes_inventory_*). UI multi-select therefore executes
+SEQUENTIAL single-piece moves with per-piece results and an explicit banner
+("Batch = sequential single-piece moves (backend is per-piece)"); no atomic-batch
+claim. List source = GET /api/v1/inventory/state/{batch_id} (pieces[] carries
+design_no but NO location; synthetic:true rows are C13A purchase-transit projections
+— selection-disabled in UI; they would 409 WRONG_STATE).
+LOCATION-COLUMN GAP: deferred — pieces[] has no location; per-piece lookups (N+1)
+rejected; a batch location-join read is a candidate backend addition for the
+Excel-upload slice.
+MIGRATION: idempotency schema applied to verify-tree warehouse.db 2026-07-02
+(backup warehouse.db.pre-idempotency-20260702.bak; column TEXT NOT NULL DEFAULT ''
++ partial UNIQUE idx_movement_idempotency verified; row count unchanged at 0).
+Draft file to be renamed to applied form in this slice's commit; PROD application
+deferred to deploy under deploy_persistence_storage_reviewer.
+VERIFY-TREE DB has zero movement events: render check covers empty-state +
+error-state rendering; full table interaction verified against real data at deploy.
+SCOPE: this slice = foundation + manual selection wired to the real single-piece
+backend; Excel upload = future slice; scanner = optional, deferred.
+
+### 2026-07-02 — B×7-1 rework: page renamed Move Stock → Move Location (operator decision (i)); "Move Stock" name reserved for the business stage promotion (slice B×7-1b)
+DECISION (i): the page built in slice B×7-1 is a physical location (shelf/zone)
+metadata helper — it does NOT change inventory state. Renamed
+move_stock → move_location (file move-location-page.jsx, component
+MoveLocationPage, nav label "Move Location", slug move_location); the
+move_stock slug RETURNS to ROUTE_REDIRECTS (12 entries) and stays
+ACTIVE-PLANNED for the true business promotion.
+STOCK PROMOTION NOTE SPEC (operator, verbatim): "promotion creates an Internal
+Stock Movement document / Stock Promotion Note recording: source stage,
+destination stage, packing list / import reference, design numbers, batch
+numbers, piece count, operator, timestamp, reason/note, before/after inventory
+state. Selection: manual checkbox by mouse first; Excel upload later; scanner
+optional, never required."
+OPERATOR LIFECYCLE RULE (verbatim): "Inventory temp states are
+document-event-driven, synchronized with wFirma: Temp Purchase closes
+AUTOMATICALLY on PZ creation (goods received -> real warehouse stock). WZ
+creation moves goods out -> Temp Sale (in transit to customer), shown as out
+in wFirma and Atlas. DHL delivery confirmation closes Temp Sale. Manual Move
+Stock page = exception/correction path only; the document is the primary
+trigger."
+MIGRATION: draft renamed to applied form 20260512_002516_idempotency_key.py in
+this slice's commit (schema already applied to verify-tree warehouse.db
+2026-07-02 per the B×7-1 entry above; PROD application deferred to deploy
+under deploy_persistence_storage_reviewer). Known residue: the backend
+MIGRATION_PENDING message (inventory_location_writer.py:100) still says
+"draft_20260512_002516_idempotency_key" — cosmetic, error-path-only; follow-up
+candidate, not changed in this rework (out of instructed scope).
+
 ## Authority-Model Separation — six separate authorities (2026-06-22)
 
 - **Binding (operator-approved, permanent, no flag):** import, product master, proforma,

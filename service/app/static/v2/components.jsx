@@ -19,7 +19,15 @@ const NAV_TREE = [
   { id: 'proforma',  label: 'Pro Forma', icon: '📋' },
   { id: 'documents', label: 'Documents', icon: '📄' },
   { id: 'accounting', label: 'Accounting', icon: '⊞', badge: 'NEW' },
-  { id: 'inventory', label: 'Inventory', icon: '◫' },
+  // B×7-1 (2026-07-02, PROJECT_STATE DECISIONS "slice B×7-1"): Inventory becomes
+  // a NAV_TREE group so promoted inventory tools (move_location first; more B-slices
+  // follow) sit as SubTabStrip siblings of the read-only hub. defaultId keeps
+  // /v2/inventory as the landing page. id: 'inventory' remains present as a
+  // child, preserving existing nav pins that assert its membership.
+  { id: 'g_inventory', label: 'Inventory', icon: '◫', defaultId: 'inventory', children: [
+    { id: 'inventory',  label: 'Stock Hub' },
+    { id: 'move_location', label: 'Move Location' },
+  ]},
   { id: 'reports',   label: 'Reports',   icon: '≡' },
 
   { id: 'g_setup', label: 'Setup', icon: '⚙', defaultId: 'admin', children: [

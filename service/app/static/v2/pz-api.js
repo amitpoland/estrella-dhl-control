@@ -384,6 +384,40 @@
       _postM(`${BASE}/warehouse/receipt/confirm`,
         { batch_id: batchId, lines: lines, source_documents: sourceDocuments || null }),
 
+    // -- Inventory: Move Stock (slice B×7-1) ------------------------------
+    // GET /api/v1/inventory/state/{batch_id}
+    // INVENTORY read authority: counts + per-piece list.
+    // { batch_id, as_of, counts, pieces:[{scan_code, state, product_code,
+    //   design_no, updated_at, synthetic?, source?}], total, synthetic,
+    //   source, degraded }. Honest-empty: unknown batch -> 200 with total=0.
+    // synthetic:true pieces are C13A purchase-transit projections (not movable).
+    getInventoryState: (batchId) =>
+      _get(`${BASE}/inventory/state/${encodeURIComponent(batchId)}`),
+
+    // POST /api/v1/inventory/pieces/{piece_id}/location
+    //   body: { to_location, operator, idempotency_key, note? }
+    // LOCAL metadata-only write — moves physical location; does NOT change
+    // inventory_state; NO wFirma/fiscal write. Idempotent on (piece, key):
+    // replays return status:"replayed" with the prior event_id.
+    // Operator identity rides in the BODY (backend contract) — action-proposals
+    // precedent: _call (no X-Operator) + _resolveOperator(); a blank operator
+    // REFUSES to POST.
+    movePieceLocation: (pieceId, { toLocation, operator, idempotencyKey, note } = {}) => {
+      const op = ((operator || '') || _resolveOperator() || '').trim();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required -- move cancelled.' });
+      const body = {
+        to_location:     toLocation,
+        operator:        op,
+        idempotency_key: idempotencyKey,
+      };
+      const n = (note || '').trim();
+      if (n) body.note = n;
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/location`, body);
+    },
+
     // -- Action proposals (Inbox 2B.3b write wiring) ----------------------
     // Attribution rides in the BODY (approved_by / rejected_by) per the
     // action-proposals contract -- NOT the X-Operator header that _callM

@@ -481,24 +481,13 @@ function IdentityMappingPage() {
     ]}/>;
 }
 
-function MoveStockPage() {
-  return <StubPage
-    title="Move Stock"
-    description="Move identified items from Temp Warehouse → Final Stock once Identity / Mapping is confirmed and customs is verified. Approval required."
-    status="backend"
-    columns={['Lot','Item','From','To','Qty','Status']}
-    rows={[
-      ['LOT-2412-441-A','EJ-D-00412','Temp Warehouse','Final Stock', '12', 'Pending mapping'],
-      ['LOT-2412-441-B','EJ-D-00413','Temp Warehouse','Final Stock', '8',  'Mapping required'],
-      ['LOT-2412-552',  'EJ-D-00420','Temp Warehouse','Final Stock', '20', 'Ready · awaiting approval'],
-    ]}
-    endpoints={[
-      'POST /api/v1/inventory/move           (single lot)',
-      'POST /api/v1/inventory/move/bulk',
-      'GET  /api/v1/inventory/move/preview?lot=…',
-      'POST /api/v1/inventory/move/{id}/approve',
-    ]}/>;
-}
+// B×7-1 (2026-07-02): the MoveStockPage stub was RETIRED here — the live page
+// now owns the name (move-stock-page.jsx, loaded EARLIER in index.html; keeping
+// the stub caused a window-global last-write collision that silently rendered
+// the mock over the live page — the same defect class slice-03 removed for
+// ReportsPage). Sprint-31 playbook step P3: mock retired, functions deleted.
+// The stub's advertised endpoints were FICTIONAL (superseded per PROJECT_STATE
+// DECISIONS "slice B×7-1"). Each future B-slice retires its own stub the same way.
 
 function SampleOutPage() {
   return <StubPage
@@ -576,7 +565,8 @@ function ReturnToProducerPage() {
 Object.assign(window, {
   FeatureStatus, PendingBtn, OperationalStatusStrip,
   CoverageMapPage, CoverageMatrix, ActionCenterPage,
-  IdentityMappingPage, MoveStockPage,
+  IdentityMappingPage,
+  // MoveStockPage retired (B×7-1) — live page owns the name; see comment above.
   SampleOutPage, SampleReturnPage,
   GoodsReturnPage, ReturnToProducerPage,
 });
