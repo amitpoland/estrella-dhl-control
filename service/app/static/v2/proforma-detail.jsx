@@ -1969,13 +1969,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // Ready only when the batch full-gate AND this draft's client document are ready.
   const reservationReady = !!(reservationPreview &&
     reservationPreview.ready_to_create && reservationDoc && reservationDoc.ready);
-  // Reservation blockers are surfaced at TWO distinct scopes so a BATCH-level
-  // warehouse blocker (e.g. "84 packing line(s) not yet scanned" — counts the
-  // whole batch's packing, NOT this draft's billed lines) is never mistaken for a
-  // Draft blocker. batch_blocking_reasons (warehouse + wFirma config) block every
-  // client in the batch; reservationDoc.blocking_reasons are THIS draft/client's
-  // own. The CREATE GATE (reservationReady) is unchanged — this only clarifies the
-  // DISPLAY (Lesson F rule 5: reflect backend truth, never re-derive it).
+  // Reservation signals are surfaced at TWO distinct scopes. Warehouse scan
+  // signals (e.g. "84 packing line(s) not yet scanned" — counts the whole
+  // batch's packing, NOT this draft's billed lines) arrive as batch_advisories:
+  // ADVISORY, never a blocker (authority separation 2026-06-22, Lesson N).
+  // batch_blocking_reasons carry infrastructure/wFirma-config blockers that
+  // block every client in the batch; reservationDoc.blocking_reasons are THIS
+  // draft/client's own. The CREATE GATE (reservationReady) is unchanged — this
+  // only clarifies the DISPLAY (Lesson F rule 5: reflect backend truth, never
+  // re-derive it).
   const reservationBatchReasons = ((reservationPreview && reservationPreview.batch_blocking_reasons) || []).filter(Boolean);
   const reservationDraftReasons = ((reservationDoc && reservationDoc.blocking_reasons) || []).filter(Boolean);
   // Authority separation (2026-06-22): warehouse scan completeness and sales-data
