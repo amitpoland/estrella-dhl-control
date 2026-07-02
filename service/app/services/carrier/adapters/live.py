@@ -491,6 +491,23 @@ def _raise_dhl_error(resp: httpx.Response) -> None:
     try:
         detail = resp.json()
         msg = detail.get("detail") or detail.get("message") or detail.get("title") or str(detail)
+        # DHL validation errors ("Multiple problems found, see Additional Details")
+        # carry the field-level violations in additionalDetails — surface every
+        # entry or the failure is undiagnosable from UI/logs. Response content
+        # only; never the request body or credentials.
+        extras = detail.get("additionalDetails")
+        if extras:
+            items = extras if isinstance(extras, list) else [extras]
+            parts = []
+            for item in items:
+                if isinstance(item, dict):
+                    text = " ".join(
+                        str(item[k]) for k in ("code", "path", "message") if item.get(k)
+                    )
+                    parts.append(text or str(item))
+                else:
+                    parts.append(str(item))
+            msg = f"{msg} | Additional details: {'; '.join(parts)}"
     except Exception:
         msg = resp.text[:500]
     raise CarrierGateError(f"DHL API {resp.status_code}: {msg}")
