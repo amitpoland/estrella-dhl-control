@@ -46,6 +46,9 @@ from fastapi.responses import JSONResponse
 from ..core.logging import get_logger
 from ..core.security import require_api_key
 from ..services import wfirma_client
+from ..services.customer_master_db import (    # C-2b V5 reroute
+    lookup_wfirma_contractor as _cmd_lookup_contractor,
+)
 from ..services.ledger_aggregator import (
     aggregate_invoice_ledger,
     aggregate_statement,
@@ -152,7 +155,7 @@ def get_client_invoice_ledger(
     # Preflight: confirm contractor exists. Same pattern as the Phase 5
     # /post receiver-preflight.
     try:
-        rcv = wfirma_client.fetch_contractor_by_id(cid)
+        rcv = _cmd_lookup_contractor(cid)  # C-2b V5
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -285,7 +288,7 @@ def _build_statement_dict(
 
     # Preflight contractor.
     try:
-        rcv = wfirma_client.fetch_contractor_by_id(cid)
+        rcv = _cmd_lookup_contractor(cid)  # C-2b V5
     except Exception as exc:
         raise HTTPException(
             status_code=502,

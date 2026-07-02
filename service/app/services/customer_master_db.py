@@ -1098,3 +1098,37 @@ def get_effective_defaults(customer: "CustomerMaster") -> Dict[str, Any]:
     out["insurance_enabled"]         = c.insurance_enabled
 
     return out
+
+
+# ── C-2b: sync-layer passthroughs (customer authority) ───────────────────────
+# Business routes call THESE instead of importing wfirma_client customer
+# functions directly (Constitution §3: Module → Customer Master → Mirror →
+# wFirma; the forbidden identifier must live only in the whitelisted sync
+# layer).  Behaviour is identical passthrough — zero logic change.
+# Modelled on reservation_db.lookup_wfirma_product (C-1c, commit feeb1fbe).
+
+def search_wfirma_customer(name: str, nip: Optional[str] = None):
+    """Search wFirma for a contractor by name or NIP, via the Customer Master
+    sync layer.  Signature mirrors wfirma_client.search_customer exactly.
+
+    C-2b rationale: business routes (routes_proforma — V4) must not call
+    wfirma_client.search_customer directly (Constitution §3, authority-
+    violation V4).  Re-pointing to the wfirma_customer_mirror is gated on
+    equivalence verification (later slice); this passthrough is the
+    call-path migration step.
+    """
+    from .wfirma_client import search_customer  # lazy — keeps the forbidden
+    return search_customer(name, nip)           # identifier inside sync layer
+
+
+def lookup_wfirma_contractor(contractor_id: str):
+    """Fetch a single wFirma contractor by id, via the Customer Master sync
+    layer.  Signature mirrors wfirma_client.fetch_contractor_by_id exactly.
+
+    C-2b rationale: business routes (routes_proforma V4, routes_ledgers V5,
+    routes_suppliers V7) must not call wfirma_client.fetch_contractor_by_id
+    directly (Constitution §3).  This passthrough relocates the call into the
+    authority's service layer without changing any behaviour.
+    """
+    from .wfirma_client import fetch_contractor_by_id  # lazy — sync layer only
+    return fetch_contractor_by_id(contractor_id)

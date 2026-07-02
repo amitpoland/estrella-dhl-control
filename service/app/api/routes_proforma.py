@@ -38,6 +38,8 @@ from ..services import wfirma_client
 from ..services.customer_master_db import (
     get_customer as get_customer_master,
     list_customers as _list_customer_master,
+    search_wfirma_customer as _cmd_search_customer,       # C-2b V4 reroute
+    lookup_wfirma_contractor as _cmd_lookup_contractor,   # C-2b V4 reroute
 )
 from ..services.proforma_draft_governance import (
     check_top_patch, check_line_patch, check_post_readiness, check_convert_series,
@@ -1497,7 +1499,7 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
             customer_vat_id  = ((cust or {}).get("vat_id")  or "").strip()
             if not customer_country:
                 try:
-                    live = wfirma_client.search_customer(client_name)
+                    live = _cmd_search_customer(client_name)  # C-2b V4
                 except Exception:
                     live = None
                 if live is not None:
@@ -1526,7 +1528,7 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
         if not customer_country or (customer_country.upper() != "PL"
                                      and not customer_vat_id):
             try:
-                live = wfirma_client.search_customer(client_name)
+                live = _cmd_search_customer(client_name)  # C-2b V4
             except Exception:
                 live = None
             if live is not None:
@@ -1874,7 +1876,7 @@ def proforma_create(
     receiver_id = (req.wfirma_contractor_receiver_id or "").strip()
     if receiver_id:
         try:
-            rcv = wfirma_client.fetch_contractor_by_id(receiver_id)
+            rcv = _cmd_lookup_contractor(receiver_id)  # C-2b V4
         except Exception as exc:
             return JSONResponse({
                 "ok":               False,
@@ -3634,7 +3636,7 @@ def proforma_to_invoice(
     rcv_id = (plan.contractor_receiver_id or "").strip()
     if rcv_id:
         try:
-            rcv = wfirma_client.fetch_contractor_by_id(rcv_id)
+            rcv = _cmd_lookup_contractor(rcv_id)  # C-2b V4
         except Exception as exc:
             return JSONResponse({
                 "ok":               False,
@@ -7792,7 +7794,7 @@ def _build_proforma_request_from_draft(
             customer_vat_id  = ((cust or {}).get("vat_id")  or "").strip()
             if not customer_country:
                 try:
-                    live = wfirma_client.search_customer(client_name)
+                    live = _cmd_search_customer(client_name)  # C-2b V4
                 except Exception:
                     live = None
                 if live is not None:
@@ -7825,7 +7827,7 @@ def _build_proforma_request_from_draft(
         if not customer_country or (customer_country.upper() != "PL"
                                      and not customer_vat_id):
             try:
-                live = wfirma_client.search_customer(client_name)
+                live = _cmd_search_customer(client_name)  # C-2b V4
             except Exception:
                 live = None
             if live is not None:
@@ -8092,7 +8094,7 @@ def post_proforma_draft_to_wfirma(
     receiver_id = (req.wfirma_contractor_receiver_id or "").strip()
     if receiver_id:
         try:
-            rcv = wfirma_client.fetch_contractor_by_id(receiver_id)
+            rcv = _cmd_lookup_contractor(receiver_id)  # C-2b V4
         except Exception as exc:
             return _post_validation_error(
                 draft_id,

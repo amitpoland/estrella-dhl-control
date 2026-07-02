@@ -382,7 +382,9 @@ async def suppliers_sync_apply_endpoint(request: Request) -> JSONResponse:
     deep_filled = 0
     deep_errors: List[Dict[str, Any]] = []
     try:
-        from ..services import wfirma_client as wfc
+        from ..services.customer_master_db import (   # C-2b V7 reroute
+            lookup_wfirma_contractor as _cmd_lookup_contractor,
+        )
         from ..services.suppliers_db import upsert_supplier_identity_from_wfirma
         for p in result.get("proposals", []):
             wfid = p.get("wfirma_id")
@@ -393,7 +395,7 @@ async def suppliers_sync_apply_endpoint(request: Request) -> JSONResponse:
             if p.get("status") in ("skipped_invalid", "needs_operator_review"):
                 continue
             try:
-                cd = wfc.fetch_contractor_by_id(wfid)
+                cd = _cmd_lookup_contractor(wfid)  # C-2b V7
                 if not cd.ok:
                     continue
                 # Compose a single-line address fallback from non-empty parts.

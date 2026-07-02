@@ -241,3 +241,43 @@ def test_prose_and_master_reads_not_flagged():
         "prose / status keys / Product Master reads must NOT be flagged by the "
         "real-access detector"
     )
+
+
+# ── C-2b: no direct wFirma customer calls in V4/V5/V7 business routes ────────
+
+_V4_V5_V7_ROUTES = ["routes_proforma.py", "routes_ledgers.py", "routes_suppliers.py"]
+_CUSTOMER_DIRECT_PATTERNS = [
+    re.compile(r"\.search_customer\s*\("),
+    re.compile(r"\.fetch_contractor_by_id\s*\("),
+]
+
+
+def test_no_direct_wfirma_customer_calls_in_v4_v5_v7_routes():
+    """C-2b standing pin: routes_proforma (V4), routes_ledgers (V5), and
+    routes_suppliers (V7) must contain zero direct wfirma_client.search_customer
+    or wfirma_client.fetch_contractor_by_id call sites.
+
+    Calls must go through customer_master_db passthroughs
+    (search_wfirma_customer / lookup_wfirma_contractor) as per
+    Phase-C Constitution §3 and the C-2b call-path reroute slice.
+
+    Comment-stripped to exclude prose mentions.
+    """
+    violations: dict = {}
+    for fname in _V4_V5_V7_ROUTES:
+        fpath = _APP / "api" / fname
+        code = _strip_comments_and_docstrings(
+            fpath.read_text(encoding="utf-8", errors="replace")
+        )
+        hits = []
+        for rx in _CUSTOMER_DIRECT_PATTERNS:
+            for m in rx.finditer(code):
+                # Capture surrounding context for diagnostics
+                start = max(0, m.start() - 60)
+                hits.append(code[start: m.end() + 20].strip())
+        if hits:
+            violations[fname] = hits
+    assert not violations, (
+        f"C-2b VIOLATION — direct wfirma_client customer calls found in business "
+        f"routes (must route via customer_master_db passthroughs): {violations}"
+    )
