@@ -34,6 +34,7 @@ from ..services import description_engine as deng
 from ..services import wfirma_capabilities as wfc
 from ..services import wfirma_client
 from ..services import wfirma_db as wfdb
+from ..services import reservation_db as rdb   # sync-layer passthrough (C-1c)
 from ..services import wfirma_product_auto_register as _wfar
 from ..services import wfirma_customer_auto_resolve as _wfcar
 
@@ -307,7 +308,9 @@ def search_good(
     The operator uses the response to confirm a mapping via PUT /products/{code}.
     """
     try:
-        result = wfirma_client.get_product_by_code(product_code)
+        # C-1c: live wFirma read via the sync-layer passthrough, not a direct
+        # wfirma_client call in a business route (§2). Read-only, behaviour identical.
+        result = rdb.lookup_wfirma_product(product_code)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -370,7 +373,8 @@ def search_and_compare_good(
     # 1. Live wFirma search (read-only)
     wfirma_error = ""
     try:
-        wf_product = wfirma_client.get_product_by_code(product_code)
+        # C-1c: sync-layer passthrough (read-only), not a direct wfirma_client call.
+        wf_product = rdb.lookup_wfirma_product(product_code)
     except Exception as exc:
         wf_product = None
         wfirma_error = f"{type(exc).__name__}: {exc}"
@@ -437,7 +441,8 @@ def search_goods_bulk(req: BulkGoodsSearchRequest) -> JSONResponse:
     looked_up: dict = {}
     for pc in seen_index:
         try:
-            result = wfirma_client.get_product_by_code(pc)
+            # C-1c: sync-layer passthrough (read-only), not a direct wfirma_client call.
+            result = rdb.lookup_wfirma_product(pc)
             looked_up[pc] = {
                 "product_code": pc,
                 "found":        result is not None,
