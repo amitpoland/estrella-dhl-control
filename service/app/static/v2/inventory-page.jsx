@@ -256,6 +256,30 @@ function DocumentViewerPage({ doc, onBack }) {
     return <pre style={{ marginTop: 10, padding: '12px 14px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11, color: 'var(--text)', overflowX: 'auto', maxHeight: 360, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace', lineHeight: 1.5 }}>{JSON.stringify(data, null, 2)}</pre>;
   }
 
+  // Wireframe KPI tile (B1, ported from design/inventory-page.design.jsx
+  // :28-43 InvStatTile). A `pending` tile shows a clean BACKEND-PENDING ·
+  // PHASE C badge instead of a value (used where the aggregate genuinely has
+  // no data — never a fake number).
+  function InvStatTile({ label, value, hint, tone, pending, testid }) {
+    const toneColor = tone === 'red'   ? 'var(--badge-red-text)'
+                    : tone === 'amber' ? 'var(--badge-amber-text)'
+                    : tone === 'green' ? 'var(--badge-green-text)'
+                    : 'var(--text)';
+    return (
+      <div data-testid={testid} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px', boxShadow: '0 1px 2px var(--shadow)' }}>
+        <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 6, lineHeight: 1.25 }}>{label}</div>
+        {pending ? (
+          <span style={{ display: 'inline-flex', alignItems: 'center', fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', padding: '3px 7px', borderRadius: 3, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', border: '1px solid var(--badge-amber-border)' }}>
+            BACKEND-PENDING · PHASE C
+          </span>
+        ) : (
+          <div style={{ fontSize: 22, fontWeight: 600, color: toneColor, lineHeight: 1.25 }}>{value == null ? '—' : value}</div>
+        )}
+        {hint && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>{hint}</div>}
+      </div>
+    );
+  }
+
   function InvPanel({ title, subtitle, children, testid }) {
     return (
       <div data-testid={testid} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)', marginBottom: 20 }}>
@@ -290,19 +314,21 @@ function DocumentViewerPage({ doc, onBack }) {
         {loading && <div style={{ color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>}
         {error && <div style={{ color: 'var(--badge-red-text)', fontSize: 12 }}>Error: {error}</div>}
         {s2 && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
-            <StatBadge label="Final stock" count={s2.final_stock && s2.final_stock.count} tone="green" sub="WAREHOUSE_STOCK" />
-            <StatBadge label="Samples out" count={s2.samples && s2.samples.count} tone="amber" sub="SAMPLE_OUT" />
-            <StatBadge label="Returns" count={s2.returns && s2.returns.count} tone="red"
-              sub={s2.returns && s2.returns.subcounts ? `${s2.returns.subcounts.from_client} client · ${s2.returns.subcounts.to_producer} producer` : null}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+            <InvStatTile testid="tile-final-stock" label="Final stock" value={s2.final_stock && s2.final_stock.count} tone="green" hint="WAREHOUSE_STOCK" />
+            <InvStatTile testid="tile-samples-out" label="Samples out" value={s2.samples && s2.samples.count} tone="amber" hint="SAMPLE_OUT" />
+            <InvStatTile testid="tile-returns" label="Returns" value={s2.returns && s2.returns.count} tone="red"
+              hint={s2.returns && s2.returns.subcounts ? `${s2.returns.subcounts.from_client} client · ${s2.returns.subcounts.to_producer} producer` : null}
             />
+            {/* Consignment: the aggregate genuinely returns not-available (no
+                CONSIGNMENT state/table) — a clean pending tile, never a fake
+                number. The engineer-facing basis stays in data.limitations. */}
+            <InvStatTile testid="tile-consignment" label="Consignment" pending hint="physically with client · title retained" />
           </div>
         )}
-        {data && data.limitations && data.limitations.length > 0 && (
-          <div style={{ marginTop: 12, fontSize: 11, color: 'var(--badge-amber-text)' }}>
-            ⚠ {data.limitations.join(' · ')}
-          </div>
-        )}
+        {/* B1: the raw diagnostic limitations paragraph was removed from the UI
+            (its content lives in the API response for engineers; the
+            Consignment pending tile carries the operator-facing signal). */}
         <div style={{ marginTop: 10 }}>
           <button onClick={load} disabled={loading} style={{ fontSize: 11, border: '1px solid var(--border)', background: 'transparent', borderRadius: 4, padding: '4px 10px', cursor: loading ? 'default' : 'pointer', color: 'var(--text-2)' }} data-testid="btn-refresh-stage2">
             {loading ? '…' : '↻ Refresh'}

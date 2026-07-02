@@ -6056,6 +6056,26 @@ components exposed to the same collision (grep spread-rest in static/v2)
 — candidates include the Button emitting the observed
 ['children','onClick','disabled','title','warn','style'] list.
 
+### 2026-07-03 — Phase B B1: Overview KPI tile polish (operator ruling "c")
+OPERATOR RULING (verbatim): "DEFER Sample/Returns to Phase C. Do B1 KPI polish
+now. No pending-scaffold tabs. No fake read data. Sample/Returns read
+endpoints become a separate backend slice later."
+TAB STRATEGY ASSUMPTION REVERSED by this ruling: LIVE-TABS-ONLY — a tab exists
+only when it carries real data; pending badges are allowed only on elements
+INSIDE live sections, never as scaffold tabs. (Supersedes the earlier
+mapping-gate "tab-by-tab scaffold" option.)
+PHASE-C INTAKE gains: sample/returns READ endpoints (writes exist; reads are
+the gap found in the Sample/Returns scope-verify a2126333) — a separate
+backend slice with a freeze exception when scheduled.
+B1 BUILD: Stage-2 overview tiles restyled to the wireframe InvStatTile design
+(design/inventory-page.design.jsx :28-43); real numbers from
+/inventory/stage2/aggregate ONLY (Final stock=WAREHOUSE_STOCK, Samples
+out=SAMPLE_OUT, Returns=RFC+RTP). Consignment = a clean tile with
+BACKEND-PENDING · PHASE C badge (aggregate genuinely returns not-available).
+The raw diagnostic limitations paragraph is REMOVED from the UI — that content
+stays in the API response (data.limitations) for engineers. No new tabs, no
+layout restructure beyond the tile row.
+
 ### 2026-07-03 — Phase B Sample/Returns tabs: SCOPE-VERIFY STOP (premise wrong — modules are write-only)
 OPERATOR CONTRACT (verbatim, recorded for when the slice proceeds): Authority
 = existing Inventory V2 page only · existing Customer Master only · existing
