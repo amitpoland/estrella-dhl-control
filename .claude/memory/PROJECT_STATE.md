@@ -6056,6 +6056,44 @@ components exposed to the same collision (grep spread-rest in static/v2)
 — candidates include the Button emitting the observed
 ['children','onClick','disabled','title','warn','style'] list.
 
+### 2026-07-03 — Phase B Sample/Returns tabs: SCOPE-VERIFY STOP (premise wrong — modules are write-only)
+OPERATOR CONTRACT (verbatim, recorded for when the slice proceeds): Authority
+= existing Inventory V2 page only · existing Customer Master only · existing
+Inventory backend only · existing navigation only · no new page · no duplicate
+UI · wireframe is design authority. Backend = existing endpoints only; missing
+→ "BACKEND-PENDING · PHASE C", never mock rows / fake counters / invented
+documents. UI = match the wireframe; no developer forms, no raw IDs, no
+batch-number text boxes, no internal DB fields. Customer authority = existing
+Customer Master only. Inventory authority = existing module only. Selection =
+checkbox multi-select · optional barcode search/scan (never mandatory) ·
+design/style search · Excel where appropriate. Documents = every movement
+document-driven; absent generation → BACKEND-PENDING · PHASE C, no
+placeholders.
+AUTHORITY-FIRST PERMANENT RULE (verbatim): "Before any UI coding begins,
+identify the existing authority page that will be modified. If it cannot be
+identified with certainty, STOP and ask. Never create a second implementation
+while searching for the correct location." Identified authority: InventoryPage
+(post-fold 0cee8173). Wireframe present (sha256:f7dd5e3889…).
+SCOPE-VERIFY FINDING (read-only, HEAD, exhaustive) → STOP per the operator's
+"anything uncertain → STOP and ask": the sample/returns modules are
+WRITE-ONLY. routes_inventory_sample = 2 POST (sample-out, sample-return),
+routes_inventory_returns = 3 POST (return-from-client, return-to-producer,
+return-from-producer). ZERO GET/list endpoints; no read of sample_out_events /
+returns_events anywhere; no list functions in the writers. The ONLY live
+sample/returns data is COUNTS from /inventory/stage2/aggregate (SAMPLE_OUT
+count; combined RETURNED_FROM_CLIENT+RETURNED_TO_PRODUCER count) — already
+shown by the Inventory hub Stage2Panel. Therefore the wireframe's four
+list-centric tabs (Sample Out / Sample Return / Client Return / Return to
+Producer — Sample ID, issued-to, return-by, condition, RMA, RTP, AWB-out
+columns) have NO read feed and would be ~90% BACKEND-PENDING · PHASE C. The
+"cheapest real parity" premise is materially wrong (writes ≠ readable tables).
+OPTIONS surfaced to operator (see report
+reports/inspection/2026-07-03T-sample-returns-scope-stop.md): (a) build the
+honest pending-scaffold now (mostly badges); (b) add read endpoints first
+(small backend slice — needs a freeze exception; backend is frozen for the
+inventory phase); (c) defer Sample/Returns to Phase C and do B1 KPI polish now
+(recommended). No UI built; slice HELD for operator decision.
+
 ### 2026-07-03 — Phase B FOLD: Move Location → Inventory Move Stock modal (Lesson M relocation)
 OPERATOR RULES (verbatim): "Fold Move Location into existing V2 Inventory. No
 standalone Move Location page. No duplicate Inventory authority. Existing V2
