@@ -134,6 +134,19 @@ Master / Customer Master; direct wFirma queries from any module are
 forbidden; if the Master is insufficient, STOP and extend the Master — never
 bypass it.)
 
+**MASTER CONSUMPTION RULE (permanent, operator-ratified 2026-07-03):** "Every
+business module must consume Masters. No business module may consume Mirrors.
+No business module may consume wFirma. Mirrors exist only for synchronization.
+Masters exist only for business logic." **LAYER RESPONSIBILITIES:** a **Mirror**
+holds ONLY `wfirma_id, product_code, sync_version, last_sync, hash,
+deleted_flag` — nothing else, never business logic. A **Master** holds design
+number, product code, category, status, active, business mapping. **Inventory
+NEVER reads the Mirror — only the Master.** Enforced by the standing pin
+`service/tests/test_master_consumption_rule.py` (mirror schema = exactly the six
+columns; no business module reads wFirma/mirror for product data — the known
+violation list shrinks per C-1 sub-slice and must reach zero by C-1d; new
+violations fail immediately).
+
 ---
 
 ## MANDATORY GOVERNANCE GATES

@@ -81,9 +81,14 @@ remains).
   product_master.
 - routes_reservations.py:170 sync_wfirma_products_by_codes (rworker) →
   **reads/writes the canonical mirror** (V6 fix).
-- routes_master_data.py:408 upsert_product_local (a THIRD product surface —
-  product_local overlay) → keep as the business-attribute overlay ABOVE the
-  Master; it is not a mirror; note it, do not fold in C-1.
+- routes_master_data.py:408 upsert_product_local (product_local overlay).
+  **AMENDED by operator (2026-07-03, overrides the earlier "keep as third
+  surface" note):** the one-Master criterion applies — product_local's
+  business fields FOLD INTO the Product Master (hs_code_override→hsn_code,
+  unit_override→unit, origin_country, notes, design_code_link, active→
+  is_active); product_local DEPRECATES IN PLACE (readers redirected in C-1c,
+  table retained, nothing deleted). Folded by backfill_product_authority()
+  in C-1a.
 - **V1 product write path** (routes_wfirma.py:2003 create_product / :2320
   edit_product) → rerouted THROUGH the Master: the route resolves via Product
   Master, and on create/edit updates product_master.status + the mirror — the

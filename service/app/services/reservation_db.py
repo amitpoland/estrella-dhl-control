@@ -73,6 +73,23 @@ CREATE TABLE IF NOT EXISTS wfirma_product_mapping (
 );
 CREATE INDEX IF NOT EXISTS idx_wfirma_product_mapping_status ON wfirma_product_mapping(sync_status);
 
+-- ── C-1a: canonical Product MIRROR (sync layer ONLY; PROJECT_STATE DECISIONS
+-- "C-1 RATIFIED" LAYER RESPONSIBILITIES). EXACTLY six columns — wfirma_id,
+-- product_code, sync_version, last_sync, hash, deleted_flag — never business
+-- logic. Consolidates the two split mirrors (wfirma_products in wfirma.db +
+-- wfirma_product_mapping above) which deprecate in place (readers redirected
+-- in C-1c, tables retained). Pinned by test_master_consumption_rule.py.
+CREATE TABLE IF NOT EXISTS wfirma_product_mirror (
+    wfirma_id    TEXT NOT NULL DEFAULT '',
+    product_code TEXT NOT NULL,
+    sync_version INTEGER NOT NULL DEFAULT 1,
+    last_sync    TEXT NOT NULL DEFAULT '',
+    hash         TEXT NOT NULL DEFAULT '',
+    deleted_flag INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wpm_product_code ON wfirma_product_mirror(product_code);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wpm_wfirma_id ON wfirma_product_mirror(wfirma_id) WHERE wfirma_id != '';
+
 CREATE TABLE IF NOT EXISTS wfirma_customer_mapping (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     client_name TEXT NOT NULL UNIQUE,
@@ -173,6 +190,21 @@ _PRODUCT_MASTER_PHASE4_COLUMNS = (
     ("is_globally_unique",            "INTEGER NOT NULL DEFAULT 1"),
 )
 
+# C-1a — product_master promoted to the EJ Dashboard Product MASTER authority
+# (PROJECT_STATE DECISIONS "C-1 RATIFIED"). Adds the business authority fields
+# (status incl. 'mapping_required', is_active) plus the fields folded from the
+# deprecating product_local overlay (unit, origin_country, notes,
+# design_code_link). hs_code_override folds into the existing hsn_code column
+# at backfill (no new column). Additive, idempotent.
+_PRODUCT_MASTER_C1A_AUTHORITY_COLUMNS = (
+    ("status",           "TEXT NOT NULL DEFAULT 'mapping_required'"),
+    ("is_active",        "INTEGER NOT NULL DEFAULT 1"),
+    ("unit",             "TEXT NOT NULL DEFAULT ''"),
+    ("origin_country",   "TEXT NOT NULL DEFAULT 'IN'"),
+    ("notes",            "TEXT NOT NULL DEFAULT ''"),
+    ("design_code_link", "TEXT NOT NULL DEFAULT ''"),
+)
+
 
 # ── Init ───────────────────────────────────────────────────────────────────────
 
@@ -186,6 +218,9 @@ def init_reservation_db(db_path: Path) -> None:
         # Phase 4 composite identity columns
         for col, ddl in _PRODUCT_MASTER_PHASE4_COLUMNS:
             _add_column_if_missing(con, "product_master", col, ddl)
+        # C-1a — Product Master authority columns (business layer)
+        for col, ddl in _PRODUCT_MASTER_C1A_AUTHORITY_COLUMNS:
+            _add_column_if_missing(con, "product_master", col, ddl)
         # Phase 4 — partial unique index on (supplier_id, product_code) for 417G rows.
         # Only applies when supplier_id is non-empty (EJL rows keep the existing
         # UNIQUE(product_code) constraint; 417G rows need the composite constraint).
@@ -197,6 +232,161 @@ def init_reservation_db(db_path: Path) -> None:
             )
         except Exception:
             pass  # index may already exist
+
+
+# ── C-1a Product Authority backfill ─────────────────────────────────────────────
+
+def backfill_product_authority(
+    reservation_db_path: Path,
+    wfirma_db_path:      Path,
+    master_data_db_path: Path,
+    *,
+    now_iso: str,
+) -> dict:
+    """C-1a data backfill (PROJECT_STATE DECISIONS "C-1 RATIFIED").
+
+    Idempotent. Populates wfirma_product_mirror from the two deprecating split
+    mirrors (wfirma_products in wfirma.db + wfirma_product_mapping in the
+    reservation DB), folds product_local business fields into product_master,
+    and sets product_master.status from mirror presence. Reads the sibling DBs
+    read-only; writes only the reservation DB. Never raises on a missing
+    sibling table — degrades and reports.
+
+    Returns {mirror_rows, status_set, local_folded}.
+    """
+    import hashlib
+
+    result = {"mirror_rows": 0, "status_set": 0, "local_folded": 0,
+              "wfirma_id_collisions": 0}
+    init_reservation_db(reservation_db_path)
+
+    # 1. Collect wFirma product identities from the two split sources.
+    #    prefer a confirmed wfirma_product_id; carry code/name for the hash.
+    ids: dict = {}   # product_code -> (wfirma_id, wfirma_code, wfirma_name)
+
+    def _merge(pc, wid, code, name):
+        pc = (pc or "").strip()
+        if not pc:
+            return
+        wid = (wid or "").strip()
+        prev = ids.get(pc)
+        # a non-empty wfirma_id always wins over an empty one
+        if prev is None or (not prev[0] and wid):
+            ids[pc] = (wid, (code or "").strip(), (name or "").strip())
+
+    # wfirma.db / wfirma_products (read-only)
+    try:
+        with sqlite3.connect(f"file:{wfirma_db_path}?mode=ro", uri=True) as wcon:
+            wcon.row_factory = sqlite3.Row
+            for r in wcon.execute(
+                "SELECT product_code, wfirma_product_id, product_name FROM wfirma_products"
+            ):
+                _merge(r["product_code"], r["wfirma_product_id"], r["product_code"], r["product_name"])
+    except Exception:
+        pass  # table/file may be absent in a fresh tree
+
+    # reservation.db / wfirma_product_mapping (same file)
+    with _connect(reservation_db_path) as con:
+        try:
+            for r in con.execute(
+                "SELECT product_code, wfirma_product_id, wfirma_code, wfirma_name "
+                "FROM wfirma_product_mapping"
+            ):
+                _merge(r["product_code"], r["wfirma_product_id"], r["wfirma_code"], r["wfirma_name"])
+        except Exception:
+            pass
+
+        # 2. Upsert the canonical mirror (idempotent on product_code).
+        #    COLLISION-SAFE: the UNIQUE wfirma_id invariant is enforced. If two
+        #    product_codes claim the SAME non-empty wfirma_id (a real
+        #    data-integrity condition — one wFirma product should map to one
+        #    code), the second is stored with an EMPTY mirror wfirma_id and
+        #    counted as a collision, so the invariant holds and the problem is
+        #    surfaced (reported) rather than crashing the migration. The
+        #    already-claimed wfirma_id set is seeded from rows already present.
+        # wfirma_id -> owning product_code (ownership-aware so a re-run does NOT
+        # collide a row with its OWN prior entry).
+        claimed = {
+            r["wfirma_id"]: r["product_code"] for r in con.execute(
+                "SELECT wfirma_id, product_code FROM wfirma_product_mirror WHERE wfirma_id!=''"
+            )
+        }
+        for pc, (wid, code, name) in ids.items():
+            eff_wid = wid
+            owner = claimed.get(wid) if wid else None
+            if wid and owner is not None and owner != pc:
+                eff_wid = ""            # collision (different code) — hold UNIQUE, surface it
+                result["wfirma_id_collisions"] += 1
+            elif wid:
+                claimed[wid] = pc
+            h = hashlib.sha256(f"{eff_wid}|{code}|{name}".encode("utf-8")).hexdigest()[:32]
+            existing = con.execute(
+                "SELECT product_code FROM wfirma_product_mirror WHERE product_code=?", (pc,)
+            ).fetchone()
+            if existing:
+                con.execute(
+                    "UPDATE wfirma_product_mirror SET wfirma_id=?, last_sync=?, hash=?, "
+                    "sync_version=sync_version+1 WHERE product_code=?",
+                    (eff_wid, now_iso, h, pc),
+                )
+            else:
+                con.execute(
+                    "INSERT INTO wfirma_product_mirror "
+                    "(wfirma_id, product_code, sync_version, last_sync, hash, deleted_flag) "
+                    "VALUES (?,?,?,?,?,0)",
+                    (eff_wid, pc, 1, now_iso, h),
+                )
+                result["mirror_rows"] += 1
+
+        # 3. Master status from mirror presence (only for product_codes that
+        #    have a product_master row — the master is the business authority).
+        for pc, (wid, _c, _n) in ids.items():
+            new_status = "mapped" if wid else "mapping_required"
+            cur = con.execute(
+                "UPDATE product_master SET status=?, updated_at=? "
+                "WHERE product_code=? AND status!=?",
+                (new_status, now_iso, pc, new_status),
+            )
+            result["status_set"] += cur.rowcount
+
+        # 4. Fold product_local business fields into the master (override wins).
+        try:
+            with sqlite3.connect(f"file:{master_data_db_path}?mode=ro", uri=True) as mcon:
+                mcon.row_factory = sqlite3.Row
+                local_rows = mcon.execute(
+                    "SELECT product_code, hs_code_override, unit_override, "
+                    "design_code_link, notes, origin_country, active "
+                    "FROM product_local"
+                ).fetchall()
+        except Exception:
+            local_rows = []
+        for lr in local_rows:
+            pc = (lr["product_code"] or "").strip()
+            if not pc:
+                continue
+            cur = con.execute(
+                """UPDATE product_master SET
+                       hsn_code        = CASE WHEN ?!='' THEN ? ELSE hsn_code END,
+                       unit            = CASE WHEN ?!='' THEN ? ELSE unit END,
+                       design_code_link= CASE WHEN ?!='' THEN ? ELSE design_code_link END,
+                       notes           = CASE WHEN ?!='' THEN ? ELSE notes END,
+                       origin_country  = COALESCE(NULLIF(?, ''), origin_country),
+                       is_active       = ?,
+                       updated_at      = ?
+                   WHERE product_code=?""",
+                (
+                    (lr["hs_code_override"] or ""), (lr["hs_code_override"] or ""),
+                    (lr["unit_override"] or ""), (lr["unit_override"] or ""),
+                    (lr["design_code_link"] or ""), (lr["design_code_link"] or ""),
+                    (lr["notes"] or ""), (lr["notes"] or ""),
+                    (lr["origin_country"] or ""),
+                    int(lr["active"]) if lr["active"] is not None else 1,
+                    now_iso, pc,
+                ),
+            )
+            result["local_folded"] += cur.rowcount
+
+    return result
 
 
 # ── product_master ─────────────────────────────────────────────────────────────

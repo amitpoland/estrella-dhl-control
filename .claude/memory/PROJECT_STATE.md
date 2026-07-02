@@ -6056,6 +6056,40 @@ components exposed to the same collision (grep spread-rest in static/v2)
 — candidates include the Button emitting the observed
 ['children','onClick','disabled','title','warn','style'] list.
 
+### 2026-07-03 — C-1 RATIFIED with amendments: "EJ Dashboard Master Authority Establishment"
+1. C-1 OBJECTIVE (renamed): "EJ Dashboard Master Authority Establishment" —
+   NOT table cleanup. Authority established first, consumers migrated after;
+   pattern reusable for C-2..C-7.
+2. MASTER CONSUMPTION RULE (verbatim): "Every business module must consume
+   Masters. No business module may consume Mirrors. No business module may
+   consume wFirma. Mirrors exist only for synchronization. Masters exist only
+   for business logic."
+3. LAYER RESPONSIBILITIES (verbatim): Mirror = wfirma_id, product_code,
+   sync_version, last_sync, hash, deleted_flag — NOTHING else, never business
+   logic. Master = design number, product code, category, status, active,
+   business mapping. Inventory NEVER reads the Mirror — only the Master.
+4. REVISED QUEUE: C-1 Product Authority → C-2 Customer Authority → C-3
+   Inventory-consumes-Masters-only (verification) → C-4 Sample/Returns →
+   C-5 Consignment → C-6 Invoice → C-7 MM Integration.
+5. C-1 SUCCESS CRITERIA (verbatim): one Product Mirror · one Product Master ·
+   Inventory consumes Product Master · no business module consumes Mirror or
+   wFirma directly · architecture reusable for future modules.
+6. PLAN AMENDMENT (one-master criterion overrides b7937266): product_local is
+   NOT a third surface — its business fields fold INTO the Product Master; the
+   table deprecates in place (readers redirected, table retained, nothing
+   deleted).
+C-1 EXECUTES AS FOUR GATED SUB-SLICES (each own pre-flight, R1 scope-lock,
+tests+golden, gated commits, typed SKELETON, STOP for operator "next"; no
+deploy; DB file-copy backup before every migration):
+  C-1a SCHEMA (wfirma_product_mirror 6-cols + product_master authority
+    columns + product_local fold + backfill + standing pin) ← THIS RUN.
+  C-1b WRITE PATH (routes_wfirma create/edit through Master, V1; sync
+    Mirror-first then Master resolve; V6 reservations reroute).
+  C-1c CONSUMER MIGRATION (~13 read sites → Master; split tables +
+    product_local dead-read; xfail list → zero).
+  C-1d VERIFICATION (completion audit; Inventory→Master-only greps; pin fully
+    green; census appended; success criteria answered line-by-line).
+
 ### 2026-07-03 — Phase C QUEUE REORDER (operator) + MASTER-FIRST RULE (verbatim)
 QUEUE (operator, verbatim order): C-0 Authority Cleanup (read-only) → C-1
 Product Master Authority → C-2 Customer Master Authority → C-3 Sample/Returns
