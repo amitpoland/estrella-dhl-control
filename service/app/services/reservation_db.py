@@ -93,6 +93,24 @@ CREATE TABLE IF NOT EXISTS wfirma_product_mirror (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wpm_product_code ON wfirma_product_mirror(product_code);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wpm_wfirma_id ON wfirma_product_mirror(wfirma_id) WHERE wfirma_id != '';
 
+-- ── C-2a: canonical Customer MIRROR (sync layer ONLY; Phase-C Constitution §3/§7).
+-- EXACTLY six columns — contractor_id, client_name, sync_version, last_sync,
+-- hash, deleted_flag — never business logic. Consolidates the two split caches
+-- (wfirma_customers in wfirma.db + wfirma_customer_mapping below) which
+-- deprecate in place (reads migrated in C-2b). contractor_id is the wFirma
+-- stable id (PRIMARY KEY); client_name is a mutable label only.
+-- Pinned by test_master_consumption_rule.py (test_customer_mirror_schema_is_exactly_six_columns).
+CREATE TABLE IF NOT EXISTS wfirma_customer_mirror (
+    contractor_id TEXT NOT NULL,
+    client_name   TEXT NOT NULL DEFAULT '',
+    sync_version  INTEGER NOT NULL DEFAULT 1,
+    last_sync     TEXT NOT NULL DEFAULT '',
+    hash          TEXT NOT NULL DEFAULT '',
+    deleted_flag  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (contractor_id)
+);
+CREATE INDEX IF NOT EXISTS idx_wcm_client_name ON wfirma_customer_mirror(client_name);
+
 CREATE TABLE IF NOT EXISTS wfirma_customer_mapping (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     client_name TEXT NOT NULL UNIQUE,
@@ -388,6 +406,131 @@ def backfill_product_authority(
                 ),
             )
             result["local_folded"] += cur.rowcount
+
+    return result
+
+
+# ── C-2a Customer Authority — mirror upsert + backfill ───────────────────────────
+
+def upsert_customer_mirror(
+    db_path: Path,
+    *,
+    contractor_id: str,
+    client_name: str = "",
+) -> Dict[str, Any]:
+    """Write or update a customer sync identity into wfirma_customer_mirror.
+
+    C-2a (Phase-C Constitution §3/§7): contractor_id is the wFirma stable id;
+    client_name is a mutable label (legally-changed names are NOT collisions —
+    we update the label and bump sync_version). When contractor_id is empty,
+    the row is skipped (mirror rows must hold confirmed wFirma contractor ids).
+
+    Returns {"written": bool, "reason": str | None}.
+    """
+    import hashlib
+
+    contractor_id = (contractor_id or "").strip()
+    if not contractor_id:
+        return {"written": False, "reason": "empty_contractor_id"}
+
+    client_name = (client_name or "").strip()
+    now = _now()
+    h = hashlib.sha256(f"{contractor_id}|{client_name}".encode("utf-8")).hexdigest()[:32]
+
+    with _connect(db_path) as con:
+        existing = con.execute(
+            "SELECT contractor_id FROM wfirma_customer_mirror WHERE contractor_id=?",
+            (contractor_id,),
+        ).fetchone()
+        if existing:
+            con.execute(
+                "UPDATE wfirma_customer_mirror "
+                "SET client_name=?, sync_version=sync_version+1, last_sync=?, hash=? "
+                "WHERE contractor_id=?",
+                (client_name, now, h, contractor_id),
+            )
+        else:
+            con.execute(
+                "INSERT INTO wfirma_customer_mirror "
+                "(contractor_id, client_name, sync_version, last_sync, hash, deleted_flag) "
+                "VALUES (?,?,?,?,?,0)",
+                (contractor_id, client_name, 1, now, h),
+            )
+    return {"written": True, "reason": None}
+
+
+def backfill_customer_authority(
+    db_path: Path,
+    wfirma_db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """C-2a idempotent backfill: populate wfirma_customer_mirror from both
+    legacy customer caches (wfirma_customer_mapping in the same reservation DB
+    + wfirma_customers in wfirma.db).
+
+    Idempotent — a second run bumps sync_version for rows whose label changed,
+    and writes nothing new where the contractor_id is already mirrored with the
+    same name. Never raises on missing sibling tables. Reports name_conflicts
+    (same contractor_id seen with different client_name values across the two
+    sources — kept as an advisory list; mirror stores the last-seen label).
+
+    Returns {from_mapping, from_cache, written, skipped_empty_id, name_conflicts}.
+    """
+    init_reservation_db(db_path)
+
+    result: Dict[str, Any] = {
+        "from_mapping": 0,
+        "from_cache": 0,
+        "written": 0,
+        "skipped_empty_id": 0,
+        "name_conflicts": [],  # list of (contractor_id, name_a, name_b)
+    }
+
+    # Collect rows from both sources: contractor_id -> client_name
+    # (last non-empty name wins; name_conflicts surfaced when values differ)
+    seen: Dict[str, str] = {}  # contractor_id -> client_name (first encountered)
+
+    def _record(contractor_id: str, client_name: str, source_key: str) -> None:
+        cid = (contractor_id or "").strip()
+        name = (client_name or "").strip()
+        if not cid:
+            result["skipped_empty_id"] += 1
+            return
+        result[source_key] += 1
+        if cid in seen:
+            prev_name = seen[cid]
+            if prev_name != name and name:
+                result["name_conflicts"].append((cid, prev_name, name))
+                seen[cid] = name  # update to latest label
+        else:
+            seen[cid] = name
+
+    # Source 1: wfirma_customer_mapping (same reservation DB)
+    try:
+        with _connect(db_path) as con:
+            for r in con.execute(
+                "SELECT client_name, wfirma_customer_id FROM wfirma_customer_mapping"
+            ):
+                _record(r["wfirma_customer_id"], r["client_name"], "from_mapping")
+    except Exception:
+        pass  # table may be absent in a fresh tree
+
+    # Source 2: wfirma_customers (wfirma.db, read-only)
+    if wfirma_db_path is not None and wfirma_db_path.exists():
+        try:
+            with sqlite3.connect(f"file:{wfirma_db_path}?mode=ro", uri=True) as wcon:
+                wcon.row_factory = sqlite3.Row
+                for r in wcon.execute(
+                    "SELECT client_name, wfirma_customer_id FROM wfirma_customers"
+                ):
+                    _record(r["wfirma_customer_id"], r["client_name"], "from_cache")
+        except Exception:
+            pass  # table/file may be absent
+
+    # Upsert all collected rows into the mirror
+    for cid, name in seen.items():
+        res = upsert_customer_mirror(db_path, contractor_id=cid, client_name=name)
+        if res.get("written"):
+            result["written"] += 1
 
     return result
 

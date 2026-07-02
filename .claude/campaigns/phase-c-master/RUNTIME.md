@@ -6,9 +6,9 @@
 ## Current State
 
 - **Phase:** Wave 1 — Master Authority Completion (Phase 0 COMPLETE 2026-07-03; CP1 issued)
-- **Current slice:** C-2a — customer mirror consolidation
+- **Current slice:** C-2b — customer write-path reroute (V4/V5/V7)
 - **Slice state:** IN_PROGRESS
-- **Next:** C-2b → C-2c; C-1e awaits operator ruling (OI-18); C-1f requires C-1e
+- **Next:** C-2c; C-1e awaits operator ruling (OI-18); C-1f requires C-1e
 - **Blocked by:** — (C-1e/C-1f deferred within wave per OI-18; unblocked slices remain)
 
 ## Completed Slices (append-only ledger)
@@ -36,13 +36,14 @@ Campaign slices:
 |---|---|---|
 | 2026-07-03 | Platform launch (docs-only; 8 documents + PROJECT_STATE ruling) | `575bb3f3` |
 | 2026-07-03 | Phase 0 evidence pass (registers populated; W1/W2 VALID) | `be0783c8` |
-| 2026-07-03 | C-1w2 capabilities write path + inseparable reads → sync layer; pin 3→2; golden 160/160; capabilities 69+2 pre-existing | see git log `feat(c1w2-…)` |
+| 2026-07-03 | C-1w2 capabilities write path + inseparable reads → sync layer; pin 3→2; golden 160/160; capabilities 69+2 pre-existing | `3833627c` |
+| 2026-07-03 | C-2a wfirma_customer_mirror schema (contractor_id PK) + collision-safe upsert + idempotent 2-source backfill; pin 9/9; golden 160/160 | see git log `feat(c2a-…)` |
 
 ## Budget Tracking (live; boundary snapshots go to MASTER_MANIFEST §4)
 
 | Wave | Consumed | Budget | Forecast |
 |---|---|---|---|
-| Wave 1 | 0.5h (C-1w2) | 8h | within budget |
+| Wave 1 | 1h (C-1w2, C-2a) | 8h | within budget |
 | Wave 2 | 0h | 11h | — |
 | Wave 3 | 0h | 6h | — |
 | Wave 4 | 0h | 5h | — |

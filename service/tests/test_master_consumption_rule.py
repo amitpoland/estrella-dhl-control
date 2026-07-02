@@ -120,6 +120,29 @@ def test_mirror_schema_is_exactly_six_columns():
     )
 
 
+# ── C-2a: customer mirror schema = exactly six columns ──────────────────────
+
+_CUSTOMER_MIRROR_COLUMNS = {
+    "contractor_id", "client_name", "sync_version", "last_sync", "hash", "deleted_flag"
+}
+
+
+def test_customer_mirror_schema_is_exactly_six_columns():
+    """C-2a standing pin: wfirma_customer_mirror has EXACTLY the six mirror-discipline
+    columns (contractor_id, client_name, sync_version, last_sync, hash, deleted_flag).
+    Schema drift (any add/remove) FAILS immediately (LAYER RESPONSIBILITIES, Phase-C §3/§7)."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "reservation_queue.db"
+        rdb.init_reservation_db(db)
+        con = sqlite3.connect(str(db))
+        cols = {r[1] for r in con.execute("PRAGMA table_info(wfirma_customer_mirror)")}
+        con.close()
+    assert cols == _CUSTOMER_MIRROR_COLUMNS, (
+        f"wfirma_customer_mirror must have EXACTLY the six sync columns "
+        f"(LAYER RESPONSIBILITIES). Got: {sorted(cols)}"
+    )
+
+
 def test_mirror_has_unique_product_code_and_wfirma_id():
     with tempfile.TemporaryDirectory() as td:
         db = Path(td) / "reservation_queue.db"
