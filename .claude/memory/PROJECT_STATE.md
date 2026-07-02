@@ -5917,6 +5917,26 @@ WARNING 2026-07-02 14:06 — lane-a status write failing silently in prod).
 Backup scheduling (#1) = operator task, recorded separately once confirmed
 running.
 
+### 2026-07-03 — infra hardening #4: HTTP access logging (health pass d67d3722)
+GATE PROVEN EMPIRICALLY (local boots, prod-exact CLI per the NSSM
+AppParameters read in d67d3722; truth table verbatim):
+| variant | logging.py silencer | --access-log flag | access line? |
+| baseline (prod today) | WARNING (present) | absent (uvicorn default ON) | NO |
+| (b) flag only | WARNING (present) | present | NO |
+| (a) in-repo flip only | INFO | absent | (proven post-edit — the fix) |
+CONCLUSION: uvicorn's access log is ON by default; the ONLY gate is
+core/logging.py:11 silencing uvicorn.access to WARNING after uvicorn's own
+dictConfig (app import runs last, so the silencer always wins). The NSSM
+--access-log parameter is neither sufficient nor necessary — NO operator-side
+NSSM change required; prod inherits the fix at normal deploy.
+FIX: core/logging.py flips uvicorn.access to INFO explicitly (comment cites
+finding #4 + the atlas access-log dead-end this gap caused). Format: uvicorn
+default access format (client_addr, request line = method+path, status) —
+the atlas-class question ("is /dashboard/atlas ever hit") becomes grep-able.
+ROTATION: NSSM online rotation at 10MB absorbs the stream (no new
+mechanism). RETENTION: access lines join pz_stdout.log and its accepted
+pruning posture (finding #8).
+
 ## Authority-Model Separation — six separate authorities (2026-06-22)
 
 - **Binding (operator-approved, permanent, no flag):** import, product master, proforma,
