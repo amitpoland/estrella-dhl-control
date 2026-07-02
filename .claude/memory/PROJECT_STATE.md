@@ -5876,6 +5876,20 @@ webhook/poll extension PARKED on the decision-list as candidate slice BE-1c.
 Until then, direct-booked PZs promote via physical-receipt confirm or the
 future manual exception page.
 
+### 2026-07-02 — client_po + invoice_no silent-drop fix (operator: "both")
+Both fields parsed by routes_packing (dict :1434, :1443) but omitted from the
+document_db INSERT (:2003-2009) since inception — silently dropped at the DB
+boundary. Persisted via ALTER-on-init (TEXT NOT NULL DEFAULT '') + INSERT
+bind, matching the established sales_packing_lines evolution idiom
+(document_db.py:369-380). Legacy rows carry '' (backfill = separate decision;
+original packing files retained per scope report 2e05787e —
+sales_documents.source_file_path). Consumers: consignment contract linkage
+(operator spec — Cons.ID ↔ Client PO ↔ Proforma join prerequisite);
+proforma-detail fallback at :2542 (currently fakes client_po from
+invoice_no||client_ref) to prefer the real column in the UI parity slice.
+Pin test: parse→persist→readback both fields, legacy-row '' default,
+drop-can't-return INSERT pin. Backend only, zero UI files, no deploy.
+
 ## Authority-Model Separation — six separate authorities (2026-06-22)
 
 - **Binding (operator-approved, permanent, no flag):** import, product master, proforma,
