@@ -6658,6 +6658,20 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 # OPEN QUESTIONS
 
+## OQ-INFRA-BACKUP-TASK: has Amit created the backup scheduled task? (2026-07-03, OPEN — highest-value checkbox on the board)
+
+- **Question**: Infra health pass d67d3722 finding #1 — the B7 backup service is fully built (backup_service.py: online-backup API + WAL checkpoint + 7/4/12 retention + manifest + admin API + CLI + runbook) but the Windows Task Scheduler job was never created. Last valid backup: 2026-06-14. Has the operator run the runbook's `schtasks` creation (daily `run_backup.py` + prune) and has the first manifest landed in C:\PZ-backups?
+- **Who can answer**: Amit (operator) — two `schtasks` lines per service/docs/ops/backup-runbook.md; zero code.
+- **Impact if unanswered**: no automated backup of any production DB; Guardian backup_freshness stays degraded; findings #5 (off-box copy) and #7 (debris cleanup) stay blocked behind it.
+- **Candidate path to closure**: Amit confirms task created + first manifest verified → DECISIONS record + Guardian green confirmation → #5 unblocks.
+
+## OQ-WFIRMA-MM-ANSWER: does the wFirma API support MM inter-warehouse transfer? (2026-07-03, OPEN — gates consignment/BE-1c)
+
+- **Question**: MM (przesunięcie międzymagazynowe) is absent from the client registry, python-wfirma's types, and all repo docs (scope 6d6d9d64 §B). Amit asks wFirma support: is MM available via API? Also from §E: WZ add via API vs invoice-auto-WZ; consignment warehouse existence; sandbox availability.
+- **Who can answer**: Amit via wFirma support; §E checklist persisted at reports/inspection/2026-07-03T-wfirma-section-e-operator-checklist.md.
+- **Impact if unanswered**: consignment flow (MM Main→Consignment + invoice-from-consignment) and the sale-out-leg WZ shape cannot lock scope.
+- **Candidate path to closure**: answers land → consignment model decision + sale-out-leg slice spec.
+
 ## OQ-B71B-DIRECT-WFIRMA-PZ: should a PZ booked directly inside wFirma auto-promote stock? (2026-07-02, ANSWERED (a) — CLOSED same day; see DECISIONS "slice B×7-1b BE-1")
 
 - **Question**: BE-1 (auto-promotion hook, slice B×7-1b) fires `run_stock_promotion()` from the two app-pipeline PZ writers (`routes_wfirma.py:2738`, `global_pz_push.py:619` — both emit EV_WFIRMA_PZ_CREATED). A PZ booked DIRECTLY in wFirma (bypassing Atlas, e.g. operator working in wFirma UI) is invisible today — the webhook scheduler carries no warehouse-document events. Option (a): app-pipeline PZs only for now; direct-wFirma PZs handled manually via the future exception page; poll/webhook extension parked as BE-1c. Option (b): the extension is required before the feature counts as done. Advisor lean: (a).
