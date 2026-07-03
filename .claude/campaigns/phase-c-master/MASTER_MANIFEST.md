@@ -1,5 +1,7 @@
 # Phase-C Inventory Master — Campaign Manifest (MASTER_MANIFEST.md)
 
+**Platform v1.0 — FROZEN at `e2d69602` (operator ruling 2026-07-03)**
+
 **Campaign:** EJ Dashboard Phase-C Inventory Master Campaign
 **Version:** 1.0 · **Created:** 2026-07-03 · **Launch ruling:** §5 (verbatim)
 **Parent program:** `.claude/campaigns/ej-dashboard-master.md`

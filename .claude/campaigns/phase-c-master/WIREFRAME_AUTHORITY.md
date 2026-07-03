@@ -1,5 +1,7 @@
 # Phase-C Inventory Master — Wireframe Authority (WIREFRAME_AUTHORITY.md)
 
+**Platform v1.0 — FROZEN at `e2d69602` (operator ruling 2026-07-03)**
+
 Constitution §12 (verbatim): "Inventory UI is exactly the supplied wireframe. Never
 redesign. Never simplify. Never invent. Wireframe is the UI authority."
 

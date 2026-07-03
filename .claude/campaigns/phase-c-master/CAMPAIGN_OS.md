@@ -1,5 +1,7 @@
 # Phase-C Inventory Master — Campaign Operating System (CAMPAIGN_OS.md)
 
+**Platform v1.0 — FROZEN at `e2d69602` (operator ruling 2026-07-03)**
+
 **Version:** 1.0 · **Adopted:** 2026-07-03 · **Status:** ACTIVE
 **Campaign:** EJ Dashboard Phase-C Inventory Master Campaign
 **Governed by:** Phase-C Constitution R4 (CLAUDE.md §"EJ Dashboard Phase-C Constitution (Final)")

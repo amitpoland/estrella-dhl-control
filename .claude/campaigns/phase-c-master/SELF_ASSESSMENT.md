@@ -1,5 +1,7 @@
 # Phase-C Inventory Master — Self-Assessment Ledger (SELF_ASSESSMENT.md)
 
+**Platform v1.0 — FROZEN at `e2d69602` (operator ruling 2026-07-03)**
+
 Scope-vs-estimate ledger (operator amendment item 3). Append-only.
 
 Triggers:

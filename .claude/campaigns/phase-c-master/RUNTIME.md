@@ -1,5 +1,7 @@
 # Phase-C Inventory Master — Runtime State (RUNTIME.md)
 
+**Platform v1.0 — FROZEN at `e2d69602` (operator ruling 2026-07-03)**
+
 **Updated:** 2026-07-03 (platform creation) · updated at EVERY slice boundary
 **Branch:** `deploy/latest`
 

@@ -1,5 +1,7 @@
 # Phase-C Inventory Master — Lessons Learned (LESSONS_LEARNED.md)
 
+**Platform v1.0 — FROZEN at `e2d69602` (operator ruling 2026-07-03)**
+
 Append-only. Entry #1 is operator-ratified verbatim (verdict 2026-07-03, R4).
 This file is platform document #9 — loaded with the platform per CAMPAIGN_OS §1.
 

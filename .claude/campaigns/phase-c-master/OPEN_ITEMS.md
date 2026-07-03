@@ -1,5 +1,7 @@
 # Phase-C Inventory Master — Open Items Ledger (OPEN_ITEMS.md)
 
+**Platform v1.0 — FROZEN at `e2d69602` (operator ruling 2026-07-03)**
+
 OI = an item requiring operator input (wFirma account facts, business decisions) that
 gates campaign slices. Constitution §19: never guess a wFirma capability. States:
 **OPEN** / **ANSWERED** (with citation) / **INVALIDATED** (assumption behind it collapsed).

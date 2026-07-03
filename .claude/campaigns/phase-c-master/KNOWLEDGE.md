@@ -1,5 +1,7 @@
 # Phase-C Inventory Master — Validated Knowledge (KNOWLEDGE.md)
 
+**Platform v1.0 — FROZEN at `e2d69602` (operator ruling 2026-07-03)**
+
 Append-only. Facts here are PROVEN from repo evidence — nothing guessed (Constitution
 §18/§19). Populated at platform creation from the Phase-0-grade audits; extended by the
 Phase 0 run and at each wave boundary.
