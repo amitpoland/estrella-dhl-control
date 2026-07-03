@@ -199,3 +199,19 @@ Campaign slices:
   REPAIRED (mapping tab now exists); 6/8 wireframe fields honest em-dash
   [IV-ID-1] (no backend). Next: W3-page12 MoveStock stage-transition tab —
   then the Inventory-family browser render gate + health check.
+- W3-page12 COMPLETE (MoveStockModal Stage-Transition tab, census #12, scope S):
+  9/9 gate; disabled tab became honest document-driven guide + exception/correction
+  path per operator lifecycle rule (KNOWLEDGE.md); all 12 inventory_state_engine
+  transitions listed with real triggers + endpoint names; 5 deep-link buttons
+  (inv:jump CustomEvent) to dedicated tabs (Sample Out, Sample Return, Client
+  Return, Return to Producer, Temp Sale); Lesson-M IV-ST-1 disclosed (wireframe
+  Consignment/TempSale "Confirm move" has no backend POST route); wh→wh tab
+  fully preserved; pin 11/11, smoke 63/63, 0 console errors. Build record:
+  reports/wave3/pages/2026-07-04-page12-movestock-transition.md. NO COMMIT.
+  Next: Inventory-family browser render gate + Wave-3 health check (page 9
+  Final Stock still holds on Q-4 ruling).
+- W3-page12 COMPLETE (MoveStock stage-transition tab): 9/9 gate; silently-disabled
+  control -> honest document-driven-transitions guide (engine LEGAL_TRANSITIONS
+  rendered w/ real triggers/endpoints; 5 deep-links; IV-ST-1 Lesson-M panel; no
+  manual-transition route exists = none invented); wh->wh preserved. Inventory
+  family: 10 of 11 tabs + modal DONE; page 9 holds on Q-4. Family render gate next.

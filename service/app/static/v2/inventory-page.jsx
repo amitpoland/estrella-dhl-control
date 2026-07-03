@@ -1810,119 +1810,329 @@ function DocumentViewerPage({ doc, onBack }) {
     return (
       <window.Modal title="Move Stock" onClose={onClose} wide>
         <div data-testid="move-stock-modal">
-          {/* Move-type toggle — wh→wh wired; stage transition pending (Phase C) */}
+          {/* Move-type toggle — wh→wh LIVE; stage-transition tab LIVE (document-driven guide).
+              Census #12 (scope S): was silently disabled (B×7-1 era); now an honest
+              exception/correction guide per operator lifecycle rule (KNOWLEDGE.md §Operator
+              lifecycle rules): "Manual Move Stock page = exception/correction path only;
+              the document is the primary trigger." */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16, padding: 4, background: 'var(--bg-subtle)', borderRadius: 8, border: '1px solid var(--border)' }}>
             {[
-              { id: 'wh-wh', testid: 'ms-type-wh-wh', title: 'Warehouse → Warehouse', desc: 'Physical location transfer', pending: false },
-              { id: 'stage', testid: 'ms-type-stage', title: 'Stage transition', desc: 'Main → Sample / Consignment / RTP', pending: true },
+              { id: 'wh-wh', testid: 'ms-type-wh-wh', title: 'Warehouse → Warehouse', desc: 'Physical location transfer' },
+              { id: 'stage', testid: 'ms-type-stage', title: 'Stage transition', desc: 'Document-driven guide + exception path' },
             ].map(opt => (
-              <button key={opt.id} data-testid={opt.testid} onClick={() => !opt.pending && setMoveType(opt.id)}
-                disabled={opt.pending}
-                title={opt.pending ? 'backend-pending — Phase C' : ''}
-                style={{ padding: '12px 14px', textAlign: 'left', borderRadius: 6, cursor: opt.pending ? 'not-allowed' : 'pointer',
-                  opacity: opt.pending ? 0.55 : 1,
+              <button key={opt.id} data-testid={opt.testid} onClick={() => setMoveType(opt.id)}
+                style={{ padding: '12px 14px', textAlign: 'left', borderRadius: 6, cursor: 'pointer',
                   background: moveType === opt.id ? 'var(--card)' : 'transparent',
                   border: moveType === opt.id ? '1px solid var(--accent)' : '1px solid transparent' }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {opt.title}
-                  {opt.pending && <span style={{ fontSize: 8.5, fontWeight: 700, padding: '1px 5px', borderRadius: 3, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', border: '1px solid var(--badge-amber-border)' }}>BACKEND-PENDING · PHASE C</span>}
-                </div>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>{opt.title}</div>
                 <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 2 }}>{opt.desc}</div>
               </button>
             ))}
           </div>
 
-          {/* Honest-mechanics banner */}
-          <div data-testid="ms-banner" style={{ marginBottom: 14, padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11.5, color: 'var(--text-2)' }}>
-            Batch = sequential single-piece moves (backend is per-piece). Metadata-only write — lifecycle state is not changed. Selection is from the source-location list (no ID paste).
-          </div>
+          {/* ── Warehouse → Warehouse (location move, LIVE) ─────────────────────── */}
+          {moveType === 'wh-wh' && (<>
+            {/* Honest-mechanics banner */}
+            <div data-testid="ms-banner" style={{ marginBottom: 14, padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11.5, color: 'var(--text-2)' }}>
+              Batch = sequential single-piece moves (backend is per-piece). Metadata-only write — lifecycle state is not changed. Selection is from the source-location list (no ID paste).
+            </div>
 
-          {/* Source location select */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
-            <div>
-              <label style={lbl}>Source location</label>
-              {locErr && <div style={{ fontSize: 11, color: 'var(--badge-red-text)' }}>{locErr}</div>}
-              <select data-testid="ms-source" value={source} onChange={e => loadPieces(e.target.value)} style={fld}>
-                <option value="">— select a location —</option>
-                {(locs || []).map(l => <option key={l.location_code} value={l.location_code}>{locName(l)}</option>)}
-              </select>
+            {/* Source / Destination selects */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+              <div>
+                <label style={lbl}>Source location</label>
+                {locErr && <div style={{ fontSize: 11, color: 'var(--badge-red-text)' }}>{locErr}</div>}
+                <select data-testid="ms-source" value={source} onChange={e => loadPieces(e.target.value)} style={fld}>
+                  <option value="">— select a location —</option>
+                  {(locs || []).map(l => <option key={l.location_code} value={l.location_code}>{locName(l)}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={lbl}>Destination location</label>
+                <select data-testid="ms-destination" value={dest} onChange={e => setDest(e.target.value)} style={fld}>
+                  <option value="">— select a destination —</option>
+                  {(locs || []).filter(l => l.location_code !== source).map(l => <option key={l.location_code} value={l.location_code}>{locName(l)}</option>)}
+                </select>
+              </div>
             </div>
-            <div>
-              <label style={lbl}>Destination location</label>
-              <select data-testid="ms-destination" value={dest} onChange={e => setDest(e.target.value)} style={fld}>
-                <option value="">— select a destination —</option>
-                {(locs || []).filter(l => l.location_code !== source).map(l => <option key={l.location_code} value={l.location_code}>{locName(l)}</option>)}
-              </select>
-            </div>
-          </div>
 
-          {/* Pieces at source */}
-          {loadingPieces && <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }}>Loading pieces…</div>}
-          {pieceErr && <div style={{ fontSize: 12, color: 'var(--badge-red-text)', marginBottom: 12 }}>{pieceErr}</div>}
-          {pieces && pieces.length === 0 && (
-            <div data-testid="ms-empty" style={{ marginBottom: 12, padding: 12, border: '1px dashed var(--border)', borderRadius: 6, fontSize: 12, color: 'var(--text-3)' }}>
-              No pieces at this location (honest empty — inventory_current_location has no rows here).
+            {/* Pieces at source */}
+            {loadingPieces && <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }}>Loading pieces…</div>}
+            {pieceErr && <div style={{ fontSize: 12, color: 'var(--badge-red-text)', marginBottom: 12 }}>{pieceErr}</div>}
+            {pieces && pieces.length === 0 && (
+              <div data-testid="ms-empty" style={{ marginBottom: 12, padding: 12, border: '1px dashed var(--border)', borderRadius: 6, fontSize: 12, color: 'var(--text-3)' }}>
+                No pieces at this location (honest empty — inventory_current_location has no rows here).
+              </div>
+            )}
+            {pieces && pieces.length > 0 && (
+              <table data-testid="ms-table" style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 14 }}>
+                <thead><tr>
+                  {['', 'Piece (scan_code)', 'Design', 'Product code', 'Status'].map(h => (
+                    <th key={h} style={{ padding: '6px 8px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em', textAlign: 'left', borderBottom: '1px solid var(--border)' }}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {pieces.map(p => {
+                    const synthetic = !!p.synthetic;
+                    const sc = p.scan_code;
+                    return (
+                      <tr key={sc}>
+                        <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                          <input type="checkbox" data-testid="ms-row-checkbox" checked={!!selected[sc]} disabled={synthetic}
+                            title={synthetic ? 'projection — not movable (would 409 WRONG_STATE)' : ''} onChange={() => toggle(sc)} />
+                        </td>
+                        <td style={{ padding: '6px 8px', fontSize: 12, fontFamily: 'ui-monospace, monospace', borderBottom: '1px solid var(--border-subtle)' }}>{sc}</td>
+                        <td style={{ padding: '6px 8px', fontSize: 12, borderBottom: '1px solid var(--border-subtle)' }}>{p.design_no || '—'}</td>
+                        <td style={{ padding: '6px 8px', fontSize: 12, borderBottom: '1px solid var(--border-subtle)' }}>{p.product_code || '—'}</td>
+                        <td style={{ padding: '6px 8px', fontSize: 12, color: 'var(--text-3)', borderBottom: '1px solid var(--border-subtle)' }}>{p.current_status || '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+
+            {/* Note */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={lbl}>Reason / note</label>
+              <textarea data-testid="ms-note" value={note} onChange={e => setNote(e.target.value)} rows="2" style={{ ...fld, resize: 'vertical' }} placeholder="Optional — recorded on each piece's movement event" />
             </div>
-          )}
-          {pieces && pieces.length > 0 && (
-            <table data-testid="ms-table" style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 14 }}>
-              <thead><tr>
-                {['', 'Piece (scan_code)', 'Design', 'Product code', 'Status'].map(h => (
-                  <th key={h} style={{ padding: '6px 8px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em', textAlign: 'left', borderBottom: '1px solid var(--border)' }}>{h}</th>
+
+            {/* Pending-badge: unlocated stock selection has no non-paste feed yet */}
+            <div data-testid="ms-pending-unlocated" style={{ marginBottom: 16, padding: '10px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-amber-text)' }}>
+              <strong>Backend-pending — Phase C.</strong> Moving freshly-received stock not yet placed at a location is not available here — that needs a non-paste by-stage picker (no ID-paste box by design).
+            </div>
+
+            {results && (
+              <div data-testid="ms-results" style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>Per-piece results ({results.length}/{selectedCodes.length})</div>
+                {results.map(r => (
+                  <div key={r.scan_code} data-testid="ms-result-row" style={{ padding: '6px 8px', fontSize: 12, borderBottom: '1px solid var(--border-subtle)', display: 'flex', gap: 10 }}>
+                    <span style={{ fontFamily: 'ui-monospace, monospace' }}>{r.scan_code}</span>
+                    <span style={{ fontWeight: 700, color: r.outcome === 'failed' ? 'var(--badge-red-text)' : 'var(--badge-green-text)' }}>{r.outcome}</span>
+                    {r.code && <span style={{ color: 'var(--badge-red-text)' }}>{r.hint}</span>}
+                    {!r.code && r.detail && <span style={{ color: 'var(--text-3)' }}>→ {r.detail}</span>}
+                  </div>
                 ))}
-              </tr></thead>
-              <tbody>
-                {pieces.map(p => {
-                  const synthetic = !!p.synthetic;
-                  const sc = p.scan_code;
-                  return (
-                    <tr key={sc}>
-                      <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
-                        <input type="checkbox" data-testid="ms-row-checkbox" checked={!!selected[sc]} disabled={synthetic}
-                          title={synthetic ? 'projection — not movable (would 409 WRONG_STATE)' : ''} onChange={() => toggle(sc)} />
-                      </td>
-                      <td style={{ padding: '6px 8px', fontSize: 12, fontFamily: 'ui-monospace, monospace', borderBottom: '1px solid var(--border-subtle)' }}>{sc}</td>
-                      <td style={{ padding: '6px 8px', fontSize: 12, borderBottom: '1px solid var(--border-subtle)' }}>{p.design_no || '—'}</td>
-                      <td style={{ padding: '6px 8px', fontSize: 12, borderBottom: '1px solid var(--border-subtle)' }}>{p.product_code || '—'}</td>
-                      <td style={{ padding: '6px 8px', fontSize: 12, color: 'var(--text-3)', borderBottom: '1px solid var(--border-subtle)' }}>{p.current_status || '—'}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
+              </div>
+            )}
 
-          {/* Note */}
-          <div style={{ marginBottom: 14 }}>
-            <label style={lbl}>Reason / note</label>
-            <textarea data-testid="ms-note" value={note} onChange={e => setNote(e.target.value)} rows="2" style={{ ...fld, resize: 'vertical' }} placeholder="Optional — recorded on each piece's movement event" />
-          </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <window.Btn variant="outline" onClick={onClose} data-testid="ms-cancel">Cancel</window.Btn>
+              <window.Btn variant="gold" onClick={submit} disabled={!canMove} data-testid="ms-submit">
+                {moving ? 'Moving…' : `Move ${selectedCodes.length} piece(s) → location`}
+              </window.Btn>
+            </div>
+          </>)}
 
-          {/* Pending-badge: unlocated stock selection has no non-paste feed yet */}
-          <div data-testid="ms-pending-unlocated" style={{ marginBottom: 16, padding: '10px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-amber-text)' }}>
-            <strong>Backend-pending — Phase C.</strong> Moving freshly-received stock not yet placed at a location is not available here — that needs a non-paste by-stage picker (no ID-paste box by design).
-          </div>
+          {/* ── Stage transition tab — document-driven guide + exception/correction path ──
+              Census #12 (scope S). Operator lifecycle rule (KNOWLEDGE.md): "Manual Move
+              Stock page = exception/correction path only; the document is the primary
+              trigger." Every transition listed here names its real trigger. Where a live
+              dedicated modal exists it is deep-linked. Where the backend is WFIRMA-GATED
+              or has no POST route a Lesson-M disclosure replaces the action button.
+              IV-ST-1: wireframe "Confirm move" for Consignment / Temp Sale destinations
+              has no backend POST route — disclosed here, not silently blocked.          */}
+          {moveType === 'stage' && (
+            <div data-testid="ms-stage-panel">
 
-          {results && (
-            <div data-testid="ms-results" style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>Per-piece results ({results.length}/{selectedCodes.length})</div>
-              {results.map(r => (
-                <div key={r.scan_code} data-testid="ms-result-row" style={{ padding: '6px 8px', fontSize: 12, borderBottom: '1px solid var(--border-subtle)', display: 'flex', gap: 10 }}>
-                  <span style={{ fontFamily: 'ui-monospace, monospace' }}>{r.scan_code}</span>
-                  <span style={{ fontWeight: 700, color: r.outcome === 'failed' ? 'var(--badge-red-text)' : 'var(--badge-green-text)' }}>{r.outcome}</span>
-                  {r.code && <span style={{ color: 'var(--badge-red-text)' }}>{r.hint}</span>}
-                  {!r.code && r.detail && <span style={{ color: 'var(--text-3)' }}>→ {r.detail}</span>}
+              {/* Architecture reminder */}
+              <div data-testid="ms-stage-doctrine" style={{ marginBottom: 16, padding: '12px 14px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 6 }}>
+                  How stage transitions work in this system
                 </div>
-              ))}
+                <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6 }}>
+                  Stage transitions are <strong>document-driven</strong>: the business document (PZ, invoice, sample form, return note) is
+                  the primary trigger and fires <code style={{ fontFamily: 'ui-monospace, monospace', background: 'var(--card)', padding: '1px 4px', borderRadius: 3, fontSize: 11 }}>inventory_state_engine.transition()</code> automatically.
+                  This tab is the <strong>exception/correction path</strong> — use it when the system state does not match physical reality and
+                  the document that should have fired the transition is missing or was not processed.
+                </div>
+              </div>
+
+              {/* Lifecycle transition table */}
+              <div style={{ marginBottom: 6, fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                Available transitions by current piece state
+              </div>
+
+              {/* WAREHOUSE_STOCK transitions */}
+              <div data-testid="ms-stage-group-wh" style={{ marginBottom: 14, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, padding: '2px 6px', borderRadius: 3, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)' }}>WAREHOUSE_STOCK</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-3)' }}>pieces physically confirmed in warehouse</span>
+                </div>
+                <div>
+                  {/* WAREHOUSE_STOCK → SALES_TRANSIT */}
+                  <div data-testid="ms-stage-row-sales-transit" style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>→ SALES_TRANSIT</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
+                        Trigger: <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>invoice_issued</code> — fires automatically when a proforma is converted to an invoice (C-3d / <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>run_stock_issue()</code>).
+                      </div>
+                    </div>
+                    <div style={{ flexShrink: 0 }}>
+                      <a href="#proforma" data-testid="ms-stage-link-proforma"
+                        onClick={e => { e.preventDefault(); window.dispatchEvent(new CustomEvent('inv:jump', { detail: { tab: 'tempSale' } })); onClose(); }}
+                        style={{ display: 'inline-block', padding: '5px 10px', fontSize: 11, fontWeight: 700, borderRadius: 5, background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)', cursor: 'pointer', textDecoration: 'none' }}>
+                        Go to Temp Sale tab ↗
+                      </a>
+                    </div>
+                  </div>
+
+                  {/* WAREHOUSE_STOCK → SAMPLE_OUT */}
+                  <div data-testid="ms-stage-row-sample-out" style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>→ SAMPLE_OUT</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
+                        Trigger: <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>sample_out_marked</code> — via POST <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>/inventory/pieces/&#123;id&#125;/sample-out</code>.
+                        Use the <strong>Sample Out tab</strong> — its "Issue Sample" form is the live UI for this transition.
+                      </div>
+                    </div>
+                    <div style={{ flexShrink: 0 }}>
+                      <a href="#sample-out" data-testid="ms-stage-link-sample-out"
+                        onClick={e => { e.preventDefault(); window.dispatchEvent(new CustomEvent('inv:jump', { detail: { tab: 'sampleOut' } })); onClose(); }}
+                        style={{ display: 'inline-block', padding: '5px 10px', fontSize: 11, fontWeight: 700, borderRadius: 5, background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)', cursor: 'pointer', textDecoration: 'none' }}>
+                        Go to Sample Out tab ↗
+                      </a>
+                    </div>
+                  </div>
+
+                  {/* WAREHOUSE_STOCK → RETURNED_FROM_CLIENT */}
+                  <div data-testid="ms-stage-row-rfc" style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>→ RETURNED_FROM_CLIENT</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
+                        Trigger: <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>returned_from_client_received</code> — via POST <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>/inventory/pieces/&#123;id&#125;/return-from-client</code>.
+                        Use the <strong>Goods Return from Client tab</strong>.
+                      </div>
+                    </div>
+                    <div style={{ flexShrink: 0 }}>
+                      <a href="#client-return" data-testid="ms-stage-link-client-return"
+                        onClick={e => { e.preventDefault(); window.dispatchEvent(new CustomEvent('inv:jump', { detail: { tab: 'clientReturn' } })); onClose(); }}
+                        style={{ display: 'inline-block', padding: '5px 10px', fontSize: 11, fontWeight: 700, borderRadius: 5, background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)', cursor: 'pointer', textDecoration: 'none' }}>
+                        Go to Client Return tab ↗
+                      </a>
+                    </div>
+                  </div>
+
+                  {/* WAREHOUSE_STOCK → RETURNED_TO_PRODUCER */}
+                  <div data-testid="ms-stage-row-rtp" style={{ padding: '10px 12px', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>→ RETURNED_TO_PRODUCER</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
+                        Trigger: <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>returned_to_producer_shipped</code> — via POST <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>/inventory/pieces/&#123;id&#125;/return-to-producer</code>.
+                        Use the <strong>Return to Producer tab</strong>.
+                      </div>
+                    </div>
+                    <div style={{ flexShrink: 0 }}>
+                      <a href="#producer-return" data-testid="ms-stage-link-producer-return"
+                        onClick={e => { e.preventDefault(); window.dispatchEvent(new CustomEvent('inv:jump', { detail: { tab: 'producerReturn' } })); onClose(); }}
+                        style={{ display: 'inline-block', padding: '5px 10px', fontSize: 11, fontWeight: 700, borderRadius: 5, background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)', cursor: 'pointer', textDecoration: 'none' }}>
+                        Go to Return to Producer tab ↗
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* PURCHASE_TRANSIT transitions */}
+              <div data-testid="ms-stage-group-pt" style={{ marginBottom: 14, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, padding: '2px 6px', borderRadius: 3, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', border: '1px solid var(--badge-amber-border)' }}>PURCHASE_TRANSIT</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-3)' }}>goods expected, PZ generated, not yet received</span>
+                </div>
+                <div style={{ padding: '10px 12px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 3 }}>→ WAREHOUSE_STOCK</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
+                    Trigger: <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>warehouse_receive</code> — fires automatically on PZ booking
+                    (<code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>run_stock_promotion()</code> / BE-1).
+                    Manual override: "Receive" button on the <strong>Temp Purchase tab</strong> opens this modal in wh→wh mode
+                    which calls <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>run_stock_promotion</code> directly.
+                  </div>
+                </div>
+              </div>
+
+              {/* SAMPLE_OUT transitions */}
+              <div data-testid="ms-stage-group-so" style={{ marginBottom: 14, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, padding: '2px 6px', borderRadius: 3, background: 'var(--badge-blue-bg, var(--bg-subtle))', color: 'var(--badge-blue-text, var(--text-2))', border: '1px solid var(--border)' }}>SAMPLE_OUT</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-3)' }}>issued to salesperson or client</span>
+                </div>
+                <div>
+                  <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>→ WAREHOUSE_STOCK (return)</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
+                        Trigger: <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>sample_returned</code> — via POST <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>/inventory/pieces/&#123;id&#125;/sample-return</code>.
+                        Use the <strong>Sample Return tab</strong> "Record Return" action.
+                      </div>
+                    </div>
+                    <div style={{ flexShrink: 0 }}>
+                      <a href="#sample-return" data-testid="ms-stage-link-sample-return"
+                        onClick={e => { e.preventDefault(); window.dispatchEvent(new CustomEvent('inv:jump', { detail: { tab: 'sampleReturn' } })); onClose(); }}
+                        style={{ display: 'inline-block', padding: '5px 10px', fontSize: 11, fontWeight: 700, borderRadius: 5, background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)', cursor: 'pointer', textDecoration: 'none' }}>
+                        Go to Sample Return tab ↗
+                      </a>
+                    </div>
+                  </div>
+                  <div style={{ padding: '10px 12px' }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 3 }}>→ RETURNED_FROM_CLIENT (escalate)</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
+                      Trigger: <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>returned_from_client_received</code> — sample came back damaged/defective.
+                      Use <strong>Goods Return from Client tab</strong>.
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* RETURNS transitions */}
+              <div data-testid="ms-stage-group-returns" style={{ marginBottom: 14, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, padding: '2px 6px', borderRadius: 3, background: 'var(--badge-red-bg, var(--bg-subtle))', color: 'var(--badge-red-text)', border: '1px solid var(--border)' }}>RETURNED_FROM_CLIENT / RETURNED_TO_PRODUCER</span>
+                </div>
+                <div style={{ padding: '10px 12px', fontSize: 11, color: 'var(--text-3)', lineHeight: 1.6 }}>
+                  Return states transition back to <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>WAREHOUSE_STOCK</code> via restocking events
+                  (<code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>returned_restocked</code> /
+                  <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>returned_from_producer_restocked</code>).
+                  Use the <strong>Return to Producer tab</strong> "Restock" action, or
+                  the <strong>Goods Return tab</strong> for client-originated returns.
+                </div>
+              </div>
+
+              {/* SALES_TRANSIT / CLOSED */}
+              <div data-testid="ms-stage-group-terminal" style={{ marginBottom: 16, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, padding: '2px 6px', borderRadius: 3, background: 'var(--badge-red-bg, var(--bg-subtle))', color: 'var(--badge-red-text)', border: '1px solid var(--border)' }}>SALES_TRANSIT → CLOSED</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-3)' }}>terminal transitions</span>
+                </div>
+                <div style={{ padding: '10px 12px', fontSize: 11, color: 'var(--text-3)', lineHeight: 1.6 }}>
+                  <strong>SALES_TRANSIT → CLOSED</strong> trigger:
+                  <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>delivery_confirmed</code> — no operator-facing
+                  POST route exists yet (IV-TS-1, future slice). <strong>CLOSED is a terminal state</strong> — no transitions out.
+                </div>
+              </div>
+
+              {/* Lesson-M disclosure: wireframe-promised Consignment manual route */}
+              {/* IV-ST-1 — wireframe "Confirm move → Consignment / Temp Sale" has no
+                  backend POST route. Lesson M: cannot silently suppress; disclosing with
+                  reason. Consignment = WFIRMA-GATED + OI-1; Temp Sale = invoice-driven. */}
+              <div data-testid="ms-stage-lesson-m" style={{ marginBottom: 16, padding: '10px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--badge-amber-text)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 5 }}>
+                  Lesson M — planned capability disclosure (IV-ST-1)
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', lineHeight: 1.6 }}>
+                  The wireframe shows a <em>"Confirm move → Consignment"</em> action and a <em>"Confirm move → Temp Sale"</em> action from this tab.
+                  Neither has a backend POST route:<br />
+                  • <strong>Consignment</strong> — requires wFirma MM internal transfer (Main → Consignment warehouse); WFIRMA-GATED · OI-1 (MM API vehicle open).<br />
+                  • <strong>Temp Sale (reserve against proforma)</strong> — invoice-driven (<code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>invoice_issued</code>); no standalone reservation POST route.
+                  Both are tracked under census IV-ST-1 and will be wired when their backend routes exist.
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <window.Btn variant="outline" onClick={onClose} data-testid="ms-stage-close">Close</window.Btn>
+              </div>
             </div>
           )}
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <window.Btn variant="outline" onClick={onClose} data-testid="ms-cancel">Cancel</window.Btn>
-            <window.Btn variant="gold" onClick={submit} disabled={!canMove} data-testid="ms-submit">
-              {moving ? 'Moving…' : `Move ${selectedCodes.length} piece(s) → location`}
-            </window.Btn>
-          </div>
         </div>
       </window.Modal>
     );
