@@ -79,11 +79,17 @@ _REAL_ACCESS_PATTERNS = {
 # but intentionally LEFT its wfirma_db accessor reads/writes as the
 # "C-1c-deprecating reader path"; the refined detector now measures them.
 KNOWN_PRODUCT_VIOLATION_FILES = {
-    "routes_proforma.py",  # ~12 reads (C-1c) + 1 write @4527 (write slice) — residual until C-1d/C-1f
+    # C-1f MIGRATED the ~12 proforma fiscal reads to mirror-first with cache fallback.
+    # Residual = the single transitional dual-write site (wfdb.upsert_product @~4699) +
+    # transitional cache reads for non-identity fields (product_name_pl/vat_rate/unit) that
+    # the mirror does not store — cleanup is post-1d (when cache write is removed).
+    # Pattern hits remaining: acc:upsert_product (dual-write), acc:get_product (non-id fields).
+    "routes_proforma.py",
     # routes_dashboard.py          — MIGRATED to the Product Master in C-1c STAGE 1a.
     # routes_packing.py            — MIGRATED to the Product Master in C-1c STAGE 1b.
     # routes_wfirma_capabilities.py — MIGRATED in C-1w2 (write path + cache reads).
     # routes_wfirma.py             — MIGRATED in C-1e (5 reads + 3 writes → rdb sync layer).
+    # routes_proforma.py (reads)   — MIGRATED in C-1f (12 reads → mirror-first; residual = dual-write).
 }
 
 

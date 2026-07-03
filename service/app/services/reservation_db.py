@@ -786,6 +786,74 @@ def upsert_product_mirror(
     return {"written": True, "collision": False, "owner": product_code}
 
 
+# ── Mirror read accessors (C-1f: proforma fiscal reads migration 1d) ─────────
+# These are the ONLY public read paths for wfirma_product_mirror.
+# Business modules must NOT query the mirror table directly — they call these.
+# The mirror carries only sync-identity columns (wfirma_id, product_code,
+# sync_version, last_sync, hash, deleted_flag).  There are NO business fields
+# (name / vat_rate / unit) — those stay in the wfirma_products cache, which
+# routes_proforma falls back to for those non-identity fields.
+
+def get_mirror_product(
+    db_path: Path,
+    product_code: str,
+) -> Optional[Dict[str, Any]]:
+    """Return the wfirma_product_mirror row for *product_code*, or None.
+
+    Returns the raw mirror dict with keys: wfirma_id, product_code,
+    sync_version, last_sync, hash, deleted_flag.  A non-empty wfirma_id
+    means the sync identity is confirmed (equivalent to cache sync_status='matched').
+    Returns None if no mirror row exists for this code.
+    """
+    if not product_code:
+        return None
+    with _connect(db_path) as con:
+        row = con.execute(
+            "SELECT wfirma_id, product_code, sync_version, last_sync, hash, deleted_flag "
+            "FROM wfirma_product_mirror WHERE product_code=?",
+            (product_code,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_mirror_products_batch(
+    db_path: Path,
+    product_codes: List[str],
+) -> Dict[str, Dict[str, Any]]:
+    """Fetch multiple mirror rows in one query. Returns {product_code: row_dict}.
+
+    Only codes present in wfirma_product_mirror are included in the result.
+    Codes with an empty wfirma_id are included (caller decides if that counts).
+    """
+    if not product_codes:
+        return {}
+    placeholders = ",".join("?" for _ in product_codes)
+    with _connect(db_path) as con:
+        rows = con.execute(
+            f"SELECT wfirma_id, product_code, sync_version, last_sync, hash, deleted_flag "
+            f"FROM wfirma_product_mirror WHERE product_code IN ({placeholders})",
+            product_codes,
+        ).fetchall()
+    return {row["product_code"]: dict(row) for row in rows}
+
+
+def list_mirror_products(db_path: Path) -> List[Dict[str, Any]]:
+    """Return all rows from wfirma_product_mirror ordered by product_code.
+
+    Used by the C-1f reverse-map builder (_build_wfirma_id_to_code_map) as the
+    mirror-first replacement for wfdb.list_products().
+    """
+    with _connect(db_path) as con:
+        rows = con.execute(
+            "SELECT wfirma_id, product_code, sync_version, last_sync, hash, deleted_flag "
+            "FROM wfirma_product_mirror ORDER BY product_code"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def create_wfirma_product_via_master(
     db_path: Path,
     *,
