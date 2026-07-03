@@ -27,7 +27,20 @@
   (musing husk dir handle-locked, git metadata pruned); eager-swirles kept
   (2 dirty entries, foreign uncommitted work); intelligent-wilson removed at
   session end.
-- **Next slice:** C-3a (returns_events migration — VERIFY TREE apply only).
+- **C-3a COMPLETE** — returns_events migration applied to the VERIFY TREE
+  (table + 3 indexes; ensure_returns_schema()=True). sample_out_events draft
+  applied too (same verify-tree-only class; C-3b local verification needs it).
+  PROD apply remains CP4/deploy operator ritual (both drafts idempotent).
+- **C-3b + C-3c COMPLETE** — GET /api/v1/inventory/samples (paired out/return
+  register, status open|returned, recipient filter) + GET /api/v1/inventory/returns
+  (direction register; to_producer open→resolved via linked producer_restock).
+  Read-only, on the EXISTING routers (§20 chain: Inventory V2 → wireframe stub
+  tabs → warehouse_db → warehouse.db → existing routers); 503 MIGRATION_PENDING
+  gates preserved. Suite test_c3b_c3c_inventory_read_endpoints 9/9; adjacent
+  writer/piece-view/pin suites 92 green.
+- **Next slice:** C-3d (SALES_TRANSIT write path — invoice_issued via shared
+  run_stock_issue()) · then C-3e (merchandising joined read) · C-3f (movement
+  trails). C-4a stays OI-17-gated.
 
 ## Completed Slices (append-only ledger)
 
