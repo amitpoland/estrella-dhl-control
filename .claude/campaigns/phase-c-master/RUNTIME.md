@@ -150,3 +150,10 @@ Campaign slices:
 - Current slice: W3-P0 — PAGE-BY-PAGE GAP CENSUS (read-only; BUILD / REMOVE /
   WFIRMA-GATED / OUT; orders the wave, Inventory first).
 - Exit: CP3 recognition gate (unlabeled side-by-side composites). NO DEPLOY in-wave.
+
+- W3-P0 census COMPLETE: 101 gaps (BUILD 67 · REMOVE 16 · WFIRMA-GATED 5 · OUT 10 ·
+  QUESTION 3). Wave order: Inventory tabs 1-12 first (U-1..U-6 mapped), then
+  Accounting hub, Dashboard, Shipment Detail, Proforma, Setup, Reports, rest.
+  Q-1/Q-2/Q-3 posed to operator (dhl placement · automation slug owner ·
+  diagnostics CLI tools) — none block pages 1-12.
+- Current slice: W3-page1 — Inventory / Sample Out tab (U-1; census #1).
