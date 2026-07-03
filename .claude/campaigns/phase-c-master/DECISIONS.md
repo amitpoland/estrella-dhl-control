@@ -426,3 +426,30 @@ document header (9 docs + the new CONSTITUTION.md pointer-of-record, which
 points to the verbatim Constitution in CLAUDE.md rather than duplicating it —
 interpretation disclosed in the file). This artifact closes the governance
 era. Holding state unchanged: CP4-handover, frozen 4-check gate (a2d13a85).
+
+---
+
+### 2026-07-03 — FREEZE INTERPRETATION (operator, verbatim R4 — official reading of 33f893cf; no new rule under v1.0)
+
+OPERATOR (verbatim):
+"Platform v1.0 frozen means governed, not immutable. New ideas / stylistic
+improvements / prompt wording tweaks: NO. Production incident /
+architecture contradiction / paid lesson: YES, as amendment.
+Mid-campaign discipline: Platform v1.0 is not touched during the campaign.
+Lessons paid during Wave 3/4 are captured immediately in LESSONS_LEARNED
+(evidence duty), but the platform amendments they justify go to the
+Platform v1.1 amendment backlog, evaluated only after campaign closure
+with full execution evidence."
+
+Effect: LESSONS_LEARNED stays live during Waves 3/4 (evidence duty,
+immediate capture); platform-document amendments justified by those lessons
+queue in the §v1.1 backlog below and are evaluated ONLY after campaign
+closure. No new file created (deferred items already live in this ledger).
+
+## Platform v1.1 Amendment Backlog (evaluated only after campaign closure, with full execution evidence)
+
+(empty at freeze — entries arrive only via: production incident ·
+architecture contradiction · paid lesson)
+
+| # | Date | Trigger (incident/contradiction/lesson) | Proposed amendment | Evidence |
+|---|---|---|---|---|
