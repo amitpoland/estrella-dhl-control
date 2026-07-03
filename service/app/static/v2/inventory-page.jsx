@@ -3778,6 +3778,275 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // ── Identity / Mapping tab — Wave-3 page 11 (census #11, scope S) ─────────
+  //
+  // §D owner: WfirmaMappingPage (ops-cell.jsx:599) — DO NOT rebuild.
+  // This tab EMBEDS the existing mapping surface by consuming the SAME endpoints
+  // (getWfirmaProducts, getWfirmaCapabilities) via the existing pz-api.js methods,
+  // presented inside the Inventory tab layout per wireframe §7 Tab 11.
+  //
+  // Wireframe §7 Tab 11 defines:
+  //   Info banner + 8-field identity model (one row per product mapping).
+  //
+  // 8 identity fields with editable flag and data source:
+  //   wfirma_good_id       — External read-only  — getWfirmaProducts → p.wfirma_product_id
+  //   wfirma_product_code  — External read-only  — getWfirmaProducts → p.product_code
+  //   product_family_code  — Internal commercial — NO existing endpoint → honest "—" [IV-ID-1]
+  //   design_id            — Internal commercial — NO existing endpoint → honest "—" [IV-ID-1]
+  //   batch_id             — Physical            — NO existing endpoint → honest "—" [IV-ID-1]
+  //   bag_id               — Physical            — NO existing endpoint → honest "—" [IV-ID-1]
+  //   stock_unit_id        — Truth (sys-gen)     — NO existing endpoint → honest "—" [IV-ID-1]
+  //   trace_barcode        — Truth               — NO existing endpoint → honest "—" [IV-ID-1]
+  //
+  // Quick-action dead-control repair (page 6):
+  //   InventoryOverviewTab at line 3381 fires setActiveTab('mapping').
+  //   Before this slice the tab did not exist in INV_TABS — the click navigated
+  //   nowhere (dangling). This slice WIRES the 'mapping' tab so the quick-action
+  //   lands on the Identity/Mapping panel. Cited as page-6 dead-control repair.
+  //
+  // pz-api.js NOT modified: getWfirmaProducts + getWfirmaCapabilities already exist.
+
+  function IdentityMappingTab() {
+    const [products, setProducts]   = useState(null);
+    const [caps, setCaps]           = useState(null);
+    const [loading, setLoading]     = useState(true);
+    const [error, setError]         = useState('');
+    const [filter, setFilter]       = useState('');
+
+    const load = useCallback(async () => {
+      setLoading(true);
+      setError('');
+      const [capRes, prodRes] = await Promise.all([
+        window.PzApi.getWfirmaCapabilities(),
+        window.PzApi.getWfirmaProducts(),
+      ]);
+      setLoading(false);
+      const errs = [];
+      if (!capRes.ok)  errs.push('capabilities: ' + (capRes.error || 'HTTP ' + capRes.status));
+      if (!prodRes.ok) errs.push('products: '     + (prodRes.error || 'HTTP ' + prodRes.status));
+      if (errs.length) { setError(errs.join(' | ')); return; }
+      setCaps(capRes.data);
+      setProducts((prodRes.data && prodRes.data.products) || []);
+    }, []);
+
+    useEffect(() => { load(); }, [load]);
+
+    // Filtered rows
+    const f = filter.trim().toLowerCase();
+    const rows = (products || []).filter(p => {
+      if (!f) return true;
+      const code = (p.product_code || '').toLowerCase();
+      const gid  = (p.wfirma_product_id || '').toLowerCase();
+      const name = (p.product_name_pl || p.product_name || '').toLowerCase();
+      return code.includes(f) || gid.includes(f) || name.includes(f);
+    });
+
+    const TH = {
+      padding: '7px 10px', fontSize: 10, fontWeight: 700,
+      color: 'var(--text-3)', textTransform: 'uppercase',
+      letterSpacing: '0.07em', textAlign: 'left',
+      borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap',
+    };
+    const TD = {
+      padding: '8px 10px', fontSize: 12, borderBottom: '1px solid var(--border-subtle)',
+      color: 'var(--text)', verticalAlign: 'middle',
+    };
+    const DASH = <span style={{ color: 'var(--text-3)' }}>—</span>;
+    const PENDING_TAG = (
+      <span style={{
+        fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
+        background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
+        border: '1px solid var(--badge-amber-border)',
+        borderRadius: 3, padding: '1px 4px', marginLeft: 4, verticalAlign: 'middle',
+      }}>IV-ID-1</span>
+    );
+
+    return (
+      <div data-testid="identity-mapping-tab" style={{ maxWidth: 1100, margin: '0 auto' }}>
+
+        {/* Info banner — verbatim wireframe §7 Tab 11 */}
+        <div data-testid="id-info-banner" style={{
+          marginBottom: 16, padding: '10px 14px',
+          background: 'var(--badge-green-bg)',
+          border: '1px solid var(--badge-green-border)',
+          borderRadius: 8, fontSize: 12, color: 'var(--badge-green-text)',
+        }}>
+          wFirma is not the inventory truth. The truth is <code style={{ fontFamily: 'monospace', fontSize: 11 }}>stock_unit_id</code>,
+          scanned via <code style={{ fontFamily: 'monospace', fontSize: 11 }}>trace_barcode</code>.
+          wFirma fields appear here as read-only references.
+        </div>
+
+        {/* Error banner */}
+        {error && (
+          <div data-testid="id-error-banner" style={{
+            marginBottom: 14, padding: '10px 14px',
+            background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+            borderRadius: 8, fontSize: 12, color: 'var(--badge-red-text)',
+          }}>
+            Failed to load mapping data: {error}
+          </div>
+        )}
+
+        {/* Capability strip — live from getWfirmaCapabilities (same surface as WfirmaMappingPage) */}
+        {caps && (
+          <div data-testid="id-cap-strip" style={{
+            marginBottom: 16, padding: '10px 14px',
+            background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+            borderRadius: 8, fontSize: 12,
+          }}>
+            <div style={{ fontWeight: 700, color: 'var(--text-2)', marginBottom: 8, fontSize: 11 }}>
+              wFirma capability — GET /api/v1/wfirma/capabilities
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {[
+                { label: 'goods.read',  ok: !!caps.product_api_supported },
+                { label: 'goods.write', ok: !!caps.create_product_allowed },
+              ].map(p => (
+                <span key={p.label} style={{
+                  padding: '3px 8px', borderRadius: 4, fontSize: 11,
+                  background: p.ok ? 'var(--badge-green-bg)' : 'var(--badge-red-bg)',
+                  color: p.ok ? 'var(--badge-green-text)' : 'var(--badge-red-text)',
+                  border: p.ok ? '1px solid var(--badge-green-border)' : '1px solid var(--badge-red-border)',
+                  fontWeight: 600,
+                }}>
+                  {p.ok ? '✓' : '✗'} {p.label}
+                </span>
+              ))}
+              {caps.blocking_reasons && caps.blocking_reasons.length > 0 && (
+                <span style={{ fontSize: 11, color: 'var(--badge-amber-text)', alignSelf: 'center' }}>
+                  · {caps.blocking_reasons.join(' · ')}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Toolbar — filter + refresh */}
+        <div data-testid="id-toolbar" style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14 }}>
+          <input
+            data-testid="id-filter"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            placeholder="Filter by product code or wFirma ID…"
+            style={{
+              flex: 1, padding: '6px 10px', borderRadius: 6,
+              border: '1px solid var(--border)', background: 'var(--bg-subtle)',
+              color: 'var(--text)', fontSize: 12.5,
+            }}
+          />
+          <InvFetchBtn data-testid="id-refresh" onClick={load} loading={loading} label="↻ Refresh" />
+        </div>
+
+        {/* Loading state */}
+        {loading && !products && (
+          <div style={{ padding: '32px 0', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+            Loading identity mapping data — GET /api/v1/wfirma/products…
+          </div>
+        )}
+
+        {/* 8-field identity table — wireframe §7 Tab 11 */}
+        {products && (
+          <div style={{
+            background: 'var(--card)', border: '1px solid var(--border)',
+            borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)',
+          }}>
+            {/* Column legend header — groups */}
+            <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)', display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600 }}>
+                EXTERNAL (read-only from wFirma GET /api/v1/wfirma/products)
+              </span>
+              <span style={{ fontSize: 10, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                INTERNAL COMMERCIAL · PHYSICAL · TRUTH (no endpoint yet — {PENDING_TAG})
+              </span>
+            </div>
+
+            <div style={{ overflowX: 'auto' }}>
+              <table data-testid="id-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)' }}>
+                    {/* 8 wireframe fields — exact labels from wireframe §7 Tab 11 */}
+                    {/* Group 1 — External */}
+                    <th style={{ ...TH, borderRight: '1px solid var(--border-subtle)' }}>wFirma Good ID</th>
+                    <th style={{ ...TH, borderRight: '2px solid var(--border)' }}>wFirma Product Code</th>
+                    {/* Group 2 — Internal commercial */}
+                    <th style={TH}>Product Family Code</th>
+                    <th style={{ ...TH, borderRight: '2px solid var(--border)' }}>Design ID</th>
+                    {/* Group 3 — Physical */}
+                    <th style={TH}>Batch ID</th>
+                    <th style={{ ...TH, borderRight: '2px solid var(--border)' }}>Bag ID</th>
+                    {/* Group 4 — Truth */}
+                    <th style={TH}>Stock Unit ID</th>
+                    <th style={TH}>Trace Barcode</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.length === 0 && (
+                    <tr>
+                      <td colSpan={8} style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '28px 0' }}>
+                        {filter ? 'No products match filter.' : 'No product mappings registered.'}
+                      </td>
+                    </tr>
+                  )}
+                  {rows.map((p, i) => {
+                    const hasGoodId = !!(p.wfirma_product_id);
+                    return (
+                      <tr key={p.product_code || i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                        {/* External — live from API */}
+                        <td style={{ ...TD, fontFamily: 'monospace', fontSize: 11, borderRight: '1px solid var(--border-subtle)' }}>
+                          {hasGoodId
+                            ? <code style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{p.wfirma_product_id}</code>
+                            : <span style={{ color: 'var(--badge-red-text)', fontSize: 11 }}>missing</span>
+                          }
+                        </td>
+                        <td style={{ ...TD, fontFamily: 'monospace', fontSize: 11, borderRight: '2px solid var(--border)' }}>
+                          {p.product_code
+                            ? <code style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{p.product_code}</code>
+                            : DASH
+                          }
+                        </td>
+                        {/* Internal commercial — no endpoint */}
+                        <td style={{ ...TD, color: 'var(--text-3)' }}>{DASH}</td>
+                        <td style={{ ...TD, color: 'var(--text-3)', borderRight: '2px solid var(--border)' }}>{DASH}</td>
+                        {/* Physical — no endpoint */}
+                        <td style={{ ...TD, color: 'var(--text-3)' }}>{DASH}</td>
+                        <td style={{ ...TD, color: 'var(--text-3)', borderRight: '2px solid var(--border)' }}>{DASH}</td>
+                        {/* Truth — no endpoint */}
+                        <td style={{ ...TD, color: 'var(--text-3)', fontFamily: 'monospace', fontSize: 11 }}>{DASH}</td>
+                        <td style={{ ...TD, color: 'var(--text-3)', fontFamily: 'monospace', fontSize: 10 }}>{DASH}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Footer — count + honest gap notice */}
+            {products.length > 0 && (
+              <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                  {rows.length} of {products.length} product{products.length !== 1 ? 's' : ''} shown
+                  {f ? ` (filtered by "${filter}")` : ''}
+                </span>
+                <span style={{ fontSize: 10, color: 'var(--badge-amber-text)' }}>
+                  Internal commercial, physical, and truth fields require a future /api/v1/inventory/identity endpoint
+                  (census gap IV-ID-1 — not yet built)
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Source note */}
+        <div style={{ marginTop: 10, fontSize: 10, color: 'var(--text-3)' }}>
+          External fields: GET /api/v1/wfirma/products (via existing PzApi.getWfirmaProducts).
+          Authority: WfirmaMappingPage (ops-cell.jsx:599) — this tab reuses the same endpoints,
+          not a duplicate surface. Internal / physical / truth fields: honest em-dash until
+          /api/v1/inventory/identity is built (census IV-ID-1).
+        </div>
+      </div>
+    );
+  }
+
   // ── InventoryPage — shell entry point (Wave-3: tab strip, Overview tab live) ─
   //
   // Wave-3 tab strip progression:
@@ -3785,12 +4054,11 @@ function DocumentViewerPage({ doc, onBack }) {
   //   U-2: clientReturn + producerReturn (pages 3-4)
   //   U-3: tempSale (page 5)
   //   U-6: overview (page 6) — THIS SLICE (renames hub → overview)
+  //   page 11: mapping — THIS SLICE (wires the dangling quick-action from page 6)
   //
-  // Tab 'mapping' — Identity/Mapping — is reachable from Overview quick-action.
-  // It is not yet a wired tab in the strip (no census BUILD gap for the tab strip
-  // entry itself; the tab strip will grow when the Identity/Mapping panel slice lands).
-  // The setActiveTab('mapping') call from InventoryOverviewTab is wired here so
-  // navigation works even before the tab strip button appears.
+  // Dead-control repair (page 6): InventoryOverviewTab:3381 fires setActiveTab('mapping').
+  // Before this slice that call navigated nowhere (the 'mapping' id was absent from
+  // INV_TABS and the render tree). Adding 'mapping' here resolves the dangling wiring.
 
   const INV_TABS = [
     { id: 'overview',       label: 'Overview',           wire: true  },
@@ -3802,6 +4070,7 @@ function DocumentViewerPage({ doc, onBack }) {
     { id: 'tempPurchase',   label: 'Temp Purchase',      wire: true  },
     { id: 'tempWarehouse',  label: 'Temp Warehouse',     wire: true  },
     { id: 'consignment',    label: 'Consignment',        wire: false },
+    { id: 'mapping',        label: 'Identity / Mapping', wire: true  },
   ];
 
   function InvTabStrip({ active, onChange }) {
@@ -3901,6 +4170,12 @@ function DocumentViewerPage({ doc, onBack }) {
 
           {/* ── Consignment tab — Wave-3 U-4 page 10 (WFIRMA-GATED) ── */}
           {activeTab === 'consignment' && <ConsignmentTab />}
+
+          {/* ── Identity / Mapping tab — Wave-3 page 11 ────────────── */}
+          {/* §D authority: WfirmaMappingPage (ops-cell.jsx:599) — not rebuilt here;  */}
+          {/* same endpoints consumed (getWfirmaProducts, getWfirmaCapabilities).     */}
+          {/* Also repairs the dangling quick-action from page 6 (Overview tab).      */}
+          {activeTab === 'mapping' && <IdentityMappingTab />}
         </div>
       </div>
     );

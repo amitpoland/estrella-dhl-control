@@ -194,3 +194,8 @@ Campaign slices:
   structure (3 sub-tabs, exact columns) with ZERO fake rows; OI-1/2/17 cited on
   banner + every disabled action; browser 0-errors. Next: W3-page11 Identity/
   Mapping; page 9 still holds on Q-4.
+- W3-page11 COMPLETE (Identity/Mapping tab): 9/9 gate; SS-D honored (reuses
+  WfirmaMappingPage's endpoints, nothing rebuilt); page-6 dangling quick-action
+  REPAIRED (mapping tab now exists); 6/8 wireframe fields honest em-dash
+  [IV-ID-1] (no backend). Next: W3-page12 MoveStock stage-transition tab —
+  then the Inventory-family browser render gate + health check.
