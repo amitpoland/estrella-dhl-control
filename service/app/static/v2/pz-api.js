@@ -720,5 +720,32 @@
         apply: applyList || [],
       }),
 
+    // ── Inventory: Sample Out register — Wave-3 U-1 ────────────────────────
+    // GET /api/v1/inventory/samples?status=&recipient=&limit=
+    // → { ok, count, samples: [{sample_id, scan_code, recipient_client_name,
+    //     recipient_client_id, sample_reason, expected_return_date, out_operator,
+    //     out_at, notes, return_event_id, returned_at, return_operator, status}] }
+    // status filter: 'open' | 'returned' (omit for all)
+    // Authority: routes_inventory_sample.py:149 (C-3b, Wave-2 backend LIVE)
+    getInventorySamples: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/inventory/samples${qs}`);
+    },
+
+    // POST /api/v1/inventory/pieces/{piece_id}/sample-out
+    //   body: { operator, recipient_client_name, recipient_client_id?,
+    //           expected_return_date, sample_reason, idempotency_key, notes? }
+    // Moves piece WAREHOUSE_STOCK → SAMPLE_OUT. Idempotent on (scan_code, key).
+    // Authority: routes_inventory_sample.py:91
+    issueSampleOut: (pieceId, payload) => {
+      const op = ((payload && payload.operator) || _resolveOperator() || '').trim();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required — sample-out cancelled.' });
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/sample-out`,
+        { ...payload, operator: op });
+    },
+
   });
 })();

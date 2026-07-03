@@ -157,3 +157,7 @@ Campaign slices:
   Q-1/Q-2/Q-3 posed to operator (dhl placement · automation slug owner ·
   diagnostics CLI tools) — none block pages 1-12.
 - Current slice: W3-page1 — Inventory / Sample Out tab (U-1; census #1).
+- W3-page1 COMPLETE (Sample Out tab, U-1): 9/9 page-gate criteria evidence-cited
+  (build record reports/wave3/pages/2026-07-03-page1-sample-out.md); INV_TABS strip
+  introduced; slice-only staging (operator pz-api.js WIP excluded via surgical blob).
+  Next: W3-page2 — Sample Return tab.

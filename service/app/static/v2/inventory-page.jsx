@@ -811,6 +811,323 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // ── Sample Out tab — Wave-3 / U-1 ─────────────────────────────────────────
+  // Wireframe §7 Tab 7 (SampleOutTab).
+  // Gap rows addressed: IV-SO-1, IV-SO-2, IV-SO-3, IV-SO-4.
+  // Backend: GET /api/v1/inventory/samples (routes_inventory_sample.py:149)
+  //          POST /api/v1/inventory/pieces/{id}/sample-out (routes_inventory_sample.py:91)
+  // No placeholder data; honest empty state when register is empty.
+
+  const SAMPLE_REASON_LABELS = {
+    customer_review:  'Customer Review',
+    quality_check:    'Quality Check',
+    marketing_photo:  'Marketing Photo',
+    trade_show:       'Trade Show',
+    other:            'Other',
+  };
+
+  function daysLeft(expectedReturnDate) {
+    if (!expectedReturnDate) return null;
+    const diffMs = new Date(expectedReturnDate) - new Date();
+    return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  }
+
+  function DaysLeftChip({ expectedReturnDate, status }) {
+    if (status === 'returned') {
+      return <span style={{ fontSize: 11, color: 'var(--badge-green-text)' }}>—</span>;
+    }
+    const d = daysLeft(expectedReturnDate);
+    if (d == null) return <span style={{ fontSize: 11, color: 'var(--text-3)' }}>—</span>;
+    const tone = d < 0 ? 'red' : d <= 3 ? 'amber' : 'green';
+    const bg     = `var(--badge-${tone}-bg)`;
+    const color  = `var(--badge-${tone}-text)`;
+    const border = `var(--badge-${tone}-border)`;
+    return (
+      <span data-testid="so-days-left" style={{ display: 'inline-flex', alignItems: 'center', background: bg, color, border: `1px solid ${border}`, borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>
+        {d < 0 ? `${Math.abs(d)}d overdue` : d === 0 ? 'Due today' : `${d}d left`}
+      </span>
+    );
+  }
+
+  function SampleStatusChip({ status }) {
+    const MAP = {
+      open:     { label: 'Out',      bg: 'var(--badge-amber-bg)',   color: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+      returned: { label: 'Returned', bg: 'var(--badge-green-bg)',   color: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+    };
+    const s = MAP[status] || { label: status || '?', bg: 'var(--badge-neutral-bg)', color: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
+    return (
+      <span data-testid="so-status-chip" style={{ display: 'inline-flex', alignItems: 'center', background: s.bg, color: s.color, border: `1px solid ${s.border}`, borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>
+        {s.label}
+      </span>
+    );
+  }
+
+  // Issue Sample modal — submits POST /api/v1/inventory/pieces/{piece_id}/sample-out
+  function IssueSampleModal({ onClose, onSuccess }) {
+    const [pieceId, setPieceId]           = useState('');
+    const [recipient, setRecipient]       = useState('');
+    const [reason, setReason]             = useState('customer_review');
+    const [returnDate, setReturnDate]     = useState('');
+    const [notes, setNotes]               = useState('');
+    const [submitting, setSubmitting]     = useState(false);
+    const [err, setErr]                   = useState('');
+
+    function genKey() {
+      return 'so-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    async function submit() {
+      setErr('');
+      const pid = pieceId.trim();
+      const rec = recipient.trim();
+      if (!pid)  { setErr('Piece ID (scan code) is required.'); return; }
+      if (!rec)  { setErr('Recipient client name is required.'); return; }
+      if (!returnDate) { setErr('Expected return date is required.'); return; }
+      setSubmitting(true);
+      const res = await window.PzApi.issueSampleOut(pid, {
+        recipient_client_name: rec,
+        recipient_client_id:   '',
+        expected_return_date:  returnDate,
+        sample_reason:         reason,
+        idempotency_key:       genKey(),
+        notes:                 notes.trim(),
+      });
+      setSubmitting(false);
+      if (!res.ok) {
+        const detail = (res.data && res.data.detail && res.data.detail.detail) ||
+                       (res.data && res.data.detail) || res.error || ('HTTP ' + res.status);
+        setErr(String(detail));
+        return;
+      }
+      onSuccess();
+    }
+
+    const lbl = { fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4, display: 'block' };
+    const fld = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, boxSizing: 'border-box' };
+
+    return (
+      <window.Modal title="Issue Sample Out" onClose={onClose}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <label style={lbl} htmlFor="so-piece-id">Piece ID (scan code)</label>
+            <input id="so-piece-id" data-testid="so-piece-id" value={pieceId} onChange={e => setPieceId(e.target.value)} placeholder="e.g. ABC001|sr01|RG-001" style={fld} />
+          </div>
+          <div>
+            <label style={lbl} htmlFor="so-recipient">Recipient client name</label>
+            <input id="so-recipient" data-testid="so-recipient" value={recipient} onChange={e => setRecipient(e.target.value)} placeholder="Client or salesperson name" style={fld} />
+          </div>
+          <div>
+            <label style={lbl} htmlFor="so-reason">Purpose / reason</label>
+            <select id="so-reason" data-testid="so-reason" value={reason} onChange={e => setReason(e.target.value)} style={fld}>
+              {Object.entries(SAMPLE_REASON_LABELS).map(([v, label]) => (
+                <option key={v} value={v}>{label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={lbl} htmlFor="so-return-date">Expected return date</label>
+            <input id="so-return-date" data-testid="so-return-date" type="date" value={returnDate} onChange={e => setReturnDate(e.target.value)} style={fld} />
+          </div>
+          <div>
+            <label style={lbl} htmlFor="so-notes">Notes (optional)</label>
+            <textarea id="so-notes" data-testid="so-notes" value={notes} onChange={e => setNotes(e.target.value)} rows="2" style={{ ...fld, resize: 'vertical' }} placeholder="Free-text note recorded with the sample event" />
+          </div>
+          {err && (
+            <div data-testid="so-error" style={{ padding: '8px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)' }}>
+              {err}
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 4 }}>
+            <window.Btn variant="outline" onClick={onClose} data-testid="so-cancel">Cancel</window.Btn>
+            <window.Btn onClick={submit} disabled={submitting} data-testid="so-submit-issue">
+              {submitting ? 'Issuing…' : 'Issue Sample Out'}
+            </window.Btn>
+          </div>
+        </div>
+      </window.Modal>
+    );
+  }
+
+  function SampleOutTab() {
+    const [samples, setSamples]     = useState(null);
+    const [loading, setLoading]     = useState(true);
+    const [error, setError]         = useState('');
+    const [statusFilter, setStatus] = useState('');      // '' | 'open' | 'returned'
+    const [recipFilter, setRecip]   = useState('');
+    const [showIssue, setShowIssue] = useState(false);
+
+    const load = useCallback(async () => {
+      setLoading(true);
+      setError('');
+      const params = {};
+      if (statusFilter) params.status = statusFilter;
+      if (recipFilter.trim()) params.recipient = recipFilter.trim();
+      const res = await window.PzApi.getInventorySamples(params);
+      setLoading(false);
+      if (!res.ok) {
+        setError(res.error || ('HTTP ' + res.status));
+        return;
+      }
+      setSamples((res.data && res.data.samples) || []);
+    }, [statusFilter, recipFilter]);
+
+    useEffect(() => { load(); }, [load]);
+
+    // Derived KPI counts from loaded data (or null if still loading)
+    const kpis = React.useMemo(() => {
+      if (!samples) return null;
+      const now = new Date();
+      let activeOut = 0, closingSoon = 0, overdue = 0, returned = 0;
+      for (const s of samples) {
+        if (s.status === 'returned') { returned++; continue; }
+        activeOut++;
+        const d = daysLeft(s.expected_return_date);
+        if (d != null && d < 0)        overdue++;
+        else if (d != null && d <= 3)  closingSoon++;
+      }
+      return { activeOut, closingSoon, overdue, returned };
+    }, [samples]);
+
+    const TH = { padding: '7px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
+    const TD = { padding: '8px 10px', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)', color: 'var(--text)', verticalAlign: 'middle' };
+
+    return (
+      <div data-testid="sample-out-tab" style={{ maxWidth: 1100, margin: '0 auto' }}>
+        {showIssue && (
+          <IssueSampleModal
+            onClose={() => setShowIssue(false)}
+            onSuccess={() => { setShowIssue(false); load(); }}
+          />
+        )}
+
+        {/* KPI strip — 4 tiles per wireframe §7 Tab 7 */}
+        {kpis && (
+          <div data-testid="so-kpi-strip" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+            <InvStatTile testid="so-kpi-active"   label="Active out"           value={kpis.activeOut}   tone="amber" />
+            <InvStatTile testid="so-kpi-closing"  label="Closing soon (≤3 days)" value={kpis.closingSoon} tone="amber" />
+            <InvStatTile testid="so-kpi-overdue"  label="Overdue"              value={kpis.overdue}     tone="red"   />
+            <InvStatTile testid="so-kpi-returned" label="Returned (mo.)"       value={kpis.returned}    tone="green" />
+          </div>
+        )}
+        {loading && !samples && (
+          <div data-testid="so-kpi-loading" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+            {['Active out','Closing soon (≤3 days)','Overdue','Returned (mo.)'].map(l => (
+              <InvStatTile key={l} label={l} value={null} />
+            ))}
+          </div>
+        )}
+
+        {/* Toolbar: filters + Issue Sample button */}
+        <div data-testid="so-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+          {/* Status filter */}
+          <select data-testid="so-filter-status" value={statusFilter} onChange={e => setStatus(e.target.value)}
+            style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, cursor: 'pointer' }}>
+            <option value="">All statuses</option>
+            <option value="open">Open / Out</option>
+            <option value="returned">Returned</option>
+          </select>
+          {/* Recipient filter */}
+          <input data-testid="so-filter-recipient" value={recipFilter} onChange={e => setRecip(e.target.value)}
+            placeholder="Filter by recipient…" style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, minWidth: 180, flex: 1 }} />
+          <InvFetchBtn data-testid="so-refresh" onClick={load} loading={loading} label="↻ Refresh" />
+          {/* + Issue Sample — labels exactly what it writes (Lesson: every write button labels the write) */}
+          <button data-testid="btn-issue-sample" onClick={() => setShowIssue(true)}
+            style={{ padding: '7px 16px', borderRadius: 8, border: '1px solid var(--accent)', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            + Issue Sample
+          </button>
+        </div>
+
+        {/* Error state */}
+        {error && (
+          <div data-testid="so-error-banner" style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--badge-red-text)' }}>
+            Failed to load samples: {error}
+          </div>
+        )}
+
+        {/* Register table — 10 columns per wireframe */}
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
+          <div style={{ overflowX: 'auto' }}>
+            <table data-testid="so-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle)' }}>
+                  {/* 10 columns exactly per wireframe §7 Tab 7 */}
+                  <th style={TH}>Sample ID</th>
+                  <th style={TH}>Source SU</th>
+                  <th style={TH}>Design</th>
+                  <th style={TH}>Qty</th>
+                  <th style={TH}>Issued to</th>
+                  <th style={TH}>Purpose</th>
+                  <th style={TH}>Issued</th>
+                  <th style={TH}>Return by</th>
+                  <th style={TH}>Days left</th>
+                  <th style={TH}>Status</th>
+                  <th style={{ ...TH, textAlign: 'right' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading && (
+                  <tr><td colSpan={11} style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '28px 0' }}>Loading…</td></tr>
+                )}
+                {!loading && samples && samples.length === 0 && (
+                  <tr>
+                    <td colSpan={11} data-testid="so-empty" style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '32px 0', fontStyle: 'italic' }}>
+                      No sample records{statusFilter ? ` with status "${statusFilter}"` : ''}{recipFilter ? ` matching "${recipFilter}"` : ''}.
+                    </td>
+                  </tr>
+                )}
+                {!loading && samples && samples.map(s => {
+                  const isOut = s.status === 'open';
+                  const scanShort = s.scan_code || '—';
+                  // Extract design from scan_code (format: product_code|design or product_code|sr01|design)
+                  const parts = (s.scan_code || '').split('|');
+                  const design = parts.length >= 3 ? parts[2] : (parts.length === 2 ? parts[1] : '—');
+                  const issuedDate = s.out_at ? s.out_at.slice(0, 10) : '—';
+                  return (
+                    <tr key={s.sample_id} data-testid="so-row" style={{ background: 'var(--card)' }}>
+                      <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }}>{s.sample_id || '—'}</td>
+                      <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }}>{scanShort}</td>
+                      <td style={TD}>{design}</td>
+                      <td style={TD}>1</td>
+                      <td style={TD}>{s.recipient_client_name || '—'}</td>
+                      <td style={TD}>{SAMPLE_REASON_LABELS[s.sample_reason] || s.sample_reason || '—'}</td>
+                      <td style={{ ...TD, fontSize: 11.5, color: 'var(--text-2)' }}>{issuedDate}</td>
+                      <td style={{ ...TD, fontSize: 11.5, color: 'var(--text-2)', fontFamily: 'ui-monospace, monospace' }}>
+                        {s.expected_return_date || '—'}
+                      </td>
+                      <td style={TD}>
+                        <DaysLeftChip expectedReturnDate={s.expected_return_date} status={s.status} />
+                      </td>
+                      <td style={TD}>
+                        <SampleStatusChip status={s.status} />
+                      </td>
+                      <td style={{ ...TD, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        {/* Row actions per wireframe: Record Return (if out/overdue) · View */}
+                        {isOut && (
+                          <button data-testid="so-btn-record-return" disabled title="backend-pending — Sample Return tab (Wave-3 U-1 slice 2)"
+                            style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'not-allowed', opacity: 0.6 }}>
+                            Record Return
+                          </button>
+                        )}
+                        <button data-testid="so-btn-view" disabled title="backend-pending — detail view (future slice)"
+                          style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', cursor: 'not-allowed', opacity: 0.6 }}>
+                          View
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {/* Endpoint reference */}
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-3)' }}>
+          Register: GET /api/v1/inventory/samples · Issue: POST /api/v1/inventory/pieces/&#123;id&#125;/sample-out
+        </div>
+      </div>
+    );
+  }
+
   // ── Move Stock modal (Phase B FOLD — Lesson M relocation of Move Location
   //    into the Inventory authority; PROJECT_STATE DECISIONS "Phase B FOLD").
   //    Ported from the wireframe MoveStockModal (design/inventory-page.design.jsx
@@ -1015,38 +1332,79 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  // ── InventoryPage — shell entry point ───────────────────────────────────────
+  // ── InventoryPage — shell entry point (Wave-3: tab strip added) ─────────────
+  //
+  // Wave-3 progressive tab strip: the 11 wireframe tabs are built one per slice.
+  // Tabs already implemented: sampleOut (this slice, Wave-3 U-1).
+  // Remaining tabs appear as a placeholder tab strip that redirects to the hub
+  // panels until their own slice lands.  Each future slice adds its tab.
 
-  function InventoryPage({ openViewer }) {  // openViewer accepted; read panels are read-only
-    // Title + subtitle are provided by the shell <PageHeader> (index.html inventory route).
-    // The read panels below make no write calls; the ONLY write surface is the
-    // Move Stock modal (Phase B FOLD — Lesson M relocation of Move Location).
-    const [showMove, setShowMove] = useState(false);
+  const INV_TABS = [
+    { id: 'hub',        label: 'Hub (overview)',   wire: false },
+    { id: 'sampleOut',  label: 'Sample Out',       wire: true  },
+  ];
+
+  function InvTabStrip({ active, onChange }) {
     return (
-      <div style={{ maxWidth: 980, margin: '0 auto', padding: '28px 24px' }} data-testid="inventory-hub-root">
-        {/* Move Stock action — the folded Move Location capability (no standalone page) */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
-          <button data-testid="btn-open-move-stock" onClick={() => setShowMove(true)}
-            style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid var(--accent)', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            ⇄ Move Stock
-          </button>
-        </div>
-        {showMove && <MoveStockModal onClose={() => setShowMove(false)} />}
+      <div data-testid="inv-tab-strip" style={{ display: 'flex', gap: 0, borderBottom: '2px solid var(--border)', marginBottom: 0, overflowX: 'auto' }}>
+        {INV_TABS.map(t => {
+          const isActive = active === t.id;
+          return (
+            <button key={t.id} data-testid={`inv-tab-${t.id}`} onClick={() => onChange(t.id)}
+              style={{
+                padding: '10px 18px', fontSize: 13, fontWeight: isActive ? 700 : 500,
+                background: 'transparent', border: 'none', borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+                color: isActive ? 'var(--accent-text, var(--text))' : 'var(--text-2)',
+                cursor: 'pointer', whiteSpace: 'nowrap', marginBottom: -2,
+              }}>
+              {t.label}
+              {!t.wire && <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 4px', borderRadius: 3, background: 'var(--badge-neutral-bg)', color: 'var(--badge-neutral-text)', border: '1px solid var(--badge-neutral-border)', verticalAlign: 'middle' }}>PANELS</span>}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
 
-        <Stage2Panel />
-        <BatchPanel />
-        <PiecePanel />
-        <LocationPanel />
-        <AuditPanel />
-        <PromotionNotesPanel />
+  function InventoryPage({ openViewer }) {  // openViewer accepted
+    const [showMove, setShowMove] = useState(false);
+    const [activeTab, setActiveTab] = useState('hub');
 
-        <div style={{ marginTop: 8, padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
-          <strong style={{ color: 'var(--text-2)' }}>Read-only endpoints:</strong>{' '}
-          /inventory/stage2/aggregate &middot; /inventory/state/&#123;batch_id&#125; &middot;
-          /inventory/pieces/&#123;piece_id&#125; &middot; /warehouse/inventory/&#123;scan_code&#125; &middot;
-          /warehouse/locations &middot; /warehouse/locations/&#123;code&#125;/inventory &middot;
-          /warehouse/audit-summary/&#123;batch_id&#125; &middot; /warehouse/audit/&#123;batch_id&#125; &middot;
-          /inventory/promotion-notes/&#123;batch_id&#125; &middot; /inventory/promotion-note/&#123;note_no&#125;
+    return (
+      <div style={{ maxWidth: 1120, margin: '0 auto', padding: '20px 24px 28px' }} data-testid="inventory-hub-root">
+        {/* Tab strip (grows tab-by-tab across Wave-3 slices) */}
+        <InvTabStrip active={activeTab} onChange={setActiveTab} />
+
+        <div style={{ paddingTop: 20 }}>
+          {/* ── Hub tab: existing panels ──────────────────────────── */}
+          {activeTab === 'hub' && (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+                <button data-testid="btn-open-move-stock" onClick={() => setShowMove(true)}
+                  style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid var(--accent)', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  ⇄ Move Stock
+                </button>
+              </div>
+              {showMove && <MoveStockModal onClose={() => setShowMove(false)} />}
+              <Stage2Panel />
+              <BatchPanel />
+              <PiecePanel />
+              <LocationPanel />
+              <AuditPanel />
+              <PromotionNotesPanel />
+              <div style={{ marginTop: 8, padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
+                <strong style={{ color: 'var(--text-2)' }}>Read-only endpoints:</strong>{' '}
+                /inventory/stage2/aggregate &middot; /inventory/state/&#123;batch_id&#125; &middot;
+                /inventory/pieces/&#123;piece_id&#125; &middot; /warehouse/inventory/&#123;scan_code&#125; &middot;
+                /warehouse/locations &middot; /warehouse/locations/&#123;code&#125;/inventory &middot;
+                /warehouse/audit-summary/&#123;batch_id&#125; &middot; /warehouse/audit/&#123;batch_id&#125; &middot;
+                /inventory/promotion-notes/&#123;batch_id&#125; &middot; /inventory/promotion-note/&#123;note_no&#125;
+              </div>
+            </div>
+          )}
+
+          {/* ── Sample Out tab — Wave-3 U-1 ──────────────────────── */}
+          {activeTab === 'sampleOut' && <SampleOutTab />}
         </div>
       </div>
     );
