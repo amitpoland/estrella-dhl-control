@@ -136,6 +136,30 @@ Recorded: MASTER_MANIFEST §2/§6 amendment · RUNTIME.md · LESSONS_LEARNED.md 
 
 ---
 
+### 2026-07-03 — Wave-3 gate ruling: DEPLOY FIRST, then Wave 3
+
+OPERATOR RULING (session question, 2026-07-03): "Deploy first, then Wave 3" —
+run the production deploy ritual now (7-agent gate + CP4; payload =
+service/docs/ops/c3g-deploy-note.md incl. mirror backfill + goods-id-99
+collision + registry backfill + returns_events prod apply). Wave 3 is RATIFIED
+to start immediately after deploy verification; CP3 then closes against live
+backends (clears W3-A1).
+
+Deploy mechanics decided in-session (documented defaults):
+- Prod base established by CRLF-normalized fingerprint: C:\PZ = origin/main
+  HEAD `c7c0e14e` (#814) — version.txt was stale (aa414d90).
+- deploy/latest lacked #809–#814 → merge of origin/main required to avoid
+  regressing prod. Operator's uncommitted pz-api.js blocked an in-place merge
+  (Ruling 5: no stash) → CLEAN deploy worktree `C:\PZ-deploy-w12`, branch
+  `deploy/wave12`, merge `84c292de` (zero conflicts). Worktree doubles as the
+  robocopy source so operator-dirty files cannot ship.
+- Candidate gates green on the worktree: golden 160/160 · pin 11/11 ·
+  smoke 63/1 · carrier suites 100.
+- Lesson D applies (83 local commits, no PR): disclosure + reconciliation plan
+  + local-commit-deploys.jsonl append are part of the CP4 packet.
+
+---
+
 ### 2026-07-03 — C-3g slice decisions (Wave 2 slice #1)
 
 Executed under Wave-2 ratification amendment 1 (pin → true 0). Five slice-level
