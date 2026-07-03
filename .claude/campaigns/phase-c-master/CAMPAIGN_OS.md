@@ -234,3 +234,19 @@ the 7-agent production deploy gate; Constitution R4 (§§0–20 + Application Au
 + MASTER-FIRST + MASTER CONSUMPTION rules); Engineering Lessons (at their named gates);
 Anti-HOLD rules. Where this OS conflicts with any of the above, the above wins; the
 conflict is reported as a governance finding, never silently resolved in the OS's favor.
+
+## §11 Closing Philosophy (operator, verbatim R4, 2026-07-03)
+
+"अब campaign का control prompt नहीं, artifacts करते हैं।
+Constitution तय करता है क्या कभी नहीं बदलता।
+Project Knowledge तय करता है business truth क्या है।
+Architecture Map तय करता है authority कहाँ है।
+Manifest तय करता है इस campaign में क्या करना है।
+Campaign State तय करता है अभी कहाँ पहुँचे हैं।
+Lessons Learned तय करता है कौन सी गलती दोबारा नहीं करनी।
+Architectural Decisions तय करता है कौन से compromises स्वीकार किए गए।
+Prompt केवल bootstrap है।
+Future rules are amendments to these artifacts, never prompt growth."
+
+(Recorded as directed: an artifact amendment, not a rule — no behavior
+change. The prompt is bootstrap; the platform documents govern.)

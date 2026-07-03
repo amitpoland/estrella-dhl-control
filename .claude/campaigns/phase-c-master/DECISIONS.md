@@ -383,3 +383,23 @@ changes would require a new operator ruling superseding the freeze.
 Holding state unchanged: CP4-handover; board moves on "deployed" |
 STOP output | collision list (per-row: evidence + recommendation from the
 agent, RULING from the operator).
+
+---
+
+### 2026-07-03 — OPERATOR CLOSING PHILOSOPHY (verbatim R4 — CAMPAIGN_OS §11; no new rules, no behavior change)
+
+"अब campaign का control prompt नहीं, artifacts करते हैं।
+Constitution तय करता है क्या कभी नहीं बदलता।
+Project Knowledge तय करता है business truth क्या है।
+Architecture Map तय करता है authority कहाँ है।
+Manifest तय करता है इस campaign में क्या करना है।
+Campaign State तय करता है अभी कहाँ पहुँचे हैं।
+Lessons Learned तय करता है कौन सी गलती दोबारा नहीं करनी।
+Architectural Decisions तय करता है कौन से compromises स्वीकार किए गए।
+Prompt केवल bootstrap है।
+Future rules are amendments to these artifacts, never prompt growth."
+
+Recorded in CAMPAIGN_OS.md §11 (closing section) as directed. Holding state
+unchanged: CP4-handover, frozen 4-check gate (a2d13a85), board moves on
+"deployed" | STOP output | collision list; 4×GREEN = technical acceptance;
+"Wave 3 begins" = business authorization.
