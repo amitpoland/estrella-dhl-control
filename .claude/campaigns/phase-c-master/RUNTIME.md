@@ -163,3 +163,7 @@ Campaign slices:
   Next: W3-page2 — Sample Return tab.
 - W3-page2 COMPLETE (Sample Return tab, U-1): 9/9 gate; Record Return now LIVE
   cross-tab; QC fields Lesson-M pending (no backend). Next: W3-page3 Client Return.
+- W3-page3 COMPLETE (Client Return tab, U-2): 9/9 gate (criterion-7 cold-origin 200
+  completed by orchestrator on port 8129 — agent had stated-only). PLANNED: one
+  consolidated real-browser render gate (Preview) after the Inventory family,
+  before page 13. Next: W3-page4 Return to Producer.

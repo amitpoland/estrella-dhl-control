@@ -761,5 +761,30 @@
         { ...payload, operator: op });
     },
 
+    // Authority: routes_inventory_returns.py:212 (C-3a/C-3c, Wave-2 backend LIVE)
+    getInventoryReturns: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/inventory/returns${qs}`);
+    },
+
+    // POST /api/v1/inventory/pieces/{piece_id}/return-from-client
+    //   body: { operator, return_reason, origin_context, received_at,
+    //           idempotency_key, source_holder_name?, notes? }
+    // Moves piece WAREHOUSE_STOCK|SAMPLE_OUT → RETURNED_FROM_CLIENT.
+    // Idempotent on (scan_code, idempotency_key).
+    // return_reason enum: warranty_claim | customer_refused |
+    //   post_sample_review_reject | dimension_issue |
+    //   quality_complaint | wrong_item_shipped | other
+    // Authority: routes_inventory_returns.py:116 (C-3a, LIVE)
+    recordClientReturn: (pieceId, payload) => {
+      const op = ((payload && payload.operator) || _resolveOperator() || '').trim();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required — client-return cancelled.' });
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/return-from-client`,
+        { ...payload, operator: op });
+    },
+
   });
 })();

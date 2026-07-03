@@ -1381,6 +1381,349 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // ── Client Return tab — Wave-3 / U-2 page 3 ─────────────────────────────
+  // Wireframe §7 Tab 9 (ClientReturnTab / GoodsReturnPage).
+  // Gap rows addressed: IV-CR-1, IV-CR-2.
+  // Backend GET:  GET /api/v1/inventory/returns?direction=from_client
+  //               (routes_inventory_returns.py:212; C-3a/C-3c, LIVE)
+  // Backend POST: POST /api/v1/inventory/pieces/{id}/return-from-client
+  //               (routes_inventory_returns.py:116; C-3a, LIVE)
+  // Wireframe status vocabulary: from_client rows are always status='recorded'.
+  // No credit-note/debit-note wFirma writes: no backend — Lesson-M honest-disabled.
+  // No Condition/Decision fields: no backend — Lesson-M honest-disabled.
+  // No placeholder data; honest empty state when register is empty.
+
+  // Return reason enum → display label (matches backend enum from routes_inventory_returns.py:43–52)
+  const CLIENT_RETURN_REASON_LABELS = {
+    warranty_claim:             'Warranty Claim',
+    customer_refused:           'Customer Refused',
+    post_sample_review_reject:  'Post-Sample Review Reject',
+    dimension_issue:            'Dimension Issue',
+    quality_complaint:          'Quality Complaint',
+    wrong_item_shipped:         'Wrong Item Shipped',
+    other:                      'Other',
+  };
+
+  // Record Client Return modal — submits POST /api/v1/inventory/pieces/{pieceId}/return-from-client
+  function RecordClientReturnModal({ onClose, onSuccess }) {
+    const [pieceId, setPieceId]       = useState('');
+    const [client, setClient]         = useState('');
+    const [reason, setReason]         = useState('quality_complaint');
+    const [originCtx, setOriginCtx]   = useState('');
+    const [receivedAt, setReceivedAt] = useState('');
+    const [notes, setNotes]           = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    const [err, setErr]               = useState('');
+
+    function genKey() {
+      return 'cr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    async function submit() {
+      setErr('');
+      const pid = pieceId.trim();
+      const ori = originCtx.trim();
+      const rec = receivedAt.trim();
+      if (!pid) { setErr('Piece scan code is required.'); return; }
+      if (!ori) { setErr('Origin context (RMA # or invoice ref) is required.'); return; }
+      if (!rec) { setErr('Received-at date/time is required.'); return; }
+      setSubmitting(true);
+      const res = await window.PzApi.recordClientReturn(pid, {
+        return_reason:      reason,
+        origin_context:     ori,
+        received_at:        rec,
+        source_holder_name: client.trim(),
+        idempotency_key:    genKey(),
+        notes:              notes.trim(),
+      });
+      setSubmitting(false);
+      if (!res.ok) {
+        const detail = (res.data && res.data.detail && res.data.detail.detail) ||
+                       (res.data && res.data.detail) || res.error || ('HTTP ' + res.status);
+        setErr(String(detail));
+        return;
+      }
+      onSuccess();
+    }
+
+    const lbl = { fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4, display: 'block' };
+    const fld = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, boxSizing: 'border-box' };
+
+    return (
+      <window.Modal title="Record Client Return" onClose={onClose}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Info band */}
+          <div style={{ padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
+            Records an inbound RMA from a client. Piece moves
+            <strong style={{ color: 'var(--text)' }}> WAREHOUSE_STOCK / SAMPLE_OUT → RETURNED_FROM_CLIENT</strong>.
+            Action is idempotent — duplicate submissions with the same scan code return the prior event.
+          </div>
+
+          {/* Piece scan code */}
+          <div>
+            <label style={lbl} htmlFor="cr-piece-id">Piece scan code <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+            <input id="cr-piece-id" data-testid="cr-piece-id" value={pieceId} onChange={e => setPieceId(e.target.value)}
+              style={fld} placeholder="e.g. EJL001|sr1|RG-10025" />
+          </div>
+
+          {/* Client name */}
+          <div>
+            <label style={lbl} htmlFor="cr-client">Client name (optional — who returned it)</label>
+            <input id="cr-client" data-testid="cr-client" value={client} onChange={e => setClient(e.target.value)}
+              style={fld} placeholder="e.g. Aurum Trading" />
+          </div>
+
+          {/* Origin context (invoice/RMA ref) */}
+          <div>
+            <label style={lbl} htmlFor="cr-origin">Origin context — RMA # or invoice ref <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+            <input id="cr-origin" data-testid="cr-origin-context" value={originCtx} onChange={e => setOriginCtx(e.target.value)}
+              style={fld} placeholder="e.g. RMA-0044 or INV 2025/0412" />
+            <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 3 }}>
+              Stored as the audit identifier for this return event (stored in notes field).
+            </div>
+          </div>
+
+          {/* Return reason */}
+          <div>
+            <label style={lbl} htmlFor="cr-reason">Return reason <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+            <select id="cr-reason" data-testid="cr-reason" value={reason} onChange={e => setReason(e.target.value)} style={fld}>
+              {Object.entries(CLIENT_RETURN_REASON_LABELS).map(([v, l]) =>
+                <option key={v} value={v}>{l}</option>
+              )}
+            </select>
+          </div>
+
+          {/* Received at */}
+          <div>
+            <label style={lbl} htmlFor="cr-received-at">Received at (ISO 8601) <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+            <input id="cr-received-at" data-testid="cr-received-at" type="datetime-local" value={receivedAt} onChange={e => setReceivedAt(e.target.value)}
+              style={fld} />
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label style={lbl} htmlFor="cr-notes">Notes (optional)</label>
+            <textarea id="cr-notes" data-testid="cr-notes" value={notes} onChange={e => setNotes(e.target.value)} rows="2"
+              style={{ ...fld, resize: 'vertical' }} placeholder="Condition observation, packing state, etc." />
+          </div>
+
+          {/* Credit note / debit note: no backend — Lesson-M honest-disabled */}
+          <details>
+            <summary data-testid="cr-wfirma-expand" style={{ fontSize: 11, color: 'var(--text-3)', cursor: 'pointer', userSelect: 'none' }}>
+              Credit note / Debit note (wFirma write) ▸
+            </summary>
+            <div style={{ marginTop: 10, padding: '10px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-amber-text)' }}>
+              <strong>Backend-pending — Phase C (future slice).</strong> Credit-note and debit-note
+              wFirma writes have no backend route — the POST /api/v1/inventory/pieces/&#123;id&#125;/return-from-client
+              contract does not produce a wFirma document. These actions are not wired per Lesson M
+              (capability suppression only with a cancellation record; here there is no cancellation,
+              just no backend yet). Census tag: IV-CR-2.
+            </div>
+          </details>
+
+          {/* Error display */}
+          {err && (
+            <div data-testid="cr-error" style={{ padding: '8px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)' }}>
+              {err}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 4 }}>
+            <window.Btn variant="outline" onClick={onClose} data-testid="cr-cancel">Cancel</window.Btn>
+            <window.Btn onClick={submit} disabled={submitting} data-testid="cr-submit-return">
+              {submitting ? 'Recording…' : 'Record Client Return'}
+            </window.Btn>
+          </div>
+        </div>
+      </window.Modal>
+    );
+  }
+
+  function ClientReturnTab() {
+    const [records, setRecords]         = useState(null);
+    const [loading, setLoading]         = useState(true);
+    const [error, setError]             = useState('');
+    const [clientFilter, setClientFilter] = useState('');
+    const [showModal, setShowModal]     = useState(false);
+
+    const load = useCallback(async () => {
+      setLoading(true);
+      setError('');
+      const params = { direction: 'from_client' };
+      const res = await window.PzApi.getInventoryReturns(params);
+      setLoading(false);
+      if (!res.ok) {
+        setError(res.error || ('HTTP ' + res.status));
+        return;
+      }
+      setRecords((res.data && res.data.returns) || []);
+    }, []);
+
+    useEffect(() => { load(); }, [load]);
+
+    // Derived KPI counts from loaded data (wireframe: 4 implied tiles)
+    // Backend only has 'recorded' status for from_client; QC sub-buckets have no backend.
+    const totalRecorded     = records ? records.length : null;
+    const filteredRecords   = records
+      ? records.filter(r => {
+          if (!clientFilter.trim()) return true;
+          const cf = clientFilter.trim().toLowerCase();
+          return (r.source_holder_name || '').toLowerCase().includes(cf);
+        })
+      : [];
+
+    const TH = { padding: '7px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
+    const TD = { padding: '8px 10px', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)', color: 'var(--text)', verticalAlign: 'middle' };
+
+    return (
+      <div data-testid="client-return-tab" style={{ maxWidth: 1100, margin: '0 auto' }}>
+        {showModal && (
+          <RecordClientReturnModal
+            onClose={() => setShowModal(false)}
+            onSuccess={() => { setShowModal(false); load(); }}
+          />
+        )}
+
+        {/* KPI strip — 4 implied tiles per wireframe §7 Tab 9 */}
+        <div data-testid="cr-kpi-strip" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+          {/* Awaiting inspection / Inspected / Routed to RTP — QC sub-buckets have no backend;
+              Lesson-M pending tile. Total recorded is derivable. */}
+          <InvStatTile testid="cr-kpi-awaiting"  label="Awaiting inspection" pending hint="QC outcome writes — future slice (census IV-CR-2)" />
+          <InvStatTile testid="cr-kpi-inspected" label="Inspected"           pending hint="QC outcome writes — future slice (census IV-CR-2)" />
+          <InvStatTile testid="cr-kpi-recorded"  label="Recorded (total)"    value={totalRecorded} tone="green" hint="all from_client returns in register" />
+          <InvStatTile testid="cr-kpi-rtp"       label="Routed to RTP"       pending hint="QC outcome writes — future slice (census IV-CR-2)" />
+        </div>
+
+        {/* Toolbar: client filter + Record button + Refresh */}
+        <div data-testid="cr-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+          <input data-testid="cr-filter-client" value={clientFilter} onChange={e => setClientFilter(e.target.value)}
+            placeholder="Filter by client…" style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, minWidth: 180, flex: 1 }} />
+          <window.Btn onClick={() => setShowModal(true)} data-testid="cr-btn-record-return">
+            + Record Client Return
+          </window.Btn>
+          <InvFetchBtn data-testid="cr-refresh" onClick={load} loading={loading} label="↻ Refresh" />
+        </div>
+
+        {/* Error state */}
+        {error && (
+          <div data-testid="cr-error-banner" style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--badge-red-text)' }}>
+            Failed to load client returns: {error}
+          </div>
+        )}
+
+        {/* Register table — columns per wireframe §7 Tab 9:
+            RMA ID · Invoice · Client · Design · Qty · Value · Reason · Received · Condition · Decision · Status · Actions
+            (Wireframe lists 10 data cols; Value/Condition/Decision have no backend — Lesson-M honest) */}
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Client RMAs — goods returned from clients</span>
+            {records !== null && (
+              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                {filteredRecords.length} of {records.length} record(s)
+              </span>
+            )}
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table data-testid="cr-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle)' }}>
+                  {/* 10 columns per wireframe §7 Tab 9 */}
+                  <th style={TH}>RMA ID</th>
+                  <th style={TH}>Invoice / Origin</th>
+                  <th style={TH}>Client</th>
+                  <th style={TH}>Design</th>
+                  <th style={TH}>Qty</th>
+                  <th style={TH}>Value</th>
+                  <th style={TH}>Reason</th>
+                  <th style={TH}>Received</th>
+                  <th style={TH}>Condition</th>
+                  <th style={TH}>Decision</th>
+                  <th style={TH}>Status</th>
+                  <th style={{ ...TH, textAlign: 'right' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading && (
+                  <tr><td colSpan={12} style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '28px 0' }}>Loading…</td></tr>
+                )}
+                {!loading && records && filteredRecords.length === 0 && (
+                  <tr>
+                    <td colSpan={12} data-testid="cr-empty" style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '32px 0', fontStyle: 'italic' }}>
+                      No client returns{clientFilter ? ` matching "${clientFilter}"` : ''} — register is empty (honest empty).
+                    </td>
+                  </tr>
+                )}
+                {!loading && filteredRecords.map(r => {
+                  // RMA ID: short prefix from event id
+                  const rmaId = r.id ? ('RMA-' + String(r.id).slice(0, 8).toUpperCase()) : '—';
+                  // Invoice / Origin: origin_context stored in notes field (inventory_returns_writer.py:155)
+                  const invoiceRef = r.notes || '—';
+                  // Client: source_holder_name
+                  const clientName = r.source_holder_name || '—';
+                  // Design: derived from scan_code (same algorithm as other tabs)
+                  const parts = (r.scan_code || '').split('|');
+                  const design = parts.length >= 3 ? parts[2] : (parts.length === 2 ? parts[1] : (r.scan_code || '—'));
+                  // Qty: always 1 (single-piece tracking)
+                  const qty = 1;
+                  // Reason: enum → display label
+                  const reasonLabel = CLIENT_RETURN_REASON_LABELS[r.return_reason] || r.return_reason || '—';
+                  // Received: received_at date portion
+                  const receivedDate = r.received_at ? r.received_at.slice(0, 10) : (r.occurred_at ? r.occurred_at.slice(0, 10) : '—');
+
+                  return (
+                    <tr key={r.id} data-testid="cr-row" style={{ background: 'var(--card)' }}>
+                      <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, fontWeight: 700 }}>{rmaId}</td>
+                      <td style={{ ...TD, fontSize: 11.5, color: 'var(--text-2)', fontFamily: 'ui-monospace, monospace' }}>{invoiceRef}</td>
+                      <td style={TD}>{clientName}</td>
+                      <td style={TD}>{design}</td>
+                      <td style={TD}>{qty}</td>
+                      {/* Value — no backend field; Lesson-M honest */}
+                      <td style={{ ...TD, color: 'var(--text-3)' }}>
+                        <span title="backend-pending — value field not in returns_events schema (future slice)" style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-3)' }}>—</span>
+                      </td>
+                      <td style={TD}>{reasonLabel}</td>
+                      <td style={{ ...TD, fontSize: 11.5, color: 'var(--text-2)', fontFamily: 'ui-monospace, monospace' }}>{receivedDate}</td>
+                      {/* Condition — QC field: no backend; Lesson-M honest */}
+                      <td style={{ ...TD, color: 'var(--text-3)' }}>
+                        <span title="backend-pending — QC condition writes (future slice)" style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-3)' }}>—</span>
+                      </td>
+                      {/* Decision — QC field: no backend; Lesson-M honest */}
+                      <td style={{ ...TD, color: 'var(--text-3)' }}>
+                        <span title="backend-pending — QC decision (Restock/Repair/RTP) writes (future slice)" style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-3)' }}>—</span>
+                      </td>
+                      <td style={TD}>
+                        {/* Status: from_client rows are always 'recorded' per routes_inventory_returns.py:212 */}
+                        <span style={{ display: 'inline-flex', alignItems: 'center', background: 'var(--badge-neutral-bg)', color: 'var(--badge-neutral-text)', border: '1px solid var(--badge-neutral-border)', borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
+                          {r.status || 'recorded'}
+                        </span>
+                      </td>
+                      <td style={{ ...TD, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        {/* Inspect action: QC outcome writes have no backend — Lesson-M honest-disabled */}
+                        <button data-testid="cr-btn-inspect" disabled title="backend-pending — QC outcome writes (Inspect/condition/decision) have no backend route yet (future slice)"
+                          style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'not-allowed', opacity: 0.5 }}>
+                          Inspect
+                        </button>
+                        {/* Credit Note: wFirma write — no backend; Lesson-M honest-disabled */}
+                        <button data-testid="cr-btn-credit-note" disabled title="backend-pending — credit note wFirma write has no backend route yet (future slice; census IV-CR-2)"
+                          style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', cursor: 'not-allowed', opacity: 0.6 }}>
+                          Credit Note
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {/* Endpoint reference */}
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-3)' }}>
+          Register: GET /api/v1/inventory/returns?direction=from_client · Record: POST /api/v1/inventory/pieces/&#123;id&#125;/return-from-client
+        </div>
+      </div>
+    );
+  }
+
   // ── Move Stock modal (Phase B FOLD — Lesson M relocation of Move Location
   //    into the Inventory authority; PROJECT_STATE DECISIONS "Phase B FOLD").
   //    Ported from the wireframe MoveStockModal (design/inventory-page.design.jsx
@@ -1593,9 +1936,10 @@ function DocumentViewerPage({ doc, onBack }) {
   // panels until their own slice lands.  Each future slice adds its tab.
 
   const INV_TABS = [
-    { id: 'hub',          label: 'Hub (overview)', wire: false },
-    { id: 'sampleOut',    label: 'Sample Out',     wire: true  },
-    { id: 'sampleReturn', label: 'Sample Return',  wire: true  },
+    { id: 'hub',           label: 'Hub (overview)', wire: false },
+    { id: 'sampleOut',     label: 'Sample Out',     wire: true  },
+    { id: 'sampleReturn',  label: 'Sample Return',  wire: true  },
+    { id: 'clientReturn',  label: 'Client Return',  wire: true  },
   ];
 
   function InvTabStrip({ active, onChange }) {
@@ -1684,6 +2028,9 @@ function DocumentViewerPage({ doc, onBack }) {
 
           {/* ── Sample Return tab — Wave-3 U-1 page 2 ────────────── */}
           {activeTab === 'sampleReturn' && <SampleReturnTab />}
+
+          {/* ── Client Return tab — Wave-3 U-2 page 3 ───────────── */}
+          {activeTab === 'clientReturn' && <ClientReturnTab />}
         </div>
       </div>
     );
