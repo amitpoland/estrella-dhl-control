@@ -20,7 +20,13 @@ Rules and boundary vs PROJECT_STATE.md:
 - **Task:** Phase-C Inventory Master Campaign (platform `.claude/campaigns/phase-c-master/`) —
   launched 2026-07-03 per operator FINAL PRE-LAUNCH AMENDMENT (verbatim R4).
 - **Started:** 2026-07-03
-- **Status:** BLOCKED-HOLD (CAMPAIGN_OS §5a — Wave-3 ratification at the Wave-2 boundary)
+- **Status:** BLOCKED-HOLD (CP4 — operator executes the prod deploy runbook)
+- **Deploy state:** gate READY-TO-DEPLOY (7/7); Lesson-D ACKNOWLEDGED; candidate
+  `84c292de` in C:\PZ-deploy-w12; pz-deploy-guard makes the sync operator-only →
+  runbook = reports/deploy/2026-07-03-wave12-operator-runbook.md (`a6e15149`).
+  Wave 3 ratified to start after deploy verification ("Deploy first, then Wave 3",
+  `9a6b0607`). On operator "deployed": run read-only post-verify + jsonl append +
+  W3-A1 → VALID, then Wave 3 (U-1..U-6).
 - **HOLD reason:** §5a ratification rule: every wave of the reconstructed
   manifest needs operator ratification at the preceding boundary. WAVE 2
   (Backend) COMPLETE 2026-07-03 under "RATIFIED. Wave 2 begins." (+4
