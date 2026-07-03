@@ -95,12 +95,16 @@ robocopy "C:\PZ-deploy-w12\service\app" "C:\PZ\app" /E /XD __pycache__ .pytest_c
 # exit codes 0-3 = OK; 4+ = STOP, go to Section 5 (Rollback)
 ```
 
-> **🔴 AMENDED 2026-07-03 (paid lesson — LESSONS_LEARNED #6).** The original
-> 2a used `/XO` (timestamp-based skip). On the first execution it left
-> **39 modified files stale + 1 new file missing** on prod (all still at
-> `c7c0e14e`; added files copied, modified files skipped — the /XO
-> signature), while robocopy reported success and the service came up green
-> on the OLD code paths. `/XO` is REMOVED above: content, not timestamps,
+> **🔴 AMENDED 2026-07-03 (paid lesson — LESSONS_LEARNED #6).**
+> "Repository inspection shows backfill_product_authority exists in the
+> deploy candidate (C:\PZ-deploy-w12 @ 84c292de) at
+> service/app/services/reservation_db.py:260. The production tree (C:\PZ)
+> does not contain that implementation because the deployment sync was
+> incomplete." (Operator amendment 1, verbatim.) The original 2a used `/XO`
+> (timestamp-based skip): **39 modified files stale + 1 new file missing**
+> on prod (all still at `c7c0e14e`; added files copied, modified files
+> skipped — the /XO signature), while robocopy reported success and the
+> service came up green on the OLD code paths. `/XO` is REMOVED above: content, not timestamps,
 > decides. **The sync is not done until the gate below prints `SYNC VERIFIED`.**
 
 ### 2a-v. MANDATORY sync verification gate (after every robocopy; service still STOPPED)
@@ -126,13 +130,35 @@ for dirpath, dirnames, filenames in os.walk(src_root):
         elif h1 != h2: diff.append(rel)
 print(f"total={total} MISSING={len(missing)} DIFF={len(diff)}")
 for r in missing + diff: print("  NOT-SYNCED:", r)
-print("SYNC VERIFIED" if not missing and not diff else "SYNC INCOMPLETE - re-run robocopy, do NOT proceed")
+named = ["main.py", os.path.join("services","reservation_db.py"), os.path.join("api","routes_proforma.py")]
+named_ok = True
+for rel in named:
+    m = norm(os.path.join(src_root, rel)) == norm(os.path.join(dst_root, rel))
+    named_ok &= m
+    print(f"  named-check {rel}: {'MATCH' if m else 'MISMATCH'}")
+print("SYNC VERIFIED" if not missing and not diff and named_ok else "SYNC INCOMPLETE - re-run robocopy, do NOT proceed")
 ```
 
-**STOP CONDITION:** anything other than `SYNC VERIFIED`. Re-run the 2a
-robocopy and this gate until clean. (First-execution census 2026-07-03:
-`total=493 MISSING=1 DIFF=39` → after the resync this must read
-`MISSING=0 DIFF=0`.)
+**GATE DEFINITION (operator amendment 3, verbatim): "2a-v SYNC VERIFIED
+requires ALL of:**
+- **MISSING = 0**
+- **DIFF = 0**
+- **service/app/main.py hash matches deploy candidate**
+- **reservation_db.py hash matches deploy candidate**
+- **routes_proforma.py hash matches deploy candidate**
+**Only then continue to Step 2b."**
+
+The script above prints the three named-file checks explicitly; anything
+other than `SYNC VERIFIED` = STOP, re-run the 2a robocopy and this gate
+until clean. (First-execution census 2026-07-03: `total=493 MISSING=1
+DIFF=39` → after the resync this must read `MISSING=0 DIFF=0` + 3× MATCH.)
+
+> **NO-ASSUMED-PROGRESS SAFEGUARD (operator amendment 2, verbatim):**
+> "Do not assume any migration or backfill already executed successfully
+> after the partial sync. After the resync passes 2a-v, re-run the
+> deployment ritual from Step 2b onward in order, because idempotent steps
+> are safe but skipped code is not."
+
 
 
 ### 2b. Event-table migrations (idempotent; returns + sample)

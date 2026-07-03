@@ -107,11 +107,16 @@ any execution step is logged.
 against the final deploy candidate SHA, not the intermediate SHA on which
 they were originally written."
 
-Paid cost (evidence, first wave12 deploy execution 2026-07-03):
-- Ritual step 2c failed on prod: `backfill_product_authority` absent from
-  the DEPLOYED `C:\PZ\app\services\reservation_db.py`.
-- Root cause was NOT a stale snippet: the function exists at the candidate
-  SHA `84c292de` (reservation_db.py:260, signature exactly as the runbook).
+Paid cost (evidence, first wave12 deploy execution 2026-07-03; precise
+claim per operator amendment 1, verbatim): "Repository inspection shows
+backfill_product_authority exists in the deploy candidate
+(C:\PZ-deploy-w12 @ 84c292de) at
+service/app/services/reservation_db.py:260. The production tree (C:\PZ)
+does not contain that implementation because the deployment sync was
+incomplete."
+- Ritual step 2c therefore failed on prod (import from the stale tree).
+- The snippet itself was correct against the candidate SHA (signature
+  match at reservation_db.py:260).
   The 2a robocopy with `/XO` (timestamp-skip) left **39 modified files
   stale + 1 new file missing (services/stock_issue.py)** — every stale file
   hash-matched the pre-deploy base `c7c0e14e`; added files copied, modified
