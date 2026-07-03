@@ -69,6 +69,35 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
+## Current origin/main HEAD (2026-07-03, updated): `c7c0e14e`
+
+- **origin/main HEAD = `c7c0e14e`** — `fix(carrier): thread dutiable class into rates discovery — resolves PL→LT 1001 (#814)` (merged 2026-07-03T06:22:25Z). Chain since `85da2ef` (post-PR-726): `4c4c77bf` (#813 DHL additionalDetails) → `86f03d86` (#812 intra-EU customs-free) → `ea2823e9` (#810 Brazil PLT bypass) → `20b4b8b5` (#809 Full Scan + ScanStatusPanel) → `4c4c77bf` (merged 2026-07-02) → `c7c0e14e` (#814 dutiable class). Supersedes the `85da2ef` block below (append-only — prior entries retained).
+
+## Phase-C Wave 2 (Backend) — COMPLETE on deploy/latest (2026-07-03)
+
+- **Phase-C Wave 2 backend COMPLETE on `deploy/latest` branch** (2026-07-03). NOT yet deployed to `C:\PZ` — 7-agent ritual + CP4 pending. Commits in landing order:
+  - `0d12fa60` — ratification docs (R0 scope-lock amendments)
+  - `2f44ffba` — R3 storage-leak fix (shipment-detail prune budget → growth ratchet)
+  - `568c05b2` — C-3g (NameError fix: dangling `prod` ref in `_build_service_charge_lines`; see DEFECT note below)
+  - `be0b1252` — R2-census docs (INSPECTOR dispositions)
+  - `9044640e` — R3 batch (test-health, 8/8 pre-existing failures fixed)
+  - `fee3b087` — C-3a/b/c (service_product_registry in pildb, transitional dual-write setup)
+  - `e8d275cd` — C-3d (routes_wfirma_capabilities declared a product-sync surface; whitelist + customer-pin precedent)
+  - Additional commits at `deploy/latest` tail — C-3e/f + boundary docs.
+  - **C-4a skipped** per ratification: OI-17 (wFirma MM API capability) remains OPEN; C-4 gated on it.
+
+- **Product consumption pin at TRUE ZERO** (2026-07-03): `KNOWN_PRODUCT_VIOLATION_FILES = {}` pinned to stay empty. Transitional dual-write and `rdb.get_cached_*` passthroughs retired. Service-charge metadata moved to `pildb` `service_product_registry` (identity stays in `wfirma_product_mirror`).
+
+- **DEFECT found + fixed in C-3g** (2026-07-03): C-1f (`6a781ee4`) had shipped a NameError on every MAPPED service-charge emission in `_build_service_charge_lines` (dangling `prod` ref); fixed in `568c05b2` + source-grep-pinned.
+
+- **New backend endpoints (ZERO UI)** (2026-07-03): `GET /api/v1/inventory/samples` · `/returns` · `/merchandising/{batch_id}` · `/movements/{batch_id}`; `run_stock_issue()` fires the previously-unreachable `invoice_issued` trigger on proforma→invoice conversion (advisory, never blocks — Lesson N).
+
+- **Verification pass** (2026-07-03): baseline-diffed full `-k proforma` sweeps (pristine-HEAD worktree) — 7 pre-existing failures fixed, 0 introduced; pin 11/11, golden 160/160, smoke 63. R3 register cleared 8/8. Backlog items filed: B-018 (shipment-detail prune budget breach → growth ratchet); B-017 (users.db import-time trap) + LESSONS_LEARNED #3.
+
+- **RULE 6 scorecard citations** (2026-07-03, Lesson C disk-verified): scorecard `.claude/memory/scorecards/2026-07-03-phase-c-wave2-backend.md` (3 agents scored, all EXEMPLARY; repeated-weak flags carried for `frontend-flow-reviewer` + `backend-safety-reviewer`); self-eval `.claude/memory/scorecards/self-eval-2026-07-03.md` (29/35 ACCEPTABLE, prior SELF-DEGRADATION flag resolved).
+
+- **Deploy state** (2026-07-03): Wave-2 backend NOT yet deployed to `C:\PZ`. 7-agent ritual + CP4 required. CP4 payload = `service/docs/ops/c3g-deploy-note.md` (mirror backfill re-run + goods-id-99 collision resolution + service-registry backfill + returns/sample event-table migrations).
+
 ## Current origin/main HEAD (2026-06-22, updated post-PR-726): `85da2ef`
 
 - **origin/main HEAD = `85da2ef`** — `fix(v2): Packing List SR is sequential (not colliding pack_sr) + Origin defaults to India (#723)` (latest as of 2026-06-22 when PR #726 opened). Chain since `ef24ee3`: `a9c750e` (#721 chore/memory) → `6157740` (#705 create-reservation guard) → `cbd4dd6` (#722 DSK chase SLA serialize) → `e1b5883` (#724 cowork repair) → `85da2ef` (#723 Packing List SR fix). Supersedes the `ef24ee3` block below (append-only — prior entries retained).
@@ -6558,6 +6587,16 @@ BACKUP (operator, verbatim): "Backup task still needs to be done before any
 risky cleanup." — OQ-INFRA-BACKUP-TASK remains OPEN; findings #5/#7 stay
 blocked behind it.
 
+## Phase-C Wave 2 ratified + executed (2026-07-03)
+
+- **Operator ratification (verbatim):** "RATIFIED. Wave 2 begins." with four amendments recorded in `.claude/campaigns/phase-c-master/DECISIONS.md`:
+  1. C-3g slice #1 pin → 0 (product consumption TRUE ZERO, `KNOWN_PRODUCT_VIOLATION_FILES = {}`).
+  2. R2-census INSPECTOR dispositions: 3 sync-layer files whitelisted with citations; 3 dev-tools files exempt; 0 business-logic files.
+  3. R3 batched as test-health pass with storage-leak as first commit on a single lane (no parallel lanes).
+  4. users.db import-time trap: record as lesson + task, not chased in Wave 2 scope.
+- **Wave 2 campaign execution boundary:** Wave 2 halted at the Wave-2 boundary per CAMPAIGN_OS §5a; Wave 3 (Entire UI U-1..U-6) awaits operator ratification (OQ-WAVE3-RATIFICATION).
+- **C-4a skipped** (2026-07-03): OI-17 (wFirma MM API capability — does MM exist in wFirma API?) remains OPEN; C-4 (Consignment/Sample/Returns UI) is hard-gated on that answer.
+
 ## Authority-Model Separation — six separate authorities (2026-06-22)
 
 - **Binding (operator-approved, permanent, no flag):** import, product master, proforma,
@@ -6627,6 +6666,12 @@ blocked behind it.
 - **Proforma product description authority = `description_engine`/`product_descriptions`** (2026-06-21): the canonical source for per-line product description is the same `description_engine`/`product_descriptions` table shared with PZ and customs. PR #677 displays it read-only in the proforma panel (`description_bilingual`/`_pl`/`_en` + source badge). This is the permanent authority for the display surface.
 - **Display-only; wFirma line-name posting is NOT affected** (2026-06-21): the wFirma posted line name originates from `design_no`/`product_code` (`routes_proforma.py:1553/7254`). Whether the posted line name should ADOPT the canonical description is a separate accounting/legal decision tracked as BACKLOG B-013. No code may alter the posted-line source without an explicit operator decision here.
 - **V1 remains the active proforma surface; V2 cutover is Atlas-V2 scope** (2026-06-21): PR #677 patches V1 minimally (Lesson F). V2 cutover (`proforma-v2.html` / `v2/proforma-detail.jsx`) is the operator-approved Atlas-V2 work tracked as BACKLOG B-014. No V2 cutover may occur without an explicit operator decision.
+
+## Next 3 actions in queue (refreshed 2026-07-03 — Phase-C Wave 2 backend COMPLETE on deploy/latest; main HEAD `c7c0e14e`)
+
+1. **Deploy Phase-C Wave 2 backend to `C:\PZ`** — target: 7-agent deploy ritual GO + operator executes CP4 playbook (`service/docs/ops/c3g-deploy-note.md`: mirror backfill re-run + goods-id-99 collision resolution + service-registry backfill + returns/sample event-table migrations) + PZService restart + GATE-6 health endpoint + smoke. Gating: OQ-WAVE2-DEPLOY open; no UI files in wave-2 (GATE 6 = backend endpoint smoke only); `deploy/latest` branch must not diverge before deploy.
+2. **Wave-3 ratification** — target: operator "RATIFIED. Wave 3 begins." on the Wave-3 document in `.claude/campaigns/phase-c-master/`; Wave 3 = Entire UI U-1..U-6 (Inventory, Sample, Returns, Consignment, Invoice, MM Integration). Gating: OQ-WAVE3-RATIFICATION open; W3-A1 precondition requires Wave-2 backend deployed (action 1 above must close first); operator reads CAMPAIGN_OS §5a before ratifying.
+3. **Execute agent-tuning Issues #709 + #694 (GATE 4 ISSUE dispositions — repeated-weak frontend-flow-reviewer + backend-safety-reviewer)** — target: both reviewer prompts hardened; next campaign scorecard Evidence ≥4/5 for both agents. Gating: Issues #709 + #694 OPEN; requires agent-prompt-refiner session or direct prompt edits; independent of Wave 3.
 
 ## Next 3 actions in queue (refreshed 2026-06-22 — PR #726 OPENED; main HEAD `85da2ef`)
 
@@ -7405,6 +7450,21 @@ entry). Effect: Wave 2 (Backend) ACTIVE on `deploy/latest`.
 ---
 
 # OPEN QUESTIONS
+
+## OQ-WAVE3-RATIFICATION: Phase-C Wave 3 (Entire UI) awaiting operator ratification (2026-07-03, OPEN — campaign holds at Wave-2 boundary per CAMPAIGN_OS §5a)
+
+- **Question**: Phase-C CAMPAIGN_OS §5a requires explicit operator ratification before each wave begins. Wave 2 backend is COMPLETE on `deploy/latest`. Wave 3 covers the entire UI layer (U-1..U-6: Inventory, Sample, Returns, Consignment, Invoice, MM Integration). Has the operator read the Wave-3 document in `.claude/campaigns/phase-c-master/` and issued "RATIFIED. Wave 3 begins."?
+- **Who can answer**: Operator (Amit) — read CAMPAIGN_OS §1 load order + Wave-3 document; issue ratification word.
+- **Impact if unanswered**: Campaign is frozen at Wave-2 boundary; no UI slice for Inventory/Sample/Returns/Consignment/Invoice/MM may be dispatched; B1 KPI polish and fold slices already built are the frontier.
+- **Precondition (W3-A1)**: Wave-2 backend deployed to `C:\PZ` and smoke-verified (OQ-WAVE2-DEPLOY must close first) — otherwise Wave 3 UI is built on an undeployed backend.
+- **Candidate path to closure**: OQ-WAVE2-DEPLOY closes → Operator reads Wave-3 doc → "RATIFIED. Wave 3 begins." → DECISIONS records date + amendments → this OQ moves to DECISIONS.
+
+## OQ-WAVE2-DEPLOY: Phase-C Wave 2 backend deploy to C:\PZ pending (2026-07-03, OPEN — 7-agent ritual + CP4 preconditions)
+
+- **Question**: Phase-C Wave 2 backend is on `deploy/latest` branch but NOT yet deployed to `C:\PZ`. Has the 7-agent deploy ritual been executed, the CP4 playbook from `service/docs/ops/c3g-deploy-note.md` applied (mirror backfill re-run + goods-id-99 collision resolution + service-registry backfill + returns/sample event-table migrations), PZService restarted, and smoke-verified green?
+- **Who can answer**: Operator (Amit) — execute 7-agent gate, run CP4 steps, restart PZService; orchestrator verifies health endpoint + smoke after restart.
+- **Impact if unanswered**: Wave-2 backend enhancements (product consumption pin, service-product registry, C-3g NameError fix, new inventory endpoints) are not live; Wave-3 ratification (OQ-WAVE3-RATIFICATION) is blocked on this closing first (W3-A1 precondition).
+- **Candidate path to closure**: 7-agent gate GO → operator executes CP4 → PZService restart → health endpoint + smoke green → FACTS records deploy SHA + date → this OQ closes and OQ-WAVE3-RATIFICATION precondition clears.
 
 ## OQ-INFRA-BACKUP-TASK: has Amit created the backup scheduled task? (2026-07-03, OPEN — highest-value checkbox on the board)
 
