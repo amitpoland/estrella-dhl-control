@@ -747,5 +747,19 @@
         { ...payload, operator: op });
     },
 
+    // POST /api/v1/inventory/pieces/{piece_id}/sample-return
+    //   body: { operator, idempotency_key, notes? }
+    // Moves piece SAMPLE_OUT → WAREHOUSE_STOCK. Idempotent on (scan_code, key).
+    // Authority: routes_inventory_sample.py:125 (LIVE)
+    recordSampleReturn: (pieceId, payload) => {
+      const op = ((payload && payload.operator) || _resolveOperator() || '').trim();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required — sample-return cancelled.' });
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/sample-return`,
+        { ...payload, operator: op });
+    },
+
   });
 })();

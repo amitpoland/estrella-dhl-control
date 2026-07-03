@@ -948,7 +948,7 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  function SampleOutTab() {
+  function SampleOutTab({ onRecordReturn }) {
     const [samples, setSamples]     = useState(null);
     const [loading, setLoading]     = useState(true);
     const [error, setError]         = useState('');
@@ -1103,8 +1103,9 @@ function DocumentViewerPage({ doc, onBack }) {
                       <td style={{ ...TD, textAlign: 'right', whiteSpace: 'nowrap' }}>
                         {/* Row actions per wireframe: Record Return (if out/overdue) · View */}
                         {isOut && (
-                          <button data-testid="so-btn-record-return" disabled title="backend-pending — Sample Return tab (Wave-3 U-1 slice 2)"
-                            style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'not-allowed', opacity: 0.6 }}>
+                          <button data-testid="so-btn-record-return"
+                            onClick={() => onRecordReturn && onRecordReturn(s)}
+                            style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'pointer' }}>
                             Record Return
                           </button>
                         )}
@@ -1123,6 +1124,258 @@ function DocumentViewerPage({ doc, onBack }) {
         {/* Endpoint reference */}
         <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-3)' }}>
           Register: GET /api/v1/inventory/samples · Issue: POST /api/v1/inventory/pieces/&#123;id&#125;/sample-out
+        </div>
+      </div>
+    );
+  }
+
+  // ── Sample Return tab — Wave-3 / U-1 page 2 ──────────────────────────────
+  // Wireframe SampleReturnTab (docs/design/inventory-page.design.jsx:433–479).
+  // Gap rows addressed: IV-SR-1, IV-SR-2, IV-SR-3, IV-SR-4.
+  // Backend GET: GET /api/v1/inventory/samples?status=returned (routes_inventory_sample.py:149)
+  // Backend POST: POST /api/v1/inventory/pieces/{id}/sample-return (routes_inventory_sample.py:125)
+  // No QC outcome writes (Inspect action, condition, inspector, decision fields) —
+  //   no backend exists; Lesson-M honest-disabled with reason title.
+
+  // Record Return modal — submits POST /api/v1/inventory/pieces/{piece_id}/sample-return
+  function RecordReturnModal({ sample, onClose, onSuccess }) {
+    const [notes, setNotes]           = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    const [err, setErr]               = useState('');
+
+    function genKey() {
+      return 'sr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    async function submit() {
+      setErr('');
+      const scanCode = (sample && sample.scan_code) || '';
+      if (!scanCode) { setErr('No scan code on this sample record — cannot record return.'); return; }
+      setSubmitting(true);
+      const res = await window.PzApi.recordSampleReturn(scanCode, {
+        idempotency_key: genKey(),
+        notes: notes.trim(),
+      });
+      setSubmitting(false);
+      if (!res.ok) {
+        const detail = (res.data && res.data.detail && res.data.detail.detail) ||
+                       (res.data && res.data.detail) || res.error || ('HTTP ' + res.status);
+        setErr(String(detail));
+        return;
+      }
+      onSuccess();
+    }
+
+    const lbl = { fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4, display: 'block' };
+    const fld = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, boxSizing: 'border-box' };
+
+    const scanShort = (sample && sample.scan_code) || '—';
+    const parts = (sample && sample.scan_code ? sample.scan_code.split('|') : []);
+    const design = parts.length >= 3 ? parts[2] : (parts.length === 2 ? parts[1] : '—');
+
+    return (
+      <window.Modal title="Record Sample Return" onClose={onClose}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Info band — shows which piece is being returned */}
+          <div style={{ padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }}>
+            <div style={{ fontWeight: 700, color: 'var(--text)', marginBottom: 2 }}>Piece: <span style={{ fontFamily: 'ui-monospace, monospace' }}>{scanShort}</span></div>
+            <div style={{ color: 'var(--text-2)' }}>Design: {design}</div>
+            <div style={{ color: 'var(--text-2)' }}>Issued to: {(sample && sample.recipient_client_name) || '—'}</div>
+            <div style={{ color: 'var(--text-3)', fontSize: 11, marginTop: 4 }}>
+              This will move the piece SAMPLE_OUT → WAREHOUSE_STOCK. Action is idempotent.
+            </div>
+          </div>
+          <div>
+            <label style={lbl} htmlFor="sr-notes">Notes (optional)</label>
+            <textarea id="sr-notes" data-testid="sr-notes" value={notes} onChange={e => setNotes(e.target.value)} rows="2"
+              style={{ ...fld, resize: 'vertical' }} placeholder="Condition note, reason, or any remark recorded with the return event" />
+          </div>
+          {/* QC outcome fields: no backend exists; Lesson-M honest-disabled */}
+          <details>
+            <summary data-testid="sr-qc-expand" style={{ fontSize: 11, color: 'var(--text-3)', cursor: 'pointer', userSelect: 'none' }}>
+              QC / Inspect fields (Condition · Inspector · Decision) ▸
+            </summary>
+            <div style={{ marginTop: 10, padding: '10px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-amber-text)' }}>
+              <strong>Backend-pending — Phase C (future slice).</strong> QC outcome writes
+              (condition, inspector assignment, decision: Restock / Repair / Write-off) have no
+              backend route — the POST /api/v1/inventory/pieces/&#123;id&#125;/sample-return
+              contract accepts only operator, idempotency_key, notes. These fields are not
+              wired per Lesson M (capability suppression only with a cancellation record;
+              here there is no cancellation, just no backend yet).
+            </div>
+          </details>
+          {err && (
+            <div data-testid="sr-error" style={{ padding: '8px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)' }}>
+              {err}
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 4 }}>
+            <window.Btn variant="outline" onClick={onClose} data-testid="sr-cancel">Cancel</window.Btn>
+            <window.Btn onClick={submit} disabled={submitting} data-testid="sr-submit-return">
+              {submitting ? 'Recording…' : 'Record Sample Return'}
+            </window.Btn>
+          </div>
+        </div>
+      </window.Modal>
+    );
+  }
+
+  function SampleReturnTab() {
+    const [samples, setSamples]       = useState(null);
+    const [loading, setLoading]       = useState(true);
+    const [error, setError]           = useState('');
+    const [recipFilter, setRecip]     = useState('');
+    const [returnModal, setReturnModal] = useState(null); // sample record to record-return on
+
+    const load = useCallback(async () => {
+      setLoading(true);
+      setError('');
+      const params = { status: 'returned' };
+      if (recipFilter.trim()) params.recipient = recipFilter.trim();
+      const res = await window.PzApi.getInventorySamples(params);
+      setLoading(false);
+      if (!res.ok) {
+        setError(res.error || ('HTTP ' + res.status));
+        return;
+      }
+      setSamples((res.data && res.data.samples) || []);
+    }, [recipFilter]);
+
+    useEffect(() => { load(); }, [load]);
+
+    // Derived KPI counts from loaded data (wireframe: 4 tiles)
+    // KPI data: "awaiting inspection" / "in repair" / "restocked mo." / "written off mo."
+    // The backend return event carries no condition/decision/inspector — all three are
+    // QC fields with no backend. We can derive "total returned" but not the sub-buckets.
+    // Show total as "Restocked (mo.)" pending the QC backend. Others shown as pending.
+    const totalReturned = samples ? samples.length : null;
+
+    const TH = { padding: '7px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
+    const TD = { padding: '8px 10px', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)', color: 'var(--text)', verticalAlign: 'middle' };
+
+    return (
+      <div data-testid="sample-return-tab" style={{ maxWidth: 1100, margin: '0 auto' }}>
+        {returnModal && (
+          <RecordReturnModal
+            sample={returnModal}
+            onClose={() => setReturnModal(null)}
+            onSuccess={() => { setReturnModal(null); load(); }}
+          />
+        )}
+
+        {/* KPI strip — 4 tiles per wireframe SampleReturnTab:442–447 */}
+        <div data-testid="sr-kpi-strip" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+          {/* Awaiting inspection / In repair / Written off — QC sub-buckets have no backend;
+              Lesson-M pending tile. Restocked total is derivable from returned count. */}
+          <InvStatTile testid="sr-kpi-awaiting"  label="Awaiting inspection" pending hint="QC outcome writes — future slice" />
+          <InvStatTile testid="sr-kpi-repair"    label="In repair"           pending hint="QC outcome writes — future slice" />
+          <InvStatTile testid="sr-kpi-restocked" label="Returned (total)"    value={totalReturned} tone="green" hint="all returned this register" />
+          <InvStatTile testid="sr-kpi-writeoff"  label="Written off (mo.)"   pending hint="QC outcome writes — future slice" />
+        </div>
+
+        {/* Toolbar: recipient filter + Refresh */}
+        <div data-testid="sr-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+          <input data-testid="sr-filter-recipient" value={recipFilter} onChange={e => setRecip(e.target.value)}
+            placeholder="Filter by recipient…" style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, minWidth: 180, flex: 1 }} />
+          <InvFetchBtn data-testid="sr-refresh" onClick={load} loading={loading} label="↻ Refresh" />
+        </div>
+
+        {/* Error state */}
+        {error && (
+          <div data-testid="sr-error-banner" style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--badge-red-text)' }}>
+            Failed to load sample returns: {error}
+          </div>
+        )}
+
+        {/* Register table — 10 columns per wireframe SampleReturnTab:453–473
+            Columns: Return ID · Sample ID · Design · Qty · Returned from ·
+                     Received · Condition · Inspector · Decision · Status · Actions */}
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Samples returned from sales / clients</span>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table data-testid="sr-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle)' }}>
+                  {/* 10 columns exactly per wireframe SampleReturnTab */}
+                  <th style={TH}>Return ID</th>
+                  <th style={TH}>Sample ID</th>
+                  <th style={TH}>Design</th>
+                  <th style={TH}>Qty</th>
+                  <th style={TH}>Returned from</th>
+                  <th style={TH}>Received</th>
+                  <th style={TH}>Condition</th>
+                  <th style={TH}>Inspector</th>
+                  <th style={TH}>Decision</th>
+                  <th style={TH}>Status</th>
+                  <th style={{ ...TH, textAlign: 'right' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading && (
+                  <tr><td colSpan={11} style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '28px 0' }}>Loading…</td></tr>
+                )}
+                {!loading && samples && samples.length === 0 && (
+                  <tr>
+                    <td colSpan={11} data-testid="sr-empty" style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '32px 0', fontStyle: 'italic' }}>
+                      No sample returns{recipFilter ? ` matching "${recipFilter}"` : ''} — register is empty (honest empty).
+                    </td>
+                  </tr>
+                )}
+                {!loading && samples && samples.map(s => {
+                  const scanShort = s.scan_code || '—';
+                  const parts = (s.scan_code || '').split('|');
+                  const design = parts.length >= 3 ? parts[2] : (parts.length === 2 ? parts[1] : '—');
+                  // Return ID: use return_event_id (the actual return event ID from the DB)
+                  const returnId = s.return_event_id ? ('SR-' + String(s.return_event_id).slice(0, 8)) : '—';
+                  const receivedDate = s.returned_at ? s.returned_at.slice(0, 10) : '—';
+                  return (
+                    <tr key={s.sample_id} data-testid="sr-row" style={{ background: 'var(--card)' }}>
+                      <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, fontWeight: 700 }}>{returnId}</td>
+                      <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, color: 'var(--text-3)' }}>{s.sample_id || '—'}</td>
+                      <td style={TD}>{design}</td>
+                      <td style={TD}>1</td>
+                      <td style={TD}>{s.recipient_client_name || '—'}</td>
+                      <td style={{ ...TD, fontSize: 11.5, color: 'var(--text-2)', fontFamily: 'ui-monospace, monospace' }}>{receivedDate}</td>
+                      {/* Condition, Inspector, Decision — QC fields: no backend; Lesson-M honest */}
+                      <td style={{ ...TD, color: 'var(--text-3)' }}>
+                        <span title="backend-pending — QC outcome writes (future slice)" style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-3)' }}>—</span>
+                      </td>
+                      <td style={{ ...TD, color: 'var(--text-3)' }}>
+                        <span title="backend-pending — inspector assignment (future slice)" style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-3)' }}>—</span>
+                      </td>
+                      <td style={{ ...TD, color: 'var(--text-3)' }}>
+                        <span title="backend-pending — QC decision (future slice)" style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-3)' }}>—</span>
+                      </td>
+                      <td style={TD}>
+                        {/* Returned = piece is back in WAREHOUSE_STOCK; status is always "Returned" here */}
+                        <span style={{ display: 'inline-flex', alignItems: 'center', background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)', borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
+                          Returned
+                        </span>
+                      </td>
+                      <td style={{ ...TD, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        {/* Inspect action: QC outcome writes have no backend — Lesson-M honest-disabled */}
+                        <button data-testid="sr-btn-inspect" disabled title="backend-pending — QC outcome writes (Inspect/condition/decision) have no backend route yet (future slice)"
+                          style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'not-allowed', opacity: 0.5 }}>
+                          Inspect
+                        </button>
+                        {/* View action: no detail endpoint yet — Lesson-M honest-disabled */}
+                        <button data-testid="sr-btn-view" disabled title="backend-pending — detail view (future slice)"
+                          style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', cursor: 'not-allowed', opacity: 0.6 }}>
+                          View
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {/* Endpoint reference */}
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-3)' }}>
+          Register: GET /api/v1/inventory/samples?status=returned · Record return: POST /api/v1/inventory/pieces/&#123;id&#125;/sample-return
         </div>
       </div>
     );
@@ -1340,8 +1593,9 @@ function DocumentViewerPage({ doc, onBack }) {
   // panels until their own slice lands.  Each future slice adds its tab.
 
   const INV_TABS = [
-    { id: 'hub',        label: 'Hub (overview)',   wire: false },
-    { id: 'sampleOut',  label: 'Sample Out',       wire: true  },
+    { id: 'hub',          label: 'Hub (overview)', wire: false },
+    { id: 'sampleOut',    label: 'Sample Out',     wire: true  },
+    { id: 'sampleReturn', label: 'Sample Return',  wire: true  },
   ];
 
   function InvTabStrip({ active, onChange }) {
@@ -1367,11 +1621,33 @@ function DocumentViewerPage({ doc, onBack }) {
   }
 
   function InventoryPage({ openViewer }) {  // openViewer accepted
-    const [showMove, setShowMove] = useState(false);
-    const [activeTab, setActiveTab] = useState('hub');
+    const [showMove, setShowMove]             = useState(false);
+    const [activeTab, setActiveTab]           = useState('hub');
+    // Cross-tab Record Return: opened from SampleOutTab row → RecordReturnModal in InventoryPage
+    // so that the modal can trigger a refresh of the Sample Return tab when visible.
+    const [recordReturnTarget, setRecordReturnTarget] = useState(null);
+
+    function handleRecordReturn(sample) {
+      setRecordReturnTarget(sample);
+    }
+
+    function handleReturnSuccess() {
+      setRecordReturnTarget(null);
+      // Switch to Sample Return tab so the operator sees the result
+      setActiveTab('sampleReturn');
+    }
 
     return (
       <div style={{ maxWidth: 1120, margin: '0 auto', padding: '20px 24px 28px' }} data-testid="inventory-hub-root">
+        {/* Cross-tab Record Return modal (opened from Sample Out row; success → switches to Sample Return) */}
+        {recordReturnTarget && (
+          <RecordReturnModal
+            sample={recordReturnTarget}
+            onClose={() => setRecordReturnTarget(null)}
+            onSuccess={handleReturnSuccess}
+          />
+        )}
+
         {/* Tab strip (grows tab-by-tab across Wave-3 slices) */}
         <InvTabStrip active={activeTab} onChange={setActiveTab} />
 
@@ -1403,8 +1679,11 @@ function DocumentViewerPage({ doc, onBack }) {
             </div>
           )}
 
-          {/* ── Sample Out tab — Wave-3 U-1 ──────────────────────── */}
-          {activeTab === 'sampleOut' && <SampleOutTab />}
+          {/* ── Sample Out tab — Wave-3 U-1 page 1 ───────────────── */}
+          {activeTab === 'sampleOut' && <SampleOutTab onRecordReturn={handleRecordReturn} />}
+
+          {/* ── Sample Return tab — Wave-3 U-1 page 2 ────────────── */}
+          {activeTab === 'sampleReturn' && <SampleReturnTab />}
         </div>
       </div>
     );

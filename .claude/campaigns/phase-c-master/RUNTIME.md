@@ -161,3 +161,5 @@ Campaign slices:
   (build record reports/wave3/pages/2026-07-03-page1-sample-out.md); INV_TABS strip
   introduced; slice-only staging (operator pz-api.js WIP excluded via surgical blob).
   Next: W3-page2 — Sample Return tab.
+- W3-page2 COMPLETE (Sample Return tab, U-1): 9/9 gate; Record Return now LIVE
+  cross-tab; QC fields Lesson-M pending (no backend). Next: W3-page3 Client Return.
