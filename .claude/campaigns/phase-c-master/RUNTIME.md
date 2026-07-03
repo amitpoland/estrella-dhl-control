@@ -184,3 +184,9 @@ Campaign slices:
   (no second implementation); Upload-packing Lesson-M (IV-TP-2). Orchestrator
   re-ran pin 11/11 + smoke 63 (agent table had drifted from the operator's 9).
   Next: W3-page8 Temp Warehouse tab.
+- W3-page8 COMPLETE (Temp Warehouse tab, U-3): 9/9 gate (browser 0-errors, pin,
+  smoke run by agent). DISCLOSED MODEL GAP -> Q-4: engine has a single
+  WAREHOUSE_STOCK state; wireframe splits stage-1 (awaiting count) vs stage-2
+  (final). Page 9 (Final Stock) BLOCKED on the Q-4 ruling (else identical rows in
+  two tabs). Proposed default: location/bag-assigned = Final, unassigned = Temp.
+  Next unblocked: W3-page10 Consignment gated surface (census #10).

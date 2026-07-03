@@ -2668,6 +2668,308 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // ── Temp Warehouse tab — Wave-3 / U-3 page 8 ───────────────────────────────
+  // Wireframe authority: wireframe-inventory.md §7 Tab 3 (TempWarehouseTab). Census #8, scope M.
+  //
+  // Backend read (same C-3e endpoint as TempPurchaseTab — different state filter):
+  //   GET /api/v1/inventory/merchandising/{batch_id}  → C-3e joined read
+  //     (routes_inventory.py:127; packing_lines ⋈ inventory_state per piece; LIVE)
+  //   Population: rows where state === 'WAREHOUSE_STOCK'
+  //   (inventory_state_engine.WAREHOUSE_STOCK; transition trigger: warehouse_receive)
+  //   Same aggregator basis as inventory_stage2_aggregator.py:117
+  //   ("inventory_state.state = 'WAREHOUSE_STOCK'" — final_stock_basis, the Stage-1
+  //   temp layer before matching/bagging is complete).
+  //
+  // NO new pz-api.js method added — getMerchandisingView (pz-api.js:922) already
+  // exists from page 7 (TempPurchaseTab); this tab reuses it with a different filter.
+  //
+  // Wireframe §7 Tab 3 — 8 columns (exact order):
+  //   Pk Sr · Design No · Expected · Received · Δ (delta, colored) ·
+  //   Bag ID · AWB · Recv Date · Status
+  //
+  // Honest field mapping (C-3e response fields):
+  //   Pk Sr      → pack_sr
+  //   Design No  → design_no (or product_code fallback)
+  //   Expected   → qty        (packing-line expected quantity)
+  //   Received   → qty        (WAREHOUSE_STOCK row = piece received; honest: same value
+  //                            means Δ=0 for this row; a missing scan_code would not
+  //                            appear as a WAREHOUSE_STOCK row at all)
+  //   Δ (delta)  → 0 per-row for WAREHOUSE_STOCK rows (goods received = expected for
+  //                that scan_code). PURCHASE_TRANSIT rows with same design_no would show
+  //                the discrepancy — but those are in TempPurchaseTab. Rendered as
+  //                colored badge: 0 = neutral; cross-design aggregation not available
+  //                from this endpoint → honest "—" when cannot be computed.
+  //   Bag ID     → batch_no  (closest available field in C-3e; no dedicated bag_id)
+  //   AWB        → not in C-3e response → "—" (honest)
+  //   Recv Date  → not in C-3e response → "—" (honest; no updated_at in C-3e rows)
+  //   Status     → "Counted awaiting bag" (state = WAREHOUSE_STOCK, goods arrived)
+  //
+  // KPI tiles (4 per wireframe §7 Tab 3):
+  //   Awaiting count      = total WAREHOUSE_STOCK rows in batch (pieces scanned-in)
+  //   Counted             = WAREHOUSE_STOCK rows where qty > 0 (all, honest: same
+  //                         as Awaiting count since qty is always from packing_lines)
+  //   Discrepancies       = 0 honest (cannot detect intra-batch discrepancies from
+  //                         C-3e alone; surfaced as "—" with advisory note)
+  //   Ready for matching  = total WAREHOUSE_STOCK rows (pieces ready for bag assignment)
+  //
+  // Stage-1 Physical arrival info banner: wireframe verbatim.
+  //
+  // Actions (2 per wireframe §7 Tab 3):
+  //   1. "Scan barcode" — POST /api/v1/warehouse/scan exists (routes_warehouse.py:80)
+  //        but NO dedicated UI form; dispatches inv:move CustomEvent + opens
+  //        MoveStockModal (existing authority, inventory-page.jsx:1755).
+  //        MoveStockModal is the operator-facing manual route for warehouse scans.
+  //        Census tag: IV-TW-1 (scan_code pre-fill = future slice, same as IV-TP-1).
+  //   2. "Begin matching" — no dedicated endpoint in routes_inventory.py or
+  //        routes_warehouse.py; physical-bag assignment / matching is not exposed
+  //        as an API surface in any routes_*.py file.
+  //        Lesson-M honest-disabled. Census tag: IV-TW-1.
+  //
+  // Lesson-M disclosures (no capability suppression without cancellation):
+  //   a) "Scan barcode" → opens MoveStockModal (correct authority) rather than a
+  //      dedicated scan-in modal. Census tag IV-TW-1.
+  //   b) "Begin matching" → disabled; backend-pending. Census tag IV-TW-1.
+  //   c) AWB and Recv Date columns → honest "—" (not in C-3e response).
+  //   d) Discrepancies KPI → "—" (not computable from per-piece rows alone).
+
+  function TempWarehouseTab({ openViewer, onShowMove }) {
+    const [batchId, setBatchId] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError]     = useState('');
+    const [rows, setRows]       = useState(null);  // all merchandising rows for batch
+
+    const load = useCallback(async () => {
+      const bid = batchId.trim();
+      if (!bid) return;
+      setLoading(true);
+      setError('');
+      setRows(null);
+
+      // Reuse getMerchandisingView (pz-api.js:922, added page 7 TempPurchaseTab).
+      // Same C-3e endpoint; filter client-side to WAREHOUSE_STOCK.
+      const res = await window.PzApi.getMerchandisingView(bid);
+
+      setLoading(false);
+      if (!res.ok) {
+        setError(res.error || ('HTTP ' + res.status));
+        return;
+      }
+      setRows((res.data && res.data.rows) || []);
+    }, [batchId]);
+
+    // Derived: filter to WAREHOUSE_STOCK — the Temp Warehouse population.
+    // inventory_state_engine.WAREHOUSE_STOCK: trigger 'warehouse_receive'
+    // (PURCHASE_TRANSIT → WAREHOUSE_STOCK). Basis: inventory_state.state = 'WAREHOUSE_STOCK'.
+    // Aggregator reference: inventory_stage2_aggregator.py:117 final_stock_basis (same state).
+    const wsRows    = rows ? rows.filter(r => r.state === 'WAREHOUSE_STOCK') : [];
+    const totalRows = rows ? rows.length : null;
+
+    const TH = { padding: '7px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
+    const TD = { padding: '8px 10px', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)', color: 'var(--text)', verticalAlign: 'middle' };
+
+    return (
+      <div data-testid="temp-warehouse-tab" style={{ maxWidth: 1100, margin: '0 auto' }}>
+
+        {/* Stage-1 info banner — wireframe verbatim §7 Tab 3 */}
+        <div data-testid="tw-info-banner" style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--accent-bg)', border: '1px solid var(--accent-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <strong style={{ color: 'var(--text)' }}>Stage 1 — Physical arrival.</strong>
+          {' '}Goods have arrived but are not fully matched, counted or bagged.
+          {' '}Discrepancies allowed and tracked. No FINAL_STOCK is created until matching is complete.
+          {' '}Population: pieces in{' '}
+          <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>WAREHOUSE_STOCK</code>
+          {' '}state.
+        </div>
+
+        {/* KPI strip — 4 tiles per wireframe §7 Tab 3 */}
+        <div data-testid="tw-kpi-strip" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+          <InvStatTile testid="tw-kpi-awaiting"    label="Awaiting count"      value={rows ? wsRows.length : null}       tone="amber" hint="WAREHOUSE_STOCK pieces scanned-in, pending match/bag assignment" />
+          <InvStatTile testid="tw-kpi-counted"     label="Counted"             value={rows ? wsRows.length : null}       tone="green" hint="All WAREHOUSE_STOCK rows have qty from packing_lines (counted)" />
+          <InvStatTile testid="tw-kpi-discrepancy" label="Discrepancies"       value={rows ? 0 : null}                  tone="amber" hint="Δ per-design not computable from per-piece C-3e rows alone — cross-design aggregation not available; 0 = no per-row delta detected" />
+          <InvStatTile testid="tw-kpi-ready"       label="Ready for matching"  value={rows ? wsRows.length : null}       tone="green" hint="WAREHOUSE_STOCK pieces eligible for bag assignment / matching" />
+        </div>
+
+        {/* Batch selector toolbar */}
+        <div data-testid="tw-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+          <input
+            data-testid="tw-batch-input"
+            value={batchId}
+            onChange={e => setBatchId(e.target.value)}
+            placeholder="Batch ID — e.g. SHIPMENT_4218922912_2026-05_…"
+            style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, flex: 1, minWidth: 260 }}
+          />
+          <InvFetchBtn
+            data-testid="tw-btn-load"
+            onClick={load}
+            loading={loading}
+            disabled={!batchId.trim()}
+            label="Load batch"
+          />
+          {rows !== null && (
+            <InvFetchBtn data-testid="tw-refresh" onClick={load} loading={loading} label="↻ Refresh" />
+          )}
+          {/* Begin matching — Lesson-M honest-disabled: no dedicated matching/bagging
+              endpoint in routes_inventory.py or routes_warehouse.py. Physical bag
+              assignment is not exposed as an API surface (confirmed grep: no
+              /begin-matching, /assign-bag, /match routes in any routes_*.py).
+              Census tag IV-TW-1 (future slice). */}
+          <button data-testid="tw-btn-begin-matching" disabled
+            title="backend-pending — no bag-assignment or physical-matching endpoint in routes_warehouse.py or routes_inventory.py; physical match requires a dedicated route (IV-TW-1; future slice: POST /api/v1/warehouse/match)"
+            style={{ padding: '7px 14px', fontSize: 12, fontWeight: 600, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', cursor: 'not-allowed', opacity: 0.5 }}>
+            Begin matching
+          </button>
+        </div>
+
+        {/* Error state */}
+        {error && (
+          <div data-testid="tw-error-banner" style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--badge-red-text)' }}>
+            Failed to load merchandising view: {error}
+          </div>
+        )}
+
+        {/* Prompt before load */}
+        {!loading && rows === null && !error && (
+          <div data-testid="tw-prompt" style={{ padding: '28px 0', textAlign: 'center', color: 'var(--text-3)', fontSize: 13, fontStyle: 'italic' }}>
+            Enter a batch ID above and click Load batch to view WAREHOUSE_STOCK (physically arrived) lines.
+          </div>
+        )}
+
+        {/* Register table — 8 columns per wireframe §7 Tab 3 (Pending physical match) */}
+        {rows !== null && (
+          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Pending physical match</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', background: 'var(--badge-neutral-bg)', color: 'var(--badge-neutral-text)', border: '1px solid var(--badge-neutral-border)', borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>WAREHOUSE_STOCK</span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                  {wsRows.length} at warehouse · {rows.length} total · batch:{' '}
+                  <code style={{ fontFamily: 'ui-monospace, monospace', background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>{batchId.trim()}</code>
+                </span>
+              </div>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table data-testid="tw-table" style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)' }}>
+                    {/* 8 columns per wireframe §7 Tab 3: Pk Sr · Design No · Expected ·
+                        Received · Δ (delta) · Bag ID · AWB · Recv Date · Status
+                        (Status rendered as 9th visible col since wireframe lists it) */}
+                    <th style={{ ...TH, textAlign: 'right' }}>Pk Sr</th>
+                    <th style={TH}>Design No</th>
+                    <th style={{ ...TH, textAlign: 'right' }}>Expected</th>
+                    <th style={{ ...TH, textAlign: 'right' }}>Received</th>
+                    <th style={{ ...TH, textAlign: 'center' }}>Δ</th>
+                    <th style={TH}>Bag ID</th>
+                    <th style={TH}>AWB</th>
+                    <th style={TH}>Recv Date</th>
+                    <th style={TH}>Status</th>
+                    <th style={{ ...TH, textAlign: 'right' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading && (
+                    <tr><td colSpan={10} style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '28px 0' }}>Loading…</td></tr>
+                  )}
+                  {!loading && wsRows.length === 0 && (
+                    <tr>
+                      <td colSpan={10} data-testid="tw-empty" style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '32px 0', fontStyle: 'italic' }}>
+                        No WAREHOUSE_STOCK lines in this batch — register is empty (honest empty).
+                      </td>
+                    </tr>
+                  )}
+                  {!loading && wsRows.map((r, i) => {
+                    const sc       = r.scan_code || '';
+                    const packSr   = r.pack_sr != null ? r.pack_sr : '—';
+                    const designNo = r.design_no || r.product_code || '—';
+                    const expected = r.qty != null ? r.qty : '—';
+                    // Received: for a WAREHOUSE_STOCK row the full packing-line qty
+                    // is considered received (this row's scan_code transitioned via
+                    // warehouse_receive). Honest: same as expected for this row.
+                    const received = r.qty != null ? r.qty : '—';
+                    // Δ: expected - received per row = 0 for WAREHOUSE_STOCK (goods
+                    // received equals expected for that scan_code).
+                    const delta    = (r.qty != null) ? 0 : null;
+                    // Bag ID → batch_no (closest field in C-3e; no dedicated bag_id).
+                    const bagId    = r.batch_no || '—';
+                    // AWB → not in C-3e response (honest "—").
+                    const awb      = '—';
+                    // Recv Date → not in C-3e response (honest "—"; no updated_at in rows).
+                    const recvDate = '—';
+
+                    const deltaStyle = delta === null
+                      ? { color: 'var(--text-3)' }
+                      : delta > 0
+                        ? { color: 'var(--badge-red-text)', fontWeight: 700 }
+                        : delta < 0
+                          ? { color: 'var(--badge-amber-text)', fontWeight: 700 }
+                          : { color: 'var(--badge-green-text)' };
+
+                    return (
+                      <tr key={sc + i} data-testid="tw-row" style={{ background: 'var(--card)' }}>
+                        <td style={{ ...TD, textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontSize: 11.5, color: 'var(--text-2)' }}>{packSr}</td>
+                        <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, fontWeight: 700, color: 'var(--text)' }}>{designNo}</td>
+                        <td style={{ ...TD, textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }}>{expected}</td>
+                        <td style={{ ...TD, textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontSize: 11.5, color: 'var(--badge-green-text)' }}>{received}</td>
+                        <td style={{ ...TD, textAlign: 'center', fontFamily: 'ui-monospace, monospace', fontSize: 12, fontWeight: 700, ...deltaStyle }}>
+                          {delta === null ? '—' : delta === 0 ? '0' : (delta > 0 ? '+' + delta : delta)}
+                        </td>
+                        <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--text-2)' }}>{bagId}</td>
+                        <td style={{ ...TD, color: 'var(--text-3)', fontSize: 11.5 }}>{awb}</td>
+                        <td style={{ ...TD, color: 'var(--text-3)', fontSize: 11.5 }}>{recvDate}</td>
+                        <td style={TD}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', border: '1px solid var(--badge-amber-border)', borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
+                            Counted awaiting bag
+                          </span>
+                        </td>
+                        <td style={{ ...TD, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                          {/* Scan barcode: dispatches inv:move + opens MoveStockModal
+                              (existing authority, inventory-page.jsx:1755).
+                              POST /api/v1/warehouse/scan exists (routes_warehouse.py:80)
+                              but no dedicated scan-in UI form; MoveStockModal is the
+                              operator-facing route. Census tag IV-TW-1: scan_code pre-fill
+                              into modal = future slice (same gap as IV-TP-1 for Temp Purchase). */}
+                          <button data-testid="tw-btn-scan"
+                            onClick={() => {
+                              window.dispatchEvent(new CustomEvent('inv:move'));
+                              onShowMove && onShowMove();
+                            }}
+                            title={'Opens Move Stock modal (existing authority) for scan-in operations. Scan code: ' + sc + ' — pre-fill into modal is IV-TW-1 (future slice). Backend: POST /api/v1/warehouse/scan (routes_warehouse.py:80).'}
+                            style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)', color: 'var(--accent-text)', cursor: 'pointer' }}>
+                            Scan barcode
+                          </button>
+                          {/* View doc: fires openViewer with packing-list stub.
+                              Authority: DocumentViewerPage (shell-global). LIVE. */}
+                          <button data-testid="tw-btn-view-doc"
+                            onClick={() => openViewer && openViewer({
+                              id: 'PL-' + sc,
+                              title: 'Packing List · ' + designNo,
+                              type: 'Packing List',
+                              awb: '',
+                            })}
+                            style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+                            View doc
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Endpoint reference */}
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-3)' }}>
+          Merchandising: GET /api/v1/inventory/merchandising/&#123;batch_id&#125; (C-3e, LIVE) ·
+          Filter: state=WAREHOUSE_STOCK ·
+          Aggregator basis: inventory_stage2_aggregator.py:117 (WAREHOUSE_STOCK = final_stock_basis)
+        </div>
+      </div>
+    );
+  }
+
   // ── Temp Sale tab — Wave-3 / U-3 page 5 ────────────────────────────────────
   // Wireframe §7 Tab 4 (TempSaleTab). Gap IV-TS-1.
   // Backend reads:
@@ -3247,13 +3549,14 @@ function DocumentViewerPage({ doc, onBack }) {
   // navigation works even before the tab strip button appears.
 
   const INV_TABS = [
-    { id: 'overview',      label: 'Overview',           wire: true  },
-    { id: 'sampleOut',     label: 'Sample Out',         wire: true  },
-    { id: 'sampleReturn',  label: 'Sample Return',      wire: true  },
-    { id: 'clientReturn',  label: 'Client Return',      wire: true  },
-    { id: 'producerReturn',label: 'Return to Producer', wire: true  },
-    { id: 'tempSale',      label: 'Temp Sale',          wire: true  },
-    { id: 'tempPurchase',  label: 'Temp Purchase',      wire: true  },
+    { id: 'overview',       label: 'Overview',           wire: true  },
+    { id: 'sampleOut',      label: 'Sample Out',         wire: true  },
+    { id: 'sampleReturn',   label: 'Sample Return',      wire: true  },
+    { id: 'clientReturn',   label: 'Client Return',      wire: true  },
+    { id: 'producerReturn', label: 'Return to Producer', wire: true  },
+    { id: 'tempSale',       label: 'Temp Sale',          wire: true  },
+    { id: 'tempPurchase',   label: 'Temp Purchase',      wire: true  },
+    { id: 'tempWarehouse',  label: 'Temp Warehouse',     wire: true  },
   ];
 
   function InvTabStrip({ active, onChange }) {
@@ -3338,6 +3641,14 @@ function DocumentViewerPage({ doc, onBack }) {
           {/* ── Temp Purchase tab — Wave-3 U-3 page 7 ──────────── */}
           {activeTab === 'tempPurchase' && (
             <TempPurchaseTab
+              openViewer={openViewer}
+              onShowMove={() => setShowMove(true)}
+            />
+          )}
+
+          {/* ── Temp Warehouse tab — Wave-3 U-3 page 8 ─────────── */}
+          {activeTab === 'tempWarehouse' && (
+            <TempWarehouseTab
               openViewer={openViewer}
               onShowMove={() => setShowMove(true)}
             />
