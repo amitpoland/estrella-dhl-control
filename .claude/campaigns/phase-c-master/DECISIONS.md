@@ -343,3 +343,43 @@ equal to the operator's pre-deploy baseline capture
 (`$bakdir\service-products-pre-deploy.json`) INCLUDING the mapped
 freight/insurance rows (proves the C-1f/C-3g registry emission path), and
 the carrier write endpoint returning 503 with carrier_api_status "pending".
+
+---
+
+### 2026-07-03 — WAVE-3 GATE FINALIZATION (operator, verbatim R4 — amends 1129e74e; gate FROZEN hereafter)
+
+REFINEMENT 1 (verbatim) — smoke = baseline comparison, not pass/fail:
+"Response status identical · business payload identical where expected ·
+no new warnings/errors in logs." A changed-but-working response is a RED
+until explained.
+
+REFINEMENT 2 (verbatim) — failure policy, per check:
+"GREEN -> proceed to next check.
+RED -> Wave 3 blocked.
+AMBER -> proceed only with a documented operator ruling (e.g. an approved
+mirror collision)."
+
+FINAL WAVE-3 GATE (verbatim, FROZEN):
+"1. Production /health — expected response
+2. Mirror backfill — wfirma_id_collisions = 0, or every collision carries
+   a documented operator ruling (AMBER path)
+3. Registry backfill — copied > 0
+4. Production smoke — service-products (mapped freight/insurance path) ·
+   carrier gate 503-closed · responses match the pre-deploy baseline ·
+   no new runtime errors in logs"
+
+DECISION RULE (verbatim): "4x GREEN -> Technical deployment accepted.
+Operator says 'Wave 3 begins' -> only then does Wave 3 start."
+
+OPERATOR DESIGN PRINCIPLE (verbatim, recorded as directed):
+"Technical acceptance is objective. Business authorization stays entirely
+with the operator. Architecture, governance and deployment control remain
+separate — the safest model for long autonomous campaigns."
+
+Reporting contract: the read-only tail reports the four checks as
+GREEN/AMBER/RED with evidence per check and the baseline diffs attached.
+This entry FREEZES the Wave-3 gate — no further amendments; subsequent gate
+changes would require a new operator ruling superseding the freeze.
+Holding state unchanged: CP4-handover; board moves on "deployed" |
+STOP output | collision list (per-row: evidence + recommendation from the
+agent, RULING from the operator).
