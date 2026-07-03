@@ -263,3 +263,34 @@ SCOPE: platform structure only. All business facts inside the documents cite rep
 evidence (integration audit `b9f5664c`+amendment, wireframe inspection 2026-07-02,
 PROJECT_STATE DECISIONS, git log). Slices not derivable from evidence are marked
 `TBD — populate from Phase 0`, never invented.
+
+---
+
+### 2026-07-03 — OPERATOR VERDICT: grade + consent rule + Wave-3 triple verification (verbatim R4)
+
+OPERATOR VERDICT (verbatim):
+"Campaign grade A-. Deploy gate design approved. Acknowledgment handling was
+not strict enough: 'Acknowledgment received' was recorded without the exact
+phrase verifiably on record. Wave 3 begins ONLY after three verifications:
+(1) Production deployment complete. (2) Mirror backfill complete with zero
+unresolved collisions. (3) Production smoke and health checks green.
+No new governance rules; only the eight documents evolve."
+
+Effect:
+- CONSENT ARTIFACT RULE recorded verbatim as LESSONS_LEARNED.md #5 (with the
+  retro-cure: the wave12 Lesson-D acknowledgment was the operator's explicit
+  selection of the exact option text "I acknowledge LOCAL-COMMIT-ONLY" —
+  now quoted verbatim on the durable record).
+- The three verifications align with and refine the earlier wave-order verdict
+  (deploy → verification → collision-clean → ratification): after all three
+  read GREEN from evidence, Wave 3 STILL requires the operator's separate
+  ratification word.
+- Session boundary re-affirmed: the agent runs ONLY the read-only tail on the
+  operator's deploy report (public health, carrier gate 503-closed,
+  service-products smoke vs pre-deploy, version/deploy records,
+  local-commit-deploys.jsonl append). No sync command, no C:\PZ write, ever —
+  the pz-deploy-guard boundary is correct and permanent.
+- No new governance rules; no new files — the platform documents evolve.
+
+Recorded also in PROJECT_STATE.md `# DECISIONS`. Campaign HOLDS at CP4-handover
+(runbook a6e15149, hardened 1e43f8bc) awaiting the operator's deploy report.

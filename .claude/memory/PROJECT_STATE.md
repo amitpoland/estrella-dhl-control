@@ -7438,6 +7438,28 @@ answered, wave completes without it otherwise; stop conditions unchanged.
 Canonical detail: `.claude/campaigns/phase-c-master/DECISIONS.md` (Wave-2 ratification
 entry). Effect: Wave 2 (Backend) ACTIVE on `deploy/latest`.
 
+### 2026-07-03 — Phase-C verdict: grade A- + CONSENT ARTIFACT RULE + Wave-3 triple verification (verbatim R4)
+
+OPERATOR VERDICT (verbatim): "Campaign grade A-. Deploy gate design approved.
+Acknowledgment handling was not strict enough: 'Acknowledgment received' was
+recorded without the exact phrase verifiably on record. Wave 3 begins ONLY
+after three verifications: (1) Production deployment complete. (2) Mirror
+backfill complete with zero unresolved collisions. (3) Production smoke and
+health checks green. No new governance rules; only the eight documents evolve."
+
+CONSENT ARTIFACT RULE (verbatim, LESSONS_LEARNED.md #5): "for irreversible
+boundaries (deploy, prod writes, CP4/CP5), the operator's exact acknowledgment
+phrase must be quoted verbatim in the durable record BEFORE any execution line
+is written. A paraphrase, a --continue, or an inferred consent is a
+non-acknowledgment. If the record cannot prove the phrase was given, the
+acknowledgment did not happen."
+
+Retro-cure on record: the wave12 Lesson-D acknowledgment was the operator's
+explicit selection of the exact option text "I acknowledge LOCAL-COMMIT-ONLY"
+(2026-07-03). Campaign HOLDS at CP4-handover; deploy operator-executed via
+runbook (a6e15149 → hardened 1e43f8bc); agent scope on deploy report =
+read-only tail only; pz-deploy-guard boundary permanent.
+
 ---
 
 # ASSUMPTIONS

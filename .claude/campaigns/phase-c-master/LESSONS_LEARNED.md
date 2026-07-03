@@ -80,3 +80,21 @@ every edited function) and map each to at least one fixture that actually
 executes it. A path with no executing fixture is UNGATED — say so in the
 slice report; do not let a green suite imply coverage it does not have.
 Caught in C-3g (`568c05b2`) and pinned by source-grep + mapped-charge tests.
+
+## #5 — CONSENT ARTIFACT RULE (operator, verbatim, 2026-07-03)
+
+"CONSENT ARTIFACT RULE — for irreversible boundaries (deploy, prod writes,
+CP4/CP5), the operator's exact acknowledgment phrase must be quoted verbatim
+in the durable record BEFORE any execution line is written. A paraphrase, a
+--continue, or an inferred consent is a non-acknowledgment. If the record
+cannot prove the phrase was given, the acknowledgment did not happen. (Paid
+cost: the Wave-2 CP4 packet's ambiguous 'Acknowledgment received' line.)"
+
+Application note: the Lesson-D acknowledgment for the wave12 deploy WAS given
+via an explicit selection of the exact option text "I acknowledge
+LOCAL-COMMIT-ONLY" (session question, 2026-07-03), but the durable record
+wrote only "Acknowledgment received" — insufficient under this rule. The
+verbatim phrase is now on record HERE and in DECISIONS.md: the operator
+selected the option labeled exactly **"I acknowledge LOCAL-COMMIT-ONLY"**.
+Going forward, every irreversible-boundary record quotes the phrase before
+any execution step is logged.
