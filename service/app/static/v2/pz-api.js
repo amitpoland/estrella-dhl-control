@@ -841,5 +841,9 @@
       return _get(`${BASE}/inventory/movements/${encodeURIComponent(batchId)}${qs}`);
     },
 
+    // Cross-batch aggregate: NO endpoint exists — tab uses per-batch picker.
+    getMerchandisingView: (batchId) =>
+      _get(`${BASE}/inventory/merchandising/${encodeURIComponent(batchId)}`),
+
   });
 })();

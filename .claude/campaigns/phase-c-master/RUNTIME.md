@@ -179,3 +179,8 @@ Campaign slices:
   honest badge; pieces-on-hand + cross-batch ledger honestly deferred (no backend).
   Legacy panels kept reachable in a collapsed details block (census OUT).
   All 6 built tabs wired. Next: W3-page7 Temp Purchase (L, C-3e merchandising read).
+- W3-page7 COMPLETE (Temp Purchase tab, U-3): browser-verified 13-col
+  merchandising register on C-3e; Receive opens the EXISTING MoveStockModal
+  (no second implementation); Upload-packing Lesson-M (IV-TP-2). Orchestrator
+  re-ran pin 11/11 + smoke 63 (agent table had drifted from the operator's 9).
+  Next: W3-page8 Temp Warehouse tab.

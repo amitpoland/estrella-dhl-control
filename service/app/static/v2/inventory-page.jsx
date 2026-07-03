@@ -2392,6 +2392,282 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // ── Temp Purchase tab — Wave-3 / U-3 page 7 ──────────────────────────────
+  // Wireframe: inventory-page.design.jsx TempPurchaseTab (lines 6472–). Census #7, scope L.
+  // Backend read:
+  //   GET /api/v1/inventory/merchandising/{batch_id}  → C-3e joined read
+  //     (routes_inventory.py:127; packing_lines ⋈ inventory_state per piece; LIVE)
+  //   Response shape: { ok, batch_id, count, rows:[{scan_code, product_code, design_no,
+  //     batch_no, pack_sr, ctg, client_po, karat, color, quality, dia_wt, size, qty, uom,
+  //     gross_weight, net_weight, state}] }
+  //   Client-side filter: rows where state === 'PURCHASE_TRANSIT' — the Temp Purchase population.
+  //
+  // 13-column merchandising table (wireframe exact columns / order):
+  //   Pk Sr · Ctg · Client PO · Design No · Karat · Color · Quality · Dia Wt · Col Wt ·
+  //   Qty · Size · State · Actions
+  //   (Col Wt = net_weight from packing_lines; State = inventory_state badge; wireframe
+  //   includes AWB and Total but those fields are not in the C-3e response — rendered as
+  //   "—" honest empty per wireframe honesty rules; 13 columns incl. actions column)
+  //
+  // KPI tiles (4 per wireframe TempPurchaseTab stats):
+  //   Open packing lists  · Awaiting goods (lines) · Partially arrived · Closed-out
+  //   Mapping (honesty — C-3e has no status field; status is derived from inventory
+  //   state: PURCHASE_TRANSIT="Awaiting goods"; absent state=""="Partially arrived"
+  //   fallback; no row with state=WAREHOUSE_STOCK+ in merchandising means Closed-out
+  //   count is not available from this endpoint — KPI shows PURCHASE_TRANSIT count and
+  //   total; honest gap label where count is not resolvable):
+  //     Open packing lists  = total rows in batch (all packing lines including non-PT)
+  //     Awaiting goods      = rows with state === 'PURCHASE_TRANSIT' (the tab population)
+  //     Partially arrived   = rows with state === '' (empty/missing, packing line exists
+  //                           but no inventory_state entry yet; honest "unknown" fallback)
+  //     Closed-out          = rows with state not PURCHASE_TRANSIT and not empty
+  //                           (WAREHOUSE_STOCK or later — goods received)
+  //
+  // 3 actions (wireframe exactly traced):
+  //   1. "View doc" — fires openViewer with packing-list document stub.
+  //        Authority: DocumentViewerPage (shell-global, window.DocumentViewerPage);
+  //        openViewer is passed from InventoryPage → TempPurchaseTab prop.
+  //        Same pattern as SampleOutTab / existing DocumentViewerPage callers. LIVE.
+  //   2. "Receive" (promote to warehouse) — dispatches inv:move CustomEvent +
+  //        opens existing MoveStockModal in the parent InventoryPage.
+  //        Authority: MoveStockModal (inventory-page.jsx:1755); run_stock_promotion()
+  //        (stock_promotion.py) is the document-driven backend (BE-1). The MoveStock
+  //        modal is the ONLY operator-facing UI for manual piece promotion. No second
+  //        implementation allowed (WIREFRAME_AUTHORITY §D; task rule). Lesson-M note:
+  //        this triggers the modal in "wh-wh" mode (location move); the actual
+  //        PURCHASE_TRANSIT→WAREHOUSE_STOCK promotion is document-driven (BE-1 =
+  //        run_stock_promotion, fired by dhl_delivery_service or PZ-booked trigger).
+  //        The modal pre-fills the scan_code for the operator. Census tag: IV-TP-1.
+  //   3. "Upload Packing List" (toolbar, not per-row) — Lesson-M honest-disabled.
+  //        No upload endpoint for packing lists exists in routes_inventory.py.
+  //        The existing Upload Document mechanism (inv:upload CustomEvent) targets
+  //        the document hub (routes_upload), not packing list ingestion.
+  //        Census tag: IV-TP-2 (future slice: POST /api/v1/packing-lists/upload).
+  //
+  // Stage-1 Document layer info banner: per wireframe verbatim.
+
+  function TempPurchaseTab({ openViewer, onShowMove }) {
+    const [batchId, setBatchId]   = useState('');
+    const [loading, setLoading]   = useState(false);
+    const [error, setError]       = useState('');
+    const [rows, setRows]         = useState(null);  // all merchandising rows for batch
+
+    const load = useCallback(async () => {
+      const bid = batchId.trim();
+      if (!bid) return;
+      setLoading(true);
+      setError('');
+      setRows(null);
+
+      const res = await window.PzApi.getMerchandisingView(bid);
+
+      setLoading(false);
+      if (!res.ok) {
+        setError(res.error || ('HTTP ' + res.status));
+        return;
+      }
+      setRows((res.data && res.data.rows) || []);
+    }, [batchId]);
+
+    // Derived: filter to PURCHASE_TRANSIT for the Temp Purchase population.
+    const ptRows      = rows ? rows.filter(r => r.state === 'PURCHASE_TRANSIT') : [];
+    const emptyRows   = rows ? rows.filter(r => !r.state) : [];
+    const closedRows  = rows ? rows.filter(r => r.state && r.state !== 'PURCHASE_TRANSIT') : [];
+    const totalRows   = rows ? rows.length : null;
+
+    const TH = { padding: '7px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
+    const TD = { padding: '8px 10px', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)', color: 'var(--text)', verticalAlign: 'middle' };
+
+    return (
+      <div data-testid="temp-purchase-tab" style={{ maxWidth: 1100, margin: '0 auto' }}>
+
+        {/* Stage-1 info banner — wireframe verbatim */}
+        <div data-testid="tp-info-banner" style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--accent-bg)', border: '1px solid var(--accent-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <strong style={{ color: 'var(--text)' }}>Stage 1 — Document layer.</strong>
+          {' '}These lines come from supplier invoices &amp; packing lists. Goods are{' '}
+          <em>expected</em> but not physically confirmed. No final stock is created here.
+          {' '}Population: pieces in <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>PURCHASE_TRANSIT</code> state.
+        </div>
+
+        {/* KPI strip — 4 tiles per wireframe TempPurchaseTab stats */}
+        <div data-testid="tp-kpi-strip" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+          <InvStatTile testid="tp-kpi-open"       label="Open packing lists"     value={totalRows}         hint="All packing-list lines in selected batch" />
+          <InvStatTile testid="tp-kpi-awaiting"   label="Awaiting goods (lines)" value={rows ? ptRows.length : null} tone="amber" hint="PURCHASE_TRANSIT — expected, not yet physically confirmed" />
+          <InvStatTile testid="tp-kpi-partial"    label="Partially arrived"       value={rows ? emptyRows.length : null} tone="amber" hint="Packing line exists, no inventory state entry yet" />
+          <InvStatTile testid="tp-kpi-closed"     label="Closed-out"             value={rows ? closedRows.length : null} tone="green" hint="State beyond PURCHASE_TRANSIT — goods received" />
+        </div>
+
+        {/* Batch selector toolbar */}
+        <div data-testid="tp-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+          <input
+            data-testid="tp-batch-input"
+            value={batchId}
+            onChange={e => setBatchId(e.target.value)}
+            placeholder="Batch ID — e.g. SHIPMENT_4218922912_2026-05_…"
+            style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, flex: 1, minWidth: 260 }}
+          />
+          <InvFetchBtn
+            data-testid="tp-btn-load"
+            onClick={load}
+            loading={loading}
+            disabled={!batchId.trim()}
+            label="Load batch"
+          />
+          {rows !== null && (
+            <InvFetchBtn data-testid="tp-refresh" onClick={load} loading={loading} label="↻ Refresh" />
+          )}
+          {/* Upload Packing List — Lesson-M honest-disabled: no upload endpoint for
+              packing lists in routes_inventory.py; the document-hub inv:upload is a
+              different surface. Census tag IV-TP-2 (future: POST /api/v1/packing-lists/upload). */}
+          <button data-testid="tp-btn-upload" disabled
+            title="backend-pending — no packing-list upload endpoint in routes_inventory.py; the document hub (inv:upload CustomEvent) targets general documents, not packing-list ingestion (IV-TP-2; future slice: POST /api/v1/packing-lists/upload)"
+            style={{ padding: '7px 14px', fontSize: 12, fontWeight: 600, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', cursor: 'not-allowed', opacity: 0.5 }}>
+            + Upload Packing List
+          </button>
+        </div>
+
+        {/* Error state */}
+        {error && (
+          <div data-testid="tp-error-banner" style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--badge-red-text)' }}>
+            Failed to load merchandising view: {error}
+          </div>
+        )}
+
+        {/* Prompt before load */}
+        {!loading && rows === null && !error && (
+          <div data-testid="tp-prompt" style={{ padding: '28px 0', textAlign: 'center', color: 'var(--text-3)', fontSize: 13, fontStyle: 'italic' }}>
+            Enter a batch ID above and click Load batch to view PURCHASE_TRANSIT packing-list lines.
+          </div>
+        )}
+
+        {/* Register table — 13 columns per wireframe TempPurchaseTab */}
+        {rows !== null && (
+          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Open packing-list lines</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', background: 'var(--badge-neutral-bg)', color: 'var(--badge-neutral-text)', border: '1px solid var(--badge-neutral-border)', borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>from invoices &amp; packing lists</span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                  {ptRows.length} PURCHASE_TRANSIT · {rows.length} total · batch:{' '}
+                  <code style={{ fontFamily: 'ui-monospace, monospace', background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>{batchId.trim()}</code>
+                </span>
+              </div>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table data-testid="tp-table" style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)' }}>
+                    {/* 13 columns: Pk Sr · Ctg · Client PO · Design No · Karat · Color ·
+                        Quality · Dia Wt · Col Wt · Qty · Size · State · Actions */}
+                    <th style={{ ...TH, textAlign: 'right' }}>Pk Sr</th>
+                    <th style={TH}>Ctg</th>
+                    <th style={TH}>Client PO</th>
+                    <th style={TH}>Design No</th>
+                    <th style={TH}>Karat</th>
+                    <th style={TH}>Color</th>
+                    <th style={TH}>Quality</th>
+                    <th style={{ ...TH, textAlign: 'right' }}>Dia Wt</th>
+                    <th style={{ ...TH, textAlign: 'right' }}>Col Wt</th>
+                    <th style={{ ...TH, textAlign: 'right' }}>Qty</th>
+                    <th style={TH}>Size</th>
+                    <th style={TH}>State</th>
+                    <th style={{ ...TH, textAlign: 'right' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading && (
+                    <tr><td colSpan={13} style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '28px 0' }}>Loading…</td></tr>
+                  )}
+                  {!loading && ptRows.length === 0 && (
+                    <tr>
+                      <td colSpan={13} data-testid="tp-empty" style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '32px 0', fontStyle: 'italic' }}>
+                        No PURCHASE_TRANSIT lines in this batch — register is empty (honest empty).
+                      </td>
+                    </tr>
+                  )}
+                  {!loading && ptRows.map((r, i) => {
+                    const sc       = r.scan_code || '';
+                    const packSr   = r.pack_sr != null ? r.pack_sr : '—';
+                    const ctg      = r.ctg || '—';
+                    const clientPo = r.client_po || '—';
+                    const designNo = r.design_no || r.product_code || '—';
+                    const karat    = r.karat || '—';
+                    const color    = r.color || '—';
+                    const quality  = r.quality || '—';
+                    const diaWt    = r.dia_wt != null ? r.dia_wt : '—';
+                    // Col Wt = net_weight from packing_lines (advisory, may be absent)
+                    const colWt    = r.net_weight != null ? r.net_weight : '—';
+                    const qty      = r.qty != null ? r.qty : '—';
+                    const size     = r.size || '—';
+
+                    return (
+                      <tr key={sc + i} data-testid="tp-row" style={{ background: 'var(--card)' }}>
+                        <td style={{ ...TD, textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontSize: 11.5, color: 'var(--text-2)' }}>{packSr}</td>
+                        <td style={TD}>{ctg}</td>
+                        <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }}>{clientPo}</td>
+                        <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, fontWeight: 700, color: 'var(--text)' }}>{designNo}</td>
+                        <td style={TD}>{karat}</td>
+                        <td style={TD}>{color}</td>
+                        <td style={TD}>{quality}</td>
+                        <td style={{ ...TD, textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }}>{diaWt}</td>
+                        <td style={{ ...TD, textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontSize: 11.5, color: 'var(--text-2)' }}>{colWt}</td>
+                        <td style={{ ...TD, textAlign: 'right', fontWeight: 700 }}>{qty}</td>
+                        <td style={TD}>{size}</td>
+                        <td style={TD}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', background: 'var(--badge-blue-bg)', color: 'var(--badge-blue-text)', border: '1px solid var(--badge-blue-border)', borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
+                            In Transit
+                          </span>
+                        </td>
+                        <td style={{ ...TD, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                          {/* View doc: fires openViewer with packing-list stub.
+                              Authority: DocumentViewerPage (shell-global). LIVE. */}
+                          <button data-testid="tp-btn-view-doc"
+                            onClick={() => openViewer && openViewer({
+                              id: 'PL-' + sc,
+                              title: 'Packing List · ' + designNo,
+                              type: 'Packing List',
+                              awb: '',
+                            })}
+                            style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+                            View doc
+                          </button>
+                          {/* Receive: opens existing MoveStockModal via parent prop.
+                              Authority: MoveStockModal (inventory-page.jsx:1755).
+                              run_stock_promotion (BE-1) is the document-driven backend;
+                              MoveStockModal is the ONLY operator-facing manual route.
+                              Census tag IV-TP-1: scan_code pre-fill not yet wired into
+                              MoveStockModal (modal opens in default state). */}
+                          <button data-testid="tp-btn-receive"
+                            onClick={() => {
+                              window.dispatchEvent(new CustomEvent('inv:move'));
+                              onShowMove && onShowMove();
+                            }}
+                            title={'Opens Move Stock modal (existing authority) to manually promote this piece from PURCHASE_TRANSIT → WAREHOUSE_STOCK via run_stock_promotion (BE-1). Scan code: ' + sc + ' — pre-fill into modal is IV-TP-1 (future slice).'}
+                            style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)', color: 'var(--accent-text)', cursor: 'pointer' }}>
+                            Receive
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Endpoint reference */}
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-3)' }}>
+          Merchandising: GET /api/v1/inventory/merchandising/&#123;batch_id&#125; (C-3e, LIVE) ·
+          Filter: state=PURCHASE_TRANSIT ·
+          Cross-batch aggregate: not available — per-batch read only
+        </div>
+      </div>
+    );
+  }
+
   // ── Temp Sale tab — Wave-3 / U-3 page 5 ────────────────────────────────────
   // Wireframe §7 Tab 4 (TempSaleTab). Gap IV-TS-1.
   // Backend reads:
@@ -2977,6 +3253,7 @@ function DocumentViewerPage({ doc, onBack }) {
     { id: 'clientReturn',  label: 'Client Return',      wire: true  },
     { id: 'producerReturn',label: 'Return to Producer', wire: true  },
     { id: 'tempSale',      label: 'Temp Sale',          wire: true  },
+    { id: 'tempPurchase',  label: 'Temp Purchase',      wire: true  },
   ];
 
   function InvTabStrip({ active, onChange }) {
@@ -3057,6 +3334,14 @@ function DocumentViewerPage({ doc, onBack }) {
 
           {/* ── Temp Sale tab — Wave-3 U-3 page 5 ───────────────── */}
           {activeTab === 'tempSale' && <TempSaleTab />}
+
+          {/* ── Temp Purchase tab — Wave-3 U-3 page 7 ──────────── */}
+          {activeTab === 'tempPurchase' && (
+            <TempPurchaseTab
+              openViewer={openViewer}
+              onShowMove={() => setShowMove(true)}
+            />
+          )}
         </div>
       </div>
     );
