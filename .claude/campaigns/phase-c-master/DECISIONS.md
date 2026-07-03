@@ -136,6 +136,72 @@ Recorded: MASTER_MANIFEST §2/§6 amendment · RUNTIME.md · LESSONS_LEARNED.md 
 
 ---
 
+### 2026-07-03 — C-3g slice decisions (Wave 2 slice #1)
+
+Executed under Wave-2 ratification amendment 1 (pin → true 0). Five slice-level
+decisions, each a documented default per Anti-HOLD ("technical ambiguity with a
+sensible default"):
+
+1. **service_product_registry (new table, pildb / proforma_links.db).** The
+   retired wfirma_products cache was the ONLY store of service-charge emission
+   metadata (freight label, informational vat_rate, unit); mirror discipline
+   forbids business fields, and C-1w1 ruled service charges out of product_master.
+   The metadata is PROFORMA-domain line-emission config → it lives in the PROFORMA
+   authority's own DB. Identity (wfirma_product_id) deliberately NOT duplicated
+   there — the mirror stays the sole identity store. Backfill tool:
+   `service/tools/backfill_service_product_registry.py` (deploy-ritual step).
+2. **routes_wfirma_capabilities.py added to the PRODUCT pin _SYNC_WHITELIST.**
+   Same "wFirma-facing by purpose" ruling the CUSTOMER pin already applies to the
+   same file. Its product reads/writes ARE sync management (mapping registry
+   listing, adopt-pending — it already calls wfdb.adopt_pending_product directly).
+   The transitional rdb.get_cached_* passthroughs it used were retired; it now
+   reads wfirma_db directly as a declared sync surface.
+3. **Semantic sync-state API** `product_authority_resolver.get_registered_goods_state(_batch)`
+   (returns wfirma_product_id + last-synced display name only) replaces raw-cache
+   passthrough reads for the two sync operations living in routes_wfirma
+   (products/resolve drift check, products/sync-names before-value) and the
+   proforma invoice-line-name enrichment. Alternative considered: moving the two
+   endpoint bodies wholesale into the sync layer (~400 lines churn in fiscal
+   paths) — deferred as a future refinement, recorded here.
+4. **DEFECT found & fixed in-slice:** C-1f (`6a781ee4`) removed the
+   `prod = wfdb.get_product(ct)` assignment in `_build_service_charge_lines` but
+   left `prod.get(...)` references → **NameError on EVERY mapped service charge**
+   at proforma build. The C-1f output-equivalence gate missed it because the
+   registry suite's mapped-charge tests were already failing (they were in the
+   C-1d pre-existing-failure register as capabilities/registry noise). Fixed in
+   C-3g; pinned by test_service_product_registry_phase2_3 (source-grep asserts
+   no dangling `prod.get`, and the mapped-freight/insurance tests now seed the
+   real mirror+registry stores).
+5. **Verify-tree data collision surfaced:** cache rows `EJL/26-27/254-1` and
+   `EJL/26-27/257-2` both claim wFirma goods id `99`; the mirror's UNIQUE
+   invariant keeps 254-1 and reports 257-2 unresolved (honest state). Prod deploy
+   ritual must run the mirror backfill and resolve any reported collision before
+   going live — `service/docs/ops/c3g-deploy-note.md` is the CP4 payload.
+
+---
+
+### 2026-07-03 — R2-census dispositions (Wave-2 amendment 2, INSPECTOR-verified)
+
+Each of the 6 out-of-pin census files received exactly one disposition
+(GATE 4 discipline). INSPECTOR = read-only inspection agent; full report in
+the Wave-2 session record; citations recorded in test_master_consumption_rule.py
+_SYNC_WHITELIST comments.
+
+| File | Verdict | Basis (citation) |
+|---|---|---|
+| services/global_pz_push.py | SYNC-LAYER → whitelisted | :235-248 `_build_product_map` reads list_products for wfirma_product_id+product_code only (PZ payload good_id map); no cache/mirror writes |
+| services/wfirma_reservation.py | SYNC-LAYER → whitelisted | :362-368 get_product readiness gate (wfirma_product_id, sync_status) pre-reservation-sync; no cache/mirror writes |
+| services/wfirma_reservation_create.py | SYNC-LAYER → whitelisted | :143-158 Gate 7 get_product → ReservationLine (wfirma_product_id, product_name_pl, unit); no cache/mirror writes |
+| tools/build_pz_batch.py | DEV-TOOL → exempt-by-purpose | :142 get_product_by_code behind explicit `--resolve` flag; CLI only, no production import |
+| tools/send_wfirma_good_live_test.py | DEV-TOOL → exempt-by-purpose | :405 duplicate-existence guard; double-confirmation CLI |
+| tools/send_wfirma_proforma_live_test.py | DEV-TOOL → exempt-by-purpose | :235 `--bill-to --product-code` line resolution; double-confirmation CLI |
+
+**No BUSINESS-LOGIC verdicts → no migrate slice required.** None of the six
+files write wfirma_products or the mirror (writers remain exclusively the
+whitelisted sync modules). Census closed.
+
+---
+
 ### 2026-07-03 — Platform authored in-session (operator authorization)
 
 DECISION: the eight-document platform was authored fresh in this session from repo

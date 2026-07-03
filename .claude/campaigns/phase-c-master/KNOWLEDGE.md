@@ -143,6 +143,27 @@ all Wave 4 (OI-1/3/4/7/9/10/11).
 
 ## Wave-boundary updates (append at each boundary)
 
+### Wave-2, C-3g (2026-07-03) — mirror-only reads + passthrough retirement
+- Product pin at TRUE 0: KNOWN_PRODUCT_VIOLATION_FILES = {} (empty, pinned to
+  stay empty); routes_proforma / routes_wfirma / routes_wfirma_capabilities all
+  measure zero real-access hits.
+- rdb.get_cached_product/_batch/list_cached_products DELETED; capabilities is a
+  declared product-sync surface (whitelist, customer-pin precedent); sync-state
+  queries: product_authority_resolver.get_registered_goods_state(_batch).
+- Service-charge emission metadata: pildb service_product_registry
+  (proforma_links.db); identity stays mirror-only. Backfill tool:
+  service/tools/backfill_service_product_registry.py.
+- C-1f had shipped a NameError on every MAPPED service-charge emission
+  (_build_service_charge_lines `prod` dangling ref) — fixed + pinned in C-3g.
+- wfirma_id collision in verify-tree data: goods id 99 claimed by
+  EJL/26-27/254-1 (mirror owner) AND EJL/26-27/257-2 (unresolved) — deploy note
+  requires operator resolution of prod collisions (c3g-deploy-note.md).
+- reservation_db.register_product_identity STILL dual-writes mirror+cache — 
+  intentionally: the cache remains the sync layer's own store (capabilities
+  listing, auto-register lifecycle); only BUSINESS reads of it were retired.
+  Full cache collapse into the 3-table canonical set remains future scope
+  (audit §Q6 target).
+
 ### Wave-1 boundary (2026-07-03) — C-1d census
 - Pin baseline 5 → 1 (routes_proforma single transitional dual-write; not a read).
 - Customer full-app pin at zero. Inventory grep clean.
