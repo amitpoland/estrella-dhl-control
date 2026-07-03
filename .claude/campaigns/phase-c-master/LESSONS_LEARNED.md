@@ -33,3 +33,26 @@ DHL scripts, modified V2 files); recovered only because the orchestrator
 noticed the entry-count drop and popped the stash. Lesson-K-style negative
 scope ("DO NOT run git stash") is now mandatory in every write-capable agent
 prompt for this campaign.
+
+## #3 — Import-time filesystem side effects are a fresh-checkout trap (users.db, 2026-07-03)
+
+Ratified at Wave-2 ratification (operator amendment 4: "users.db import-time
+creation -> LESSONS_LEARNED entry + follow-up task (fresh-checkout trap), not
+chased now").
+
+Fact pattern: `service/app/main.py:131-135` computes the auth DB path
+(`settings.storage_root / "users.db"`) at MODULE IMPORT time. Test fixtures
+patch `settings.storage_root` only around the request-serving context
+(`with patch.object(settings, "storage_root", ...)`), but `from app.main
+import app` runs BEFORE the patch — so the first import in any fresh
+checkout/worktree creates `users.db` in the LIVE storage root. The conftest
+storage-leak guard then flags a one-time "STORAGE LEAK (new)" failure that
+does not reproduce on the second run (the file now exists and enters the
+session baseline). In long-lived trees (`C:\PZ-verify`) the file pre-exists,
+so the trap only fires on fresh checkouts — making it look flaky.
+
+Rule: paths derived from `settings.*` must be resolved at CALL time (inside
+lifespan/startup or the function that uses them), never at import time.
+Import of `app.main` must be filesystem-silent.
+
+Disposition: BACKLOG B-017 (SCHEDULED — follow-up task; not chased in Wave 2).

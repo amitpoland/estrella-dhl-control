@@ -100,6 +100,42 @@ ANSWERED (commit SHA named in the acknowledgment per Ruling 4).
 
 ---
 
+### 2026-07-03 — WAVE 2 RATIFIED (operator, verbatim, with four amendments)
+
+OPERATOR RULING (verbatim): "RATIFIED. Wave 2 begins."
+
+Amendments to the ratification packet (verbatim):
+1. "C-3g (transitional dual-write cleanup + cache-passthrough retirement) is Wave 2
+   slice #1 — product pin must reach true 0 before C-3b onward."
+2. "Residual-2 census: INSPECTOR verifies each of the 6 files. Sync-layer services ->
+   whitelist WITH file:line citation. Any business logic found -> migrate slice,
+   propose scope. Dev tools -> exempt-by-purpose, documented."
+3. "Residual-3: one batched test-health slice inside Wave 2 — absorb the storage-leak
+   fix as its first commit, landed on deploy/latest (single-lane; close any side
+   worktree)."
+4. "users.db import-time creation -> LESSONS_LEARNED entry + follow-up task
+   (fresh-checkout trap), not chased now."
+
+Rules confirmed unchanged (verbatim): "ZERO UI. C-3a migration applies to verify tree
+only (prod apply = CP4/deploy, operator ritual). C-4a runs only if OI-17 is answered;
+the wave completes without it otherwise. Stop conditions unchanged: hard stops,
+Confidence Gate, CP3/CP4."
+
+Effect: CAMPAIGN_OS §5a stop-line satisfied for Wave 2; Wave 2 (Backend) ACTIVE.
+Slice order: C-3g → Residual-2 census → Residual-3 test-health → C-3a (verify tree)
+→ C-3b → C-3c → C-3d → C-3e → C-3f; C-4a only if OI-17 answered in-wave.
+Residual mapping (C-1d audit §Declared residuals): C-3g = residuals 1+2;
+census = residual 3 (6 files: services/global_pz_push.py, services/wfirma_reservation.py,
+services/wfirma_reservation_create.py, tools/build_pz_batch.py,
+tools/send_wfirma_good_live_test.py, tools/send_wfirma_proforma_live_test.py);
+test-health = residual 4.
+
+Recorded: MASTER_MANIFEST §2/§6 amendment · RUNTIME.md · LESSONS_LEARNED.md #3 (users.db)
+· BACKLOG.md B-017 (users.db follow-up, SCHEDULED) · PROJECT_STATE.md `# DECISIONS`
+(canonical). Artifact SHA named in the acknowledgment per §8a.
+
+---
+
 ### 2026-07-03 — Platform authored in-session (operator authorization)
 
 DECISION: the eight-document platform was authored fresh in this session from repo

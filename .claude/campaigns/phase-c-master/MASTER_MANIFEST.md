@@ -28,7 +28,7 @@ Move-Location fold `0cee8173`.
 |---|---|---|---|---|
 | Phase 0 | Research + validation | Registers populated; OI evidence pass; KNOWLEDGE.md | — | **COMPLETE 2026-07-03** |
 | **Wave 1** | **Authority** | C-1w2 · C-1e · C-1f · C-1d · C-2a · C-2b · C-2c | 8h | **ACTIVE** |
-| **Wave 2** | **Backend** (ZERO UI) | C-3a · C-3b · C-3c · C-3d · C-3e · C-3f · C-4a (OI-gated) | 11h | RESTORED 2026-07-03 — awaiting ratification after C-1d |
+| **Wave 2** | **Backend** (ZERO UI) | C-3g · R2-census · R3-test-health · C-3a · C-3b · C-3c · C-3d · C-3e · C-3f · C-4a (OI-gated) | 11h | **ACTIVE — RATIFIED 2026-07-03** (four amendments, see §6 + DECISIONS.md) |
 | **Wave 3** | **Entire UI** (built once, CP3) | U-1..U-6 (complete wireframe UI) | 6h | RESTORED 2026-07-03 — awaiting ratification |
 | **Wave 4** | **Synchronization** | C-4b · C-4d · C-5a · C-6a · C-7a · C-8a/b/c · C-9a | 5h | RESTORED 2026-07-03 — awaiting ratification |
 
@@ -52,7 +52,10 @@ never merged into backend. Backend complete first. UI exactly once."
 
 | Slice | Name | Authority | Evidence |
 |---|---|---|---|
-| C-3a | returns_events migration apply (deploy-gated → CP4) | Inventory V2 | Wireframe inspection §B; draft_20260512_175238 |
+| **C-3g** | **Slice #1 (ratification amendment 1):** transitional dual-write cleanup (routes_proforma C-1w1 region) + cache-passthrough retirement (get_cached_product/_batch/list_cached_products + C-1f non-identity cache reads + loud fallback) — product pin must reach TRUE 0 before C-3b onward; own equivalence check | Product Master | C-1d audit §Declared residuals 1+2; operator amendment 1 |
+| **R2-census** | Residual-2 census (amendment 2): INSPECTOR verifies each of the 6 out-of-pin files; sync-layer → whitelist w/ file:line citation; business logic → migrate-slice proposal; dev tools → exempt-by-purpose documented | Product Master | C-1d audit §Declared residuals 3 |
+| **R3-test-health** | Residual-3 (amendment 3): ONE batched test-health slice; first commit = storage-leak seeding fix (landed on deploy/latest, single-lane, side worktree closed); then shipment-detail assertions ×2, capabilities ×2, test_audit_proforma_converted ×3 (root-cause honest disposition) | — (test health) | C-1d audit §Declared residuals 4 |
+| C-3a | returns_events migration apply — **verify tree only; prod apply = CP4/deploy operator ritual** (amendment) | Inventory V2 | Wireframe inspection §B; draft_20260512_175238 |
 | C-3b | Sample READ/list endpoints (sample_out_events) — backend only, no stub wiring | Inventory V2 | Audit queue item 1 |
 | C-3c | Returns READ/list endpoints (returns_events) — backend only | Inventory V2 | Audit queue item 1 |
 | C-3d | SALES_TRANSIT write path — fire `invoice_issued` on proforma→invoice via shared `run_stock_issue()` | Inventory V2 (+ Invoice trigger) | Audit §Q3; wireframe §B; gap #2 |
@@ -173,3 +176,4 @@ Recorded also in: DECISIONS.md · PROJECT_STATE.md `# DECISIONS` (repo-canonical
 |---|---|---|
 | 2026-07-03 | Platform created; FINAL PRE-LAUNCH AMENDMENT items 1–5 (Confidence Gate, CP Status Summary, Wave Assumptions register, Campaign Budget, launch ruling) incorporated at creation | Operator, verbatim R4 |
 | 2026-07-03 | OPERATOR VERDICT: wave structure RESTORED (W1 Authority · W2 Backend · W3 Entire UI · W4 Synchronization); registers + budgets re-derived; UI items moved W2→W3; ratification rule + stop-line active (Waves 2–4 need operator ratification after C-1d) | Operator, verbatim R4 (DECISIONS.md verdict entry) |
+| 2026-07-03 | **WAVE 2 RATIFIED** ("RATIFIED. Wave 2 begins.") with four amendments: (1) C-3g = slice #1, pin → true 0 before C-3b; (2) Residual-2 census w/ INSPECTOR verdicts per file; (3) Residual-3 batched test-health slice, storage-leak fix = first commit on deploy/latest, single-lane; (4) users.db → LESSONS_LEARNED #3 + BACKLOG B-017, not chased. C-3a verify-tree-only clarified; C-4a stays OI-17-gated ("wave completes without it otherwise") | Operator ratification (DECISIONS.md Wave-2 entry) |

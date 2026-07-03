@@ -5,12 +5,12 @@
 
 ## Current State
 
-- **Phase:** Wave 1 — Master Authority Completion (Phase 0 COMPLETE 2026-07-03; CP1 issued)
-- **Current slice:** — WAVE 1 (Authority) COMPLETE (C-1d audit passed)
-- **Slice state:** CAMPAIGN HOLD — operator STOP-LINE: ratification of the restored
-  Wave 2–4 plan required before Wave-2 entry (CAMPAIGN_OS §5a)
-- **Next:** on operator ratification → Wave 2 (Backend) per MASTER_MANIFEST restored plan
-- **Blocked by:** — (C-1e/C-1f deferred within wave per OI-18; unblocked slices remain)
+- **Phase:** Wave 2 — Backend (ZERO UI) — **RATIFIED 2026-07-03** ("RATIFIED. Wave 2
+  begins.", four amendments — DECISIONS.md Wave-2 entry)
+- **Current slice:** C-3g (dual-write cleanup + cache-passthrough retirement; pin → true 0)
+- **Slice order:** C-3g → R2-census → R3-test-health (first commit = storage-leak fix)
+  → C-3a (verify tree only) → C-3b → C-3c → C-3d → C-3e → C-3f · C-4a only if OI-17 answers
+- **Blocked by:** C-4a gated on OI-17 (OPEN — non-fatal, wave completes without it)
 
 ## Completed Slices (append-only ledger)
 

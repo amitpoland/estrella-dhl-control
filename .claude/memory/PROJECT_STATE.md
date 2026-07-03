@@ -7376,6 +7376,25 @@ C-1w2 `3833627c` · C-2a `18fb89ad` · C-2b `60a34f9e` · C-2c `0d0bf78d`.
 
 ---
 
+### 2026-07-03 — Phase-C WAVE 2 RATIFIED (operator, verbatim, four amendments)
+
+OPERATOR: "RATIFIED. Wave 2 begins." Amendments: (1) C-3g (transitional dual-write
+cleanup + cache-passthrough retirement) is Wave 2 slice #1 — product pin to TRUE 0
+before C-3b onward. (2) Residual-2 census: INSPECTOR verifies each of the 6
+out-of-pin files; sync-layer services → whitelist WITH file:line citation; business
+logic → migrate slice + scope proposal; dev tools → exempt-by-purpose, documented.
+(3) Residual-3: one batched test-health slice inside Wave 2 — storage-leak fix
+absorbed as its first commit, landed on deploy/latest (single-lane; side worktrees
+closed). (4) users.db import-time creation → LESSONS_LEARNED entry + follow-up task
+(fresh-checkout trap), not chased now. Rules unchanged: ZERO UI; C-3a migration =
+verify tree only (prod apply = CP4/deploy operator ritual); C-4a only if OI-17
+answered, wave completes without it otherwise; stop conditions unchanged.
+
+Canonical detail: `.claude/campaigns/phase-c-master/DECISIONS.md` (Wave-2 ratification
+entry). Effect: Wave 2 (Backend) ACTIVE on `deploy/latest`.
+
+---
+
 # ASSUMPTIONS
 
 - **P2 shadow window will accumulate ≥48 hours of real-time DHL dispatch volume by 2026-05-14T23:26:44Z** before promotion to live. Source: master plan §4.3 + shadow-window opened on PR #46 merge. Move to FACTS by reading shadow-classification count + duration from admin runtime-flags audit log.
