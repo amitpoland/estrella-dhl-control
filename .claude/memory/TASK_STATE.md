@@ -20,15 +20,15 @@ Rules and boundary vs PROJECT_STATE.md:
 - **Task:** Phase-C Inventory Master Campaign (platform `.claude/campaigns/phase-c-master/`) —
   launched 2026-07-03 per operator FINAL PRE-LAUNCH AMENDMENT (verbatim R4).
 - **Started:** 2026-07-03
-- **Status:** BLOCKED-HOLD (Wave 1 — unresolvable OI)
-- **HOLD reason:** Condition #4 (unclear business decision) — OI-18: C-1e
-  (routes_wfirma reads(5)+writes(3) migration) was marked "ADDED RESIDUAL
-  (DEVIATION, needs ruling)" by the operator's own C-1c ruling; C-1f and C-1d
-  depend on it. All other Wave-1 slices complete: C-1w2 `3833627c`, C-2a
-  `18fb89ad`, C-2b `60a34f9e`, C-2c `0d0bf78d` (platform `575bb3f3`, Phase 0
-  `be0783c8`). Resume: obtain the C-1e ruling → C-1e → C-1f
-  (output-equivalence-gated) → C-1d → Wave-1 boundary CP2 → Wave 2 per the
-  Architecture Confidence Gate. Runtime: `.claude/campaigns/phase-c-master/RUNTIME.md`.
+- **Status:** BLOCKED-HOLD (operator STOP-LINE — Wave 2-4 ratification)
+- **HOLD reason:** Operator STOP-LINE (verbatim, `a4231850`): "After C-1d, STOP
+  for operator ratification of the restored Wave 2-4 plan." WAVE 1 (Authority)
+  COMPLETE — C-1d audit 8/8 (`1bb6bc1a`). Full ledger: platform `575bb3f3`,
+  Phase 0 `be0783c8`, C-1w2 `3833627c`, C-2a `18fb89ad`, C-2b `60a34f9e`,
+  C-2c `0d0bf78d`, verdict `a4231850`, C-1e `7c4f6f0b`, MC-proof `37aaaf27`,
+  C-1f `6a781ee4`, C-1d `1bb6bc1a`. Resume: operator ratifies the restored
+  Wave 2-4 plan (MASTER_MANIFEST §2/§3) → Wave 2 (Backend) per CAMPAIGN_OS.
+  Runtime: `.claude/campaigns/phase-c-master/RUNTIME.md`.
 
 ## Prior task — Architecture Review (COMPLETE)
 
