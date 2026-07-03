@@ -163,6 +163,21 @@ def init_db(db_path: Path) -> None:
                 raise
         # Phase 1: also ensure the drafts table + events table exist.
         _ensure_drafts_table(conn)
+        # C-3g: service-charge product metadata registry (PROFORMA authority).
+        # Holds ONLY display/config metadata for service-charge line emission
+        # (freight/insurance). The wFirma identity (wfirma_product_id) is NOT
+        # stored here — wfirma_product_mirror is the sole identity authority.
+        # Replaces the retired wfirma_products cache dependency for service
+        # charges (Phase-C C-3g; C-1d declared residuals 1+2).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS service_product_registry (
+                charge_type  TEXT PRIMARY KEY,
+                product_name TEXT NOT NULL DEFAULT '',
+                vat_rate     TEXT NOT NULL DEFAULT '23',
+                unit         TEXT NOT NULL DEFAULT 'szt.',
+                updated_at   TEXT NOT NULL
+            )
+        """)
         conn.commit()
 
 
@@ -2142,6 +2157,67 @@ EDITABLE_LINE_FIELDS = (
 
 ALLOWED_SERVICE_CHARGE_TYPES = ("freight", "insurance")
 
+
+# ── C-3g: service-charge product metadata registry ───────────────────────────
+# PROFORMA-authority store for service-charge line emission metadata
+# (display label, informational vat_rate, unit). Identity (wfirma_product_id)
+# lives ONLY in wfirma_product_mirror — never here.
+
+def upsert_service_product_meta(
+    db_path: Path,
+    charge_type: str,
+    *,
+    product_name: str = "",
+    vat_rate: str = "23",
+    unit: str = "szt.",
+) -> None:
+    """Insert or replace the emission metadata for a service charge type."""
+    ct = (charge_type or "").strip().lower()
+    if ct not in ALLOWED_SERVICE_CHARGE_TYPES:
+        raise ValueError(
+            f"charge_type {charge_type!r} not allowed; "
+            f"expected one of {ALLOWED_SERVICE_CHARGE_TYPES}"
+        )
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO service_product_registry "
+            "(charge_type, product_name, vat_rate, unit, updated_at) "
+            "VALUES (?,?,?,?,?) "
+            "ON CONFLICT(charge_type) DO UPDATE SET "
+            "product_name=excluded.product_name, vat_rate=excluded.vat_rate, "
+            "unit=excluded.unit, updated_at=excluded.updated_at",
+            (ct, (product_name or "").strip(), (vat_rate or "23").strip(),
+             (unit or "szt.").strip(), _now_utc_iso()),
+        )
+        conn.commit()
+
+
+def get_service_product_meta(db_path: Path, charge_type: str) -> Optional[Dict[str, Any]]:
+    """Return {product_name, vat_rate, unit} for a charge type, or None."""
+    ct = (charge_type or "").strip().lower()
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT charge_type, product_name, vat_rate, unit, updated_at "
+            "FROM service_product_registry WHERE charge_type=?", (ct,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_all_service_product_meta(db_path: Path) -> Dict[str, Dict[str, Any]]:
+    """Return {charge_type: {product_name, vat_rate, unit, updated_at}}."""
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT charge_type, product_name, vat_rate, unit, updated_at "
+            "FROM service_product_registry"
+        ).fetchall()
+    return {r["charge_type"]: dict(r) for r in rows}
+
+
 # Keys that must never appear in formula_basis — they would bleed
 # customs / import cost data into a service charge formula.
 _FORBIDDEN_FORMULA_BASIS_PREFIXES = (
@@ -3864,6 +3940,9 @@ __all__ = [
     "EDITABLE_DRAFT_FIELDS",
     "EDITABLE_LINE_FIELDS",
     "ALLOWED_SERVICE_CHARGE_TYPES",
+    "upsert_service_product_meta",
+    "get_service_product_meta",
+    "get_all_service_product_meta",
     "_FORBIDDEN_FORMULA_BASIS_PREFIXES",
     "DraftNotFound",
     "DraftNotEditable",

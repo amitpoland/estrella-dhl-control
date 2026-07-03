@@ -66,16 +66,16 @@ def _norm(s: str) -> str:
     return (s or "").strip().upper()
 
 
-# ── C-1f: mirror-first fiscal read helpers (1d) ──────────────────────────────
+# ── C-1f/C-3g: mirror-only fiscal read helpers ───────────────────────────────
 # All proforma fiscal reads (wfirma_product_id resolution) use these helpers.
-# Design: mirror-first with logged cache fallback.
+# Design (C-3g, Wave-2 ratification): MIRROR-ONLY.
 #   1. Read wfirma_product_mirror via reservation_db accessors.
-#   2. If a row exists with a non-empty wfirma_id → use it as wfirma_product_id.
-#   3. If no mirror row OR wfirma_id is empty → fall back to wfdb cache; log WARNING.
-#   4. If both mirror and cache have an id but they DIFFER → use mirror id; log WARNING.
-# This guarantees byte-identical payloads whenever mirror and cache agree (which
-# the Mirror Completeness Proof + C-1a backfill establish), while surfacing any
-# divergence loudly instead of silently.
+#   2. A row with a non-empty wfirma_id → that is the wfirma_product_id.
+#   3. No row / empty wfirma_id → unresolved (None). No cache fallback.
+# The transitional cache fallback + divergence logging (C-1f) were retired in
+# C-3g: the Mirror Completeness Proof (37aaaf27) covers every confirmed-id
+# write path, and the deploy ritual re-runs the C-1a backfill
+# (reservation_db.backfill_product_authority) before this code serves traffic.
 
 def _c1f_rdb_path():
     """Path to reservation_queue.db (holds wfirma_product_mirror)."""
@@ -101,64 +101,15 @@ def _c1f_mirror_good_id(product_code: str) -> Optional[str]:
     return None
 
 
-def _c1f_mirror_good_id_with_fallback(product_code: str) -> Optional[str]:
-    """Mirror-first lookup with cache fallback and divergence logging.
-
-    Returns the wfirma_product_id to use for fiscal payload construction:
-    - Mirror confirmed → mirror wfirma_id (logged on divergence vs cache).
-    - Mirror absent/empty → cache wfirma_product_id (logged as fallback WARNING).
-    - Both absent → None.
-    """
-    # Step 1: mirror read
-    mirror_id = _c1f_mirror_good_id(product_code)
-
-    # Step 2: cache read (needed for divergence check and fallback)
-    cache_id: Optional[str] = None
-    if wfdb._db_path is not None:
-        try:
-            prod = wfdb.get_product(product_code)
-            cache_id = (prod or {}).get("wfirma_product_id") or None
-            if cache_id:
-                cache_id = cache_id.strip() or None
-        except Exception as _exc:
-            log.warning("C-1f: cache lookup failed for %r: %s", product_code, _exc)
-
-    if mirror_id:
-        # Mirror confirmed — check for divergence
-        if cache_id and cache_id != mirror_id:
-            log.warning(
-                "C-1f: id divergence for %r — mirror=%r cache=%r — using mirror",
-                product_code, mirror_id, cache_id,
-            )
-        return mirror_id
-    else:
-        # Fallback to cache
-        if cache_id:
-            log.warning(
-                "C-1f: mirror absent/empty for %r — falling back to cache id=%r",
-                product_code, cache_id,
-            )
-        return cache_id
-
-
-def _c1f_mirror_good_id_or_cache_truthiness(product_code: str) -> bool:
-    """Return True if the product has a confirmed wfirma_product_id (mirror or cache).
-
-    Used for truthiness-only checks (lines 1713, 7722) — does not extract the id.
-    """
-    return bool(_c1f_mirror_good_id_with_fallback(product_code))
-
-
 def _c1f_product_mapping_lookup(product_code: str) -> Optional[Dict[str, Any]]:
-    """Mirror-first callable compatible with the product_mapping_lookup contract.
+    """Mirror-only callable compatible with the product_mapping_lookup contract.
 
-    C-1f: mirror-first fiscal read (1d).
     Replaces `wfdb.get_product` when passed as a callable argument.
     The downstream consumer checks `(row or {}).get("wfirma_product_id")` for
     truthiness. This wrapper returns a dict with wfirma_product_id set from the
-    mirror (with cache fallback), or None if neither has an id.
+    mirror, or None when the mirror has no confirmed id (C-3g: no cache fallback).
     """
-    good_id = _c1f_mirror_good_id_with_fallback(product_code)
+    good_id = _c1f_mirror_good_id(product_code)
     if good_id:
         return {"wfirma_product_id": good_id, "product_code": product_code}
     return None
@@ -243,10 +194,10 @@ def _check_warehouse_readiness(batch_id: str) -> List[str]:
         return reasons
 
     # 2. Unresolved product_codes — batch fetch (C6 T6: O(1) vs O(N) per-code)
-    # C-1f: mirror-first fiscal read (1d) — mirror batch replaces cache batch.
-    # A mirror row with non-empty wfirma_id is "matched"; mirror absent/empty →
-    # fallback to cache per-code (rare: backfill covers all confirmed ids).
-    if wfdb._db_path is not None or _c1f_rdb_path().exists():
+    # C-3g: mirror-only — a mirror row with a non-empty wfirma_id is "matched";
+    # mirror absent/empty → unresolved. The C-1f per-code cache fallback was
+    # retired (Wave-2 ratification; deploy ritual re-runs the C-1a backfill).
+    if _c1f_rdb_path().exists():
         all_codes = sorted({
             (r.get("product_code") or "").strip()
             for r in pz_rows
@@ -258,25 +209,11 @@ def _check_warehouse_readiness(batch_id: str) -> List[str]:
             _rdb_path_wh = _c1f_rdb_path()
             _mirror_map: Dict[str, Dict[str, Any]] = (
                 _rdb.get_mirror_products_batch(_rdb_path_wh, all_codes)
-                if _rdb_path_wh.exists() else {}
             )
-            unresolved = []
-            for code in all_codes:
-                m_row = _mirror_map.get(code)
-                mirror_id = (m_row or {}).get("wfirma_id", "")
-                if mirror_id:
-                    # Mirror confirmed — resolved
-                    continue
-                # Mirror absent/empty — fallback to cache
-                if wfdb._db_path is not None:
-                    prod = wfdb.get_product(code)
-                    if prod and prod.get("wfirma_product_id") and prod.get("sync_status") == "matched":
-                        log.warning(
-                            "C-1f: mirror absent/empty for %r in warehouse-readiness check "
-                            "— falling back to cache (consider running backfill)", code,
-                        )
-                        continue
-                unresolved.append(code)
+            unresolved = [
+                code for code in all_codes
+                if not ((_mirror_map.get(code) or {}).get("wfirma_id", ""))
+            ]
         else:
             unresolved = []
         if unresolved:
@@ -1080,7 +1017,7 @@ def _build_preview(batch_id: str, client_name: str,
             line_currencies.append(currency)
 
         # C-1f: mirror-first fiscal read (1d) — id confirmed if mirror non-empty wfirma_id
-        product_match = bool(_c1f_mirror_good_id_with_fallback(product_code))
+        product_match = bool(_c1f_mirror_good_id(product_code))
         if not product_match:
             missing_product += 1
 
@@ -1473,24 +1410,33 @@ def _build_service_charge_lines(
 ) -> "tuple[List[wfirma_client.ReservationLine], str]":
     """
     Build wFirma ``ReservationLine`` objects for service charges that have
-    a registered product mapping in ``wfirma_products`` (keyed by charge_type).
+    a registered product mapping (keyed by charge_type).
+
+    C-3g: identity (wfirma_product_id) comes from the Product MIRROR;
+    emission metadata (display label, unit) comes from the PROFORMA
+    authority's service_product_registry (pildb). The legacy
+    ``wfirma_products`` cache is no longer consulted.
 
     Emission rules:
       - charge_type must be in ALLOWED_SERVICE_CHARGE_TYPES
-      - wfirma_products must have a non-empty wfirma_product_id for that code
+      - the mirror must have a non-empty wfirma_id for that charge_type
       - charge.currency must match doc_currency (or be empty → adopts doc_currency)
       - amount must be positive and parseable
 
     Returns ``(lines, unmapped_note)``:
       - ``lines``: ReservationLine list to append to ProformaRequest.lines
       - ``unmapped_note``: non-empty when any charge type could not be emitted
-
-    Uses module-level ``wfdb`` so test monkeypatching works.
     """
     if not charges:
         return [], ""
 
     from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
+
+    try:
+        _sc_meta = pildb.get_all_service_product_meta(_proforma_db_path())
+    except Exception as _exc:  # noqa: BLE001 — metadata is display-level; identity gates below
+        log.warning("service-charge registry read failed (using defaults): %s", _exc)
+        _sc_meta = {}
 
     lines: List[wfirma_client.ReservationLine] = []
     unmapped: List[str] = []
@@ -1504,7 +1450,7 @@ def _build_service_charge_lines(
             continue
 
         # C-1f: mirror-first fiscal read (1d) — good_id from mirror, cache fallback
-        good_id = _c1f_mirror_good_id_with_fallback(ct) or ""
+        good_id = _c1f_mirror_good_id(ct) or ""
         if not good_id:
             unmapped.append(ct)
             continue
@@ -1530,15 +1476,12 @@ def _build_service_charge_lines(
         # Canonical wording: insurance line name is always generated by the
         # centralized insurance_wording module — never taken from freeform
         # product registry text.  Freight keeps the registry label.
+        _meta = _sc_meta.get(ct) or {}
         if ct == "insurance":
             from ..services.insurance_wording import build_insurance_line_name
             _line_name = build_insurance_line_name()
         else:
-            _line_name = (
-                (prod.get("product_name_pl") or "").strip()
-                or (prod.get("product_name") or "").strip()
-                or ct
-            )
+            _line_name = (_meta.get("product_name") or "").strip() or ct
 
         lines.append(wfirma_client.ReservationLine(
             product_code   = ct,
@@ -1546,7 +1489,7 @@ def _build_service_charge_lines(
             product_name   = _line_name,
             qty            = 1.0,
             unit_price     = float(amount),
-            unit           = (prod.get("unit") or "szt."),
+            unit           = (_meta.get("unit") or "szt."),
             currency       = use_ccy,
         ))
 
@@ -1677,7 +1620,7 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
     for ln in preview.get("lines", []):
         pc = ln.get("product_code") or ""
         # C-1f: mirror-first fiscal read (1d) — wfirma_good_id from mirror, cache fallback
-        good_id = (_c1f_mirror_good_id_with_fallback(pc) if pc else None) or ""
+        good_id = (_c1f_mirror_good_id(pc) if pc else None) or ""
         if not good_id:
             missing_products.append(pc or "<unknown>")
             continue
@@ -1829,7 +1772,7 @@ def proforma_create(
         _sc_types = {(c.get("charge_type") or "").lower() for c in _raw_service_charges}
         _unmapped = [
             ct for ct in _sc_types
-            if not _c1f_mirror_good_id_or_cache_truthiness(ct)
+            if not _c1f_mirror_good_id(ct)
         ]
         if _unmapped:
             _service_charges_wfirma_warning = (
@@ -2458,14 +2401,13 @@ def adopt_issued_proforma(
 # converts the proforma to a final invoice.
 
 def _build_wfirma_id_to_code_map() -> Dict[str, str]:
-    """{wfirma_product_id → product_code} from wfirma_product_mirror (mirror-first).
+    """{wfirma_product_id → product_code} from wfirma_product_mirror.
 
-    C-1f: mirror-first fiscal read (1d) — reads the mirror for the authoritative
-    wfirma_id→product_code map. Falls back to wfdb cache for any code where the
-    mirror row is absent or has an empty wfirma_id (covers backfill gaps).
+    C-3g: mirror-only — the mirror is the sole identity authority for the
+    reverse map. The C-1f cache-gap fallback was retired (Wave-2 ratification;
+    the deploy ritual re-runs the C-1a backfill before this serves traffic).
     """
     out: Dict[str, str] = {}
-    # Primary: mirror read
     from ..services import reservation_db as _rdb
     _rdb_path_rev = _c1f_rdb_path()
     if _rdb_path_rev.exists():
@@ -2473,18 +2415,6 @@ def _build_wfirma_id_to_code_map() -> Dict[str, str]:
             wid = (row.get("wfirma_id") or "").strip()
             pc  = (row.get("product_code") or "").strip()
             if wid and pc:
-                out[wid] = pc
-    # Fallback: cache rows not covered by mirror (mirror gaps)
-    if wfdb._db_path is not None:
-        for row in wfdb.list_products():
-            wid = (row.get("wfirma_product_id") or "").strip()
-            pc  = (row.get("product_code")      or "").strip()
-            if wid and pc and wid not in out:
-                # Only include if mirror didn't already claim this wid
-                log.warning(
-                    "C-1f: reverse-map fallback to cache for wid=%r code=%r "
-                    "(mirror row absent — consider running backfill)", wid, pc,
-                )
                 out[wid] = pc
     return out
 
@@ -4284,14 +4214,16 @@ def _enrich_invoice_line_names(lines: List[Dict[str, Any]]) -> None:
         return
     prod_index: Dict[str, Dict[str, Any]] = {}
     try:
-        from ..services import wfirma_db as _wfdb_inv
+        # C-3g: registered-goods display names come from the product
+        # authority's sync-state query, not from raw legacy-cache rows.
+        from ..services import product_authority_resolver as _par
         codes = sorted({
             str(ln.get("product_code") or "").strip()
             for ln in lines
             if str(ln.get("product_code") or "").strip()
         })
         if codes:
-            prod_index = _wfdb_inv.get_products_batch(codes) or {}
+            prod_index = _par.get_registered_goods_state_batch(codes) or {}
     except Exception as exc:  # pragma: no cover - enrichment is best-effort
         log.warning("invoice line-name enrichment unavailable (non-fatal): %s", exc)
         prod_index = {}
@@ -4600,19 +4532,22 @@ def get_service_products() -> JSONResponse:
         }
     """
     rows = []
+    # C-3g: identity from the mirror; metadata (label/vat/unit) from the
+    # PROFORMA authority's service_product_registry. No legacy-cache read.
+    try:
+        _sc_meta = pildb.get_all_service_product_meta(_proforma_db_path())
+    except Exception as _exc:  # noqa: BLE001
+        log.warning("service-charge registry read failed (using defaults): %s", _exc)
+        _sc_meta = {}
     for ct in pildb.ALLOWED_SERVICE_CHARGE_TYPES:
-        # C-1f: mirror-first fiscal read (1d) — wfirma_product_id from mirror, cache fallback.
-        # Non-identity fields (product_name_pl, vat_rate, unit) come from cache only
-        # (the mirror holds sync-identity columns only; no business metadata).
-        good_id = _c1f_mirror_good_id_with_fallback(ct)
-        # Cache row still needed for non-identity fields (name, vat_rate, unit).
-        prod = wfdb.get_product(ct) if wfdb._db_path is not None else None
+        good_id = _c1f_mirror_good_id(ct)
+        meta = _sc_meta.get(ct) or {}
         rows.append({
             "charge_type":       ct,
             "wfirma_product_id": good_id or None,
-            "product_name":      (prod or {}).get("product_name_pl") or (prod or {}).get("product_name") or "",
-            "vat_rate":          (prod or {}).get("vat_rate") or "23",
-            "unit":              (prod or {}).get("unit") or "szt.",
+            "product_name":      (meta.get("product_name") or "").strip(),
+            "vat_rate":          (meta.get("vat_rate") or "23").strip(),
+            "unit":              (meta.get("unit") or "szt.").strip(),
             "status":            "mapped" if good_id else "unmapped",
         })
     return JSONResponse({"ok": True, "service_products": rows})
@@ -4663,20 +4598,15 @@ def register_service_product(
             status_code=400,
             detail="wfirma_product_id is required and must be non-empty",
         )
-    if wfdb._db_path is None:
-        raise HTTPException(
-            status_code=503,
-            detail="wfirma_db not initialised — check storage_root",
-        )
-    # C-1w1: populate the Product MIRROR (the code→wfirma_id sync identity) so it
-    # becomes the COMPLETE authority for slice 1d's read migration. Written FIRST,
-    # before the wfirma_products cache write, so a mirror failure or collision can
-    # never leave the cache written but the mirror empty (no divergence window).
+    # C-1w1/C-3g: the Product MIRROR is the SOLE identity store for the
+    # code→wfirma_id mapping (written FIRST; a collision surfaces as 409).
     # A service charge type is NOT a Product Master product (a master row would
     # pollute the product-options picker), so ONLY the mirror is written — no
     # master row. No wFirma push here (the operator supplies an existing
     # wfirma_product_id). Identity/sync only; ZERO value recomputation
-    # (customs-value-freeze).
+    # (customs-value-freeze). The C-1w1 transitional wfirma_products cache
+    # dual-write was retired in C-3g (Wave-2 ratification): emission metadata
+    # now lives in the PROFORMA authority's service_product_registry.
     from ..services import reservation_db as _rdb
     _rdb_path = settings.storage_root / "reservation_queue.db"
     try:
@@ -4693,31 +4623,21 @@ def register_service_product(
             detail={"error": "wfirma_id_collision", "wfirma_id": pid,
                     "owner_product_code": _mres.get("owner")},
         )
-    # Transitional DUAL-WRITE: the legacy wfirma_products cache write is KEPT until
-    # 1d migrates the proforma service-charge reads (removing it now would change
-    # the un-migrated reads' good_id and fail output-equivalence). Cache write LAST.
-    wfdb.upsert_product(
-        ct,
-        wfirma_product_id = pid,
-        product_name_pl   = (body.product_name or "").strip(),
-        vat_rate          = (body.vat_rate or "23").strip(),
-        unit              = (body.unit or "szt.").strip(),
-        sync_status       = "mapped",
+    # Metadata write (PROFORMA authority) — after the identity write succeeded.
+    _meta_name = (body.product_name or "").strip()
+    _meta_vat  = (body.vat_rate or "23").strip()
+    _meta_unit = (body.unit or "szt.").strip()
+    pildb.upsert_service_product_meta(
+        _proforma_db_path(), ct,
+        product_name=_meta_name, vat_rate=_meta_vat, unit=_meta_unit,
     )
-    # C-1f: mirror-first fiscal read (1d) — wfirma_product_id is already known (pid
-    # from the request body, confirmed by the mirror write above). Cache read is kept
-    # ONLY for non-identity fields (product_name_pl, vat_rate, unit) that the mirror
-    # does not store. The dual-write cache (upsert_product at ~4557) persists those
-    # fields; the mirror holds only sync-identity. This cache read is transitional
-    # and will be removed when the cache write is removed (post-1d cleanup).
-    prod = wfdb.get_product(ct)
     return JSONResponse({
         "ok":               True,
         "charge_type":      ct,
         "wfirma_product_id": pid,
-        "product_name":     (prod or {}).get("product_name_pl") or "",
-        "vat_rate":         (prod or {}).get("vat_rate") or "23",
-        "unit":             (prod or {}).get("unit") or "szt.",
+        "product_name":     _meta_name,
+        "vat_rate":         _meta_vat,
+        "unit":             _meta_unit,
         "status":           "mapped",
         "operator":         x_operator or "",
     })
@@ -5819,7 +5739,7 @@ def _derive_draft_readiness(
     for _ln in _r_lines:
         _pc = (str(_ln.get("product_code") or "")).strip()
         try:
-            _good_id = _c1f_mirror_good_id_with_fallback(_pc) if _pc else None
+            _good_id = _c1f_mirror_good_id(_pc) if _pc else None
         except Exception:
             _good_id = None
         if not _good_id:
@@ -7867,7 +7787,7 @@ def _build_proforma_request_from_draft(
         _sc_types = {(c.get("charge_type") or "").lower() for c in charges}
         _sc_unmapped = [
             ct for ct in _sc_types
-            if not _c1f_mirror_good_id_or_cache_truthiness(ct)
+            if not _c1f_mirror_good_id(ct)
         ]
         if _sc_unmapped:
             _sc_wfirma_note = (
@@ -8021,7 +7941,7 @@ def _build_proforma_request_from_draft(
     missing_products: List[str] = []
     for ln in lines_raw:
         pc = (ln.get("product_code") or "").strip()
-        good_id = (_c1f_mirror_good_id_with_fallback(pc) if pc else None) or ""
+        good_id = (_c1f_mirror_good_id(pc) if pc else None) or ""
         if not good_id:
             missing_products.append(pc or "<unknown>")
             continue

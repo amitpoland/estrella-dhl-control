@@ -598,25 +598,13 @@ def edit_wfirma_product(
     )
 
 
-def get_cached_product(product_code: str) -> Optional[Dict[str, Any]]:
-    """Transitional cache read passthrough to wfirma_db.get_product (C-1w2).
-    Removed after 1d re-points reads to the mirror / Product Master."""
-    from . import wfirma_db as _wfdb  # C-1w2: transitional cache read passthrough, removed after 1d.
-    return _wfdb.get_product(product_code)
-
-
-def get_cached_products_batch(codes: List[str]) -> Dict[str, Any]:
-    """Transitional cache batch-read passthrough to wfirma_db.get_products_batch
-    (C-1w2). Removed after 1d re-points reads to the mirror / Product Master."""
-    from . import wfirma_db as _wfdb  # C-1w2: transitional cache read passthrough, removed after 1d.
-    return _wfdb.get_products_batch(codes)
-
-
-def list_cached_products(sync_status: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Transitional list passthrough to wfirma_db.list_products (C-1w2).
-    Removed after 1d re-points reads to the mirror / Product Master."""
-    from . import wfirma_db as _wfdb  # C-1w2: transitional cache read passthrough, removed after 1d.
-    return _wfdb.list_products(sync_status=sync_status)
+# C-3g: the transitional cache-read passthroughs (get_cached_product /
+# get_cached_products_batch / list_cached_products, C-1w2/C-1e) were RETIRED
+# at Wave-2 ratification. Identity reads now use the mirror accessors below;
+# registered-goods sync-state queries live in
+# product_authority_resolver.get_registered_goods_state(_batch); the
+# wFirma-setup surface (routes_wfirma_capabilities) reads wfirma_db directly
+# as a declared product-sync surface.
 
 
 def register_product_identity(

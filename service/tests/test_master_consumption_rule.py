@@ -53,6 +53,30 @@ _SYNC_WHITELIST = {
     "wfirma_product_registration.py", "wfirma_product_auto_register.py",
     "product_authority_resolver.py", "reservation_worker.py",
     "wfirma_product_resolver.py", "cpa_product_service.py",
+    # C-3g (Wave-2 ratification): wFirma-setup / diagnostic surface (mapping
+    # registry listing, adopt-pending, goods-description push) — the same
+    # "wFirma-facing by purpose" ruling the CUSTOMER pin already applies to
+    # this file (see _CUSTOMER_SYNC_WHITELIST below). Its product reads/writes
+    # ARE the sync-management operations; recorded in phase-c-master
+    # DECISIONS.md (C-3g slice decision).
+    "routes_wfirma_capabilities.py",
+    # R2-census (Wave-2 ratification amendment 2) — INSPECTOR-verified
+    # SYNC-LAYER services (this pin scans api/routes_*.py only; these entries
+    # record the ratified disposition and future-proof a services extension):
+    #   global_pz_push.py:235-248 _build_product_map — wfirma_db.list_products,
+    #     consumes wfirma_product_id+product_code to build PZ good_id map.
+    #   wfirma_reservation.py:362-368 — wfdb.get_product readiness gate
+    #     (wfirma_product_id, sync_status) before reservation sync.
+    #   wfirma_reservation_create.py:143-158 Gate 7 — wfdb.get_product
+    #     (wfirma_product_id, product_name_pl, unit) → ReservationLine payload.
+    "global_pz_push.py",
+    "wfirma_reservation.py",
+    "wfirma_reservation_create.py",
+    # R2-census DEV-TOOL exemptions (exempt-by-purpose, NOT whitelist members —
+    # operator CLI tools under app/tools/, no production import path, read-only
+    # wfirma_client.get_product_by_code guards): build_pz_batch.py:142 (--resolve
+    # flag only), send_wfirma_good_live_test.py:405 (duplicate guard),
+    # send_wfirma_proforma_live_test.py:235 (--bill-to line resolution).
 }
 
 # REAL product-authority access (matched on comment/docstring-stripped code).
@@ -72,24 +96,19 @@ _REAL_ACCESS_PATTERNS = {
     "api:edit_product":        re.compile(r"\.edit_product\s*\("),
 }
 
-# BASELINE known violations (files) as of C-1w2 — the HONEST real-access
-# set measured by the refined detector. This SHRINKS across C-1c STAGE 1 (read
-# migrations) and reaches the declared residual (the write slices) by C-1d.
-# NOTE: routes_wfirma.py re-appears here — C-1b removed its wFirma CLIENT calls
-# but intentionally LEFT its wfirma_db accessor reads/writes as the
-# "C-1c-deprecating reader path"; the refined detector now measures them.
-KNOWN_PRODUCT_VIOLATION_FILES = {
-    # C-1f MIGRATED the ~12 proforma fiscal reads to mirror-first with cache fallback.
-    # Residual = the single transitional dual-write site (wfdb.upsert_product @~4699) +
-    # transitional cache reads for non-identity fields (product_name_pl/vat_rate/unit) that
-    # the mirror does not store — cleanup is post-1d (when cache write is removed).
-    # Pattern hits remaining: acc:upsert_product (dual-write), acc:get_product (non-id fields).
-    "routes_proforma.py",
+# BASELINE known violations (files) — TRUE ZERO as of C-3g (Wave-2
+# ratification amendment 1: "product pin must reach true 0 before C-3b
+# onward"). Every business route consumes the Product Master / mirror; the
+# wFirma-setup surface is a declared sync surface (_SYNC_WHITELIST).
+KNOWN_PRODUCT_VIOLATION_FILES: set = {
     # routes_dashboard.py          — MIGRATED to the Product Master in C-1c STAGE 1a.
     # routes_packing.py            — MIGRATED to the Product Master in C-1c STAGE 1b.
-    # routes_wfirma_capabilities.py — MIGRATED in C-1w2 (write path + cache reads).
-    # routes_wfirma.py             — MIGRATED in C-1e (5 reads + 3 writes → rdb sync layer).
-    # routes_proforma.py (reads)   — MIGRATED in C-1f (12 reads → mirror-first; residual = dual-write).
+    # routes_wfirma_capabilities.py — MIGRATED in C-1w2; C-3g: declared sync surface (whitelist).
+    # routes_wfirma.py             — MIGRATED in C-1e (5 reads + 3 writes → rdb sync layer);
+    #                                C-3g: mirror maps + registered-goods sync-state API.
+    # routes_proforma.py           — reads MIGRATED in C-1f (mirror-first); C-3g retired the
+    #                                transitional dual-write + non-identity cache reads
+    #                                (service-charge metadata → pildb service_product_registry).
 }
 
 
@@ -204,12 +223,13 @@ def test_reservations_router_stays_clean():
 
 
 def test_known_violation_baseline_is_documented_and_shrinking():
-    """C-1e migrated routes_wfirma.py (5 reads + 3 writes) — baseline now 1 file.
-    The next shrink (C-1d/C-1f) migrates proforma reads and removes routes_proforma.py
-    from this set, reaching the zero-violation target."""
-    assert len(KNOWN_PRODUCT_VIOLATION_FILES) == 1, (
-        "KNOWN_PRODUCT_VIOLATION_FILES changed — update this count as C-1d/C-1f "
-        "migrates remaining proforma reads (routes_proforma.py is the last residual)."
+    """C-3g reached the TRUE-ZERO target (Wave-2 ratification amendment 1):
+    the baseline is empty and must STAY empty — any addition is a new
+    authority violation, not a baseline update."""
+    assert len(KNOWN_PRODUCT_VIOLATION_FILES) == 0, (
+        "KNOWN_PRODUCT_VIOLATION_FILES must stay EMPTY (C-3g true-zero pin). "
+        "A business route may not access wFirma product data directly — route "
+        "it through the Product Master / mirror instead of re-adding a baseline entry."
     )
 
 

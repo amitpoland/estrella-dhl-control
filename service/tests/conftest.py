@@ -262,3 +262,43 @@ def _guard_storage_root():
             f"to redirect settings.storage_root in the test or its autouse "
             f"fixture."
         )
+
+
+# ── C-3g: mirror-complete product seeding (test-estate invariant) ────────────
+# Production write paths are mirror-complete (Mirror Completeness Proof
+# 37aaaf27): every confirmed-id product write feeds wfirma_product_mirror.
+# Many legacy tests seed via raw wfirma_db.upsert_product (cache only); after
+# C-3g's mirror-only business reads such a seed would leave the product
+# invisible to routes. This shim upholds the production invariant for direct
+# cache seeding: a non-empty wfirma_product_id also upserts the mirror in the
+# SAME storage sandbox (derived from wfdb._db_path.parent, which the standard
+# storage fixture keeps equal to the patched settings.storage_root).
+# Unaffected by design: seeds with an empty id (divergence tests), tests that
+# monkeypatch upsert_product themselves (their patch replaces this wrapper),
+# and explicit mirror writes (upsert_product_mirror is idempotent).
+# Ratified context: phase-c-master DECISIONS.md, C-3g slice decisions.
+
+@pytest.fixture(autouse=True)
+def _mirror_complete_product_seeding(monkeypatch):
+    try:
+        from app.services import wfirma_db as _wfdb
+        from app.services import reservation_db as _rdb
+    except Exception:
+        yield
+        return
+    _orig = _wfdb.upsert_product
+
+    def _mirror_complete(product_code, **kwargs):
+        res = _orig(product_code, **kwargs)
+        wid = (kwargs.get("wfirma_product_id") or "").strip()
+        try:
+            if wid and _wfdb._db_path is not None:
+                mdb = Path(_wfdb._db_path).parent / "reservation_queue.db"
+                _rdb.init_reservation_db(mdb)
+                _rdb.upsert_product_mirror(mdb, wfirma_id=wid, product_code=product_code)
+        except Exception:
+            pass  # the seeding shim must never fail a test on its own
+        return res
+
+    monkeypatch.setattr(_wfdb, "upsert_product", _mirror_complete)
+    yield

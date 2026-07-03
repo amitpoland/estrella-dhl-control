@@ -14,7 +14,7 @@ Coverage:
   9.  _build_service_charge_lines — zero amount skipped (no line, no note)
   10. _build_service_charge_lines — negative amount skipped
   11. _build_service_charge_lines — invalid amount → unmapped note
-  12. _build_service_charge_lines — wfdb._db_path is None → unmapped note
+  12. _build_service_charge_lines — mirror DB absent → unmapped note (C-3g)
   13. GET /api/v1/proforma/service-products — returns all charge types
   14. GET returns "unmapped" status before any mapping registered
   15. GET returns "mapped" after PUT registers a product
@@ -25,6 +25,11 @@ Coverage:
   20. PUT charge_type is case-normalised to lowercase
   21. Integration: proforma XML includes service charge line when mapping present
   22. Integration: proforma XML omits service charge line when no mapping
+
+C-3g (Wave-2 ratification): identity = wfirma_product_mirror; emission
+metadata = pildb.service_product_registry; the legacy wfirma_products cache
+is retired from this path. Fixtures seed the REAL stores under tmp storage.
+Also pins the C-1f `prod` NameError fix (source-grep + mapped-charge tests).
 """
 from __future__ import annotations
 
@@ -75,53 +80,42 @@ def client(tmp_path, monkeypatch) -> TestClient:
         yield c
 
 
-def _patch_wfdb_empty(monkeypatch):
-    """wfdb initialised but no product stored → all unmapped."""
-    monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
-    monkeypatch.setattr(wfdb, "get_product", lambda code: None)
+# C-3g: service-charge identity lives in wfirma_product_mirror; emission
+# metadata (label/vat/unit) lives in pildb's service_product_registry. The
+# legacy wfirma_products cache is no longer consulted, so these helpers seed
+# the REAL stores under a tmp storage_root instead of monkeypatching wfdb.
+
+def _seed_unmapped(monkeypatch, tmp_path):
+    """Empty storage → no mirror rows → all charge types unmapped."""
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
 
 
-def _patch_wfdb_freight_only(monkeypatch):
+def _seed_mirror_and_meta(monkeypatch, tmp_path, mapping):
+    """Seed mirror identity + registry metadata for {ct: (wfirma_id, name)}."""
+    from app.services import reservation_db as _rdb
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    db = tmp_path / "reservation_queue.db"
+    _rdb.init_reservation_db(db)
+    for ct, (wid, name) in mapping.items():
+        _rdb.upsert_product_mirror(db, wfirma_id=wid, product_code=ct)
+        pildb.upsert_service_product_meta(
+            tmp_path / "proforma_links.db", ct,
+            product_name=name, vat_rate="23", unit="szt.",
+        )
+
+
+def _seed_freight_only(monkeypatch, tmp_path):
     """freight mapped, insurance not."""
-    monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
-
-    def _get(code: str):
-        if code == "freight":
-            return {
-                "wfirma_product_id": "WFP-99001",
-                "product_name_pl":   "Fracht",
-                "product_name":      "Freight",
-                "vat_rate":          "23",
-                "unit":              "szt.",
-            }
-        return None
-
-    monkeypatch.setattr(wfdb, "get_product", _get)
+    _seed_mirror_and_meta(monkeypatch, tmp_path,
+                          {"freight": ("WFP-99001", "Fracht")})
 
 
-def _patch_wfdb_both(monkeypatch):
+def _seed_both(monkeypatch, tmp_path):
     """Both freight and insurance mapped."""
-    monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
-
-    def _get(code: str):
-        return {
-            "freight": {
-                "wfirma_product_id": "WFP-99001",
-                "product_name_pl":   "Fracht",
-                "product_name":      "Freight",
-                "vat_rate":          "23",
-                "unit":              "szt.",
-            },
-            "insurance": {
-                "wfirma_product_id": "WFP-99002",
-                "product_name_pl":   "Ubezpieczenie",
-                "product_name":      "Insurance",
-                "vat_rate":          "23",
-                "unit":              "szt.",
-            },
-        }.get(code)
-
-    monkeypatch.setattr(wfdb, "get_product", _get)
+    _seed_mirror_and_meta(monkeypatch, tmp_path, {
+        "freight":   ("WFP-99001", "Fracht"),
+        "insurance": ("WFP-99002", "Ubezpieczenie"),
+    })
 
 
 # ── Unit tests: _build_service_charge_lines ───────────────────────────────────
@@ -138,8 +132,8 @@ class TestBuildServiceChargeLines:
         assert lines == []
         assert note == ""
 
-    def test_mapped_freight_emits_line(self, monkeypatch):
-        _patch_wfdb_freight_only(monkeypatch)
+    def test_mapped_freight_emits_line(self, monkeypatch, tmp_path):
+        _seed_freight_only(monkeypatch, tmp_path)
         lines, note = self._fn()(
             [{"charge_type": "freight", "amount": "150.00", "currency": "EUR"}],
             "EUR",
@@ -154,8 +148,8 @@ class TestBuildServiceChargeLines:
         assert ln.currency == "EUR"
         assert note == ""
 
-    def test_mapped_insurance_emits_line(self, monkeypatch):
-        _patch_wfdb_both(monkeypatch)
+    def test_mapped_insurance_emits_line(self, monkeypatch, tmp_path):
+        _seed_both(monkeypatch, tmp_path)
         lines, note = self._fn()(
             [{"charge_type": "insurance", "amount": "22.50", "currency": "EUR"}],
             "EUR",
@@ -169,8 +163,8 @@ class TestBuildServiceChargeLines:
         assert lines[0].product_name == DEFAULT_INSURANCE_LINE_NAME
         assert note == ""
 
-    def test_both_charge_types_both_emitted(self, monkeypatch):
-        _patch_wfdb_both(monkeypatch)
+    def test_both_charge_types_both_emitted(self, monkeypatch, tmp_path):
+        _seed_both(monkeypatch, tmp_path)
         charges = [
             {"charge_type": "freight",   "amount": "100.00", "currency": "EUR"},
             {"charge_type": "insurance", "amount": "15.00",  "currency": "EUR"},
@@ -181,8 +175,8 @@ class TestBuildServiceChargeLines:
         assert codes == {"freight", "insurance"}
         assert note == ""
 
-    def test_unknown_charge_type_excluded_with_note(self, monkeypatch):
-        _patch_wfdb_both(monkeypatch)
+    def test_unknown_charge_type_excluded_with_note(self, monkeypatch, tmp_path):
+        _seed_both(monkeypatch, tmp_path)
         lines, note = self._fn()(
             [{"charge_type": "handling", "amount": "50.00", "currency": "EUR"}],
             "EUR",
@@ -190,8 +184,8 @@ class TestBuildServiceChargeLines:
         assert lines == []
         assert "handling(unknown_type)" in note
 
-    def test_allowed_type_unmapped_product_gives_note(self, monkeypatch):
-        _patch_wfdb_empty(monkeypatch)
+    def test_allowed_type_unmapped_product_gives_note(self, monkeypatch, tmp_path):
+        _seed_unmapped(monkeypatch, tmp_path)
         lines, note = self._fn()(
             [{"charge_type": "freight", "amount": "75.00", "currency": "EUR"}],
             "EUR",
@@ -199,8 +193,8 @@ class TestBuildServiceChargeLines:
         assert lines == []
         assert "freight" in note
 
-    def test_currency_mismatch_excluded_with_note(self, monkeypatch):
-        _patch_wfdb_freight_only(monkeypatch)
+    def test_currency_mismatch_excluded_with_note(self, monkeypatch, tmp_path):
+        _seed_freight_only(monkeypatch, tmp_path)
         lines, note = self._fn()(
             [{"charge_type": "freight", "amount": "100.00", "currency": "USD"}],
             "EUR",
@@ -209,8 +203,8 @@ class TestBuildServiceChargeLines:
         assert "currency_mismatch" in note
         assert "USD" in note
 
-    def test_empty_charge_currency_adopts_doc_currency(self, monkeypatch):
-        _patch_wfdb_freight_only(monkeypatch)
+    def test_empty_charge_currency_adopts_doc_currency(self, monkeypatch, tmp_path):
+        _seed_freight_only(monkeypatch, tmp_path)
         # charge.currency is absent → adopts "EUR"
         lines, note = self._fn()(
             [{"charge_type": "freight", "amount": "80.00"}],
@@ -220,8 +214,8 @@ class TestBuildServiceChargeLines:
         assert lines[0].currency == "EUR"
         assert note == ""
 
-    def test_zero_amount_skipped_no_note(self, monkeypatch):
-        _patch_wfdb_freight_only(monkeypatch)
+    def test_zero_amount_skipped_no_note(self, monkeypatch, tmp_path):
+        _seed_freight_only(monkeypatch, tmp_path)
         lines, note = self._fn()(
             [{"charge_type": "freight", "amount": "0.00", "currency": "EUR"}],
             "EUR",
@@ -230,8 +224,8 @@ class TestBuildServiceChargeLines:
         # zero amount is silently skipped — no note needed
         assert note == ""
 
-    def test_negative_amount_skipped(self, monkeypatch):
-        _patch_wfdb_freight_only(monkeypatch)
+    def test_negative_amount_skipped(self, monkeypatch, tmp_path):
+        _seed_freight_only(monkeypatch, tmp_path)
         lines, note = self._fn()(
             [{"charge_type": "freight", "amount": "-10.00", "currency": "EUR"}],
             "EUR",
@@ -239,8 +233,8 @@ class TestBuildServiceChargeLines:
         assert lines == []
         assert note == ""
 
-    def test_invalid_amount_gives_unmapped_note(self, monkeypatch):
-        _patch_wfdb_freight_only(monkeypatch)
+    def test_invalid_amount_gives_unmapped_note(self, monkeypatch, tmp_path):
+        _seed_freight_only(monkeypatch, tmp_path)
         lines, note = self._fn()(
             [{"charge_type": "freight", "amount": "not_a_number", "currency": "EUR"}],
             "EUR",
@@ -248,9 +242,10 @@ class TestBuildServiceChargeLines:
         assert lines == []
         assert "invalid_amount" in note
 
-    def test_db_path_none_treats_as_unmapped(self, monkeypatch):
-        """When wfdb._db_path is None the helper cannot look up products."""
-        monkeypatch.setattr(wfdb, "_db_path", None, raising=False)
+    def test_missing_mirror_db_treats_as_unmapped(self, monkeypatch, tmp_path):
+        """C-3g: no reservation_queue.db under storage_root -> no identity ->
+        the charge is unmapped (the legacy wfdb cache is never consulted)."""
+        monkeypatch.setattr(settings, "storage_root", tmp_path)
         lines, note = self._fn()(
             [{"charge_type": "freight", "amount": "50.00", "currency": "EUR"}],
             "EUR",
@@ -258,9 +253,9 @@ class TestBuildServiceChargeLines:
         assert lines == []
         assert "freight" in note
 
-    def test_decimal_rounding_half_even(self, monkeypatch):
+    def test_decimal_rounding_half_even(self, monkeypatch, tmp_path):
         """ROUND_HALF_EVEN applied: 0.005 → 0.00 (banker's rounding)."""
-        _patch_wfdb_freight_only(monkeypatch)
+        _seed_freight_only(monkeypatch, tmp_path)
         lines, _ = self._fn()(
             [{"charge_type": "freight", "amount": "99.995", "currency": "EUR"}],
             "EUR",
@@ -269,9 +264,9 @@ class TestBuildServiceChargeLines:
         assert len(lines) == 1
         assert abs(lines[0].unit_price - 100.00) < 0.001
 
-    def test_mixed_mapped_unmapped_partial_emit(self, monkeypatch):
+    def test_mixed_mapped_unmapped_partial_emit(self, monkeypatch, tmp_path):
         """freight mapped, insurance not → freight emitted, note mentions insurance."""
-        _patch_wfdb_freight_only(monkeypatch)
+        _seed_freight_only(monkeypatch, tmp_path)
         charges = [
             {"charge_type": "freight",   "amount": "100.00", "currency": "EUR"},
             {"charge_type": "insurance", "amount": "20.00",  "currency": "EUR"},
@@ -287,28 +282,28 @@ class TestBuildServiceChargeLines:
 class TestGetServiceProducts:
     _PATH = "/api/v1/proforma/service-products"
 
-    def test_returns_ok_true(self, client, monkeypatch):
-        _patch_wfdb_empty(monkeypatch)
+    def test_returns_ok_true(self, client, monkeypatch, tmp_path):
+        _seed_unmapped(monkeypatch, tmp_path)
         r = client.get(self._PATH, headers=_auth_headers())
         assert r.status_code == 200
         assert r.json()["ok"] is True
 
-    def test_returns_all_allowed_charge_types(self, client, monkeypatch):
-        _patch_wfdb_empty(monkeypatch)
+    def test_returns_all_allowed_charge_types(self, client, monkeypatch, tmp_path):
+        _seed_unmapped(monkeypatch, tmp_path)
         r = client.get(self._PATH, headers=_auth_headers())
         data = r.json()
         types_returned = {row["charge_type"] for row in data["service_products"]}
         assert types_returned == set(pildb.ALLOWED_SERVICE_CHARGE_TYPES)
 
-    def test_unmapped_status_before_registration(self, client, monkeypatch):
-        _patch_wfdb_empty(monkeypatch)
+    def test_unmapped_status_before_registration(self, client, monkeypatch, tmp_path):
+        _seed_unmapped(monkeypatch, tmp_path)
         r = client.get(self._PATH, headers=_auth_headers())
         for row in r.json()["service_products"]:
             assert row["status"] == "unmapped"
             assert row["wfirma_product_id"] is None
 
-    def test_mapped_status_after_freight_registered(self, client, monkeypatch):
-        _patch_wfdb_freight_only(monkeypatch)
+    def test_mapped_status_after_freight_registered(self, client, monkeypatch, tmp_path):
+        _seed_freight_only(monkeypatch, tmp_path)
         r = client.get(self._PATH, headers=_auth_headers())
         rows = {row["charge_type"]: row for row in r.json()["service_products"]}
         assert rows["freight"]["status"] == "mapped"
@@ -316,17 +311,17 @@ class TestGetServiceProducts:
         # insurance still unmapped
         assert rows["insurance"]["status"] == "unmapped"
 
-    def test_both_mapped_both_show_mapped_status(self, client, monkeypatch):
-        _patch_wfdb_both(monkeypatch)
+    def test_both_mapped_both_show_mapped_status(self, client, monkeypatch, tmp_path):
+        _seed_both(monkeypatch, tmp_path)
         r = client.get(self._PATH, headers=_auth_headers())
         for row in r.json()["service_products"]:
             assert row["status"] == "mapped", f"{row['charge_type']} should be mapped"
 
-    def test_requires_auth_when_api_key_configured(self, client, monkeypatch):
+    def test_requires_auth_when_api_key_configured(self, client, monkeypatch, tmp_path):
         """Auth is enforced only when settings.api_key is non-empty; skip in dev mode."""
         if not settings.api_key:
             pytest.skip("api_key not configured — auth disabled in dev mode")
-        _patch_wfdb_empty(monkeypatch)
+        _seed_unmapped(monkeypatch, tmp_path)
         r = client.get(self._PATH)
         assert r.status_code in (401, 403)
 
@@ -344,24 +339,8 @@ class TestPutServiceProduct:
         )
 
     def test_registers_freight_successfully(self, client, monkeypatch):
-        # Patch wfdb to accept the upsert and return the row after
-        _captured = {}
-
-        def _upsert(code, **kwargs):
-            _captured[code] = kwargs
-
-        def _get(code):
-            if code in _captured:
-                return {"wfirma_product_id": _captured[code]["wfirma_product_id"],
-                        "product_name_pl": _captured[code].get("product_name_pl", ""),
-                        "vat_rate": _captured[code].get("vat_rate", "23"),
-                        "unit": _captured[code].get("unit", "szt.")}
-            return None
-
-        monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
-        monkeypatch.setattr(wfdb, "upsert_product", _upsert)
-        monkeypatch.setattr(wfdb, "get_product", _get)
-
+        # C-3g: PUT writes the mirror (identity) + pildb registry (metadata);
+        # the legacy wfdb cache is not involved.
         r = self._put(client, "freight", {
             "wfirma_product_id": "12345",
             "product_name": "Fracht",
@@ -376,18 +355,11 @@ class TestPutServiceProduct:
         assert body["status"] == "mapped"
 
     def test_c1w1_registration_populates_mirror_not_master(self, client, tmp_path, monkeypatch):
-        # C-1w1: registering a service product writes the MIRROR (code→wfirma_id
-        # sync identity) so it is complete for slice 1d — but does NOT create a
-        # Product Master row (service charges are not products; a master row would
-        # pollute the product picker). Legacy cache write kept (transitional
-        # dual-write); response unchanged.
-        monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
-        monkeypatch.setattr(wfdb, "upsert_product", lambda code, **kw: None)
-        monkeypatch.setattr(
-            wfdb, "get_product",
-            lambda code: {"wfirma_product_id": "77777", "product_name_pl": "Fracht",
-                          "vat_rate": "23", "unit": "szt."},
-        )
+        # C-1w1/C-3g: registering a service product writes the MIRROR
+        # (code->wfirma_id sync identity) — but does NOT create a Product
+        # Master row (service charges are not products; a master row would
+        # pollute the product picker). C-3g retired the transitional cache
+        # dual-write; metadata goes to pildb's service_product_registry.
         r = self._put(client, "freight",
                       {"wfirma_product_id": "77777", "product_name": "Fracht"})
         assert r.status_code == 200 and r.json()["wfirma_product_id"] == "77777"
@@ -408,13 +380,6 @@ class TestPutServiceProduct:
     def test_c1w1_wfirma_id_collision_returns_409(self, client, tmp_path, monkeypatch):
         # Two charge types cannot claim the same wfirma_id — the second is a 409,
         # not a silent 200 with an unwritten mirror (the divergence 1d would trip on).
-        monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
-        monkeypatch.setattr(wfdb, "upsert_product", lambda code, **kw: None)
-        monkeypatch.setattr(
-            wfdb, "get_product",
-            lambda code: {"wfirma_product_id": "SHARED", "product_name_pl": "",
-                          "vat_rate": "23", "unit": "szt."},
-        )
         assert self._put(client, "freight",
                          {"wfirma_product_id": "SHARED"}).status_code == 200
         r2 = self._put(client, "insurance", {"wfirma_product_id": "SHARED"})
@@ -423,84 +388,43 @@ class TestPutServiceProduct:
         assert r2.json()["detail"]["owner_product_code"] == "freight"
 
     def test_registers_insurance_successfully(self, client, monkeypatch):
-        _captured = {}
-
-        def _upsert(code, **kwargs):
-            _captured[code] = kwargs
-
-        def _get(code):
-            if code in _captured:
-                return {"wfirma_product_id": _captured[code]["wfirma_product_id"],
-                        "product_name_pl": "",
-                        "vat_rate": "23",
-                        "unit": "szt."}
-            return None
-
-        monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
-        monkeypatch.setattr(wfdb, "upsert_product", _upsert)
-        monkeypatch.setattr(wfdb, "get_product", _get)
-
         r = self._put(client, "insurance", {"wfirma_product_id": "99999"})
         assert r.status_code == 200
         assert r.json()["charge_type"] == "insurance"
 
     def test_unknown_charge_type_returns_400(self, client, monkeypatch):
-        monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
         r = self._put(client, "handling_fee", {"wfirma_product_id": "12345"})
         assert r.status_code == 400
         assert "not allowed" in r.json()["detail"]
 
     def test_empty_wfirma_product_id_returns_400(self, client, monkeypatch):
-        monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
         r = self._put(client, "freight", {"wfirma_product_id": "   "})
         assert r.status_code == 400
         assert "wfirma_product_id" in r.json()["detail"]
 
     def test_charge_type_normalised_to_lowercase(self, client, monkeypatch):
         """PUT /service-products/FREIGHT (uppercased) must be accepted."""
-        _captured = {}
-
-        def _upsert(code, **kwargs):
-            _captured[code] = kwargs
-
-        def _get(code):
-            if code in _captured:
-                return {"wfirma_product_id": _captured[code]["wfirma_product_id"],
-                        "product_name_pl": "", "vat_rate": "23", "unit": "szt."}
-            return None
-
-        monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
-        monkeypatch.setattr(wfdb, "upsert_product", _upsert)
-        monkeypatch.setattr(wfdb, "get_product", _get)
-
         r = self._put(client, "FREIGHT", {"wfirma_product_id": "55555"})
         assert r.status_code == 200
         assert r.json()["charge_type"] == "freight"
 
     def test_operator_header_echoed_in_response(self, client, monkeypatch):
-        _captured = {}
-
-        def _upsert(code, **kwargs):
-            _captured[code] = kwargs
-
-        def _get(code):
-            if code in _captured:
-                return {"wfirma_product_id": _captured[code]["wfirma_product_id"],
-                        "product_name_pl": "", "vat_rate": "23", "unit": "szt."}
-            return None
-
-        monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
-        monkeypatch.setattr(wfdb, "upsert_product", _upsert)
-        monkeypatch.setattr(wfdb, "get_product", _get)
-
         r = self._put(client, "freight", {"wfirma_product_id": "777"},
                       operator="bob")
         assert r.json()["operator"] == "bob"
 
-    def test_wfdb_not_initialised_returns_503(self, client, monkeypatch):
+    def test_put_does_not_touch_legacy_wfdb_cache(self, client, monkeypatch):
+        """C-3g regression: PUT must succeed with wfdb uninitialised and must
+        never call wfdb.upsert_product (the dual-write is retired)."""
         monkeypatch.setattr(wfdb, "_db_path", None, raising=False)
+
+        def _boom(*a, **kw):  # any cache write is a C-3g violation
+            raise AssertionError("wfdb.upsert_product must not be called (C-3g)")
+
+        monkeypatch.setattr(wfdb, "upsert_product", _boom)
         r = self._put(client, "freight", {"wfirma_product_id": "12345"})
-        assert r.status_code == 503
+        assert r.status_code == 200
+        assert r.json()["status"] == "mapped"
 
     def test_requires_auth_when_api_key_configured(self, client, monkeypatch):
         """Auth is enforced only when settings.api_key is non-empty; skip in dev mode."""
@@ -592,13 +516,29 @@ class TestServiceChargesInProformaXml:
         assert "WFP-99001" not in xml
 
     def test_service_product_registry_source_grep_wires_into_build_lines(self):
-        """Source-grep: _build_service_charge_lines calls wfdb.get_product."""
+        """Source-grep (C-3g): _build_service_charge_lines resolves identity
+        from the mirror and metadata from the pildb registry — and never
+        touches the retired wfdb cache. Also pins the C-1f defect fix: no
+        dangling `prod.get` reference may survive (the removed assignment
+        left a NameError on every mapped charge)."""
         import inspect
         from app.api.routes_proforma import _build_service_charge_lines
         src = inspect.getsource(_build_service_charge_lines)
-        assert "wfdb.get_product" in src, (
-            "_build_service_charge_lines must call wfdb.get_product(ct) "
-            "to resolve the wFirma product mapping"
+        assert "_c1f_mirror_good_id" in src, (
+            "_build_service_charge_lines must resolve wfirma_good_id from the "
+            "Product MIRROR (identity authority)"
+        )
+        assert "get_all_service_product_meta" in src, (
+            "_build_service_charge_lines must read emission metadata from the "
+            "pildb service_product_registry (PROFORMA authority)"
+        )
+        assert "wfdb.get_product" not in src, (
+            "C-3g: the legacy wfdb cache read is retired from "
+            "_build_service_charge_lines"
+        )
+        assert "prod.get" not in src, (
+            "C-1f regression: a dangling `prod.get(...)` here is the NameError "
+            "that broke every mapped service-charge emission (fixed in C-3g)"
         )
 
     def test_build_service_charge_lines_respects_allowed_types(self):

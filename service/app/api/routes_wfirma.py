@@ -68,9 +68,29 @@ from ..services.wfirma_pz_notes import build_wfirma_pz_notes
 from ..services import description_engine as deng
 from ..services import wfirma_client
 from ..services import reservation_db as rdb  # C-1e: wfirma_db fully migrated; import removed
+from ..services import product_authority_resolver as _par  # C-3g: registered-goods sync-state queries
 from ..services import suppliers_db as _sdb
 from ..services import warehouse_receipt as _wrcpt
 from ..utils.io import write_json_atomic
+
+
+def _mirror_product_map() -> Dict[str, str]:
+    """{product_code → wfirma_id} from wfirma_product_mirror (identity only).
+
+    C-3g: replaces the retired transitional cache listing
+    (rdb.list_cached_products) for PZ preview/create product maps — the
+    mirror is the sole identity authority.
+    """
+    out: Dict[str, str] = {}
+    db = settings.storage_root / "reservation_queue.db"
+    if not db.exists():
+        return out
+    for row in rdb.list_mirror_products(db):
+        wid = (row.get("wfirma_id") or "").strip()
+        pc  = (row.get("product_code") or "").strip()
+        if wid and pc:
+            out[pc] = wid
+    return out
 
 
 # ── Import-time grammar compatibility gate (Phase 2B4) ──────────────────────
@@ -1664,14 +1684,8 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
 
     warehouse_id = (settings.wfirma_warehouse_id or "").strip()
 
-    # ── Load product_code → wfirma_good_id mapping ───────────────────────────
-    product_map: Dict[str, str] = {}
-    all_products = rdb.list_cached_products()  # C-1e: transitional cache read via sync layer
-    for p in all_products:
-        pid  = (p.get("wfirma_product_id") or "").strip()
-        code = (p.get("product_code") or "").strip()
-        if pid and code:
-            product_map[code] = pid
+    # ── Load product_code → wfirma_good_id mapping (mirror, C-3g) ────────────
+    product_map: Dict[str, str] = _mirror_product_map()
 
     # ── Convert raw rows to BatchRow ──────────────────────────────────────────
     batch_rows = [
@@ -1912,9 +1926,11 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
 
     operator_for_log = _operator_from_header(None)  # endpoint has no operator header today
 
-    # Performance: batch-fetch all known local products in one SQL round-trip
-    # instead of O(N) individual get_product() calls (C6 T6 hardening).
-    _local_cache: Dict[str, Any] = rdb.get_cached_products_batch(list(seen.keys()))  # C-1e: transitional cache read via sync layer
+    # Performance: batch-fetch all known registered-goods states in one SQL
+    # round-trip instead of O(N) individual calls (C6 T6 hardening).
+    # C-3g: registered-goods sync-state via the product authority (identity +
+    # last-synced display name) — replaces the retired raw-cache passthrough.
+    _local_cache: Dict[str, Any] = _par.get_registered_goods_state_batch(list(seen.keys()))
 
     # C-1b: the reservation_queue.db Product Master + mirror authority handle.
     _rdb = _reservation_db()
@@ -2131,13 +2147,8 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
             pass
         created += 1
 
-    # ── Compute ready_for_pz via pz_preview builder ───────────────────────────
-    product_map: Dict[str, str] = {}
-    for p in rdb.list_cached_products():  # C-1e: transitional cache read via sync layer
-        pid  = (p.get("wfirma_product_id") or "").strip()
-        code = (p.get("product_code") or "").strip()
-        if pid and code:
-            product_map[code] = pid
+    # ── Compute ready_for_pz via pz_preview builder (mirror map, C-3g) ────────
+    product_map: Dict[str, str] = _mirror_product_map()
 
     cd             = audit.get("customs_declaration") or {}
     mrn            = cd.get("mrn", "") or audit.get("inputs", {}).get("zc429_mrn", "") or ""
@@ -2366,7 +2377,7 @@ async def wfirma_products_sync_names(
             })
             continue
 
-        existing = rdb.get_cached_product(pc)  # C-1e: transitional cache read via sync layer
+        existing = _par.get_registered_goods_state(pc)  # C-3g: sync-state via product authority
         wfirma_id = (existing or {}).get("wfirma_product_id") or ""
         wfirma_id = wfirma_id.strip()
         if not wfirma_id:
@@ -2738,12 +2749,7 @@ async def wfirma_pz_create(
     clearance_date = cd.get("clearance_date", "") or audit.get("timestamp", "")[:10]
     rows_raw       = _build_rows(output_dir, audit)
 
-    product_map: Dict[str, str] = {}
-    for p in rdb.list_cached_products():  # C-1e: transitional cache read via sync layer
-        pid  = (p.get("wfirma_product_id") or "").strip()
-        code = (p.get("product_code") or "").strip()
-        if pid and code:
-            product_map[code] = pid
+    product_map: Dict[str, str] = _mirror_product_map()  # mirror identity map (C-3g)
 
     batch_rows = [
         BatchRow(

@@ -110,6 +110,12 @@ def _enter_build_patches(stack: ExitStack, mock_wfdb: MagicMock) -> None:
     stack.enter_context(
         patch("app.api.routes_proforma.wfdb", mock_wfdb)
     )
+    # C-3g: per-line good-id resolution is mirror-only — the builder calls
+    # _c1f_mirror_good_id (the retired wfdb.get_product fallback is gone).
+    stack.enter_context(
+        patch("app.api.routes_proforma._c1f_mirror_good_id",
+              return_value=_WFIRMA_PRODUCT_ID)
+    )
     stack.enter_context(
         patch("app.services.wfirma_client.decide_proforma_vat_context",
               return_value=_vat_decision())

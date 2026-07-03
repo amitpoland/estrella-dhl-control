@@ -340,9 +340,12 @@ def test_unmapped_product_blocks_pz_and_proforma_via_existing_gate():
         "proforma preview gate must surface 'unresolved in wfirma_products' "
         "blocker — operator [TASK] requires unmapped products to block proforma"
     )
-    # The gate checks sync_status='matched'
-    assert 'sync_status") == "matched"' in proforma_src, (
-        "proforma gate must require sync_status='matched' for products"
+    # C-3g: the gate is MIRROR-ONLY — a product resolves iff its mirror row
+    # carries a non-empty wfirma_id (the legacy sync_status=='matched' cache
+    # check was retired with the cache fallback at Wave-2 ratification).
+    assert "get_mirror_products_batch" in proforma_src, (
+        "proforma warehouse-readiness gate must resolve products via the "
+        "mirror batch read (mirror-only, C-3g)"
     )
 
     wfirma_src = (

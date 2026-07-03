@@ -230,7 +230,7 @@ class ProductMappingRequest(BaseModel):
 @router.get("/products", dependencies=[_auth])
 def list_products(sync_status: Optional[str] = None) -> JSONResponse:
     """List locally registered product_code → wFirma product_id mappings."""
-    rows = rdb.list_cached_products(sync_status=sync_status)  # C-1w2: transitional cache read via sync layer
+    rows = wfdb.list_products(sync_status=sync_status)  # C-3g: direct sync-layer read (wFirma-setup surface, product-pin whitelisted)
     return JSONResponse({"count": len(rows), "products": rows})
 
 
@@ -1193,7 +1193,7 @@ def adopt_pending_found_for_batch(
         for r in invoice_rows
         if (r.get("product_code") or "").strip()
     })
-    cache = rdb.get_cached_products_batch(codes) if codes else {}  # C-1w2: transitional cache read via sync layer
+    cache = wfdb.get_products_batch(codes) if codes else {}  # C-3g: direct sync-layer read (wFirma-setup surface)
 
     adopted: List[str] = []
     skipped: List[dict] = []
@@ -1399,7 +1399,7 @@ def refresh_good_name_from_block(product_code: str) -> JSONResponse:
         })
 
     # ── 2. Local mapping must exist with non-empty wfirma_product_id ──────
-    local = rdb.get_cached_product(pc)  # C-1w2: transitional cache read via sync layer
+    local = wfdb.get_product(pc)  # C-3g: direct sync-layer read (wFirma-setup surface)
     wfirma_product_id = (local or {}).get("wfirma_product_id") or ""
     if not local or not wfirma_product_id:
         return JSONResponse({
@@ -2016,7 +2016,7 @@ def shipment_setup_detail(batch_id: str) -> JSONResponse:
     mapped_map = {}
     try:
         if all_codes:
-            mapped_map = rdb.get_cached_products_batch(all_codes) or {}  # C-1w2: transitional cache read via sync layer
+            mapped_map = wfdb.get_products_batch(all_codes) or {}  # C-3g: direct sync-layer read (wFirma-setup surface)
     except Exception as exc:
         out["errors"].append("wfirma_products lookup failed: " + str(exc))
 
