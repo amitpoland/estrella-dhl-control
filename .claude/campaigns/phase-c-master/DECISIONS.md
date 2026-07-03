@@ -482,3 +482,24 @@ Defect-1 basis: both collision rows repo-proven leaked test seeds
 test_proforma_readiness_single_authority.py:8,58). Defect-2 basis:
 registry table lazily created by pildb init_db (proforma_invoice_link_db.py
 :135/:173, accessors :2181/:2211; no startup hook — main.py imports none).
+
+---
+
+### 2026-07-03 — COMPLETION CRITERION REFINED (operator, verbatim R4 — amends c5395af9)
+
+OPERATOR (verbatim):
+"Deployment is complete only when all of the following are true:
+1. wfirma_id_collisions = 0
+2. collision_postcheck.py reports 0 remaining collision rows
+3. service_product_registry exists
+4. registry_backfill_and_verify.py exits 0
+5. copied > 0 or the script explicitly reports that the registry was
+   already populated before this run (idempotent success)
+6. Service health endpoint returns 200"
+
+Executed: registry_backfill_and_verify.py success logic amended to match
+condition 5 — exit 0 on copied > 0, OR exit 0 with the explicit message
+"REGISTRY ALREADY POPULATED before this run — idempotent success" when the
+table carries rows but this run copied nothing; exit 1 on
+table-exists-but-empty; exit 2 reserved for the table-missing STOP
+("repository diagnosis is wrong; reinvestigate").

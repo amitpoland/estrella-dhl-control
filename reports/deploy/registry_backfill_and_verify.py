@@ -25,10 +25,15 @@ try:
         "SELECT charge_type, product_name FROM service_product_registry").fetchall()
     con.close()
     print(f"service_product_registry EXISTS — rows: {n} {rows}")
-    if len(result["copied"]) > 0 and n > 0:
-        print("REGISTRY VERIFIED — Defect 2 cured.")
+    if n > 0 and len(result["copied"]) > 0:
+        print("REGISTRY VERIFIED — Defect 2 cured (copied > 0).")
         sys.exit(0)
-    print("copied = 0 or table empty — STOP, paste this output to the session.")
+    if n > 0:
+        print("REGISTRY ALREADY POPULATED before this run — idempotent success "
+              "(criterion condition 5, second branch).")
+        sys.exit(0)
+    print("table exists but EMPTY and copied = 0 — STOP, paste this output "
+          "to the session.")
     sys.exit(1)
 except sqlite3.OperationalError as exc:
     print(f"VERIFICATION FAILED after tool run: {exc}")
