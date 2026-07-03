@@ -698,3 +698,138 @@ class TestEuCustomsDeclarable:
         assert regs == [{"number": "LT100001738313", "typeCode": "EUV",
                          "issuerCountryCode": "LT"}]
         assert body["content"]["isCustomsDeclarable"] is False
+
+
+# ── TestRatesDutiableThreading ────────────────────────────────────────────────
+
+
+class TestRatesDutiableThreading:
+    """The rates discovery query must ask for the same dutiable class the
+    shipment is posted with (DHL 1001 incident: dutiable PL→LT rates returned
+    [P, 8], so P sailed into a non-dutiable shipment and DHL rejected it)."""
+
+    def _run(self, tmp_path, dest_cc, dest_city, dest_postal,
+             rates_products=None, rates_fail=False, requested="P"):
+        config = _make_config()
+        adapter = DhlExpressLiveAdapter(config)
+        request = _make_request(
+            dest_cc=dest_cc, dest_city=dest_city, dest_postal=dest_postal,
+            product_code=requested,
+        )
+        with _mock_settings(tmp_path), patch("httpx.Client") as mock_cls:
+            mock_client = mock_cls.return_value.__enter__.return_value
+            mock_client.get.return_value = (
+                _rates_error() if rates_fail else _rates_resp(rates_products or [])
+            )
+            mock_client.post.return_value = _ship_resp("AWB-THREAD")
+            adapter.create_shipment(request)
+        return mock_client
+
+    # ── rates query carries the shipment's dutiable class ────────────────────
+
+    def test_pl_to_lt_rates_query_is_non_dutiable(self, tmp_path):
+        client = self._run(tmp_path, "LT", "Vilnius", "01000",
+                           rates_products=["U", "K"])
+        params = client.get.call_args[1]["params"]
+        assert params["isCustomsDeclarable"] is False
+
+    def test_pl_to_de_rates_query_is_non_dutiable(self, tmp_path):
+        client = self._run(tmp_path, "DE", "Hamburg", "20457",
+                           rates_products=["U", "W"])
+        params = client.get.call_args[1]["params"]
+        assert params["isCustomsDeclarable"] is False
+
+    def test_pl_to_ch_rates_query_is_dutiable(self, tmp_path):
+        client = self._run(tmp_path, "CH", "Basel", "4000",
+                           rates_products=["P"])
+        params = client.get.call_args[1]["params"]
+        assert params["isCustomsDeclarable"] is True
+
+    def test_pl_to_br_rates_query_is_dutiable(self, tmp_path):
+        client = self._run(tmp_path, "BR", "Sao Paulo", "01001-001",
+                           rates_products=["P"])
+        params = client.get.call_args[1]["params"]
+        assert params["isCustomsDeclarable"] is True
+
+    # ── resolved product reaches the shipment body ────────────────────────────
+
+    def test_pl_to_lt_requested_p_available_uk_body_has_u_not_p(self, tmp_path):
+        """Operator regression: requested P, available [U, K] → body U, no P."""
+        client = self._run(tmp_path, "LT", "Vilnius", "01000",
+                           rates_products=["U", "K"], requested="P")
+        body = client.post.call_args[1]["json"]
+        assert body["productCode"] == "U"
+        assert body["productCode"] != "P"
+
+    def test_pl_to_lt_real_nondutiable_list_resolves_to_u_not_c(self, tmp_path):
+        """Real DHL non-dutiable PL→LT list leads with C (Medical Express) —
+        the equivalence table must pick U, never C."""
+        client = self._run(tmp_path, "LT", "Vilnius", "01000",
+                           rates_products=["C", "T", "U", "7", "B", "W"],
+                           requested="P")
+        body = client.post.call_args[1]["json"]
+        assert body["productCode"] == "U"
+
+    def test_rates_failure_still_falls_back_to_requested(self, tmp_path):
+        client = self._run(tmp_path, "LT", "Vilnius", "01000",
+                           rates_fail=True, requested="P")
+        body = client.post.call_args[1]["json"]
+        assert body["productCode"] == "P"
+
+    # ── select_product_code equivalence units ─────────────────────────────────
+
+    def test_select_p_prefers_u_over_list_head(self):
+        assert select_product_code("P", ["C", "T", "U", "7", "B", "W"]) == "U"
+
+    def test_select_p_prefers_w_when_u_absent(self):
+        assert select_product_code("P", ["C", "T", "7", "B", "W"]) == "W"
+
+    def test_select_p_falls_back_to_list_head_without_equivalents(self):
+        assert select_product_code("P", ["C", "T"]) == "C"
+
+    # ── empty rates results are not cached ────────────────────────────────────
+
+    def test_empty_rates_success_not_cached(self):
+        """A 200 response with zero products must NOT poison the cache."""
+        kwargs = dict(
+            api_key="key", api_secret="secret",
+            api_url="https://express.api.dhl.com", api_path="/mydhlapi",
+            account="427294774", origin_cc="PL", origin_city="Warszawa",
+            origin_postal="02-174", dest_cc="LT", dest_city="Vilnius",
+            dest_postal="01000", weight_kg=1.5, planned_date="2026-07-03",
+            is_customs_declarable=False,
+        )
+        with patch("httpx.Client") as mock_cls:
+            mock_client = mock_cls.return_value.__enter__.return_value
+            mock_client.get.side_effect = [
+                _rates_resp([]),          # first: empty success
+                _rates_resp(["U", "K"]),  # second: real answer
+            ]
+            first = lookup_available_products(**kwargs)
+            second = lookup_available_products(**kwargs)
+
+        assert first == []
+        assert second == ["U", "K"]
+        assert mock_client.get.call_count == 2  # empty result was not cached
+
+    def test_cache_key_separates_dutiable_class(self):
+        """Dutiable and non-dutiable lookups for the same route don't collide."""
+        base = dict(
+            api_key="key", api_secret="secret",
+            api_url="https://express.api.dhl.com", api_path="/mydhlapi",
+            account="427294774", origin_cc="PL", origin_city="Warszawa",
+            origin_postal="02-174", dest_cc="LT", dest_city="Vilnius",
+            dest_postal="01000", weight_kg=1.5, planned_date="2026-07-03",
+        )
+        with patch("httpx.Client") as mock_cls:
+            mock_client = mock_cls.return_value.__enter__.return_value
+            mock_client.get.side_effect = [
+                _rates_resp(["P", "8"]),                      # dutiable
+                _rates_resp(["C", "T", "U", "7", "B", "W"]),  # non-dutiable
+            ]
+            dutiable = lookup_available_products(**base, is_customs_declarable=True)
+            nondutiable = lookup_available_products(**base, is_customs_declarable=False)
+
+        assert dutiable == ["P", "8"]
+        assert nondutiable == ["C", "T", "U", "7", "B", "W"]
+        assert mock_client.get.call_count == 2
