@@ -123,8 +123,8 @@ here immediately; the current wave finishes only unaffected slices.
 - **W2-A6** — packing_lines carries the merchandising fields (karat/stone/weights/qty) for the C-3e join. — State: **VALID** (wireframe inspection DELIVERABLE 2: "data already in packing_lines")
 
 ### Wave 3 — Entire UI (re-derived 2026-07-03; original wording preserved: "Wave-2 reads live, wireframe unchanged")
-- **W3-A1** — Wave-2 backend reads deployed and live (sample/returns lists, merchandising join, trails). — State: [verify at Wave-2 boundary]
-- **W3-A2** — Wireframe unchanged: docs/design/estrella-dashboard-wireframe.html sha256:f7dd5e3889660fdc1ef76da0f1424a11cad512e7202650db10c031a57799699a. — State: **VALID** (Phase 0: hashed; re-hash at each boundary)
+- **W3-A1** — Wave-2 backend reads deployed and live (sample/returns lists, merchandising join, trails). — State: **AT-RISK (deploy-gated)** — Wave-2 boundary check: all reads CODE-COMPLETE on deploy/latest (C-3b/c/e/f); PRODUCTION deploy = operator 7-agent ritual + CP4 (c3g-deploy-note.md payload) still pending. Must be LIVE before Wave-3 UI slices CLOSE (CP3 needs live backends). Not invalidated — sequencing dependency only.
+- **W3-A2** — Wireframe unchanged: docs/design/estrella-dashboard-wireframe.html sha256:f7dd5e3889660fdc1ef76da0f1424a11cad512e7202650db10c031a57799699a. — State: **VALID** (Wave-2 boundary re-hash: MATCH. Canonical method: hash the GIT BLOB (LF) — `git show HEAD:<path>` — not the checked-out file; Windows CRLF checkout changes the raw-file hash and produced a false INVALIDATED reading at this boundary before normalization.)
 - **W3-A3** — UI exactly once: every wireframe surface maps to its EXISTING owner (§D no-duplicate plan); no new page/app/HTML. — State: VALID by construction (WIREFRAME_AUTHORITY.md)
 - **W3-A4** — CP3 recognition gate available (browser verification per GATE 6). — State: VALID
 - **W3-A5** — Consignment ledger UI (U-4) requires C-4a shipped; if C-4a was OI-deferred, U-4 defers with it (planned-state honesty, Lesson M). — State: tracks W2-A5
@@ -141,11 +141,11 @@ Expected durations — initial estimates, amendable:
 
 | Wave | Budget | Consumed | Remaining | Forecast |
 |---|---|---|---|---|
-| Wave 1 | 8h | 0h | 8h | — |
-| Wave 2 | 11h | 0h | 11h | — |
-| Wave 3 | 6h | 0h | 6h | — |
+| Wave 1 | 8h | ~4h — COMPLETE | closed | closed at 50% |
+| Wave 2 | 11h | ~5.5h — COMPLETE (C-3g, R2, R3, C-3a..C-3f; C-4a OI-deferred) | closed | closed at ~50% |
+| Wave 3 | 6h | 0h | 6h | awaiting ratification |
 | Wave 4 | 5h | 0h | 5h | — |
-| **Total** | **30h** | **0h** | **30h** | — |
+| **Total** | **30h** | **~9.5h** | **~20.5h** | under budget |
 
 Every health check records Consumed / Remaining / Forecast per wave (live copy in
 RUNTIME.md; this table updated at wave boundaries). A wave exceeding **1.5×** its budget

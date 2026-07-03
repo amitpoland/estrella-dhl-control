@@ -20,15 +20,20 @@ Rules and boundary vs PROJECT_STATE.md:
 - **Task:** Phase-C Inventory Master Campaign (platform `.claude/campaigns/phase-c-master/`) —
   launched 2026-07-03 per operator FINAL PRE-LAUNCH AMENDMENT (verbatim R4).
 - **Started:** 2026-07-03
-- **Status:** BLOCKED-HOLD (operator STOP-LINE — Wave 2-4 ratification)
-- **HOLD reason:** Operator STOP-LINE (verbatim, `a4231850`): "After C-1d, STOP
-  for operator ratification of the restored Wave 2-4 plan." WAVE 1 (Authority)
-  COMPLETE — C-1d audit 8/8 (`1bb6bc1a`). Full ledger: platform `575bb3f3`,
-  Phase 0 `be0783c8`, C-1w2 `3833627c`, C-2a `18fb89ad`, C-2b `60a34f9e`,
-  C-2c `0d0bf78d`, verdict `a4231850`, C-1e `7c4f6f0b`, MC-proof `37aaaf27`,
-  C-1f `6a781ee4`, C-1d `1bb6bc1a`. Resume: operator ratifies the restored
-  Wave 2-4 plan (MASTER_MANIFEST §2/§3) → Wave 2 (Backend) per CAMPAIGN_OS.
-  Runtime: `.claude/campaigns/phase-c-master/RUNTIME.md`.
+- **Status:** BLOCKED-HOLD (CAMPAIGN_OS §5a — Wave-3 ratification at the Wave-2 boundary)
+- **HOLD reason:** §5a ratification rule: every wave of the reconstructed
+  manifest needs operator ratification at the preceding boundary. WAVE 2
+  (Backend) COMPLETE 2026-07-03 under "RATIFIED. Wave 2 begins." (+4
+  amendments, recorded `0d12fa60`). Wave-2 ledger: R3 storage-leak `2f44ffba`
+  · C-3g `568c05b2` · R2-census `be0b1252` · R3 batch `9044640e` · C-3a/b/c
+  `fee3b087` · C-3d `e8d275cd` · C-3e/f + boundary docs (git log tail).
+  C-4a SKIPPED per ratification (OI-17 OPEN — "wave completes without it").
+  Confidence Gate at boundary: NO INVALIDATED assumptions; W3-A1 AT-RISK
+  (prod deploy of the Wave-2 backend = operator 7-agent ritual + CP4; payload
+  `service/docs/ops/c3g-deploy-note.md` — mirror backfill + collision check +
+  service-registry backfill + returns/sample migrations). Resume: operator
+  ratifies Wave 3 (Entire UI) → U-1..U-6; W3-A1 must be LIVE before UI slices
+  close (CP3). Runtime: `.claude/campaigns/phase-c-master/RUNTIME.md`.
 
 ## Prior task — Architecture Review (COMPLETE)
 

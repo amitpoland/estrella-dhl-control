@@ -107,10 +107,14 @@ Campaign slices:
 
 ## Architecture Confidence (mirror of MASTER_MANIFEST §3 states)
 
-- Wave 1: VALID (Phase 0: pin 8/8, regression 160/160, contractor_id load-bearing)
-- Wave 2: VALID (A1/A2/A4/A6 evidenced; A3 re-verified at Wave-1 boundary: single-writer untouched → VALID; A5/OI-17 slice-gated only)
-- Wave 3: AT-RISK (W3-A3 OI-17 open; W3-A5 OI-1 open — fallback exists)
-- Wave 4: AT-RISK (W4-A1 OI-7/9/10/11 open)
+- Wave 1: COMPLETE
+- Wave 2: COMPLETE (slice work; prod deploy of the wave = operator ritual)
+- Wave 3: NO INVALIDATED assumptions at the Wave-2 boundary. W3-A1 AT-RISK
+  (deploy-gated: backend reads code-complete, prod deploy pending — must be
+  live before UI slices close); W3-A2 VALID (git-blob re-hash MATCH; hash
+  the blob, not the CRLF checkout); W3-A3/A4 VALID; W3-A5 tracks OI-17
+  (C-4a deferred → U-4 defers, Lesson M planned-state honesty).
+- Wave 4: AT-RISK (W4-A1 OI-7/9/10/11 open; OI-1/OI-3 open)
 
 ## Open OI Blockers (abbreviated — full ledger in OPEN_ITEMS.md)
 
