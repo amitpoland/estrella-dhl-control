@@ -38,9 +38,18 @@
   tabs → warehouse_db → warehouse.db → existing routers); 503 MIGRATION_PENDING
   gates preserved. Suite test_c3b_c3c_inventory_read_endpoints 9/9; adjacent
   writer/piece-view/pin suites 92 green.
-- **Next slice:** C-3d (SALES_TRANSIT write path — invoice_issued via shared
-  run_stock_issue()) · then C-3e (merchandising joined read) · C-3f (movement
-  trails). C-4a stays OI-17-gated.
+- **C-3d COMPLETE** — services/stock_issue.py run_stock_issue() (ONE shared
+  function, BE-1 idiom): billed pieces WAREHOUSE_STOCK → SALES_TRANSIT on
+  proforma→invoice conversion (trigger invoice_issued, previously unreachable);
+  idempotent replay, shortfall advisory (Lesson N — never blocks the invoice),
+  never-raise, summary mirror EV_INVENTORY_SALES_TRANSIT_ISSUED. Piece
+  selection = deterministic scan_code order per billed product_code (documented
+  default — piece↔line binding is preview-time-only). Suite
+  test_stock_issue_c3d 12/12; adjacent convert/promotion suites green
+  (dashboard two-step-convert HTML assertion failure is pre-existing, both
+  sweeps); pin 11/11; smoke 63.
+- **Next slice:** C-3e (merchandising joined read) · C-3f (movement trails).
+  C-4a stays OI-17-gated.
 
 ## Completed Slices (append-only ledger)
 

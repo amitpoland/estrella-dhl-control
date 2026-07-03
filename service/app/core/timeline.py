@@ -37,6 +37,7 @@ EV_PZ_BLOCKED         = "pz_blocked"
 # timeline — they do not gate, drive, or duplicate any production logic.
 EV_INVENTORY_PURCHASE_TRANSIT_SEEDED   = "inventory_purchase_transit_seeded"
 EV_INVENTORY_WAREHOUSE_STOCK_PROMOTED  = "inventory_warehouse_stock_promoted"
+EV_INVENTORY_SALES_TRANSIT_ISSUED      = "inventory_sales_transit_issued"  # C-3d
 EV_INVENTORY_TRANSITION_FAILED         = "inventory_transition_failed"
 EV_DHL_EMAIL_RECEIVED     = "dhl_email_received"
 EV_DHL_INBOX_SCANNED      = "dhl_inbox_scanned"

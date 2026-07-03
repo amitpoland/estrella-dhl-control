@@ -4049,6 +4049,39 @@ def proforma_to_invoice(
             log.warning("[%s] convert audit append skipped: %s",
                         batch_id, _exc)
 
+    # 9. C-3d — fire the (previously unreachable) invoice_issued lifecycle
+    # trigger: billed pieces WAREHOUSE_STOCK → SALES_TRANSIT via the ONE
+    # shared run_stock_issue(). Best-effort by contract — the wFirma invoice
+    # already exists; inventory custody state is advisory to fiscal actions
+    # (Lesson N) and must never fail or block the conversion response.
+    _issue_summary: Dict[str, Any] = {}
+    if link_marked_issued:
+        try:
+            from ..services.stock_issue import run_stock_issue
+            _billed_lines: List[Dict[str, Any]] = []
+            if _cv_draft is not None:
+                try:
+                    _billed_lines = [
+                        {"product_code": l.get("product_code"),
+                         "qty": l.get("qty")}
+                        for l in (json.loads(
+                            _cv_draft.editable_lines_json or "[]") or [])
+                        if isinstance(l, dict)
+                    ]
+                except Exception:
+                    _billed_lines = []
+            _issue_summary = run_stock_issue(
+                batch_id,
+                trigger     = "invoice_issued",
+                source      = "proforma_convert",
+                lines       = _billed_lines,
+                client_name = cn,
+                operator    = operator or "system",
+            )
+        except Exception as _issue_exc:
+            log.warning("[%s] stock issue after convert skipped: %s",
+                        batch_id, _issue_exc)
+
     return JSONResponse({
         "ok":                       True,
         "status":                   "issued",
@@ -4068,6 +4101,9 @@ def proforma_to_invoice(
         # Phase C — Fix 3: series-mismatch advisories (non-blocking).
         # Empty list in the normal case (CM series matched and was used).
         "convert_advisories":       _series_advisories,
+        # C-3d: advisory summary of the WAREHOUSE_STOCK → SALES_TRANSIT issue
+        # (empty dict when the issue step was skipped; never blocks).
+        "stock_issue":              _issue_summary,
     })
 
 
