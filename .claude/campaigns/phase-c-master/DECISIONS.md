@@ -294,3 +294,23 @@ Effect:
 
 Recorded also in PROJECT_STATE.md `# DECISIONS`. Campaign HOLDS at CP4-handover
 (runbook a6e15149, hardened 1e43f8bc) awaiting the operator's deploy report.
+
+---
+
+### 2026-07-03 — WAVE-3 GATE: concrete predicates (operator, verbatim)
+
+OPERATOR (verbatim):
+"WAVE-3 GATE (operator's three, independently verified):
+1. /health on production returns the expected response
+2. Mirror backfill: wfirma_id_collisions = 0 (or all resolved by operator ruling)
+3. Registry backfill: copied > 0 on prod
+All three GREEN -> then, and only then, your separate word ratifies Wave 3."
+
+Effect: refines the triple-verification gate (63446e56) into evaluable
+predicates. Each is INDEPENDENTLY verified by the agent from evidence at the
+read-only tail: (1) prod /health response; (2) the final mirror-backfill
+collision report (`$bakdir\mirror-backfill-collision-report.txt`) showing
+wfirma_id_collisions = 0, or every collision carrying an operator ruling on
+record; (3) the registry-backfill output showing non-empty `copied`. GREEN×3
+is a precondition for — never a substitute for — the operator's separate
+Wave-3 ratification word.
