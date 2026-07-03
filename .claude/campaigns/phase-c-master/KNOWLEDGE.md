@@ -143,4 +143,13 @@ all Wave 4 (OI-1/3/4/7/9/10/11).
 
 ## Wave-boundary updates (append at each boundary)
 
-(pending)
+### Wave-1 boundary (2026-07-03) — C-1d census
+- Pin baseline 5 → 1 (routes_proforma single transitional dual-write; not a read).
+- Customer full-app pin at zero. Inventory grep clean.
+- Mirror completeness: COMPLETE (proof 37aaaf27; 3 gaps closed).
+- Out-of-pin-scope census (disposition at ratification): global_pz_push,
+  wfirma_reservation, wfirma_reservation_create (services);
+  build_pz_batch, send_wfirma_good_live_test, send_wfirma_proforma_live_test (tools).
+- W2-A3 (single-writer discipline intact after Wave 1): re-verified — no Wave-1
+  slice touched inventory_state_engine or its writers → VALID.
+- Full audit: reports/implement/2026-07-03T190000Z/c1d-verification-audit.md

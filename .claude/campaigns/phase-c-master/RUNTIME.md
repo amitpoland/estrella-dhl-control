@@ -6,10 +6,10 @@
 ## Current State
 
 - **Phase:** Wave 1 — Master Authority Completion (Phase 0 COMPLETE 2026-07-03; CP1 issued)
-- **Current slice:** C-1d — C-1 verification audit (wave close)
-- **Slice state:** IN_PROGRESS
-- **Next:** Mirror Completeness Proof → C-1f (output-equivalence) → C-1d → **STOP-LINE:
-  operator ratification of the restored Wave 2–4 plan (no auto-entry into Wave 2)**
+- **Current slice:** — WAVE 1 (Authority) COMPLETE (C-1d audit passed)
+- **Slice state:** CAMPAIGN HOLD — operator STOP-LINE: ratification of the restored
+  Wave 2–4 plan required before Wave-2 entry (CAMPAIGN_OS §5a)
+- **Next:** on operator ratification → Wave 2 (Backend) per MASTER_MANIFEST restored plan
 - **Blocked by:** — (C-1e/C-1f deferred within wave per OI-18; unblocked slices remain)
 
 ## Completed Slices (append-only ledger)
@@ -44,13 +44,14 @@ Campaign slices:
 | 2026-07-03 | Operator verdict recorded (6 rulings + stop-line); waves restored; platform doc #9 | `a4231850` |
 | 2026-07-03 | C-1e routes_wfirma 5 reads + 3 mirror-first dual-writes → sync layer; pin 2→1; resolve suite 10/10 (7 stale patch targets repaired); smoke 63; golden green | `7c4f6f0b` |
 | 2026-07-03 | Mirror Completeness Proof (ratified check): census of ALL product writers; 3 gaps found + FIXED; verdict COMPLETE | `37aaaf27` |
-| 2026-07-03 | C-1f — 12 proforma fiscal reads → mirror-first w/ logged fallback; output-equivalence gate PASS (proforma 120 ✅, smoke 63, golden 160/160, 9 new tests) | see git log `feat(c1f-…)` |
+| 2026-07-03 | C-1f — 12 proforma fiscal reads → mirror-first w/ logged fallback; output-equivalence gate PASS | `6a781ee4` |
+| 2026-07-03 | C-1d verification audit — 8/8 success criteria; residuals declared; WAVE 1 COMPLETE | see git log `docs(c1d-…)` |
 
 ## Budget Tracking (live; boundary snapshots go to MASTER_MANIFEST §4)
 
 | Wave | Consumed | Budget | Forecast |
 |---|---|---|---|
-| Wave 1 | 3.75h (C-1w2, C-2a/b/c, C-1e, MC-proof, C-1f) | 8h | within budget |
+| Wave 1 | ~4h — COMPLETE (C-1w2, C-2a/b/c, C-1e, MC-proof, C-1f, C-1d) | 8h | closed at 50% of budget |
 | Wave 2 | 0h | 11h | — |
 | Wave 3 | 0h | 6h | — |
 | Wave 4 | 0h | 5h | — |
@@ -58,7 +59,7 @@ Campaign slices:
 ## Architecture Confidence (mirror of MASTER_MANIFEST §3 states)
 
 - Wave 1: VALID (Phase 0: pin 8/8, regression 160/160, contractor_id load-bearing)
-- Wave 2: VALID (A1/A2/A4/A5 evidenced Phase 0; A3 re-verified at Wave-1 boundary)
+- Wave 2: VALID (A1/A2/A4/A6 evidenced; A3 re-verified at Wave-1 boundary: single-writer untouched → VALID; A5/OI-17 slice-gated only)
 - Wave 3: AT-RISK (W3-A3 OI-17 open; W3-A5 OI-1 open — fallback exists)
 - Wave 4: AT-RISK (W4-A1 OI-7/9/10/11 open)
 
