@@ -338,35 +338,36 @@ def test_product_auto_register_works_without_sad(storage):
     Verifies: ensure_products_for_batch(dry_run=True) finds the 4 product
     codes from invoice_lines data alone (no audit SAD field, no pz_rows).
     """
-    # Seed invoice lines directly (as intake would)
-    ddb.store_invoice_lines("DOC-TG-187", BATCH, [
-        {
-            "invoice_no":    "EJL/26-27/187",
-            "line_position": 1,
-            "product_code":  "EJL/26-27/187-1",
-            "description":   "PRS, 14KT Gold, Stud With Diam EARRINGS",
-            "quantity":      1.0,
-            "unit_price":    1120.0,
-            "total_value":   1120.0,
-            "currency":      "USD",
-            "hsn_code":      "71131913",
-        },
-        {
-            "invoice_no":    "EJL/26-27/188",
-            "line_position": 1,
-            "product_code":  "EJL/26-27/188-1",
-            "description":   "PRS, 14KT Gold, Diamond EARRINGS",
-            "quantity":      2.0,
-            "unit_price":    800.0,
-            "total_value":   1600.0,
-            "currency":      "USD",
-            "hsn_code":      "71131913",
-        },
-    ])
-
     from app.services.wfirma_product_auto_register import ensure_products_for_batch
 
     with patch.object(settings, "storage_root", storage):
+        # Seed invoice lines directly (as intake would) — inside the patch:
+        # store_invoice_lines touches reservation_queue.db under storage_root.
+        ddb.store_invoice_lines("DOC-TG-187", BATCH, [
+            {
+                "invoice_no":    "EJL/26-27/187",
+                "line_position": 1,
+                "product_code":  "EJL/26-27/187-1",
+                "description":   "PRS, 14KT Gold, Stud With Diam EARRINGS",
+                "quantity":      1.0,
+                "unit_price":    1120.0,
+                "total_value":   1120.0,
+                "currency":      "USD",
+                "hsn_code":      "71131913",
+            },
+            {
+                "invoice_no":    "EJL/26-27/188",
+                "line_position": 1,
+                "product_code":  "EJL/26-27/188-1",
+                "description":   "PRS, 14KT Gold, Diamond EARRINGS",
+                "quantity":      2.0,
+                "unit_price":    800.0,
+                "total_value":   1600.0,
+                "currency":      "USD",
+                "hsn_code":      "71131913",
+            },
+        ])
+
         result = ensure_products_for_batch(BATCH, dry_run=True)
 
     assert result["scanned"] == 2, (
