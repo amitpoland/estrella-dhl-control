@@ -11,6 +11,23 @@
 - **Slice order:** C-3g → R2-census → R3-test-health (first commit = storage-leak fix)
   → C-3a (verify tree only) → C-3b → C-3c → C-3d → C-3e → C-3f · C-4a only if OI-17 answers
 - **Blocked by:** C-4a gated on OI-17 (OPEN — non-fatal, wave completes without it)
+- **C-3g COMPLETE** `568c05b2` — pin TRUE 0; equivalence gates green (pin 11/11,
+  registry 33/33, targeted 291, golden 160/160, smoke 63); baseline-diffed full
+  sweep: 7 pre-existing fixed, 0 introduced. C-1f NameError defect (mapped
+  service charges) found + fixed in-slice. Deploy note = c3g-deploy-note.md (CP4).
+- **R2-census COMPLETE** — INSPECTOR verdicts: 3 SYNC-LAYER whitelisted w/
+  citations (global_pz_push, wfirma_reservation, wfirma_reservation_create),
+  3 DEV-TOOL exempt-by-purpose (build_pz_batch, send_wfirma_good/proforma
+  _live_test); ZERO business logic → no migrate slice. DECISIONS.md entry.
+- **R3-test-health COMPLETE** — storage-leak fix `2f44ffba` (first commit);
+  capabilities 2× (subset pin + explicit flag-off patch); audit_proforma_converted
+  3× (commercial-basis seeding for the SINGLE READINESS AUTHORITY convert gate);
+  shipment-detail 2× (prune budget → growth ratchet; breach filed B-018);
+  pr2c2 storage isolation. Side worktrees: eager-diffie + musing-volhard removed
+  (musing husk dir handle-locked, git metadata pruned); eager-swirles kept
+  (2 dirty entries, foreign uncommitted work); intelligent-wilson removed at
+  session end.
+- **Next slice:** C-3a (returns_events migration — VERIFY TREE apply only).
 
 ## Completed Slices (append-only ledger)
 

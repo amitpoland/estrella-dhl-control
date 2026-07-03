@@ -112,6 +112,53 @@ def _seed_issued_proforma(storage, *, wfirma_id="467236963"):
                               wfirma_proforma_id=wfirma_id)
 
 
+def _seed_commercial_basis(storage):
+    """R3 test-health (Wave 2): the convert route now runs the SINGLE
+    READINESS AUTHORITY gate (intent="convert") before any live call — the
+    same commercial basis approve/post require: sales rows for the client, a
+    matched wFirma customer, and a matched product mapping. Seed all three so
+    the audit-emission pins (what these tests actually verify) can execute."""
+    import uuid as _uuid
+    pdb.upsert_packing_lines([{
+        "batch_id": _BATCH, "invoice_no": "EJL/26-27/187",
+        "invoice_line_position": 1, "product_code": "EJL/26-27/187-1",
+        "design_no": "TG001", "bag_id": "", "tray_id": "",
+        "item_type": "RING", "uom": "PCS", "quantity": 1.0,
+        "gross_weight": 0.0, "net_weight": 0.0, "metal": "", "karat": "",
+        "stone_type": "", "remarks": "", "extracted_confidence": 1.0,
+        "requires_manual_review": False, "pack_sr": 1.0,
+        "unit_price": 306.0, "total_value": 306.0, "scan_code": "SC-ACME-1",
+    }])
+    ddb.store_invoice_lines("DOC-ACME-187", _BATCH, [{
+        "invoice_no": "EJL/26-27/187", "line_position": 1,
+        "product_code": "EJL/26-27/187-1", "description": "RING",
+        "quantity": 1.0, "unit_price": 306.0, "total_value": 306.0,
+        "currency": "EUR", "hsn_code": "71131913",
+    }])
+    sd = ddb.store_sales_document(
+        batch_id=_BATCH, document_id=str(_uuid.uuid4()),
+        data={"client_name": _CLIENT, "client_ref": "ACME-REF",
+              "sales_doc_no": "SO-ACME"},
+    )
+    ddb.store_sales_packing_lines(sd, _BATCH, [{
+        "client_name": _CLIENT, "client_ref": "ACME-REF",
+        "product_code": "TG001", "design_no": "TG001", "bag_id": "",
+        "quantity": 1.0, "unit_price": 306.0, "currency": "EUR",
+        "remarks": "",
+    }])
+    wfdb.upsert_product(
+        product_code="EJL/26-27/187-1", wfirma_product_id="42",
+        sync_status="matched",
+    )
+    wfdb.upsert_customer(
+        client_name=_CLIENT, wfirma_customer_id="9001",
+        country="LT", vat_id="LT123456789", match_status="matched",
+    )
+    (storage / "outputs" / _BATCH / "pz_rows.json").write_text(json.dumps([
+        {"product_code": "EJL/26-27/187-1", "unit_netto_pln": 1300.0},
+    ]), encoding="utf-8")
+
+
 def _proforma_xml(*, pid="467236963", pnum="PROF 92/2026") -> str:
     return f"""<?xml version="1.0"?>
 <api>
@@ -306,6 +353,7 @@ def test_helper_does_not_touch_proforma_issued_or_cancelled(storage):
 # ── 4. Execute route emits event on success ────────────────────────────────
 
 def test_execute_emits_event_on_success(client, storage):
+    _seed_commercial_basis(storage)
     _seed_audit(storage)
     _seed_issued_proforma(storage)
     # fetch_invoice_xml called twice: 1st=source proforma, 2nd=verify-after-create
@@ -338,6 +386,7 @@ def test_execute_emits_event_on_success(client, storage):
 # ── 5. Execute does NOT emit when wFirma create fails ──────────────────────
 
 def test_execute_does_not_emit_when_wfirma_rejects(client, storage):
+    _seed_commercial_basis(storage)
     _seed_audit(storage)
     _seed_issued_proforma(storage)
     def _fail(method, module, op, body):
@@ -358,6 +407,7 @@ def test_execute_does_not_emit_when_wfirma_rejects(client, storage):
 
 
 def test_execute_does_not_emit_on_network_failure(client, storage):
+    _seed_commercial_basis(storage)
     _seed_audit(storage)
     _seed_issued_proforma(storage)
     with _gate_invoice_on(), \

@@ -415,14 +415,17 @@ def test_contractor_search_hit(client, db):
         for p in blockers: p.stop()
     assert r.status_code == 200
     body = r.json()
-    assert body == {
-        "ok":     True,
-        "found":  True,
-        "result": {
-            "wfirma_id": "C-99", "name": "Juliany EOOD", "nip": "BG123456789",
-            "country": "BG", "zip": "1000", "city": "Sofia",
-        },
+    assert body["ok"] is True and body["found"] is True
+    # R3 test-health (Wave 2): the search result grew enrichment fields
+    # (email, account_payments, …) — pin the identity core as a SUBSET so
+    # additive enrichment does not break this test again.
+    core = {
+        "wfirma_id": "C-99", "name": "Juliany EOOD", "nip": "BG123456789",
+        "country": "BG", "zip": "1000", "city": "Sofia",
     }
+    assert core.items() <= body["result"].items(), (
+        f"core identity fields drifted: {body['result']}"
+    )
     mock.assert_called_once_with("Juliany EOOD", None)
 
 
@@ -1069,11 +1072,17 @@ def _seed_locked_block(product_code: str, item_type: str = "RING",
 
 
 def test_refresh_blocked_when_flag_off(client, db):
-    """Default flag is False → status=blocked, no wFirma call, no local change."""
+    """Flag off → status=blocked, no wFirma call, no local change.
+
+    R3 test-health (Wave 2): the flag is patched OFF explicitly — this
+    machine's standing env posture is all-ON (WFIRMA_EDIT_PRODUCT_ALLOWED=true),
+    so relying on the settings default made the test environment-dependent.
+    """
     pc = "EJL/REF/1"
     _seed_local_mapping(pc, "G-001")
     _seed_locked_block(pc)
     with (
+        patch.object(settings, "wfirma_edit_product_allowed", False),
         patch.object(_wc, "edit_product",
                      side_effect=AssertionError("must not be called when flag off")),
     ):
