@@ -530,3 +530,59 @@ Six completion criteria (0a4029e8), re-measured on the live root:
 Stale-DB artifact register: see LESSONS_LEARNED #7. Lesson-D record appended
 to local-commit-deploys.jsonl. W3-A1 flipped VALID (four-check gate 4xGREEN —
 gate report in chat, this entry is its durable anchor).
+
+---
+
+### 2026-07-03 — GATE-RECORD PROVENANCE ANNEXE (operator correction, verbatim R4 — amends ab96ebfa) + DEPLOYMENT CLOSURE
+
+OPERATOR CORRECTION (verbatim): "Do not state as fact 'Independent: 140
+rows... ZERO duplicate wfirma_ids...' or 'Logs show no tracebacks...'
+unless those were actually measured during this verification. If
+independently queried from the live database and logs, cite the
+query/command and its output. If not, rephrase as evidence taken from the
+operator output rather than additional independent findings."
+
+Provenance per "independent" claim (all EXCEPT the carrier item were
+genuinely measured this session, read-only, immediately post-deploy;
+commands + verbatim outputs):
+
+CHECK 2 (measured) — sqlite3 read-only (`file:C:/PZ/storage/reservation_queue.db?mode=ro`):
+  SELECT COUNT(*) FROM wfirma_product_mirror
+    -> [{'n': 140}]
+  SELECT wfirma_id, COUNT(*) c FROM wfirma_product_mirror WHERE wfirma_id!=''
+    GROUP BY wfirma_id HAVING c>1
+    -> []   (zero duplicate ids)
+  SELECT product_code, wfirma_id FROM wfirma_product_mirror
+    WHERE product_code IN ('EJL/26-27/254-1','EJL/26-27/257-2')
+    -> [{'EJL/26-27/254-1','50408675'}, {'EJL/26-27/257-2','50409315'}]
+
+CHECK 3 (measured) — sqlite3 read-only (`file:C:/PZ/storage/proforma_links.db?mode=ro`):
+  SELECT charge_type, product_name, vat_rate, unit FROM service_product_registry
+    -> freight  'Przesyłka kurierska DHL' 23 usł.
+       insurance 'Ubezpieczenie przesyłki' 23 usł.
+
+CHECK 4, emission-chain item (measured) — same connections:
+  SELECT product_code, wfirma_id FROM wfirma_product_mirror
+    WHERE product_code IN ('freight','insurance')
+    -> freight 13002743 · insurance 13102217
+
+CHECK 4, logs item (measured, SCOPE-LIMITED — wording downgraded per this
+correction): `tail -15 C:\PZ\logs\pz_stderr.log` returned only clean
+startup lines ("Started server process [16492]" ... "Uvicorn running").
+Claim holds for the inspected tail ONLY; the full log history was not swept.
+
+CHECK 4, carrier item (NOT independently measured — downgraded): evidence
+is code-review provenance (7-agent security review at 84c292de: enforcement
+at routes_carrier_actions.py:47 + carrier/factory.py) + range evidence
+(no carrier-config change in the deploy diff). No runtime probe was run
+from the box (auth-gated write endpoint). Runtime posture attribution:
+operator environment, unchanged by this deploy.
+
+CHECK 1 (operator-output evidence): /health 200 (status ok, engine ok,
+env prod) from the operator's authenticated window; the box measured only
+the unauthenticated 401-alive probe (`curl -w %{http_code}` -> 401).
+
+DEPLOYMENT CLOSURE (operator ruling, verbatim): "From a deployment
+perspective, this deployment campaign is closed. The next work is Wave 3
+functional validation (UI and business workflow testing), not additional
+deployment investigation unless a new production issue is observed."

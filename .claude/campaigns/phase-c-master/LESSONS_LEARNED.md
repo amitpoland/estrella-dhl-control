@@ -157,5 +157,15 @@ lazy-creation proof, and the 7-agent code reviews. The recorded memory fact
 ("batch storage root is C:\PZ\storage, NOT C:\PZ\app\storage") had said
 this all along — the runbook contradicted it and nothing cross-checked.
 
+Causal sequence (operator, verbatim): "app correctly on C:\PZ\storage ->
+scripts verified C:\PZ\app\storage -> dead copy held stale test artifacts ->
+false collision + registry failures -> live root = production exactly as
+designed."
+
+Companion rule (same failure class): unattributed measurement is how the
+wrong-root investigation happened — every recorded measurement carries its
+command + output provenance (see the gate-record provenance annexe in
+DECISIONS).
+
 Disposition: tooling amendment queued as v1.1-003 (storage-root resolution
 from app config/env). Platform v1.0 untouched.
