@@ -142,3 +142,11 @@ Campaign slices:
 - W3-A1 -> VALID. Campaign HOLDS for the operator's separate Wave-3 ratification words.
 - Paid lessons this deploy: #6 (/XO partial sync), #7 (storage-root assumption) —
   v1.1-001/-003 queued; Platform v1.0 untouched.
+
+## Wave 3 (Entire UI) — ACTIVE (ratified 2026-07-03, verbatim directive in DECISIONS)
+
+- Wireframe authority re-confirmed against the operator's attachment (sha256
+  f7dd5e3889… IDENTICAL) — W3-A2 VALID.
+- Current slice: W3-P0 — PAGE-BY-PAGE GAP CENSUS (read-only; BUILD / REMOVE /
+  WFIRMA-GATED / OUT; orders the wave, Inventory first).
+- Exit: CP3 recognition gate (unlabeled side-by-side composites). NO DEPLOY in-wave.

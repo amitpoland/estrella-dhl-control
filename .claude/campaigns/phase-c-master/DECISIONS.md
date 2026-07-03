@@ -586,3 +586,43 @@ DEPLOYMENT CLOSURE (operator ruling, verbatim): "From a deployment
 perspective, this deployment campaign is closed. The next work is Wave 3
 functional validation (UI and business workflow testing), not additional
 deployment investigation unless a new production issue is observed."
+
+---
+
+### 2026-07-03 — WAVE 3 RATIFIED + GOVERNING DIRECTIVE (operator, verbatim R4)
+
+Ratification: "WAVE 3 BEGINS" (operator, with the attached wireframe —
+hash-verified IDENTICAL to the pinned authority f7dd5e3889…, W3-A2 confirmed).
+
+OPERATOR DIRECTIVE (verbatim — the wave's governing spec):
+"Wave 3 Objective — Authority: Wireframe is the single source of truth.
+Goal: Make the live application match the approved wireframes exactly.
+Scope: Compare every page against the approved wireframes. Verify every
+button. Verify every modal. Verify every workflow. Verify every API
+wiring. Verify every navigation path. Verify every data source. Remove
+placeholder or duplicate UI. Preserve existing business logic unless the
+wireframe explicitly requires a change.
+Rules: Inspect first. Do not redesign. Do not invent UI. Do not replace
+working backend authority. Fix root causes only. Work page by page.
+Produce evidence after each completed page. Keep the application
+deployable after every PR.
+Completion Criteria — a page is complete only when ALL are true: Layout
+matches the wireframe. Components match. Buttons work. API wiring is
+correct. No dead controls. No placeholder content. No console errors. No
+duplicate authority. Smoke test passes. Only then move to the next page.
+Deployment phase is finished — no deployment work unless a new production
+issue appears."
+
+Execution model (operator, this ratification): wave-Phase-0 PAGE-BY-PAGE
+GAP CENSUS first (read-only, committed; gaps tagged BUILD / REMOVE /
+WFIRMA-GATED / OUT; census orders the wave, Inventory first) -> per page:
+Discovery Gate -> port per the PORTING RULE (wireframe's own markup/tokens,
+never patch-CSS) -> the operator's completion criteria as the page gate
+(evidence-cited; cold-origin render; console clean; smoke; golden) ->
+commit -> campaign state + evidence -> next page. Standing constraints
+unchanged (no new pages · no paste-ID inputs · no fake data · business
+logic preserved · pins green · verify-tree only, NO DEPLOY — Wave-3 prod
+deploy is a separate CP4/CP5 ritual AFTER CP3). CP3 at wave end: unlabeled
+side-by-side composites, every ported page vs its wireframe screen — the
+recognition gate is the wave's only exit. Chat contact: hard stops ·
+page-gate failures needing a ruling · WFIRMA-GATED questions · CP3.

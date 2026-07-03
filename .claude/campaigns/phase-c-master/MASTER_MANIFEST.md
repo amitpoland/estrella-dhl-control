@@ -31,7 +31,7 @@ Move-Location fold `0cee8173`.
 | Phase 0 | Research + validation | Registers populated; OI evidence pass; KNOWLEDGE.md | — | **COMPLETE 2026-07-03** |
 | **Wave 1** | **Authority** | C-1w2 · C-1e · C-1f · C-1d · C-2a · C-2b · C-2c | 8h | **ACTIVE** |
 | **Wave 2** | **Backend** (ZERO UI) | C-3g · R2-census · R3-test-health · C-3a · C-3b · C-3c · C-3d · C-3e · C-3f · C-4a (OI-gated) | 11h | **ACTIVE — RATIFIED 2026-07-03** (four amendments, see §6 + DECISIONS.md) |
-| **Wave 3** | **Entire UI** (built once, CP3) | U-1..U-6 (complete wireframe UI) | 6h | RESTORED 2026-07-03 — awaiting ratification |
+| **Wave 3** | **Entire UI** (built once, CP3) | census → page-by-page (U-1..U-6 mapped onto the census order) | 6h | **ACTIVE — RATIFIED 2026-07-03** ("WAVE 3 BEGINS" + verbatim directive, DECISIONS) |
 | **Wave 4** | **Synchronization** | C-4b · C-4d · C-5a · C-6a · C-7a · C-8a/b/c · C-9a | 5h | RESTORED 2026-07-03 — awaiting ratification |
 
 **WAVE STRUCTURE RESTORED (operator ruling, verbatim, 2026-07-03):** "Wave 1
