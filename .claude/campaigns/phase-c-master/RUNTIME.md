@@ -170,3 +170,7 @@ Campaign slices:
 - W3-page4 COMPLETE (Return to Producer tab, U-2): 9/9 gate (criterion 7 actually
   run: uvicorn:8131 200; criterion 9 re-run by orchestrator: pin 11/11, smoke 63).
   U-1+U-2 CLOSED. Next: W3-page5 Temp Sale tab (U-3).
+- W3-page5 COMPLETE (Temp Sale tab, U-3): 9/9 gate (7+9 actually run). Honest
+  architecture: batch-scoped reads only (no cross-batch endpoint invented);
+  View-proforma + Issue-invoice Lesson-M disabled (census IV-TS-1). Next:
+  W3-page6 Overview KPI/quick-actions (U-6).

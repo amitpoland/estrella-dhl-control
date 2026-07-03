@@ -826,5 +826,20 @@
         { ...payload, operator: op });
     },
 
+    // by any live endpoint; per-batch read is the only available authority.
+    getInventoryBatchState: (batchId) =>
+      _get(`${BASE}/inventory/state/${encodeURIComponent(batchId)}`),
+
+    // GET /api/v1/inventory/movements/{batch_id}
+    // → { ok:true, batch_id, count, events:[{id, scan_code, from_state,
+    //     to_state, trigger, occurred_at, operator, note}], document_trails }
+    // Used by TempSaleTab to extract client_name from the invoice_issued
+    // transition note field ("invoice issue: {client_name}").
+    // Authority: routes_inventory.py:203 (C-3f, LIVE)
+    getInventoryMovements: (batchId, limit) => {
+      const qs = limit ? `?limit=${encodeURIComponent(limit)}` : '';
+      return _get(`${BASE}/inventory/movements/${encodeURIComponent(batchId)}${qs}`);
+    },
+
   });
 })();

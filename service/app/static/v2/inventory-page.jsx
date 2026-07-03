@@ -2392,6 +2392,269 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // ── Temp Sale tab — Wave-3 / U-3 page 5 ────────────────────────────────────
+  // Wireframe §7 Tab 4 (TempSaleTab). Gap IV-TS-1.
+  // Backend reads:
+  //   GET /api/v1/inventory/state/{batch_id}  → filter to SALES_TRANSIT pieces
+  //     (routes_inventory.py:74; inventory_batch_state.get_batch_state; LIVE)
+  //   GET /api/v1/inventory/movements/{batch_id} → invoice_issued event notes
+  //     (routes_inventory.py:203; C-3f; LIVE)
+  // Read authority: per-batch only. No cross-batch SALES_TRANSIT aggregate
+  // endpoint exists → tab uses batch picker (BatchPanel precedent).
+  // Wireframe KPI tiles (4): Open reservations · Awaiting goods · Reserved ·
+  //   Sales-invoice gate (LOCKED)
+  // Wireframe gate banner: "Sales-invoice gate is enforced…"
+  // Wireframe table columns (8): Proforma · Client · Design No · Qty · Value ·
+  //   Linked to · Status · (actions)
+  // Wireframe row actions (2): View proforma · Issue invoice
+  //
+  // Lesson-M honest-disabled:
+  //   "View proforma" — no proforma_id/invoice_no field in inventory_state or
+  //     inventory_state_events for SALES_TRANSIT pieces; the note field carries
+  //     "invoice issue: {client_name}" (stock_issue.py:130) but no proforma ref.
+  //     No backend route links a SALES_TRANSIT scan_code back to its proforma
+  //     without a separate cross-join query not exposed by any live endpoint.
+  //     Census tag: IV-TS-1 (future slice: add proforma_id to transition note).
+  //   "Issue invoice" (delivery_confirmed) — SALES_TRANSIT → CLOSED transition
+  //     trigger "delivery_confirmed" has no operator-facing POST route in any
+  //     routes_*.py file (confirmed grep: no /delivery-confirm, no
+  //     /confirm-delivery endpoint in routes_inventory.py or routes_proforma.py).
+  //     Census tag: IV-TS-1 (future slice: POST /api/v1/inventory/pieces/{id}/
+  //     confirm-delivery).
+  //   "Value" column — no value/price field in inventory_state pieces rows;
+  //     packing_lines has cif_value but no endpoint joins them for SALES_TRANSIT.
+  //     Rendered as "—" (honest empty).
+  //
+  // KPI mapping:
+  //   Open reservations = total SALES_TRANSIT pieces in batch
+  //   Awaiting goods    = 0 always (SALES_TRANSIT means invoice already issued;
+  //                       "awaiting" in wireframe = pieces where invoice_issued
+  //                       but DHL tracking not yet confirmed — not distinguishable
+  //                       from current reads; rendered as total for honesty)
+  //   Reserved          = total SALES_TRANSIT pieces (same as Open reservations —
+  //                       wireframe distinction not resolvable from current reads)
+  //   Sales-invoice gate = always LOCKED (no delivery_confirmed route exists)
+
+  function TempSaleTab() {
+    const [batchId, setBatchId]       = useState('');
+    const [loading, setLoading]       = useState(false);
+    const [error, setError]           = useState('');
+    const [pieces, setPieces]         = useState(null);   // SALES_TRANSIT pieces
+    const [clientByCode, setClientByCode] = useState({}); // scan_code → client_name from events
+
+    const load = useCallback(async () => {
+      const bid = batchId.trim();
+      if (!bid) return;
+      setLoading(true);
+      setError('');
+      setPieces(null);
+      setClientByCode({});
+
+      // Fetch state (SALES_TRANSIT filter) and movements (client context) in parallel.
+      const [stateRes, movRes] = await Promise.all([
+        window.PzApi.getInventoryBatchState(bid),
+        window.PzApi.getInventoryMovements(bid, 2000),
+      ]);
+
+      setLoading(false);
+
+      if (!stateRes.ok) {
+        setError(stateRes.error || ('HTTP ' + stateRes.status));
+        return;
+      }
+
+      // Filter to SALES_TRANSIT pieces only.
+      const allPieces = (stateRes.data && stateRes.data.pieces) || [];
+      const transit = allPieces.filter(p => p.state === 'SALES_TRANSIT');
+      setPieces(transit);
+
+      // Build scan_code → client_name from invoice_issued event notes.
+      // stock_issue.py writes: note = "invoice issue: {client_name}"
+      if (movRes.ok) {
+        const events = (movRes.data && movRes.data.events) || [];
+        const map = {};
+        for (const ev of events) {
+          if (ev.trigger === 'invoice_issued' && ev.scan_code && ev.note) {
+            const m = /^invoice issue:\s*(.+)$/i.exec((ev.note || '').trim());
+            if (m && m[1] && !map[ev.scan_code]) {
+              map[ev.scan_code] = m[1].trim();
+            }
+          }
+        }
+        setClientByCode(map);
+      }
+    }, [batchId]);
+
+    // Derived KPI counts
+    const total          = pieces ? pieces.length : null;
+    const gateLocked     = true; // always — no delivery_confirmed route exists
+
+    const TH = { padding: '7px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
+    const TD = { padding: '8px 10px', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)', color: 'var(--text)', verticalAlign: 'middle' };
+
+    return (
+      <div data-testid="temp-sale-tab" style={{ maxWidth: 1100, margin: '0 auto' }}>
+
+        {/* Gate banner — wireframe §7 Tab 4 exact */}
+        <div data-testid="ts-gate-banner" style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--badge-amber-text)', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontWeight: 700 }}>🔒 Sales-invoice gate is enforced.</span>
+          {' '}No commercial sale invoice can be issued from a TEMP_SALE row. The invoice is unlocked only when its linked stock has reached FINAL_STOCK after physical verification.
+          {' '}<span style={{ fontSize: 11, opacity: 0.8 }}>(delivery_confirmed backend-pending — IV-TS-1)</span>
+        </div>
+
+        {/* KPI strip — 4 tiles per wireframe §7 Tab 4 */}
+        <div data-testid="ts-kpi-strip" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+          <InvStatTile testid="ts-kpi-open"       label="Open reservations" value={total}  hint="SALES_TRANSIT pieces in selected batch" />
+          <InvStatTile testid="ts-kpi-awaiting"   label="Awaiting goods"    value={total}  tone="amber" hint="invoice issued; DHL delivery not yet confirmed (not distinguishable from current reads — shows total)" />
+          <InvStatTile testid="ts-kpi-reserved"   label="Reserved"          value={total}  tone="green" hint="SALES_TRANSIT pieces (all are committed)" />
+          <InvStatTile testid="ts-kpi-gate"       label="Sales-invoice gate" value="LOCKED" tone="amber"
+            hint="delivery_confirmed route not yet built — Issue invoice disabled (IV-TS-1)" />
+        </div>
+
+        {/* Batch selector toolbar */}
+        <div data-testid="ts-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+          <input
+            data-testid="ts-batch-input"
+            value={batchId}
+            onChange={e => setBatchId(e.target.value)}
+            placeholder="Batch ID — e.g. SHIPMENT_4218922912_2026-05_…"
+            style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, flex: 1, minWidth: 260 }}
+          />
+          <InvFetchBtn
+            data-testid="ts-btn-load"
+            onClick={load}
+            loading={loading}
+            disabled={!batchId.trim()}
+            label="Load batch"
+          />
+          {pieces !== null && (
+            <InvFetchBtn data-testid="ts-refresh" onClick={load} loading={loading} label="↻ Refresh" />
+          )}
+        </div>
+
+        {/* Error state */}
+        {error && (
+          <div data-testid="ts-error-banner" style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--badge-red-text)' }}>
+            Failed to load batch state: {error}
+          </div>
+        )}
+
+        {/* Prompt before load */}
+        {!loading && pieces === null && !error && (
+          <div data-testid="ts-prompt" style={{ padding: '28px 0', textAlign: 'center', color: 'var(--text-3)', fontSize: 13, fontStyle: 'italic' }}>
+            Enter a batch ID above and click Load batch to view SALES_TRANSIT reservations.
+          </div>
+        )}
+
+        {/* Register table — 8 columns per wireframe §7 Tab 4 */}
+        {pieces !== null && (
+          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
+                Sales reservations awaiting closure — SALES_TRANSIT
+              </span>
+              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                {pieces.length} piece(s) · batch: <code style={{ fontFamily: 'ui-monospace, monospace', background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>{batchId.trim()}</code>
+              </span>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table data-testid="ts-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)' }}>
+                    {/* 8 columns per wireframe §7 Tab 4 */}
+                    <th style={TH}>Proforma</th>
+                    <th style={TH}>Client</th>
+                    <th style={TH}>Design No</th>
+                    <th style={TH}>Qty</th>
+                    <th style={TH}>Value</th>
+                    <th style={TH}>Linked to</th>
+                    <th style={TH}>Status</th>
+                    <th style={{ ...TH, textAlign: 'right' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading && (
+                    <tr><td colSpan={8} style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '28px 0' }}>Loading…</td></tr>
+                  )}
+                  {!loading && pieces.length === 0 && (
+                    <tr>
+                      <td colSpan={8} data-testid="ts-empty" style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '32px 0', fontStyle: 'italic' }}>
+                        No SALES_TRANSIT pieces in this batch — register is empty (honest empty).
+                      </td>
+                    </tr>
+                  )}
+                  {!loading && pieces.map((p, i) => {
+                    const sc     = p.scan_code || '';
+                    // Design: derived from scan_code (batch|sr|design split)
+                    const parts  = sc.split('|');
+                    const design = p.design_no || (parts.length >= 3 ? parts[2] : (parts.length === 2 ? parts[1] : sc)) || '—';
+                    // Client: extracted from invoice_issued event note
+                    const client = clientByCode[sc] || '—';
+                    // Qty: always 1 (single-piece tracking)
+                    const qty    = 1;
+                    // Value: not in inventory_state; no join endpoint — honest "—"
+                    const value  = '—';
+                    // Linked to: scan_code is the piece identifier
+                    const linked = sc || '—';
+                    // updated_at display
+                    const updAt  = p.updated_at ? p.updated_at.slice(0, 10) : '—';
+
+                    return (
+                      <tr key={sc + i} data-testid="ts-row" style={{ background: 'var(--card)' }}>
+                        {/* Proforma: no proforma_id in inventory_state — Lesson-M honest-disabled (IV-TS-1) */}
+                        <td style={{ ...TD, fontSize: 11.5, color: 'var(--text-3)', fontStyle: 'italic' }}
+                          title="No proforma_id stored in inventory_state SALES_TRANSIT row — future slice will add proforma link (IV-TS-1)">
+                          —
+                        </td>
+                        <td style={TD}>{client}</td>
+                        <td style={TD}>{design}</td>
+                        <td style={TD}>{qty}</td>
+                        {/* Value: no price field in inventory_state; no join endpoint */}
+                        <td style={{ ...TD, color: 'var(--text-3)', fontStyle: 'italic' }}
+                          title="No value/price field in inventory_state pieces; no join endpoint available (IV-TS-1)">
+                          {value}
+                        </td>
+                        <td style={{ ...TD, fontSize: 11.5, fontFamily: 'ui-monospace, monospace', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={linked}>
+                          {linked}
+                        </td>
+                        <td style={TD}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', border: '1px solid var(--badge-amber-border)', borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
+                            Reserved
+                          </span>
+                        </td>
+                        <td style={{ ...TD, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                          {/* View proforma: no proforma_id in inventory_state — Lesson-M honest-disabled */}
+                          <button data-testid="ts-btn-view-proforma" disabled
+                            title="backend-pending — no proforma_id stored in SALES_TRANSIT inventory_state row; no endpoint links scan_code to its proforma_id without a separate cross-join not yet exposed (IV-TS-1; future slice)"
+                            style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', cursor: 'not-allowed', opacity: 0.5 }}>
+                            View proforma
+                          </button>
+                          {/* Issue invoice (delivery_confirmed): no POST route — Lesson-M honest-disabled */}
+                          <button data-testid="ts-btn-issue-invoice" disabled
+                            title="backend-pending — SALES_TRANSIT → CLOSED delivery_confirmed transition has no operator-facing POST route in any routes_*.py; gate enforced by Sales-invoice gate banner (IV-TS-1; future slice: POST /api/v1/inventory/pieces/{id}/confirm-delivery)"
+                            style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'not-allowed', opacity: 0.5 }}>
+                            Issue invoice
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Endpoint reference */}
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-3)' }}>
+          State: GET /api/v1/inventory/state/&#123;batch_id&#125; (filter state=SALES_TRANSIT) ·
+          Events: GET /api/v1/inventory/movements/&#123;batch_id&#125; ·
+          Cross-batch aggregate: not available — per-batch read only (IV-TS-1)
+        </div>
+      </div>
+    );
+  }
+
   // ── InventoryPage — shell entry point (Wave-3: tab strip added) ─────────────
   //
   // Wave-3 progressive tab strip: the 11 wireframe tabs are built one per slice.
@@ -2405,6 +2668,7 @@ function DocumentViewerPage({ doc, onBack }) {
     { id: 'sampleReturn',   label: 'Sample Return',     wire: true  },
     { id: 'clientReturn',   label: 'Client Return',     wire: true  },
     { id: 'producerReturn', label: 'Return to Producer', wire: true  },
+    { id: 'tempSale',       label: 'Temp Sale',         wire: true  },
   ];
 
   function InvTabStrip({ active, onChange }) {
@@ -2499,6 +2763,9 @@ function DocumentViewerPage({ doc, onBack }) {
 
           {/* ── Return to Producer tab — Wave-3 U-2 page 4 ──────── */}
           {activeTab === 'producerReturn' && <ProducerReturnTab />}
+
+          {/* ── Temp Sale tab — Wave-3 U-3 page 5 ───────────────── */}
+          {activeTab === 'tempSale' && <TempSaleTab />}
         </div>
       </div>
     );
