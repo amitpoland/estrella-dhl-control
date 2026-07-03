@@ -215,3 +215,16 @@ Campaign slices:
   rendered w/ real triggers/endpoints; 5 deep-links; IV-ST-1 Lesson-M panel; no
   manual-transition route exists = none invented); wh->wh preserved. Inventory
   family: 10 of 11 tabs + modal DONE; page 9 holds on Q-4. Family render gate next.
+
+## Wave-3 Inventory-family boundary (2026-07-04) — health check
+
+- FAMILY RENDER GATE PASS: cold Preview pass, all 10 built tabs walked, ZERO
+  console errors (server inventory-dev:8200).
+- Inventory family: 10/11 tabs + modal COMPLETE (pages 1-8, 10-12); page 9
+  (Final Stock) HOLDS on Q-4 (stage-split criterion).
+- Confidence Gate re-check → Wave 4: unchanged AT-RISK (OI-1/2/3/4/7/9/10/11
+  still open; no new evidence). W3 assumptions: all still VALID.
+- BUDGET: ~2.0× trigger fired → SELF_ASSESSMENT entry + manifest-revision
+  proposal DUE at this boundary report (operator rules; no silent scope cut).
+- Next unblocked: census #13 Accounting hub (L) — awaits the operator's word on
+  the budget proposal; Q-1/Q-2/Q-3/Q-4 outstanding.
