@@ -314,3 +314,32 @@ wfirma_id_collisions = 0, or every collision carrying an operator ruling on
 record; (3) the registry-backfill output showing non-empty `copied`. GREEN×3
 is a precondition for — never a substitute for — the operator's separate
 Wave-3 ratification word.
+
+---
+
+### 2026-07-03 — WAVE-3 GATE REFINEMENT: four checks (operator, verbatim R4 — amends 8ac57f33)
+
+OPERATOR GATE REFINEMENT (verbatim):
+"Final deployment gate:
+1. Production /health returns the expected response
+2. Mirror backfill clean: wfirma_id_collisions = 0 in the final report,
+   or every collision resolved by documented operator ruling
+3. Registry backfill: copied > 0 on prod
+4. Production smoke tests pass — at minimum the critical flows this
+   deployment touches: service-products (including the mapped freight/
+   insurance emission, the C-1f path) and the carrier gate (503-closed)
+All four GREEN precede — and never replace — the operator's separate
+Wave-3 ratification word."
+
+Rationale note (operator-directed): check 4 exists because of
+LESSONS_LEARNED #4 — the C-1f defect proved migrations can succeed while
+runtime behavior breaks; the smoke set must exercise the actually-touched
+code paths, not just endpoints being reachable. The read-only tail already
+runs these probes; this ruling promotes them from advisory to GATE-BLOCKING.
+
+Reporting contract: GREEN/RED per check, evidence cited per check.
+Check-4 evidence set (minimum): GET /api/v1/proforma/service-products output
+equal to the operator's pre-deploy baseline capture
+(`$bakdir\service-products-pre-deploy.json`) INCLUDING the mapped
+freight/insurance rows (proves the C-1f/C-3g registry emission path), and
+the carrier write endpoint returning 503 with carrier_api_status "pending".
