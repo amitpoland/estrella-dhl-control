@@ -174,3 +174,8 @@ Campaign slices:
   architecture: batch-scoped reads only (no cross-batch endpoint invented);
   View-proforma + Issue-invoice Lesson-M disabled (census IV-TS-1). Next:
   W3-page6 Overview KPI/quick-actions (U-6).
+- W3-page6 COMPLETE (Overview tab, U-6): 9/9 gate incl. REAL browser verification
+  (0 console errors, tab-switch + modal verified). Consignment tile WFIRMA-GATED
+  honest badge; pieces-on-hand + cross-batch ledger honestly deferred (no backend).
+  Legacy panels kept reachable in a collapsed details block (census OUT).
+  All 6 built tabs wired. Next: W3-page7 Temp Purchase (L, C-3e merchandising read).

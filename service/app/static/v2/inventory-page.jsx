@@ -2655,20 +2655,328 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  // ── InventoryPage — shell entry point (Wave-3: tab strip added) ─────────────
+  // ── InventoryOverviewTab — Wave-3 U-6 (page 6) ─────────────────────────────
   //
-  // Wave-3 progressive tab strip: the 11 wireframe tabs are built one per slice.
-  // Tabs already implemented: sampleOut (this slice, Wave-3 U-1).
-  // Remaining tabs appear as a placeholder tab strip that redirects to the hub
-  // panels until their own slice lands.  Each future slice adds its tab.
+  // Wireframe authority: docs/design/inventory-page.design.jsx:658-791
+  // (InventoryOverviewTab). Census gap IDs: IV-O-1, IV-O-2, IV-O-3 (BUILD).
+  // IV-O-4 (WFIRMA-GATED): Consignment tile stays pending — no backend.
+  //
+  // Layout (exact wireframe order):
+  //   1. Quick-action row (3 cards): Upload Document · Move Stock · Identity/Mapping
+  //   2. KPI tile row (4 tiles): Final stock · Pieces on hand · Stock value · Reorder alerts
+  //      — Final stock + samples + returns from GET /api/v1/inventory/stage2/aggregate (live)
+  //      — Consignment: WFIRMA-GATED pending tile (Census IV-O-4)
+  //   3. Stage summary cards (2-col): Stage 1 (Temp Purchase/Warehouse/Sale) · Stage 2 (Final/Samples/Returns)
+  //      — Each row is a tab-navigation link (setTab(id))
+  //   4. Recent inventory movements table (read from /api/v1/inventory/stage2/aggregate
+  //      when movements surface is available; today aggregate has no movements array —
+  //      table renders empty state instead of fake data)
+  //
+  // Hub diagnostic panels (BatchPanel, PiecePanel, LocationPanel, AuditPanel,
+  // PromotionNotesPanel) are kept in a collapsed <details> block — no REMOVE tag
+  // in the census; wireframe is silent about them (OUT), so they stay reachable
+  // per the task instruction: "keep in place" / census-REMOVE-only removal rule.
+
+  function InventoryOverviewTab({ setActiveTab, onShowMove }) {
+    // ── Aggregate fetch for KPI tiles ──────────────────────────────────────
+    const [aggData, setAggData]       = useState(null);
+    const [aggLoading, setAggLoading] = useState(true);
+    const [aggError, setAggError]     = useState(null);
+
+    const loadAgg = useCallback(async () => {
+      setAggLoading(true); setAggError(null);
+      try { setAggData(await apiFetch('/api/v1/inventory/stage2/aggregate')); }
+      catch (e) { setAggError((e && e.message) || String(e)); }
+      finally { setAggLoading(false); }
+    }, []);
+
+    useEffect(() => { loadAgg(); }, [loadAgg]);
+
+    const s2 = aggData && aggData.stage2;
+
+    // KPI values — derived from aggregate (never fake numbers)
+    const finalStock   = s2 && s2.final_stock  && s2.final_stock.count;
+    const samplesCount = s2 && s2.samples       && s2.samples.count;
+    const returnsCount = s2 && s2.returns       && s2.returns.count;
+    const returnsSub   = s2 && s2.returns && s2.returns.subcounts;
+
+    // ── Quick-action card styles (wireframe :664-696) ───────────────────────
+    const qaCard = {
+      padding: '16px 18px', border: '1px solid var(--border)', borderRadius: 8,
+      background: 'var(--card)', cursor: 'pointer',
+      display: 'flex', alignItems: 'center', gap: 14,
+    };
+    const qaIcon = (bg, color) => ({
+      width: 38, height: 38, borderRadius: 8, background: bg, color,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: 18, fontWeight: 700, flexShrink: 0,
+    });
+
+    // ── Stage-row click handler ─────────────────────────────────────────────
+    const goTab = (id) => () => setActiveTab(id);
+
+    // ── Stage summary row component ─────────────────────────────────────────
+    function StageRow({ id, label, right }) {
+      return (
+        <div key={id} onClick={goTab(id)} data-testid={`overview-stage-row-${id}`}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '12px 18px', cursor: 'pointer',
+            borderBottom: '1px solid var(--border-subtle)',
+          }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{label}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{right}</span>
+            <span style={{ fontSize: 14, color: 'var(--text-3)' }}>›</span>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Recent movements badge (no spread-rest — global _excluded collision) ─
+    function MovementBadge({ label, tone }) {
+      const MAP = {
+        amber:  { bg: 'var(--badge-amber-bg)',   tx: 'var(--badge-amber-text)',   bd: 'var(--badge-amber-border)'  },
+        green:  { bg: 'var(--badge-green-bg)',   tx: 'var(--badge-green-text)',   bd: 'var(--badge-green-border)'  },
+        blue:   { bg: 'var(--badge-blue-bg)',    tx: 'var(--badge-blue-text)',    bd: 'var(--badge-blue-border)'   },
+        red:    { bg: 'var(--badge-red-bg)',     tx: 'var(--badge-red-text)',     bd: 'var(--badge-red-border)'    },
+        orange: { bg: 'var(--badge-orange-bg)',  tx: 'var(--badge-orange-text)',  bd: 'var(--badge-orange-border)' },
+      };
+      const t = MAP[tone] || { bg: 'var(--badge-neutral-bg)', tx: 'var(--badge-neutral-text)', bd: 'var(--badge-neutral-border)' };
+      return (
+        <span style={{
+          display: 'inline-flex', alignItems: 'center',
+          background: t.bg, color: t.tx, border: `1px solid ${t.bd}`,
+          borderRadius: 4, padding: '2px 8px',
+          fontSize: 11, fontWeight: 600, letterSpacing: '0.03em', whiteSpace: 'nowrap',
+        }}>{label}</span>
+      );
+    }
+
+    // The aggregate does not return a movements array — recent movements table
+    // shows an empty state (no fake data, per census / no REMOVE tag needed).
+    // Backend endpoint for movement log is GET /api/v1/inventory/movements/{batch_id}
+    // (batch-scoped, not cross-batch). A cross-batch ledger is Wave 4 scope.
+    const MOVEMENTS_COLS = [
+      { key: 'time',   label: 'When',      muted: true },
+      { key: 'kind',   label: 'Movement'               },
+      { key: 'su',     label: 'Stock Unit / Line', mono: true },
+      { key: 'design', label: 'Design',    mono: true  },
+      { key: 'qty',    label: 'Qty',       align: 'right', bold: true },
+      { key: 'who',    label: 'By',        muted: true },
+      { key: 'ref',    label: 'Ref',       mono: true, muted: true },
+    ];
+
+    return (
+      <div data-testid="inv-overview-tab">
+        {/* ── 1. Quick actions (3-col grid, wireframe :663-697) ──────────── */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
+          {/* Upload Document — fires inv:upload event (no backend today → Lesson M planned-state;
+              upload doc routes live at /api/v1/documents/upload; wired via existing Upload panel.
+              The event lets a future listener open the DocumentUploadModal. The card is
+              actionable (not disabled) because the upload surface already exists in the app. */}
+          <div data-testid="overview-qa-upload"
+            onClick={() => window.dispatchEvent(new CustomEvent('inv:upload'))}
+            style={qaCard}>
+            <div style={qaIcon('var(--badge-amber-bg)', 'var(--badge-amber-text)')}>↑</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Upload Document</div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Packing list · Invoice · Transfer · Return — auto-routes by type</div>
+            </div>
+            <span style={{ fontSize: 16, color: 'var(--text-3)' }}>›</span>
+          </div>
+
+          {/* Move Stock — fires inv:move event + opens MoveStockModal via parent */}
+          <div data-testid="overview-qa-move"
+            onClick={() => { window.dispatchEvent(new CustomEvent('inv:move')); onShowMove(); }}
+            style={qaCard}>
+            <div style={qaIcon('var(--badge-blue-bg)', 'var(--badge-blue-text)')}>⇄</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Move Stock</div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Warehouse → Warehouse, Main → Sample / Consignment / Return</div>
+            </div>
+            <span style={{ fontSize: 16, color: 'var(--text-3)' }}>›</span>
+          </div>
+
+          {/* Identity / Mapping — navigates to mapping tab (setActiveTab) */}
+          <div data-testid="overview-qa-mapping"
+            onClick={goTab('mapping')}
+            style={qaCard}>
+            <div style={qaIcon('var(--badge-green-bg)', 'var(--badge-green-text)')}>≡</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Identity / Mapping</div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Family · Design · Batch · Bag · Trace barcode</div>
+            </div>
+            <span style={{ fontSize: 16, color: 'var(--text-3)' }}>›</span>
+          </div>
+        </div>
+
+        {/* ── 2. KPI tile row (wireframe :699-704) ──────────────────────── */}
+        {aggLoading && (
+          <div style={{ color: 'var(--text-3)', fontSize: 12, marginBottom: 20 }}>Loading inventory overview…</div>
+        )}
+        {aggError && (
+          <div style={{ color: 'var(--badge-red-text)', fontSize: 12, marginBottom: 20 }}>Error loading aggregate: {aggError}</div>
+        )}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+          {/* Final stock — WAREHOUSE_STOCK count from aggregate (census IV-O-1 BUILD) */}
+          <InvStatTile
+            testid="ov-tile-final-stock"
+            label="Stock units (final)"
+            value={finalStock == null ? (aggLoading ? '…' : '—') : finalStock}
+            tone="green"
+            hint="WAREHOUSE_STOCK state"
+          />
+          {/* Pieces on hand — aggregate has no piece-count bucket today;
+              renders as pending (census IV-O-1: aggregate only exposes SU count for
+              final_stock; piece sum requires a separate query — Wave-4 scope) */}
+          <InvStatTile
+            testid="ov-tile-pieces"
+            label="Pieces on hand"
+            value={aggLoading ? '…' : '—'}
+            hint="piece-count aggregate — Wave 4"
+          />
+          {/* Samples + Returns combined as stock activity proxy — live from aggregate */}
+          <InvStatTile
+            testid="ov-tile-returns"
+            label="Returns (all)"
+            value={returnsCount == null ? (aggLoading ? '…' : '—') : returnsCount}
+            tone={returnsCount > 0 ? 'red' : undefined}
+            hint={returnsSub && returnsCount != null ? `${returnsSub.from_client} client · ${returnsSub.to_producer} producer` : 'RETURNED_FROM_CLIENT + RETURNED_TO_PRODUCER'}
+          />
+          {/* Consignment — WFIRMA-GATED: no backend (census IV-O-4 WFIRMA-GATED,
+              OI-1, OI-2, OI-17 OPEN). Honest pending tile, never a fake number. */}
+          <InvStatTile
+            testid="ov-tile-consignment"
+            label="Consignment"
+            pending
+            hint="physically with client · C-4a gated"
+          />
+        </div>
+
+        {/* ── 3. Stage summary cards 2-col (wireframe :706-762) ─────────── */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16 }}>
+          {/* Stage 1 summary card */}
+          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
+            <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-amber-text)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 4 }}>Stage 1 — Temporary</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>Document &amp; arrival layer</div>
+              </div>
+            </div>
+            <div style={{ padding: '6px 0' }}>
+              <StageRow id="tempPurchase"  label="Temp Purchase"  right="packing lists · arrivals" />
+              <StageRow id="tempWarehouse" label="Temp Warehouse" right="awaiting count · discrepancies" />
+              <StageRow id="tempSale"      label="Temp Sale"      right="reservations · invoice gate" />
+            </div>
+          </div>
+
+          {/* Stage 2 summary card */}
+          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
+            <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-blue-text)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 4 }}>Stage 2 — Physical</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>Verified stock &amp; movements</div>
+            </div>
+            <div style={{ padding: '6px 0' }}>
+              <StageRow id="finalStock"     label="Final Stock"                right={finalStock != null ? `${finalStock} SU` : (aggLoading ? '…' : '—')} />
+              <StageRow id="sampleOut"      label="Sample Out"                 right={samplesCount != null ? `${samplesCount} active` : (aggLoading ? '…' : '—')} />
+              <StageRow id="sampleReturn"   label="Sample Return"              right="awaiting inspection" />
+              <StageRow id="clientReturn"   label="Goods Return from Client"   right="open · awaiting inspection" />
+              <StageRow id="producerReturn" label="Return to Producer"         right="open" />
+            </div>
+          </div>
+        </div>
+
+        {/* ── 4. Recent inventory movements (wireframe :764-788) ────────── */}
+        {/* The aggregate endpoint does not return a movements array — this table
+            correctly shows empty state. GET /api/v1/inventory/movements/{batch_id}
+            is batch-scoped only. Cross-batch movement ledger is Wave 4 scope (C-6a). */}
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
+          <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Recent inventory movements</span>
+            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Cross-batch ledger — Wave 4</span>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 700 }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                  {MOVEMENTS_COLS.map(c => (
+                    <th key={c.key} style={{
+                      padding: '10px 12px', textAlign: c.align || 'left',
+                      fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                      letterSpacing: '0.10em', textTransform: 'uppercase', whiteSpace: 'nowrap',
+                    }}>{c.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td colSpan={MOVEMENTS_COLS.length} style={{ padding: '32px 20px', textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>
+                    Cross-batch movement log available in Wave 4 — use per-batch view in Diagnostics below
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* ── Refresh control ─────────────────────────────────────────────── */}
+        <div style={{ marginTop: 12 }}>
+          <button onClick={loadAgg} disabled={aggLoading}
+            style={{ fontSize: 11, border: '1px solid var(--border)', background: 'transparent', borderRadius: 4, padding: '4px 10px', cursor: aggLoading ? 'default' : 'pointer', color: 'var(--text-2)' }}
+            data-testid="ov-btn-refresh">
+            {aggLoading ? '…' : '↻ Refresh KPI data'}
+          </button>
+        </div>
+
+        {/* ── Hub diagnostic panels (OUT-tagged; wireframe silent; kept per task rule) ── */}
+        {/* Collapsed by default per Frontend Design Standard "Legacy sections in <details>" */}
+        <details style={{ marginTop: 24 }} data-testid="inv-diagnostics-details">
+          <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', padding: '8px 0', userSelect: 'none' }}>
+            ▸ Diagnostics — batch / piece / location / audit panels
+          </summary>
+          <div style={{ marginTop: 12 }}>
+            <Stage2Panel />
+            <BatchPanel />
+            <PiecePanel />
+            <LocationPanel />
+            <AuditPanel />
+            <PromotionNotesPanel />
+            <div style={{ marginTop: 8, padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
+              <strong style={{ color: 'var(--text-2)' }}>Read-only endpoints:</strong>{' '}
+              /inventory/stage2/aggregate &middot; /inventory/state/&#123;batch_id&#125; &middot;
+              /inventory/pieces/&#123;piece_id&#125; &middot; /warehouse/inventory/&#123;scan_code&#125; &middot;
+              /warehouse/locations &middot; /warehouse/locations/&#123;code&#125;/inventory &middot;
+              /warehouse/audit-summary/&#123;batch_id&#125; &middot; /warehouse/audit/&#123;batch_id&#125; &middot;
+              /inventory/promotion-notes/&#123;batch_id&#125; &middot; /inventory/promotion-note/&#123;note_no&#125;
+            </div>
+          </div>
+        </details>
+      </div>
+    );
+  }
+
+  // ── InventoryPage — shell entry point (Wave-3: tab strip, Overview tab live) ─
+  //
+  // Wave-3 tab strip progression:
+  //   U-1: sampleOut + sampleReturn (pages 1-2)
+  //   U-2: clientReturn + producerReturn (pages 3-4)
+  //   U-3: tempSale (page 5)
+  //   U-6: overview (page 6) — THIS SLICE (renames hub → overview)
+  //
+  // Tab 'mapping' — Identity/Mapping — is reachable from Overview quick-action.
+  // It is not yet a wired tab in the strip (no census BUILD gap for the tab strip
+  // entry itself; the tab strip will grow when the Identity/Mapping panel slice lands).
+  // The setActiveTab('mapping') call from InventoryOverviewTab is wired here so
+  // navigation works even before the tab strip button appears.
 
   const INV_TABS = [
-    { id: 'hub',            label: 'Hub (overview)',    wire: false },
-    { id: 'sampleOut',      label: 'Sample Out',        wire: true  },
-    { id: 'sampleReturn',   label: 'Sample Return',     wire: true  },
-    { id: 'clientReturn',   label: 'Client Return',     wire: true  },
-    { id: 'producerReturn', label: 'Return to Producer', wire: true  },
-    { id: 'tempSale',       label: 'Temp Sale',         wire: true  },
+    { id: 'overview',      label: 'Overview',           wire: true  },
+    { id: 'sampleOut',     label: 'Sample Out',         wire: true  },
+    { id: 'sampleReturn',  label: 'Sample Return',      wire: true  },
+    { id: 'clientReturn',  label: 'Client Return',      wire: true  },
+    { id: 'producerReturn',label: 'Return to Producer', wire: true  },
+    { id: 'tempSale',      label: 'Temp Sale',          wire: true  },
   ];
 
   function InvTabStrip({ active, onChange }) {
@@ -2685,7 +2993,6 @@ function DocumentViewerPage({ doc, onBack }) {
                 cursor: 'pointer', whiteSpace: 'nowrap', marginBottom: -2,
               }}>
               {t.label}
-              {!t.wire && <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 4px', borderRadius: 3, background: 'var(--badge-neutral-bg)', color: 'var(--badge-neutral-text)', border: '1px solid var(--badge-neutral-border)', verticalAlign: 'middle' }}>PANELS</span>}
             </button>
           );
         })}
@@ -2695,7 +3002,7 @@ function DocumentViewerPage({ doc, onBack }) {
 
   function InventoryPage({ openViewer }) {  // openViewer accepted
     const [showMove, setShowMove]             = useState(false);
-    const [activeTab, setActiveTab]           = useState('hub');
+    const [activeTab, setActiveTab]           = useState('overview');
     // Cross-tab Record Return: opened from SampleOutTab row → RecordReturnModal in InventoryPage
     // so that the modal can trigger a refresh of the Sample Return tab when visible.
     const [recordReturnTarget, setRecordReturnTarget] = useState(null);
@@ -2721,35 +3028,19 @@ function DocumentViewerPage({ doc, onBack }) {
           />
         )}
 
-        {/* Tab strip (grows tab-by-tab across Wave-3 slices) */}
+        {/* Move Stock modal — triggered from Overview quick-action or tab content */}
+        {showMove && <MoveStockModal onClose={() => setShowMove(false)} />}
+
+        {/* Tab strip */}
         <InvTabStrip active={activeTab} onChange={setActiveTab} />
 
         <div style={{ paddingTop: 20 }}>
-          {/* ── Hub tab: existing panels ──────────────────────────── */}
-          {activeTab === 'hub' && (
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
-                <button data-testid="btn-open-move-stock" onClick={() => setShowMove(true)}
-                  style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid var(--accent)', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                  ⇄ Move Stock
-                </button>
-              </div>
-              {showMove && <MoveStockModal onClose={() => setShowMove(false)} />}
-              <Stage2Panel />
-              <BatchPanel />
-              <PiecePanel />
-              <LocationPanel />
-              <AuditPanel />
-              <PromotionNotesPanel />
-              <div style={{ marginTop: 8, padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
-                <strong style={{ color: 'var(--text-2)' }}>Read-only endpoints:</strong>{' '}
-                /inventory/stage2/aggregate &middot; /inventory/state/&#123;batch_id&#125; &middot;
-                /inventory/pieces/&#123;piece_id&#125; &middot; /warehouse/inventory/&#123;scan_code&#125; &middot;
-                /warehouse/locations &middot; /warehouse/locations/&#123;code&#125;/inventory &middot;
-                /warehouse/audit-summary/&#123;batch_id&#125; &middot; /warehouse/audit/&#123;batch_id&#125; &middot;
-                /inventory/promotion-notes/&#123;batch_id&#125; &middot; /inventory/promotion-note/&#123;note_no&#125;
-              </div>
-            </div>
+          {/* ── Overview tab — Wave-3 U-6 page 6 ─────────────────────── */}
+          {activeTab === 'overview' && (
+            <InventoryOverviewTab
+              setActiveTab={setActiveTab}
+              onShowMove={() => setShowMove(true)}
+            />
           )}
 
           {/* ── Sample Out tab — Wave-3 U-1 page 1 ───────────────── */}
