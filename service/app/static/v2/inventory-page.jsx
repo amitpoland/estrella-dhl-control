@@ -3534,6 +3534,250 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // ── Consignment tab — Wave-3 / U-4 page 10 ────────────────────────────────
+  // Wireframe §7 Tab 5 (ConsignmentTab). Census #10, scope S.
+  // Gaps: IV-CN-1, IV-CN-2, IV-CN-3 — all tagged WFIRMA-GATED.
+  //
+  // Backend status: ABSENT. Three open items block all backend work:
+  //   OI-1 — MM via API (wFirma inter-warehouse transfer endpoint unconfirmed)
+  //   OI-2 — Consignment warehouse (second warehouse in wFirma unconfirmed)
+  //   OI-17 — Consignment allocation model (state vs. location dimension open)
+  //
+  // Honest surface (Lesson M + planned-state honesty):
+  //   • 3 sub-tab headers exactly per wireframe (Issue / Proforma Issue / Balance)
+  //   • KPI region: 4 tiles per sub-tab, all PENDING
+  //   • Both tables: wireframe column headers present; single gated-state row
+  //   • All action buttons visible + disabled with OI-reason in title attr
+  //   • Compact banner citing OI-1, OI-2, OI-17 at top
+  //   • Zero fake rows, zero data fetches (nothing to fetch)
+  //
+  // §D rule: stub in client-kyc-and-consignment.jsx:282 is left UNTOUCHED.
+  // This honest surface is built IN inventory-page.jsx per the tab pattern.
+  // The stub will be addressed in its own REMOVE slice.
+  //
+  // Wireframe table columns:
+  //   Issue sub-tab:     Cons.ID · Client · Design · Qty · Value (EUR) ·
+  //                      Issued · Due Back · Days Out · Proforma
+  //   Proforma sub-tab:  Proforma · Client · Qty (Issued) · Value (EUR) ·
+  //                      Sold · Balance Qty · Balance (EUR) · Issued · Status
+  //   Balance sub-tab:   Client · Open lines · Balance qty · At cost (EUR) ·
+  //                      Aging 0-30d · Aging 31-60d · Aging 60d+
+
+  const CN_GATE_MSG = (
+    'Consignment backend pending — wFirma MM answer (OI-1) + ' +
+    'consignment warehouse (OI-2) + allocation model (OI-17) open · Wave-4 scope'
+  );
+
+  const CN_BTN_DISABLED_STYLE = {
+    padding: '5px 12px', fontSize: 12, fontWeight: 600,
+    background: 'var(--border)', border: '1px solid var(--border)',
+    borderRadius: 5, color: 'var(--text-3)',
+    cursor: 'not-allowed', opacity: 0.6,
+  };
+
+  const CN_TH = {
+    padding: '7px 10px', fontSize: 10, fontWeight: 700,
+    color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em',
+    textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap',
+  };
+  const CN_TD = {
+    padding: '10px 10px', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)',
+    color: 'var(--text-2)', verticalAlign: 'middle', fontStyle: 'italic',
+  };
+
+  // Gated-state row spanning all columns of each sub-tab table
+  function CnGatedRow({ colCount }) {
+    return (
+      <tr>
+        <td colSpan={colCount} style={{ ...CN_TD, textAlign: 'center', padding: '18px 10px' }}>
+          <span data-testid="cn-gated-msg" style={{ color: 'var(--badge-amber-text)', fontWeight: 600, fontStyle: 'normal', fontSize: 12 }}>
+            {CN_GATE_MSG}
+          </span>
+        </td>
+      </tr>
+    );
+  }
+
+  // KPI tile for consignment (all pending)
+  function CnKpiTile({ label }) {
+    return (
+      <div data-testid={`cn-kpi-${label.toLowerCase().replace(/\s+/g,'_')}`}
+        style={{ background: 'var(--card-bg,var(--surface))', border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px', minWidth: 0 }}>
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
+        <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-3)' }}>—</div>
+        <div style={{ marginTop: 4 }}>
+          <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', borderRadius: 4 }}>PENDING</span>
+        </div>
+      </div>
+    );
+  }
+
+  function ConsignmentTab() {
+    const [sub, setSub] = React.useState('issue');
+
+    // ── OI banner ──────────────────────────────────────────────────────────────
+    const banner = (
+      <div data-testid="cn-oi-banner"
+        style={{ marginBottom: 16, padding: '10px 14px',
+          background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)',
+          borderRadius: 8, fontSize: 12, color: 'var(--badge-amber-text)',
+          display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+        <span style={{ fontWeight: 700, flexShrink: 0 }}>⏳ Consignment backend pending.</span>
+        <span>
+          Three open items block backend work:{' '}
+          <strong>OI-1</strong> (MM via API — wFirma inter-warehouse transfer endpoint unconfirmed) ·{' '}
+          <strong>OI-2</strong> (consignment warehouse in wFirma unconfirmed) ·{' '}
+          <strong>OI-17</strong> (allocation model: state vs. location dimension, operator decision pending).{' '}
+          All three must be resolved before Wave-4 implementation can begin.
+        </span>
+      </div>
+    );
+
+    // ── Sub-tab strip ───────────────────────────────────────────────────────────
+    const subTabs = [
+      { id: 'issue',    label: 'Issue' },
+      { id: 'proforma', label: 'Proforma Issue' },
+      { id: 'balance',  label: 'Balance / Valuation' },
+    ];
+
+    const subStrip = (
+      <div data-testid="cn-sub-strip" style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border)' }}>
+        {subTabs.map(s => (
+          <button key={s.id} data-testid={`cn-sub-${s.id}`}
+            onClick={() => setSub(s.id)}
+            style={{
+              padding: '8px 14px', background: 'none', border: 'none', cursor: 'pointer',
+              borderBottom: `2px solid ${sub === s.id ? 'var(--accent)' : 'transparent'}`,
+              color: sub === s.id ? 'var(--text)' : 'var(--text-2)',
+              fontSize: 12.5, fontWeight: sub === s.id ? 700 : 500, marginBottom: -1,
+            }}>{s.label}</button>
+        ))}
+      </div>
+    );
+
+    // ── Issue sub-tab ──────────────────────────────────────────────────────────
+    const issuePanel = (
+      <>
+        {/* 4 KPI tiles — wireframe Issue sub-tab */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+          <CnKpiTile label="Active out" />
+          <CnKpiTile label="Closing soon" />
+          <CnKpiTile label="Overdue" />
+          <CnKpiTile label="Total at risk" />
+        </div>
+
+        {/* Issue ledger table — 9 wireframe columns + actions */}
+        <div style={{ background: 'var(--card-bg,var(--surface))', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Consignment goods issued</span>
+            <button data-testid="cn-btn-issue" disabled
+              title={'Issue Consignment — ' + CN_GATE_MSG}
+              style={CN_BTN_DISABLED_STYLE}>
+              + Issue Consignment
+            </button>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  {['Cons. ID', 'Client', 'Design', 'Qty', 'Value (EUR)', 'Issued', 'Due Back', 'Days Out', 'Proforma', ''].map(col => (
+                    <th key={col} style={CN_TH}>{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <CnGatedRow colCount={10} />
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </>
+    );
+
+    // ── Proforma Issue sub-tab ─────────────────────────────────────────────────
+    const proformaPanel = (
+      <>
+        {/* 4 KPI tiles — wireframe Proforma Issue sub-tab */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+          <CnKpiTile label="Open proformas" />
+          <CnKpiTile label="Partially sold" />
+          <CnKpiTile label="Fully unsold" />
+          <CnKpiTile label="Overdue unsold" />
+        </div>
+
+        {/* Proforma issue table — 9 wireframe columns (incl. Sold, Balance Qty/EUR) */}
+        <div style={{ background: 'var(--card-bg,var(--surface))', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Proformas with consignment goods · sold vs balance</span>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  {['Proforma', 'Client', 'Qty (Issued)', 'Value (EUR)', 'Sold', 'Balance Qty', 'Balance (EUR)', 'Issued', 'Status', ''].map(col => (
+                    <th key={col} style={CN_TH}>{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <CnGatedRow colCount={10} />
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </>
+    );
+
+    // ── Balance / Valuation sub-tab ────────────────────────────────────────────
+    const balancePanel = (
+      <>
+        {/* 4 KPI tiles — wireframe Balance sub-tab */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+          <CnKpiTile label="Total balance qty" />
+          <CnKpiTile label="Balance value" />
+          <CnKpiTile label="Aging > 30d" />
+          <CnKpiTile label="Aging > 60d" />
+        </div>
+
+        {/* Balance / valuation table */}
+        <div style={{ background: 'var(--card-bg,var(--surface))', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Balance valuation by client &amp; aging</span>
+            <button data-testid="cn-btn-export-valuation" disabled
+              title={'Export valuation — ' + CN_GATE_MSG}
+              style={CN_BTN_DISABLED_STYLE}>
+              ↓ Export valuation
+            </button>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  {['Client', 'Open lines', 'Balance qty', 'At cost (EUR)', 'Aging 0–30d', 'Aging 31–60d', 'Aging 60d+'].map(col => (
+                    <th key={col} style={CN_TH}>{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <CnGatedRow colCount={7} />
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </>
+    );
+
+    return (
+      <div data-testid="consignment-tab" style={{ maxWidth: 1100, margin: '0 auto' }}>
+        {banner}
+        {subStrip}
+        {sub === 'issue'    && issuePanel}
+        {sub === 'proforma' && proformaPanel}
+        {sub === 'balance'  && balancePanel}
+      </div>
+    );
+  }
+
   // ── InventoryPage — shell entry point (Wave-3: tab strip, Overview tab live) ─
   //
   // Wave-3 tab strip progression:
@@ -3557,6 +3801,7 @@ function DocumentViewerPage({ doc, onBack }) {
     { id: 'tempSale',       label: 'Temp Sale',          wire: true  },
     { id: 'tempPurchase',   label: 'Temp Purchase',      wire: true  },
     { id: 'tempWarehouse',  label: 'Temp Warehouse',     wire: true  },
+    { id: 'consignment',    label: 'Consignment',        wire: false },
   ];
 
   function InvTabStrip({ active, onChange }) {
@@ -3653,6 +3898,9 @@ function DocumentViewerPage({ doc, onBack }) {
               onShowMove={() => setShowMove(true)}
             />
           )}
+
+          {/* ── Consignment tab — Wave-3 U-4 page 10 (WFIRMA-GATED) ── */}
+          {activeTab === 'consignment' && <ConsignmentTab />}
         </div>
       </div>
     );

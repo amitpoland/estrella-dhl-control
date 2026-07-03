@@ -190,3 +190,7 @@ Campaign slices:
   (final). Page 9 (Final Stock) BLOCKED on the Q-4 ruling (else identical rows in
   two tabs). Proposed default: location/bag-assigned = Final, unassigned = Temp.
   Next unblocked: W3-page10 Consignment gated surface (census #10).
+- W3-page10 COMPLETE (Consignment WFIRMA-GATED surface, U-4): 9/9 gate; wireframe
+  structure (3 sub-tabs, exact columns) with ZERO fake rows; OI-1/2/17 cited on
+  banner + every disabled action; browser 0-errors. Next: W3-page11 Identity/
+  Mapping; page 9 still holds on Q-4.
