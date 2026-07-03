@@ -100,3 +100,31 @@ verbatim phrase is now on record HERE and in DECISIONS.md: the operator
 selected the option labeled exactly **"I acknowledge LOCAL-COMMIT-ONLY"**.
 Going forward, every irreversible-boundary record quotes the phrase before
 any execution step is logged.
+
+## #6 — Deployment runbooks are executable artifacts (operator, verbatim, 2026-07-03)
+
+"Deployment runbooks are executable artifacts. They must be validated
+against the final deploy candidate SHA, not the intermediate SHA on which
+they were originally written."
+
+Paid cost (evidence, first wave12 deploy execution 2026-07-03):
+- Ritual step 2c failed on prod: `backfill_product_authority` absent from
+  the DEPLOYED `C:\PZ\app\services\reservation_db.py`.
+- Root cause was NOT a stale snippet: the function exists at the candidate
+  SHA `84c292de` (reservation_db.py:260, signature exactly as the runbook).
+  The 2a robocopy with `/XO` (timestamp-skip) left **39 modified files
+  stale + 1 new file missing (services/stock_issue.py)** — every stale file
+  hash-matched the pre-deploy base `c7c0e14e`; added files copied, modified
+  files skipped (the /XO signature). robocopy reported success; the service
+  restarted GREEN on the old code paths — "code synced" was an exit-code
+  assumption, never content-verified.
+- Secondary finding: `POST /api/v1/admin/product-master/backfill`
+  (routes_admin.py:117-145) is a DIFFERENT backfill
+  (invoice_lines→product_master projection, `require_admin` session-cookie
+  auth) — documented in the runbook to prevent it being mistaken for the
+  mirror backfill.
+
+Rule (campaign discipline; the platform-level amendment queues to v1.1):
+a deploy sync is complete only when a CONTENT-hash census of source vs
+deployed tree reads MISSING=0 / DIFF=0 (runbook §2a-v gate). Timestamp-based
+copy filters (`/XO`) are forbidden in deploy syncs.

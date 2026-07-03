@@ -453,3 +453,4 @@ architecture contradiction · paid lesson)
 
 | # | Date | Trigger (incident/contradiction/lesson) | Proposed amendment | Evidence |
 |---|---|---|---|---|
+| v1.1-001 | 2026-07-03 | Paid lesson #6 (partial /XO sync; prod ran mixed code) | CAMPAIGN_OS deploy discipline: content-hash sync-verification gate mandatory in every deploy ritual; timestamp-based copy filters forbidden; runbooks validated against the FINAL candidate SHA | LESSONS_LEARNED #6; runbook §2a-v; census total=493 MISSING=1 DIFF=39 (all stale = c7c0e14e) |

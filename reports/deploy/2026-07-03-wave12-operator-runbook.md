@@ -91,9 +91,49 @@ sc.exe stop PZService; Start-Sleep 8; sc.exe query PZService   # expect STOPPED
 ### 2a. Code sync (NO /MIR; storage excluded)
 
 ```powershell
-robocopy "C:\PZ-deploy-w12\service\app" "C:\PZ\app" /E /XO /XD __pycache__ .pytest_cache storage /XF *.pyc *.pyo *.zip
+robocopy "C:\PZ-deploy-w12\service\app" "C:\PZ\app" /E /XD __pycache__ .pytest_cache storage /XF *.pyc *.pyo *.zip
 # exit codes 0-3 = OK; 4+ = STOP, go to Section 5 (Rollback)
 ```
+
+> **🔴 AMENDED 2026-07-03 (paid lesson — LESSONS_LEARNED #6).** The original
+> 2a used `/XO` (timestamp-based skip). On the first execution it left
+> **39 modified files stale + 1 new file missing** on prod (all still at
+> `c7c0e14e`; added files copied, modified files skipped — the /XO
+> signature), while robocopy reported success and the service came up green
+> on the OLD code paths. `/XO` is REMOVED above: content, not timestamps,
+> decides. **The sync is not done until the gate below prints `SYNC VERIFIED`.**
+
+### 2a-v. MANDATORY sync verification gate (after every robocopy; service still STOPPED)
+
+Save as `verify_sync.py` anywhere (or run from `C:\PZ-deploy-w12`) and run
+`python verify_sync.py`:
+
+```python
+import hashlib, os
+def norm(p):
+    try: return hashlib.sha1(open(p,"rb").read().replace(b"\r\n",b"\n")).hexdigest()
+    except Exception: return None
+src_root, dst_root = r"C:\PZ-deploy-w12\service\app", r"C:\PZ\app"
+diff, missing, total = [], [], 0
+for dirpath, dirnames, filenames in os.walk(src_root):
+    dirnames[:] = [d for d in dirnames if d not in ("__pycache__", ".pytest_cache", "storage")]
+    for f in filenames:
+        if f.endswith((".pyc", ".pyo", ".zip")): continue
+        sp = os.path.join(dirpath, f); rel = os.path.relpath(sp, src_root)
+        total += 1
+        h1, h2 = norm(sp), norm(os.path.join(dst_root, rel))
+        if h2 is None: missing.append(rel)
+        elif h1 != h2: diff.append(rel)
+print(f"total={total} MISSING={len(missing)} DIFF={len(diff)}")
+for r in missing + diff: print("  NOT-SYNCED:", r)
+print("SYNC VERIFIED" if not missing and not diff else "SYNC INCOMPLETE - re-run robocopy, do NOT proceed")
+```
+
+**STOP CONDITION:** anything other than `SYNC VERIFIED`. Re-run the 2a
+robocopy and this gate until clean. (First-execution census 2026-07-03:
+`total=493 MISSING=1 DIFF=39` → after the resync this must read
+`MISSING=0 DIFF=0`.)
+
 
 ### 2b. Event-table migrations (idempotent; returns + sample)
 
@@ -104,6 +144,23 @@ python "C:\PZ-deploy-w12\service\app\db\migrations\draft_20260512_122327_sample_
 ```
 
 ### 2c. C-1a product-authority backfill re-run → **collision report to file**
+
+> **VERIFIED against deployed SHA `84c292de`:** the snippet below is THE
+> supported procedure. `backfill_product_authority` exists at
+> `service/app/services/reservation_db.py:260` with EXACTLY this signature:
+> `(reservation_db_path, wfirma_db_path, master_data_db_path, *, now_iso)`.
+> Its first-run failure was the PARTIAL SYNC (prod's reservation_db.py was
+> still `c7c0e14e`), not a stale snippet — once 2a-v prints `SYNC VERIFIED`
+> this step runs as written. **Do NOT use**
+> `POST /api/v1/admin/product-master/backfill` (routes_admin.py:117-145)
+> for this step: that endpoint wraps a DIFFERENT backfill
+> (`product_master_backfill.backfill_from_invoice_lines` — an
+> invoice-lines→product_master projection; `require_admin` session-cookie
+> auth; dry-run default) and never touches `wfirma_product_mirror`.
+> Steps 2b (both migration drafts accept `<db> up` — verified :149-157 and
+> :144-152) and 2d (`--storage-root` required — verified
+> tools/backfill_service_product_registry.py:64-65) are correct as written
+> at `84c292de`.
 
 ```powershell
 cd C:\PZ
