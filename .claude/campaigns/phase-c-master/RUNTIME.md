@@ -59,7 +59,14 @@
 - **C-4a SKIPPED per ratification** — OI-17 (consignment model) still OPEN;
   "the wave completes without it otherwise."
 - **WAVE 2 (Backend) slice work COMPLETE** — boundary CP2 + Confidence Gate
-  check next; Wave 3 requires operator ratification (CAMPAIGN_OS §5a).
+  check done; Wave 3 requires operator ratification (CAMPAIGN_OS §5a).
+- **WAVE ORDER LOCKED (operator verdict 2026-07-03, verbatim R4):** "Wave 3
+  begins only after: (1) Production deploy (2) Post-deploy verification
+  (3) Mirror collision report clean (4) Wave 3 ratification. This order will
+  not change." Deploy runbook (single, 5-section, operator-executed):
+  reports/deploy/2026-07-03-wave12-operator-runbook.md. Campaign HOLDS at
+  CP4/CP5 until the operator reports deploy done + verification green +
+  collision report clean; ratification is a separate step after that.
 
 ## Completed Slices (append-only ledger)
 

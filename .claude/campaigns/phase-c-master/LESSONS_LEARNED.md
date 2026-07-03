@@ -56,3 +56,27 @@ lifespan/startup or the function that uses them), never at import time.
 Import of `app.main` must be filesystem-silent.
 
 Disposition: BACKLOG B-017 (SCHEDULED — follow-up task; not chased in Wave 2).
+
+## #4 — Gate coverage must be proven, not assumed (operator-ratified, 2026-07-03)
+
+Operator rule (verbatim): "the C-1f NameError shipped under both adversarial
+review and the output-equivalence gate because the gate's fixtures never
+walked the mapped-service-charge path. Rule: gate coverage must be proven
+(the gated paths enumerated against the code paths), not assumed."
+
+Fact pattern: C-1f (`6a781ee4`) removed the `prod = wfdb.get_product(ct)`
+assignment in `_build_service_charge_lines` but left `prod.get(...)` refs —
+a NameError on EVERY mapped freight/insurance emission. The
+output-equivalence gate reported PASS because its fixture population never
+included a MAPPED service charge (the registry suite's mapped-charge tests
+were themselves in the pre-existing-failure register, so the broken path had
+zero live coverage). Adversarial review also missed it: reviewers verified
+the changed lines, not the reachability of every identifier the hunk left
+behind.
+
+Mechanic: before declaring an equivalence/regression gate PASSED for a
+migration slice, ENUMERATE the code paths the slice touched (every branch of
+every edited function) and map each to at least one fixture that actually
+executes it. A path with no executing fixture is UNGATED — say so in the
+slice report; do not let a green suite imply coverage it does not have.
+Caught in C-3g (`568c05b2`) and pinned by source-grep + mapped-charge tests.

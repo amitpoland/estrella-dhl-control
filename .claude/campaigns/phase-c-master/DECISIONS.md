@@ -136,6 +136,30 @@ Recorded: MASTER_MANIFEST §2/§6 amendment · RUNTIME.md · LESSONS_LEARNED.md 
 
 ---
 
+### 2026-07-03 — OPERATOR VERDICT: wave order locked; deploy gates Wave 3 (verbatim R4)
+
+OPERATOR VERDICT (verbatim):
+"Wave 1 Complete. Wave 2 Complete (development). Production deploy +
+verification: Pending. Wave 3 begins only after: (1) Production deploy
+(2) Post-deploy verification (3) Mirror collision report clean (4) Wave 3
+ratification. This order will not change. Prompt stays stable; only the
+eight documents evolve."
+
+Effect: supersedes the earlier same-day "Wave 3 is RATIFIED to start
+immediately after deploy verification" reading — Wave-3 ratification is a
+SEPARATE step (4) after deploy (1), verification (2), and a CLEAN mirror
+collision report (3). Campaign holds at CP4/CP5; deploy itself is
+operator-executed (hard stop #7 unchanged). Companion order executed this
+session: single operator runbook assembled at
+`reports/deploy/2026-07-03-wave12-operator-runbook.md` (backup-first with
+EstrellaDBBackup red warning — task confirmed ABSENT on this host; ordered
+deploy steps; collision report file + per-product ruling table; post-deploy
+verification incl. production output-equivalence and the C-1f
+mapped-charge exercise; rollback from the .bak set). Lesson recorded:
+LESSONS_LEARNED.md #4 (gate coverage must be proven, not assumed).
+
+---
+
 ### 2026-07-03 — Wave-3 gate ruling: DEPLOY FIRST, then Wave 3
 
 OPERATOR RULING (session question, 2026-07-03): "Deploy first, then Wave 3" —

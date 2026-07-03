@@ -20,13 +20,19 @@ Rules and boundary vs PROJECT_STATE.md:
 - **Task:** Phase-C Inventory Master Campaign (platform `.claude/campaigns/phase-c-master/`) —
   launched 2026-07-03 per operator FINAL PRE-LAUNCH AMENDMENT (verbatim R4).
 - **Started:** 2026-07-03
-- **Status:** BLOCKED-HOLD (CP4 — operator executes the prod deploy runbook)
+- **Status:** BLOCKED-HOLD (CP4/CP5 — operator executes the prod deploy runbook)
 - **Deploy state:** gate READY-TO-DEPLOY (7/7); Lesson-D ACKNOWLEDGED; candidate
   `84c292de` in C:\PZ-deploy-w12; pz-deploy-guard makes the sync operator-only →
-  runbook = reports/deploy/2026-07-03-wave12-operator-runbook.md (`a6e15149`).
-  Wave 3 ratified to start after deploy verification ("Deploy first, then Wave 3",
-  `9a6b0607`). On operator "deployed": run read-only post-verify + jsonl append +
-  W3-A1 → VALID, then Wave 3 (U-1..U-6).
+  runbook = reports/deploy/2026-07-03-wave12-operator-runbook.md (REVISED to the
+  operator's 5-section spec: backup-first w/ EstrellaDBBackup RED warning —
+  task confirmed ABSENT; ordered deploy steps; collision report file + ruling
+  table; post-deploy verification incl. prod output-equivalence + C-1f
+  mapped-charge exercise; .bak rollback). **Wave order LOCKED (operator verdict,
+  verbatim R4):** Wave 3 only after (1) production deploy (2) post-deploy
+  verification (3) mirror collision report CLEAN (4) SEPARATE Wave-3
+  ratification. On operator "deploy done + verification green + collision
+  report clean": jsonl append + W3-A1 → VALID, then WAIT for ratification (4).
+  Lesson recorded: LESSONS_LEARNED.md #4 (gate coverage proven, not assumed).
 - **HOLD reason:** §5a ratification rule: every wave of the reconstructed
   manifest needs operator ratification at the preceding boundary. WAVE 2
   (Backend) COMPLETE 2026-07-03 under "RATIFIED. Wave 2 begins." (+4
