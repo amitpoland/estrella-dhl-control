@@ -454,3 +454,31 @@ architecture contradiction · paid lesson)
 | # | Date | Trigger (incident/contradiction/lesson) | Proposed amendment | Evidence |
 |---|---|---|---|---|
 | v1.1-001 | 2026-07-03 | Paid lesson #6 (partial /XO sync; prod ran mixed code) | CAMPAIGN_OS deploy discipline: content-hash sync-verification gate mandatory in every deploy ritual; timestamp-based copy filters forbidden; runbooks validated against the FINAL candidate SHA | LESSONS_LEARNED #6; runbook §2a-v; census total=493 MISSING=1 DIFF=39 (all stale = c7c0e14e) |
+
+---
+
+### 2026-07-03 — DEPLOY REMEDIATION AMENDMENT + COMPLETION CRITERION (operator, verbatim R4)
+
+OPERATOR AMENDMENT (verbatim): "Amend the remediation so that collision
+cleanup is transactional (backup rows before deletion), then provide the
+exact commands. After the registry backfill, immediately verify that
+service_product_registry exists. Do not assume success. Only declare
+deployment complete if both the collision count is 0 and the registry
+table is present."
+
+COMPLETION CRITERION (verbatim, recorded as directed): deployment complete
+ONLY when collisions = 0 AND the registry table is present with copied > 0.
+
+Executed as four committed scripts under reports/deploy/:
+collision_precheck.py (read-only row confirmation) · collision_fix.py
+(per-DB single-connection BEGIN → backup-table AS SELECT → DELETE →
+count-match assert → COMMIT, else ROLLBACK) · collision_postcheck.py
+(zero remaining + backup counts 2+2) · registry_backfill_and_verify.py
+(tool run + immediate COUNT(*) verification; on residual OperationalError
+prints the mandated STOP — "repository diagnosis is wrong; reinvestigate"
+— and exits 2, never asking the operator to continue).
+Defect-1 basis: both collision rows repo-proven leaked test seeds
+(test_proforma_pre_approve_surfacing.py:43,230 ·
+test_proforma_readiness_single_authority.py:8,58). Defect-2 basis:
+registry table lazily created by pildb init_db (proforma_invoice_link_db.py
+:135/:173, accessors :2181/:2211; no startup hook — main.py imports none).
