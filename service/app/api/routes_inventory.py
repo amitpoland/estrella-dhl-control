@@ -120,3 +120,113 @@ def get_promotion_note(note_no: str) -> dict:
                     "detail": f"promotion note {note_no!r} not found"},
         )
     return note
+
+
+# ── C-3e: merchandising-grade batch read (Phase-C Wave 2 — backend only) ─────
+
+@router.get("/merchandising/{batch_id}")
+def get_merchandising_view(batch_id: str) -> dict:
+    """Packing-list-grade merchandising rows for a batch, joined with the
+    live inventory state per piece (inventory_state ⋈ packing_lines).
+
+    Backs the wireframe DELIVERABLE-2 Stock Hub columns (PK SR · CTG ·
+    Client PO · Design No · Karat · Color · Quality · Dia Wt · Qty) — the
+    data already lives in packing_lines (W2-A6); client_po is a best-effort
+    sales-side display enrichment (advisory, '' when absent). Read-only;
+    UI wiring is Wave 3 / U-3.
+
+    Honest empty: unknown batch_id yields rows=[] (HTTP 200).
+    """
+    from ..services import packing_db as pdb
+    from ..services import inventory_state_engine as ise
+
+    packing = pdb.get_packing_lines_for_batch(batch_id) or []
+
+    # {scan_code: state} — one query via the engine's batch map.
+    state_by_scan: dict = {}
+    try:
+        for state, scans in (ise.list_all_states_for_batch(batch_id) or {}).items():
+            for sc in scans:
+                state_by_scan[sc] = state
+    except Exception:
+        state_by_scan = {}
+
+    # Best-effort client_po enrichment from the sales side (advisory only —
+    # never gates; design_no/product_code keyed).
+    client_po_by_key: dict = {}
+    try:
+        from ..services import document_db as ddb
+        for sl in ddb.get_sales_packing_lines(batch_id) or []:
+            po = (sl.get("client_po") or "").strip()
+            if not po:
+                continue
+            for key in ((sl.get("product_code") or "").strip(),
+                        (sl.get("design_no") or "").strip()):
+                if key and key not in client_po_by_key:
+                    client_po_by_key[key] = po
+    except Exception:
+        client_po_by_key = {}
+
+    rows = []
+    for line in packing:
+        sc = line.get("scan_code") or ""
+        try:
+            sc = sc or pdb._compute_scan_code(line) or ""
+        except Exception:
+            sc = sc or ""
+        pc = (line.get("product_code") or "").strip()
+        dn = (line.get("design_no") or "").strip()
+        rows.append({
+            "scan_code":      sc,
+            "product_code":   pc,
+            "design_no":      dn,
+            "batch_no":       line.get("batch_no") or "",
+            "pack_sr":        line.get("pack_sr"),
+            "ctg":            line.get("item_type") or "",
+            "client_po":      client_po_by_key.get(dn) or client_po_by_key.get(pc) or "",
+            "karat":          line.get("karat") or "",
+            "color":          line.get("metal_color") or "",
+            "quality":        line.get("quality_string") or "",
+            "dia_wt":         line.get("diamond_weight"),
+            "size":           line.get("size") or "",
+            "qty":            line.get("quantity"),
+            "uom":            line.get("uom") or "",
+            "gross_weight":   line.get("gross_weight"),
+            "net_weight":     line.get("net_weight"),
+            "state":          state_by_scan.get(sc, ""),
+        })
+    return {"ok": True, "batch_id": batch_id, "count": len(rows), "rows": rows}
+
+
+# ── C-3f: movement / document-trail read (Phase-C Wave 2 — backend only) ─────
+
+@router.get("/movements/{batch_id}")
+def list_batch_movements(batch_id: str, limit: int = 1000) -> dict:
+    """Lifecycle movement trail for every piece of a batch, newest first —
+    the engine's append-only inventory_state_events. Document trails hang
+    off the referenced endpoints (promotion notes, sample/returns registers,
+    per-piece unified timeline at /pieces/{piece_id}). Read-only; UI wiring
+    is Wave 3.
+
+    Honest empty: unknown batch_id yields events=[] (HTTP 200).
+    """
+    from ..services import inventory_state_engine as ise
+    from ..services.stock_promotion_note_db import list_notes
+
+    events = ise.list_events_for_batch(batch_id, limit=limit)
+    try:
+        note_count = len(list_notes(batch_id) or [])
+    except Exception:
+        note_count = 0
+    return {
+        "ok":       True,
+        "batch_id": batch_id,
+        "count":    len(events),
+        "events":   events,
+        "document_trails": {
+            "promotion_notes": note_count,
+            "promotion_notes_endpoint": f"/api/v1/inventory/promotion-notes/{batch_id}",
+            "samples_endpoint":  "/api/v1/inventory/samples",
+            "returns_endpoint":  "/api/v1/inventory/returns",
+        },
+    }

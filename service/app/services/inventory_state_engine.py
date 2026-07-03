@@ -420,6 +420,29 @@ def list_all_states_for_batch(batch_id: str) -> Dict[str, List[str]]:
     return out
 
 
+def list_events_for_batch(batch_id: str, limit: int = 1000) -> List[Dict[str, Any]]:
+    """Append-only lifecycle event trail for every piece of *batch_id*,
+    newest first. Read-only (C-3f — movement/document-trail reads; the
+    engine owns its event table, so the batch reader lives here).
+    Returns [] on any error so read surfaces degrade gracefully."""
+    if not batch_id:
+        return []
+    limit = max(1, min(int(limit or 1000), 5000))
+    try:
+        with _connect() as con:
+            rows = con.execute(
+                """SELECT e.* FROM inventory_state_events e
+                   JOIN inventory_state s ON s.scan_code = e.scan_code
+                   WHERE s.batch_id = ?
+                   ORDER BY e.occurred_at DESC
+                   LIMIT ?""",
+                (batch_id, limit),
+            ).fetchall()
+    except Exception:
+        return []
+    return [dict(r) for r in rows]
+
+
 def count_by_state(batch_id: Optional[str] = None) -> Dict[str, int]:
     """Disjoint counts per state. Sum equals total tracked items."""
     counts = {s: 0 for s in STATES}

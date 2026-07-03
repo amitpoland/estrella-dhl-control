@@ -48,8 +48,18 @@
   test_stock_issue_c3d 12/12; adjacent convert/promotion suites green
   (dashboard two-step-convert HTML assertion failure is pre-existing, both
   sweeps); pin 11/11; smoke 63.
-- **Next slice:** C-3e (merchandising joined read) · C-3f (movement trails).
-  C-4a stays OI-17-gated.
+- **C-3e COMPLETE** — GET /api/v1/inventory/merchandising/{batch_id}:
+  packing_lines ⋈ inventory_state per piece with the DELIVERABLE-2 columns
+  (pack_sr/ctg/client_po/design/karat/color/quality/dia_wt/qty); client_po =
+  best-effort sales-side advisory. Read-only; UI = Wave 3 / U-3.
+- **C-3f COMPLETE** — GET /api/v1/inventory/movements/{batch_id}: engine
+  lifecycle trail (new read-only ise.list_events_for_batch) newest-first +
+  document-trail pointers (promotion notes count/endpoint, samples/returns
+  registers). Suite test_c3e_c3f 6/6; adjacent suites 66 green.
+- **C-4a SKIPPED per ratification** — OI-17 (consignment model) still OPEN;
+  "the wave completes without it otherwise."
+- **WAVE 2 (Backend) slice work COMPLETE** — boundary CP2 + Confidence Gate
+  check next; Wave 3 requires operator ratification (CAMPAIGN_OS §5a).
 
 ## Completed Slices (append-only ledger)
 
