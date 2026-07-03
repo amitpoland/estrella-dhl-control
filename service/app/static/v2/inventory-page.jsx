@@ -1928,6 +1928,470 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // ── Return to Producer tab — Wave-3 / U-2 page 4 ────────────────────────────
+  // Wireframe §7 Tab 10 (ProducerReturnTab).
+  // Backend GET:  GET /api/v1/inventory/returns?direction=to_producer
+  //               (routes_inventory_returns.py:212; C-3c, LIVE)
+  // Backend POST: POST /api/v1/inventory/pieces/{id}/return-to-producer
+  //               (routes_inventory_returns.py:148; LIVE)
+  //               POST /api/v1/inventory/pieces/{id}/return-from-producer
+  //               (routes_inventory_returns.py:181; LIVE — restock leg)
+  // Wireframe columns (10): RTP ID · Source · Design · Qty · Supplier · Reason ·
+  //   Prepared · AWB out · Status · Actions
+  // Wireframe KPI tiles (4): In preparation · Awaiting AWB · In transit · Confirmed (mo.)
+  // Lifecycle: open (RETURNED_TO_PRODUCER, no dispatch_reference = in preparation;
+  //            with dispatch_reference = awaiting AWB added / in transit)
+  //            resolved (producer_restock event linked = confirmed by producer)
+  // Add AWB: dispatch_reference is supplied at return-to-producer creation time
+  //          (POST body field). No backend route exists to UPDATE dispatch_reference
+  //          on an existing returns_events row — Lesson-M honest-disabled with reason.
+  // Return-from-producer: wired as "Confirm Received" on resolved rows — the
+  //   scan_code must be in RETURNED_TO_PRODUCER state; operator confirms restock.
+
+  const PRODUCER_RETURN_REASON_LABELS = {
+    defect:                  'Defect',
+    dimension_out_of_spec:   'Dimension Out of Spec',
+    quality_reject:          'Quality Reject',
+    post_inspection_reject:  'Post-Inspection Reject',
+    recall:                  'Recall',
+    other:                   'Other',
+  };
+
+  // ReturnToProducerModal — submits POST /api/v1/inventory/pieces/{pieceId}/return-to-producer
+  function ReturnToProducerModal({ onClose, onSuccess }) {
+    const [pieceId, setPieceId]     = useState('');
+    const [producer, setProducer]   = useState('');
+    const [producerId, setProducerId] = useState('');
+    const [reason, setReason]       = useState('defect');
+    const [dispatchRef, setDispatchRef] = useState('');
+    const [resDate, setResDate]     = useState('');
+    const [notes, setNotes]         = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    const [err, setErr]             = useState('');
+
+    function genKey() {
+      return 'rtp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    async function submit() {
+      setErr('');
+      const pid  = pieceId.trim();
+      const prod = producer.trim();
+      if (!pid)  { setErr('Piece scan code is required.'); return; }
+      if (!prod) { setErr('Producer / supplier name is required.'); return; }
+      setSubmitting(true);
+      const res = await window.PzApi.returnToProducer(pid, {
+        producer_name:            prod,
+        producer_id:              producerId.trim(),
+        return_reason:            reason,
+        dispatch_reference:       dispatchRef.trim(),
+        expected_resolution_date: resDate.trim(),
+        idempotency_key:          genKey(),
+        notes:                    notes.trim(),
+      });
+      setSubmitting(false);
+      if (!res.ok) {
+        const detail = (res.data && res.data.detail && res.data.detail.detail) ||
+                       (res.data && res.data.detail) || res.error || ('HTTP ' + res.status);
+        setErr(String(detail));
+        return;
+      }
+      onSuccess();
+    }
+
+    const lbl = { fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4, display: 'block' };
+    const fld = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, boxSizing: 'border-box' };
+
+    return (
+      <window.Modal title="Return to Producer" onClose={onClose}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Info band */}
+          <div style={{ padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
+            Records a piece shipped back to the producer. Piece moves
+            <strong style={{ color: 'var(--text)' }}> WAREHOUSE_STOCK / RETURNED_FROM_CLIENT → RETURNED_TO_PRODUCER</strong>.
+            Action is idempotent — duplicate submissions with the same scan code return the prior event.
+          </div>
+
+          {/* Piece scan code */}
+          <div>
+            <label style={lbl} htmlFor="rtp-piece-id">Piece scan code <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+            <input id="rtp-piece-id" data-testid="rtp-piece-id" value={pieceId} onChange={e => setPieceId(e.target.value)}
+              style={fld} placeholder="e.g. EJL001|sr1|RG-10025" />
+          </div>
+
+          {/* Producer name */}
+          <div>
+            <label style={lbl} htmlFor="rtp-producer">Producer / supplier name <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+            <input id="rtp-producer" data-testid="rtp-producer" value={producer} onChange={e => setProducer(e.target.value)}
+              style={fld} placeholder="e.g. Mehta Gems · MUM" />
+          </div>
+
+          {/* Producer ID (optional) */}
+          <div>
+            <label style={lbl} htmlFor="rtp-producer-id">Producer ID (optional wFirma contractor ref)</label>
+            <input id="rtp-producer-id" data-testid="rtp-producer-id" value={producerId} onChange={e => setProducerId(e.target.value)}
+              style={fld} placeholder="e.g. contractor-id-123" />
+          </div>
+
+          {/* Return reason */}
+          <div>
+            <label style={lbl} htmlFor="rtp-reason">Return reason <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+            <select id="rtp-reason" data-testid="rtp-reason" value={reason} onChange={e => setReason(e.target.value)} style={fld}>
+              {Object.entries(PRODUCER_RETURN_REASON_LABELS).map(([v, l]) =>
+                <option key={v} value={v}>{l}</option>
+              )}
+            </select>
+          </div>
+
+          {/* Dispatch reference / outbound AWB */}
+          <div>
+            <label style={lbl} htmlFor="rtp-dispatch-ref">Outbound AWB / dispatch reference (optional)</label>
+            <input id="rtp-dispatch-ref" data-testid="rtp-dispatch-ref" value={dispatchRef} onChange={e => setDispatchRef(e.target.value)}
+              style={fld} placeholder="e.g. DHL 123456789 or PRMA-0012" />
+            <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 3 }}>
+              Set at creation time. Cannot be updated after creation (no PATCH route — set now or leave blank).
+            </div>
+          </div>
+
+          {/* Expected resolution date */}
+          <div>
+            <label style={lbl} htmlFor="rtp-res-date">Expected resolution date (optional)</label>
+            <input id="rtp-res-date" data-testid="rtp-res-date" type="date" value={resDate} onChange={e => setResDate(e.target.value)}
+              style={fld} />
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label style={lbl} htmlFor="rtp-notes">Notes (optional)</label>
+            <textarea id="rtp-notes" data-testid="rtp-notes" value={notes} onChange={e => setNotes(e.target.value)} rows="2"
+              style={{ ...fld, resize: 'vertical' }} placeholder="Defect description, packing note, etc." />
+          </div>
+
+          {/* Debit note / wFirma: no backend — Lesson-M honest-disabled */}
+          <details>
+            <summary data-testid="rtp-wfirma-expand" style={{ fontSize: 11, color: 'var(--text-3)', cursor: 'pointer', userSelect: 'none' }}>
+              Debit note (wFirma write) ▸
+            </summary>
+            <div style={{ marginTop: 10, padding: '10px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-amber-text)' }}>
+              <strong>Backend-pending — Phase C (future slice).</strong> Debit-note wFirma writes
+              (reverse of PZ) have no backend route — this POST creates only the inventory event.
+              These actions are not wired per Lesson M (no cancellation record, no backend yet).
+              Census tag: IV-RTP-2.
+            </div>
+          </details>
+
+          {/* Error display */}
+          {err && (
+            <div data-testid="rtp-error" style={{ padding: '8px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)' }}>
+              {err}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 4 }}>
+            <window.Btn variant="outline" onClick={onClose} data-testid="rtp-cancel">Cancel</window.Btn>
+            <window.Btn onClick={submit} disabled={submitting} data-testid="rtp-submit">
+              {submitting ? 'Recording…' : 'Return to Producer'}
+            </window.Btn>
+          </div>
+        </div>
+      </window.Modal>
+    );
+  }
+
+  // ConfirmReceivedModal — submits POST /api/v1/inventory/pieces/{pieceId}/return-from-producer
+  // Used on resolved rows to mark a piece as back in WAREHOUSE_STOCK.
+  // Note: "resolved" in list_returns_records means the producer_restock event already
+  // exists (linked_origin_event_id). This modal fires for "open" rows that have a
+  // dispatch_reference (shipped) — the scan_code is still RETURNED_TO_PRODUCER.
+  function ConfirmReceivedModal({ record, onClose, onSuccess }) {
+    const [notes, setNotes]         = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    const [err, setErr]             = useState('');
+
+    function genKey() {
+      return 'rfp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    async function submit() {
+      setErr('');
+      setSubmitting(true);
+      const res = await window.PzApi.returnFromProducer(record.scan_code, {
+        idempotency_key: genKey(),
+        notes:           notes.trim(),
+      });
+      setSubmitting(false);
+      if (!res.ok) {
+        const detail = (res.data && res.data.detail && res.data.detail.detail) ||
+                       (res.data && res.data.detail) || res.error || ('HTTP ' + res.status);
+        setErr(String(detail));
+        return;
+      }
+      onSuccess();
+    }
+
+    const lbl = { fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4, display: 'block' };
+    const fld = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, boxSizing: 'border-box' };
+    const rtpId = record.id ? ('RTP-' + String(record.id).slice(0, 8).toUpperCase()) : '—';
+
+    return (
+      <window.Modal title="Confirm Producer Receipt" onClose={onClose}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Info band */}
+          <div style={{ padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
+            Marks <strong style={{ color: 'var(--text)' }}>{rtpId}</strong> (scan: <code style={{ fontSize: 11 }}>{record.scan_code}</code>) as
+            received back from producer. Piece moves
+            <strong style={{ color: 'var(--text)' }}> RETURNED_TO_PRODUCER → WAREHOUSE_STOCK</strong>.
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label style={lbl} htmlFor="rfp-notes">Notes (optional)</label>
+            <textarea id="rfp-notes" data-testid="rfp-notes" value={notes} onChange={e => setNotes(e.target.value)} rows="2"
+              style={{ ...fld, resize: 'vertical' }} placeholder="Inspection outcome, condition on receipt, etc." />
+          </div>
+
+          {/* Error display */}
+          {err && (
+            <div data-testid="rfp-error" style={{ padding: '8px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)' }}>
+              {err}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 4 }}>
+            <window.Btn variant="outline" onClick={onClose} data-testid="rfp-cancel">Cancel</window.Btn>
+            <window.Btn onClick={submit} disabled={submitting} data-testid="rfp-submit">
+              {submitting ? 'Confirming…' : 'Confirm Received'}
+            </window.Btn>
+          </div>
+        </div>
+      </window.Modal>
+    );
+  }
+
+  function ProducerReturnTab() {
+    const [records, setRecords]           = useState(null);
+    const [loading, setLoading]           = useState(true);
+    const [error, setError]               = useState('');
+    const [supplierFilter, setSupplierFilter] = useState('');
+    const [showModal, setShowModal]       = useState(false);
+    const [confirmRecord, setConfirmRecord] = useState(null);
+
+    const load = useCallback(async () => {
+      setLoading(true);
+      setError('');
+      const res = await window.PzApi.getProducerReturns({ direction: 'to_producer' });
+      setLoading(false);
+      if (!res.ok) {
+        setError(res.error || ('HTTP ' + res.status));
+        return;
+      }
+      setRecords((res.data && res.data.returns) || []);
+    }, []);
+
+    useEffect(() => { load(); }, [load]);
+
+    // Derived KPI counts
+    // open = no resolution_event_id; resolved = resolution_event_id present
+    // In preparation: open + no dispatch_reference
+    // Awaiting AWB / In transit: open + dispatch_reference set
+    // Confirmed (mo.): resolved — exact month boundary unknown from this data; show total resolved
+    const inPreparation = records ? records.filter(r => r.status === 'open' && !(r.dispatch_reference || '').trim()).length : null;
+    const awaitingOrTransit = records ? records.filter(r => r.status === 'open' && (r.dispatch_reference || '').trim()).length : null;
+    const confirmed     = records ? records.filter(r => r.status === 'resolved').length : null;
+    const totalOpen     = records ? records.filter(r => r.status === 'open').length : null;
+
+    const filteredRecords = records
+      ? records.filter(r => {
+          if (!supplierFilter.trim()) return true;
+          const sf = supplierFilter.trim().toLowerCase();
+          return (r.producer_name || '').toLowerCase().includes(sf);
+        })
+      : [];
+
+    const TH = { padding: '7px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
+    const TD = { padding: '8px 10px', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)', color: 'var(--text)', verticalAlign: 'middle' };
+
+    return (
+      <div data-testid="producer-return-tab" style={{ maxWidth: 1100, margin: '0 auto' }}>
+        {showModal && (
+          <ReturnToProducerModal
+            onClose={() => setShowModal(false)}
+            onSuccess={() => { setShowModal(false); load(); }}
+          />
+        )}
+        {confirmRecord && (
+          <ConfirmReceivedModal
+            record={confirmRecord}
+            onClose={() => setConfirmRecord(null)}
+            onSuccess={() => { setConfirmRecord(null); load(); }}
+          />
+        )}
+
+        {/* KPI strip — 4 tiles per wireframe §7 Tab 10 */}
+        <div data-testid="rtp-kpi-strip" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+          <InvStatTile testid="rtp-kpi-preparation" label="In preparation"      value={inPreparation}   hint="open rows with no dispatch_reference (not yet shipped)" />
+          <InvStatTile testid="rtp-kpi-awaiting"    label="Awaiting AWB / transit" value={awaitingOrTransit} tone="amber" hint="open rows with dispatch_reference set (shipped, awaiting confirmation)" />
+          <InvStatTile testid="rtp-kpi-open"        label="Open (total)"        value={totalOpen}       hint="all open to_producer rows" />
+          <InvStatTile testid="rtp-kpi-confirmed"   label="Confirmed by producer" value={confirmed}     tone="green" hint="rows where producer_restock event has landed (resolved)" />
+        </div>
+
+        {/* Toolbar: supplier filter + Return to Producer action + Refresh */}
+        <div data-testid="rtp-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+          <input data-testid="rtp-filter-supplier" value={supplierFilter} onChange={e => setSupplierFilter(e.target.value)}
+            placeholder="Filter by supplier…" style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, minWidth: 180, flex: 1 }} />
+          <window.Btn onClick={() => setShowModal(true)} data-testid="rtp-btn-record">
+            + Return to Producer
+          </window.Btn>
+          <InvFetchBtn data-testid="rtp-refresh" onClick={load} loading={loading} label="↻ Refresh" />
+        </div>
+
+        {/* Error state */}
+        {error && (
+          <div data-testid="rtp-error-banner" style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--badge-red-text)' }}>
+            Failed to load producer returns: {error}
+          </div>
+        )}
+
+        {/* Register table — columns per wireframe §7 Tab 10:
+            RTP ID · Source (scan_code) · Design · Qty · Supplier · Reason ·
+            Prepared (occurred_at) · AWB out (dispatch_reference) · Status · Actions */}
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Producer RTPs — goods returned to suppliers</span>
+            {records !== null && (
+              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                {filteredRecords.length} of {records.length} record(s)
+              </span>
+            )}
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table data-testid="rtp-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle)' }}>
+                  {/* 10 columns per wireframe §7 Tab 10 */}
+                  <th style={TH}>RTP ID</th>
+                  <th style={TH}>Source</th>
+                  <th style={TH}>Design</th>
+                  <th style={TH}>Qty</th>
+                  <th style={TH}>Supplier</th>
+                  <th style={TH}>Reason</th>
+                  <th style={TH}>Prepared</th>
+                  <th style={TH}>AWB out</th>
+                  <th style={TH}>Status</th>
+                  <th style={{ ...TH, textAlign: 'right' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading && (
+                  <tr><td colSpan={10} style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '28px 0' }}>Loading…</td></tr>
+                )}
+                {!loading && records && filteredRecords.length === 0 && (
+                  <tr>
+                    <td colSpan={10} data-testid="rtp-empty" style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '32px 0', fontStyle: 'italic' }}>
+                      No producer returns{supplierFilter ? ` matching "${supplierFilter}"` : ''} — register is empty (honest empty).
+                    </td>
+                  </tr>
+                )}
+                {!loading && filteredRecords.map(r => {
+                  // RTP ID: short prefix from event id
+                  const rtpId = r.id ? ('RTP-' + String(r.id).slice(0, 8).toUpperCase()) : '—';
+                  // Source: scan_code
+                  const source = r.scan_code || '—';
+                  // Design: derived from scan_code (same algorithm as other tabs)
+                  const parts  = (r.scan_code || '').split('|');
+                  const design = parts.length >= 3 ? parts[2] : (parts.length === 2 ? parts[1] : (r.scan_code || '—'));
+                  // Qty: always 1 (single-piece tracking)
+                  const qty    = 1;
+                  // Supplier: producer_name
+                  const supplier = r.producer_name || '—';
+                  // Reason: enum → display label
+                  const reasonLabel = PRODUCER_RETURN_REASON_LABELS[r.return_reason] || r.return_reason || '—';
+                  // Prepared: occurred_at date portion
+                  const prepared = r.occurred_at ? r.occurred_at.slice(0, 10) : '—';
+                  // AWB out: dispatch_reference (may be blank if not yet set)
+                  const awbOut = (r.dispatch_reference || '').trim() || '—';
+                  // Status derivation
+                  // open + no dispatch_reference → In preparation
+                  // open + dispatch_reference    → In transit
+                  // resolved                     → Confirmed by producer
+                  const isOpen     = r.status === 'open';
+                  const hasDispatch = (r.dispatch_reference || '').trim().length > 0;
+                  const isResolved = r.status === 'resolved';
+                  let statusLabel, statusBg, statusColor, statusBorder;
+                  if (isResolved) {
+                    statusLabel  = 'Confirmed by producer';
+                    statusBg     = 'var(--badge-green-bg)';
+                    statusColor  = 'var(--badge-green-text)';
+                    statusBorder = 'var(--badge-green-border)';
+                  } else if (isOpen && hasDispatch) {
+                    statusLabel  = 'In transit';
+                    statusBg     = 'var(--badge-amber-bg)';
+                    statusColor  = 'var(--badge-amber-text)';
+                    statusBorder = 'var(--badge-amber-border)';
+                  } else {
+                    statusLabel  = 'In preparation';
+                    statusBg     = 'var(--badge-neutral-bg)';
+                    statusColor  = 'var(--badge-neutral-text)';
+                    statusBorder = 'var(--badge-neutral-border)';
+                  }
+
+                  return (
+                    <tr key={r.id} data-testid="rtp-row" style={{ background: 'var(--card)' }}>
+                      <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, fontWeight: 700 }}>{rtpId}</td>
+                      <td style={{ ...TD, fontSize: 11.5, color: 'var(--text-2)', fontFamily: 'ui-monospace, monospace', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={source}>{source}</td>
+                      <td style={TD}>{design}</td>
+                      <td style={TD}>{qty}</td>
+                      <td style={TD}>{supplier}</td>
+                      <td style={TD}>{reasonLabel}</td>
+                      <td style={{ ...TD, fontSize: 11.5, color: 'var(--text-2)', fontFamily: 'ui-monospace, monospace' }}>{prepared}</td>
+                      <td style={{ ...TD, fontSize: 11.5, fontFamily: 'ui-monospace, monospace' }}>
+                        {awbOut !== '—' ? awbOut : (
+                          <span style={{ color: 'var(--text-3)', fontStyle: 'italic' }}>—</span>
+                        )}
+                      </td>
+                      <td style={TD}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', background: statusBg, color: statusColor, border: `1px solid ${statusBorder}`, borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
+                          {statusLabel}
+                        </span>
+                      </td>
+                      <td style={{ ...TD, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        {/* Add AWB: no backend PATCH route to update dispatch_reference — Lesson-M honest-disabled */}
+                        <button data-testid="rtp-btn-add-awb" disabled
+                          title="backend-pending — no PATCH/PUT route exists to update dispatch_reference on an existing returns_events row; set AWB at creation time via + Return to Producer modal (future slice may add PATCH)"
+                          style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'not-allowed', opacity: 0.5 }}>
+                          Add AWB
+                        </button>
+                        {/* Confirm Received: POST return-from-producer — live only on open rows (still RETURNED_TO_PRODUCER state) */}
+                        {isOpen ? (
+                          <window.Btn
+                            data-testid="rtp-btn-confirm-received"
+                            onClick={() => setConfirmRecord(r)}
+                            style={{ padding: '4px 10px', fontSize: 11.5 }}>
+                            Confirm Received
+                          </window.Btn>
+                        ) : (
+                          <button data-testid="rtp-btn-confirm-received" disabled
+                            title="already resolved — producer_restock event has landed"
+                            style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', cursor: 'not-allowed', opacity: 0.6 }}>
+                            Confirmed ✓
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {/* Endpoint reference */}
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-3)' }}>
+          Register: GET /api/v1/inventory/returns?direction=to_producer · Record: POST /api/v1/inventory/pieces/&#123;id&#125;/return-to-producer · Restock: POST /api/v1/inventory/pieces/&#123;id&#125;/return-from-producer
+        </div>
+      </div>
+    );
+  }
+
   // ── InventoryPage — shell entry point (Wave-3: tab strip added) ─────────────
   //
   // Wave-3 progressive tab strip: the 11 wireframe tabs are built one per slice.
@@ -1936,10 +2400,11 @@ function DocumentViewerPage({ doc, onBack }) {
   // panels until their own slice lands.  Each future slice adds its tab.
 
   const INV_TABS = [
-    { id: 'hub',           label: 'Hub (overview)', wire: false },
-    { id: 'sampleOut',     label: 'Sample Out',     wire: true  },
-    { id: 'sampleReturn',  label: 'Sample Return',  wire: true  },
-    { id: 'clientReturn',  label: 'Client Return',  wire: true  },
+    { id: 'hub',            label: 'Hub (overview)',    wire: false },
+    { id: 'sampleOut',      label: 'Sample Out',        wire: true  },
+    { id: 'sampleReturn',   label: 'Sample Return',     wire: true  },
+    { id: 'clientReturn',   label: 'Client Return',     wire: true  },
+    { id: 'producerReturn', label: 'Return to Producer', wire: true  },
   ];
 
   function InvTabStrip({ active, onChange }) {
@@ -2031,6 +2496,9 @@ function DocumentViewerPage({ doc, onBack }) {
 
           {/* ── Client Return tab — Wave-3 U-2 page 3 ───────────── */}
           {activeTab === 'clientReturn' && <ClientReturnTab />}
+
+          {/* ── Return to Producer tab — Wave-3 U-2 page 4 ──────── */}
+          {activeTab === 'producerReturn' && <ProducerReturnTab />}
         </div>
       </div>
     );

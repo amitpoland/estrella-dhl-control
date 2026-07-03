@@ -786,5 +786,45 @@
         { ...payload, operator: op });
     },
 
+    // Authority: routes_inventory_returns.py:212 (C-3c, Wave-2 backend LIVE)
+    getProducerReturns: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/inventory/returns${qs}`);
+    },
+
+    // POST /api/v1/inventory/pieces/{piece_id}/return-to-producer
+    //   body: { operator, producer_name, idempotency_key,
+    //           return_reason?, dispatch_reference?, producer_id?,
+    //           expected_resolution_date?, notes? }
+    // Moves piece WAREHOUSE_STOCK | RETURNED_FROM_CLIENT → RETURNED_TO_PRODUCER.
+    // Idempotent on (scan_code, idempotency_key).
+    // return_reason enum: defect | dimension_out_of_spec | quality_reject |
+    //   post_inspection_reject | recall | other
+    // Authority: routes_inventory_returns.py:148 (LIVE)
+    returnToProducer: (pieceId, payload) => {
+      const op = ((payload && payload.operator) || _resolveOperator() || '').trim();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required — return-to-producer cancelled.' });
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/return-to-producer`,
+        { ...payload, operator: op });
+    },
+
+    // POST /api/v1/inventory/pieces/{piece_id}/return-from-producer
+    //   body: { operator, idempotency_key, notes? }
+    // Restock leg: RETURNED_TO_PRODUCER → WAREHOUSE_STOCK.
+    // Idempotent on (scan_code, idempotency_key).
+    // Authority: routes_inventory_returns.py:181 (LIVE)
+    returnFromProducer: (pieceId, payload) => {
+      const op = ((payload && payload.operator) || _resolveOperator() || '').trim();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required — return-from-producer cancelled.' });
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/return-from-producer`,
+        { ...payload, operator: op });
+    },
+
   });
 })();

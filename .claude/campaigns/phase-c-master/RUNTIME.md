@@ -167,3 +167,6 @@ Campaign slices:
   completed by orchestrator on port 8129 — agent had stated-only). PLANNED: one
   consolidated real-browser render gate (Preview) after the Inventory family,
   before page 13. Next: W3-page4 Return to Producer.
+- W3-page4 COMPLETE (Return to Producer tab, U-2): 9/9 gate (criterion 7 actually
+  run: uvicorn:8131 200; criterion 9 re-run by orchestrator: pin 11/11, smoke 63).
+  U-1+U-2 CLOSED. Next: W3-page5 Temp Sale tab (U-3).
