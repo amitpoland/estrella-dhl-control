@@ -6,7 +6,7 @@
 ## Current State
 
 - **Phase:** Wave 1 — Master Authority Completion (Phase 0 COMPLETE 2026-07-03; CP1 issued)
-- **Current slice:** Mirror Completeness Proof (ruled sequence, after C-1e)
+- **Current slice:** C-1f — proforma fiscal reads migration (output-equivalence-gated)
 - **Slice state:** IN_PROGRESS
 - **Next:** Mirror Completeness Proof → C-1f (output-equivalence) → C-1d → **STOP-LINE:
   operator ratification of the restored Wave 2–4 plan (no auto-entry into Wave 2)**
@@ -42,13 +42,14 @@ Campaign slices:
 | 2026-07-03 | C-2b V4/V5/V7 customer call-path reroute → Customer Master passthroughs; pin 10/10; smoke 63; golden 160/160 | `60a34f9e` |
 | 2026-07-03 | C-2c customer verification sweep — full-app pin (zero business violations); pin 11/11; C-2 COMPLETE | `0d0bf78d` |
 | 2026-07-03 | Operator verdict recorded (6 rulings + stop-line); waves restored; platform doc #9 | `a4231850` |
-| 2026-07-03 | C-1e routes_wfirma 5 reads + 3 mirror-first dual-writes → sync layer; pin 2→1; resolve suite 10/10 (7 stale patch targets repaired); smoke 63; golden green | see git log `feat(c1e-…)` |
+| 2026-07-03 | C-1e routes_wfirma 5 reads + 3 mirror-first dual-writes → sync layer; pin 2→1; resolve suite 10/10 (7 stale patch targets repaired); smoke 63; golden green | `7c4f6f0b` |
+| 2026-07-03 | Mirror Completeness Proof (ratified check): census of ALL product writers; 3 gaps found + FIXED (auto-register create, mapping helper, reservation_worker matched); verdict COMPLETE | see git log `fix(mirror-completeness…)` |
 
 ## Budget Tracking (live; boundary snapshots go to MASTER_MANIFEST §4)
 
 | Wave | Consumed | Budget | Forecast |
 |---|---|---|---|
-| Wave 1 | 2.5h (C-1w2, C-2a, C-2b, C-2c, C-1e) | 8h | within budget |
+| Wave 1 | 3h (C-1w2, C-2a, C-2b, C-2c, C-1e, MC-proof) | 8h | within budget |
 | Wave 2 | 0h | 11h | — |
 | Wave 3 | 0h | 6h | — |
 | Wave 4 | 0h | 5h | — |
