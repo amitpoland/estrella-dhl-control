@@ -133,3 +133,12 @@ Campaign slices:
 - OI-18 C-1e ruling — ANSWERED 2026-07-03 (Option (a)); Wave-1 remainder unblocked
 - OI-3 WZ add-vs-auto — gates C-6a, C-8c
 - OI-7/9/10/11 webhook config — gate Wave 4
+
+## Production deploy record (2026-07-03)
+
+- DEPLOYED: 84c292de (deploy/wave12 = Waves 1+2 + origin/main) — operator-executed
+  runbook; SYNC VERIFIED (493/0/0 + 3 named MATCH); live-root backfills complete
+  (mirror 140/collisions 0; registry 2); /health 200; four-check gate 4xGREEN.
+- W3-A1 -> VALID. Campaign HOLDS for the operator's separate Wave-3 ratification words.
+- Paid lessons this deploy: #6 (/XO partial sync), #7 (storage-root assumption) —
+  v1.1-001/-003 queued; Platform v1.0 untouched.

@@ -454,6 +454,7 @@ architecture contradiction · paid lesson)
 | # | Date | Trigger (incident/contradiction/lesson) | Proposed amendment | Evidence |
 |---|---|---|---|---|
 | v1.1-001 | 2026-07-03 | Paid lesson #6 (partial /XO sync; prod ran mixed code) | CAMPAIGN_OS deploy discipline: content-hash sync-verification gate mandatory in every deploy ritual; timestamp-based copy filters forbidden; runbooks validated against the FINAL candidate SHA | LESSONS_LEARNED #6; runbook §2a-v; census total=493 MISSING=1 DIFF=39 (all stale = c7c0e14e) |
+| v1.1-003 | 2026-07-03 | Paid lesson #7 (storage-root hardcoded; stale-DB investigation) | Deploy tooling resolves the effective storage root from the running app's config/env; hardcoded storage paths forbidden in rituals/tools | LESSONS_LEARNED #7; live-root re-verification 2026-07-03 |
 
 ---
 
@@ -503,3 +504,29 @@ condition 5 — exit 0 on copied > 0, OR exit 0 with the explicit message
 table carries rows but this run copied nothing; exit 1 on
 table-exists-but-empty; exit 2 reserved for the table-missing STOP
 ("repository diagnosis is wrong; reinvestigate").
+
+---
+
+### 2026-07-03 — PRODUCTION DEPLOYMENT COMPLETE (84c292de) — six criteria re-verified on the LIVE root
+
+Operator evidence: mirror_rows 140 · status_set 105 · wfirma_id_collisions 0 ·
+registry copied freight+insurance · /health 200 (status ok, engine ok, env prod).
+Independent read-only verification (C:\PZ\storage): mirror 140 rows, ZERO
+duplicate wfirma_ids; registry = exactly the two service products with correct
+names/units AND their mirror identities (13002743/13102217) — the full C-1f
+emission chain present in data; prod stderr clean startup, no tracebacks;
+unauthenticated liveness 401-alive + operator authenticated 200.
+
+Six completion criteria (0a4029e8), re-measured on the live root:
+1. wfirma_id_collisions = 0 — GREEN (live backfill report)
+2. postcheck 0 remaining — superseded-by-rescope: the collision existed only in
+   the dead copy; live data never had it (no purge needed or performed on live)
+3. service_product_registry exists — GREEN (live, 2 rows)
+4. verifier exit 0 — superseded-by-rescope: the wrong-root script was retired
+   from the path; live verification done by direct queries (this entry)
+5. copied > 0 — GREEN (freight + insurance)
+6. /health 200 — GREEN (operator window; auth-gated 401-alive from the box)
+
+Stale-DB artifact register: see LESSONS_LEARNED #7. Lesson-D record appended
+to local-commit-deploys.jsonl. W3-A1 flipped VALID (four-check gate 4xGREEN —
+gate report in chat, this entry is its durable anchor).

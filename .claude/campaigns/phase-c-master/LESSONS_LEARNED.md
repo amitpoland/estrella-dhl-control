@@ -133,3 +133,29 @@ Rule (campaign discipline; the platform-level amendment queues to v1.1):
 a deploy sync is complete only when a CONTENT-hash census of source vs
 deployed tree reads MISSING=0 / DIFF=0 (runbook §2a-v gate). Timestamp-based
 copy filters (`/XO`) are forbidden in deploy syncs.
+
+## #7 — Storage-root assumption (operator, verbatim, 2026-07-03)
+
+"The deployment tooling assumed C:\PZ\app\storage while production runs
+from C:\PZ\storage. That incorrect assumption caused false collision
+reports, false registry failures, investigation against a stale database,
+and unnecessary deployment delay. Future deployment tools should obtain
+the effective storage root from the running application's configuration
+or environment instead of hardcoding a path."
+
+Evidence of the stale-DB artifacts this produced (all later re-measured
+against the live root): the goods-id-99 "collision" + its purge + the first
+"collisions: 0" (dead copy only; live codes carry real distinct ids
+50408675/50409315); the "zero fiscal usage" queries (dead copies of
+documents/packing/reservation DBs); "prod cache = 1 row / zero service
+products registered" (live cache: 139 rows INCLUDING freight 13002743 +
+insurance 13102217); the first registry-absent verification and the
+"empty registry is the correct migrated state" conclusion. Remained valid
+throughout: the 2a-v SYNC census (code tree, not storage), the migrations
+(live warehouse.db carries both event tables via app-init), the route-level
+lazy-creation proof, and the 7-agent code reviews. The recorded memory fact
+("batch storage root is C:\PZ\storage, NOT C:\PZ\app\storage") had said
+this all along — the runbook contradicted it and nothing cross-checked.
+
+Disposition: tooling amendment queued as v1.1-003 (storage-root resolution
+from app config/env). Platform v1.0 untouched.
