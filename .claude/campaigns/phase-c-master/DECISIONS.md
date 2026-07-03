@@ -626,3 +626,29 @@ deploy is a separate CP4/CP5 ritual AFTER CP3). CP3 at wave end: unlabeled
 side-by-side composites, every ported page vs its wireframe screen — the
 recognition gate is the wave's only exit. Chat contact: hard stops ·
 page-gate failures needing a ruling · WFIRMA-GATED questions · CP3.
+
+---
+
+### 2026-07-04 — CENSUS AUDIT PRECISION (operator, verbatim R4 — advisor-verified vs pinned wireframe f7dd5e38…)
+
+OPERATOR (verbatim):
+"- CONFIRMED missing controls: the Inventory PageHeader actions row —
+'↑ Upload Document' (inv:upload), 'Cycle count', header '↓ Export'
+(= manifest U-5). Verify against live; re-open the Inventory family
+header as a BUILD gap.
+- CONFIRMED wireframe page: DocumentsHubPage ('full CRUD for every doc')
+— must appear in the census with its full control set.
+- The control-level audit must TAG each gap's source: WIREFRAME-REQUIRED
+(control exists in the pinned file — cite its location in the bundle)
+vs OPERATOR-RULED (the Entry-Point Rule: Create/Upload/Import/New on
+every workflow — e.g. New Shipment exists only as SVG illustration;
+email-import/manual-create/scan do not appear in the file). Both are
+BUILD gaps, but their authority differs and the census must say which."
+
+Effect: (1) Inventory family header re-opened as BUILD (slice W3-page6b);
+(2) DocumentsHubPage re-audited into the census with its full control set;
+(3) census gains the two-source tagging: WIREFRAME-REQUIRED (with a pinned-
+bundle location cite per control) vs OPERATOR-RULED / ENTRY-POINT RULE
+(operator authority: Create/Upload/Import/New on every workflow, even where
+the wireframe shows only an illustration). The ENTRY-POINT RULE is recorded
+here as an operator-ruled census authority for Wave 3.
