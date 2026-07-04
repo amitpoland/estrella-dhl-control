@@ -228,3 +228,10 @@ Campaign slices:
   proposal DUE at this boundary report (operator rules; no silent scope cut).
 - Next unblocked: census #13 Accounting hub (L) — awaits the operator's word on
   the budget proposal; Q-1/Q-2/Q-3/Q-4 outstanding.
+- W3-page6b COMPLETE (Inventory header actions row): 9/9 gate; Upload -> real
+  documents-hub navigation (dangling inv:upload REMOVED at both sites); Export ->
+  context-sensitive live CSV of the active tab; Cycle count Lesson-M (IV-HDR-1).
+  Census amended: 116 gaps, all source-tagged (WIREFRAME-REQUIRED w/ bundle cites
+  vs OPERATOR-RULED Entry-Point). DocumentsHub delta re-audited: 13 wireframe
+  controls -> 0 live (read-only observer; incl. fiscal-class Post-to-wFirma).
+  CAMPAIGN HOLDS at the family boundary: budget ruling + Q-1..Q-4 awaited.

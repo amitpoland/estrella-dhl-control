@@ -948,7 +948,7 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  function SampleOutTab({ onRecordReturn }) {
+  function SampleOutTab({ onRecordReturn, reportExport }) {
     const [samples, setSamples]     = useState(null);
     const [loading, setLoading]     = useState(true);
     const [error, setError]         = useState('');
@@ -972,6 +972,24 @@ function DocumentViewerPage({ doc, onBack }) {
     }, [statusFilter, recipFilter]);
 
     useEffect(() => { load(); }, [load]);
+
+    // W3-page6b: report exportable rows to InventoryPage header Export button.
+    useEffect(() => {
+      if (!reportExport) return;
+      if (!samples || samples.length === 0) { reportExport(null, null); return; }
+      const HDRS = ['Sample ID', 'Source SU', 'Design', 'Qty', 'Issued to', 'Purpose', 'Issued', 'Return by', 'Status'];
+      const rows = samples.map(s => {
+        const parts = (s.scan_code || '').split('|');
+        const design = parts.length >= 3 ? parts[2] : (parts.length === 2 ? parts[1] : '');
+        return [
+          s.sample_id || '', s.scan_code || '', design, '1',
+          s.recipient_client_name || '', s.sample_reason || '',
+          s.out_at ? s.out_at.slice(0, 10) : '',
+          s.expected_return_date || '', s.status || '',
+        ];
+      });
+      reportExport(HDRS, rows);
+    }, [samples, reportExport]);
 
     // Derived KPI counts from loaded data (or null if still loading)
     const kpis = React.useMemo(() => {
@@ -1220,7 +1238,7 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  function SampleReturnTab() {
+  function SampleReturnTab({ reportExport }) {
     const [samples, setSamples]       = useState(null);
     const [loading, setLoading]       = useState(true);
     const [error, setError]           = useState('');
@@ -1242,6 +1260,20 @@ function DocumentViewerPage({ doc, onBack }) {
     }, [recipFilter]);
 
     useEffect(() => { load(); }, [load]);
+
+    // W3-page6b: report exportable rows.
+    useEffect(() => {
+      if (!reportExport) return;
+      if (!samples || samples.length === 0) { reportExport(null, null); return; }
+      const HDRS = ['Sample ID', 'Scan Code', 'Client', 'Returned at', 'Status'];
+      const rows = samples.map(s => [
+        s.sample_id || '', s.scan_code || '',
+        s.recipient_client_name || '',
+        s.returned_at ? s.returned_at.slice(0, 10) : '',
+        s.status || '',
+      ]);
+      reportExport(HDRS, rows);
+    }, [samples, reportExport]);
 
     // Derived KPI counts from loaded data (wireframe: 4 tiles)
     // KPI data: "awaiting inspection" / "in repair" / "restocked mo." / "written off mo."
@@ -1539,7 +1571,7 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  function ClientReturnTab() {
+  function ClientReturnTab({ reportExport }) {
     const [records, setRecords]         = useState(null);
     const [loading, setLoading]         = useState(true);
     const [error, setError]             = useState('');
@@ -1560,6 +1592,20 @@ function DocumentViewerPage({ doc, onBack }) {
     }, []);
 
     useEffect(() => { load(); }, [load]);
+
+    // W3-page6b: report exportable rows.
+    useEffect(() => {
+      if (!reportExport) return;
+      if (!records || records.length === 0) { reportExport(null, null); return; }
+      const HDRS = ['Return ID', 'Scan Code', 'Client', 'Reason', 'Recorded at', 'Status'];
+      const rows = records.map(r => [
+        r.return_id || '', r.scan_code || '',
+        r.source_holder_name || '', r.reason || '',
+        r.recorded_at ? r.recorded_at.slice(0, 10) : '',
+        r.status || '',
+      ]);
+      reportExport(HDRS, rows);
+    }, [records, reportExport]);
 
     // Derived KPI counts from loaded data (wireframe: 4 implied tiles)
     // Backend only has 'recorded' status for from_client; QC sub-buckets have no backend.
@@ -2378,7 +2424,7 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  function ProducerReturnTab() {
+  function ProducerReturnTab({ reportExport }) {
     const [records, setRecords]           = useState(null);
     const [loading, setLoading]           = useState(true);
     const [error, setError]               = useState('');
@@ -2399,6 +2445,21 @@ function DocumentViewerPage({ doc, onBack }) {
     }, []);
 
     useEffect(() => { load(); }, [load]);
+
+    // W3-page6b: report exportable rows.
+    useEffect(() => {
+      if (!reportExport) return;
+      if (!records || records.length === 0) { reportExport(null, null); return; }
+      const HDRS = ['Return ID', 'Scan Code', 'Producer', 'Dispatch Ref', 'Reason', 'Recorded at', 'Status'];
+      const rows = records.map(r => [
+        r.return_id || '', r.scan_code || '',
+        r.producer_name || '', r.dispatch_reference || '',
+        r.reason || '',
+        r.recorded_at ? r.recorded_at.slice(0, 10) : '',
+        r.status || '',
+      ]);
+      reportExport(HDRS, rows);
+    }, [records, reportExport]);
 
     // Derived KPI counts
     // open = no resolution_event_id; resolved = resolution_event_id present
@@ -2656,7 +2717,7 @@ function DocumentViewerPage({ doc, onBack }) {
   //
   // Stage-1 Document layer info banner: per wireframe verbatim.
 
-  function TempPurchaseTab({ openViewer, onShowMove }) {
+  function TempPurchaseTab({ openViewer, onShowMove, reportExport }) {
     const [batchId, setBatchId]   = useState('');
     const [loading, setLoading]   = useState(false);
     const [error, setError]       = useState('');
@@ -2684,6 +2745,20 @@ function DocumentViewerPage({ doc, onBack }) {
     const emptyRows   = rows ? rows.filter(r => !r.state) : [];
     const closedRows  = rows ? rows.filter(r => r.state && r.state !== 'PURCHASE_TRANSIT') : [];
     const totalRows   = rows ? rows.length : null;
+
+    // W3-page6b: report exportable rows (merchandising view columns).
+    useEffect(() => {
+      if (!reportExport) return;
+      if (!rows || rows.length === 0) { reportExport(null, null); return; }
+      const HDRS = ['Pk Sr', 'CTG', 'Client PO', 'Design No', 'Karat', 'Color', 'Quality', 'Dia Wt', 'Qty', 'State'];
+      const csvRows = rows.map(r => [
+        r.pk_sr || '', r.category || '', r.client_po || '',
+        r.design_no || '', r.karat || '', r.color || '',
+        r.quality || '', r.dia_wt != null ? String(r.dia_wt) : '',
+        r.qty != null ? String(r.qty) : '', r.state || '',
+      ]);
+      reportExport(HDRS, csvRows);
+    }, [rows, reportExport]);
 
     const TH = { padding: '7px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
     const TD = { padding: '8px 10px', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)', color: 'var(--text)', verticalAlign: 'middle' };
@@ -2942,7 +3017,7 @@ function DocumentViewerPage({ doc, onBack }) {
   //   c) AWB and Recv Date columns → honest "—" (not in C-3e response).
   //   d) Discrepancies KPI → "—" (not computable from per-piece rows alone).
 
-  function TempWarehouseTab({ openViewer, onShowMove }) {
+  function TempWarehouseTab({ openViewer, onShowMove, reportExport }) {
     const [batchId, setBatchId] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError]     = useState('');
@@ -2973,6 +3048,23 @@ function DocumentViewerPage({ doc, onBack }) {
     // Aggregator reference: inventory_stage2_aggregator.py:117 final_stock_basis (same state).
     const wsRows    = rows ? rows.filter(r => r.state === 'WAREHOUSE_STOCK') : [];
     const totalRows = rows ? rows.length : null;
+
+    // W3-page6b: report exportable rows (WAREHOUSE_STOCK subset of merchandising view).
+    // Dependency on `rows` (not derived `wsRows`) avoids stale closure on array identity.
+    useEffect(() => {
+      if (!reportExport) return;
+      if (!rows) { reportExport(null, null); return; }
+      const ws = rows.filter(r => r.state === 'WAREHOUSE_STOCK');
+      if (ws.length === 0) { reportExport(null, null); return; }
+      const HDRS = ['Pk Sr', 'CTG', 'Client PO', 'Design No', 'Karat', 'Color', 'Quality', 'Dia Wt', 'Qty', 'State'];
+      const csvRows = ws.map(r => [
+        r.pk_sr || '', r.category || '', r.client_po || '',
+        r.design_no || '', r.karat || '', r.color || '',
+        r.quality || '', r.dia_wt != null ? String(r.dia_wt) : '',
+        r.qty != null ? String(r.qty) : '', r.state || '',
+      ]);
+      reportExport(HDRS, csvRows);
+    }, [rows, reportExport]);
 
     const TH = { padding: '7px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
     const TD = { padding: '8px 10px', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)', color: 'var(--text)', verticalAlign: 'middle' };
@@ -3223,7 +3315,7 @@ function DocumentViewerPage({ doc, onBack }) {
   //                       wireframe distinction not resolvable from current reads)
   //   Sales-invoice gate = always LOCKED (no delivery_confirmed route exists)
 
-  function TempSaleTab() {
+  function TempSaleTab({ reportExport }) {
     const [batchId, setBatchId]       = useState('');
     const [loading, setLoading]       = useState(false);
     const [error, setError]           = useState('');
@@ -3276,6 +3368,20 @@ function DocumentViewerPage({ doc, onBack }) {
     // Derived KPI counts
     const total          = pieces ? pieces.length : null;
     const gateLocked     = true; // always — no delivery_confirmed route exists
+
+    // W3-page6b: report exportable rows (after pieces + clientByCode both update).
+    useEffect(() => {
+      if (!reportExport) return;
+      if (!pieces || pieces.length === 0) { reportExport(null, null); return; }
+      const HDRS = ['Scan Code', 'State', 'Design', 'Client', 'Updated at'];
+      const rows = pieces.map(p => [
+        p.scan_code || '', p.state || '',
+        p.design_no || '',
+        clientByCode[p.scan_code] || '',
+        p.updated_at ? p.updated_at.slice(0, 16).replace('T', ' ') : '',
+      ]);
+      reportExport(HDRS, rows);
+    }, [pieces, clientByCode, reportExport]);
 
     const TH = { padding: '7px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
     const TD = { padding: '8px 10px', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)', color: 'var(--text)', verticalAlign: 'middle' };
@@ -3559,12 +3665,14 @@ function DocumentViewerPage({ doc, onBack }) {
       <div data-testid="inv-overview-tab">
         {/* ── 1. Quick actions (3-col grid, wireframe :663-697) ──────────── */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
-          {/* Upload Document — fires inv:upload event (no backend today → Lesson M planned-state;
-              upload doc routes live at /api/v1/documents/upload; wired via existing Upload panel.
-              The event lets a future listener open the DocumentUploadModal. The card is
-              actionable (not disabled) because the upload surface already exists in the app. */}
+          {/* Upload Document — navigates to Documents Hub (the existing upload authority).
+              W3-page6b dead-control repair: the previous inv:upload CustomEvent had NO
+              listener anywhere in the codebase — this was a dangling dead control (census
+              REMOVE on the dispatch). Replaced with real navigation to /v2/documents so the
+              card actually does something. Matches the PageHeader "↑ Upload Document" button
+              above (both navigate to the same authority — no duplicate logic). */}
           <div data-testid="overview-qa-upload"
-            onClick={() => window.dispatchEvent(new CustomEvent('inv:upload'))}
+            onClick={navigateToDocuments}
             style={qaCard}>
             <div style={qaIcon('var(--badge-amber-bg)', 'var(--badge-amber-text)')}>↑</div>
             <div style={{ flex: 1 }}>
@@ -4304,12 +4412,68 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // ── W3-page6b: PageHeader actions row helpers ───────────────────────────────
+  //
+  // exportMeta: { headers: string[], rows: string[][], tabId: string } | null
+  //   — each tab reports its current dataset via reportExport(headers, rows).
+  //   — null when the active tab has no loaded rows (Export disabled).
+  //
+  // navigateToDocuments(): real SPA navigation to /v2/documents.
+  //   Uses history.pushState + window.dispatchEvent(popstate) so the shell
+  //   router (index.html parseV2Location) picks it up without a full reload.
+  //   Fallback: window.location.href if the popstate approach is unavailable.
+
+  function navigateToDocuments() {
+    history.pushState({ page: 'documents' }, '', '/v2/documents');
+    window.dispatchEvent(new PopStateEvent('popstate', { state: { page: 'documents' } }));
+  }
+
+  function exportCsv(headers, rows, filename) {
+    // Client-side CSV from rendered dataset — existing idiom (proforma-detail.jsx:2692-2698).
+    const escape = (v) => {
+      const s = v == null ? '' : String(v);
+      return s.includes(',') || s.includes('"') || s.includes('\n')
+        ? '"' + s.replace(/"/g, '""') + '"'
+        : s;
+    };
+    const lines = [headers.map(escape).join(',')].concat(rows.map(r => r.map(escape).join(',')));
+    const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename || 'inventory-export.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+  }
+
   function InventoryPage({ openViewer }) {  // openViewer accepted
     const [showMove, setShowMove]             = useState(false);
     const [activeTab, setActiveTab]           = useState('overview');
     // Cross-tab Record Return: opened from SampleOutTab row → RecordReturnModal in InventoryPage
     // so that the modal can trigger a refresh of the Sample Return tab when visible.
     const [recordReturnTarget, setRecordReturnTarget] = useState(null);
+
+    // W3-page6b: Export state — tabs report their current dataset here.
+    // reportExport is passed as a prop to every tab that has a table.
+    // null = no exportable rows for the active tab.
+    const [exportMeta, setExportMeta] = useState(null);
+
+    // Clear export state when the tab changes so the button reflects the new tab.
+    const handleTabChange = useCallback((id) => {
+      setActiveTab(id);
+      setExportMeta(null);
+    }, []);
+
+    const reportExport = useCallback((headers, rows) => {
+      setExportMeta(rows && rows.length > 0 ? { headers, rows } : null);
+    }, []);
+
+    const handleExport = useCallback(() => {
+      if (!exportMeta) return;
+      const tabLabel = INV_TABS.find(t => t.id === activeTab);
+      const filename = 'inventory-' + (tabLabel ? tabLabel.id : activeTab) + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+      exportCsv(exportMeta.headers, exportMeta.rows, filename);
+    }, [exportMeta, activeTab]);
 
     function handleRecordReturn(sample) {
       setRecordReturnTarget(sample);
@@ -4321,8 +4485,95 @@ function DocumentViewerPage({ doc, onBack }) {
       setActiveTab('sampleReturn');
     }
 
+    // W3-page6b: Tabs that have no exportable table (overview, consignment).
+    const TABS_WITH_NO_TABLE = ['overview', 'consignment', 'mapping'];
+    const exportDisabled = !exportMeta || TABS_WITH_NO_TABLE.includes(activeTab);
+    const exportTitle = exportDisabled
+      ? (TABS_WITH_NO_TABLE.includes(activeTab)
+          ? 'Export not available for this tab — select a data tab (Sample Out, Returns, Temp Sale, etc.) and load records first'
+          : 'Load records in the active tab to enable export')
+      : 'Export ' + (exportMeta.rows.length) + ' rows from the current tab as CSV';
+
     return (
       <div style={{ maxWidth: 1120, margin: '0 auto', padding: '20px 24px 28px' }} data-testid="inventory-hub-root">
+
+        {/* ── W3-page6b: PageHeader actions row (wireframe Inventory header: IV-HDR-*) ─
+             Three controls per the wireframe header row:
+               ↑ Upload Document  |  Cycle count  |  ↓ Export
+             Authority note (WIREFRAME-REQUIRED, pinned wireframe f7dd5e38):
+             - Upload Document (IV-HDR-2): navigates to Documents Hub — the existing upload
+               authority (WIREFRAME_AUTHORITY §D: "Upload Document → existing routes_upload
+               surfaces — link, not duplicate"). Repairs the page-6 dangling inv:upload
+               CustomEvent (census REMOVE on the dangling event dispatch).
+             - Cycle count (IV-HDR-1): net-new capability with NO backend owner (WIREFRAME_AUTHORITY
+               §D: "Cycle Count → NO owner — net-new"). Rendered per Lesson-M planned-state
+               honesty: visible, disabled, title naming the gap + census tag.
+             - Export (IV-HDR-3): live client-side CSV of the active tab's loaded rows;
+               disabled when the active tab has no table or no loaded rows. */}
+        <div
+          data-testid="inv-header-actions"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16,
+            justifyContent: 'flex-end',
+          }}
+        >
+          {/* ↑ Upload Document — real navigation to Documents Hub (IV-HDR-2; WIREFRAME-REQUIRED).
+              Repairs the page-6 inv:upload dangling CustomEvent: the Overview quick-action card
+              now also navigates here instead of dispatching inv:upload (dead control repair). */}
+          <button
+            data-testid="inv-hdr-upload"
+            onClick={navigateToDocuments}
+            title="Navigate to Documents Hub — the upload authority for all document types (packing lists, invoices, transfers, customs)"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '7px 14px', fontSize: 13, fontWeight: 600,
+              border: '1px solid var(--border)', borderRadius: 6,
+              background: 'var(--card)', color: 'var(--text)', cursor: 'pointer',
+            }}
+          >
+            ↑ Upload Document
+          </button>
+
+          {/* Cycle count — IV-HDR-1 — Lesson-M planned-state honesty:
+              No backend owner exists (WIREFRAME_AUTHORITY §D: "NO owner — net-new;
+              own pre-flight + operator approval required"). Visible and labelled so
+              the operator knows the gap; disabled until a backend slice ships. */}
+          <button
+            data-testid="inv-hdr-cycle-count"
+            disabled
+            title="Cycle count — IV-HDR-1: net-new capability, no backend owner. Backend slice required before this control can be enabled. (census: WIREFRAME-REQUIRED, no existing authority)"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '7px 14px', fontSize: 13, fontWeight: 600,
+              border: '1px solid var(--border)', borderRadius: 6,
+              background: 'var(--bg-subtle)', color: 'var(--text-3)',
+              cursor: 'not-allowed', opacity: 0.6,
+            }}
+          >
+            Cycle count
+          </button>
+
+          {/* ↓ Export — IV-HDR-3 — live client-side CSV from the active tab's loaded rows.
+              Disabled with an honest title when the active tab has no table or no loaded rows. */}
+          <button
+            data-testid="inv-hdr-export"
+            onClick={handleExport}
+            disabled={exportDisabled}
+            title={exportTitle}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '7px 14px', fontSize: 13, fontWeight: 600,
+              border: '1px solid var(--border)', borderRadius: 6,
+              background: exportDisabled ? 'var(--bg-subtle)' : 'var(--card)',
+              color: exportDisabled ? 'var(--text-3)' : 'var(--text)',
+              cursor: exportDisabled ? 'not-allowed' : 'pointer',
+              opacity: exportDisabled ? 0.6 : 1,
+            }}
+          >
+            ↓ Export
+          </button>
+        </div>
+
         {/* Cross-tab Record Return modal (opened from Sample Out row; success → switches to Sample Return) */}
         {recordReturnTarget && (
           <RecordReturnModal
@@ -4335,8 +4586,8 @@ function DocumentViewerPage({ doc, onBack }) {
         {/* Move Stock modal — triggered from Overview quick-action or tab content */}
         {showMove && <MoveStockModal onClose={() => setShowMove(false)} />}
 
-        {/* Tab strip */}
-        <InvTabStrip active={activeTab} onChange={setActiveTab} />
+        {/* Tab strip — uses handleTabChange (clears exportMeta on switch) */}
+        <InvTabStrip active={activeTab} onChange={handleTabChange} />
 
         <div style={{ paddingTop: 20 }}>
           {/* ── Overview tab — Wave-3 U-6 page 6 ─────────────────────── */}
@@ -4348,25 +4599,32 @@ function DocumentViewerPage({ doc, onBack }) {
           )}
 
           {/* ── Sample Out tab — Wave-3 U-1 page 1 ───────────────── */}
-          {activeTab === 'sampleOut' && <SampleOutTab onRecordReturn={handleRecordReturn} />}
+          {/* reportExport: passes current loaded samples as CSV rows      */}
+          {activeTab === 'sampleOut' && (
+            <SampleOutTab
+              onRecordReturn={handleRecordReturn}
+              reportExport={reportExport}
+            />
+          )}
 
           {/* ── Sample Return tab — Wave-3 U-1 page 2 ────────────── */}
-          {activeTab === 'sampleReturn' && <SampleReturnTab />}
+          {activeTab === 'sampleReturn' && <SampleReturnTab reportExport={reportExport} />}
 
           {/* ── Client Return tab — Wave-3 U-2 page 3 ───────────── */}
-          {activeTab === 'clientReturn' && <ClientReturnTab />}
+          {activeTab === 'clientReturn' && <ClientReturnTab reportExport={reportExport} />}
 
           {/* ── Return to Producer tab — Wave-3 U-2 page 4 ──────── */}
-          {activeTab === 'producerReturn' && <ProducerReturnTab />}
+          {activeTab === 'producerReturn' && <ProducerReturnTab reportExport={reportExport} />}
 
           {/* ── Temp Sale tab — Wave-3 U-3 page 5 ───────────────── */}
-          {activeTab === 'tempSale' && <TempSaleTab />}
+          {activeTab === 'tempSale' && <TempSaleTab reportExport={reportExport} />}
 
           {/* ── Temp Purchase tab — Wave-3 U-3 page 7 ──────────── */}
           {activeTab === 'tempPurchase' && (
             <TempPurchaseTab
               openViewer={openViewer}
               onShowMove={() => setShowMove(true)}
+              reportExport={reportExport}
             />
           )}
 
@@ -4375,10 +4633,12 @@ function DocumentViewerPage({ doc, onBack }) {
             <TempWarehouseTab
               openViewer={openViewer}
               onShowMove={() => setShowMove(true)}
+              reportExport={reportExport}
             />
           )}
 
           {/* ── Consignment tab — Wave-3 U-4 page 10 (WFIRMA-GATED) ── */}
+          {/* No reportExport — no backend table yet (WFIRMA-GATED)       */}
           {activeTab === 'consignment' && <ConsignmentTab />}
 
           {/* ── Identity / Mapping tab — Wave-3 page 11 ────────────── */}
