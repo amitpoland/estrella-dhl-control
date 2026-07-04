@@ -28,7 +28,7 @@ Authority: this file is the single source for keyword → skill mapping.
 | `UI_FRONTEND` | ui, frontend, v2, dashboard, component, layout, css, page, visual, render, html, style, button, modal, tab, panel, form, chart, design, improve ui, fix ui, redesign, restyle, polish, modernize, clean up | `frontend-design` + `ej-dashboard-design` | `ui-ux-pro-max` | Always consult `ej-dashboard-design` (project governance layer) together with `frontend-design` — no automatic inheritance, both must be active. Read `EJ_OVERRIDES.md` before applying `ui-ux-pro-max` output. V1 frozen — check Lesson F. |
 | `PROFORMA` | proforma, conflict, draft, snapshot, series, workspace, readiness, wired, pregate, pre-gate | `backend-route-and-service-builder` | *(planned: `proforma-engine`)* | `proforma-engine` planned but not installed. Use `backend-route-and-service-builder` until built. |
 | `DHL_CUSTOMS` | dhl, customs, clearance, awb, carrier, label, sad, invoice line, customs duty, tariff, packing | `pz-shipment` | `customs-pz-safety-checker` | `customs-pz-safety-checker` mandatory for any PZ guard changes. |
-| `WFIRMA_PZ` | wfirma, accounting, tax, vat, booked, pz calc, pz doc, pz number, pz import, zc429 | `backend-route-and-service-builder` | `pz-shipment` | `wfirma` skill planned; use AUTHORITY_MAP §wFirma until built. |
+| `WFIRMA_PZ` | wfirma, accounting, tax, vat, booked, pz calc, pz doc, pz number, pz import, zc429 | `backend-route-and-service-builder` | `wfirma-api-integration` (reference) | `wfirma-api-integration` reference skill **INSTALLED 2026-07-04** — read it for wFirma API behavior (auth, invoices, webhooks, gotchas). Implementation authority stays `ej-dashboard-fullstack-governance`; protected-domain approval (invoices/VAT/accounting/webhooks/persistence) is NOT bypassed. `pz-shipment` for PZ specifics. |
 | `BACKEND_API` | backend, api, route, endpoint, service, database, db, sqlite, model, schema, migration | `backend-route-and-service-builder` | — | Read-only planner — produces plan, does not write code directly. |
 | `AUDIT_EVIDENCE` | audit, evidence, timeline, log, trace, event, history, immutable | `audit-trace-reporter` | — | Read-only inspection only. |
 | `DEPLOY_RELEASE` | deploy, release, production, sync, rollback, gate, pzservice, robocopy, nssm | `deploy` | — | Requires full 7-agent gate. Never skip. |
@@ -105,7 +105,7 @@ The following keywords are strong enough that 1 hit = HIGH confidence (not MEDIU
 |---|---|---|---|
 | `proforma-engine` | PROFORMA | Proforma / conflict / workspace | PLANNED — file when B2–B9 types designed |
 | `dhl-customs` | DHL_CUSTOMS | DHL clearance / customs | PLANNED |
-| `wfirma` | WFIRMA_PZ | wFirma API / PZ accounting | PLANNED |
+| `wfirma-api-integration` | WFIRMA_PZ | wFirma API / PZ accounting | **INSTALLED 2026-07-04** — reference-only (`.claude/skills/wfirma-api-integration/`), subordinate to `ej-dashboard-fullstack-governance`; no protected-domain bypass |
 | `frontend-design` (global) | UI_FRONTEND | V1/V2 frontend | EXISTS as repo skill; invoke directly |
 
 When `MISSING_SKILL` appears in routing output, record in `BACKLOG.md` with disposition SCHEDULED unless already present.

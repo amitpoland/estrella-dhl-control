@@ -1,0 +1,35 @@
+# Gotchas Cheat Sheet — read before writing non-trivial wFirma integration code
+
+Fast-scan list of documented traps. Each links to the reference file with full detail. This file exists specifically so a project doesn't get stuck re-discovering these the hard way.
+
+1. **JSON nested collections need numeric string keys even for a single item** (`{"0": {...}}`), or you risk a 500 on add. → `request-response-conventions.md`
+2. **`contractor.id` ≠ `contractor_detail.id`.** Use `contractor.id` (CRM-level) for any request that references "a contractor." `contractor_detail.id` is a per-invoice snapshot id and changes across invoices for the same real contractor — never key sync/dedup logic off it. → `contractors.md`
+3. **There is no direct API to create warehouse documents (PZ/WZ/RW/PW/MM).** Stock changes only happen as a side effect of invoice/receipt/expense documents. Don't architect a "POST a WZ" feature — it doesn't exist. → `warehouse-goods.md`
+4. **Negative stock is blocked by design** — expect and handle this as a normal rejection, not a bug. → `warehouse-goods.md`
+5. **Draft invoices don't get a number and aren't sent to KSeF until finalized in the UI.** If you need a "hold for review" invoice flow, use draft `type`, not a full invoice you plan to edit later. → `invoices.md`
+6. **KSeF status/number is NOT returned synchronously on `/invoices/add`.** Poll `/invoices/get/{id}` after a delay, or (better) use a webhook. → `invoices.md`, `webhooks.md`
+7. **KSeF authorization is per-user, not just per-company.** The specific user whose API key is used must have personally completed KSeF authorization in the wFirma UI — company-level KSeF being "on" is not sufficient. → `invoices.md`
+8. **`warehouse_type: "simple"` skips the warehouse effect entirely.** Only set this if you deliberately don't want stock/WZ side effects for that document. → `invoices.md`
+9. **Regenerating API keys in the wFirma UI rotates BOTH accessKey and secretKey together** — a downstream break after someone touches Ustawienia » Bezpieczeństwo » Aplikacje » Klucze is probably this, not a code bug. → `auth.md`
+10. **Every request needs `company_id` if the account has multiple companies** — don't assume a "default" company. → `auth.md`
+11. **`fields` filter parameter uses CamelCase.field notation** (`Invoice.total`, `ContractorDetail.name`), different from the lowercase branch names in the actual response body (`invoice`, `contractor_detail`). A `fields` filter that "returns nothing" is often a casing/naming mismatch, not a broken filter. → `query-syntax.md`
+12. **A top-level `status.code = OK` doesn't guarantee no errors** — nested per-record/per-field `errors` branches can exist even on an overall-OK response (e.g. one invoicecontent line rejected). Always walk the full response tree for `errors`, not just the top-level status. → `error-handling.md`, `request-response-conventions.md`
+13. **Webhooks auto-disable after 10 consecutive failed delivery attempts** and must be manually re-enabled — monitor for silent stock/KSeF-sync gaps if your receiving endpoint had downtime. → `webhooks.md`
+14. **No documented bulk-add endpoint for invoices.** For high-volume loads (e.g. ~1000/month from a spreadsheet), wFirma's own recommendation is a scheduled script adding records one at a time, not a batch call. → `error-handling.md`
+15. **Products/goods are referenced by wFirma's internal `id`, not by your external SKU/EAN.** Resolve external codes to `goods.id` via a `find` query first if building line items programmatically. → `warehouse-goods.md`
+16. **`test.api2.wfirma.pl` exists as a sandbox host** — use it before running new bulk/destructive operations against production for the first time. → `auth.md`
+17. **Reservations (rezerwacje) are entirely UI-only — there is no API to create, query, or realize them.** Don't design any feature around "auto-create a wFirma reservation via API." → `proforma-reservations-flow.md`
+18. **There is no "convert proforma to invoice" API action.** You must GET the proforma, then POST a fresh `/invoices/add` — and NOT copy the proforma's numbering-related fields into it, or you'll hit a documented numbering bug. → `proforma-reservations-flow.md`
+19. **Proforma invoices use their own separate numbering series** from normal invoices — don't assume one shared counter. → `proforma-reservations-flow.md`
+20. **Numbering is locked and system-assigned by default** — don't try to pass a custom `number`/`fullnumber` on add and expect it honored; custom numbering needs a dedicated series configured in the UI. → `series-and-numbering.md`
+21. **WDT (0% VAT intra-EU) invoices always use the average NBP rate from the last business day BEFORE the issue date** — not the issue date itself, and not the general sales-date rule that applies to other invoice types. → `currency.md`
+22. **`contractor_id` is an undocumented-but-working `find` condition field** for filtering by contractor — the "obvious" documented-looking options (`Contractor.id`, `Invoice.contractor`) don't work. → `payment-and-contractor-master.md`
+23. **Sending `invoicecontents` without the correct nesting can silently create an invoice with a blank `__empty` line item at a nominal price instead of erroring** — a confirmed data-corruption failure mode, not just a 500. Always validate the response's line items match what you sent, don't just check for a success status. → `request-response-conventions.md`, `error-handling.md`
+24. **There's no "payment terms in days" field** — you compute the concrete `paymentdate` yourself from the invoice date plus whatever terms apply to that contractor, and store per-contractor default terms in your own system. → `payment-and-contractor-master.md`
+25. **Expense/wydatki API write support is unconfirmed and may not exist** — don't design automated expense-booking without testing it first on the sandbox. → `expenses.md`
+26. **`/invoices/download` returns raw PDF bytes, not a JSON response or a link** — a different code path than every other action in this API; a common integrator confusion. → `document-output.md`
+27. **There's no standalone print/download for PZ or any warehouse document not tied to an invoice.** The only API-reachable warehouse-document printout is a WZ bundled into its triggering invoice's PDF via `warehouse_documents=1`. → `document-output.md`
+28. **wFirma's OCR/file-attached expense booking does NOT work for foreign-language or foreign-currency invoices** — meaning it can't be used for Estrella Jewels' Indian-supplier purchase invoices at all. → `expenses.md`
+29. **The `description` field (max 320 chars) is the only confirmed free-text notes field on an invoice** — don't assume a second free-text field exists for structured info without checking current docs first. → `document-output.md`
+
+If you hit a failure mode not listed here, don't assume it's undocumented-but-safe-to-guess-around — check the specific module's page on doc.wfirma.pl, and if still unclear, say so explicitly to the user rather than presenting a guess as fact.
