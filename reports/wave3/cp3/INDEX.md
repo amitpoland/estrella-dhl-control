@@ -1,6 +1,6 @@
 # CP3 Capture Index — Wave-3
 
-**Generated:** 2026-07-04 05:47 UTC
+**Generated:** 2026-07-04 (accounting section regenerated clean)
 **Viewport:** 1440x900, light default
 
 ## Summary
@@ -46,35 +46,35 @@
 | 27 | inventory_tab_goods_return_from_client | inventory_tab_goods_return_from_client | inventory_tab_8 | [pair-27-inventory_tab_goods_return_from_client.png](pair-27-inventory_tab_goods_return_from_client.png) |
 | 28 | inventory_tab_return_to_producer | inventory_tab_return_to_producer | inventory_tab_9 | [pair-28-inventory_tab_return_to_producer.png](pair-28-inventory_tab_return_to_producer.png) |
 | 29 | inventory_tab_identity_mapping | inventory_tab_identity_mapping | inventory_tab_10 | [pair-29-inventory_tab_identity_mapping.png](pair-29-inventory_tab_identity_mapping.png) |
-| 30 | accounting_tab_overview | accounting_tab_overview | accounting_tab_0 | [pair-30-accounting_tab_overview.png](pair-30-accounting_tab_overview.png) |
-| 31 | accounting_tab_proforma | accounting_tab_proforma | accounting_tab_1 | [pair-31-accounting_tab_proforma.png](pair-31-accounting_tab_proforma.png) |
-| 32 | accounting_tab_wz | accounting_tab_wz | accounting_tab_6 | [pair-32-accounting_tab_wz.png](pair-32-accounting_tab_wz.png) |
-| 33 | accounting_tab_pz | accounting_tab_pz | accounting_tab_7 | [pair-33-accounting_tab_pz.png](pair-33-accounting_tab_pz.png) |
-| 34 | accounting_tab_pw | accounting_tab_pw | accounting_tab_8 | [pair-34-accounting_tab_pw.png](pair-34-accounting_tab_pw.png) |
-| 35 | accounting_tab_rw | accounting_tab_rw | accounting_tab_9 | [pair-35-accounting_tab_rw.png](pair-35-accounting_tab_rw.png) |
-| 36 | accounting_tab_mm | accounting_tab_mm | accounting_tab_10 | [pair-36-accounting_tab_mm.png](pair-36-accounting_tab_mm.png) |
-| 37 | accounting_tab_client_ledger | accounting_tab_client_ledger | accounting_tab_2 | [pair-37-accounting_tab_client_ledger.png](pair-37-accounting_tab_client_ledger.png) |
-| 38 | accounting_tab_wfirma_sync | accounting_tab_wfirma_sync | accounting_tab_3 | [pair-38-accounting_tab_wfirma_sync.png](pair-38-accounting_tab_wfirma_sync.png) |
+| 30 | accounting_tab_overview | accounting_tab_overview | acc-rail-purchase | [pair-30-accounting_tab_overview.png](pair-30-accounting_tab_overview.png) |
+| 31 | accounting_tab_proforma | accounting_tab_proforma | acc-rail-proforma | [pair-31-accounting_tab_proforma.png](pair-31-accounting_tab_proforma.png) |
+| 32 | accounting_tab_client_ledger | accounting_tab_client_ledger | acc-rail-ledger | [pair-32-accounting_tab_client_ledger.png](pair-32-accounting_tab_client_ledger.png) |
+| 33 | accounting_tab_wfirma_sync | accounting_tab_wfirma_sync | acc-rail-sync | [pair-33-accounting_tab_wfirma_sync.png](pair-33-accounting_tab_wfirma_sync.png) |
+| 34 | accounting_tab_wz | accounting_tab_wz | acc-rail-wz | [pair-34-accounting_tab_wz.png](pair-34-accounting_tab_wz.png) |
+| 35 | accounting_tab_pz | accounting_tab_pz | acc-rail-pz | [pair-35-accounting_tab_pz.png](pair-35-accounting_tab_pz.png) |
+| 36 | accounting_tab_pw | accounting_tab_pw | acc-rail-pw | [pair-36-accounting_tab_pw.png](pair-36-accounting_tab_pw.png) |
+| 37 | accounting_tab_rw | accounting_tab_rw | acc-rail-rw | [pair-37-accounting_tab_rw.png](pair-37-accounting_tab_rw.png) |
+| 38 | accounting_tab_mm | accounting_tab_mm | acc-rail-mm | [pair-38-accounting_tab_mm.png](pair-38-accounting_tab_mm.png) |
 
 ## Wireframe-Only (Census tag: W4-PLANNED)
 
-| Name | File | Census Tag |
-|---|---|---|
-| accounting_tab_invoice | [only-wireframe-accounting_tab_invoice.png](only-wireframe-accounting_tab_invoice.png) | W4-PLANNED |
-| accounting_tab_credit_note | [only-wireframe-accounting_tab_credit_note.png](only-wireframe-accounting_tab_credit_note.png) | W4-PLANNED |
-| accounting_tab_client_balance | [only-wireframe-accounting_tab_client_balance.png](only-wireframe-accounting_tab_client_balance.png) | W4-PLANNED |
-| accounting_tab_supplier_ledger | [only-wireframe-accounting_tab_supplier_ledger.png](only-wireframe-accounting_tab_supplier_ledger.png) | W4-PLANNED |
+| Name | File | Census Tag | Note |
+|---|---|---|---|
+| accounting_tab_invoice | [only-wireframe-accounting_tab_invoice.png](only-wireframe-accounting_tab_invoice.png) | W4-PLANNED | Census Tab C sub-type: Invoice — no dedicated live acc-rail |
+| accounting_tab_credit_note | [only-wireframe-accounting_tab_credit_note.png](only-wireframe-accounting_tab_credit_note.png) | W4-PLANNED | Census Tab C sub-type: Credit Note — no dedicated live acc-rail |
+| accounting_tab_client_balance | [only-wireframe-accounting_tab_client_balance.png](only-wireframe-accounting_tab_client_balance.png) | W4-PLANNED | Census Tab C sub-type: Client Balance — no dedicated live acc-rail |
+| accounting_tab_supplier_ledger | [only-wireframe-accounting_tab_supplier_ledger.png](only-wireframe-accounting_tab_supplier_ledger.png) | W4-PLANNED | Census Tab C sub-type: Supplier Ledger — no dedicated live acc-rail |
 
 ## Live-Only (Census tag: W4-EXTRA)
 
-| Name | File | Census Tag |
-|---|---|---|
-| dhl_customs | [only-live-dhl_customs.png](only-live-dhl_customs.png) | W4-EXTRA |
-| proforma_search | [only-live-proforma_search.png](only-live-proforma_search.png) | W4-EXTRA |
-| shipping_ops | [only-live-shipping_ops.png](only-live-shipping_ops.png) | W4-EXTRA |
-| proforma_detail | [only-live-proforma_detail.png](only-live-proforma_detail.png) | W4-EXTRA |
-| accounting_tab_4 | [only-live-accounting_tab_4.png](only-live-accounting_tab_4.png) | W4-EXTRA |
-| accounting_tab_5 | [only-live-accounting_tab_5.png](only-live-accounting_tab_5.png) | W4-EXTRA |
+| Name | File | Census Tag | Note |
+|---|---|---|---|
+| dhl_customs | [only-live-dhl_customs.png](only-live-dhl_customs.png) | W4-EXTRA | DHL customs module — no wireframe nav entry |
+| proforma_search | [only-live-proforma_search.png](only-live-proforma_search.png) | W4-EXTRA | Supplementary search page — no wireframe nav entry |
+| shipping_ops | [only-live-shipping_ops.png](only-live-shipping_ops.png) | W4-EXTRA | Shipping ops panel — no wireframe nav entry |
+| proforma_detail | [only-live-proforma_detail.png](only-live-proforma_detail.png) | W4-EXTRA | Proforma detail empty state |
+| accounting_tab_master | [only-live-accounting_tab_master.png](only-live-accounting_tab_master.png) | W4-EXTRA | Census AC-7 OUT — acc-rail-master navigates to /v2/master; no WF accounting tab counterpart |
+| accounting_tab_audit | [only-live-accounting_tab_audit.png](only-live-accounting_tab_audit.png) | W4-EXTRA | Census AC-8 BUILD gap — Audit Trail live but not yet in WF accounting section |
 
 ## Capture Errors
 

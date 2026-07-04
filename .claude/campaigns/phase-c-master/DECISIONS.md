@@ -703,3 +703,28 @@ report (Wave-4/backlog intake, not UI work).
 Also active this wave: /ui-ux-pro-max design-intelligence loaded WITH
 EJ_OVERRIDES (accessibility/UX/structural guidance only; EJ tokens +
 dashboard-shared components; no Tailwind/TS/hex/npm icons).
+
+---
+
+### 2026-07-04 — CP3 REVIEW HOLD (operator, verbatim R4) + queued Visual Bug Sweep
+
+OPERATOR (verbatim): "CP3 is NOT accepted yet. Hold at the recognition gate.
+Do not start CP4. I will perform a live operator review of the running UI on
+port 8135. After operator feedback: fix visual defects, fix interaction
+defects, perform one final visual polish sweep, regenerate CP3 only if
+required. No production deployment until operator acceptance."
+
+Effect: CP3 UNACCEPTED. Read-only prep only while the operator reviews:
+(1) keep port-8135 server healthy serving /v2 (launch --app-dir service fix
+committed); (2) regenerate accounting composites pair-30..38 cleanly
+(cosmetic collision fix); (3) operator-review-map.md (live-review guide).
+NO page rebuilds until feedback lands.
+
+QUEUED — VISUAL BUG SWEEP (operator, verbatim; runs as its own slice AFTER
+interaction fixes land): "Visual Bug Sweep: alignment · spacing · overflow ·
+mobile width · scrolling · clipped buttons · inconsistent icons · typography ·
+responsive issues · dark/light regressions (if applicable)." Production-
+quality polish, not functional; dedicated pass under the same CP3 gate; no
+wireframe redesign; EJ tokens only.
+
+CP3 acceptance is the operator's word alone; CP4/prod deploy only after it.
