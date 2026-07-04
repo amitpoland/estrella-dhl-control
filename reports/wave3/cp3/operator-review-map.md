@@ -1,6 +1,6 @@
 # Wave-3 CP3 — Operator Live-Review Map
 
-**Server:** http://localhost:54494/v2/index.html (Preview-managed; hash-routed SPA — `#/<slug>`).
+**Server:** http://localhost:60991/v2/index.html (Preview-managed; hash-routed SPA — `#/<slug>`).
 > **NOTE (2026-07-04):** port 8135 is held by a kernel zombie socket (dead PID
 > 27036, left by a CP3 harness run — cannot be force-cleared from user space,
 > self-reaps or clears on reboot). The IDENTICAL live UI is served Preview-

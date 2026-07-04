@@ -86,6 +86,22 @@ visual-polish phase.
 
 ## Defects
 
+### Defect #002
+- **Page:** Inventory
+- **Control:** Header "↓ Export" button
+- **Severity:** High (2) · **Class:** INTERACTION
+- **Expected:** Export the currently filtered rows of the active tab.
+- **Actual:** The Export button "doesn't do anything" — it was `disabled` whenever the active tab had no loaded rows, so clicking produced no response and no feedback.
+- **Screenshot:** operator-provided (Inventory header); reproduced on Preview.
+- **Root cause:** The header Export was `disabled = !exportMeta || TABS_WITH_NO_TABLE.includes(activeTab)`. Disabled on the Overview landing tab always, and on every data tab until records load (empty in dev / before a batch is loaded). A disabled `<button>` fires no `onClick`, so it read as broken with no explanation. The CSV path (`exportCsv`) and filter handling were already correct (register tabs filter server-side; the reported rows are the filtered set).
+- **Fix:** Export is always clickable. With loaded rows → downloads the filtered CSV (unchanged path). With none → renders an inline `inv-hdr-export-hint` message naming exactly what to do (open a data tab / load records), so the action always produces a visible response. Muted styling stays as a "nothing to export yet" cue. No wireframe redesign — the header Export control is preserved and made functional. Commit `4f6d75e5` (`service/app/static/v2/inventory-page.jsx`).
+- **Verification checklist:**
+  - Behavior in Preview (localhost:60991): ✅ button enabled (cursor pointer) on Overview + Sample Out; both hint variants render on click; re-walked all 11 tabs — Export present + responsive on each.
+  - No related console errors: ✅ (clean across the tab walk).
+  - Wireframe match holds: ✅ header Export control present per wireframe; inline hint is interaction feedback, not a layout change.
+  - Affected CP3 screenshot regenerated: ✅ `pair-08-inventory.png` live-right refreshed.
+- **Status:** CLOSED (commit `4f6d75e5`; no regression on the Inventory page — all 11 tabs re-walked clean).
+
 ### Defect #001
 - **Page:** Global shell
 - **Control:** Navigation / header icons
