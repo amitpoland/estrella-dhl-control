@@ -1,7 +1,7 @@
 # SKILL_REGISTRY.md — Atlas V2 Project Skills
 
 **Source of truth for skills version-controlled in `.claude/skills/`.**
-Generated 2026-06-06 by direct inspection. 5 project skills (ej-dashboard-design added 2026-07-04; ej-dashboard-fullstack-governance added 2026-07-04).
+Generated 2026-06-06 by direct inspection. 6 project skills (ej-dashboard-design added 2026-07-04; ej-dashboard-fullstack-governance added 2026-07-04; ej-dashboard-webapp-testing added 2026-07-04).
 
 > Skills are knowledge/governance surfaces, not actors. They tell an agent
 > *how* to do something correctly; they do not themselves mutate production.
@@ -17,6 +17,7 @@ Generated 2026-06-06 by direct inspection. 5 project skills (ej-dashboard-design
 | `ui-ux-pro-max` | Reference / search tool | UI/UX design ideas, accessibility, layout, palettes | Anything outside UI styling; stack defaults (Tailwind/TS) do NOT apply here | Search-only intelligence |
 | `ej-dashboard-design` | Governance / project layer | EJ Dashboard V2 UI — authority resolution, canonical-file identification, tokens, cross-module consistency | Backend/deploy/financial-customs logic; creating new pages/authorities without written approval | Read-with-`frontend-design` governance |
 | `ej-dashboard-fullstack-governance` | Governance / fullstack layer | Cross-layer changes on EJ Dashboard — route + service + persistence + UI together; stack lock; route→service→model mapping | New stack/scaffold (Next.js/TS/Tailwind/GraphQL/Postgres); protected-domain figures (financial/customs/accounting/inventory/shipment); bypassing `process_batch()`/master chain; authorizing a deploy | Read-before-edit governance |
+| `ej-dashboard-webapp-testing` | Governance / verification | Safe browser testing of EJ Dashboard (`/v2/`) — server detection, networkidle waits, screenshot/console/network capture, structured report | Modifying application code; testing against production (:47213); destructive/write actions without approval; triggering financial/customs/accounting/shipment/inventory/document-generation flows | Read-only browser verification |
 
 ---
 
@@ -63,6 +64,15 @@ Generated 2026-06-06 by direct inspection. 5 project skills (ej-dashboard-design
 - **Relationship / provenance:** **Adapted from — NOT a copy of** — the generic `development/senior-fullstack` template (`claude-code-templates`). The generic template was never installed; each of its wrong-stack defaults is inverted into a hard prohibition and bound to this repo's real stack (FastAPI + one-SQLite-file-per-domain + vanilla Babel JSX). **Composes with** `frontend-design` + `ej-dashboard-design` (frontend), the 7-agent deploy gate (production), and Engineering Lessons A/E/G/J/N; on conflict, those authorities win.
 - **Key rules it enforces:** `/context` + route→service→model map before edits; no new stack/scaffold; `process_batch()` is the only calc path; routes are thin callers, logic in services; `main.py` route registration; masters own product/customer data (no direct wFirma from a module); protected-domain changes are stop-and-confirm; a regression test for the changed route+service contract + a stated rollback (covering the separate `C:\PZ\engine\` sync) are mandatory before "done".
 - **Example:** "To add a `warehouse_note` field to the inventory page, map UI (`inventory-page.jsx`) → `PzApi` → `routes_inventory.py` → `inventory_service.py` → `inventory_db.py` first, flag the new column as a schema change, add a response-shape regression test, and state the rollback — before writing any code."
+
+### `ej-dashboard-webapp-testing`
+- **Purpose:** Safely **browser-test** the EJ Dashboard Portal (`/v2/`) with Playwright-style automation. Detect a running server before starting one, prefer existing project run commands/logs/helper scripts, wait for networkidle before DOM inspection, capture screenshots + console errors + failed network requests, and produce a structured test report. Read-only verification — it does not fix or deploy.
+- **Invocation context:** Run `/context` first. Triggers on "browser-test / smoke-test / verify a dashboard route or flow in the browser". This is the EJ-specific how-to for CLAUDE.md `preview_tools` + GATE 6 (browser-verification completeness). Composes with `frontend-design` / `ej-dashboard-design` (verifies their output) and `ej-dashboard-fullstack-governance` (a bug found → the *fix* routes there).
+- **Allowed domains:** Browser verification of `/v2/` routes — navigation, DOM/console/network inspection, screenshots, running existing smoke helpers, writing a report under `tasks/smoke-reports/`.
+- **Forbidden domains:** Modifying application code; testing against production (:47213 / `pz.estrellajewels.eu`); running destructive/write actions (Create PZ, Post/Convert/Submit to wFirma, Delete, Send, override) without explicit approval; triggering protected flows — financial, customs, accounting, shipment, inventory, and document-generation (PDF/XLSX); authorizing a deploy.
+- **Relationship / provenance:** **Adapted from — NOT a copy of** — the generic `development/webapp-testing` template (`claude-code-templates`); the template was never installed. Only the discipline was kept and bound to this repo's run surfaces (`make dev` :8000; `.claude/launch.json` preview configs :8135/:8200/:8136; V2 at `/v2/`), helper scripts (`run_smoke.py`, `lifecycle_smoke_tests.py` — treated as black boxes, `--help` before source), and safety rules.
+- **Key rules it enforces:** `/context` + state route/actions first; detect-before-start; local server only, never prod; prefer existing surfaces (Preview MCP / `run_smoke.py`) over hand-rolled flows; `--help` before reading helper source; wait for `networkidle` before inspection; capture screenshot + console errors + failed (4xx/5xx) requests; no app-code edits; no destructive/protected-flow trigger without approval; structured report (route · server · actions · result · evidence · failures · skipped).
+- **Example:** "To verify the dashboard home: detect a running server (else start `pz-service-verify` :8135), open `/v2/dashboard`, wait for networkidle, capture a screenshot + console + network, confirm the KPI strip and six kanban lanes render with no MOCK banner, and write the report to `tasks/smoke-reports/` — triggering no write actions."
 
 ---
 
