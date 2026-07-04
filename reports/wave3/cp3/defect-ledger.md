@@ -150,11 +150,18 @@ The classification model is now complete — no further process changes.
 - **Expected:** Consistent EJ icon system (SVG/glyph icons only, per the EJ design overrides — no emoji icons)
 - **Actual:** Mixed emoji (🧾 🌿 🔔) and geometric glyph icons (▦ ◫ ≡ ⚙) in the same nav/header
 - **Screenshot:** automated review 2026-07-04 (nav header, `/v2/dashboard` @ 1440px)
-- **Root cause:** _(fill on fix)_
-- **Fix:** _(fill on fix)_
-- **Verification checklist:** _(on fix)_ Preview behavior · no console errors · wireframe match holds · CP3 shell composite regenerated
-- **Status:** OPEN
-
-> Queue note: Low/VISUAL — does NOT jump the queue. Interaction defects from the
-> operator's review are worked first (frozen ordering); #001 is worked when the
-> operator reaches visual polish, or immediately on the operator's word.
+- **Type:** Bug (spec violated — EJ design overrides mandate SVG/glyph icons, no emoji).
+- **Root cause:** the global shell (`components.jsx` — `NAV_TREE` + `TopBar`) carried four literal emoji among otherwise-approved monochrome geometric glyphs (`▦ ✉ ⬡ ✈ ⊞ ◫ ≡ ⚙ ☀`): `📋` Pro Forma, `📄` Documents (nav), `🌿` theme toggle (light state), `🔔` header bell. Emoji render as colored, platform-variant pictographs — inconsistent with the approved glyph family.
+- **Fix:** replaced only those four with the existing approved style — no layout change, no new icon library, existing tokens only (commit `c95df552`, `service/app/static/v2/components.jsx`):
+  - `📋` → `▤` (geometric glyph, nav Pro Forma)
+  - `📄` → `▭` (rectangle glyph, nav Documents)
+  - `🌿` → `☾` (moon glyph — pairs with the existing `☀` sun in the `isDark ? '☀' : '☾'` toggle)
+  - `🔔` → inline `<svg>` bell (stroke `var(--text-2)`, `aria-label="Notifications"`) — matches the file's existing SVG idiom; the red unread dot is preserved.
+  - **Scope exclusion:** the `🧾` Supplier Invoices nav entry is the operator's uncommitted supplier-invoice WIP — deliberately NOT touched (surgical staging left it unstaged). It will be normalised whenever that WIP lands. The dashboard page-content emoji `📥`/`📤` live in `dashboard-kanban.jsx`, outside this defect's shell scope.
+- **Verification checklist:**
+  - Behavior in Preview (localhost:60991): ✅ all four render as glyph/SVG — Pro Forma `▤`, Documents `▭`, theme toggle `☾` (title "Switch to Dark"), header bell inline SVG; no layout shift.
+  - No related console errors: ✅ (error-level console clean after reload).
+  - Wireframe match holds: ✅ nav/header structure unchanged; icons now consistent with the approved glyph system.
+  - Affected CP3 screenshot regenerated: ✅ `pair-01-dashboard.png` (shell composite) refreshed 2026-07-04.
+- **Fix commit:** `c95df552`.
+- **Status:** CLOSED (commit `c95df552`; shell re-walked — no new defect, no regression on prior verified defects).
