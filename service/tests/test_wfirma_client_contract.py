@@ -500,9 +500,38 @@ def test_create_product_validates_required_args():
         create_product("EJL/X", "")
 
 
-def test_get_stock_raises():
-    with pytest.raises(NotImplementedError):
-        get_stock("GD-001")
+# ── Tests: get_stock (C-9a — live goods read, mocked HTTP) ───────────────────
+# get_stock reuses the live goods/find transport (mirrors get_product_by_code);
+# fixtures _XML_GOOD_OK / _XML_GOOD_EMPTY / _full_settings / _resp are defined
+# below at module scope and resolve at call time.
+
+def test_get_stock_returns_count_reserved_available():
+    with _full_settings():
+        with patch("app.services.wfirma_client._requests.request",
+                   return_value=_resp(200, _XML_GOOD_OK)):
+            s = get_stock("987654")
+    assert s == {"count": 10.0, "reserved": 2.0, "available": 8.0}
+
+
+def test_get_stock_empty_id_raises_value_error():
+    with pytest.raises(ValueError, match="wfirma_good_id is required"):
+        get_stock("")
+
+
+def test_get_stock_not_found_raises_runtime_error():
+    with _full_settings():
+        with patch("app.services.wfirma_client._requests.request",
+                   return_value=_resp(200, _XML_GOOD_EMPTY)):
+            with pytest.raises(RuntimeError, match="no good found"):
+                get_stock("999999")
+
+
+def test_get_stock_http_error_raises_runtime_error():
+    with _full_settings():
+        with patch("app.services.wfirma_client._requests.request",
+                   return_value=_resp(500, "err")):
+            with pytest.raises(RuntimeError, match="HTTP 500"):
+                get_stock("987654")
 
 
 def test_create_proforma_validates_required_args():

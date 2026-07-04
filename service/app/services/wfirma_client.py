@@ -1160,18 +1160,63 @@ def edit_product(
 
 def get_stock(wfirma_good_id: str) -> Dict[str, float]:
     """
-    Get current stock and reserved quantities for a good.
+    Get current stock and reserved quantities for a good (C-9a — double-stock-out
+    verification read).
 
     Returns {"count": float, "reserved": float, "available": float}
-    Raises NotImplementedError — live calls not yet enabled.
+    where available = count - reserved.
 
-    API: GET goods/get (or goods/find with id condition)
-    Auth: API Key headers
-    Key fields: count (current stock), reserved (currently reserved)
+    Raises ValueError when wfirma_good_id is empty.
+    Raises RuntimeError on HTTP error, non-OK wFirma status, or when the good id
+    is not found (a stock check for a missing good is an error, not zero stock).
+    Raises ConnectionError on network failure.
+
+    API: GET goods/find (conditions.id.eq) — reuses the live goods read path
+    (mirrors get_product_by_code); no new HTTP layer, no caching.
+    Auth: API Key headers (shared transport).
+    Key fields: count (current stock), reserved (currently reserved).
     """
-    raise NotImplementedError(
-        "get_stock: live wFirma API calls not yet enabled."
-    )
+    if not wfirma_good_id or not str(wfirma_good_id).strip():
+        raise ValueError("get_stock: wfirma_good_id is required")
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <goods>
+    <parameters>
+      <conditions>
+        <condition>
+          <field>id</field>
+          <operator>eq</operator>
+          <value>{_esc(str(wfirma_good_id).strip())}</value>
+        </condition>
+      </conditions>
+      <page><start>0</start><limit>1</limit></page>
+    </parameters>
+  </goods>
+</api>"""
+    http_status, response_text = _http_request("GET", "goods", "find", body)
+    if http_status >= 400:
+        raise RuntimeError(f"goods/find HTTP {http_status}")
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(f"goods/find wFirma status={code}: {desc}")
+    root = ET.fromstring(response_text)
+    node = root.find(".//good")
+    if node is None:
+        raise RuntimeError(f"get_stock: no good found for id={wfirma_good_id}")
+
+    def _f(tag: str) -> float:
+        try:
+            return float(_find_text(node, tag) or 0)
+        except (ValueError, TypeError):
+            return 0.0
+
+    count = _f("count")
+    reserved = _f("reserved")
+    return {
+        "count": count,
+        "reserved": reserved,
+        "available": count - reserved,
+    }
 
 
 # ── VAT Codes ─────────────────────────────────────────────────────────────────
