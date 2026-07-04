@@ -728,3 +728,31 @@ quality polish, not functional; dedicated pass under the same CP3 gate; no
 wireframe redesign; EJ tokens only.
 
 CP3 acceptance is the operator's word alone; CP4/prod deploy only after it.
+
+---
+
+### 2026-07-04 — EXECUTION ORDER UPDATED (operator, verbatim R4) — CP3 defect-driven mode
+
+OPERATOR (verbatim):
+"1. Freeze all implementation work.
+2. Do not start CP4.
+3. Do not rebuild any page unless it is based on operator feedback.
+4. Use the Preview instance currently serving the latest Wave 3 build
+   (localhost:54494 or the current Preview URL).
+5. Ignore the 8135 zombie socket until after CP3 is accepted. It is not a
+   release blocker.
+6. Record every operator issue in a defect ledger with: page · control ·
+   expected behavior · actual behavior · screenshot · severity.
+7. Fix interaction defects first.
+8. Run the Visual Bug Sweep only after interaction defects are closed.
+9. Regenerate only the affected CP3 screenshots.
+10. Wait for operator acceptance before any deployment activity."
+
+Effect: implementation FROZEN. Mode = CP3 defect-driven. Defect ledger at
+reports/wave3/cp3/defect-ledger.md (6-col schema). Each operator finding →
+a ledger row + a fix slice (INTERACTION defects first, each through the
+10-criterion gate); Visual Bug Sweep runs ONLY after the interaction ledger
+is closed; only affected CP3 composites regenerate; the 8135 zombie is NOT a
+release blocker (review served on the current Preview URL). CP4/deploy waits
+for the operator's acceptance word alone. No page rebuilds absent operator
+feedback.
