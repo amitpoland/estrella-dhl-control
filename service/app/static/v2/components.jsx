@@ -16,8 +16,8 @@ const NAV_TREE = [
   // P2 ("operator can observe truth") cannot be satisfied — the page exists
   // but is not reachable. Observer only; Lane A/B remain the sole authority.
   { id: 'dhl',       label: 'DHL',       icon: '✈' },
-  { id: 'proforma',  label: 'Pro Forma', icon: '📋' },
-  { id: 'documents', label: 'Documents', icon: '📄' },
+  { id: 'proforma',  label: 'Pro Forma', icon: '▤' },
+  { id: 'documents', label: 'Documents', icon: '▭' },
   { id: 'accounting', label: 'Accounting', icon: '⊞', badge: 'NEW' },
   // Phase B FOLD (2026-07-03, PROJECT_STATE DECISIONS "Phase B FOLD"): the
   // g_inventory NAV group (Stock Hub + Move Location) is COLLAPSED back to a
@@ -328,7 +328,7 @@ function TopBar({ onNewShipment, onToggleDark, isDark, onOpenSearch }) {
         borderRadius: 6, padding: '5px 10px', cursor: 'pointer',
         fontSize: 14, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 4,
       }}>
-        {isDark ? '☀' : '🌿'}
+        {isDark ? '☀' : '☾'}
       </button>
 
       <button onClick={onNewShipment} style={{
@@ -342,7 +342,10 @@ function TopBar({ onNewShipment, onToggleDark, isDark, onOpenSearch }) {
       </button>
 
       <button style={{ background: 'none', border: 'none', cursor: 'pointer', position: 'relative', padding: 4 }}>
-        <span style={{ fontSize: 18, color: 'var(--text-2)' }}>🔔</span>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-2)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-label="Notifications" role="img">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+          <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+        </svg>
         <span style={{ position: 'absolute', top: 2, right: 2, width: 8, height: 8, borderRadius: '50%', background: '#C0321A', border: '1.5px solid var(--card)' }}></span>
       </button>
 
