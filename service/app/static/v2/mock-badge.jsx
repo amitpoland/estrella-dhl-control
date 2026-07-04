@@ -61,7 +61,14 @@
 //   retired and its capability folded into the Inventory page as the Move
 //   Stock modal (Lesson M relocation; PROJECT_STATE DECISIONS "Phase B FOLD").
 //   Net page count DECREASED by one. WIRED_PAGES = 18/18.
-const WIRED_PAGES = ['proforma', 'proforma_search', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard', 'api_status', 'diagnostics', 'coverage', 'detail'];
+// Wave-3 Accounting Hub (2026-07-04): 'accounting' added — AccountingHub wired
+//   live to 6 tabs: Purchase Ledger (listBatches), Sales/Proforma
+//   (searchProformaDrafts), Client Ledger (LedgersPage embed), wFirma Sync
+//   (getWfirmaContractorScanStatus + navigate to wfirma_setup), Master Data
+//   (navigate to master), Audit Trail (listMasterAudit). Wave-4 doc-register
+//   tabs (WZ/PZ/PW/RW/MM) kept visible but gated per R-Q3 (BACKEND-REQUIRED).
+//   All mock arrays removed.
+const WIRED_PAGES = ['proforma', 'proforma_search', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard', 'api_status', 'diagnostics', 'coverage', 'detail', 'accounting'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;

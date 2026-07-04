@@ -883,5 +883,9 @@
     getBatchFiles: (batchId) =>
       _get(`${BASE}/dashboard/batches/${encodeURIComponent(batchId)}/files`),
 
+    // Used by: Accounting Hub wFirma Sync tab
+    getWfirmaContractorScanStatus: () =>
+      _get(`${BASE}/wfirma/contractors/scan/status`),
+
   });
 })();

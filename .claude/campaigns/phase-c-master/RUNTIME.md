@@ -263,3 +263,9 @@ Campaign slices:
   DC-12 upload-packing-list route, DC-13-PZ document-level PZ create, DC-14
   modal (same route). Sprint-35 read-only contract SUPERSEDED honestly: 33/0
   w/ whitelist write-endpoint pin + STOP-control no-fetch pin. Next: Accounting Hub.
+- W3 Accounting Hub COMPLETE: MOCK -> live 6-tab hub (Purchase Ledger, Sales/
+  Proforma, Client Ledger via LedgersPage embed, wFirma Sync status+navigate,
+  Master Data navigate, Audit Trail) — Missing: 0; Wave-4 doc-register tabs
+  visible-gated per R-Q3; Sprint-28 contract superseded (11/11); WIRED_PAGES
+  20/20 ('accounting' staged surgically apart from the operator's
+  supplier_invoice_review WIP). Next per order: Shipment Detail.
