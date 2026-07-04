@@ -1,7 +1,7 @@
 ---
 name: ej-dashboard-master
 metadata:
-  version: 1.2.0
+  version: 1.3.0
 description: >
   Master ROUTER / orchestration skill for EJ Dashboard Portal (Estrella Jewels / Atlas-v2)
   work. This is NOT a design, backend, refactor, or testing skill and owns NO implementation
@@ -42,14 +42,45 @@ win over all; the 7-agent deploy gate owns production.
 At the **beginning of every new Claude Code session**:
 
 1. **Inspect the repository.**
-2. **Detect available project skills.**
-3. **Build the routing table** (category → minimum skill set, from §4 / the decision matrix).
-4. **Cache the routing decision.**
+2. **Inspect active campaigns** — read `ACTIVE_CAMPAIGNS.md` (the Active Campaign Registry) to
+   learn which long-running campaigns are `ACTIVE` / `BLOCKED` / `PLANNED` and each one's next
+   milestone, so in-flight work is continued, not restarted.
+3. **Detect available project skills.**
+4. **Build the routing table** (category → minimum skill set, from §4 / the decision matrix).
+5. **Cache the routing + campaign decision.**
 
 **Do NOT activate implementation skills yet.** Only activate skills after the **first user task
 is classified** (§2). Bootstrap makes the router *ready to dispatch* — it loads no
 design/backend/refactor/testing skill until a real task arrives. This prevents unnecessary
 loading and keeps a fresh session at minimum context.
+
+## Active Campaign Registry
+
+The master router holds **four state surfaces**: the **Skill Registry** (`SKILL_REGISTRY.md`),
+this **Active Campaign Registry** (`ACTIVE_CAMPAIGNS.md`), the **Architecture Decision Matrix**,
+and the **Skill Freeze Policy**. The campaign registry is the layer that lets long-running work
+survive across sessions — without it, each new session tries to rebuild campaign context from
+scratch.
+
+`ACTIVE_CAMPAIGNS.md` is a **state registry, not a planning tool.** Per campaign it holds only:
+Objective · Current phase · Last completed milestone · Next milestone · Blockers · Authority
+owner (+ a pointer to the authoritative detail doc). It carries **no** Gantt charts, estimates,
+deadlines, or assignments — out of scope by design.
+
+Standard status vocabulary (use exactly these): `PLANNED` · `ACTIVE` · `BLOCKED` · `ON HOLD` ·
+`REVIEW` · `COMPLETE` · `ARCHIVED`.
+
+Rules:
+- **Read it at Session Bootstrap and at task start.** Before classifying, check whether the task
+  belongs to an existing campaign.
+- **Continue, don't restart.** If a task advances an `ACTIVE` campaign, resume that campaign's
+  next milestone — never open a parallel effort for work already in flight (the campaign-level
+  form of the no-duplicate-authority rule §6).
+- **Index, not a second source of truth.** Detailed campaign state stays owned by the
+  authoritative docs (`.claude/campaigns/*`, `.claude/memory/PROJECT_STATE.md`); this registry
+  points to them and must stay consistent. Never let it fork campaign authority.
+- **Keep it current.** At a campaign milestone (the workflow Close step), update the campaign's
+  Current phase / Last completed / Next milestone / Blockers.
 
 ## 1. Inspect first
 
@@ -117,10 +148,12 @@ extend in place. An unpropagated rename is a silent duplicate authority — reje
 ## 7. Execution workflow (never skip a step)
 
 ```
-Inspect → Classify → Skill Selection → Plan → Implement → Verify → Close
+Inspect → Read Active Campaigns → Classify → Skill Selection → Plan → Implement → Verify → Close (update campaign milestone)
 ```
 
-Every implementation task runs the full chain. Discussion-class requests stop after answering
+At task start, read the Active Campaign Registry: if the task belongs to an `ACTIVE` campaign,
+**continue** it (advance its phase / next milestone) rather than starting a parallel effort; at
+Close, update that campaign's milestone. Every implementation task runs the full chain. Discussion-class requests stop after answering
 (no Implement/Verify). Verify uses the repo-real gate the activated skill requires
 (`make verify` / targeted `pytest`, or `ej-dashboard-webapp-testing` for a browser surface);
 never self-authorize a deploy. **Close = release every Active skill** from context (§11 Skill
@@ -215,6 +248,6 @@ authority; or authorize a deploy. It classifies, selects, delegates, and verifie
 
 `tests/` covers the routing contract (discussion/planning load no implementation skills; UI →
 design pair; backend → fullstack + clean-code; browser → webapp-testing only; protected-domain
-stop-and-ask; duplicate-authority rejection; Minimum Skill Principle; conflict resolution).
-The task-type → skills mapping lives in `ARCHITECTURE_DECISION_MATRIX.md`. Re-validate both after
-any edit.
+stop-and-ask; duplicate-authority rejection; Minimum Skill Principle; conflict resolution;
+campaign continuity). The task-type → skills mapping lives in `ARCHITECTURE_DECISION_MATRIX.md`;
+active-campaign state lives in `ACTIVE_CAMPAIGNS.md`. Re-validate both after any edit.

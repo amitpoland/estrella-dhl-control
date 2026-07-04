@@ -48,10 +48,16 @@ not fixed — they change dynamically as the task changes.
            Repository Inspect
                    │
                    ▼
+        Inspect Active Campaigns
+                   │
+                   ▼
            Routing Table Build
                    │
                    ▼
            Wait for User Task
+                   │
+                   ▼
+       Continue Existing Campaign
                    │
                    ▼
            Task Classification
@@ -66,8 +72,20 @@ not fixed — they change dynamically as the task changes.
                Verify
                    │
                    ▼
-           Release Active Skills
+     Release Active Skills · Update Campaign
 ```
+
+### Four state surfaces the master holds
+
+1. **Skill Registry** (`SKILL_REGISTRY.md`) — which skills exist and what each owns.
+2. **Active Campaign Registry** (`ACTIVE_CAMPAIGNS.md`) — which long-running campaigns are
+   `PLANNED` / `ACTIVE` / `BLOCKED` / `ON HOLD` / `REVIEW` / `COMPLETE` / `ARCHIVED`, and each
+   one's next milestone. A **state registry, not a planning tool** (no Gantt/estimates/deadlines/
+   assignments); an **index** that points to the authoritative campaign docs, never a second
+   source of truth. Read at bootstrap and task start so in-flight work is **continued, not
+   restarted**.
+3. **Architecture Decision Matrix** (`ARCHITECTURE_DECISION_MATRIX.md`) — task-type → skills.
+4. **Skill Freeze Policy** (`SKILL_REGISTRY.md`) — no new skills without architectural approval.
 
 - **Session Bootstrap** — at session start: inspect the repo, detect available skills, build +
   cache the routing table. No implementation skill is activated until the first task is classified.
