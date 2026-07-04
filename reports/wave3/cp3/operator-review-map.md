@@ -1,6 +1,11 @@
 # Wave-3 CP3 — Operator Live-Review Map
 
-**Server:** http://127.0.0.1:8135/v2/index.html (hash-routed SPA — `#/<slug>`).
+**Server:** http://localhost:54494/v2/index.html (Preview-managed; hash-routed SPA — `#/<slug>`).
+> **NOTE (2026-07-04):** port 8135 is held by a kernel zombie socket (dead PID
+> 27036, left by a CP3 harness run — cannot be force-cleared from user space,
+> self-reaps or clears on reboot). The IDENTICAL live UI is served Preview-
+> managed at the URL above (autoPort picked 54494). Launch config `pz-review`
+> added to `.claude/launch.json` for stable managed restarts.
 **Composites for reference:** this folder, `pair-01`…`pair-38` (wireframe LEFT · live RIGHT).
 **How to read:** each row = the exact place to click + the ONE behavior to confirm.
 Every cited handler is in the live code at the line given (as of `df1ab135`/CP3 HEAD).
