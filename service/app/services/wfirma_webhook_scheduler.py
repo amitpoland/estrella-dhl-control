@@ -213,6 +213,9 @@ def _run_processing_tick() -> None:
     # ── Step 6: proactive contractor master sync from wFirma list (Phase 3B) ──
     _run_contractor_poll_tick()
 
+    # ── Step 7: goods stock-change webhook sync (Wave 4 C-8a) ─────────────────
+    _run_stock_sync_tick()
+
 
 def _run_enrichment_tick() -> None:
     """
@@ -379,6 +382,51 @@ def _run_contractor_poll_tick() -> None:
         "wfirma_scheduler: contractor_poll total=%d new=%d updated=%d error=%s",
         total, new_count, updated_count, error,
     )
+
+
+def _run_stock_sync_tick() -> None:
+    """
+    Wave 4 C-8a goods stock-change sync step — called at the end of every tick.
+
+    Routes stored webhook events through wfirma_stock_sync_processor. Inert until
+    OI-10 supplies the stock-change payload contract (see the processor): today no
+    event is recognized as a stock-change and no reads/writes occur. Wired here so
+    that only the processor's BLOCKED-BY-OI-10 sections need filling later.
+
+    Idempotency relies on the existing wfirma_webhook_events.event_id PRIMARY KEY
+    (storage-level). No new state table, no schema change, no wFirma writes.
+    """
+    if _events_db_path is None:
+        return
+
+    from .wfirma_stock_sync_processor import sync_stock_from_event
+
+    try:
+        with sqlite3.connect(str(_events_db_path)) as conn:
+            rows = conn.execute(
+                "SELECT event_id, event_type, payload_json FROM wfirma_webhook_events"
+            ).fetchall()
+    except Exception as exc:
+        log.warning("wfirma_scheduler: cannot read events DB for stock sync: %s", exc)
+        return
+
+    now = _now_utc()
+    recognized = 0
+    for event_id, event_type, payload_json in rows:
+        result = sync_stock_from_event(
+            event_id=event_id,
+            event_type=event_type,
+            payload_json=payload_json or "{}",
+            now=now,
+        )
+        if result != "skipped_not_stock_change":
+            recognized += 1
+
+    if recognized:
+        log.info(
+            "wfirma_scheduler: stock_sync recognized=%d (deferred — BLOCKED BY OI-10)",
+            recognized,
+        )
 
 
 def start_wfirma_scheduler(storage_root: Path) -> None:
