@@ -747,6 +747,7 @@
         { ...payload, operator: op });
     },
 
+    // ── Inventory: Sample Return — Wave-3 U-1 page 2 ──────────────────────
     // POST /api/v1/inventory/pieces/{piece_id}/sample-return
     //   body: { operator, idempotency_key, notes? }
     // Moves piece SAMPLE_OUT → WAREHOUSE_STOCK. Idempotent on (scan_code, key).
@@ -761,6 +762,12 @@
         { ...payload, operator: op });
     },
 
+    // ── Inventory: Client Return register — Wave-3 U-2 page 3 ─────────────
+    // GET /api/v1/inventory/returns?direction=from_client&status=&limit=
+    // → { ok, count, returns: [{id, scan_code, direction, operator,
+    //     source_holder_name, return_reason, received_at, notes,
+    //     occurred_at, created_at, status}] }
+    // direction fixed to from_client for this tab. status filter: 'recorded' (omit for all).
     // Authority: routes_inventory_returns.py:212 (C-3a/C-3c, Wave-2 backend LIVE)
     getInventoryReturns: (params) => {
       const qs = params ? '?' + new URLSearchParams(params).toString() : '';
@@ -786,6 +793,13 @@
         { ...payload, operator: op });
     },
 
+    // ── Inventory: Return to Producer register — Wave-3 U-2 page 4 ───────────
+    // GET /api/v1/inventory/returns?direction=to_producer&status=&limit=
+    // → { ok, count, returns: [{id, scan_code, direction, operator,
+    //     producer_name, producer_id, return_reason, dispatch_reference,
+    //     expected_resolution_date, notes, occurred_at, created_at,
+    //     resolution_event_id, resolved_at, status}] }
+    // status filter: 'open' (awaiting/in-transit) | 'resolved' (confirmed) (omit=all)
     // Authority: routes_inventory_returns.py:212 (C-3c, Wave-2 backend LIVE)
     getProducerReturns: (params) => {
       const qs = params ? '?' + new URLSearchParams(params).toString() : '';
@@ -826,6 +840,14 @@
         { ...payload, operator: op });
     },
 
+    // ── Inventory: Temp Sale register — Wave-3 U-3 page 5 ─────────────────
+    // GET /api/v1/inventory/state/{batch_id}
+    // → { ok:true, batch_id, as_of, counts:{state: int}, pieces:[{scan_code,
+    //     state, product_code, design_no, updated_at}], total, source, degraded? }
+    // Callers filter pieces to state==='SALES_TRANSIT'.
+    // Authority: routes_inventory.py:74 (GET /api/v1/inventory/state/{batch_id}, LIVE)
+    // Cross-batch aggregate: NO endpoint exists — tab uses per-batch picker.
+    // Lesson-M note (IV-TS-1): cross-batch SALES_TRANSIT aggregate not backed
     // by any live endpoint; per-batch read is the only available authority.
     getInventoryBatchState: (batchId) =>
       _get(`${BASE}/inventory/state/${encodeURIComponent(batchId)}`),
@@ -841,10 +863,41 @@
       return _get(`${BASE}/inventory/movements/${encodeURIComponent(batchId)}${qs}`);
     },
 
+    // ── Inventory: Temp Purchase merchandising register — Wave-3 U-3 page 7 ──
+    // GET /api/v1/inventory/merchandising/{batch_id}
+    // → { ok:true, batch_id, count, rows:[{
+    //     scan_code, product_code, design_no, batch_no,
+    //     pack_sr, ctg, client_po,
+    //     karat, color, quality, dia_wt, size, qty, uom,
+    //     gross_weight, net_weight, state }] }
+    //
+    // C-3e joined read (packing_lines ⋈ inventory_state per piece):
+    //   - pack_sr/ctg/client_po/design/karat/color/quality/dia_wt/qty from packing_lines
+    //   - state from inventory_state (current engine state of each scan_code)
+    // Client-side: filter rows where state === 'PURCHASE_TRANSIT' for Temp Purchase tab.
+    // Honest empty: unknown batch_id → rows=[] (HTTP 200).
+    // Authority: routes_inventory.py:127 (C-3e, LIVE)
     // Cross-batch aggregate: NO endpoint exists — tab uses per-batch picker.
     getMerchandisingView: (batchId) =>
       _get(`${BASE}/inventory/merchandising/${encodeURIComponent(batchId)}`),
 
+    // ── Inventory: Final Stock location view — Wave-3 page 9 ─────────────────
+    // Authority: R-Q4 (DECISIONS.md 2026-07-04): "Final Stock = location/bag-assigned
+    // inventory. Temp Warehouse = received but not yet assigned."
+    //
+    // Strategy: load all warehouse locations, then per-location inventory filtered
+    // to a given batch. Returns a flat list of items that have a non-empty
+    // current_location — these are the Final Stock pieces for the batch.
+    //
+    // Two sequential calls:
+    //   1. GET /api/v1/warehouse/locations  → location list
+    //   2. GET /api/v1/warehouse/locations/{code}/inventory  → per location (parallel)
+    //      filter client-side to items.batch_id === batchId
+    //
+    // Returns: { ok, items: [{scan_code, product_code, design_no, bag_id,
+    //   current_location, batch_id, current_status, updated_at}], locationCount }
+    //
+    // The shared disjoint predicate (exported for TempWarehouseTab amendment):
     //   isLocationAssigned(item) ← item.current_location is non-empty
     //
     // Cross-tab disjoint guarantee: FinalStockTab = isLocationAssigned(item) for
@@ -879,17 +932,116 @@
           if (it.batch_id === batchId && it.current_location && it.current_location.trim() !== '') {
             items.push(it);
           }
-          // Used by: Documents Hub OtherDocs tab, PZ kanban Download button
+        });
+      });
+
+      return { ok: true, status: 200, data: { items, locationCount: locs.length } };
+    },
+
+    // ── Wave-3 Documents Hub transport additions ─────────────────────────────
+    // These are transport-only wrappers for EXISTING endpoints.
+    // All endpoints were live before this wave; these wrappers were absent from
+    // pz-api.js. Added after getWarehouseLocationInventory per the build brief.
+    // No new backend routes — EXISTING authorities only (DECISIONS.md constraint).
+
+    // GET /api/v1/dashboard/batches/{batch_id}/files
+    // Returns file availability for a batch folder: pz_pdf, xlsx, sad, sources…
+    // Authority: routes_dashboard.py:558 (GET /batches/{batch_id}/files)
+    // Used by: Documents Hub OtherDocs tab, PZ kanban Download button
     getBatchFiles: (batchId) =>
       _get(`${BASE}/dashboard/batches/${encodeURIComponent(batchId)}/files`),
 
+    // ── Wave-3 Accounting Hub transport additions ─────────────────────────────
+    // Transport-only wrappers for EXISTING endpoints.
+    // No new backend routes — EXISTING authorities only (DECISIONS.md constraint).
+
+    // GET /api/v1/wfirma/contractors/scan/status
+    // Contractor sync status: healthy, running, last_started_at,
+    // last_completed_at, duration_ms, processed, created, updated, skipped,
+    // errors, last_error.
+    // Authority: routes_wfirma_contractors.py:117
     // Used by: Accounting Hub wFirma Sync tab
     getWfirmaContractorScanStatus: () =>
       _get(`${BASE}/wfirma/contractors/scan/status`),
 
+    // ── Wave-3 Shipment Detail transport additions ────────────────────────────
+    // Transport-only wrappers for EXISTING endpoints.
+    // No new backend routes — EXISTING authorities only (DECISIONS.md constraint).
+
+    // GET /api/v1/tracking/shipment/{batch_id}/timeline
+    // Full shipment timeline: chronological audit events with timestamps.
+    // Authority: routes_tracking.py (get_shipment_timeline)
     // Used by: shipment-detail-page.jsx TimelineTab (SD-7 gap closure)
     getShipmentTimeline: (batchId) =>
       _get(`${BASE}/tracking/shipment/${encodeURIComponent(batchId)}/timeline`),
+
+    // ── Wave-3 Dashboard transport additions ─────────────────────────────────
+    // Transport-only wrappers for EXISTING endpoints.
+    // No new backend routes — EXISTING authorities only (DECISIONS.md constraint).
+
+    // GET /api/v1/webhooks/wfirma/status
+    // wFirma sync scheduler heartbeat: scheduler_running, last_tick_at,
+    // last_completed_at, next_tick_at, queue state, snapshot totals.
+    // Authority: routes_webhooks_wfirma_status.py
+    // Used by: wireframe-update.jsx OperationalStatusStrip (D-5 gap closure)
+    getWfirmaWebhookStatus: () =>
+      _get(`${BASE}/webhooks/wfirma/status`),
+
+    // GET /api/v1/deploy/status
+    // Deployment health: live SHA, deployed_at, GATE 2 state, verification results.
+    // Authority: routes_deploy_status.py
+    // Used by: wireframe-update.jsx OperationalStatusStrip (D-5 gap closure)
+    getDeployStatus: () =>
+      _get(`${BASE}/deploy/status`),
+
+    // ── Wave-3 Proforma List + Detail transport additions ─────────────────────
+    // Transport-only wrappers for EXISTING endpoints.
+    // No new backend routes — EXISTING authorities only (DECISIONS.md constraint).
+
+    // GET /api/v1/proforma/pipeline/{batch_id}
+    // Batch-level pipeline state: aggregated draft lifecycle, reservation stats,
+    // pipeline_stage label, and per-state counts.
+    // Authority: routes_proforma.py (get_batch_pipeline)
+    // Used by: proforma-list.jsx PipelineKpiStrip (PL-1 gap closure)
+    getProformaPipeline: (batchId) =>
+      _get(`${BASE}/proforma/pipeline/${encodeURIComponent(batchId)}`),
+
+    // GET /api/v1/proforma/search
+    // Cross-batch proforma search.
+    // Auth params: client_name, batch_id, draft_state, currency, date_from,
+    //              date_to, page, page_size.
+    // Authority: routes_proforma.py (search_proforma_drafts)
+    // Used by: proforma-list.jsx cross-batch search (PL-2 gap closure)
+    searchProformaDrafts: (params) =>
+      _get(`${BASE}/proforma/search${params ? '?' + new URLSearchParams(params).toString() : ''}`),
+
+    // GET /api/v1/proforma/draft/{draft_id}/events
+    // Audit event trail for a draft: array of {event_type, created_at, detail}.
+    // Authority: routes_proforma.py (get_draft_events)
+    // Used by: proforma-detail.jsx ProformaHistoryTab (PD-5 gap closure)
+    getDraftEvents: (draftId) =>
+      _get(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/events`),
+
+    // GET /api/v1/proforma/draft/{draft_id}/suggest-service-charges
+    // Combined freight + insurance suggestion from Customer Master.
+    // Authority: routes_proforma.py (suggest_service_charges)
+    // Used by: proforma-detail.jsx ServiceChargesPanel (PL-5 gap closure)
+    suggestServiceCharges: (draftId) =>
+      _get(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/suggest-service-charges`),
+
+    // POST /api/v1/proforma/draft/{draft_id}/apply-service-charges
+    // Apply Customer Master freight/insurance as service charges.
+    // Authority: routes_proforma.py (apply_service_charges)
+    // Used by: proforma-detail.jsx ServiceChargesPanel (PL-5 gap closure)
+    applyServiceCharges: (draftId, body) =>
+      _post(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/apply-service-charges`, body),
+
+    // PUT /api/v1/proforma/service-products/{charge_type}
+    // Register a wFirma product for a service charge type.
+    // Authority: routes_proforma.py (put_service_product)
+    // Used by: proforma-detail.jsx ServiceProductRegistryPanel (PL-5 gap closure)
+    putServiceProduct: (chargeType, body) =>
+      _put(`${BASE}/proforma/service-products/${encodeURIComponent(chargeType)}`, body),
 
   });
 })();

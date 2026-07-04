@@ -2121,6 +2121,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     origin:   ln.origin || (liveDraft.origin_country) || (companyProfile && companyProfile.country) || '—',
     purity:   ln.purity || '',
     currency: ln.currency || draftCurrency,
+    _raw:     ln,  // PD-2: preserved for design_no column in ProformaLinesTab
   }));
 
   // Ambiguity line evidence: candidate product_code → packing-line context so
@@ -3039,6 +3040,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                   .then(r => r && r.ok && draftHook && draftHook.reload && draftHook.reload());
               }}
             />
+            {/* PL-5: Service Product Registry Panel — wires GET/PUT /proforma/service-products */}
+            <ServiceProductRegistryPanel />
           </React.Fragment>
         )}
         {activeTab === 'lines' && <ProformaLinesTab lines={lines} currency={draftCurrency} />}
@@ -3400,6 +3403,121 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
   );
 }
 
+// ── PL-5 — Service Product Registry Panel ────────────────────────────────────
+// Gap PL-5: getServiceProducts (pz-api.js:134, backend live at
+// GET /api/v1/proforma/service-products) was never called by any V2 JSX page.
+//
+// This panel shows the freight/insurance charge-type → wFirma product mappings.
+// Authority: GET /api/v1/proforma/service-products (read) +
+//            PUT /api/v1/proforma/service-products/{charge_type} (register)
+// Placed in ProformaOverviewTab below ServiceChargesPanel when
+// canEdit === true (editing state only).
+function ServiceProductRegistryPanel() {
+  const { useState, useEffect } = React;
+  const [products, setProducts] = useState(null);
+  const [loading, setLoading]   = useState(true);
+  const [editing, setEditing]   = useState(null);  // charge_type being edited
+  const [editVal, setEditVal]   = useState('');
+  const [saving, setSaving]     = useState(false);
+  const [saveErr, setSaveErr]   = useState(null);
+
+  const load = () => {
+    setLoading(true);
+    window.PzApi.getServiceProducts()
+      .then(r => { setProducts(r && r.ok !== false ? (r.data || r) : null); setLoading(false); })
+      .catch(() => { setProducts(null); setLoading(false); });
+  };
+  useEffect(() => { load(); }, []);
+
+  const handleSave = (chargeType) => {
+    if (!editVal.trim()) return;
+    setSaving(true); setSaveErr(null);
+    window.PzApi.putServiceProduct(chargeType, { wfirma_product_id: editVal.trim() })
+      .then(r => {
+        setSaving(false);
+        if (r && r.ok !== false) { setEditing(null); setEditVal(''); load(); }
+        else setSaveErr((r && r.error) || 'Save failed');
+      })
+      .catch(e => { setSaving(false); setSaveErr(e.message || String(e)); });
+  };
+
+  const rows = Array.isArray(products) ? products
+    : (products && Array.isArray(products.mappings)) ? products.mappings
+    : [];
+
+  return (
+    <div data-testid="service-product-registry-panel"
+      style={{ marginTop: 20, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>Service Charge → wFirma Product Registry</span>
+        {loading && <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Loading…</span>}
+      </div>
+      {!loading && rows.length === 0 && (
+        <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 8 }}>
+          No mappings registered. Map a charge type to its wFirma product ID to enable automatic line creation on Post.
+        </div>
+      )}
+      {rows.map(r => (
+        <div key={r.charge_type} data-testid={`service-product-row-${r.charge_type}`}
+          style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px', marginBottom: 4,
+            background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6 }}>
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text)', width: 80, textTransform: 'capitalize' }}>
+            {r.charge_type}</span>
+          {editing === r.charge_type ? (
+            <>
+              <input value={editVal} onChange={e => setEditVal(e.target.value)}
+                placeholder="wFirma product ID"
+                data-testid={`service-product-input-${r.charge_type}`}
+                style={{ flex: 1, padding: '4px 8px', fontSize: 12, borderRadius: 4,
+                  border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }}
+              />
+              {saveErr && <span style={{ fontSize: 11, color: 'var(--badge-red-text)' }}>{saveErr}</span>}
+              <Btn variant="primary" small disabled={saving || !editVal.trim()}
+                data-testid={`service-product-save-${r.charge_type}`}
+                onClick={() => handleSave(r.charge_type)}>
+                {saving ? '…' : '✓'}
+              </Btn>
+              <Btn variant="ghost" small onClick={() => { setEditing(null); setSaveErr(null); }}>✕</Btn>
+            </>
+          ) : (
+            <>
+              <span style={{ flex: 1, fontFamily: 'monospace', fontSize: 11, color: r.wfirma_product_id ? 'var(--text)' : 'var(--text-3)' }}>
+                {r.wfirma_product_id || '(not mapped)'}
+              </span>
+              <Btn variant="ghost" small data-testid={`service-product-edit-${r.charge_type}`}
+                onClick={() => { setEditing(r.charge_type); setEditVal(r.wfirma_product_id || ''); setSaveErr(null); }}>
+                ✎
+              </Btn>
+            </>
+          )}
+        </div>
+      ))}
+      {/* Allow adding an unmapped type */}
+      {!loading && (
+        <div style={{ marginTop: 6 }}>
+          {editing === '__new__' ? (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input value={editVal} onChange={e => setEditVal(e.target.value)}
+                placeholder="freight  OR  insurance"
+                data-testid="service-product-new-type"
+                style={{ flex: 1, padding: '4px 8px', fontSize: 12, borderRadius: 4,
+                  border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }}
+              />
+              {saveErr && <span style={{ fontSize: 11, color: 'var(--badge-red-text)' }}>{saveErr}</span>}
+              <Btn variant="ghost" small onClick={() => { setEditing(null); setSaveErr(null); }}>✕</Btn>
+            </div>
+          ) : (
+            <Btn variant="ghost" small data-testid="service-product-add-new"
+              onClick={() => { setEditing('__new__'); setEditVal(''); setSaveErr(null); }}>
+              + Add mapping
+            </Btn>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── PR B — Buyer edit modal ───────────────────────────────────────────────────
 function ProformaBuyerEditModal({ fields, saving, error, onChange, onSave, onClose }) {
   const F = (label, key, placeholder) => (
@@ -3708,53 +3826,79 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
 }
 
 // ── Lines tab ─────────────────────────────────────────────────────────────────
+// PD-2 gap closure: expanded from 8 to 12 columns per wireframe spec.
+// Added columns: Design No, Description EN, Purity (dedicated col), Currency.
+// Amount columns labelled with draft currency (historical field names unitEur/netEur
+// carry draft-currency amounts; NOT always EUR).
 function ProformaLinesTab({ lines, currency }) {
-  // Amount columns are labelled with the DRAFT currency (e.g. USD), never a
-  // hardcoded EUR. The underlying line fields are named unitEur/netEur for
-  // historical reasons but carry the draft-currency amount.
   const cur = currency || 'EUR';
+  // PD-2: 12 columns
+  const COL_HEADERS = [
+    { label: '#',          align: 'left',  width: 36 },
+    { label: 'PRODUCT',    align: 'left',  width: 90 },
+    { label: 'DESIGN NO',  align: 'left',  width: 90 },
+    { label: 'DESC (PL)',  align: 'left',  width: 160 },
+    { label: 'DESC (EN)',  align: 'left',  width: 140 },
+    { label: 'PURITY',     align: 'left',  width: 70 },
+    { label: 'HS CODE',    align: 'left',  width: 80 },
+    { label: 'ORIGIN',     align: 'left',  width: 55 },
+    { label: 'CUR',        align: 'left',  width: 45 },
+    { label: 'QTY',        align: 'right', width: 50 },
+    { label: `UNIT ${cur}`,align: 'right', width: 80 },
+    { label: `NET ${cur}`, align: 'right', width: 90 },
+  ];
   return (
     <div>
       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>
         Line items ({lines.length})
       </div>
-      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'auto', boxShadow: '0 1px 3px var(--shadow)' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
           <thead>
             <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-              {['#', 'SKU', 'DESCRIPTION', 'HS CODE', 'ORIGIN', 'QTY', `UNIT ${cur}`, `NET ${cur}`].map((h, i) => (
-                <th key={h} style={{ padding: '9px 12px', textAlign: i >= 5 ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em' }}>{h}</th>
+              {COL_HEADERS.map(h => (
+                <th key={h.label} style={{ padding: '9px 10px', textAlign: h.align, fontSize: 10, fontWeight: 700,
+                  color: 'var(--text-3)', letterSpacing: '0.08em', whiteSpace: 'nowrap',
+                  minWidth: h.width }}>{h.label}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {lines.length === 0 && (
               <tr>
-                <td colSpan="8" style={{ padding: '28px 14px', textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>
+                <td colSpan={COL_HEADERS.length} style={{ padding: '28px 14px', textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>
                   No line items — draft not yet built from packing upload.
                 </td>
               </tr>
             )}
             {lines.map((line, i) => (
-              <tr key={line.lineId || line.seq} style={{ borderBottom: i < lines.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
-                <td style={{ padding: '11px 12px', fontSize: 11, color: 'var(--text-3)' }}>{line.seq}</td>
-                <td style={{ padding: '11px 12px', fontFamily: 'monospace', fontSize: 11, fontWeight: 600, color: 'var(--text-2)' }}>{line.sku}</td>
-                <td style={{ padding: '11px 12px' }}>
-                  <div style={{ fontSize: 12, fontWeight: 600 }}>{line.desc}</div>
-                  {line.purity && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{line.purity}</div>}
+              <tr key={line.lineId || line.seq} data-testid={`line-row-${i}`}
+                style={{ borderBottom: i < lines.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
+                <td style={{ padding: '10px 10px', fontSize: 11, color: 'var(--text-3)' }}>{line.seq}</td>
+                <td style={{ padding: '10px 10px', fontFamily: 'monospace', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{line.sku}</td>
+                <td style={{ padding: '10px 10px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>
+                  {line._raw && line._raw.design_no ? line._raw.design_no : '—'}
                 </td>
-                <td style={{ padding: '11px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)' }}>{line.hsCode}</td>
-                <td style={{ padding: '11px 12px', fontSize: 11, color: 'var(--text-2)' }}>{line.origin}</td>
-                <td style={{ padding: '11px 12px', textAlign: 'right', fontSize: 12, fontWeight: 600 }}>{line.qty}</td>
-                <td style={{ padding: '11px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12 }}>{line.unitEur.toFixed(2)}</td>
-                <td style={{ padding: '11px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 13, fontWeight: 700 }}>{line.netEur.toFixed(2)}</td>
+                <td style={{ padding: '10px 10px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{line.desc_pl || line.desc || '—'}</div>
+                </td>
+                <td style={{ padding: '10px 10px' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-2)' }}>{line.desc_en || '—'}</div>
+                </td>
+                <td style={{ padding: '10px 10px', fontSize: 11, color: 'var(--text-3)' }}>{line.purity || '—'}</td>
+                <td style={{ padding: '10px 10px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)' }}>{line.hsCode}</td>
+                <td style={{ padding: '10px 10px', fontSize: 11, color: 'var(--text-2)' }}>{line.origin}</td>
+                <td style={{ padding: '10px 10px', fontSize: 11, color: 'var(--text-3)' }}>{line.currency || cur}</td>
+                <td style={{ padding: '10px 10px', textAlign: 'right', fontSize: 12, fontWeight: 600 }}>{line.qty}</td>
+                <td style={{ padding: '10px 10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12 }}>{line.unitEur.toFixed(2)}</td>
+                <td style={{ padding: '10px 10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 13, fontWeight: 700 }}>{line.netEur.toFixed(2)}</td>
               </tr>
             ))}
           </tbody>
           <tfoot>
             <tr style={{ borderTop: '2px solid var(--border)', background: 'var(--bg-subtle)' }}>
-              <td colSpan="7" style={{ padding: '11px 12px', textAlign: 'right', fontSize: 12, fontWeight: 700 }}>Total · {cur}</td>
-              <td style={{ padding: '11px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--accent)' }} data-testid="proforma-lines-total">
+              <td colSpan={COL_HEADERS.length - 1} style={{ padding: '11px 10px', textAlign: 'right', fontSize: 12, fontWeight: 700 }}>Total · {cur}</td>
+              <td style={{ padding: '11px 10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--accent)' }} data-testid="proforma-lines-total">
                 {lines.length > 0 ? lines.reduce((s, l) => s + l.netEur, 0).toFixed(2) : '—'}
               </td>
             </tr>

@@ -274,3 +274,12 @@ Campaign slices:
   PZ tab 7 buttons Lesson-M PendingAction w/ backend routes named; wireframe
   4-card Documents + 16-milestone Timeline on existing reads; 151/151 contracts,
   B-018 ratchet unaffected. Next per order: Dashboard.
+- W3 Dashboard + Proforma COMPLETE (one dispatch): D-5 fake status strip ->
+  LIVE health/status reads (honest red 401-unavailable states); Proforma List
+  PL-1..4 (pipeline KPIs, match chips, New Draft + Import modals via existing
+  flows) + Detail PD-2/PD-4 (12-col lines table w/ DESIGN NO; the never-called
+  /proforma/service-products FINALLY wired via ServiceProductRegistryPanel —
+  GET/PUT through the existing C-1w1 endpoint). In-verification bug caught+fixed
+  (KPI response key). Both matrices Missing: 0; smoke 63. Remaining: census tail
+  (Setup/Reports/automation R-Q2/diagnostics R-Q3/Inbox/Shipments/ShippingOps)
+  -> CP3.

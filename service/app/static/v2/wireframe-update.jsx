@@ -65,34 +65,88 @@ function PendingBtn({ label, level = 'backend', onClick }) {
 }
 
 // ── 2. Operational Status Strip ───────────────────────────────────────────
+// W3 D-5 gap closure: replaced hardcoded mock with live reads from existing
+// backend endpoints. Two authorities:
+//   GET /api/v1/webhooks/wfirma/status  → wFirma sync scheduler heartbeat
+//   GET /api/v1/health                  → engine health (pz engine, SAD parser)
+// Both are auth-gated (X-API-Key via EstrellaShared.apiFetch).
+// Polled once at mount; auto-refreshes every 60 seconds.
+// No fake data. If an endpoint is unavailable the item shows 'unavailable'.
 function OperationalStatusStrip() {
-  const items = [
-    { name:'wFirma',        status:'ok',   meta:'last sync 4 min ago'   , level:'active' },
-    { name:'DHL Inbox',     status:'ok',   meta:'2 unread, polled 30s ago', level:'active' },
-    { name:'Email Queue',   status:'warn', meta:'3 awaiting approval'   , level:'partial' },
-    { name:'Cliq Webhook',  status:'ok',   meta:'last event 1 min ago'  , level:'active' },
-    { name:'Cowork Bridge', status:'idle', meta:'no active tasks'       , level:'partial' },
-    { name:'WorkDrive',     status:'ok',   meta:'token valid · 14h left', level:'active' },
-  ];
-  const dotColor = s => s==='ok' ? '#22A06B' : s==='warn' ? '#D4A853' : s==='down' ? '#C0321A' : '#8A9AB0';
+  const { useState, useEffect } = React;
+  const [wfirmaStatus, setWfirmaStatus] = useState(null);
+  const [healthStatus, setHealthStatus] = useState(null);
+  const [ts, setTs] = useState(Date.now());
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      window.EstrellaShared.apiFetch('/api/v1/webhooks/wfirma/status')
+        .then(r => { if (!cancelled) setWfirmaStatus(r && r.ok !== false ? r : null); })
+        .catch(() => { if (!cancelled) setWfirmaStatus(null); });
+      window.EstrellaShared.apiFetch('/api/v1/health')
+        .then(r => { if (!cancelled) setHealthStatus(r && r.ok !== false ? r : null); })
+        .catch(() => { if (!cancelled) setHealthStatus(null); });
+      if (!cancelled) setTs(Date.now());
+    };
+    load();
+    const id = setInterval(load, 60000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  // Derive items from live data
+  const _dot = s => s === 'ok' ? '#22A06B' : s === 'warn' ? '#D4A853' : s === 'down' ? '#C0321A' : '#8A9AB0';
+  const _ago = iso => {
+    if (!iso) return null;
+    const ms = Date.now() - new Date(iso).getTime();
+    if (isNaN(ms) || ms < 0) return null;
+    const m = Math.floor(ms / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
+  };
+
+  // wFirma sync item (authority: GET /api/v1/webhooks/wfirma/status)
+  const wfItem = (() => {
+    if (!wfirmaStatus) return { name: 'wFirma Sync', status: 'down', meta: 'unavailable' };
+    const healthy = wfirmaStatus.scheduler_running === true;
+    const last = _ago(wfirmaStatus.last_completed_at || wfirmaStatus.last_tick_at);
+    const meta = healthy
+      ? (last ? `synced ${last}` : 'running')
+      : (last ? `last seen ${last}` : 'not running');
+    return { name: 'wFirma Sync', status: healthy ? 'ok' : 'warn', meta };
+  })();
+
+  // PZ engine health item (authority: GET /api/v1/health)
+  const engineItem = (() => {
+    if (!healthStatus) return { name: 'PZ Engine', status: 'down', meta: 'unavailable' };
+    const ok = healthStatus.status === 'ok' || healthStatus.healthy === true;
+    return { name: 'PZ Engine', status: ok ? 'ok' : 'warn', meta: ok ? 'healthy' : 'degraded' };
+  })();
+
+  const items = [wfItem, engineItem];
+  const fmtTs = new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
   return (
-    <div style={{
+    <div data-testid="operational-status-strip" style={{
       display:'flex', alignItems:'center', gap:18, flexWrap:'wrap',
-      padding:'7px 24px', background:'var(--bg-subtle)',
+      padding:'5px 24px', background:'var(--bg-subtle)',
       borderBottom:'1px solid var(--border)', fontSize:11,
       color:'var(--text-2)',
     }}>
       <span style={{ fontWeight:700, color:'var(--text)', letterSpacing:'0.04em' }}>System</span>
       {items.map(i => (
         <span key={i.name} style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
-          <span style={{ width:7, height:7, borderRadius:'50%', background:dotColor(i.status) }}/>
+          <span style={{ width:7, height:7, borderRadius:'50%', background:_dot(i.status) }}/>
           <span style={{ fontWeight:600, color:'var(--text)' }}>{i.name}</span>
           <span style={{ color:'var(--text-3)' }}>· {i.meta}</span>
         </span>
       ))}
       <span style={{ flex:1 }}/>
-      <a href="#" style={{ color:'var(--accent-text)', textDecoration:'underline', fontWeight:600 }}>System health →</a>
+      <span style={{ fontSize:9.5, color:'var(--text-3)', fontFamily:'monospace' }}>polled {fmtTs}</span>
+      <a href="#" onClick={e => { e.preventDefault(); window.location.hash = '#api_status'; }}
+        style={{ color:'var(--accent-text)', textDecoration:'underline', fontWeight:600 }}>System health →</a>
     </div>
   );
 }
