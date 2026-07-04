@@ -283,3 +283,12 @@ Campaign slices:
   (KPI response key). Both matrices Missing: 0; smoke 63. Remaining: census tail
   (Setup/Reports/automation R-Q2/diagnostics R-Q3/Inbox/Shipments/ShippingOps)
   -> CP3.
+- W3 census tail COMPLETE (4 sub-slices): /automation -> ActionCenterPage
+  (R-Q2: live proposals queue on existing routes_action_proposals; AI Bridge
+  relocated to right-rail sub-surface, Lesson-M cited); Diagnostics R-Q3 triad
+  labels (4 tools, none removed); Settings live company-profile read (Save
+  honest-gated Wave-4); Reports honest MOCK notice (no confirmed backend, NOT
+  wired); ShippingOps routed+nav'd (R-Q3 chips already honest, NOT in
+  WIRED_PAGES); Inbox/Shipments/Coverage confirmed satisfied. All matrices
+  Missing: 0. Operator supplier-invoice WIP excluded from staging across
+  index.html/components.jsx (verified 0 lines). CENSUS CLOSED -> CP3 next.

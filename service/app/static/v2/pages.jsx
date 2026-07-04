@@ -355,33 +355,98 @@ function LearningParserPage() {
 }
 
 // ── Admin / Settings Page
+// Wave-3 (2026-07-04): company-profile wired to GET /api/v1/settings/company-profile
 function AdminSettingsPage() {
-  const [apiUrl, setApiUrl] = React.useState('https://api.estrella-pz.pl/api/v1');
-  const [dhlEmail, setDhlEmail] = React.useState('clearance@dhl.com.pl');
-  const [wfirmaKey, setWfirmaKey] = React.useState('wf_••••••••••••••••');
-  const [saved, setSaved] = React.useState(false);
+  const [apiUrl] = React.useState('https://api.estrella-pz.pl/api/v1');
+  const [dhlEmail] = React.useState('clearance@dhl.com.pl');
+  const [wfirmaKey] = React.useState('wf_••••••••••••••••');
 
-  const save = () => { setSaved(true); setTimeout(() => setSaved(false), 2000); };
+  // Company profile — live from GET /api/v1/settings/company-profile
+  const [profile, setProfile] = React.useState(null);
+  const [profileLoading, setProfileLoading] = React.useState(true);
+  const [profileError, setProfileError] = React.useState(null);
+
+  React.useEffect(() => {
+    setProfileLoading(true);
+    setProfileError(null);
+    window.EstrellaShared.apiFetch('/api/v1/settings/company-profile')
+      .then(data => {
+        if (data && data.ok) {
+          setProfile(data.profile || {});
+        } else {
+          setProfileError('Unexpected response from server');
+        }
+      })
+      .catch(err => {
+        setProfileError(err && err.message ? err.message : 'Failed to load company profile');
+      })
+      .finally(() => setProfileLoading(false));
+  }, []);
 
   return (
     <div style={{ padding: '24px 32px', overflowY: 'auto', flex: 1 }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-        {/* API Config */}
+        {/* API Config — environment-set, not editable via UI */}
         <Card>
           <SectionHeader icon="⚙" title="API Configuration" />
+          <div style={{ padding: '10px 20px 4px', background: 'var(--badge-amber-bg, #FFF8E1)', border: '1px solid var(--badge-amber-border, #FFD54F)', borderRadius: 6, margin: '0 0 4px' }}>
+            <span style={{ fontSize: 11, color: 'var(--badge-amber-text, #B45309)', fontWeight: 600 }}>
+              ⚠ API configuration is environment-set — not editable via this UI
+            </span>
+          </div>
           <div style={{ padding: 20 }}>
             <FormField label="Backend API Base URL">
-              <Input value={apiUrl} onChange={e => setApiUrl(e.target.value)} />
+              <Input value={apiUrl} readOnly disabled />
             </FormField>
             <FormField label="DHL Clearance Email Address">
-              <Input value={dhlEmail} onChange={e => setDhlEmail(e.target.value)} />
+              <Input value={dhlEmail} readOnly disabled />
             </FormField>
             <FormField label="wFirma API Key">
-              <Input value={wfirmaKey} onChange={e => setWfirmaKey(e.target.value)} type="password" />
+              <Input value={wfirmaKey} readOnly disabled type="password" />
             </FormField>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <Btn variant="gold" onClick={save}>Save Settings</Btn>
-              {saved && <span style={{ fontSize: 11, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ Saved</span>}
+          </div>
+        </Card>
+
+        {/* Company Profile — live from GET /api/v1/settings/company-profile */}
+        <Card>
+          <SectionHeader icon="🏢" title="Company Profile" />
+          <div style={{ padding: 20 }}>
+            {profileLoading && (
+              <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '12px 0' }}>Loading company profile…</div>
+            )}
+            {profileError && !profileLoading && (
+              <div style={{ fontSize: 12, color: 'var(--badge-red-text, #DC2626)', padding: '8px 0' }}>
+                ⚠ {profileError}
+              </div>
+            )}
+            {profile && !profileLoading && (
+              <>
+                <FormField label="Legal Name">
+                  <Input value={profile.legal_name || ''} readOnly />
+                </FormField>
+                <FormField label="Email">
+                  <Input value={profile.email || ''} readOnly />
+                </FormField>
+                <FormField label="Phone">
+                  <Input value={profile.phone || ''} readOnly />
+                </FormField>
+                <FormField label="Signatory Name">
+                  <Input value={profile.signatory_name || ''} readOnly />
+                </FormField>
+                <FormField label="NIP">
+                  <Input value={profile.nip || ''} readOnly />
+                </FormField>
+                <FormField label="VAT EU">
+                  <Input value={profile.vat_eu || ''} readOnly />
+                </FormField>
+              </>
+            )}
+            <div style={{ marginTop: 12 }}>
+              <Btn
+                variant="gold"
+                disabled
+                title="PATCH /api/v1/settings/company-profile · requires admin auth · Wave-4 wiring"
+              >Save Changes</Btn>
             </div>
           </div>
         </Card>

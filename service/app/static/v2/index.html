@@ -684,12 +684,12 @@ function App() {
             </>
           )}
 
-          {/* AI Bridge — renamed Automation Center */}
+          {/* Action Center — operator approval queue (R-Q2: /automation -> Action Center -> AI Bridge backend capability) */}
           {!viewerDoc && page === 'automation' && (
             <>
-              <PageHeader title="Automation Center" subtitle="Cowork task queue, results, errors, capabilities, and prompt templates" />
+              <PageHeader title="Action Center" subtitle="Pending operator approvals — PZ adoptions · proforma approvals · credit limits · returns · AI Bridge proposals" />
               <SubTabStrip active={page} onNav={handleNav} />
-              <AiBridgePage />
+              <ActionCenterPage />
             </>
           )}
 
@@ -724,6 +724,7 @@ function App() {
               <DocumentsHubPage />
             </>
           )}
+
 
           {/* Pro Forma — Screen A (list) */}
           {!viewerDoc && page === 'proforma' && (
@@ -819,6 +820,14 @@ function App() {
               />
               <SubTabStrip active={page} onNav={handleNav} />
               <AdminSettingsPage />
+            </>
+          )}
+
+          {/* Shipping Ops — carrier shipment queue · wireframe (all carrier APIs future) */}
+          {!viewerDoc && page === 'shipping_ops' && (
+            <>
+              <PageHeader title="Shipping Operations" subtitle="Carrier shipment queue · labels · handoff · returns · audit log — wireframe only, carrier API integrations are future scope" />
+              <ShippingOpsPage />
             </>
           )}
 

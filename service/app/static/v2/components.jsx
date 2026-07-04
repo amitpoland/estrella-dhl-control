@@ -38,6 +38,7 @@ const NAV_TREE = [
     { id: 'automation',   label: 'Automation' },
     { id: 'intelligence', label: 'Intelligence Hub' },
     { id: 'coverage',     label: 'Coverage Map' },
+    { id: 'shipping_ops', label: 'Shipping Ops' },
   ]},
 ];
 
