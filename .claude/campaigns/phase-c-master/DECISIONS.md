@@ -756,3 +756,23 @@ is closed; only affected CP3 composites regenerate; the 8135 zombie is NOT a
 release blocker (review served on the current Preview URL). CP4/deploy waits
 for the operator's acceptance word alone. No page rebuilds absent operator
 feedback.
+
+---
+
+### 2026-07-04 — DEFECT LEDGER DISCIPLINE (operator, verbatim R4 — process only)
+
+TEMPLATE (every defect): "Defect #NNN · Page · Control · Severity
+(Critical/High/Medium/Low) · Expected · Actual · Screenshot · Root cause ·
+Fix · Verification checklist · Status (OPEN -> FIXED -> VERIFIED)"
+
+RULE 1 — NO BATCHING (verbatim): "even 20 problems on one page = 20 separate
+defect rows. One change never masks another; each verifies independently."
+
+RULE 2 — VERIFIED is behavioral, not code-state (verbatim): OPEN -> FIXED when
+the code changes; FIXED -> VERIFIED ONLY when ALL are true: behavior confirmed
+in the Preview UI (localhost:54494); no console errors related to the change;
+the wireframe match holds; the affected CP3 screenshot regenerated and reflects
+the fix. "Code changed" alone is FIXED, never VERIFIED.
+
+Effect: reports/wave3/cp3/defect-ledger.md working rules amended to this
+template + the two enforced rules. No new planning — process discipline only.

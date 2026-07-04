@@ -17,19 +17,40 @@ VISUAL (alignment/spacing/overflow/typography — deferred to the Visual Bug Swe
 
 ---
 
-## Ledger
+## Defect template (operator, verbatim — every defect uses this)
 
-| # | Page (slug/tab) | Control | Expected behavior | Actual behavior | Screenshot | Severity | Class | Status | Fix commit |
-|---|---|---|---|---|---|---|---|---|---|
-| _(empty — awaiting the operator's first defect batch)_ | | | | | | | | | |
+> Defect #NNN · Page · Control · Severity (Critical/High/Medium/Low) ·
+> Expected · Actual · Screenshot · Root cause · Fix · Verification checklist ·
+> Status (OPEN → FIXED → VERIFIED)
+
+Each defect is recorded as a `### Defect #NNN` block (below) with those exact
+fields. Severity = Critical / High / Medium / Low. Class stays a note
+(INTERACTION vs VISUAL) so the ordering rule still applies.
+
+## TWO ENFORCED RULES (operator, verbatim)
+
+1. **NO BATCHING** — even 20 problems on one page = 20 separate defect rows.
+   One change never masks another; each verifies independently.
+2. **VERIFIED is behavioral, not code-state.** OPEN → FIXED when the code
+   changes; FIXED → VERIFIED ONLY when ALL are true:
+   - behavior confirmed in the Preview UI (localhost:54494)
+   - no console errors related to the change
+   - the wireframe match holds
+   - the affected CP3 screenshot regenerated and reflects the fix
+
+   "Code changed" alone is FIXED, never VERIFIED.
+
+## Ordering (per the execution order)
+
+- INTERACTION defects fixed first, in severity order (Critical → High → Medium → Low).
+- VISUAL defects accumulate; the **Visual Bug Sweep** runs only once every
+  INTERACTION defect is VERIFIED.
+- Each fix is one slice through the ten-criterion gate, committed
+  `fix(w3-cp3-<NNN>)` referencing the defect.
+- No deployment activity until the operator's acceptance word.
 
 ---
 
-## Working rules (per the operator execution order)
+## Defects
 
-1. Each operator finding → one row here (verbatim expected/actual + the screenshot the operator provides or a filename under `reports/wave3/cp3/defects/`).
-2. INTERACTION rows fixed first, in severity order (BLOCKER → MAJOR → MINOR), each fix a slice through the ten-criterion gate, committed with a `fix(w3-cp3-<n>)` message referencing the row.
-3. VISUAL rows accumulate; the **Visual Bug Sweep** slice runs only once every INTERACTION row is CLOSED.
-4. After a fix, regenerate ONLY the affected page's CP3 composite(s); update INDEX.md.
-5. Status values: OPEN · IN-PROGRESS · FIXED (verified in Preview + gate) · WONT-FIX (operator-ruled) · DEFERRED-VISUAL.
-6. No deployment activity until the operator's acceptance word.
+_(empty — awaiting the operator's first defect. One defect = one #NNN block below.)_
