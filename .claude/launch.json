@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pz-service-verify",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--port", "8135", "--reload", "--app-dir", "service"],
+      "port": 8135,
+      "autoPort": false
+    },
+    {
+      "name": "inventory-dev",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--port", "8200", "--reload", "--app-dir", "service"],
+      "port": 8200,
+      "autoPort": false
+    }
+  ]
+}
