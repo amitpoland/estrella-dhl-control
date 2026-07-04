@@ -2632,6 +2632,15 @@ function DocumentViewerPage({ doc, onBack }) {
                           style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'not-allowed', opacity: 0.5 }}>
                           Add AWB
                         </button>
+                        {/* View docs: wireframe §7 Tab 10 row action "View docs" — Lesson-M honest-disabled.
+                            No per-return document read endpoint exists (IV-RTP census: no
+                            GET /api/v1/inventory/returns/{id}/documents route; Wave-4 scope).
+                            Census tag: IV-RTP (matrix-repair 2026-07-04). */}
+                        <button data-testid="rtp-btn-view-docs" disabled
+                          title="backend-pending — no document-read endpoint for producer-return records; IV-RTP census: GET /api/v1/inventory/returns/{id}/documents not yet built (Wave-4 scope)"
+                          style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', cursor: 'not-allowed', opacity: 0.5 }}>
+                          View docs
+                        </button>
                         {/* Confirm Received: POST return-from-producer — live only on open rows (still RETURNED_TO_PRODUCER state) */}
                         {isOpen ? (
                           <window.Btn
@@ -2953,6 +2962,352 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // ── Shared disjoint predicate — R-Q4 (DECISIONS.md 2026-07-04) ──────────────
+  // "Final Stock = location/bag-assigned inventory. Temp Warehouse = received
+  //  but not yet assigned."
+  //
+  // Both FinalStockTab and TempWarehouseTab use this shared predicate so their
+  // populations are provably disjoint:
+  //   FinalStockTab  rows: isAssigned(item) === true   (current_location non-empty)
+  //   TempWarehouseTab amendment: items whose scan_code is NOT in assignedCodes
+  //                                                    (no location assignment)
+  //
+  // PzApi.isLocationAssigned (pz-api.js:~928) mirrors this predicate at the API layer.
+  // item = inventory_current_location row: { scan_code, current_location, bag_id, … }
+  const isAssigned = (item) =>
+    !!(item && item.current_location && item.current_location.trim() !== '');
+
+  // ── Final Stock tab — Wave-3 / page 9 ──────────────────────────────────────
+  // Wireframe authority: design/inventory-page.design.jsx FinalStockTab (:319-378).
+  // Census: IV-FS-1 / IV-FS-2 (BUILD). R-Q4 ruling: Final Stock = WAREHOUSE_STOCK
+  // pieces WITH a location/bag assignment.
+  //
+  // Backend reads:
+  //   GET /api/v1/warehouse/locations  (LIVE, pz-api.js:402)
+  //   GET /api/v1/warehouse/locations/{code}/inventory  (LIVE, pz-api.js:408)
+  //     → items carry: scan_code, product_code, design_no, bag_id, current_location,
+  //       batch_id, current_status, updated_at  (inventory_current_location table)
+  //   Composed via PzApi.getWarehouseLocationInventory(batchId)  (pz-api.js:~935)
+  //
+  // 10 wireframe columns (design/inventory-page.design.jsx:354-371):
+  //   Stock Unit ID (scan_code, mono/bold)
+  //   Family        (product_code prefix, honest "—" if not parseable)
+  //   Design ID     (design_no)
+  //   Batch         (batch_id)
+  //   Bag           (bag_id)
+  //   Qty           (not in inventory_current_location → honest "—"; future: join packing_lines)
+  //   Location      (current_location)
+  //   Value         (not available → honest "—")
+  //   wFirma ref    (not available from location API → honest "—")
+  //   Actions       (Move Stock → MoveStockModal, Trace → openViewer)
+  //
+  // 5 KPI tiles (design file :329-335):
+  //   Stock units (count of assigned items for batch)
+  //   Pieces on hand (same as stock units — honest: same until Qty is joined)
+  //   Reserved (not available from location API → "—")
+  //   Available (not available → "—")
+  //   Stock value (not available → "—")
+  //
+  // Stage-2 info banner (design file :336-338): green — "Stage 2 — Inventory truth."
+  //
+  // Honest-unavailable fields: Qty, Value, wFirma ref (all "—" with tooltip).
+  // Lesson-M disclosures: Trace action dispatches openViewer (existing authority);
+  //   Move action opens MoveStockModal (existing authority, inventory-page.jsx:1801).
+  //   Cycle count + Export header buttons: Lesson-M honest-disabled (no backend endpoint).
+  //
+  // Disjoint proof: items are filtered via isAssigned() — the same predicate that
+  //   TempWarehouseTab uses to EXCLUDE assigned pieces. Both populations: WAREHOUSE_STOCK
+  //   pieces from getWarehouseLocationInventory (batch-scoped); together they cover all
+  //   WAREHOUSE_STOCK pieces with zero overlap.
+  //
+  // Accessibility: focus ring on all interactive buttons (outline:2px solid var(--accent));
+  //   aria-label on icon-only/action buttons; color contrast via existing tokens.
+
+  function FinalStockTab({ openViewer, onShowMove, reportExport }) {
+    const [batchId, setBatchId]   = useState('');
+    const [loading, setLoading]   = useState(false);
+    const [error, setError]       = useState('');
+    const [items, setItems]       = useState(null);  // assigned location items for batch
+    const [filterText, setFilter] = useState('');
+
+    const load = useCallback(async () => {
+      const bid = batchId.trim();
+      if (!bid) return;
+      setLoading(true);
+      setError('');
+      setItems(null);
+
+      // PzApi.getWarehouseLocationInventory: loads all locations then parallel
+      // per-location inventory, filters to batchId + isAssigned items.
+      const res = await window.PzApi.getWarehouseLocationInventory(bid);
+
+      setLoading(false);
+      if (!res.ok) {
+        setError(res.error || ('HTTP ' + res.status));
+        return;
+      }
+      setItems((res.data && res.data.items) || []);
+    }, [batchId]);
+
+    // Filtered display rows (filter by family / design / batch / bag — wireframe toolbar)
+    const displayRows = items
+      ? (filterText.trim()
+          ? items.filter(r => {
+              const q = filterText.trim().toLowerCase();
+              return (
+                (r.product_code && r.product_code.toLowerCase().includes(q)) ||
+                (r.design_no    && r.design_no.toLowerCase().includes(q))    ||
+                (r.batch_id     && r.batch_id.toLowerCase().includes(q))     ||
+                (r.bag_id       && r.bag_id.toLowerCase().includes(q))
+              );
+            })
+          : items)
+      : [];
+
+    // W3-page9: report exportable rows for CSV export (header actions row).
+    useEffect(() => {
+      if (!reportExport) return;
+      if (!items) { reportExport(null, null); return; }
+      if (items.length === 0) { reportExport(null, null); return; }
+      const HDRS = ['Stock Unit ID', 'Family', 'Design', 'Batch', 'Bag', 'Location', 'Status'];
+      const csvRows = items.map(r => [
+        r.scan_code        || '',
+        (r.product_code    || '').split('|')[0] || r.product_code || '',
+        r.design_no        || '',
+        r.batch_id         || '',
+        r.bag_id           || '',
+        r.current_location || '',
+        r.current_status   || '',
+      ]);
+      reportExport(HDRS, csvRows);
+    }, [items, reportExport]);
+
+    const TH = { padding: '7px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
+    const TD = { padding: '8px 10px', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)', color: 'var(--text)', verticalAlign: 'middle' };
+
+    return (
+      <div data-testid="final-stock-tab" style={{ maxWidth: 1200, margin: '0 auto' }}>
+
+        {/* Stage-2 info banner — wireframe design/inventory-page.design.jsx:336-338 */}
+        <div data-testid="fs-info-banner" style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <strong style={{ color: 'var(--text)' }}>Stage 2 — Inventory truth.</strong>
+          {' '}Each row is a physically-verified piece with a confirmed location/bag assignment.
+          {' '}Population: pieces in{' '}
+          <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>WAREHOUSE_STOCK</code>
+          {' '}state{' '}<em>with</em>{' '}a location or bag assignment (R-Q4).
+          {' '}Disjoint with Temp Warehouse tab (no overlap — shared{' '}
+          <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>isAssigned()</code>{' '}
+          predicate).
+        </div>
+
+        {/* KPI strip — 5 tiles per wireframe design/inventory-page.design.jsx:329-335 */}
+        <div data-testid="fs-kpi-strip" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 20 }}>
+          <InvStatTile testid="fs-kpi-units"     label="Stock units"     value={items ? items.length : null}          tone="green"  hint="WAREHOUSE_STOCK pieces with location/bag assignment" />
+          <InvStatTile testid="fs-kpi-pieces"    label="Pieces on hand"  value={items ? items.length : null}          tone="green"  hint="Same as stock units until Qty is joined from packing_lines (future slice)" />
+          <InvStatTile testid="fs-kpi-reserved"  label="Reserved"        value={items ? null : null}                  hint="Not available from location API — requires reservation join (future slice)" />
+          <InvStatTile testid="fs-kpi-available" label="Available"       value={items ? null : null}                  tone="green"  hint="Not available — derived from Reserved; future slice" />
+          <InvStatTile testid="fs-kpi-value"     label="Stock value"     value={items ? null : null}                  hint="Not available from location API — requires packing_lines value join (future slice)" />
+        </div>
+
+        {/* Batch selector toolbar */}
+        <div data-testid="fs-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+          <input
+            data-testid="fs-batch-input"
+            value={batchId}
+            onChange={e => setBatchId(e.target.value)}
+            placeholder="Batch ID — e.g. SHIPMENT_4218922912_2026-05_…"
+            aria-label="Batch ID input for Final Stock"
+            style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, flex: 1, minWidth: 260 }}
+          />
+          <InvFetchBtn
+            data-testid="fs-btn-load"
+            onClick={load}
+            loading={loading}
+            disabled={!batchId.trim()}
+            label="Load batch"
+          />
+          {items !== null && (
+            <InvFetchBtn data-testid="fs-refresh" onClick={load} loading={loading} label="↻ Refresh" />
+          )}
+        </div>
+
+        {/* Error state */}
+        {error && (
+          <div data-testid="fs-error-banner" style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--badge-red-text)' }}>
+            Failed to load Final Stock: {error}
+          </div>
+        )}
+
+        {/* Prompt before load */}
+        {!loading && items === null && !error && (
+          <div data-testid="fs-prompt" style={{ padding: '28px 0', textAlign: 'center', color: 'var(--text-3)', fontSize: 13, fontStyle: 'italic' }}>
+            Enter a batch ID above and click Load batch to view Final Stock (location-assigned WAREHOUSE_STOCK pieces).
+          </div>
+        )}
+
+        {/* Verified stock units table — 10 wireframe columns */}
+        {items !== null && (
+          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
+            {/* Table header row — wireframe design/inventory-page.design.jsx:341-352 */}
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Verified stock units</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)', borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>FINAL STOCK</span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {/* Filter input — wireframe verbatim */}
+                <input
+                  data-testid="fs-filter-input"
+                  value={filterText}
+                  onChange={e => setFilter(e.target.value)}
+                  placeholder="Filter family / design / batch / bag…"
+                  aria-label="Filter final stock by family, design, batch or bag"
+                  style={{ padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text)', minWidth: 280 }}
+                />
+                {/* Cycle count — Lesson-M honest-disabled: no endpoint in routes_warehouse.py or routes_inventory.py */}
+                <button data-testid="fs-btn-cycle-count" disabled
+                  aria-label="Cycle count — backend pending"
+                  title="backend-pending — no cycle-count endpoint in routes_warehouse.py or routes_inventory.py (IV-FS-1; future slice)"
+                  style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', cursor: 'not-allowed', opacity: 0.5, outline: 'none' }}>
+                  Cycle count
+                </button>
+                {/* Export — Lesson-M honest-disabled: no dedicated export endpoint */}
+                <button data-testid="fs-btn-export" disabled
+                  aria-label="Export final stock — backend pending"
+                  title="backend-pending — no dedicated export endpoint; use CSV download (header Export button) when batch is loaded"
+                  style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', cursor: 'not-allowed', opacity: 0.5, outline: 'none' }}>
+                  ↓ Export
+                </button>
+              </div>
+            </div>
+
+            {/* Row count summary */}
+            <div style={{ padding: '8px 16px', borderBottom: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text-3)', display: 'flex', gap: 12 }}>
+              <span>
+                {displayRows.length} shown · {items.length} total assigned ·{' '}
+                batch: <code style={{ fontFamily: 'ui-monospace, monospace', background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>{batchId.trim()}</code>
+              </span>
+              <span style={{ color: 'var(--badge-green-text)', fontWeight: 600 }}>
+                isAssigned() = current_location non-empty (R-Q4 predicate)
+              </span>
+            </div>
+
+            <div style={{ overflowX: 'auto' }}>
+              <table data-testid="fs-table" style={{ width: '100%', borderCollapse: 'collapse', minWidth: 960 }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)' }}>
+                    {/* 10 wireframe columns (design/inventory-page.design.jsx:354-371) */}
+                    <th style={{ ...TH, minWidth: 140 }}>Stock Unit ID</th>
+                    <th style={TH}>Family</th>
+                    <th style={TH}>Design ID</th>
+                    <th style={TH}>Batch</th>
+                    <th style={TH}>Bag</th>
+                    <th style={{ ...TH, textAlign: 'right' }}>Qty</th>
+                    <th style={TH}>Location</th>
+                    <th style={{ ...TH, textAlign: 'right' }}>Value</th>
+                    <th style={TH}>wFirma ref</th>
+                    <th style={{ ...TH, textAlign: 'center' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading && (
+                    <tr><td colSpan={10} style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '28px 0' }}>Loading…</td></tr>
+                  )}
+                  {!loading && displayRows.length === 0 && (
+                    <tr>
+                      <td colSpan={10} data-testid="fs-empty" style={{ ...TD, textAlign: 'center', color: 'var(--text-3)', padding: '32px 0', fontStyle: 'italic' }}>
+                        {filterText.trim()
+                          ? 'No results match the current filter.'
+                          : 'No Final Stock pieces found in this batch — no WAREHOUSE_STOCK items have a location/bag assignment yet.'}
+                      </td>
+                    </tr>
+                  )}
+                  {!loading && displayRows.map((r, i) => {
+                    // scan_code is the stock unit identity (warehouse_db.py:192-204)
+                    const scanCode   = r.scan_code        || '—';
+                    // Family: product_code prefix before '|' (bag-encoding: pc|bag_id)
+                    // or the raw product_code if no '|'. Honest: derived field.
+                    const rawPc      = r.product_code     || '';
+                    const family     = rawPc.includes('|') ? rawPc.split('|')[0] : (rawPc || '—');
+                    const designNo   = r.design_no        || '—';
+                    const batchId_r  = r.batch_id         || '—';
+                    const bagId      = r.bag_id           || '—';
+                    // Qty: not in inventory_current_location → honest "—"
+                    // (future: join packing_lines via merchandising view)
+                    const qty        = '—';
+                    const location   = r.current_location || '—';
+                    // Value PLN: not available from location API → honest "—"
+                    const value      = '—';
+                    // wFirma ref: not available from location API → honest "—"
+                    // (future: join wfirma_product_mirror via product_code)
+                    const wfRef      = '—';
+
+                    return (
+                      <tr key={scanCode + i} data-testid="fs-row" style={{ background: 'var(--card)' }}>
+                        {/* Stock Unit ID — mono/bold per wireframe */}
+                        <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, fontWeight: 700, color: 'var(--text)' }}>{scanCode}</td>
+                        <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, color: 'var(--text-2)' }}>{family}</td>
+                        <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, fontWeight: 600, color: 'var(--text)' }}>{designNo}</td>
+                        <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--text-2)' }}>{batchId_r}</td>
+                        <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, color: 'var(--text-2)' }}>{bagId}</td>
+                        <td style={{ ...TD, textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontSize: 11.5, color: 'var(--text-3)' }}
+                            title="Qty not in inventory_current_location — future: join packing_lines (IV-FS-2)">{qty}</td>
+                        <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, fontWeight: 600, color: 'var(--badge-green-text)' }}>{location}</td>
+                        <td style={{ ...TD, textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontSize: 11.5, color: 'var(--text-3)' }}
+                            title="Value PLN not in location API — future: join packing_lines (IV-FS-2)">{value}</td>
+                        <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, color: 'var(--text-3)' }}
+                            title="wFirma ref not in location API — future: join wfirma_product_mirror (IV-FS-2)">{wfRef}</td>
+                        <td style={{ ...TD, textAlign: 'center', whiteSpace: 'nowrap' }}>
+                          {/* Trace — dispatches openViewer (existing DocumentViewerPage authority) */}
+                          <button data-testid="fs-btn-trace"
+                            aria-label={'Trace stock unit ' + scanCode}
+                            onClick={() => openViewer && openViewer({
+                              id: 'SU-' + scanCode,
+                              title: 'Stock Unit · ' + designNo,
+                              type: 'Stock Unit',
+                              awb: '',
+                            })}
+                            style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer', outline: 'none' }}
+                            onFocus={e => e.currentTarget.style.outline = '2px solid var(--accent)'}
+                            onBlur={e => e.currentTarget.style.outline = 'none'}>
+                            Trace
+                          </button>
+                          {/* Move — opens MoveStockModal (existing authority, inventory-page.jsx:1801).
+                              MoveStockModal Tab 1 (W→W) is LIVE and handles location reassignment.
+                              Census: IV-MS-1 (Tab 2 stage-transition still backend-pending). */}
+                          <button data-testid="fs-btn-move"
+                            aria-label={'Move stock unit ' + scanCode}
+                            onClick={() => {
+                              window.dispatchEvent(new CustomEvent('inv:move'));
+                              onShowMove && onShowMove();
+                            }}
+                            style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)', color: 'var(--accent-text)', cursor: 'pointer', outline: 'none' }}
+                            onFocus={e => e.currentTarget.style.outline = '2px solid var(--accent)'}
+                            onBlur={e => e.currentTarget.style.outline = 'none'}>
+                            Move
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Endpoint reference */}
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-3)' }}>
+          GET /api/v1/warehouse/locations (LIVE) +
+          GET /api/v1/warehouse/locations/&#123;code&#125;/inventory (LIVE) ·
+          Filter: batch_id={batchId.trim() || '…'} + isAssigned() (current_location non-empty) ·
+          Disjoint predicate: same isAssigned() excludes these rows from Temp Warehouse tab ·
+          Authority: R-Q4 (DECISIONS.md 2026-07-04)
+        </div>
+      </div>
+    );
+  }
+
   // ── Temp Warehouse tab — Wave-3 / U-3 page 8 ───────────────────────────────
   // Wireframe authority: wireframe-inventory.md §7 Tab 3 (TempWarehouseTab). Census #8, scope M.
   //
@@ -3018,10 +3373,15 @@ function DocumentViewerPage({ doc, onBack }) {
   //   d) Discrepancies KPI → "—" (not computable from per-piece rows alone).
 
   function TempWarehouseTab({ openViewer, onShowMove, reportExport }) {
-    const [batchId, setBatchId] = useState('');
-    const [loading, setLoading] = useState(false);
-    const [error, setError]     = useState('');
-    const [rows, setRows]       = useState(null);  // all merchandising rows for batch
+    const [batchId, setBatchId]       = useState('');
+    const [loading, setLoading]       = useState(false);
+    const [error, setError]           = useState('');
+    const [rows, setRows]             = useState(null);  // all merchandising rows for batch
+    // R-Q4 amendment: assignedCodes = Set of scan_codes that have a location assignment.
+    // These are EXCLUDED from Temp Warehouse (they belong to Final Stock tab).
+    // Loaded in parallel with getMerchandisingView via getWarehouseLocationInventory.
+    // Shared predicate: isAssigned() (inventory-page.jsx:~2957).
+    const [assignedCodes, setAssigned] = useState(null);  // null = not loaded; Set when loaded
 
     const load = useCallback(async () => {
       const bid = batchId.trim();
@@ -3029,10 +3389,14 @@ function DocumentViewerPage({ doc, onBack }) {
       setLoading(true);
       setError('');
       setRows(null);
+      setAssigned(null);
 
-      // Reuse getMerchandisingView (pz-api.js:922, added page 7 TempPurchaseTab).
-      // Same C-3e endpoint; filter client-side to WAREHOUSE_STOCK.
-      const res = await window.PzApi.getMerchandisingView(bid);
+      // Parallel: getMerchandisingView (C-3e, existing) + getWarehouseLocationInventory
+      // (R-Q4 amendment — loads location assignments so Temp Warehouse can exclude them).
+      const [res, locRes] = await Promise.all([
+        window.PzApi.getMerchandisingView(bid),
+        window.PzApi.getWarehouseLocationInventory(bid),
+      ]);
 
       setLoading(false);
       if (!res.ok) {
@@ -3040,21 +3404,52 @@ function DocumentViewerPage({ doc, onBack }) {
         return;
       }
       setRows((res.data && res.data.rows) || []);
+
+      // Build assigned scan_code Set from location inventory (R-Q4 disjoint predicate).
+      // getWarehouseLocationInventory already filters to isAssigned() items.
+      // If the location load fails, set is empty → all WAREHOUSE_STOCK rows show in TW
+      // (graceful degradation; never block load on a secondary failure).
+      if (locRes.ok) {
+        const locItems = (locRes.data && locRes.data.items) || [];
+        setAssigned(new Set(locItems.map(it => it.scan_code)));
+      } else {
+        setAssigned(new Set());
+      }
     }, [batchId]);
 
-    // Derived: filter to WAREHOUSE_STOCK — the Temp Warehouse population.
-    // inventory_state_engine.WAREHOUSE_STOCK: trigger 'warehouse_receive'
-    // (PURCHASE_TRANSIT → WAREHOUSE_STOCK). Basis: inventory_state.state = 'WAREHOUSE_STOCK'.
-    // Aggregator reference: inventory_stage2_aggregator.py:117 final_stock_basis (same state).
-    const wsRows    = rows ? rows.filter(r => r.state === 'WAREHOUSE_STOCK') : [];
+    // Derived: filter to WAREHOUSE_STOCK WITHOUT location assignment — the Temp Warehouse
+    // population per R-Q4. Shared predicate: isAssigned() (declared above TempWarehouseTab).
+    //
+    // DISJOINT PROOF:
+    //   FinalStockTab rows:    WAREHOUSE_STOCK items WHERE isAssigned(item) === true
+    //                          → scan_code IS in assignedCodes
+    //   TempWarehouseTab rows: WAREHOUSE_STOCK items WHERE scan_code NOT in assignedCodes
+    //                          → isAssigned(item) === false
+    //   These two sets are mutually exclusive for any loaded batch.
+    //
+    // Graceful degradation: if assignedCodes is null (not yet loaded), fall back to
+    // unfiltered WAREHOUSE_STOCK (same as pre-R-Q4 behavior); UI shows advisory note.
+    const wsRows = rows
+      ? rows.filter(r => {
+          if (r.state !== 'WAREHOUSE_STOCK') return false;
+          if (assignedCodes === null) return true;      // graceful: show all WS until location load resolves
+          return !assignedCodes.has(r.scan_code);       // exclude assigned → those go to FinalStockTab
+        })
+      : [];
     const totalRows = rows ? rows.length : null;
 
-    // W3-page6b: report exportable rows (WAREHOUSE_STOCK subset of merchandising view).
-    // Dependency on `rows` (not derived `wsRows`) avoids stale closure on array identity.
+    // W3-page6b/W3-page9 amendment: report exportable rows — WAREHOUSE_STOCK WITHOUT
+    // location assignment (Temp Warehouse population after R-Q4 disjoint split).
+    // Dependency on `rows` + `assignedCodes` (not derived `wsRows`) avoids stale closure.
     useEffect(() => {
       if (!reportExport) return;
       if (!rows) { reportExport(null, null); return; }
-      const ws = rows.filter(r => r.state === 'WAREHOUSE_STOCK');
+      // R-Q4: export only unassigned WAREHOUSE_STOCK rows (excludes Final Stock pieces).
+      const ws = rows.filter(r => {
+        if (r.state !== 'WAREHOUSE_STOCK') return false;
+        if (assignedCodes === null) return true;  // graceful: export all WS if codes not loaded
+        return !assignedCodes.has(r.scan_code);
+      });
       if (ws.length === 0) { reportExport(null, null); return; }
       const HDRS = ['Pk Sr', 'CTG', 'Client PO', 'Design No', 'Karat', 'Color', 'Quality', 'Dia Wt', 'Qty', 'State'];
       const csvRows = ws.map(r => [
@@ -3064,7 +3459,7 @@ function DocumentViewerPage({ doc, onBack }) {
         r.qty != null ? String(r.qty) : '', r.state || '',
       ]);
       reportExport(HDRS, csvRows);
-    }, [rows, reportExport]);
+    }, [rows, assignedCodes, reportExport]);
 
     const TH = { padding: '7px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
     const TD = { padding: '8px 10px', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)', color: 'var(--text)', verticalAlign: 'middle' };
@@ -3072,14 +3467,17 @@ function DocumentViewerPage({ doc, onBack }) {
     return (
       <div data-testid="temp-warehouse-tab" style={{ maxWidth: 1100, margin: '0 auto' }}>
 
-        {/* Stage-1 info banner — wireframe verbatim §7 Tab 3 */}
-        <div data-testid="tw-info-banner" style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--accent-bg)', border: '1px solid var(--accent-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        {/* Stage-1 info banner — wireframe verbatim §7 Tab 3 + R-Q4 amendment */}
+        <div data-testid="tw-info-banner" style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--accent-bg)', border: '1px solid var(--accent-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <strong style={{ color: 'var(--text)' }}>Stage 1 — Physical arrival.</strong>
           {' '}Goods have arrived but are not fully matched, counted or bagged.
           {' '}Discrepancies allowed and tracked. No FINAL_STOCK is created until matching is complete.
           {' '}Population: pieces in{' '}
           <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>WAREHOUSE_STOCK</code>
-          {' '}state.
+          {' '}state{' '}<em>without</em>{' '}a location/bag assignment (R-Q4).
+          {' '}Pieces with a confirmed location move to the Final Stock tab (disjoint — shared{' '}
+          <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>isAssigned()</code>{' '}
+          predicate).
         </div>
 
         {/* KPI strip — 4 tiles per wireframe §7 Tab 3 */}
@@ -3714,8 +4112,20 @@ function DocumentViewerPage({ doc, onBack }) {
         {aggError && (
           <div style={{ color: 'var(--badge-red-text)', fontSize: 12, marginBottom: 20 }}>Error loading aggregate: {aggError}</div>
         )}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
-          {/* Final stock — WAREHOUSE_STOCK count from aggregate (census IV-O-1 BUILD) */}
+        {/* ── Wireframe §7 Tab 1 primary KPI row: 5 tiles in wireframe order ──
+            Authority resolution (matrix-repair 2026-07-04):
+            The pinned canonical HTML (App.jsx template) outranks the readable
+            extract. Wireframe tile set: Stock units · Pieces on hand · Reserved
+            · Available · Total value. Live values where the aggregate provides
+            them; honest-pending where the backend field does not yet exist.
+            OPERATOR NOTE for CP3 review: tiles 3 (Reserved) and 4 (Available)
+            have no backend field in stage2/aggregate; tile 5 (Total value) has
+            no value aggregate endpoint at all — all three are Wave-4 scope.
+            The existing live "Returns" and WFIRMA-GATED "Consignment" tiles are
+            preserved as a clearly-labelled secondary row (Lesson M: must not
+            suppress live capabilities). ────────────────────────────────────── */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 8 }}>
+          {/* Tile 1: Stock units (final) — WAREHOUSE_STOCK count; live from aggregate */}
           <InvStatTile
             testid="ov-tile-final-stock"
             label="Stock units (final)"
@@ -3723,31 +4133,69 @@ function DocumentViewerPage({ doc, onBack }) {
             tone="green"
             hint="WAREHOUSE_STOCK state"
           />
-          {/* Pieces on hand — aggregate has no piece-count bucket today;
-              renders as pending (census IV-O-1: aggregate only exposes SU count for
-              final_stock; piece sum requires a separate query — Wave-4 scope) */}
+          {/* Tile 2: Pieces on hand — aggregate has no piece-count bucket today;
+              piece sum requires a separate query — Wave-4 scope (census IV-O-1) */}
           <InvStatTile
             testid="ov-tile-pieces"
             label="Pieces on hand"
             value={aggLoading ? '…' : '—'}
             hint="piece-count aggregate — Wave 4"
           />
-          {/* Samples + Returns combined as stock activity proxy — live from aggregate */}
+          {/* Tile 3: Reserved — wireframe 3rd tile; no reserved-qty field in
+              stage2/aggregate (IV-O census: Wave-4 scope). Honest-pending. */}
           <InvStatTile
-            testid="ov-tile-returns"
-            label="Returns (all)"
-            value={returnsCount == null ? (aggLoading ? '…' : '—') : returnsCount}
-            tone={returnsCount > 0 ? 'red' : undefined}
-            hint={returnsSub && returnsCount != null ? `${returnsSub.from_client} client · ${returnsSub.to_producer} producer` : 'RETURNED_FROM_CLIENT + RETURNED_TO_PRODUCER'}
-          />
-          {/* Consignment — WFIRMA-GATED: no backend (census IV-O-4 WFIRMA-GATED,
-              OI-1, OI-2, OI-17 OPEN). Honest pending tile, never a fake number. */}
-          <InvStatTile
-            testid="ov-tile-consignment"
-            label="Consignment"
+            testid="ov-tile-reserved"
+            label="Reserved"
             pending
-            hint="physically with client · C-4a gated"
+            hint="reserved-qty aggregate — Wave 4 scope; no backend field yet"
           />
+          {/* Tile 4: Available — wireframe 4th tile; no available-qty field in
+              stage2/aggregate (IV-O census: Wave-4 scope). Honest-pending. */}
+          <InvStatTile
+            testid="ov-tile-available"
+            label="Available"
+            pending
+            hint="available-qty aggregate — Wave 4 scope; no backend field yet"
+          />
+          {/* Tile 5: Total value — wireframe 5th tile (§7 Tab 1); stage2 aggregate
+              has no value field (IV-O census; Wave-4 scope). Honest-pending.
+              Census tag: IV-O (matrix-repair 2026-07-04). */}
+          <InvStatTile
+            testid="ov-tile-total-value"
+            label="Total value"
+            pending
+            hint="value aggregate — no /stage2/aggregate value field; Wave-4 scope (IV-O census)"
+          />
+        </div>
+
+        {/* ── Secondary (non-wireframe) indicator row ─────────────────────────
+            Lesson M: live capabilities must not be suppressed even when the
+            wireframe does not list them in the primary tile set. These two tiles
+            were the live implementation before the wireframe authority resolution
+            and are preserved here with an honest label so the operator can see
+            them without confusion. ─────────────────────────────────────────── */}
+        <div style={{ marginBottom: 4 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 6 }}>
+            Additional (non-wireframe) indicators
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+            {/* Returns (all) — live from aggregate; was tile-3 before authority resolution */}
+            <InvStatTile
+              testid="ov-tile-returns"
+              label="Returns (all)"
+              value={returnsCount == null ? (aggLoading ? '…' : '—') : returnsCount}
+              tone={returnsCount > 0 ? 'red' : undefined}
+              hint={returnsSub && returnsCount != null ? `${returnsSub.from_client} client · ${returnsSub.to_producer} producer` : 'RETURNED_FROM_CLIENT + RETURNED_TO_PRODUCER'}
+            />
+            {/* Consignment — WFIRMA-GATED: no backend (census IV-O-4; OI-1, OI-2, OI-17 OPEN).
+                Honest pending tile, never a fake number. Was tile-4 before authority resolution. */}
+            <InvStatTile
+              testid="ov-tile-consignment"
+              label="Consignment"
+              pending
+              hint="physically with client · C-4a gated"
+            />
+          </div>
         </div>
 
         {/* ── 3. Stage summary cards 2-col (wireframe :706-762) ─────────── */}
@@ -4387,6 +4835,7 @@ function DocumentViewerPage({ doc, onBack }) {
     { id: 'tempSale',       label: 'Temp Sale',          wire: true  },
     { id: 'tempPurchase',   label: 'Temp Purchase',      wire: true  },
     { id: 'tempWarehouse',  label: 'Temp Warehouse',     wire: true  },
+    { id: 'finalStock',     label: 'Final Stock',        wire: true  },
     { id: 'consignment',    label: 'Consignment',        wire: false },
     { id: 'mapping',        label: 'Identity / Mapping', wire: true  },
   ];
@@ -4631,6 +5080,17 @@ function DocumentViewerPage({ doc, onBack }) {
           {/* ── Temp Warehouse tab — Wave-3 U-3 page 8 ─────────── */}
           {activeTab === 'tempWarehouse' && (
             <TempWarehouseTab
+              openViewer={openViewer}
+              onShowMove={() => setShowMove(true)}
+              reportExport={reportExport}
+            />
+          )}
+
+          {/* ── Final Stock tab — Wave-3 page 9 ─────────────────── */}
+          {/* R-Q4: WAREHOUSE_STOCK pieces WITH location/bag assignment.    */}
+          {/* Disjoint with TempWarehouseTab (shared isAssigned() predicate). */}
+          {activeTab === 'finalStock' && (
+            <FinalStockTab
               openViewer={openViewer}
               onShowMove={() => setShowMove(true)}
               reportExport={reportExport}

@@ -249,3 +249,11 @@ Campaign slices:
   existing authorities only, write-gates untouched, STOP on any new-write-path
   need) -> Accounting -> Shipment Detail -> Dashboard -> Proforma -> rest -> CP3.
 - Current slices: W3-page9 (Final Stock) + retro-matrix pass (parallel).
+- W3-page9 + matrix-repair COMPLETE (one interleaved commit): FinalStockTab per
+  R-Q4 (location-assigned; TempWarehouse amended to the complementary predicate,
+  provably disjoint via shared isAssigned()); Overview = wireframe 5-tile set +
+  clearly-labelled non-wireframe secondary row (authority resolution: canonical
+  HTML > extract; Lesson-M preserved Returns tile); rtp-btn-view-docs added.
+  ALL 13 completed pages read Wireframe-Required Missing: 0.
+  INVENTORY FAMILY CLOSED. Next per operator order: Documents Hub (13 controls,
+  write-gate constraint).

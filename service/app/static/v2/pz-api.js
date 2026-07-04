@@ -845,5 +845,39 @@
     getMerchandisingView: (batchId) =>
       _get(`${BASE}/inventory/merchandising/${encodeURIComponent(batchId)}`),
 
-  });
+    //   isLocationAssigned(item) ← item.current_location is non-empty
+    //
+    // Cross-tab disjoint guarantee: FinalStockTab = isLocationAssigned(item) for
+    // WAREHOUSE_STOCK pieces; TempWarehouseTab amendment = !isLocationAssigned(scan_code)
+    // for WAREHOUSE_STOCK rows. Shared predicate: PzApi.isLocationAssigned.
+    //
+    // Honest empty: unknown batch → items=[] (HTTP 200 from both endpoints).
+    // No new backend route — reuses existing getWarehouseLocations +
+    //   getLocationInventory (pz-api.js:402/408, routes_warehouse.py:184/190).
+    isLocationAssigned: (item) => !!(item && item.current_location && item.current_location.trim() !== ''),
+
+    getWarehouseLocationInventory: async (batchId) => {
+      // Step 1: load all active locations
+      const locRes = await _get(`${BASE}/warehouse/locations`);
+      if (!locRes.ok) return locRes;
+      const locs = (locRes.data && locRes.data.locations) || [];
+      if (locs.length === 0) return { ok: true, status: 200, data: { items: [], locationCount: 0 } };
+
+      // Step 2: load inventory for each location in parallel, filter to batch
+      const perLoc = await Promise.all(
+        locs.map(loc =>
+          _get(`${BASE}/warehouse/locations/${String(loc.location_code).split('/').map(encodeURIComponent).join('/')}/inventory`)
+        )
+      );
+
+      const items = [];
+      perLoc.forEach((res, idx) => {
+        if (!res.ok) return;
+        const locItems = (res.data && res.data.items) || [];
+        locItems.forEach(it => {
+          // Filter to the requested batch; include only assigned (non-empty location) rows
+          if (it.batch_id === batchId && it.current_location && it.current_location.trim() !== '') {
+            items.push(it);
+          }
+        });
 })();
