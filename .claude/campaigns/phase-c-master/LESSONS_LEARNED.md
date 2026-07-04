@@ -187,3 +187,22 @@ change (inline "why disabled" feedback) was written and recorded AS the bug's
 fix. Operator corrected it: #002 -> Closed Works-As-Designed (no code);
 #003 -> UX Improvement carries the change (commit 4f6d75e5). Record now reads
 truthfully instead of "Fixed Export bug" (there was no export bug).
+
+## #9 — Control-presence is not visual parity (operator, verbatim, 2026-07-04)
+
+"Control-presence (matrix Missing:0) is not visual parity. A page can pass
+every objective gate and still be the pre-wireframe UI. Only the operator
+Recognition Gate closes this — it is not automatable."
+
+Origin: Wave-3 status correction (2026-07-04). Every census page had passed
+the 10-criterion objective gate at control-matrix Wireframe-Required-Missing=0,
+and the wave was reported "complete". The operator Recognition Gate corrected
+it: the pages are WIRED (authority migration done, buttons functional, data
+real) but NOT PORTED (wireframe layout not implemented) — Wave 3 is ~55%. The
+objective gate verified that each required control EXISTS; it never verified
+that the page wears the wireframe's LAYOUT. A page can hold every control and
+still be the pre-wireframe UI. The remaining work is a PORTING phase: same
+data, same handlers, same authorities, same routes — wrap each page in the
+wireframe's own layout/markup/tokens. Backend/write-path untouched. Each page
+is its own recognition gate (build one → regenerate only its composite → HOLD
+for the operator's eye → proceed).
