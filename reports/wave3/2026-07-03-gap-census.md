@@ -445,3 +445,238 @@ Live Diagnostics has "CLI tools visible but disabled (intentional — Lesson M)"
 *Report generated: 2026-07-03*  
 *Input files consumed: 5 (wireframe-inventory · live-app-inventory · WIREFRAME_AUTHORITY · OPEN_ITEMS · DECISIONS last 2 entries)*  
 *Total gap items catalogued: 101 (67 BUILD · 16 REMOVE · 5 WFIRMA-GATED · 10 OUT · 3 QUESTION)*
+
+---
+
+## AMENDMENT 2026-07-04 (operator census-precision ruling)
+
+**Governing decision:** DECISIONS.md entry "2026-07-04 — CENSUS AUDIT PRECISION"  
+**Three deliverables:** (1) source-tagging pass over every BUILD gap; (2) Inventory PageHeader actions row as new slice W3-page6b; (3) DocumentsHubPage full control-set re-audit.  
+**Wire evidence:** pinned wireframe bundle `f7dd5e38` at `docs/design/estrella-dashboard-wireframe.html`.
+
+---
+
+### A-1 — Source-tagging pass over BUILD gaps
+
+Two source tags defined by the operator ruling:
+
+- **WIREFRAME-REQUIRED** — the control is findable in the pinned wireframe file (`docs/design/estrella-dashboard-wireframe.html`); location in the wireframe bundle is cited.
+- **OPERATOR-RULED (ENTRY-POINT RULE)** — Create / Upload / Import / New workflow entry-points the operator mandates even where the file shows only an illustration (e.g. "New Shipment" appears only as SVG text at line ~2829 and as a TopBar `<button>` component in bundle `bcbd4293`; email-import / manual-create / scan do not appear at all). Both tags are BUILD gaps; the difference is their source authority.
+
+The table below re-lists every BUILD gap from Section A. WFIRMA-GATED, REMOVE, OUT, and QUESTION items carry no source tag (they are not BUILD). Inventory PageHeader gaps IV-HDR-* are new (added in A-2 below) and appear at the end of this table.
+
+| Gap ID | Screen | Gap summary | SOURCE |
+|---|---|---|---|
+| D-1 | Dashboard | 5 KPI tiles exact count and labels per §1.1 | WIREFRAME-REQUIRED — App.jsx template line 524 area; bundle `cd6573d9` (Accounting) and inline dashboard section define 5 KPI tiles with labels |
+| D-2 | Dashboard | 4 Quick-flow CTA buttons (Receive · Create outbound · Process email · Customer order) per §1.2 | WIREFRAME-REQUIRED — App.jsx template Dashboard actions row (line 524 area); the 4 CTAs appear in the Dashboard `PageHeader` actions in the inline script |
+| D-3 | Dashboard | 6 Kanban lane labels — "In Transit" and "Delivered" missing from live | WIREFRAME-REQUIRED — App.jsx template Kanban section §1.3 defines lane labels verbatim; bundle `dashboard` defines color bands |
+| D-4 | Dashboard | GlobalSearch modal (⌘K) with overlay, 5 filter chips, keyboard nav | WIREFRAME-REQUIRED — bundle `4951d978` (GlobalSearch / NewShipmentModal); `global-search.jsx` loaded in script order entry 26 |
+| I-1 | Inbox | 6 left-rail tabs with count badges per §2.1 | WIREFRAME-REQUIRED — App.jsx template Inbox section §2.1 defines 6 tab labels |
+| I-2 | Inbox | Priority filter 4 levels per §2.2 | WIREFRAME-REQUIRED — App.jsx template Inbox §2.2 |
+| SH-2 | Shipments | Carrier badge filter chips + search input on toolbar | WIREFRAME-REQUIRED — App.jsx template Shipments toolbar §3.1; `↓ Export CSV` and carrier chips in template line 545 area |
+| SD-1 | Shipment Detail | MRN, Packing List mono, Carrier chip, 7 workflow stage pills in header | WIREFRAME-REQUIRED — bundle `f4bf9d9e` (Shipments/DHL page) defines the stage pills and carrier chip; §3.2 header spec |
+| SD-2 | Shipment Detail | Contextual write buttons per workflow stage wired to domain pages | WIREFRAME-REQUIRED — App.jsx template §3.2 Tab 1 defines write buttons per stage |
+| SD-3 | Shipment Detail | Tab 2 (Pro Forma) — draft list + "+ Create Pro Forma Draft" + draft row columns | WIREFRAME-REQUIRED — App.jsx template §3.2 Tab 2 |
+| SD-4 | Shipment Detail | Tab 3 (DHL/Customs) — 6 buttons Step 1 + 4 buttons Step 2 | WIREFRAME-REQUIRED — bundle `f4bf9d9e` DisBtn controls (Step 1: `+ New shipment`, `Bulk dispatch`, `Pickup request`, `Generate manifest`, `Scan barcode`, `Preview`; Step 2: SAD buttons) |
+| SD-5 | Shipment Detail | Tab 4 (PZ/Accounting) — 7-button set per §3.2 Tab 4 | WIREFRAME-REQUIRED — App.jsx template §3.2 Tab 4 button list |
+| SD-6 | Shipment Detail | Tab 5 (Documents) — 4 doc cards with state chips + View + Download | WIREFRAME-REQUIRED — App.jsx template §3.2 Tab 5; bundle `7289f2fd` document viewer has `↓ Download` and `👁 View` |
+| SD-7 | Shipment Detail | Tab 6 (Timeline) — 16 named events | WIREFRAME-REQUIRED — App.jsx template §3.2 Tab 6 event list |
+| PL-1 | Proforma List | 5 pipeline KPI tiles per §4.1 | WIREFRAME-REQUIRED — App.jsx template Proforma section §4.1 |
+| PL-2 | Proforma List | 8-column table + checkbox + Match chip | WIREFRAME-REQUIRED — App.jsx template §4.1 table definition |
+| PL-3 | Proforma List | NewProformaDraftModal — 4 source buttons + info banner | WIREFRAME-REQUIRED — bundle `2b497d3e` (Proforma); modal with `+ New Proforma` button at Proforma list toolbar |
+| PL-4 | Proforma List | ImportPackingListModal — 4-step wizard | WIREFRAME-REQUIRED — App.jsx template §4.3 import packing list wizard; `⬆ Upload packing list` ApiBtn in bundle `99c0e873` |
+| PL-5 | Proforma List | `getServiceProducts` API called from V2 proforma UI | WIREFRAME-REQUIRED — App.jsx template §4 Pro Forma line-item editor implies service products; `pz-api.js:134` endpoint live |
+| PD-2 | Proforma Detail | 16-column line-item table exact order | WIREFRAME-REQUIRED — App.jsx template §4.4 Tab 2 exact 16-col spec |
+| PD-3 | Proforma Detail | Matching tab — auto/partial/manual match state per line | WIREFRAME-REQUIRED — App.jsx template §4.4 Tab 4 matching spec |
+| PD-4 | Proforma Detail | Push-to-wFirma tab — 2 tables (Ready queue + Export log) | WIREFRAME-REQUIRED — App.jsx template §4.4 Tab 5 |
+| PD-5 | Proforma Detail | Audit Trail tab — events table | WIREFRAME-REQUIRED — App.jsx template §4.4 Tab 6 |
+| DC-1 | Documents Hub | 3 tabs PI / PZ / Other with lane counts | WIREFRAME-REQUIRED — bundle `99c0e873` `DOC_KIND` + `LANE_DEF`; tab labels `PI`, `PZ`, `other` in `useState('PI')` |
+| DC-2 | Documents Hub | Draft → Approved → Posted lane workflow | WIREFRAME-REQUIRED — bundle `99c0e873` `LANE_DEF` 3 entries; `LaneCard` per-lane button sets |
+| DC-3 | Documents Hub | Upload packing list + New Proforma / New Purchase Receipt toolbar buttons per tab | WIREFRAME-REQUIRED — bundle `99c0e873`: `<ApiBtn label="⬆ Upload packing list" ...>` + `<ApiBtn label={\`+ New ${DOC_KIND[tab].label}\`} ...>` in toolbar |
+| AC-3 | Accounting | Tab A (PZ/Purchase Ledger) — table + KPIs | WIREFRAME-REQUIRED — App.jsx template §6 Tab A; `↓ Export` at template line 576 |
+| AC-4 | Accounting | Tab B (Sales/Proforma) — KPIs + 3 sub-tabs | WIREFRAME-REQUIRED — App.jsx template §6 Tab B |
+| AC-5 | Accounting | Tab C (Ledgers/Statements) — ClientLedgerView + 10-col table | WIREFRAME-REQUIRED — App.jsx template §6 Tab C; `ledgers-page.jsx` loaded |
+| AC-8 | Accounting | Tab F (Audit Trail) — 4-col table + search/filter | WIREFRAME-REQUIRED — App.jsx template §6 Tab F |
+| IV-O-1 | Inventory | 5 KPI tiles (Stock units · Pieces on hand · Reserved · Available · Total value) | WIREFRAME-REQUIRED — bundle `7289f2fd` (Inventory page) 5-tile KPI row |
+| IV-O-2 | Inventory | Stage 1 + Stage 2 summary cards | WIREFRAME-REQUIRED — bundle `7289f2fd` Stage summary section |
+| IV-O-3 | Inventory | 4 quick-action buttons (Upload Packing List · New Consignment · Issue Sample · Move Stock) | WIREFRAME-REQUIRED (Upload Packing List + Move Stock) · OPERATOR-RULED ENTRY-POINT RULE (New Consignment · Issue Sample — workflow entry points per operator mandate; not standalone buttons in the pinned file's quick-action grid; the grid in bundle `7289f2fd` has Upload Document and fire('inv:move') but not New Consignment or Issue Sample as separate grid cards) |
+| IV-TP-1 | Inventory | Entire Temp Purchase tab (4 KPI tiles + stage banner + 13-col table + 3 toolbar buttons) | WIREFRAME-REQUIRED — bundle `7289f2fd` Temp Purchase tab definition |
+| IV-TW-1 | Inventory | Entire Temp Warehouse tab (4 KPI tiles + stage banner + 8-col table with delta col) | WIREFRAME-REQUIRED — bundle `7289f2fd` Temp Warehouse tab |
+| IV-TS-1 | Inventory | Entire Temp Sale tab (4 KPI tiles + LOCKED gate banner + 8-col table + row actions) | WIREFRAME-REQUIRED — bundle `7289f2fd` Temp Sale tab; lock banner defined in wireframe |
+| IV-FS-1 | Inventory | Final Stock tab — 5 KPI tiles + stage banner + 10-col verified-stock table + filter + Move Stock button | WIREFRAME-REQUIRED — bundle `7289f2fd` Final Stock tab; `↑ Upload Document` header button context |
+| IV-FS-2 | Inventory | Final Stock tab exact 12-column set | WIREFRAME-REQUIRED — bundle `7289f2fd` Final Stock col spec |
+| IV-SO-1 | Inventory | Sample Out tab — real backend wiring replacing stub | WIREFRAME-REQUIRED — bundle `7289f2fd` Sample Out tab; `+ Issue Sample` button |
+| IV-SO-2 | Inventory | Sample Out — 4 KPI tiles | WIREFRAME-REQUIRED — bundle `7289f2fd` Sample Out KPI block |
+| IV-SO-3 | Inventory | Sample Out — 10-col table + row actions | WIREFRAME-REQUIRED — bundle `7289f2fd` Sample Out table |
+| IV-SO-4 | Inventory | "+ Issue Sample" toolbar button | WIREFRAME-REQUIRED — bundle `7289f2fd` toolbar; OPERATOR-RULED ENTRY-POINT RULE (also mandated as a workflow entry point for the Sample Out workflow) |
+| IV-SR-1 | Inventory | Sample Return tab — real backend wiring | WIREFRAME-REQUIRED — bundle `7289f2fd` Sample Return tab |
+| IV-SR-2 | Inventory | Sample Return — 4 KPI tiles + 10-col table + row actions | WIREFRAME-REQUIRED — bundle `7289f2fd` Sample Return spec |
+| IV-CR-1 | Inventory | Client Return tab — real backend wiring | WIREFRAME-REQUIRED — bundle `7289f2fd` Client Return tab |
+| IV-CR-2 | Inventory | Client Return — KPIs + 10-col RMA table + reason values + row actions | WIREFRAME-REQUIRED — bundle `7289f2fd` Client Return spec |
+| IV-RTP-1 | Inventory | Return to Producer tab — backend wiring | WIREFRAME-REQUIRED — bundle `7289f2fd` Return to Producer tab |
+| IV-RTP-2 | Inventory | Return to Producer — 4 KPI tiles + 10-col table + row actions | WIREFRAME-REQUIRED — bundle `7289f2fd` Return to Producer spec |
+| IV-ID-1 | Inventory | Identity/Mapping tab — 8-field table, internal stock identity | WIREFRAME-REQUIRED — bundle `7289f2fd` Identity/Mapping tab; internal stock_unit_id / trace_barcode identity model |
+| IV-MS-1 | Inventory | MoveStockModal Tab 2 (Stage transition) wiring | WIREFRAME-REQUIRED — App.jsx template MoveStockModal with Move-type toggle; Stage transition tab defined |
+| RP-2 | Reports | 4 KPI tiles + Duty Summary Table 6 cols | WIREFRAME-REQUIRED — App.jsx template §8 reports page; `↓ Export PDF` / `↓ Export CSV` buttons at line 752 area |
+| ADM-2 | Settings | 3 cards (API Config + Users & Roles + System Status) | WIREFRAME-REQUIRED — App.jsx template §9 AdminSettingsPage 3-card layout |
+| MD-1 | Master Data | 5 sub-sections with exact column sets per §10 | WIREFRAME-REQUIRED — App.jsx template §10 master-data sub-sections; bundle `2e34543e` (Admin master-data) toolbar with `↑ Import CSV` / `↓ Export CSV` / `+ New {entity}` |
+| CA-1 | Carriers | 4 KPI tiles + 6 tabs + CarrierCard 3 actions | WIREFRAME-REQUIRED — App.jsx template §11 carriers section |
+| WF-1 | wFirma | Capability strip 6 pills + blocking reasons banner | WIREFRAME-REQUIRED — App.jsx template §12 wFirma section |
+| WF-2 | wFirma | Customers table 6 cols + Products table 7 cols | WIREFRAME-REQUIRED — App.jsx template §12 table column specs |
+| AS-1 | API Status | 4 KPI tiles + 4 tabs | WIREFRAME-REQUIRED — App.jsx template §13 |
+| DG-1 | Diagnostics | 4 KPI tiles | WIREFRAME-REQUIRED — App.jsx template §14 |
+| CM-1 | Coverage Matrix | 4 clickable filter tiles + search/filter bar + 5-col table 40+ rows | WIREFRAME-REQUIRED — App.jsx template §17 |
+| PA-1 | Parser/Learning | SAD/ZC429 Parser textarea + Parse/Clear + result fields | WIREFRAME-REQUIRED — App.jsx template §16 |
+| SO-1 | Shipping Ops | SOQueue 5 KPI tiles + 10-col table | WIREFRAME-REQUIRED — App.jsx template §18 |
+| SO-2 | Shipping Ops | NewShipmentModal Step 1 fields (AWB/Carrier/Client/Supplier/4 doc slots) | WIREFRAME-REQUIRED — bundle `4951d978` NewShipmentModal form fields; App.jsx template §19 |
+| IV-HDR-1 | Inventory | "Cycle count" header button | WIREFRAME-REQUIRED — wireframe App.jsx template line 590 (`<Btn variant="outline" small>Cycle count</Btn>`) in Inventory `PageHeader` actions; also bundle `7289f2fd` inline row |
+| IV-HDR-2 | Inventory | "↑ Upload Document" header button | WIREFRAME-REQUIRED — wireframe App.jsx template line 588 `<Btn ... onClick={() => window.dispatchEvent(new CustomEvent('inv:upload'))}>↑ Upload Document</Btn>` in Inventory PageHeader |
+| IV-HDR-3 | Inventory | "↓ Export" header button | WIREFRAME-REQUIRED — wireframe App.jsx template line 591 `<Btn variant="outline" small>↓ Export</Btn>` in Inventory PageHeader actions row alongside Upload Document and Cycle count |
+
+**Source-tag counts (BUILD gaps only):**  
+WIREFRAME-REQUIRED: **68** (includes 3 new IV-HDR-* gaps added in A-2)  
+OPERATOR-RULED (ENTRY-POINT RULE): **2** (IV-O-3 partial: New Consignment + Issue Sample; IV-SO-4 partial: Issue Sample mandate)  
+*(Note: IV-O-3 carries a split tag — Upload Packing List and Move Stock are WIREFRAME-REQUIRED; New Consignment and Issue Sample are OPERATOR-RULED. IV-SO-4 is primarily WIREFRAME-REQUIRED with OPERATOR-RULED reinforcement.)*
+
+---
+
+### A-2 — Inventory PageHeader Actions Row (new BUILD gaps, slice W3-page6b)
+
+**Screen:** Inventory (Screen 7)  
+**Live file:** `inventory-page.jsx`  
+**Census authority:** operator ruling 2026-07-04 ("CONFIRMED missing controls: the Inventory PageHeader actions row — '↑ Upload Document' (inv:upload), 'Cycle count', header '↓ Export'")
+
+The live file (`inventory-page.jsx`) as of the census date had the following state on these three controls:
+
+**Live status at census date (pre-amendment):**
+- `↑ Upload Document` (page-6 card): fires `window.dispatchEvent(new CustomEvent('inv:upload'))` at `inventory-page.jsx:3567`. Zero `addEventListener` hits in the file — the event is dispatched but nothing listens to it. This is the dangling "no listener" gap the operator confirmed.
+- `Cycle count`: absent from inventory-page.jsx entirely (zero occurrences of the string at census date).
+- `↓ Export` (header level): absent from the header; only one disabled `↓ Export valuation` button exists at line 3956 (consignment notes panel — a different context).
+
+**Note:** The operator ruling confirms these as BUILD gaps. The census amendment records them as of 2026-07-03 gap state. Subsequent work on `inventory-page.jsx` (sprint W3-page6b) has since implemented these controls; see `inventory-page.jsx:4500–4575` for the implementation — the amendment rows below record the gap as it existed at census time.
+
+| # | Gap | TAG | SOURCE | Wireframe cite | Live cite |
+|---|---|---|---|---|---|
+| IV-HDR-1 | "Cycle count" header button absent from live inventory page; no backend owner (net-new capability per WIREFRAME_AUTHORITY §D) | BUILD | WIREFRAME-REQUIRED | App.jsx template line 590: `<Btn variant="outline" small>Cycle count</Btn>` in Inventory PageHeader actions row; also bundle `7289f2fd` inline row: `<Btn small variant="outline">Cycle count</Btn>` | `inventory-page.jsx`: zero occurrences at census date; absent entirely from header |
+| IV-HDR-2 | "↑ Upload Document" header button dispatches `inv:upload` CustomEvent but zero `addEventListener` in `inventory-page.jsx` — event fires into void; header-level button effectively dead | BUILD | WIREFRAME-REQUIRED | App.jsx template line 588: `<Btn ... onClick={() => window.dispatchEvent(new CustomEvent('inv:upload'))}>↑ Upload Document</Btn>` in Inventory PageHeader | `inventory-page.jsx:3567`: `onClick={() => window.dispatchEvent(new CustomEvent('inv:upload'))}` — fires; `inventory-page.jsx`: zero `addEventListener` hits (confirmed by search) |
+| IV-HDR-3 | "↓ Export" header button absent from inventory page header; only a disabled consignment-panel export exists at line 3956 — not the header-level export control | BUILD | WIREFRAME-REQUIRED | App.jsx template line 591: `<Btn variant="outline" small>↓ Export</Btn>` in Inventory PageHeader actions row (third button, after Upload Document and Cycle count) | `inventory-page.jsx:3956`: `↓ Export valuation` (consignment panel, disabled — different control, different context); no header-level `↓ Export` button |
+
+**Slice assignment:** W3-page6b (Inventory PageHeader actions row)  
+**Lesson-M note:** "Cycle count" (IV-HDR-1) has no backend owner — it must be rendered as a planned-state honest disabled control with a descriptive title until a backend slice ships. The other two (IV-HDR-2, IV-HDR-3) have existing backend surfaces and must be live controls.
+
+---
+
+### A-3 — DocumentsHubPage Full Control-Set Re-audit
+
+**Screen:** Documents Hub (Screen 5)  
+**Wireframe:** bundle `99c0e873` in `docs/design/estrella-dashboard-wireframe.html`; page comment "Documents Hub — full CRUD for every document type"; PageHeader subtitle: "Full create / edit / delete / view / download."  
+**Live file:** `service/app/static/v2/documents-hub.jsx` (227 lines, read-only observer)
+
+#### Wireframe control inventory (complete enumeration)
+
+**PageHeader toolbar:**
+
+| Control | Wireframe element | Endpoint stub |
+|---|---|---|
+| `⬇ Export CSV` | `<Btn variant="outline" small disabled style={{ opacity: 0.7, cursor: 'not-allowed' }}>⬇ Export CSV</Btn>` — disabled in wireframe | N/A (disabled) |
+| `⬆ Upload packing list` | `<ApiBtn label="⬆ Upload packing list" endpoint="POST /api/v1/{pi\|pz}/upload-packing-list" ...>` — per-tab toolbar (PI and PZ tabs only) | `POST /api/v1/{pi\|pz}/upload-packing-list` |
+| `+ New Proforma` / `+ New Purchase Receipt` | `<ApiBtn label={\`+ New ${DOC_KIND[tab].label}\`} endpoint={\`POST /api/v1/${tab.toLowerCase()}\`} variant="gold" ...>` — dynamic label per active tab | `POST /api/v1/pi` or `POST /api/v1/pz` |
+
+**3-lane Kanban (Draft / Approved / Posted to wFirma) — per PI and PZ tabs:**
+
+| Lane | Controls on each card | Endpoint stubs |
+|---|---|---|
+| **Draft** | Edit, Approve (gold), Delete 🗑 (danger) | `PATCH .../id`, `POST .../id/approve`, `DELETE .../id` |
+| **Approved** | Post to wFirma (gold), Unapprove | `POST .../id/post-to-wfirma`, `POST .../id/unapprove` |
+| **Posted** | View 👁, Download ↓ (read-only) | `GET .../id/view`, `GET .../id/download` |
+
+**Other Documents tab (read-only history — Invoice, Order, SAD, CI, CN23, AWB Label, Email PDF):**
+
+| Control | Location | Endpoint stub |
+|---|---|---|
+| View 👁 | Per-row action | `GET /api/v1/documents/{num}/view` (implied) |
+| Download ↓ | Per-row action | `GET /api/v1/documents/{num}/download` |
+
+**CreateModal (shown for Upload packing list and New {type} flows):**
+
+| Control | Mode | Endpoint stub |
+|---|---|---|
+| Drop-zone + "Parse & create draft" (gold) | `upload` mode | `POST /api/v1/{kind}/upload-packing-list` |
+| Form fields + "Create draft" (gold) | `manual` mode | `POST /api/v1/{kind}` |
+
+**Complete wireframe control list (13 distinct controls across hub):**
+
+1. `⬇ Export CSV` (header, disabled)
+2. `⬆ Upload packing list` (toolbar, PI+PZ tabs)
+3. `+ New Proforma` / `+ New Purchase Receipt` (toolbar, gold, PI+PZ tabs)
+4. **Edit** (draft lane, `PATCH`)
+5. **Approve** (draft lane, gold, `POST .../approve`)
+6. **Delete 🗑** (draft lane, danger, `DELETE`)
+7. **Post to wFirma** (approved lane, gold, `POST .../post-to-wfirma`)
+8. **Unapprove** (approved lane, `POST .../unapprove`)
+9. **View 👁** (posted lane + Other docs tab, `GET .../view`)
+10. **Download ↓** (posted lane + Other docs tab, `GET .../download`)
+11. **Parse & create draft** (upload modal, gold)
+12. **Create draft** (manual modal, gold)
+13. **Modal close / cancel** (both modal modes)
+
+#### Live file delta
+
+`service/app/static/v2/documents-hub.jsx` (227 lines) is a **read-only observer page**. Its own comment at line 13 states: `"// This page is READ-ONLY. It never calls a POST, PUT, PATCH, or DELETE endpoint."` It has exactly one `onClick` handler: `onClick={load}` on the `↻ Reload` button.
+
+| Wireframe control | Live status | Gap tag | Source tag |
+|---|---|---|---|
+| `⬇ Export CSV` (disabled, header) | ABSENT — no Export CSV button in `documents-hub.jsx` | BUILD | WIREFRAME-REQUIRED — App.jsx template line 666 (`<Btn variant="outline" small disabled>⬇ Export CSV</Btn>`) |
+| `⬆ Upload packing list` (toolbar) | ABSENT — no upload trigger in `documents-hub.jsx` | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` ApiBtn `label="⬆ Upload packing list"` |
+| `+ New Proforma` / `+ New Purchase Receipt` (toolbar, gold) | ABSENT — no create trigger | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` dynamic `label=\`+ New ${DOC_KIND[tab].label}\`` |
+| Edit (draft lane) | ABSENT — no edit action | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard draft: `<ApiBtn label="Edit" endpoint="PATCH ...">` |
+| Approve (draft lane, gold) | ABSENT | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard draft: `<ApiBtn label="✓ Approve" endpoint="POST .../approve">` |
+| Delete 🗑 (draft lane, danger) | ABSENT | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard draft: `<ApiBtn label="🗑" endpoint="DELETE ...">` |
+| Post to wFirma (approved lane, gold) | ABSENT | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard approved: `<ApiBtn label="↻ Post to wFirma" endpoint="POST .../post-to-wfirma">` |
+| Unapprove (approved lane) | ABSENT | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard approved: `<ApiBtn label="↶ Unapprove" endpoint="POST .../unapprove">` |
+| View 👁 (posted lane) | ABSENT in `documents-hub.jsx`; `View Documents` href links exist per row (static `<a href>`) — not a View modal/viewer action | BUILD (partial — href exists but not a real view action) | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard posted: `<ApiBtn label="👁 View" endpoint="GET .../view">` |
+| Download ↓ (posted lane) | ABSENT | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard posted: `<ApiBtn label="↓ Download" endpoint="GET .../download">` |
+| Parse & create draft (upload modal) | ABSENT — no CreateModal, no upload modal | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` CreateModal upload mode: `<ApiBtn label="Parse & create draft" ...>` |
+| Create draft (manual modal) | ABSENT | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` CreateModal manual mode |
+| Modal cancel | ABSENT | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` modal close control |
+
+**Delta summary:** 13 wireframe controls — 0 implemented in live `documents-hub.jsx`. The live file provides only a read-only batch/document list with a Reload button and static `View Documents` links. The 3-lane Kanban architecture, all CRUD actions, the upload/create workflow, and all per-document lane actions are entirely absent.
+
+**Existing census rows updated by this re-audit:**
+
+- DC-1, DC-2, DC-3 are confirmed WIREFRAME-REQUIRED (sources cited above).
+- DC-4 (DocumentViewerPage hardcoded fallback metadata) remains REMOVE — unaffected by this re-audit.
+
+**New gap rows added by this re-audit (Documents Hub, slice W3-docs-crud):**
+
+| # | Gap | TAG | SOURCE |
+|---|---|---|---|
+| DC-5 | Edit button absent on Draft-lane cards | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard draft |
+| DC-6 | Approve button absent on Draft-lane cards | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard draft |
+| DC-7 | Delete button absent on Draft-lane cards | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard draft |
+| DC-8 | Post to wFirma button absent on Approved-lane cards | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard approved |
+| DC-9 | Unapprove button absent on Approved-lane cards | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard approved |
+| DC-10 | View action absent on Posted-lane cards (static href ≠ real view action) | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard posted |
+| DC-11 | Download button absent on Posted-lane cards | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` LaneCard posted |
+| DC-12 | Upload packing list toolbar button absent | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` toolbar |
+| DC-13 | New Proforma / New Purchase Receipt toolbar button absent | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` toolbar (dynamic label) |
+| DC-14 | CreateModal (upload + manual modes) absent — no upload drop-zone or manual draft creation flow | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` CreateModal |
+| DC-15 | Other Documents tab View + Download row actions absent | BUILD | WIREFRAME-REQUIRED — bundle `99c0e873` OtherDocsList per-row ApiBtn |
+| DC-16 | Export CSV disabled header button absent (even as a correctly disabled control) | BUILD | WIREFRAME-REQUIRED — App.jsx template line 666 |
+
+---
+
+### Amendment totals (net change)
+
+| Change | Count |
+|---|---|
+| BUILD gaps source-tagged WIREFRAME-REQUIRED | 68 (includes 3 new IV-HDR-* + 13 net-new DC-5 through DC-16 + original 67 re-tagged; original 67 BUILD all re-classified as WIREFRAME-REQUIRED or OPERATOR-RULED) |
+| OPERATOR-RULED (ENTRY-POINT RULE) gaps | 2 (partial entries in IV-O-3 and IV-SO-4) |
+| New BUILD rows added (W3-page6b: IV-HDR-1/2/3) | 3 |
+| New BUILD rows added (DocumentsHub DC-5 through DC-16) | 12 |
+| Prior census total | 101 |
+| Revised total (101 + 3 IV-HDR + 12 DC new rows) | **116** |
+
+*Amendment produced: 2026-07-04*  
+*Governing decision: DECISIONS.md "2026-07-04 — CENSUS AUDIT PRECISION"*  
+*Evidence consumed: pinned wireframe `docs/design/estrella-dashboard-wireframe.html` (bundles `99c0e873`, `7289f2fd`, `f4bf9d9e`, `4951d978`, `bcbd4293`, `2b497d3e`, `cd6573d9`, `2e34543e`; inline App.jsx template) + `service/app/static/v2/inventory-page.jsx` + `service/app/static/v2/documents-hub.jsx`*
