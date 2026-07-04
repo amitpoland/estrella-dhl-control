@@ -65,6 +65,25 @@ moving on.
 
 ---
 
+## Triage rule — OPERATOR REVIEW HEURISTIC (operator, verbatim)
+
+"Don't hunt for defects — use the application naturally. If something
+interrupts your workflow or makes you hesitate, that is a more valuable
+defect than ten cosmetic observations. Before logging any defect ask:
+'Would this slow me down if I used this application every day?' Yes ->
+log it. No -> it waits for the visual polish phase.
+Severity ladder: 1 Critical (crashes, broken workflows, incorrect
+behavior) · 2 High (confusing UX, missing actions, wrong navigation) ·
+3 Medium (layout inconsistencies affecting usability) · 4 Low (visual
+polish, e.g. Defect #001).
+Defect #001 stays OPEN but is not worked until interaction issues are
+exhausted."
+
+Severity = 1 Critical / 2 High / 3 Medium / 4 Low (replaces the earlier
+Critical/High/Medium/Low labels 1:1). No hunting, no automated sweep; work only
+operator-logged defects in interaction→severity order; #001 (Low) last, in the
+visual-polish phase.
+
 ## Defects
 
 ### Defect #001
