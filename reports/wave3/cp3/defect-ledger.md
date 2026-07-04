@@ -40,6 +40,20 @@ fields. Severity = Critical / High / Medium / Low. Class stays a note
 
    "Code changed" alone is FIXED, never VERIFIED.
 
+## RULE 3 — CLOSURE GATE (operator, verbatim)
+
+A defect cannot be CLOSED until:
+- Status = VERIFIED
+- The affected page still passes all previously verified defects
+- No new defect was introduced on that page
+- The ledger entry references the commit that fixed it
+
+**Lifecycle (final, frozen):** OPEN → FIXED (code changed) → VERIFIED
+(Preview + console + CP3 screenshot) → CLOSED (no regressions on the page +
+fixing commit SHA recorded in the row). When a page's every defect is CLOSED,
+the page is re-walked once to confirm no cross-defect regression before
+moving on.
+
 ## Ordering (per the execution order)
 
 - INTERACTION defects fixed first, in severity order (Critical → High → Medium → Low).

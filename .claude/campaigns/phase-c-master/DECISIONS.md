@@ -776,3 +776,22 @@ the fix. "Code changed" alone is FIXED, never VERIFIED.
 
 Effect: reports/wave3/cp3/defect-ledger.md working rules amended to this
 template + the two enforced rules. No new planning — process discipline only.
+
+---
+
+### 2026-07-04 — DEFECT LEDGER RULE 3: CLOSURE GATE (operator, verbatim R4 — final process rule)
+
+RULE 3 (verbatim): "A defect cannot be CLOSED until:
+- Status = VERIFIED
+- The affected page still passes all previously verified defects
+- No new defect was introduced on that page
+- The ledger entry references the commit that fixed it"
+
+LIFECYCLE (final, frozen): OPEN -> FIXED (code changed) -> VERIFIED (Preview +
+console + CP3 screenshot) -> CLOSED (no regressions on the page + fixing commit
+SHA recorded). When a page's every defect is CLOSED, the page is re-walked once
+to confirm no cross-defect regression before moving on.
+
+PROCESS NOW FROZEN for this round — no further process changes. Execution only:
+one defect -> fix -> verify -> close -> next, until the ledger empties. CP3
+acceptance is the operator's word after the ledger is clean.
