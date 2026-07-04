@@ -879,5 +879,9 @@
           if (it.batch_id === batchId && it.current_location && it.current_location.trim() !== '') {
             items.push(it);
           }
-        });
+          // Used by: Documents Hub OtherDocs tab, PZ kanban Download button
+    getBatchFiles: (batchId) =>
+      _get(`${BASE}/dashboard/batches/${encodeURIComponent(batchId)}/files`),
+
+  });
 })();

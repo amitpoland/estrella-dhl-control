@@ -257,3 +257,9 @@ Campaign slices:
   ALL 13 completed pages read Wireframe-Required Missing: 0.
   INVENTORY FAMILY CLOSED. Next per operator order: Documents Hub (13 controls,
   write-gate constraint).
+- W3 Documents Hub COMPLETE: 13/13 controls (9 WIRED to existing authorities incl.
+  Post-to-wFirma through the deployed gate routes_proforma:8095 UNCHANGED; 1
+  NAVIGATE per SS-D; 4 honest-gated) — Missing: 0. STOP-REPORT (Wave-4 intake):
+  DC-12 upload-packing-list route, DC-13-PZ document-level PZ create, DC-14
+  modal (same route). Sprint-35 read-only contract SUPERSEDED honestly: 33/0
+  w/ whitelist write-endpoint pin + STOP-control no-fetch pin. Next: Accounting Hub.
