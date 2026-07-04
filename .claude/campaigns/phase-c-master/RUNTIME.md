@@ -235,3 +235,17 @@ Campaign slices:
   vs OPERATOR-RULED Entry-Point). DocumentsHub delta re-audited: 13 wireframe
   controls -> 0 live (read-only observer; incl. fiscal-class Post-to-wFirma).
   CAMPAIGN HOLDS at the family boundary: budget ruling + Q-1..Q-4 awaited.
+
+## Boundary rulings received (2026-07-04) — wave RESUMED
+
+- R-BUDGET: Wave 3 re-budgeted 6h -> 30h, scope unchanged. R-Q4: Final Stock =
+  location-assigned / Temp Warehouse = unassigned (existing authority, no new
+  state). R-Q1: DHL standalone + entry-point sub-tab only. R-Q2: /automation ->
+  Action Center (operator authority) -> AI Bridge (backend capability).
+  R-Q3: Diagnostics tools stay, honest Disabled/Planned/Backend-Required.
+- NEW criterion 10: per-page CONTROL MATRIX (Wireframe/Implemented/Gated/
+  Operator-ruled/Out/Missing=0); retroactive matrices for pages 1-8,10-12,6b.
+- Execution order: page 9 -> retro matrices -> Documents Hub (13 controls,
+  existing authorities only, write-gates untouched, STOP on any new-write-path
+  need) -> Accounting -> Shipment Detail -> Dashboard -> Proforma -> rest -> CP3.
+- Current slices: W3-page9 (Final Stock) + retro-matrix pass (parallel).

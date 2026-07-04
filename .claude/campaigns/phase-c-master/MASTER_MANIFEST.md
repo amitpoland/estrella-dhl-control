@@ -145,7 +145,7 @@ Expected durations — initial estimates, amendable:
 |---|---|---|---|---|
 | Wave 1 | 8h | ~4h — COMPLETE | closed | closed at 50% |
 | Wave 2 | 11h | ~5.5h — COMPLETE (C-3g, R2, R3, C-3a..C-3f; C-4a OI-deferred) | closed | closed at ~50% |
-| Wave 3 | 6h | 0h | 6h | awaiting ratification |
+| Wave 3 | **30h (re-budgeted 2026-07-04, R-BUDGET verbatim — scope unchanged)** | ~12h @ family boundary | ~18h | remaining ~19 census pages at measured velocity |
 | Wave 4 | 5h | 0h | 5h | — |
 | **Total** | **30h** | **~9.5h** | **~20.5h** | under budget |
 

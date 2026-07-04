@@ -652,3 +652,54 @@ bundle location cite per control) vs OPERATOR-RULED / ENTRY-POINT RULE
 (operator authority: Create/Upload/Import/New on every workflow, even where
 the wireframe shows only an illustration). The ENTRY-POINT RULE is recorded
 here as an operator-ruled census authority for Wave 3.
+
+---
+
+### 2026-07-04 — BOUNDARY RULINGS (operator, all verbatim R4) + control-matrix gate
+
+R-BUDGET (verbatim): "Re-budget. Do not reduce scope. The 6-hour estimate is
+obsolete — 116 verified gaps, control-level census, DocumentsHub re-opened,
+Accounting/ShipmentDetail/Dashboard/Proforma remaining. Complete Wave 3 at
+measured velocity." → MASTER_MANIFEST §4 amended: Wave 3 re-budgeted 6h →
+30h (12h consumed at the family boundary + ~19 remaining census pages at
+measured velocity ~1h M / 2-3h L). Cause on record: SELF_ASSESSMENT
+2026-07-04 entry (estimate predates the ratified every-page directive and
+the 116-gap census). Scope unchanged.
+
+R-Q4 (verbatim): "Final Stock = location/bag-assigned inventory. Temp
+Warehouse = received but not yet assigned. Derived from existing authority;
+no new state." → unblocks page 9; Temp Warehouse tab gains the complementary
+filter in the same slice (both tabs disjoint by construction).
+
+R-Q1 (verbatim): "DHL remains the standalone authority. Shipment Detail
+carries only an entry point/sub-tab into it. No duplicate DHL UI or backend."
+
+R-Q2 (verbatim): "/automation -> Action Center -> AI Bridge. AI Bridge is
+backend capability; Action Center is the operator authority."
+
+R-Q3 (verbatim): "Diagnostics tools are not removed. Shown as Disabled /
+Planned / Backend Required. Honest UI is our policy."
+
+NEW PAGE-GATE REQUIREMENT (operator, verbatim — criterion 10, effective
+immediately): "Every page report attaches a control matrix:
+Wireframe controls: X · Implemented: X · Backend gated: X · Operator
+ruled: X · Out of scope: X · Missing: must be 0.
+A page is not 'Complete' until Wireframe-Required Missing = 0."
+Retroactive: pages 1-8, 10-12, 6b get matrices generated from the amended
+census; any page with Wireframe-Required Missing > 0 re-opens as a
+follow-up slice (list reported).
+
+EXECUTION ORDER (operator, verbatim): "1. Final Stock (Q-4 rule)
+2. Documents Hub 3. Accounting Hub 4. Shipment Detail 5. Dashboard
+6. Proforma 7. remaining census pages. Then CP3."
+
+DOCUMENTS HUB CONSTRAINT (operator): the wireframe's 13 controls wire to
+EXISTING backend authorities only; Post-to-wFirma and every fiscal-class
+action goes through the deployed write-gates unchanged — a UI slice never
+loosens or adds a write path; closed-gate/absent-backend → honest
+gated/pending per R-Q3; any control REQUIRING a new write path = STOP and
+report (Wave-4/backlog intake, not UI work).
+
+Also active this wave: /ui-ux-pro-max design-intelligence loaded WITH
+EJ_OVERRIDES (accessibility/UX/structural guidance only; EJ tokens +
+dashboard-shared components; no Tailwind/TS/hex/npm icons).
