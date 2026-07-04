@@ -169,3 +169,21 @@ DECISIONS).
 
 Disposition: tooling amendment queued as v1.1-003 (storage-root resolution
 from app config/env). Platform v1.0 untouched.
+
+## #8 — Reclassify before writing code (operator, verbatim, 2026-07-04)
+
+"If investigation disproves the reported defect, stop. Reclassify it before
+writing code." The ledger is a permanent engineering record, not a change log;
+separating bugs / works-as-designed / UX-improvements preserves its integrity.
+
+Decision tree: User reports issue -> Investigate -> {Real bug -> fix it ·
+Works as designed -> close WAD (no code under that record) · UX problem ->
+new UX-improvement item; the change lives there}.
+
+Paid cost: CP3 Defect #002 (Inventory Export "doesn't work"). Investigation
+DISPROVED it — export was correct (filtered rows, working download,
+intentionally disabled when empty). Instead of reclassifying first, a UX
+change (inline "why disabled" feedback) was written and recorded AS the bug's
+fix. Operator corrected it: #002 -> Closed Works-As-Designed (no code);
+#003 -> UX Improvement carries the change (commit 4f6d75e5). Record now reads
+truthfully instead of "Fixed Export bug" (there was no export bug).

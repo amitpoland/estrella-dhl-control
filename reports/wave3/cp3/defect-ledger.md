@@ -84,23 +84,52 @@ Critical/High/Medium/Low labels 1:1). No hunting, no automated sweep; work only
 operator-logged defects in interaction→severity order; #001 (Low) last, in the
 visual-polish phase.
 
+## PERMANENT RULE — Reclassify before writing code (operator, 2026-07-04)
+
+**If investigation disproves the reported defect, STOP. Reclassify it before
+writing any code.** The ledger is a permanent engineering record, not a change
+log — separating *bugs*, *works-as-designed*, and *UX improvements* preserves
+its integrity (else a future reader sees "Fixed Export bug" when there was no
+export bug — the #002/#003 correction below).
+
+```
+User reports issue
+        │
+        ▼
+   Investigate
+        │
+        ├── Real bug          → Fix it (bug record)
+        ├── Works as designed → Close as WAD (no code change under that record)
+        └── UX problem        → Create a new UX-improvement item; the change
+                                lives there, not under the bug record
+```
+
+A code change never lands under a record whose investigation disproved it.
+
 ## Defects
+
+### Defect #003
+- **Type:** UX Improvement (not a bug)
+- **Page:** Inventory · **Control:** Header "↓ Export" button
+- **Severity:** Medium (3) · **Class:** INTERACTION/UX
+- **Title:** Export button should explain why export is unavailable.
+- **Origin:** reclassified from the #002 investigation — the export works, but a disabled button with no visible reason reads as broken.
+- **Change:** Export is always clickable. With loaded rows → downloads the filtered CSV (the existing, correct path — unchanged). With none → renders an inline `inv-hdr-export-hint` message naming exactly what to do (open a data tab / load records), so the control always produces a visible response. Muted styling stays as a "nothing to export yet" cue. No wireframe redesign — the header Export control is preserved.
+- **Fix commit:** `4f6d75e5` (`service/app/static/v2/inventory-page.jsx`).
+- **Verification checklist:**
+  - Behavior in Preview (localhost:60991): ✅ button enabled (cursor pointer) on Overview + Sample Out; both hint variants render on click; all 11 inventory tabs re-walked — Export present + responsive on each.
+  - No related console errors: ✅ (clean across the tab walk).
+  - Wireframe match holds: ✅ header Export control present per wireframe; inline hint is interaction feedback, not a layout change.
+  - Affected CP3 screenshot regenerated: ✅ `pair-08-inventory.png` live-right refreshed.
+- **Status:** CLOSED (commit `4f6d75e5`; no regression — all 11 Inventory tabs re-walked clean).
 
 ### Defect #002
 - **Page:** Inventory
 - **Control:** Header "↓ Export" button
-- **Severity:** High (2) · **Class:** INTERACTION
-- **Expected:** Export the currently filtered rows of the active tab.
-- **Actual:** The Export button "doesn't do anything" — it was `disabled` whenever the active tab had no loaded rows, so clicking produced no response and no feedback.
-- **Screenshot:** operator-provided (Inventory header); reproduced on Preview.
-- **Root cause:** The header Export was `disabled = !exportMeta || TABS_WITH_NO_TABLE.includes(activeTab)`. Disabled on the Overview landing tab always, and on every data tab until records load (empty in dev / before a batch is loaded). A disabled `<button>` fires no `onClick`, so it read as broken with no explanation. The CSV path (`exportCsv`) and filter handling were already correct (register tabs filter server-side; the reported rows are the filtered set).
-- **Fix:** Export is always clickable. With loaded rows → downloads the filtered CSV (unchanged path). With none → renders an inline `inv-hdr-export-hint` message naming exactly what to do (open a data tab / load records), so the action always produces a visible response. Muted styling stays as a "nothing to export yet" cue. No wireframe redesign — the header Export control is preserved and made functional. Commit `4f6d75e5` (`service/app/static/v2/inventory-page.jsx`).
-- **Verification checklist:**
-  - Behavior in Preview (localhost:60991): ✅ button enabled (cursor pointer) on Overview + Sample Out; both hint variants render on click; re-walked all 11 tabs — Export present + responsive on each.
-  - No related console errors: ✅ (clean across the tab walk).
-  - Wireframe match holds: ✅ header Export control present per wireframe; inline hint is interaction feedback, not a layout change.
-  - Affected CP3 screenshot regenerated: ✅ `pair-08-inventory.png` live-right refreshed.
-- **Status:** CLOSED (commit `4f6d75e5`; no regression on the Inventory page — all 11 tabs re-walked clean).
+- **Reported:** "The Export button doesn't do anything." Expected: export the currently filtered rows.
+- **Disposition:** **CLOSED — Works As Designed (WAD).**
+- **Reason:** Investigation disproved the report. The export implementation was already correct: it exports the filtered rows, the `exportCsv` download path works, and the button is *intentionally* disabled when the active tab has no rows to export (Overview always; data tabs until records load — empty in dev). No functional defect found.
+- **Record-keeping note:** the reported symptom is a UX shortcoming (the disabled state gives no obvious feedback), NOT an export bug. That UX work is tracked separately as **Defect #003** — see below. No code changed under this record.
 
 ### Defect #001
 - **Page:** Global shell
