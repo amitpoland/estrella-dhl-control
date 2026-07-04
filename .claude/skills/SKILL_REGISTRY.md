@@ -1,7 +1,7 @@
 # SKILL_REGISTRY.md — Atlas V2 Project Skills
 
 **Source of truth for skills version-controlled in `.claude/skills/`.**
-Generated 2026-06-06 by direct inspection. 3 project skills.
+Generated 2026-06-06 by direct inspection. 4 project skills (ej-dashboard-design added 2026-07-04).
 
 > Skills are knowledge/governance surfaces, not actors. They tell an agent
 > *how* to do something correctly; they do not themselves mutate production.
@@ -15,6 +15,7 @@ Generated 2026-06-06 by direct inspection. 3 project skills.
 | `frontend-design` | Governance / standard | All UI work (V1 + V2 pages, new dashboard pages) | Backend logic, deploy decisions, financial/customs calc | Read-before-edit reference |
 | `atlas-v2-render-gate` | Review / verification checklist | V2 (`/v2/`) post-deploy eyeball verification | Non-V2 surfaces; not a substitute for the deploy gate | Manual verification checklist |
 | `ui-ux-pro-max` | Reference / search tool | UI/UX design ideas, accessibility, layout, palettes | Anything outside UI styling; stack defaults (Tailwind/TS) do NOT apply here | Search-only intelligence |
+| `ej-dashboard-design` | Governance / project layer | EJ Dashboard V2 UI — authority resolution, canonical-file identification, tokens, cross-module consistency | Backend/deploy/financial-customs logic; creating new pages/authorities without written approval | Read-with-`frontend-design` governance |
 
 ---
 
@@ -43,6 +44,15 @@ Generated 2026-06-06 by direct inspection. 3 project skills.
 - **Forbidden domains:** Anything outside UI styling. **Read `EJ_OVERRIDES.md` inside the skill dir before applying any output — stack defaults (Tailwind, TypeScript, shadcn/ui, Next.js, etc.) do NOT apply to this vanilla-JSX project.**
 - **Capability:** Search-only reference; produces suggestions, not code that ships unreviewed.
 - **Example:** "Search ui-ux-pro-max for accessible table patterns, then translate to the project's vanilla-JSX + CSS-variable stack per EJ_OVERRIDES."
+
+### `ej-dashboard-design`
+- **Purpose:** Project governance layer for EJ Dashboard Portal (Estrella Jewels / Atlas-v2) UI work. Enforces single-authority / routing-based canonical-file resolution, API + business-logic preservation, and design-system consistency across 25+ modules. Consistency across modules beats novelty on any single page.
+- **Invocation context:** Consult **together with `frontend-design`** on every UI task — there is no automatic inheritance, so both must be active. Triggers on EJ Dashboard / EJ Portal / V2 pages / any `.jsx` under `service/app/static/`, and on "redesign / restyle / polish / clean up / modernize" requests. Run `/context` first (inspect router, canonical pages, shared components, API wiring).
+- **Allowed domains:** V2 UI governance — canonical page identification, token/component reuse, visual change scoping, accessibility, responsive checks.
+- **Forbidden domains:** Creating new pages/routes/components or duplicate authorities without written approval; changing API wiring or business logic as a side effect of a visual change; any financial/customs/accounting figure or logic change. Stack defaults (Tailwind/TS/bundler) do NOT apply.
+- **Relationship / provenance:** `SKILL.md` (+ `README.md`, `tests/01..06`) is a **verbatim mirror** of the upstream `anthropic-skills:ej-dashboard-design` cloud plugin, installed 2026-07-04 for version control + reliable discovery. Local layer `EJ_OVERRIDES.md` binds its generic "existing tokens/components" to the canonical set in `frontend-design.md` §3 and the V2 authority map. **Precedence:** `frontend-design.md` wins token/stack/hard-rule conflicts; `ej-dashboard-design` wins architecture/authority/safety conflicts.
+- **Key rules it enforces:** Resolve canonical routed page before editing (`pages.jsx` vs `pages-v2.jsx` via router, not filename age); never create duplicate/parallel components (`*New`/`*Modern`/`*V2`); preserve API wiring + business logic; no placeholder/hardcoded data; reuse existing tokens/components; match provided Figma exactly; keyboard-accessible + focus states; check desktop/tablet/mobile; subtle motion only.
+- **Example:** "Before restyling the Inventory page, consult `frontend-design` + `ej-dashboard-design`; confirm `inventory-page.jsx` is the routed V2 authority via `components.jsx` NAV_TREE, then edit in place with existing tokens."
 
 ---
 
