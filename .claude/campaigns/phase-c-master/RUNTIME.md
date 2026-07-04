@@ -292,3 +292,16 @@ Campaign slices:
   WIRED_PAGES); Inbox/Shipments/Coverage confirmed satisfied. All matrices
   Missing: 0. Operator supplier-invoice WIP excluded from staging across
   index.html/components.jsx (verified 0 lines). CENSUS CLOSED -> CP3 next.
+
+## Wave-3 CP3 — RECOGNITION GATE (HOLD for operator, 2026-07-04)
+
+- CP3 capture: reports/wave3/cp3/ — 38 unlabeled side-by-side composites
+  (wireframe LEFT · live RIGHT), + 4 wireframe-only + 6 live-only single-sides.
+  Harness scripts/cp3_capture.py; INDEX.md maps every pair.
+- Wave-end health check GREEN: pin 11/11, golden 160/160, smoke 63/1.
+- CENSUS CLOSED: 116 gaps; every completed page control-matrix Missing: 0.
+- CP3 FINDING (operator's eye): 4 wireframe-only accounting composites
+  (invoice/credit_note/client_balance/supplier_ledger) evidence-classified as
+  SUB-VIEWS within census Tab C (LedgersPage embed, census line 393) +
+  document-types, NOT missing top-level tabs (census §6 = 6 accounting tabs).
+- CAMPAIGN HOLDS at CP3 — the wave's ONLY exit. NO prod deploy in-wave.
