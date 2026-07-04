@@ -25,7 +25,7 @@ Authority: this file is the single source for keyword → skill mapping.
 
 | TASK_TYPE | Keywords (any match scores +1) | PRIMARY_SKILL | SECONDARY_SKILL | Notes |
 |---|---|---|---|---|
-| `UI_FRONTEND` | ui, frontend, v2, dashboard, component, layout, css, page, visual, render, html, style, button, modal, tab, panel, form, chart, design, improve ui, fix ui | `frontend-design` | `ui-ux-pro-max` | Read `EJ_OVERRIDES.md` before applying `ui-ux-pro-max` output. V1 frozen — check Lesson F. |
+| `UI_FRONTEND` | ui, frontend, v2, dashboard, component, layout, css, page, visual, render, html, style, button, modal, tab, panel, form, chart, design, improve ui, fix ui, redesign, restyle, polish, modernize, clean up | `frontend-design` + `ej-dashboard-design` | `ui-ux-pro-max` | Always consult `ej-dashboard-design` (project governance layer) together with `frontend-design` — no automatic inheritance, both must be active. Read `EJ_OVERRIDES.md` before applying `ui-ux-pro-max` output. V1 frozen — check Lesson F. |
 | `PROFORMA` | proforma, conflict, draft, snapshot, series, workspace, readiness, wired, pregate, pre-gate | `backend-route-and-service-builder` | *(planned: `proforma-engine`)* | `proforma-engine` planned but not installed. Use `backend-route-and-service-builder` until built. |
 | `DHL_CUSTOMS` | dhl, customs, clearance, awb, carrier, label, sad, invoice line, customs duty, tariff, packing | `pz-shipment` | `customs-pz-safety-checker` | `customs-pz-safety-checker` mandatory for any PZ guard changes. |
 | `WFIRMA_PZ` | wfirma, accounting, tax, vat, booked, pz calc, pz doc, pz number, pz import, zc429 | `backend-route-and-service-builder` | `pz-shipment` | `wfirma` skill planned; use AUTHORITY_MAP §wFirma until built. |
@@ -117,6 +117,7 @@ When `MISSING_SKILL` appears in routing output, record in `BACKLOG.md` with disp
 | Skill | Tier | Notes |
 |---|---|---|
 | `frontend-design` | SAFE_READ_ONLY | Governance reference |
+| `ej-dashboard-design` | SAFE_READ_ONLY | Project governance layer; consult together with `frontend-design`; read `EJ_OVERRIDES.md` |
 | `ui-ux-pro-max` | SAFE_READ_ONLY | Search tool; read EJ_OVERRIDES first |
 | `audit-trace-reporter` | SAFE_READ_ONLY | Read-only inspection |
 | `backend-route-and-service-builder` | SAFE_READ_ONLY | Plan-only; never writes code directly |

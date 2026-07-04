@@ -16,7 +16,8 @@ pass through the appropriate implementation gate before any code ships.
 | 1 | `frontend-design` | REPO `.claude/skills/` | Governance / Standard | SAFE_READ_ONLY |
 | 2 | `atlas-v2-render-gate` | REPO `.claude/skills/` | Review / Checklist | SAFE_READ_ONLY |
 | 3 | `ui-ux-pro-max` | REPO `.claude/skills/` | Reference / Search | SAFE_READ_ONLY |
-| 4 | `senior-architect` | USER `~/.claude/skills/` | Reference / Scripts | SAFE_READ_ONLY |
+| 4 | `ej-dashboard-design` | REPO `.claude/skills/` | Governance / project layer | SAFE_READ_ONLY |
+| 5 | `senior-architect` | USER `~/.claude/skills/` | Reference / Scripts | SAFE_READ_ONLY |
 
 ---
 
@@ -93,11 +94,35 @@ pass through the appropriate implementation gate before any code ships.
 
 ---
 
+### S4. `ej-dashboard-design`
+
+| Field | Value |
+|---|---|
+| **Name** | `ej-dashboard-design` |
+| **Source** | REPO · `C:\PZ-verify\.claude\skills\ej-dashboard-design\` (`SKILL.md` + `README.md` + `EJ_OVERRIDES.md` + `tests/01..06`) |
+| **Version** | 1.0.0 — verbatim mirror of upstream `anthropic-skills:ej-dashboard-design` cloud plugin, installed 2026-07-04 for version control + reliable discovery |
+| **Type** | Governance / project layer — EJ Dashboard Portal UI safety & consistency |
+| **Purpose** | Layers project-specific guardrails on top of `frontend-design`: routing-based canonical-file resolution (`pages.jsx` vs `pages-v2.jsx`), single-authority enforcement, API + business-logic preservation, token/component reuse across 25+ modules. Consistency across modules beats novelty on any one page. |
+| **Tools granted** | None — read-only governance document (+ `tests/` worked examples) |
+| **R/W level** | READ-ONLY reference |
+| **Production risk** | NONE — informs; never mutates |
+| **Dispatchable** | N/A — invoked via `/ej-dashboard-design` or by reading the file; not via Agent tool |
+| **Tested** | ✅ ships with six governance test prompts (`tests/01..06`); local install verified 2026-07-04 |
+| **Classification** | SAFE_READ_ONLY |
+| **Recommended use** | **Consult together with `frontend-design` on every UI task** — no automatic inheritance; both must be active. Run `/context` first, then `/frontend-design`, then `/ej-dashboard-design`. |
+| **Forbidden use** | Does not authorize creating new pages/routes/components or duplicate authorities without written approval; does not authorize API-wiring or business-logic changes as a side effect of visual work; no financial/customs/accounting figure or logic change. Stack defaults (Tailwind/TS/bundler) do NOT apply. |
+| **Key rules enforced** | Resolve canonical routed page before editing · never create parallel/renamed components (`*New`/`*Modern`/`*V2`) · preserve API wiring + business logic · no placeholder/hardcoded data · reuse existing tokens/components · match provided Figma exactly · keyboard-accessible + visible focus · desktop/tablet/mobile · subtle motion only |
+| **Precedence** | `frontend-design.md` wins token/stack/hard-rule conflicts; `ej-dashboard-design` wins architecture/authority/safety conflicts. |
+| **Override file** | `EJ_OVERRIDES.md` — binds the skill's generic "existing tokens/components" to `frontend-design.md` §3 token set + the V2 authority map; read before applying output. |
+| **Stack constraint** | Vanilla HTML + Babel JSX (React CDN). No bundler, no TypeScript, no Tailwind. |
+
+---
+
 ## User Skills (`C:\Users\Super Fashion\.claude\skills\`)
 
 ---
 
-### S4. `senior-architect`
+### S5. `senior-architect`
 
 | Field | Value |
 |---|---|
@@ -121,6 +146,7 @@ pass through the appropriate implementation gate before any code ships.
 ## Skills Interaction Rules
 
 1. **`frontend-design` governs everything `ui-ux-pro-max` suggests.** Never ship a ui-ux-pro-max suggestion directly without checking it against the EJ stack and frontend-design rules.
+0. **`frontend-design` + `ej-dashboard-design` are consulted together on every UI task.** `frontend-design` governs visual craft (what is allowed + the canonical tokens); `ej-dashboard-design` governs project architecture/safety (canonical-file resolution, single authority, API/business-logic preservation). No automatic inheritance — both must be active. On conflict: `frontend-design.md` wins tokens/stack/hard-rules; `ej-dashboard-design` wins architecture/authority/safety.
 2. **`atlas-v2-render-gate` is a quality gate, not an authorization gate.** Passing the render-gate checklist is a necessary condition for sprint closure, but the 7-agent deploy gate is the sufficient condition for production authorization.
 3. **`senior-architect` is generic infrastructure.** Any architecture recommendation must be translated to the EJ stack (FastAPI + SQLite + Vanilla JSX + Windows NSSM + Cloudflare tunnel) before implementation.
 4. **Skills inform; they do not act.** A skill never authorizes a production mutation or a deploy.
