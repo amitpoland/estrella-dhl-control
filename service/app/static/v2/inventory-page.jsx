@@ -4906,23 +4906,43 @@ function DocumentViewerPage({ doc, onBack }) {
     // reportExport is passed as a prop to every tab that has a table.
     // null = no exportable rows for the active tab.
     const [exportMeta, setExportMeta] = useState(null);
+    // Defect #002: inline feedback when Export is clicked with nothing to export,
+    // so the control never silently "does nothing". Cleared on a successful export
+    // or on tab change.
+    const [exportHint, setExportHint] = useState('');
+
+    // W3-page6b: Tabs that have no exportable table (overview, consignment, mapping).
+    const TABS_WITH_NO_TABLE = ['overview', 'consignment', 'mapping'];
 
     // Clear export state when the tab changes so the button reflects the new tab.
     const handleTabChange = useCallback((id) => {
       setActiveTab(id);
       setExportMeta(null);
+      setExportHint('');
     }, []);
 
     const reportExport = useCallback((headers, rows) => {
       setExportMeta(rows && rows.length > 0 ? { headers, rows } : null);
     }, []);
 
+    // Defect #002 fix: Export always responds. When the active tab has loaded,
+    // filtered rows → download the CSV (unchanged). When it has none → show an
+    // inline hint naming exactly what to do, instead of a silently-inert
+    // disabled button that reads as broken.
     const handleExport = useCallback(() => {
-      if (!exportMeta) return;
-      const tabLabel = INV_TABS.find(t => t.id === activeTab);
-      const filename = 'inventory-' + (tabLabel ? tabLabel.id : activeTab) + '-' + new Date().toISOString().slice(0, 10) + '.csv';
-      exportCsv(exportMeta.headers, exportMeta.rows, filename);
-    }, [exportMeta, activeTab]);
+      if (exportMeta && !TABS_WITH_NO_TABLE.includes(activeTab)) {
+        const tabLabel = INV_TABS.find(t => t.id === activeTab);
+        const filename = 'inventory-' + (tabLabel ? tabLabel.id : activeTab) + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+        exportCsv(exportMeta.headers, exportMeta.rows, filename);
+        setExportHint('');
+        return;
+      }
+      setExportHint(
+        TABS_WITH_NO_TABLE.includes(activeTab)
+          ? 'Nothing to export on this tab. Open a data tab (Sample Out, Returns, Temp Sale, Temp Purchase/Warehouse, Final Stock) and load records, then Export.'
+          : 'No rows loaded on this tab yet. Load / filter records first, then Export the visible rows.'
+      );
+    }, [exportMeta, activeTab]);  // eslint deps: TABS_WITH_NO_TABLE is a stable module-shape const in-scope
 
     function handleRecordReturn(sample) {
       setRecordReturnTarget(sample);
@@ -4934,14 +4954,12 @@ function DocumentViewerPage({ doc, onBack }) {
       setActiveTab('sampleReturn');
     }
 
-    // W3-page6b: Tabs that have no exportable table (overview, consignment).
-    const TABS_WITH_NO_TABLE = ['overview', 'consignment', 'mapping'];
-    const exportDisabled = !exportMeta || TABS_WITH_NO_TABLE.includes(activeTab);
-    const exportTitle = exportDisabled
-      ? (TABS_WITH_NO_TABLE.includes(activeTab)
-          ? 'Export not available for this tab — select a data tab (Sample Out, Returns, Temp Sale, etc.) and load records first'
-          : 'Load records in the active tab to enable export')
-      : 'Export ' + (exportMeta.rows.length) + ' rows from the current tab as CSV';
+    const hasExportRows = !!exportMeta && !TABS_WITH_NO_TABLE.includes(activeTab);
+    const exportTitle = hasExportRows
+      ? 'Export ' + exportMeta.rows.length + ' rows from the current tab as CSV'
+      : (TABS_WITH_NO_TABLE.includes(activeTab)
+          ? 'Export — open a data tab and load records first'
+          : 'Export — load records in this tab first');
 
     return (
       <div style={{ maxWidth: 1120, margin: '0 auto', padding: '20px 24px 28px' }} data-testid="inventory-hub-root">
@@ -5002,26 +5020,44 @@ function DocumentViewerPage({ doc, onBack }) {
             Cycle count
           </button>
 
-          {/* ↓ Export — IV-HDR-3 — live client-side CSV from the active tab's loaded rows.
-              Disabled with an honest title when the active tab has no table or no loaded rows. */}
+          {/* ↓ Export — IV-HDR-3 — live client-side CSV from the active tab's loaded,
+              filtered rows. Defect #002: always clickable — exports when rows exist,
+              otherwise shows an inline hint (below) naming what to do. Never silently
+              inert. Muted styling is a cue that there is nothing to export yet, but the
+              control still responds. */}
           <button
             data-testid="inv-hdr-export"
             onClick={handleExport}
-            disabled={exportDisabled}
             title={exportTitle}
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
               padding: '7px 14px', fontSize: 13, fontWeight: 600,
               border: '1px solid var(--border)', borderRadius: 6,
-              background: exportDisabled ? 'var(--bg-subtle)' : 'var(--card)',
-              color: exportDisabled ? 'var(--text-3)' : 'var(--text)',
-              cursor: exportDisabled ? 'not-allowed' : 'pointer',
-              opacity: exportDisabled ? 0.6 : 1,
+              background: hasExportRows ? 'var(--card)' : 'var(--bg-subtle)',
+              color: hasExportRows ? 'var(--text)' : 'var(--text-2)',
+              cursor: 'pointer',
+              opacity: hasExportRows ? 1 : 0.85,
             }}
           >
             ↓ Export
           </button>
         </div>
+
+        {/* Defect #002 — inline Export feedback: shown only when Export is clicked
+            with nothing to export, so the action always produces a visible response. */}
+        {exportHint && (
+          <div
+            data-testid="inv-hdr-export-hint"
+            role="status"
+            style={{
+              margin: '6px 0 0', padding: '8px 12px', fontSize: 12.5,
+              color: 'var(--text-2)', background: 'var(--bg-subtle)',
+              border: '1px solid var(--border)', borderRadius: 6,
+            }}
+          >
+            {exportHint}
+          </div>
+        )}
 
         {/* Cross-tab Record Return modal (opened from Sample Out row; success → switches to Sample Return) */}
         {recordReturnTarget && (
