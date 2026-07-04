@@ -733,6 +733,23 @@ Design intelligence layer: `.claude/skills/ui-ux-pro-max` is a supplemental sear
 
 ---
 
+## EJ Dashboard orchestration default (skill routing)
+
+For every coding request in this repository:
+1. Start with the project orchestration skill: `ej-dashboard-master`.
+2. Let the master classify the task.
+3. Load only the minimum required project skills.
+4. Never bypass the master unless explicitly requested by the user.
+
+The routing table, conflict resolution, protected-domain gates, and skill lifecycle
+(Session Bootstrap → Dynamic Routing → Release) live in
+`.claude/skills/ej-dashboard-master/SKILL.md`. The seven-skill EJ Dashboard skill
+architecture is **FROZEN** — consult the **Skill Freeze Policy** in
+`.claude/skills/SKILL_REGISTRY.md` before proposing any new skill, and never install a
+generic third-party skill raw.
+
+---
+
 ## Available integration + System architecture + Required workflow
 
 Zoho Cliq MCP connector (all Cliq operations): connector `mcp__1760d1e3-ee15-43d5-af3a-3528cf9a21ce`, org `60014108075`, tool `ZohoCliq_Post_message_in_a_channel`, production channel `pz` (ID `O190928000006027001`). Webhook fallback: `CLIQ_WEBHOOK_URL`. "Processing…" acknowledgment via webhook → bot chat; final batch result via Estrella Cliq MCP → `#PZ` channel; dashboard resend via webhook (OAuth fallback) → `#PZ`.

@@ -102,3 +102,23 @@ Skills inform; they do not act. A skill never authorizes a production mutation o
 deploy. UI suggestions from `ui-ux-pro-max` must be filtered through `frontend-design` +
 `EJ_OVERRIDES.md` before any code is written. The deploy gate, not a render-gate checklist,
 authorizes production.
+
+---
+
+## Skill Freeze Policy
+
+**Status: FROZEN (2026-07-04).** The seven-skill EJ Dashboard skill architecture is complete:
+`frontend-design`, `ej-dashboard-design`, `ej-dashboard-fullstack-governance`,
+`ej-dashboard-clean-code`, `ej-dashboard-webapp-testing`, `ui-ux-pro-max` (reference), and the
+`ej-dashboard-master` orchestrator.
+
+No new project skill may be added unless **all** of the following hold:
+- a recurring problem has been observed in real development,
+- the problem cannot be solved by the existing skills, and
+- an architectural review approves the new skill.
+
+Generic third-party skills must **never** be installed directly (no raw `npx …templates`
+installs). Only EJ-specific adaptations of external skill philosophy are permitted, following
+the pattern of the existing `ej-dashboard-*` skills. This policy exists to keep the ecosystem
+controlled and prevent skill sprawl. The next investment is implementation value (React
+migration, wireframe parity, workflow stabilization), not new skills.
