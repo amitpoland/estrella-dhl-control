@@ -92,19 +92,31 @@ log — separating *bugs*, *works-as-designed*, and *UX improvements* preserves
 its integrity (else a future reader sees "Fixed Export bug" when there was no
 export bug — the #002/#003 correction below).
 
+A code change never lands under a record whose investigation disproved it.
+
+### Classification model (operator, 2026-07-04 — FINAL, complete)
+
+| Category | Meaning | Code change? |
+|---|---|---|
+| **Bug** | System behavior contradicts the specification / expected behavior. | Yes |
+| **Works as Designed (WAD)** | The report is disproved. Current behavior is correct. | No |
+| **UX Improvement** | Behavior is correct, but the experience can be made clearer/easier. | Yes |
+| **Feature Request** | New capability that does not exist today. | Yes — but **not** under the original defect ID |
+
+Classification gate (run before any code):
+
 ```
-User reports issue
-        │
-        ▼
-   Investigate
-        │
-        ├── Real bug          → Fix it (bug record)
-        ├── Works as designed → Close as WAD (no code change under that record)
-        └── UX problem        → Create a new UX-improvement item; the change
-                                lives there, not under the bug record
+Report received → Investigate
+        ├── Spec violated?           → Bug
+        ├── Spec satisfied?
+        │      ├── UX could improve? → UX Improvement
+        │      └── No               → Works as Designed
+        └── Capability doesn't exist? → Feature Request (new ID, not the report's)
 ```
 
-A code change never lands under a record whose investigation disproved it.
+Consequences (why this matters): **Defect IDs never change meaning · commits
+always correspond to the correct category · the audit trail stays trustworthy.**
+The classification model is now complete — no further process changes.
 
 ## Defects
 
