@@ -67,4 +67,18 @@ moving on.
 
 ## Defects
 
-_(empty — awaiting the operator's first defect. One defect = one #NNN block below.)_
+### Defect #001
+- **Page:** Global shell
+- **Control:** Navigation / header icons
+- **Severity:** Low · **Class:** VISUAL
+- **Expected:** Consistent EJ icon system (SVG/glyph icons only, per the EJ design overrides — no emoji icons)
+- **Actual:** Mixed emoji (🧾 🌿 🔔) and geometric glyph icons (▦ ◫ ≡ ⚙) in the same nav/header
+- **Screenshot:** automated review 2026-07-04 (nav header, `/v2/dashboard` @ 1440px)
+- **Root cause:** _(fill on fix)_
+- **Fix:** _(fill on fix)_
+- **Verification checklist:** _(on fix)_ Preview behavior · no console errors · wireframe match holds · CP3 shell composite regenerated
+- **Status:** OPEN
+
+> Queue note: Low/VISUAL — does NOT jump the queue. Interaction defects from the
+> operator's review are worked first (frozen ordering); #001 is worked when the
+> operator reaches visual polish, or immediately on the operator's word.
