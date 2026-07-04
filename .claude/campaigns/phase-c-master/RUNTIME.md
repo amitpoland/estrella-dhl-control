@@ -269,3 +269,8 @@ Campaign slices:
   visible-gated per R-Q3; Sprint-28 contract superseded (11/11); WIRED_PAGES
   20/20 ('accounting' staged surgically apart from the operator's
   supplier_invoice_review WIP). Next per order: Shipment Detail.
+- W3 Shipment Detail COMPLETE: 7/7 census gaps closed (SD-1..7); R-Q1 honored
+  (DHL tab = read-only summary + Open-DHL-Console entry point, zero duplication);
+  PZ tab 7 buttons Lesson-M PendingAction w/ backend routes named; wireframe
+  4-card Documents + 16-milestone Timeline on existing reads; 151/151 contracts,
+  B-018 ratchet unaffected. Next per order: Dashboard.

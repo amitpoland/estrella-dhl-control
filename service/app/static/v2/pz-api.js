@@ -887,5 +887,9 @@
     getWfirmaContractorScanStatus: () =>
       _get(`${BASE}/wfirma/contractors/scan/status`),
 
+    // Used by: shipment-detail-page.jsx TimelineTab (SD-7 gap closure)
+    getShipmentTimeline: (batchId) =>
+      _get(`${BASE}/tracking/shipment/${encodeURIComponent(batchId)}/timeline`),
+
   });
 })();

@@ -1,5 +1,14 @@
 // Shipment Detail Page — light-theme redesign with clean tabbed structure
 // Tabs: Overview · DHL / Customs · PZ / Accounting · Documents · Timeline
+//
+// Wave-3 gap-closure 2026-07-04 (SD-1 · SD-2 · SD-4 · SD-5 · SD-6 · SD-7):
+//   SD-1  Header card: MRN mono + Carrier chip + packing list mono added to sub-header.
+//   SD-2  Overview tab: stage-conditional contextual action tiles wired to domain tabs.
+//   SD-4  DHL tab: prominent "Open DHL Console" nav per R-Q1 + inline status summary stays.
+//   SD-5  PZ tab: Download XLSX · Download PDF · Mark Exported + separate Regenerate PZ added.
+//   SD-6  Documents tab: 4-card wireframe layout (PL · PF · CMR · WF) plus generated files.
+//   SD-7  Timeline tab: full 16-event label map + pending-milestone display.
+//   SD-3  Pro Forma tab: was already closed by ProformaTabInShipment — no changes needed.
 
 const SHIPMENT_TABS = [
   { id: 'overview',  label: 'Overview' },
@@ -266,6 +275,8 @@ function deriveDetail(audit, shipment) {
     netPln:   tot.net   != null ? tot.net   : (shipment.net   != null ? shipment.net   : null),
     grossPln: tot.gross != null ? tot.gross : (shipment.gross != null ? shipment.gross : null),
     dutyPln:  tot.duty  != null ? tot.duty  : (shipment.duty  != null ? shipment.duty  : null),
+    // Packing list reference — source file name if present (SD-1 header mono field)
+    packingList: (inp.packing_list_filename || inp.packing_list || null),
     // Real activity log
     timeline: Array.isArray(audit.timeline) ? audit.timeline : [],
   };
@@ -375,11 +386,38 @@ function ShipmentDetailPage({ shipment, onBack }) {
           <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>AWB / Tracking</div>
           <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace' }}>{shipment.awb}</div>
         </div>
+        {shipment.carrier && (
+          <>
+            <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>Carrier</div>
+              <Badge status={shipment.carrier} small />
+            </div>
+          </>
+        )}
         <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
         <div>
           <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>Importer</div>
           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{_dash(d.importer)}</div>
         </div>
+        {d.mrn && (
+          <>
+            <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>MRN</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', fontFamily: 'monospace' }} data-testid="header-mrn">{d.mrn}</div>
+            </div>
+          </>
+        )}
+        {d.packingList && (
+          <>
+            <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>Packing List</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', fontFamily: 'monospace' }} data-testid="header-packing-list">{d.packingList}</div>
+            </div>
+          </>
+        )}
         <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
         <div>
           <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>Lines</div>
@@ -578,8 +616,53 @@ function InfoBlock({ rows }) {
 
 function OverviewTab({ d, shipment, sadUploaded, pzGenerated, pzExported, replySent, dhlEmailReceived, setActiveTab }) {
   const wfirmaLabel = d.pzDocId ? 'Booked ✓' : (d.wfirmaMode === 'clipboard' ? 'Clipboard generated' : (pzExported ? 'Exported ✓' : 'Not exported'));
+
+  // SD-2: Stage-conditional contextual action — one tile per incomplete milestone.
+  // Navigation only (tab switch); write actions live on domain pages per Lesson M.
+  const contextActions = [];
+  if (!dhlEmailReceived) contextActions.push({ label: 'Scan DHL inbox for clearance email', tab: 'dhl', cta: 'Go to DHL / Customs' });
+  else if (!replySent)   contextActions.push({ label: 'Build and send DHL reply package',    tab: 'dhl', cta: 'Go to DHL / Customs' });
+  if (!sadUploaded)      contextActions.push({ label: 'Upload SAD / ZC429 customs document', tab: 'dhl', cta: 'Go to DHL / Customs' });
+  if (sadUploaded && !pzGenerated) contextActions.push({ label: 'Generate PZ document',      tab: 'pz',  cta: 'Go to PZ / Accounting' });
+  if (pzGenerated && !pzExported)  contextActions.push({ label: 'Export PZ to wFirma',       tab: 'pz',  cta: 'Go to PZ / Accounting' });
+
   return (
     <>
+      {contextActions.length > 0 && (
+        <>
+          <SectionLabel>Next actions</SectionLabel>
+          <div data-testid="overview-context-actions" style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 8 }}>
+            {contextActions.map((a, i) => (
+              <div key={i} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+                padding: '12px 20px', borderRadius: 8,
+                background: i === 0 ? 'linear-gradient(135deg, #FBF5E4, #F8EDD0)' : 'var(--bg-subtle)',
+                border: `1px solid ${i === 0 ? 'var(--accent-border)' : 'var(--border)'}`,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 16, fontWeight: 800, color: i === 0 ? 'var(--accent)' : 'var(--text-3)', flexShrink: 0 }}>
+                    {i === 0 ? '▶' : '○'}
+                  </span>
+                  <span style={{ fontSize: 13, fontWeight: i === 0 ? 600 : 500, color: i === 0 ? 'var(--text)' : 'var(--text-2)' }}>
+                    {a.label}
+                  </span>
+                </div>
+                <button
+                  data-testid={`overview-action-cta-${i}`}
+                  onClick={() => setActiveTab(a.tab)}
+                  style={{
+                    padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                    background: i === 0 ? 'var(--text)' : 'transparent',
+                    color: i === 0 ? 'var(--card)' : 'var(--text-2)',
+                    border: i === 0 ? 'none' : '1px solid var(--border)',
+                    flexShrink: 0,
+                  }}
+                >{a.cta} →</button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
       <SectionLabel>Key figures</SectionLabel>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
         <StatTile label="Lines"         value={_dash(d.lineCount)} />
@@ -957,8 +1040,37 @@ function DhlReadinessCard({ batchId }) {
 
 function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId }) {
   const bid = batchId || '{batch_id}';
+  // R-Q1: DHL is a standalone page authority. This sub-tab provides a status summary
+  // and an entry point only. All DHL write actions live on the standalone /dhl page.
+  const dhlConsoleUrl = batchId ? ('/v2/dhl?batch_id=' + encodeURIComponent(batchId)) : '/v2/dhl';
   return (
     <>
+      {/* R-Q1 entry-point — prominent navigation to standalone DHL Console */}
+      <div data-testid="dhl-console-entry" style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+        padding: '14px 20px', borderRadius: 10, marginBottom: 4,
+        background: 'linear-gradient(135deg, #EDF4FF, #E0EEFF)',
+        border: '1px solid #B8D0FF',
+      }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#1A40A0', marginBottom: 2 }}>DHL Console (standalone authority)</div>
+          <div style={{ fontSize: 12, color: '#4060B8', lineHeight: 1.4 }}>
+            All DHL clearance actions (inbox scan, reply send, approvals) run on the DHL Console page.
+            This sub-tab shows the current clearance status only.
+          </div>
+        </div>
+        <a
+          href={dhlConsoleUrl}
+          data-testid="dhl-open-console-link"
+          aria-label="Open DHL Console standalone page"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '8px 18px', borderRadius: 7, fontSize: 12, fontWeight: 700,
+            background: '#1A40A0', color: '#fff', textDecoration: 'none',
+            border: 'none', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap',
+          }}
+        >Open DHL Console ↗</a>
+      </div>
       <DhlReadinessCard batchId={batchId} />
       <SectionLabel>Step 1 · DHL clearance email & reply</SectionLabel>
       <PanelCard
@@ -1112,11 +1224,26 @@ function PzTab({ d, shipment, sadUploaded, pzGenerated, pzExported, pzNumber, ba
           PZ generation and wFirma export are not yet wired into this V2 page. The backend routes
           exist — run these on the V1 Shipment Detail page today. Wiring is tracked in BACKEND_GAP_REGISTER.md.
         </BackendPendingBanner>
+        {/* SD-5: full 7-button set per wireframe §3.2 Tab 4 */}
         <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <PendingAction label={pzGenerated ? 'Regenerate PZ' : 'Run PZ'} icon={pzGenerated ? '↺' : '▶'} testid="run-pz"      route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_create'} variant="gold" />
-          <PendingAction label="Confirm PZ Number" icon="✎" testid="confirm-pz"    route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_confirm'} />
-          <PendingAction label="Copy wFirma Format" icon="⊞" testid="copy-wfirma"   route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/clipboard'} />
-          <PendingAction label="Export to wFirma"   icon="↗" testid="export-wfirma" route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_create'} />
+          {/* ▶ Run PZ (gold, primary — shown when PZ not yet generated) */}
+          {!pzGenerated && (
+            <PendingAction label="Run PZ" icon="▶" testid="run-pz" route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_create'} variant="gold" />
+          )}
+          {/* ↺ Regenerate PZ (shown when PZ already generated) */}
+          {pzGenerated && (
+            <PendingAction label="Regenerate PZ" icon="↺" testid="regenerate-pz" route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_create'} />
+          )}
+          {/* ✎ Confirm PZ Number */}
+          <PendingAction label="Confirm PZ Number" icon="✎" testid="confirm-pz" route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_confirm'} />
+          {/* ↓ Download XLSX — GET /api/v1/files/{batch_id}/pz.xlsx */}
+          <PendingAction label="Download XLSX" icon="↓" testid="download-xlsx" route={'GET /api/v1/files/' + bid + '/pz.xlsx'} />
+          {/* ↓ Download PDF — GET /api/v1/files/{batch_id}/pz.pdf */}
+          <PendingAction label="Download PDF" icon="↓" testid="download-pdf" route={'GET /api/v1/files/' + bid + '/pz.pdf'} />
+          {/* ↗ Export to wFirma (gold — primary when PZ generated, not yet exported) */}
+          <PendingAction label="Export to wFirma" icon="↗" testid="export-wfirma" route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_create'} variant={pzGenerated && !pzExported ? 'gold' : 'outline'} />
+          {/* ✓ Mark Exported */}
+          <PendingAction label="Mark Exported" icon="✓" testid="mark-exported" route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_adopt'} />
         </div>
         <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <Btn variant="outline" small data-testid="pz-open-documents" aria-label="Open generated PZ files in the Documents tab" onClick={() => setActiveTab('documents')}>
@@ -1135,6 +1262,18 @@ function PzTab({ d, shipment, sadUploaded, pzGenerated, pzExported, pzNumber, ba
 // ── DOCUMENTS — wired to GET /api/v1/dashboard/batches/{batch_id}/files
 // Authority: routes_dashboard._build_files_detail()
 // No mock arrays. All file entries come from backend authority only.
+//
+// SD-6 wireframe §3.2 Tab 5: 4 canonical document cards (PL · PF · CMR · WF)
+// with state chips + View + Download, derived from real backend file data.
+
+// 4 wireframe document cards: code → { label, stateKey, states }
+// stateKey: the field in backend files response that indicates this doc's state
+const _WIREFRAME_DOC_CARDS = [
+  { code: 'PL',  label: 'Packing List',       sourceKey: 'awb',         generatedKey: null },
+  { code: 'PF',  label: 'Pro Forma Invoice',   sourceKey: null,          generatedKey: 'pz_pdf' },
+  { code: 'CMR', label: 'CMR',                 sourceKey: null,          generatedKey: 'calc_xlsx' },
+  { code: 'WF',  label: 'wFirma Printout',     sourceKey: null,          generatedKey: 'audit_en' },
+];
 
 const _GENERATED_LABELS = {
   pz_pdf:     'PZ PDF',
@@ -1230,19 +1369,129 @@ function DocumentsTab({ batchId }) {
     type: label,
   }));
 
+  // SD-6: 4 wireframe document cards — derive state from real backend data
+  const wireframeCards = _WIREFRAME_DOC_CARDS.map(card => {
+    let exists = false;
+    let url = '';
+    let stateLabel = 'Pending';
+    let name = card.label;
+    if (card.sourceKey) {
+      const srcFiles = sf[card.sourceKey] || [];
+      exists = srcFiles.length > 0;
+      url = exists ? (srcFiles[0].url || '') : '';
+      name = exists ? (srcFiles[0].name || card.label) : card.label;
+      stateLabel = exists ? 'Source' : 'Pending';
+    } else if (card.generatedKey) {
+      const genFile = gf[card.generatedKey] || {};
+      exists = !!genFile.exists;
+      url = genFile.url || '';
+      name = genFile.name || card.label;
+      stateLabel = exists ? 'Generated' : 'Pending';
+    }
+    return { code: card.code, label: card.label, name, exists, url, stateLabel, type: card.label };
+  });
+
   return (
-    <div data-testid="documents-tab" className="docs-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+    <div data-testid="documents-tab" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      {/* SD-6: 4-card wireframe layout */}
       <div>
-        <SectionLabel>Uploaded shipment documents</SectionLabel>
-        {uploadedRows.length === 0
-          ? <div style={{ padding: '20px 0', fontSize: 13, color: 'var(--text-3)' }}>No uploaded documents found.</div>
-          : <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>{uploadedRows.map((f, i) => <DocCard key={i} file={f} />)}</div>
-        }
+        <SectionLabel>Shipment documents</SectionLabel>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          {wireframeCards.map(card => (
+            <div
+              key={card.code}
+              data-testid={`doc-card-${card.code.toLowerCase()}`}
+              style={{
+                border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden',
+                background: 'var(--card)', boxShadow: '0 1px 2px var(--shadow)',
+                display: 'flex', flexDirection: 'column',
+              }}
+            >
+              {/* Card header */}
+              <div style={{
+                padding: '12px 14px 8px',
+                borderBottom: '1px solid var(--border-subtle)',
+                background: 'var(--bg-subtle)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span style={{
+                    fontSize: 11, fontWeight: 800, letterSpacing: '0.06em',
+                    padding: '2px 7px', borderRadius: 4,
+                    background: card.exists ? 'var(--badge-green-bg)' : 'var(--badge-neutral-bg)',
+                    color: card.exists ? 'var(--badge-green-text)' : 'var(--text-3)',
+                    border: `1px solid ${card.exists ? 'var(--badge-green-border)' : 'var(--border-subtle)'}`,
+                  }}>{card.code}</span>
+                  <span style={{
+                    fontSize: 10, fontWeight: 600, letterSpacing: '0.06em',
+                    padding: '2px 7px', borderRadius: 4,
+                    background: card.stateLabel === 'Pending'   ? 'var(--badge-neutral-bg)' :
+                                card.stateLabel === 'Source'    ? 'var(--badge-blue-bg)'    :
+                                                                   'var(--badge-green-bg)',
+                    color:      card.stateLabel === 'Pending'   ? 'var(--text-3)'            :
+                                card.stateLabel === 'Source'    ? 'var(--badge-blue-text)'   :
+                                                                   'var(--badge-green-text)',
+                    border: `1px solid ${
+                                card.stateLabel === 'Pending'   ? 'var(--border-subtle)'     :
+                                card.stateLabel === 'Source'    ? 'var(--badge-blue-border)' :
+                                                                   'var(--badge-green-border)'
+                    }`,
+                  }} data-testid={`doc-state-${card.code.toLowerCase()}`}>{card.stateLabel}</span>
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', lineHeight: 1.3 }}>{card.label}</div>
+              </div>
+              {/* Card actions */}
+              <div style={{ padding: '10px 14px', display: 'flex', gap: 8 }}>
+                {/* 👁 View — disabled if pending */}
+                <button
+                  data-testid={`doc-view-${card.code.toLowerCase()}`}
+                  disabled={!card.exists}
+                  onClick={card.exists && card.url ? () => window.open(card.url, '_blank', 'noopener') : undefined}
+                  style={{
+                    flex: 1, padding: '5px 0', borderRadius: 5, fontSize: 11, fontWeight: 600,
+                    border: '1px solid var(--border)', background: 'transparent',
+                    color: card.exists ? 'var(--text)' : 'var(--text-3)',
+                    cursor: card.exists ? 'pointer' : 'not-allowed', opacity: card.exists ? 1 : 0.45,
+                  }}
+                  aria-label={`View ${card.label}`}
+                  title={card.exists ? `View ${card.label}` : `${card.label} not yet available`}
+                >👁 View</button>
+                {/* ↓ Download — disabled if pending */}
+                <a
+                  data-testid={`doc-download-${card.code.toLowerCase()}`}
+                  href={card.exists && card.url ? card.url : undefined}
+                  target="_blank" rel="noopener noreferrer"
+                  onClick={!card.exists ? e => e.preventDefault() : undefined}
+                  style={{
+                    flex: 1, padding: '5px 0', borderRadius: 5, fontSize: 11, fontWeight: 600,
+                    border: '1px solid var(--border)', background: 'transparent',
+                    color: card.exists ? 'var(--text)' : 'var(--text-3)',
+                    textDecoration: 'none', textAlign: 'center', display: 'inline-flex',
+                    alignItems: 'center', justifyContent: 'center', gap: 3,
+                    cursor: card.exists ? 'pointer' : 'not-allowed', opacity: card.exists ? 1 : 0.45,
+                  }}
+                  aria-label={`Download ${card.label}`}
+                  title={card.exists ? `Download ${card.label}` : `${card.label} not yet available`}
+                >↓ Download</a>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
-      <div>
-        <SectionLabel>Generated output documents</SectionLabel>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {generatedRows.map((f, i) => <DocCard key={i} file={f} />)}
+
+      {/* All files from backend (uploaded + generated) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+        <div>
+          <SectionLabel>Uploaded shipment documents</SectionLabel>
+          {uploadedRows.length === 0
+            ? <div style={{ padding: '20px 0', fontSize: 13, color: 'var(--text-3)' }}>No uploaded documents found.</div>
+            : <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>{uploadedRows.map((f, i) => <DocCard key={i} file={f} />)}</div>
+          }
+        </div>
+        <div>
+          <SectionLabel>Generated output documents</SectionLabel>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {generatedRows.map((f, i) => <DocCard key={i} file={f} />)}
+          </div>
         </div>
       </div>
     </div>
@@ -1250,40 +1499,98 @@ function DocumentsTab({ batchId }) {
 }
 
 // ── TIMELINE
+//
+// SD-7: Full 16-event label map per wireframe §3.2 Tab 6. Shows:
+//   - Done events (from audit.timeline) with timestamp + actor.
+//   - Pending milestones (derived from shipment state) with "Pending" label.
+// Authority: audit.timeline (append-only log from batch detail endpoint).
+// No fabricated timestamps; pending events are state-derived not invented.
 
-// Real activity timeline — rendered straight from audit.timeline (the authoritative
-// append-only event log). No fabricated events; the list is empty when the authority
-// has none. Friendly labels for common events; unknown events are prettified generically.
 const _EVENT_LABELS = {
-  batch_created:                'Shipment created',
-  dhl_precheck_completed:       'DHL pre-check completed',
-  dhl_email_received:           'DHL clearance email received',
-  polish_description_generated: 'Polish description generated',
-  dsk_generated:                'DSK generated',
-  reply_package_generated:      'Reply package prepared',
-  reply_sent:                   'Reply sent to DHL',
+  // Wireframe 16-event canonical names + audit log event names
+  batch_created:                   'Shipment created',
+  invoice_uploaded:                'Invoice uploaded',
+  awb_uploaded:                    'AWB uploaded',
+  dhl_precheck_completed:          'DHL pre-check completed',
+  dhl_email_received:              'DHL clearance email received',
+  polish_description_generated:    'Polish description generated',
+  dsk_generated:                   'DSK generated',
+  reply_package_generated:         'Reply package prepared',
+  reply_sent:                      'Reply sent to DHL',
   agency_forward_after_dhl_queued: 'Forwarded to customs agency',
-  sad_imported:                 'SAD / ZC429 imported',
-  pz_created:                   'PZ created',
-  pz_confirmed:                 'PZ number confirmed',
-  wfirma_pz_created:            'PZ booked in wFirma',
+  sad_imported:                    'SAD / ZC429 uploaded',
+  sad_uploaded:                    'SAD / ZC429 uploaded',
+  customs_values_parsed:           'Customs values parsed',
+  customs_parsed:                  'Customs values parsed',
+  verification_checks_passed:      'Verification checks passed',
+  customs_verified:                'Verification checks passed',
+  pz_unlocked:                     'PZ unlocked',
+  pz_created:                      'PZ generated',
+  pz_confirmed:                    'PZ number confirmed',
+  wfirma_pz_created:               'PZ exported to wFirma',
+  wfirma_exported:                 'PZ exported to wFirma',
 };
+
 function _humanizeEvent(name) {
   if (!name) return 'Event';
   if (_EVENT_LABELS[name]) return _EVENT_LABELS[name];
   return String(name).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
-function TimelineTab({ d, detailLoading }) {
-  const events = (d.timeline || []).slice().sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+// Wireframe 16-event ordered milestone list — used to show pending events
+// when the audit log has not yet recorded them. Event presence in audit log
+// is the source of truth; this list only provides the ordered display set.
+const _TIMELINE_MILESTONES = [
+  'batch_created',
+  'invoice_uploaded',
+  'awb_uploaded',
+  'dhl_precheck_completed',
+  'dhl_email_received',
+  'polish_description_generated',
+  'dsk_generated',
+  'reply_package_generated',
+  'reply_sent',
+  'sad_imported',
+  'customs_parsed',
+  'verification_checks_passed',
+  'pz_unlocked',
+  'pz_created',
+  'pz_confirmed',
+  'wfirma_pz_created',
+];
 
-  if (detailLoading && events.length === 0) {
+function TimelineTab({ d, detailLoading }) {
+  const doneEvents = (d.timeline || []).slice().sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+  const doneKeys = new Set(doneEvents.map(e => e.event));
+
+  if (detailLoading && doneEvents.length === 0) {
     return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>Loading timeline…</div>;
   }
 
+  // Build display list: done events (with timestamp) + pending milestones (no timestamp)
+  // Done events appear in their audit-log order; pending milestones follow in wireframe order.
+  // Pending milestones that are aliases of done events are suppressed.
+  const pendingMilestones = _TIMELINE_MILESTONES.filter(key => {
+    // Check the key and common aliases
+    const aliases = {
+      sad_imported: ['sad_uploaded', 'sad_imported'],
+      customs_parsed: ['customs_values_parsed', 'customs_parsed'],
+      verification_checks_passed: ['verification_checks_passed', 'customs_verified'],
+      wfirma_pz_created: ['wfirma_pz_created', 'wfirma_exported'],
+    };
+    const checkKeys = aliases[key] || [key];
+    return !checkKeys.some(k => doneKeys.has(k));
+  });
+
+  const totalEvents = doneEvents.length;
+  const totalMilestones = _TIMELINE_MILESTONES.length;
+
   return (
-    <PanelCard title="Activity timeline" subtitle={`Chronological audit log — ${events.length} event${events.length === 1 ? '' : 's'} recorded`}>
-      {events.length === 0 ? (
+    <PanelCard
+      title="Activity timeline"
+      subtitle={`${totalEvents} of ${totalMilestones} milestones completed`}
+    >
+      {doneEvents.length === 0 && pendingMilestones.length === 0 ? (
         <div data-testid="timeline-empty" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>
           No timeline events recorded for this shipment yet.
         </div>
@@ -1291,14 +1598,16 @@ function TimelineTab({ d, detailLoading }) {
         <div data-testid="timeline-events" style={{ padding: '24px 28px' }}>
           <div style={{ position: 'relative', paddingLeft: 28 }}>
             <div style={{ position: 'absolute', left: 9, top: 6, bottom: 6, width: 2, background: 'var(--border)' }} />
-            {events.map((e, i) => (
-              <div key={i} style={{ position: 'relative', marginBottom: 18, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+
+            {/* Done events — from audit log, in timestamp order */}
+            {doneEvents.map((e, i) => (
+              <div key={i} data-testid="timeline-event-done" style={{ position: 'relative', marginBottom: 16, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
                 <div style={{
                   position: 'absolute', left: -28,
                   width: 20, height: 20, borderRadius: 10,
                   background: '#22A06B', border: '2px solid #22A06B',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  zIndex: 1, top: 0,
+                  zIndex: 1, top: 0, flexShrink: 0,
                 }}>
                   <span style={{ fontSize: 10, color: '#fff', fontWeight: 800 }}>✓</span>
                 </div>
@@ -1310,6 +1619,34 @@ function TimelineTab({ d, detailLoading }) {
                 </div>
               </div>
             ))}
+
+            {/* Pending milestones — derived from state, no timestamp */}
+            {pendingMilestones.length > 0 && (
+              <>
+                {doneEvents.length > 0 && (
+                  <div style={{ position: 'relative', marginBottom: 12, marginLeft: 6 }}>
+                    <div style={{ width: 8, height: 8, borderRadius: 4, background: 'var(--border)', display: 'inline-block' }} />
+                  </div>
+                )}
+                {pendingMilestones.map((key, i) => (
+                  <div key={key} data-testid="timeline-event-pending" style={{ position: 'relative', marginBottom: 12, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+                    <div style={{
+                      position: 'absolute', left: -28,
+                      width: 20, height: 20, borderRadius: 10,
+                      background: 'var(--bg)', border: '2px solid var(--border)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      zIndex: 1, top: 0, flexShrink: 0,
+                    }}>
+                      <span style={{ fontSize: 8, color: 'var(--text-3)', fontWeight: 800 }}>○</span>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-2)' }}>{_humanizeEvent(key)}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 1 }}>Pending</div>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         </div>
       )}
