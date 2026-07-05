@@ -64,6 +64,24 @@ Column authority split:
 | I4-BP1 | Client Balance **due-date Overdue** column | Statement authority | PHASE10A.5 probe: confirm `<paymentdate>`/`<paymentstate>` on invoice reads before due-date aging is allowed (architecture §7) | `AccClientBalance` Overdue cell (invoice-age shown, disclosed) |
 | I4-BP2 | Client Balance **Last 30d** column | Statement authority | Rolling 30-day receipts aggregation — needs a second windowed `aggregate_statement` pass or a new documented aggregator; not invented here | `AccClientBalance` Last 30d cell (`—`, Backend Pending) |
 
+## Item 8 — Import Packing List wizard — DONE (REUSE-ONLY) (2026-07-05)
+
+Operator ruling: REUSE-ONLY — no `/proforma/upload-packing-list`, no new parser,
+no new authority, no thin wrapper. The wizard is wired directly to the EXISTING
+authority `POST /api/v1/packing/{batch_id}/upload` (parses file → upserts packing
+lines → idempotently creates/syncs proforma drafts by `(batch_id, client_name)`;
+no wFirma write; no schema change). Commit `eef901eb`. Golden 160/160; smoke 63.
+
+- `pz-api.uploadPackingList(batchId, file)` — multipart POST, batchId verbatim.
+- `PfImportWizardModal` — real file picker + upload + honest result/error;
+  DC-12 Authority-Gap placeholder removed.
+- **Batch discipline:** batchId flows from `ProformaListPage` (`?batch_id=`,
+  guaranteed non-empty by its batch-required landing). No batch → batch-required
+  state, upload blocked; cross-batch entry never auto-picks. Transport proof:
+  `uploadPackingList('BATCH_ALPHA/…')` → `POST /packing/BATCH_ALPHA%2F…/upload`;
+  distinct batch id → distinct URL. Reused endpoint auth = `get_current_user`
+  (session) — write path is operator-authenticated server-side.
+
 ## Sandbox Verification Tasks (permanent — NO execution without explicit operator approval)
 
 These probe UNDOCUMENTED wFirma capabilities against the sandbox company
