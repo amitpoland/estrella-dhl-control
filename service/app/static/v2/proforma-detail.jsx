@@ -1841,7 +1841,7 @@ function ProformaPartyCards({
         )}
 
         {addrApplyError && (
-          <span data-testid="addr-apply-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginLeft: 4 }}>
+          <span data-testid="addr-apply-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginLeft: 4 }}>
             {addrApplyError}
           </span>
         )}
@@ -1887,7 +1887,7 @@ function SourceExtractionTab({ draftId }) {
       </div>
 
       {loading && <div data-testid="pf-source-loading" style={{ ...box, color: 'var(--text-3)' }}>Loading extraction…</div>}
-      {!loading && error && <div data-testid="pf-source-error" style={{ ...box, color: 'var(--danger, #c0392b)', borderColor: 'var(--danger, #c0392b)' }}>Could not load: {error}</div>}
+      {!loading && error && <div data-testid="pf-source-error" style={{ ...box, color: 'var(--badge-red-text)', borderColor: 'var(--badge-red-text)' }}>Could not load: {error}</div>}
 
       {!loading && !error && (
         <React.Fragment>
@@ -2604,7 +2604,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     },
     buyer:    { vat: customer.vatEu },
     carrier:  liveDraft.batch_id ? {
-      name:        'DHL Express',
+      // Honest source: the actual shipment/batch carrier when known, else '—'.
+      // Do NOT assume DHL — an AWB/batch_id existing does not imply a carrier.
+      name:        liveDraft.carrier || liveDraft.carrier_name || '—',
       awb:         liveDraft.batch_id,
       service:     'EXPRESS WORLDWIDE',
       incoterm:    liveDraft.incoterm || 'DAP',
@@ -3110,7 +3112,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         borderBottom: '1px solid var(--border)',
       }}>
         {PROFORMA_TABS.map(t => (
-          <button key={t.id} onClick={() => setActiveTab(t.id)} style={{
+          <button key={t.id} data-testid={`tab-${t.id}`} onClick={() => setActiveTab(t.id)} style={{
             padding: '12px 14px', background: 'none', border: 'none', cursor: 'pointer',
             borderBottom: `2px solid ${activeTab === t.id ? 'var(--accent)' : 'transparent'}`,
             color: activeTab === t.id ? 'var(--text)' : 'var(--text-2)',
@@ -3197,7 +3199,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
               {/* Carrier / route — reuses cmrPreviewData.carrier + derived CMR number */}
               <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 16px', marginBottom: 16 }} data-testid="pf-logistics-carrier">
-                {_kv('Carrier', _car.name || 'DHL Express', 'pf-logistics-carrier-name')}
+                {_kv('Carrier', _car.name || '—', 'pf-logistics-carrier-name')}
                 {_kv('Service', _car.service || '—', 'pf-logistics-service')}
                 {_kv('Incoterm', _car.incoterm || '—', 'pf-logistics-incoterm')}
                 {_kv('Route', [_car.origin, _car.destination].filter(v => v && v !== '—').join('  →  ') || '—', 'pf-logistics-route')}
@@ -3575,7 +3577,7 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
             Suggestions (Customer Master, {suggestion.draft_currency || '—'}):
           </div>
           {suggestion.applyError && (
-            <div data-testid="charge-apply-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginBottom: 6 }}>
+            <div data-testid="charge-apply-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginBottom: 6 }}>
               {suggestion.applyError}
             </div>
           )}
@@ -3671,7 +3673,7 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
         </div>
       )}
       {suggestion && suggestion.error && (
-        <div data-testid="charge-suggestion-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginTop: 6 }}>
+        <div data-testid="charge-suggestion-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginTop: 6 }}>
           {suggestion.error}
         </div>
       )}
@@ -3831,7 +3833,7 @@ function ProformaBuyerEditModal({ fields, saving, error, onChange, onSave, onClo
         {F('Country code', 'country', 'e.g. LT')}
         {F('VAT EU number', 'vat_id', 'e.g. LT123456789')}
         {error && (
-          <div data-testid="buyer-edit-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginBottom: 8 }}>
+          <div data-testid="buyer-edit-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginBottom: 8 }}>
             {error}
           </div>
         )}

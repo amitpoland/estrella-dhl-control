@@ -228,6 +228,21 @@ function PurchaseLedgerTab() {
 
   return (
     <div style={{ padding: '20px 28px 40px' }} data-testid="tab-purchase-ledger">
+      {/* Authority disclosure — this view is the import-pipeline proxy, NOT the wFirma
+          PZ warehouse-document register. It lists EJ Dashboard goods-receipt batches
+          (GET /dashboard/batches), not booked wFirma PZ documents. */}
+      <div
+        data-testid="purchase-ledger-authority-note"
+        style={{
+          background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)',
+          color: 'var(--badge-amber-text)', borderRadius: 8, padding: '9px 14px',
+          fontSize: 11.5, lineHeight: 1.5, marginBottom: 14,
+        }}
+      >
+        <strong>Import pipeline — not the wFirma PZ register.</strong> This lists EJ Dashboard
+        goods-receipt batches (the import/landed-cost pipeline). It is not the wFirma PZ
+        warehouse-document authority; booked wFirma PZ documents are viewed in wFirma.
+      </div>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
         <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)', fontFamily: '"DM Serif Display", serif' }}>
@@ -1081,7 +1096,7 @@ function _AccGridHeader({ title, code, color, actions }) {
       <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Source: wFirma</span>
       <div style={{ flex: 1 }} />
       {(actions || []).map(a => (
-        <button key={a} disabled title="Backend Pending — endpoint not yet available" style={{ padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11, fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 }}>{a}</button>
+        <button key={a} data-testid={'acc-grid-action-' + a.replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '')} disabled title="Backend Pending — endpoint not yet available" style={{ padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11, fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 }}>{a}</button>
       ))}
     </div>
   );
