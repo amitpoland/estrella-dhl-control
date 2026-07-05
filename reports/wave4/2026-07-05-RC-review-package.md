@@ -115,3 +115,43 @@ the RC enters GATE 1 review — OR, if landing the full 198-commit line at once 
 broad, instruct which slice(s) to carve into a smaller PR. Do **not** deploy or merge
 until GATE 1 + the 7-agent deploy gate pass. The lowest-risk follow-on engineering
 step (separate approval) remains **SVT-1**, the read-only warehouse-doc sandbox probe.
+
+---
+
+## 10. GATE 1 — PR readiness addendum (2026-07-05)
+
+**Delta:** 345 files vs `origin/main` (155 reports, 58 `.claude`, 48 tests, 24 services,
+18 static/v2, 16 api, misc). **198 ahead / 15 behind. Local-only.**
+
+**Behind set (15):** governance skill PRs #816/#817 (`.claude/skills/*`), carrier fixes
+#810/#812/#813/#814 (`carrier/adapters/live.py` + 2 tests), phase3b #809 (`master-page.jsx`).
+
+**Conflict surface (31 overlapping files):** 24 = `.claude/skills/*` (DUPLICATE-ADD — the
+branch added the same EJ/wfirma skill suite that #816/#817 already merged to main) + 7
+code/docs: `CLAUDE.md`, `carrier/adapters/live.py`, `test_carrier_live_adapter.py`,
+`test_carrier_product_discovery.py`, `master-page.jsx`, `customer-master-v2.html`, `pz-api.js`.
+No Wave-4 feature file (proforma-detail/list, accounting-hub, routes_proforma/accounting/ledgers)
+is in the conflict set — the Wave-4 payload is conflict-free; conflicts are governance + carrier only.
+
+**Merge vs rebase:** MERGE-from-main (single reconciliation commit) — rebasing 198 commits would
+replay the 31-file conflict up to 198×. Rebase contraindicated.
+
+**One PR vs split:** SPLIT. 345 files mix classes (Wave-3 parity, Wave-4 reuse, governance skills
+ALREADY on main, supplier-OCR, carrier plumbing) — violates PR-classification + GATE-2. Governance
+skills must be reconciled (taken from main), not re-shipped.
+
+**Excluded from PR:** operator `pz-api.js` dedup WIP + 4 uncommitted `.claude` files (stale vs #816/#817).
+
+**Next safe action (operator-run; NOT executed here):**
+```
+git stash push -m operator-wip -- service/app/static/v2/pz-api.js \
+  .claude/SKILL_ROUTING.md .claude/skills/SKILL_REGISTRY.md \
+  .claude/skills/ej-dashboard-master/README.md .claude/skills/ej-dashboard-master/SKILL.md
+git fetch origin
+git switch -c integration/w3-w4-rc feat/w4-item11-source-extraction
+git merge --no-ff origin/main      # resolve 31 conflicts: take main's .claude/skills/*, carrier,
+                                   # master-page.jsx, customer-master-v2.html; keep Wave-3/4 feature;
+                                   # hand-merge CLAUDE.md
+python test_pz_regression.py && (cd service && python -m pytest -m smoke -q)
+# THEN (separate approval): push integration branch → open PR(s). Do NOT push/merge yet.
+```
