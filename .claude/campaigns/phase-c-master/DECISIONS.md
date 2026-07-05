@@ -795,3 +795,25 @@ to confirm no cross-defect regression before moving on.
 PROCESS NOW FROZEN for this round — no further process changes. Execution only:
 one defect -> fix -> verify -> close -> next, until the ledger empties. CP3
 acceptance is the operator's word after the ledger is clean.
+
+---
+
+## Dashboard authority-of-record + remaining-page resolution (operator ruling, 2026-07-05)
+
+**Ruling C** — the current implementation, **DashboardKanban** (`service/app/static/v2/dashboard-kanban.jsx`, `/v2/dashboard`), is the Dashboard authority-of-record. It faithfully realizes the pinned wireframe (f7dd5e38) with live PZ-workflow data. Evidence: `reports/wave3/cp3/dashboard-authority-comparison.png` (panels 1 & 3 = same kanban family; panel 1 mock, panel 3 live).
+
+**`dashboard-page.jsx` (DashboardPage, summary-cards + table) is DEPRECATED** — the pre-wireframe design; governs nothing. Flagged for retirement.
+
+**Locked authority rule (remaining port):** the kanban/cockpit design family (wireframe + current build) is the target. Where a stale JSX component conflicts with the wireframe, the **WIREFRAME wins**, never the stale component.
+
+**Per-page authority resolution (continuous mode — implement if no conflict, decision-artifact per conflicting page, never block the whole campaign):**
+
+| Page | Canonical | Conflict? | Resolution |
+|---|---|---|---|
+| Dashboard | DashboardKanban | resolved | Ruling C — accepted |
+| Documents Hub | DocumentsHubPage (`documents-hub.jsx`) — already the 3-lane kanban (Draft→Approved→Posted) | No | Accept canonical (realizes wireframe kanban) |
+| Proforma | ProformaListPage + ProformaDetailPage | No (single wired authority) | Accept canonical |
+| Shipment Detail | ShipmentDetailPage (DHL entry-point-only, R-Q1) | No (single wired authority) | Accept canonical |
+| **Accounting** | AccountingHub (6-tab) | **YES** — current = 6 live tabs, **no KSeF panel, no KPO tracker**; wireframe IA = 6 KPI tiles + KSeF panel + KPO tracker (operator judges) | **Decision artifact** `reports/wave3/cp3/accounting-authority-comparison.*`; HOLD Accounting only |
+
+**Dead duplicates flagged for retirement (tracked tasks, not silent delete):** `dashboard-page.jsx`; all Page components in `pages.jsx` + `pages-v2.jsx` (15 components, every one `wired=0` in index.html).

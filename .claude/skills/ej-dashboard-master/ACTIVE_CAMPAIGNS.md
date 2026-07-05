@@ -87,10 +87,15 @@ operator-gated **production deploy** (CP4/CP5, 7-agent gate). Neither is a page 
   / not started" line was **stale** — the entire inventory UI (10 tabs) and all census pages were
   built and passed the objective gate (matrix Missing = 0); the 38 CP3 composites exist.
 - **Last completed milestone:** Phase-C Wave 3 UI + CP3 generation
-- **Next milestone:** **operator CP3 recognition gate only** (subjective visual parity —
-  operator-owned, LESSONS_LEARNED #9). Not an engineering milestone; the router must not activate
-  it as page work.
-- **Blockers:** operator CP3 acceptance (not an agent task)
+- **Dashboard authority:** **RESOLVED — Ruling C (2026-07-05)**: DashboardKanban canonical;
+  dashboard-page.jsx DEPRECATED. Locked rule: kanban/cockpit family = target; where a stale JSX
+  component conflicts with the wireframe, the WIREFRAME wins. Detail: DECISIONS.md "Dashboard
+  authority-of-record".
+- **Next milestone:** continuous per-page authority resolution — no-conflict pages accepted as
+  canonical (Documents Hub / Proforma / Shipment Detail); **Accounting = decision artifact + HOLD**
+  (6-tab vs wireframe 6-KPI/KSeF/KPO); dead duplicates (dashboard-page.jsx, pages.jsx, pages-v2.jsx)
+  flagged for retirement.
+- **Blockers:** Accounting operator ruling (decision artifact `reports/wave3/cp3/accounting-authority-comparison.*`)
 - **Authority owner:** `ej-dashboard-design` (+ `frontend-design` for craft) — recognition owned by operator
 - **Detail doc:** `.claude/campaigns/phase-c-master/MASTER_MANIFEST.md` (Wave 3) · `reports/wave3/cp3/`
 
