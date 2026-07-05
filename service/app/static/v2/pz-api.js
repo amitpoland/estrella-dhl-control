@@ -135,6 +135,13 @@
     //           pending, last_exported_doc, ... }, ... } }. No new endpoint.
     getAnalyticsPhaseA: () => _get(`${BASE}/analytics/phase-a`),
 
+    // POST /api/v1/wfirma/sync/payments-pull  (Wave 4 Item 7 — PULL-ONLY)
+    // READ-ONLY vs wFirma (payments/find GET) → local payment_state.db snapshot.
+    // Bounded to one contractor. NOT a push; no wFirma mutation.
+    // Returns { ok, data: { new, existing, contractor_id, direction:'PULL' } }
+    pullPayments: (contractorId) =>
+      _post(`${BASE}/wfirma/sync/payments-pull`, { contractor_id: contractorId }),
+
     // POST /api/v1/packing/{batch_id}/upload (multipart — EXISTING authority).
     // Wave 4 Item 8: reuse-only. Parses the packing file, upserts packing lines,
     // and idempotently creates/syncs proforma drafts by (batch_id, client_name).

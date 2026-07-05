@@ -1188,26 +1188,111 @@ function AccSupplierLedger() {
     </div>
   );
 }
+// Wave 4 Item 7 — PULL-ONLY wFirma sync. Approved pull actions are wired to
+// read-only endpoints; every PUSH action is visible but DISABLED as CP4-gated
+// (writes to live wFirma need separate operator approval). Per-source status is
+// shown honestly — there is deliberately NO single unified "synced" indicator.
+function _SyncSrcCard({ testid, title, direction, children }) {
+  const push = direction === 'PUSH';
+  return (
+    <div data-testid={testid} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', flex: 1, minWidth: 220 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{title}</span>
+        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.04em',
+          background: push ? 'var(--badge-red-bg)' : 'var(--badge-green-bg)', color: push ? 'var(--badge-red-text)' : 'var(--badge-green-text)' }}>
+          {push ? 'PUSH · CP4' : 'PULL'}
+        </span>
+      </div>
+      {children}
+    </div>
+  );
+}
 function AccWfirmaSyncInline({ onNav }) {
-  const kpis = [['Synced types', '1 pending'], ['Last full sync', 'auto every 6h'], ['Failed events', 'last 24h']];
+  const [cust, setCust] = React.useState({ busy: false, msg: null });
+  const [pay, setPay]   = React.useState({ busy: false, msg: null, cid: '' });
+  const [hook, setHook] = React.useState({ busy: false, msg: null });
+
+  const doCustomerPreview = () => {
+    setCust({ busy: true, msg: null });
+    window.PzApi.previewWfirmaSyncCustomer().then(r => {
+      if (!r || !r.ok) { setCust({ busy: false, msg: 'preview unavailable' }); return; }
+      const d = r.data || {};
+      const n = (d.insert || d.insertions || []).length, u = (d.update_fill || []).length + (d.update_match || []).length;
+      setCust({ busy: false, msg: `preview: ${n} new · ${u} fill/match (apply from Customer Master)` });
+    }).catch(() => setCust({ busy: false, msg: 'preview error' }));
+  };
+  const doPaymentsPull = () => {
+    const cid = (pay.cid || '').trim();
+    if (!cid) { setPay(s => ({ ...s, msg: 'enter a contractor id' })); return; }
+    setPay(s => ({ ...s, busy: true, msg: null }));
+    window.PzApi.pullPayments(cid).then(r => {
+      if (!r || !r.ok) { setPay(s => ({ ...s, busy: false, msg: (r && r.error) || 'pull failed' })); return; }
+      const d = r.data || {};
+      setPay(s => ({ ...s, busy: false, msg: `pulled: ${d.new != null ? d.new : '?'} new · ${d.existing != null ? d.existing : '?'} existing` }));
+    }).catch(e => setPay(s => ({ ...s, busy: false, msg: (e && e.message) || 'error' })));
+  };
+  const doWebhookStatus = () => {
+    setHook({ busy: true, msg: null });
+    window.PzApi.getWfirmaWebhookStatus().then(r => {
+      if (!r || !r.ok) { setHook({ busy: false, msg: 'status unavailable' }); return; }
+      const d = r.data || {};
+      setHook({ busy: false, msg: `scheduler ${d.scheduler_running ? 'running' : 'idle'}${d.last_completed_at ? ' · last ' + String(d.last_completed_at).replace('T', ' ').slice(0, 16) : ''}` });
+    }).catch(() => setHook({ busy: false, msg: 'status error' }));
+  };
+
+  const pullBtn = { padding: '5px 10px', borderRadius: 5, border: '1px solid var(--accent-border)', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 11, fontWeight: 600, cursor: 'pointer' };
+  const cp4Btn  = { padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11, fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 };
+  const msg = (m) => m ? <div style={{ fontSize: 10.5, color: 'var(--text-2)', marginTop: 6 }}>{m}</div> : null;
+
   return (
     <div data-testid="acc-wfirma-sync" style={{ padding: '20px 28px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--text)', fontFamily: '"DM Serif Display", serif' }}>wFirma Sync</h2>
         <div style={{ flex: 1 }} />
-        <button disabled title="Backend Pending — POST /api/v1/wfirma/sync/{type}" style={{ padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11, fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 }}>↻ Sync all now</button>
         <button data-testid="acc-wfirma-open-setup" onClick={() => onNav && onNav('wfirma_setup')} title="EJ Extension — open the full wFirma setup" style={{ padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Open full wFirma setup →</button>
       </div>
-      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-        {kpis.map(([l, n]) => (
-          <div key={l} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 16px', flex: 1, minWidth: 150 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{l}</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-3)', marginTop: 6, fontFamily: '"DM Serif Display", serif' }}>—</div>
-            <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>Backend Pending · {n}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 12 }}>Pull actions read from wFirma (read-only). Push actions that write to live wFirma are <strong>CP4-gated</strong> and disabled here. Status is per-source — no single unified indicator.</div>
+
+      {/* PULL — read-only from wFirma */}
+      <div data-testid="acc-wfirma-pull" style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>Pull — read-only from wFirma</div>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
+        <_SyncSrcCard testid="acc-wfirma-src-customer" title="Customer ← wFirma" direction="PULL">
+          <button data-testid="acc-wfirma-customer-pull" disabled={cust.busy} onClick={doCustomerPreview} style={pullBtn}>{cust.busy ? 'Loading…' : 'Preview pull'}</button>
+          <span style={{ fontSize: 10, color: 'var(--text-3)', marginLeft: 8 }}>reuses sync-from-wfirma/preview</span>
+          {msg(cust.msg)}
+        </_SyncSrcCard>
+        <_SyncSrcCard testid="acc-wfirma-src-payments" title="Payments ← wFirma" direction="PULL">
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input data-testid="acc-wfirma-payments-contractor" value={pay.cid} onChange={e => setPay(s => ({ ...s, cid: e.target.value }))}
+              placeholder="contractor id" style={{ width: 110, padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 11 }} />
+            <button data-testid="acc-wfirma-payments-pull" disabled={pay.busy} onClick={doPaymentsPull} style={pullBtn}>{pay.busy ? 'Pulling…' : 'Pull now'}</button>
           </div>
+          {msg(pay.msg)}
+        </_SyncSrcCard>
+        <_SyncSrcCard testid="acc-wfirma-src-webhook" title="Webhook status" direction="PULL">
+          <button data-testid="acc-wfirma-webhook-status" disabled={hook.busy} onClick={doWebhookStatus} style={pullBtn}>{hook.busy ? '…' : 'Refresh status'}</button>
+          <span style={{ fontSize: 10, color: 'var(--text-3)', marginLeft: 8 }}>reuses webhooks/wfirma/status</span>
+          {msg(hook.msg)}
+        </_SyncSrcCard>
+        <_SyncSrcCard testid="acc-wfirma-src-invoice" title="Invoice read" direction="PULL">
+          <button data-testid="acc-wfirma-invoice-jump" onClick={() => onNav && onNav('inv')} style={pullBtn}>Open Invoices →</button>
+          <div style={{ fontSize: 10.5, color: 'var(--text-2)', marginTop: 6 }}>read live via Invoice / Credit Note grids (invoices/find)</div>
+        </_SyncSrcCard>
+        <_SyncSrcCard testid="acc-wfirma-src-stock" title="Stock ← wFirma" direction="PULL">
+          <div data-testid="acc-wfirma-stock-pending" style={{ fontSize: 10.5, color: 'var(--badge-amber-text)' }}>Backend Pending</div>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 4 }}>get_stock is read-only (GET goods/find), but no persistence target exists yet (OI-10).</div>
+        </_SyncSrcCard>
+      </div>
+
+      {/* PUSH — CP4-gated, disabled */}
+      <div data-testid="acc-wfirma-push-cp4" style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>Push — writes to wFirma · CP4-gated (disabled)</div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        {[['acc-wfirma-push-customer', 'Customer → wFirma'], ['acc-wfirma-push-product', 'Product → wFirma'], ['acc-wfirma-push-invoice', 'Invoice / Proforma create'], ['acc-wfirma-push-goods', 'Goods edit (names)']].map(([tid, label]) => (
+          <_SyncSrcCard key={tid} testid={`${tid}-card`} title={label} direction="PUSH">
+            <button data-testid={tid} disabled title="CP4-gated — requires separate explicit operator approval" style={cp4Btn}>Blocked · CP4</button>
+          </_SyncSrcCard>
         ))}
       </div>
-      <_AccPendingTable cols={['Local type', 'Code', 'wFirma endpoint', 'Count', 'State', 'Last sync', '']} note="POST /api/v1/wfirma/sync/{type}" />
     </div>
   );
 }
