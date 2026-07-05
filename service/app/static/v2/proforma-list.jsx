@@ -437,6 +437,12 @@ function ProformaCrossBatchLanding({ onDrill }) {
   const allSel = rows.length > 0 && rows.every(r => selected[r.id || r.draft_id]);
   const toggleAll = () => allSel ? setSelected({}) : setSelected(Object.fromEntries(rows.map(r => [r.id || r.draft_id, true])));
   const disWrite = { padding: '6px 12px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11.5, fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 };
+  const enWrite  = { padding: '6px 12px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' };
+  // Reuse authority: the confirmed per-draft write flows live in the draft detail
+  // (Push → POST /proforma/draft/{id}/post; Send → .../send-email). On single
+  // selection, route to that existing flow — no new/bulk write path introduced.
+  const selRows = rows.filter(r => selected[r.id || r.draft_id]);
+  const selRow  = selRows.length === 1 ? selRows[0] : null;
 
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: '20px 32px', background: 'var(--bg)' }} data-testid="proforma-landing-page">
@@ -448,8 +454,12 @@ function ProformaCrossBatchLanding({ onDrill }) {
         <div data-testid="pf-landing-toolbar" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button data-testid="pf-tb-import" disabled title="Open a shipment batch to import a packing list (batch-scoped action)" style={disWrite}>↙ Import Packing List</button>
           <button data-testid="pf-tb-create" disabled title="Open a shipment batch to create a draft (batch-scoped action)" style={disWrite}>+ Create Draft</button>
-          <button data-testid="pf-tb-push" disabled title="Open a draft to push to wFirma (confirmed per-draft write)" style={disWrite}>↑ Push to wFirma</button>
-          <button data-testid="pf-tb-send" disabled title="Open a draft to send (confirmed per-draft email)" style={disWrite}>✉ Send</button>
+          <button data-testid="pf-tb-push" disabled={!selRow} onClick={() => selRow && onDrill && onDrill(selRow)}
+            title={selRow ? 'Push the selected draft to wFirma (opens its confirmed post)' : 'Select exactly one draft to push to wFirma'}
+            style={selRow ? enWrite : disWrite}>↑ Push to wFirma</button>
+          <button data-testid="pf-tb-send" disabled={!selRow} onClick={() => selRow && onDrill && onDrill(selRow)}
+            title={selRow ? 'Send the selected draft (opens its confirmed send)' : 'Select exactly one draft to send'}
+            style={selRow ? enWrite : disWrite}>✉ Send</button>
           <button data-testid="pf-tb-print" disabled title="Print — backend-gated (no print endpoint)" style={disWrite}>⎙ Print</button>
         </div>
       </div>
