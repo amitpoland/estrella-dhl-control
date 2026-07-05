@@ -103,6 +103,41 @@ Operator ruling: no `/accounting/summary` engine; reuse existing endpoints only.
 | I1-BP1 | Sales Overdue (due-date) | "Backend Pending — due-date authority pending" | due-date aging blocked by PHASE10A.5 wFirma payment-state probe ([[I4-BP1]]); invoice-age never presented as due-date |
 | I1-BP2 | Supplier Payable | "Backend Pending — supplier ledger authority pending" | no supplier-ledger / AP authority exists (Item 5 unbuilt); source = undocumented wFirma expenses/wydatki reads (SVT-class) |
 
+## Item 7 — wFirma Sync — SPLIT: PULL-ONLY slice DONE (2026-07-05)
+
+Operator ruling: PULL-ONLY; no generic push-capable `POST /wfirma/sync/{type}`;
+all PUSH remains CP4-gated. Commit `6835c642`. Golden 160/160; smoke 63; 7/7 tests.
+
+**Pull actions wired:**
+- **Payments-pull** — NEW `POST /api/v1/wfirma/sync/payments-pull {contractor_id}`
+  (only net-new trigger). READ-ONLY wFirma (`payments/find` GET) → local
+  `payment_state.db` snapshot. Fixed path, no `{type}` dispatcher.
+- **Customer ← wFirma** — REUSES `GET /customer-master/sync-from-wfirma/preview`
+  (+ admin `apply`), not duplicated (Item 8 rule).
+- **Webhook status** — REUSES `GET /webhooks/wfirma/status`.
+- **Invoice read** — REUSES Item 3A `accounting/documents/{invoice|credit_note}`.
+
+**Stock-pull guard outcome:** `get_stock` is read-only (`GET goods/find`) — PROVEN —
+but `wfirma_stock_sync_processor` is a no-op stub with **no persistence target (OI-10)**.
+No safe pull path to reuse → **stock-pull Backend Pending** (no no-op route shipped).
+
+**No-push proof:** source-safety tests (no `goods/edit`, no `create_*`, no
+`_http_request` POST/PUT, no `wfirma_create_*`/`_allowed`, imports only the pull
+processor) + behavioural 404s for `customer-push`/`product-push`/`goods-edit`/…;
+in-browser `customer-push`→404, `goods-edit`→404, `payments-pull` empty→400.
+
+**UI:** `AccWfirmaSyncInline` = per-source PULL cards + PUSH section visible-but-
+DISABLED (CP4-gated); no single unified synced indicator.
+
+### Remaining CP4-gated PUSH (each needs separate explicit operator approval)
+| Ref | Push | Write gate |
+|---|---|---|
+| I7-CP4-1 | Customer → wFirma | `wfirma_create_customer_allowed` |
+| I7-CP4-2 | Product → wFirma (resolve / goods create) | `wfirma_create_product_allowed` |
+| I7-CP4-3 | Goods edit (names/descriptions, `goods/edit`) | product-write |
+| I7-CP4-4 | Invoice / Proforma create | `wfirma_create_invoice_allowed` / `wfirma_create_proforma_allowed` |
+| I7-BP1 | Stock-pull | Backend Pending — no persistence target (OI-10) |
+
 ## Sandbox Verification Tasks (permanent — NO execution without explicit operator approval)
 
 These probe UNDOCUMENTED wFirma capabilities against the sandbox company
