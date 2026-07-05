@@ -23,3 +23,42 @@
 - Every UI for the above is already built and renders `Backend Pending` / `Authority Gap` (UI-before-backend); Wave 4 only wires execution.
 - No new authority, master, or write path is proposed here — this ledger only identifies. Priority is relative (P1 = unblocks the most UI), not an estimate.
 - Gating OIs (from `phase-c-master/OPEN_ITEMS.md`) still apply to the wFirma-write items (OI-1 MM API, OI-3 WZ, OI-4 get_stock, OI-7/9/10/11 webhooks).
+
+## Item 3 split — DOCUMENTED vs UNDOCUMENTED (operator ruling 2026-07-05)
+
+Item 3 (Accounting document grids) is split by wFirma documentation status:
+
+- **Item 3A — DOCUMENTED — DONE.** Invoice + Credit Note grids read live via wFirma
+  `invoices/find` (`invoice`→`normal`, `credit_note`→`correction`). Endpoint
+  `GET /api/v1/accounting/documents/{doc_type}`; transport `wfirma_client.list_invoices_by_type`.
+  No local mirror — wFirma is the authority. Commit `1094a9f9`. Golden 160/160; 4 unit + 4 route tests green.
+- **Item 3B — UNDOCUMENTED — NOT IMPLEMENTED.** WZ/PW/RW/MM warehouse-document reads.
+  The wFirma API reference (skill `wfirma-api-integration`, `references/warehouse-goods.md` +
+  `gotchas.md`) states warehouse **documents** (PZ/WZ/RW/PW/MM) are **not** a general read/write
+  API surface — WZ is emitted only as an invoice side-effect and downloaded via
+  `/invoices/download?warehouse_documents=1`; only single-doc PZ get is confirmed
+  (`warehouse_document_p_z/get/{id}`). No documented list/find endpoint exists for WZ/PW/RW/MM.
+  The UI keeps honest `Backend Pending`; the route returns 404 for these types. → Sandbox task below.
+
+## Sandbox Verification Tasks (permanent — NO execution without explicit operator approval)
+
+These probe UNDOCUMENTED wFirma capabilities against the sandbox company
+(`test.api2.wfirma.pl`). Recording only — per operator ruling, do **not** execute
+any sandbox request until the operator explicitly approves it.
+
+### SVT-1 — WZ/PW/RW/MM warehouse-document list reads (blocks Item 3B)
+
+| Field | Value |
+|---|---|
+| **Capability under test** | Read a list of WZ / PW / RW / MM warehouse documents via the wFirma API |
+| **Authority owner** | wFirma (Accounting / Warehouse Authority) — no local mirror permitted |
+| **Hypothesis** | wFirma exposes no general `find`/list endpoint for WZ/PW/RW/MM; they are side-effects of invoices (WZ) or internal warehouse ops (MM/PW/RW), not independently queryable |
+| **Expected endpoint(s) to probe** | `warehouse_document_w_z/find`, `warehouse_document_p_w/find`, `warehouse_document_r_w/find`, `warehouse_document_m_m/find` (existence unknown); fallback `/invoices/download?warehouse_documents=1` for WZ only |
+| **Expected response (if the hypothesis holds)** | `ERROR` / `ACTION NOT FOUND` / `DENIED_SCOPE_REQUESTED`, or a documented "no such module" status |
+| **Success criterion** | A documented `find`/list action returns `OK` with parseable rows for at least one of WZ/PW/RW/MM → the type graduates to a documented read and can wire like Item 3A |
+| **Failure criterion** | Any of: `ACTION NOT FOUND` / non-OK status / no `find` action for the module → confirms undocumented; Item 3B stays `Backend Pending`, UI unchanged |
+| **Affected UI** | Accounting hub `AccDocGrid` for `wz`/`pw`/`rw`/`mm` (currently `_AccPendingTable` → Backend Pending) |
+| **Affected workflow** | Accounting document review (read-only). No fiscal write — read probe only |
+| **Environment** | `test.api2.wfirma.pl` sandbox company ONLY. Never production |
+| **Gating OIs** | OI-1 (MM API), OI-3 (WZ add vs invoice-auto-emit) — see `phase-c-master/OPEN_ITEMS.md` |
+| **Status** | RECORDED — awaiting explicit operator approval to execute |
