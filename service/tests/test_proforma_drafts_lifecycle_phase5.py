@@ -114,14 +114,15 @@ def _stub_route_lookups(monkeypatch, *, missing_product=None,
         }
     monkeypatch.setattr(rp, "_resolve_customer", _fake_resolve)
 
-    def _fake_get_product(code: str):
+    # C-3g: good-id resolution is MIRROR-ONLY (_c1f_mirror_good_id); the old
+    # wfdb.get_product cache fallback is retired, so stub the mirror helper
+    # directly (same intent: these tests exercise the POST lifecycle, not the
+    # resolution layer).
+    def _fake_mirror_good_id(code: str):
         if missing_product is not None and code == missing_product:
             return None
-        return {"product_code": code, "wfirma_product_id": f"WFP-{code}"}
-    # wfdb._db_path must be truthy for the helper to attempt the lookup
-    monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom_wfirma.db"),
-                        raising=False)
-    monkeypatch.setattr(wfdb, "get_product", _fake_get_product)
+        return f"WFP-{code}"
+    monkeypatch.setattr(rp, "_c1f_mirror_good_id", _fake_mirror_good_id)
 
     # VAT context: deterministic
     monkeypatch.setattr(
@@ -548,12 +549,8 @@ def test_endpoint_blocked_receiver_preflight_fails(client, tmp_path, monkeypatch
             "normalized_name": name.upper(),
         }
     monkeypatch.setattr(rp, "_resolve_customer", _fake_resolve)
-    monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom_wfirma.db"),
-                        raising=False)
-    monkeypatch.setattr(
-        wfdb, "get_product",
-        lambda code: {"product_code": code, "wfirma_product_id": f"WFP-{code}"},
-    )
+    # C-3g: mirror-only good-id resolution — stub the mirror helper directly.
+    monkeypatch.setattr(rp, "_c1f_mirror_good_id", lambda code: f"WFP-{code}")
     monkeypatch.setattr(
         wfirma_client, "decide_proforma_vat_context",
         lambda **kw: {"context": "domestic", "vat_code": "23",

@@ -1,0 +1,61 @@
+"""
+draft_20260703_c1a_product_authority.py.draft
+
+This file is `.py.draft` — NOT picked up by any import or autoloader.
+C-1a of the EJ Dashboard Master Authority Establishment (PROJECT_STATE
+DECISIONS "C-1 RATIFIED"). Operator runs it manually after review (rename to
+`.py`), OR the schema half is already integrated into
+reservation_db.init_reservation_db() so a fresh tree self-migrates; this
+draft additionally performs the DATA BACKFILL for existing rows.
+
+Idempotent: safe to run multiple times.
+
+What it does (verify-tree only; NO deploy):
+  1. Ensures the C-1a schema (reservation_db.init_reservation_db already adds
+     wfirma_product_mirror + the product_master authority columns).
+  2. Backfills wfirma_product_mirror from the two deprecating split mirrors
+     (wfirma.db/wfirma_products + reservation.db/wfirma_product_mapping).
+  3. Folds product_local (master_data.db) business fields into product_master
+     and sets product_master.status from mirror presence.
+
+BACKUP FIRST (operator step, before running):
+  copy reservation_queue.db -> reservation_queue.db.pre-c1a-<UTC>.bak
+
+ROLLBACK:
+  - restore reservation_queue.db from the .bak;
+  - the split tables (wfirma_products, wfirma_product_mapping) and
+    product_local are NOT modified or dropped by this migration — only read —
+    so no restore is needed for them.
+
+Never drops or deletes anything. The split tables deprecate in place; their
+readers are redirected in C-1c.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def upgrade(storage_root: Path) -> dict:
+    from app.services import reservation_db as rdb
+
+    storage_root = Path(storage_root)
+    reservation_db_path = storage_root / "reservation_queue.db"
+    wfirma_db_path      = storage_root / "wfirma.db"
+    master_data_db_path = storage_root / "master_data.db"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    return rdb.backfill_product_authority(
+        reservation_db_path,
+        wfirma_db_path,
+        master_data_db_path,
+        now_iso=now_iso,
+    )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    import sys
+    from app.core.config import settings
+    root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(settings.storage_root)
+    print("C-1a product-authority backfill against", root)
+    print(upgrade(root))

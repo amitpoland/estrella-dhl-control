@@ -28,9 +28,21 @@ SCAN_COOLDOWN_SECONDS = 21600   # full scan at most once every 6 hours
 PAGE_SIZE             = 50      # contractors per wFirma API page
 
 
+def _connect(db_path: Path) -> sqlite3.Connection:
+    """Tuned connection — WAL + busy_timeout per the dhl_thread_lock idiom
+    (dhl_thread_lock.py:126-129; infra health pass d67d3722 finding #2):
+    this DB has a FastAPI 'Run Now' writer AND the APScheduler tick writer;
+    every connection now waits out a competing writer (busy_timeout FIRST,
+    so the WAL flip itself waits) instead of failing 'database is locked'."""
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
 def init_contractor_poll_db(db_path: Path) -> None:
     """Create contractor_poll.db and the scan-state table if not present."""
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS contractor_poll_state (
             id                      INTEGER PRIMARY KEY CHECK (id = 1),
@@ -47,7 +59,7 @@ def init_contractor_poll_db(db_path: Path) -> None:
 
 def get_last_scan_completed_at(db_path: Path) -> Optional[str]:
     """Return ISO timestamp of the last completed full scan, or None."""
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         row = conn.execute(
             "SELECT last_scan_completed_at FROM contractor_poll_state WHERE id = 1"
         ).fetchone()
@@ -68,7 +80,7 @@ def is_scan_due(db_path: Path, now_iso: str, cooldown_seconds: int = SCAN_COOLDO
 
 
 def mark_scan_started(db_path: Path, now_iso: str) -> None:
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.execute(
             """INSERT INTO contractor_poll_state
                (id, last_scan_started_at, last_scan_completed_at,
@@ -91,7 +103,7 @@ def mark_scan_completed(
     updated_count: int,
     error: Optional[str] = None,
 ) -> None:
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.execute(
             """INSERT INTO contractor_poll_state
                (id, last_scan_started_at, last_scan_completed_at,
@@ -111,7 +123,7 @@ def mark_scan_completed(
 
 def get_scan_state(db_path: Path) -> dict:
     """Return full scan-state row as dict (for diagnostics)."""
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT * FROM contractor_poll_state WHERE id = 1"

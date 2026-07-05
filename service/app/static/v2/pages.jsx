@@ -237,105 +237,6 @@ function WfirmaExportPage({ onViewShipment }) {
   );
 }
 
-// ── Reports Page
-function ReportsPage() {
-  const months = ['Jan', 'Feb', 'Mar', 'Apr'];
-  const data = [12, 18, 9, 7];
-  const maxVal = Math.max(...data);
-
-  return (
-    <div style={{ padding: '24px 32px', overflowY: 'auto', flex: 1 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 28 }}>
-        {[
-          { label: 'Shipments YTD', value: 46, color: 'var(--text)' },
-          { label: 'Total Duty Paid YTD', value: 'PLN 9,840', color: 'var(--accent)' },
-          { label: 'Total Gross YTD', value: 'PLN 218K', color: 'var(--badge-blue-text)' },
-          { label: 'Avg. Processing Time', value: '3.2 days', color: 'var(--badge-green-text)' },
-        ].map((c, i) => (
-          <Card key={i} style={{ padding: '16px 18px' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 6 }}>{c.label}</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: c.color, fontFamily: '"DM Serif Display", serif' }}>{c.value}</div>
-          </Card>
-        ))}
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-        {/* Bar chart */}
-        <Card style={{ padding: 20 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 16 }}>Shipments per Month (2024)</div>
-          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, height: 120 }}>
-            {months.map((m, i) => (
-              <div key={m} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600 }}>{data[i]}</div>
-                <div style={{
-                  width: '100%', borderRadius: '4px 4px 0 0',
-                  background: i === 3 ? GOLD : 'var(--border)',
-                  height: `${(data[i] / maxVal) * 80}px`,
-                  transition: 'height 0.3s',
-                }}></div>
-                <div style={{ fontSize: 10, color: 'var(--text-3)' }}>{m}</div>
-              </div>
-            ))}
-          </div>
-        </Card>
-
-        {/* Status breakdown */}
-        <Card style={{ padding: 20 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 16 }}>Current Status Breakdown</div>
-          {[
-            { label: 'Ready for Booking', count: 1, pct: 14, color: 'var(--badge-purple-text)' },
-            { label: 'Ready for PZ', count: 2, pct: 29, color: 'var(--badge-green-text)' },
-            { label: 'Awaiting DHL', count: 1, pct: 14, color: 'var(--badge-amber-text)' },
-            { label: 'Awaiting SAD', count: 2, pct: 29, color: 'var(--badge-orange-text)' },
-            { label: 'Action Required', count: 1, pct: 14, color: 'var(--badge-red-text)' },
-          ].map((row, i) => (
-            <div key={i} style={{ marginBottom: 10 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                <span style={{ fontSize: 11, color: 'var(--text)' }}>{row.label}</span>
-                <span style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 600 }}>{row.count} ({row.pct}%)</span>
-              </div>
-              <div style={{ height: 5, background: 'var(--badge-neutral-bg)', borderRadius: 3 }}>
-                <div style={{ height: '100%', width: `${row.pct}%`, background: row.color, borderRadius: 3 }}></div>
-              </div>
-            </div>
-          ))}
-        </Card>
-
-        {/* Duty summary table */}
-        <Card style={{ padding: 20, gridColumn: 'span 2' }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 14 }}>Monthly Duty & Value Summary</div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: 'var(--bg-subtle)' }}>
-                {['Month', 'Shipments', 'Total Net (PLN)', 'Total Gross (PLN)', 'Total Duty A00 (PLN)', 'Avg. Exchange Rate'].map(h => (
-                  <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.04em', textTransform: 'uppercase', borderBottom: '1px solid var(--border)' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {[
-                { month: 'January 2024', count: 12, net: '54,200', gross: '65,040', duty: '3,252', rate: '4.2310' },
-                { month: 'February 2024', count: 18, net: '82,100', gross: '98,520', duty: '4,926', rate: '4.2580' },
-                { month: 'March 2024', count: 9, net: '36,800', gross: '44,160', duty: '2,208', rate: '4.2410' },
-                { month: 'April 2024', count: 7, net: '33,100', gross: '39,720', duty: '1,986', rate: '4.2650' },
-              ].map((row, i) => (
-                <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                  <td style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--text)' }}>{row.month}</td>
-                  <td style={{ padding: '9px 12px', color: 'var(--text)' }}>{row.count}</td>
-                  <td style={{ padding: '9px 12px', textAlign: 'right', color: 'var(--text)' }}>{row.net}</td>
-                  <td style={{ padding: '9px 12px', textAlign: 'right', color: 'var(--text)' }}>{row.gross}</td>
-                  <td style={{ padding: '9px 12px', textAlign: 'right', color: 'var(--accent)', fontWeight: 700 }}>{row.duty}</td>
-                  <td style={{ padding: '9px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 11 }}>{row.rate}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
 // ── Learning / Parser Page
 function LearningParserPage() {
   const [parserInput, setParserInput] = React.useState('');
@@ -454,33 +355,98 @@ function LearningParserPage() {
 }
 
 // ── Admin / Settings Page
+// Wave-3 (2026-07-04): company-profile wired to GET /api/v1/settings/company-profile
 function AdminSettingsPage() {
-  const [apiUrl, setApiUrl] = React.useState('https://api.estrella-pz.pl/api/v1');
-  const [dhlEmail, setDhlEmail] = React.useState('clearance@dhl.com.pl');
-  const [wfirmaKey, setWfirmaKey] = React.useState('wf_••••••••••••••••');
-  const [saved, setSaved] = React.useState(false);
+  const [apiUrl] = React.useState('https://api.estrella-pz.pl/api/v1');
+  const [dhlEmail] = React.useState('clearance@dhl.com.pl');
+  const [wfirmaKey] = React.useState('wf_••••••••••••••••');
 
-  const save = () => { setSaved(true); setTimeout(() => setSaved(false), 2000); };
+  // Company profile — live from GET /api/v1/settings/company-profile
+  const [profile, setProfile] = React.useState(null);
+  const [profileLoading, setProfileLoading] = React.useState(true);
+  const [profileError, setProfileError] = React.useState(null);
+
+  React.useEffect(() => {
+    setProfileLoading(true);
+    setProfileError(null);
+    window.EstrellaShared.apiFetch('/api/v1/settings/company-profile')
+      .then(data => {
+        if (data && data.ok) {
+          setProfile(data.profile || {});
+        } else {
+          setProfileError('Unexpected response from server');
+        }
+      })
+      .catch(err => {
+        setProfileError(err && err.message ? err.message : 'Failed to load company profile');
+      })
+      .finally(() => setProfileLoading(false));
+  }, []);
 
   return (
     <div style={{ padding: '24px 32px', overflowY: 'auto', flex: 1 }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-        {/* API Config */}
+        {/* API Config — environment-set, not editable via UI */}
         <Card>
           <SectionHeader icon="⚙" title="API Configuration" />
+          <div style={{ padding: '10px 20px 4px', background: 'var(--badge-amber-bg, #FFF8E1)', border: '1px solid var(--badge-amber-border, #FFD54F)', borderRadius: 6, margin: '0 0 4px' }}>
+            <span style={{ fontSize: 11, color: 'var(--badge-amber-text, #B45309)', fontWeight: 600 }}>
+              ⚠ API configuration is environment-set — not editable via this UI
+            </span>
+          </div>
           <div style={{ padding: 20 }}>
             <FormField label="Backend API Base URL">
-              <Input value={apiUrl} onChange={e => setApiUrl(e.target.value)} />
+              <Input value={apiUrl} readOnly disabled />
             </FormField>
             <FormField label="DHL Clearance Email Address">
-              <Input value={dhlEmail} onChange={e => setDhlEmail(e.target.value)} />
+              <Input value={dhlEmail} readOnly disabled />
             </FormField>
             <FormField label="wFirma API Key">
-              <Input value={wfirmaKey} onChange={e => setWfirmaKey(e.target.value)} type="password" />
+              <Input value={wfirmaKey} readOnly disabled type="password" />
             </FormField>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <Btn variant="gold" onClick={save}>Save Settings</Btn>
-              {saved && <span style={{ fontSize: 11, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ Saved</span>}
+          </div>
+        </Card>
+
+        {/* Company Profile — live from GET /api/v1/settings/company-profile */}
+        <Card>
+          <SectionHeader icon="🏢" title="Company Profile" />
+          <div style={{ padding: 20 }}>
+            {profileLoading && (
+              <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '12px 0' }}>Loading company profile…</div>
+            )}
+            {profileError && !profileLoading && (
+              <div style={{ fontSize: 12, color: 'var(--badge-red-text, #DC2626)', padding: '8px 0' }}>
+                ⚠ {profileError}
+              </div>
+            )}
+            {profile && !profileLoading && (
+              <>
+                <FormField label="Legal Name">
+                  <Input value={profile.legal_name || ''} readOnly />
+                </FormField>
+                <FormField label="Email">
+                  <Input value={profile.email || ''} readOnly />
+                </FormField>
+                <FormField label="Phone">
+                  <Input value={profile.phone || ''} readOnly />
+                </FormField>
+                <FormField label="Signatory Name">
+                  <Input value={profile.signatory_name || ''} readOnly />
+                </FormField>
+                <FormField label="NIP">
+                  <Input value={profile.nip || ''} readOnly />
+                </FormField>
+                <FormField label="VAT EU">
+                  <Input value={profile.vat_eu || ''} readOnly />
+                </FormField>
+              </>
+            )}
+            <div style={{ marginTop: 12 }}>
+              <Btn
+                variant="gold"
+                disabled
+                title="PATCH /api/v1/settings/company-profile · requires admin auth · Wave-4 wiring"
+              >Save Changes</Btn>
             </div>
           </div>
         </Card>
@@ -1043,7 +1009,6 @@ Object.assign(window, {
   WarehousePage,
   SalesProformaPage,
   WfirmaExportPage,
-  ReportsPage,
   LearningParserPage,
   AdminSettingsPage,
   FilteredShipmentsTable,

@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     anthropic_api_key:   Optional[str] = Field(default=None)
     ai_parser_model:     str           = Field(default="claude-sonnet-4-6")
     ai_parser_enabled:   bool          = Field(default=False)
+    # Supplier invoice OCR (foreign invoices wFirma OCR can't read) — draft
+    # extraction + operator review only, never a wFirma write. Also requires
+    # ai_parser_enabled (gateway gate).
+    supplier_invoice_ocr_enabled: bool = Field(default=False)
 
     # ── Anthropic Admin API (key health checks — optional) ────────────────────
     # Admin API key is separate from anthropic_api_key. Obtain from:

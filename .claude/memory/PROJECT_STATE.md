@@ -69,6 +69,35 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
+## Current origin/main HEAD (2026-07-03, updated): `c7c0e14e`
+
+- **origin/main HEAD = `c7c0e14e`** — `fix(carrier): thread dutiable class into rates discovery — resolves PL→LT 1001 (#814)` (merged 2026-07-03T06:22:25Z). Chain since `85da2ef` (post-PR-726): `4c4c77bf` (#813 DHL additionalDetails) → `86f03d86` (#812 intra-EU customs-free) → `ea2823e9` (#810 Brazil PLT bypass) → `20b4b8b5` (#809 Full Scan + ScanStatusPanel) → `4c4c77bf` (merged 2026-07-02) → `c7c0e14e` (#814 dutiable class). Supersedes the `85da2ef` block below (append-only — prior entries retained).
+
+## Phase-C Wave 2 (Backend) — COMPLETE on deploy/latest (2026-07-03)
+
+- **Phase-C Wave 2 backend COMPLETE on `deploy/latest` branch** (2026-07-03). NOT yet deployed to `C:\PZ` — 7-agent ritual + CP4 pending. Commits in landing order:
+  - `0d12fa60` — ratification docs (R0 scope-lock amendments)
+  - `2f44ffba` — R3 storage-leak fix (shipment-detail prune budget → growth ratchet)
+  - `568c05b2` — C-3g (NameError fix: dangling `prod` ref in `_build_service_charge_lines`; see DEFECT note below)
+  - `be0b1252` — R2-census docs (INSPECTOR dispositions)
+  - `9044640e` — R3 batch (test-health, 8/8 pre-existing failures fixed)
+  - `fee3b087` — C-3a/b/c (service_product_registry in pildb, transitional dual-write setup)
+  - `e8d275cd` — C-3d (routes_wfirma_capabilities declared a product-sync surface; whitelist + customer-pin precedent)
+  - Additional commits at `deploy/latest` tail — C-3e/f + boundary docs.
+  - **C-4a skipped** per ratification: OI-17 (wFirma MM API capability) remains OPEN; C-4 gated on it.
+
+- **Product consumption pin at TRUE ZERO** (2026-07-03): `KNOWN_PRODUCT_VIOLATION_FILES = {}` pinned to stay empty. Transitional dual-write and `rdb.get_cached_*` passthroughs retired. Service-charge metadata moved to `pildb` `service_product_registry` (identity stays in `wfirma_product_mirror`).
+
+- **DEFECT found + fixed in C-3g** (2026-07-03): C-1f (`6a781ee4`) had shipped a NameError on every MAPPED service-charge emission in `_build_service_charge_lines` (dangling `prod` ref); fixed in `568c05b2` + source-grep-pinned.
+
+- **New backend endpoints (ZERO UI)** (2026-07-03): `GET /api/v1/inventory/samples` · `/returns` · `/merchandising/{batch_id}` · `/movements/{batch_id}`; `run_stock_issue()` fires the previously-unreachable `invoice_issued` trigger on proforma→invoice conversion (advisory, never blocks — Lesson N).
+
+- **Verification pass** (2026-07-03): baseline-diffed full `-k proforma` sweeps (pristine-HEAD worktree) — 7 pre-existing failures fixed, 0 introduced; pin 11/11, golden 160/160, smoke 63. R3 register cleared 8/8. Backlog items filed: B-018 (shipment-detail prune budget breach → growth ratchet); B-017 (users.db import-time trap) + LESSONS_LEARNED #3.
+
+- **RULE 6 scorecard citations** (2026-07-03, Lesson C disk-verified): scorecard `.claude/memory/scorecards/2026-07-03-phase-c-wave2-backend.md` (3 agents scored, all EXEMPLARY; repeated-weak flags carried for `frontend-flow-reviewer` + `backend-safety-reviewer`); self-eval `.claude/memory/scorecards/self-eval-2026-07-03.md` (29/35 ACCEPTABLE, prior SELF-DEGRADATION flag resolved).
+
+- **Deploy state** (2026-07-03): Wave-2 backend NOT yet deployed to `C:\PZ`. 7-agent ritual + CP4 required. CP4 payload = `service/docs/ops/c3g-deploy-note.md` (mirror backfill re-run + goods-id-99 collision resolution + service-registry backfill + returns/sample event-table migrations).
+
 ## Current origin/main HEAD (2026-06-22, updated post-PR-726): `85da2ef`
 
 - **origin/main HEAD = `85da2ef`** — `fix(v2): Packing List SR is sequential (not colliding pack_sr) + Origin defaults to India (#723)` (latest as of 2026-06-22 when PR #726 opened). Chain since `ef24ee3`: `a9c750e` (#721 chore/memory) → `6157740` (#705 create-reservation guard) → `cbd4dd6` (#722 DSK chase SLA serialize) → `e1b5883` (#724 cowork repair) → `85da2ef` (#723 Packing List SR fix). Supersedes the `ef24ee3` block below (append-only — prior entries retained).
@@ -5694,6 +5723,880 @@ Group D — Tests (3 new files):
 
 # DECISIONS
 
+### 2026-07-01 — Shipment Detail canonical authority declared (slice-01)
+DECISION: service/app/static/v2/shipment-detail-page.jsx is the sole canonical
+authority for the Shipment Detail module.
+BASIS: Authority census 2026-07-01T015910Z @ aa414d90.
+  - Loaded at v2/index.html:299 — only the base .jsx is in the script list.
+  - shipment-detail-page.v1.jsx and .v2.jsx are on disk, not loaded, and each
+    (re)defines ShipmentDetailPage — a latent window-global override collision.
+  (01-frontend-authority-map.md:23; 06-evidence-backfill.md §Claim 2, §4c)
+CONSEQUENCE: the two dead versioned JSX files are retired and DELETED in this slice
+  (C:\PZ-verify only; not committed, not deployed).
+  Reversal: git checkout HEAD -- service/app/static/v2/shipment-detail-page.v1.jsx service/app/static/v2/shipment-detail-page.v2.jsx
+  Pre-delete blob SHAs: v1=40f37b5f8aa3807e2c95a60b4351c73280ba8a27  v2=711fa071babf83c2eb36cb7dbd508747b05431dd
+SCOPE: this DECISION does NOT resolve the /dashboard/shipment-detail.html V1
+  direct-link surface (decision D-3, still open). Only the two dead .v?.jsx files.
+
+### 2026-07-02 — ReportsPage canonical authority declared (slice-03)
+DECISION: service/app/static/v2/pages-v2.jsx is the sole canonical authority for
+  the ReportsPage component.
+BASIS: pages-v2.jsx is loaded SECOND in v2/index.html after pages.jsx; its
+  window.ReportsPage assignment wins by last-write, permanently overriding the copy
+  in pages.jsx. The pages.jsx definition is never executed in the live application.
+  The duplicate was identified during the authority census (slice-03 scope).
+CONSEQUENCE: the dead ReportsPage body and its registration line are excised from
+  service/app/static/v2/pages.jsx in this slice (C:\PZ-verify only; no commit,
+  no deploy).
+  Pre-excision blob SHA of pages.jsx: 3d62394980f29a2d2697981595dd520a735daea6
+  Reversal command: git checkout 3d62394980f29a2d2697981595dd520a735daea6 -- service/app/static/v2/pages.jsx
+SCOPE: pages-v2.jsx ReportsPage definition is untouched and remains the live
+  authority. Only the shadowed dead copy in pages.jsx is removed.
+
+### 2026-07-02 — slice-04: disposition of 12 shadow-redirected V2 nav slugs (Split: A×5, B×7)
+PROVENANCE: all 12 slugs suppressed since birth — PR #423 (16b54f0e, 2026-06-02) created
+them shadow-redirected as MOCK design placeholders; never promoted; clean provenance
+(unrelated to the 2026-06-04 incident); no prior formal disposition — this entry is the first.
+Only dhl ever received the promotion playbook (Sprint 31, a5a4e5e7).
+
+GROUP A — CANCELLED-CONSOLIDATED (5): mock render blocks removed; capability homes:
+- actions, proposals -> Inbox (InboxPage scope; routes_action_proposals.py / routes_proposals.py)
+- email_queue -> Inbox (V2 target); current operational surface = V1 dashboard email-queue card + admin endpoints
+- reservation -> wFirma Setup (WfirmaMappingPage reservation-gate readiness) + Proforma-detail reservation tab (routes_wfirma_reservation.py)
+- shipping -> capability delivered via live carrier work (CarriersPage wired, DHL Express production-live); "Label & Print Ops" wireframe superseded
+
+GROUP B — ACTIVE-PLANNED FOR REBUILD (7): mock render blocks removed (zero salvage; stub
+endpoint names were FICTIONAL and are superseded by this entry). Each to be rebuilt as a
+gated V2 slice per the dhl/Sprint-31 promotion playbook (wire read-only -> NAV_TREE ->
+remove redirect -> WIRED_PAGES -> pin with test), against these REAL registered routes:
+- move_stock: POST /api/v1/inventory/pieces/{id}/location (routes_inventory_writes.py)
+- sample_out: /pieces/{id}/sample-out (routes_inventory_sample.py)
+- sample_return: /pieces/{id}/sample-return (routes_inventory_sample.py)
+- goods_return, return_prod: /pieces/{id}/return-* (routes_inventory_returns.py)
+- identity: backend partial (design/product mapping services); scope its API in the rebuild slice
+- scanner: POST /api/v1/warehouse/scan; CURRENT WORKING AUTHORITY = V1 warehouse.html
+  (still linked from V1 sidebar); V2 re-surface via rebuild slice, V1 stays authoritative until then
+NOTE: v2/pz-api.js has no transport methods for pieces/location/sample/returns; each rebuild
+slice adds its own.
+
+MECHANICS: 12 dead render blocks removed from v2/index.html (they could never render —
+ROUTE_REDIRECTS intercepts at both router entry points). ROUTE_REDIRECTS entries KEPT
+(stale-URL insurance; test_atlas_v2_sprint1 + test_sprint31 require block presence+parse).
+pz-design-v2.js NOT touched (6 live loaders; coupled to legacy-page retirement).
+Pre-excision index.html blob: 9c9e80fb4ef2de29b97d517d8ae0e6a900ca53aa
+REVERSAL: git checkout 9c9e80fb4ef2de29b97d517d8ae0e6a900ca53aa -- service/app/static/v2/index.html
+No deploy until render verification passes. No push.
+
+### 2026-07-02 — slice B×7-1: Move Stock page foundation (first inventory-family promotion)
+OPERATOR UX RULE (ratified, verbatim): "Move Stock supports three input methods, built
+in separate slices: 1. Manual selection with checkboxes. 2. Excel upload by design
+number / batch / piece count — FUTURE SLICE. 3. Optional barcode scanner — NEVER
+required. Business workflow first. Software scanning second. No mandatory scan gate."
+NAV DECISION: (a) new g_inventory NAV_TREE group (defaultId 'inventory'); inventory hub
+becomes group child (label 'Stock Hub'); move_stock added as sibling; nav-pin test
+updates (if any break) land in the same commit citing this entry.
+BACKEND TRUTHS: move path is SINGLE-PIECE-ONLY (move_piece takes one scan_code; no
+batch input anywhere in routes_inventory_*). UI multi-select therefore executes
+SEQUENTIAL single-piece moves with per-piece results and an explicit banner
+("Batch = sequential single-piece moves (backend is per-piece)"); no atomic-batch
+claim. List source = GET /api/v1/inventory/state/{batch_id} (pieces[] carries
+design_no but NO location; synthetic:true rows are C13A purchase-transit projections
+— selection-disabled in UI; they would 409 WRONG_STATE).
+LOCATION-COLUMN GAP: deferred — pieces[] has no location; per-piece lookups (N+1)
+rejected; a batch location-join read is a candidate backend addition for the
+Excel-upload slice.
+MIGRATION: idempotency schema applied to verify-tree warehouse.db 2026-07-02
+(backup warehouse.db.pre-idempotency-20260702.bak; column TEXT NOT NULL DEFAULT ''
++ partial UNIQUE idx_movement_idempotency verified; row count unchanged at 0).
+Draft file to be renamed to applied form in this slice's commit; PROD application
+deferred to deploy under deploy_persistence_storage_reviewer.
+VERIFY-TREE DB has zero movement events: render check covers empty-state +
+error-state rendering; full table interaction verified against real data at deploy.
+SCOPE: this slice = foundation + manual selection wired to the real single-piece
+backend; Excel upload = future slice; scanner = optional, deferred.
+
+### 2026-07-02 — B×7-1 rework: page renamed Move Stock → Move Location (operator decision (i)); "Move Stock" name reserved for the business stage promotion (slice B×7-1b)
+DECISION (i): the page built in slice B×7-1 is a physical location (shelf/zone)
+metadata helper — it does NOT change inventory state. Renamed
+move_stock → move_location (file move-location-page.jsx, component
+MoveLocationPage, nav label "Move Location", slug move_location); the
+move_stock slug RETURNS to ROUTE_REDIRECTS (12 entries) and stays
+ACTIVE-PLANNED for the true business promotion.
+STOCK PROMOTION NOTE SPEC (operator, verbatim): "promotion creates an Internal
+Stock Movement document / Stock Promotion Note recording: source stage,
+destination stage, packing list / import reference, design numbers, batch
+numbers, piece count, operator, timestamp, reason/note, before/after inventory
+state. Selection: manual checkbox by mouse first; Excel upload later; scanner
+optional, never required."
+OPERATOR LIFECYCLE RULE (verbatim): "Inventory temp states are
+document-event-driven, synchronized with wFirma: Temp Purchase closes
+AUTOMATICALLY on PZ creation (goods received -> real warehouse stock). WZ
+creation moves goods out -> Temp Sale (in transit to customer), shown as out
+in wFirma and Atlas. DHL delivery confirmation closes Temp Sale. Manual Move
+Stock page = exception/correction path only; the document is the primary
+trigger."
+MIGRATION: draft renamed to applied form 20260512_002516_idempotency_key.py in
+this slice's commit (schema already applied to verify-tree warehouse.db
+2026-07-02 per the B×7-1 entry above; PROD application deferred to deploy
+under deploy_persistence_storage_reviewer). Known residue: the backend
+MIGRATION_PENDING message (inventory_location_writer.py:100) still says
+"draft_20260512_002516_idempotency_key" — cosmetic, error-path-only; follow-up
+candidate, not changed in this rework (out of instructed scope).
+
+### 2026-07-02 — slice B×7-1b BE-1: auto stock promotion on PZ creation (operator decision (a))
+OPERATOR DECISION (a) (verbatim): "App-pipeline PZs only for now. Direct wFirma
+PZ bookings should not block BE-1. Record direct-wFirma PZ auto-promotion as
+BE-1c / future extension. Rule: If PZ is created through Atlas/EJ pipeline,
+auto-promote PURCHASE_TRANSIT → WAREHOUSE_STOCK. If PZ is created directly
+inside wFirma, it remains manual/exception handling until webhook/poll
+extension is approved."
+SCOPE (operator, verbatim): no UI; no deploy; additive backend hook only;
+idempotent skip required; both PZ writers must call shared
+run_stock_promotion(); double promotion must no-op cleanly; receipt-first
+then PZ and PZ-first then receipt orderings must be tested.
+IMPLEMENTATION: new shared authority service/app/services/stock_promotion.py
+→ run_stock_promotion(batch_id, trigger=, source=, operator=) (Business
+Feature Completeness: the ONE shared function). Callers:
+(1) routes_wfirma.wfirma_pz_create success path (trigger="pz_created",
+source="wfirma_pz_create") after EV_WFIRMA_PZ_CREATED, inside the pz_write
+lock, result surfaced as "stock_promotion" in the create response;
+(2) global_pz_push correction push (trigger="pz_created",
+source="correction_push") after its EV_WFIRMA_PZ_CREATED, errors surfaced in
+PushResult warnings; (3) PRE-EXISTING routes_upload._promote_to_warehouse_stock
+(internal PZ generation) now DELEGATES to the shared function
+(trigger="pz_generated", source="pz_pipeline") — discovered during BE-1
+scoping: promotion already fired at internal-PZ-generation time; the
+one-shared-function rule forbids Logic A / Logic B divergence, so the existing
+loop is EXTRACTED behavior-preserving and stays pinned by the pre-existing
+test_warehouse_stock_promotion.py suite (9 tests, must stay green unmodified).
+BEHAVIOR DELTA (disclosed): generation-path transition events now carry
+trigger="pz_generated" + operator="system" (previously empty trigger); the
+summary mirror detail gains skipped/errors/trigger keys (additive; the
+financial-key ban on mirror payloads is unchanged and still pinned).
+BE-1c (PARKED, future extension): direct-wFirma PZ auto-promotion via
+webhook/poll — requires wFirma warehouse-document event ingestion that the
+Track B scheduler does not carry today. Until approved, direct-booked PZs are
+manual/exception handling. OQ-B71B-DIRECT-WFIRMA-PZ answered (a) 2026-07-02.
+OBSERVED ADJACENT PATH (not hooked, disclosed): PZ ADOPT
+(EV_WFIRMA_PZ_ADOPTED — recording an EXISTING wFirma document) is a third
+terminal path that does NOT auto-promote under BE-1; whether adoption should
+promote is a separate business question, not assumed.
+VERIFY PASS (2026-07-02, 3-lens adversarial workflow — unsafe-writes /
+idempotency-replay / scope-authority — all three lenses refuted=false): two
+hardenings applied same day before commit — (1) the wfirma_pz_create hook
+moved OUTSIDE _pz_write_lock (promotion is idempotent and needs none of the
+lock's guarantees; in-lock placement widened the 409 PZ_WRITE_LOCKED window
+by N engine transitions and left stock_promotion latently unbound if a
+pre-assignment statement raised); (2) benign-race recheck in
+run_stock_promotion (a concurrent promoter winning between get_state and
+transition now counts as skipped, not a false-positive error; no failure
+mirror emitted; pinned by test_benign_race_counts_as_skipped_not_error).
+Residuals ACCEPTED, documented, no code change: (a) the already_created
+fast path returns before the hook, so a crash between audit patch and
+promotion leaves stragglers to the receipt path / next generation run;
+(b) global_pz_push crash-before-push-record replay can duplicate the wFirma
+document — pre-existing gap, unchanged by BE-1 (promotion itself no-ops
+cleanly on replay); (c) single-writer invariant independently confirmed
+(only inventory_state_engine.transition() writes inventory_state).
+BE-1 ASSUMPTION recorded (operator may reverse with one word): auto-promotion
+fires on APP-PIPELINE PZ creation only (three writers hooked via shared
+run_stock_promotion). PZs booked directly inside wFirma are NOT seen today —
+webhook/poll extension PARKED on the decision-list as candidate slice BE-1c.
+Until then, direct-booked PZs promote via physical-receipt confirm or the
+future manual exception page.
+
+### 2026-07-02 — client_po + invoice_no silent-drop fix (operator: "both")
+Both fields parsed by routes_packing (dict :1434, :1443) but omitted from the
+document_db INSERT (:2003-2009) since inception — silently dropped at the DB
+boundary. Persisted via ALTER-on-init (TEXT NOT NULL DEFAULT '') + INSERT
+bind, matching the established sales_packing_lines evolution idiom
+(document_db.py:369-380). Legacy rows carry '' (backfill = separate decision;
+original packing files retained per scope report 2e05787e —
+sales_documents.source_file_path). Consumers: consignment contract linkage
+(operator spec — Cons.ID ↔ Client PO ↔ Proforma join prerequisite);
+proforma-detail fallback at :2542 (currently fakes client_po from
+invoice_no||client_ref) to prefer the real column in the UI parity slice.
+Pin test: parse→persist→readback both fields, legacy-row '' default,
+drop-can't-return INSERT pin. Backend only, zero UI files, no deploy.
+
+### 2026-07-02 — BE-2 Stock Promotion Note (document layer)
+BE-2 Stock Promotion Note: header+lines tables on warehouse.db
+(packing_documents precedent), series SPN/NNN/YYYY = first local document
+series (BEGIN IMMEDIATE + MAX+1/year + UNIQUE retry — the precedent for all
+future local series). Note written best-effort inside run_stock_promotion
+after the loop: auto (pz_created), generation, and future manual paths produce
+identical Notes. Operator contract fields verbatim: source stage, destination
+stage, packing list / import reference (packing_document_id + invoice_no),
+design numbers, batch numbers, piece count, operator, timestamp, reason/note,
+before/after inventory state per piece. client_po does NOT apply (purchase-
+side receipt; premise corrected in scope 6d6d9d64). No-op promotions produce
+NO Note; partial promotions produce ONE Note covering the moved subset only.
+DECIDED — BE-2b (receipt-path promotions via DHL bridge / direct receive
+currently bypass run_stock_promotion and carry NO Note): planned as the next
+follow-up slice; gap recorded, not silent. View: v0 = note_no in audit
+timeline (free); v1 Stock Hub panel + print component = separate pre-flighted
+slices.
+
+### 2026-07-03 — infra hardening per health pass d67d3722
+(a) WAL + busy_timeout=10000 set at init in proforma_links/payment_state/
+contractor_poll/customer_master DB modules (dhl_thread_lock idiom; these 4
+have handler AND APScheduler writers with no lock protection).
+(b) routes_dhl_clearance write_json_atomic NameError fixed (observed live
+WARNING 2026-07-02 14:06 — lane-a status write failing silently in prod).
+Backup scheduling (#1) = operator task, recorded separately once confirmed
+running.
+
+### 2026-07-03 — infra hardening #4: HTTP access logging (health pass d67d3722)
+GATE PROVEN EMPIRICALLY (local boots, prod-exact CLI per the NSSM
+AppParameters read in d67d3722; truth table verbatim):
+| variant | logging.py silencer | --access-log flag | access line? |
+| baseline (prod today) | WARNING (present) | absent (uvicorn default ON) | NO |
+| (b) flag only | WARNING (present) | present | NO |
+| (a) in-repo flip only | INFO | absent | (proven post-edit — the fix) |
+CONCLUSION: uvicorn's access log is ON by default; the ONLY gate is
+core/logging.py:11 silencing uvicorn.access to WARNING after uvicorn's own
+dictConfig (app import runs last, so the silencer always wins). The NSSM
+--access-log parameter is neither sufficient nor necessary — NO operator-side
+NSSM change required; prod inherits the fix at normal deploy.
+FIX: core/logging.py flips uvicorn.access to INFO explicitly (comment cites
+finding #4 + the atlas access-log dead-end this gap caused). Format: uvicorn
+default access format (client_addr, request line = method+path, status) —
+the atlas-class question ("is /dashboard/atlas ever hit") becomes grep-able.
+ROTATION: NSSM online rotation at 10MB absorbs the stream (no new
+mechanism). RETENTION: access lines join pz_stdout.log and its accepted
+pruning posture (finding #8).
+
+### 2026-07-03 — GOVERNANCE: authority-first rule + business principle + inventory phase roadmap (operator-ratified, verbatim)
+PERMANENT RULE: "Before implementing any feature: 1. Find the existing
+business authority. 2. Find the existing V2 page. 3. Find the existing
+backend authority. 4. Extend that authority only. 5. Never create another
+page, React app, HTML page, route, or frontend authority. If the existing
+authority cannot support the feature: STOP. Explain why. Request operator
+approval before creating anything new."
+BUSINESS PRINCIPLE: "The software must follow the business workflow. The
+business must never be changed to fit the software. Customer Master =
+single customer authority. Inventory = single inventory authority.
+Proforma/Invoice = single document authority. Scanner optional, never
+mandatory. Documents drive inventory, not the other way around. Every
+inventory movement has exactly one document trail."
+PHASE ROADMAP: A = BE-2b (this slice) completes backend movement authority,
+backend then FROZEN for the inventory phase; B = UI parity into the
+existing Inventory authority only (NOTE recorded: operator's Phase-B rules
+imply folding Move Location into the Inventory page and retiring the
+standalone page — requires its own pre-flight + explicit operator approval
+at Phase-B start); C = wFirma.
+
+### 2026-07-03 — BE-2b: receipt-path promotions produce Stock Promotion Notes (operator GO)
+OPERATOR DECISION (verbatim): "BE-2b. Reason: it closes the business rule
+first: Every stock movement must produce a document. UI parity should come
+after, so the page can show complete backend truth, not a partial document
+trail."
+IMPLEMENTATION: dhl_delivery_bridge.execute_goods_received converts its
+direct per-row ise.transition loop (the last PURCHASE_TRANSIT →
+WAREHOUSE_STOCK writer outside the shared authority) into a
+run_stock_promotion() caller (trigger="warehouse_receive",
+source="dhl_delivery_bridge", goods_received note preserved as
+reason_note). The receipt path thereby gains the idempotent skip, audit
+mirrors, and the Stock Promotion Note for free. Return contract preserved
+(transitioned=promoted count, errors list; note_no added, additive).
+BOUNDARY (by design, pinned): sample_return (SAMPLE_OUT→WAREHOUSE_STOCK)
+and return_from_producer_to_stock (RETURNED_TO_PRODUCER→WAREHOUSE_STOCK)
+remain DIRECT engine transitions — returns to stock are NOT Temp
+Warehouse→Final Stock promotions and produce no Promotion Note under the
+operator contract.
+DISCLOSED (pre-existing, unchanged): no production dispatcher invokes
+execute_goods_received yet — the delivered→confirm proposal is emitted but
+the Inbox approval executor is not wired to it; BE-2b makes the path
+Note-complete for when it wires. DEPENDENCY (disclosed): the shared
+function derives pieces from packing lines, so the bridge now requires
+packing_db initialised (service startup does this; bridge tests init it).
+VERIFY PASS (2026-07-03, 2-lens adversarial workflow): lens-2 refuted=false;
+lens-1's refuted=true traces entirely to the DISCLOSED error-format delta
+(old per-scan-code strings → one aggregated count string; no production
+parser exists) — its primary attack (piece-set divergence between the old
+inventory_state SELECT and the packing-lines-driven loop) found nothing.
+Four hardenings applied pre-commit: (1) run_stock_promotion sets
+note_failed=True when pieces promote but the Note write fails (programmatic
+signal, not just a log; bridge surfaces it into errors[]); (2) bridge
+result gains skipped so a REPLAY (transitioned=0, skipped>0) is
+distinguishable from an empty batch (0,0) — future-dispatcher requirement;
+(3) partial-failure shape pinned (the aggregated error string is the
+documented contract); (4) boundary comments added in-code at both returns
+writers' WAREHOUSE_STOCK transitions (returns ≠ promotions, no Note by
+design). RESIDUALS accepted: run_stock_promotion "errors" is an INT counter
+(documented in its docstring; bridge maps to strings); note_no is additive
+on the bridge result — when the dispatcher is wired, its response shape
+must include it deliberately.
+STEP-0 SITE VERIFICATION AT HEAD (per the BE-2b build instruction): the
+PURCHASE_TRANSIT→WAREHOUSE_STOCK writer set outside run_stock_promotion is
+(1) dhl_delivery_bridge.execute_goods_received — the ONE production
+receipt path ("DHL bridge" and "direct physical-receipt confirm" from the
+prior scoping are the SAME function) — CONVERTED in this slice; and
+(2) DIVERGENCE, held per the STOP clause: routes_packing.py:3237
+dev_seed_inventory_state (POST /inventory-state/seed-batch, dev_router,
+hard-gated settings.environment!="dev" → 404) promotes PT→WS through a
+VARIABLE target (chain planner, :3303-3310) — invisible to literal greps.
+It is a dev-only legacy-batch backfill/repair tool with dry_run semantics;
+converting it is non-trivial (dry_run has no shared-function equivalent)
+and whether legacy backfills should mint Notes is a BUSINESS question —
+NOT edited; held for operator ruling (exempt-as-repair-tool + recorded
+boundary, vs convert-with-Note trigger "legacy_backfill"). Its dev gate is
+now PINNED (test) so it cannot silently reach production unruled.
+TRIGGER NAMING: kept trigger="warehouse_receive" for the receipt path
+(instruction's "receipt_confirmed"/"dhl_delivered" were examples) —
+continuity with the trigger this path has always written to
+inventory_state_events, and it names the origin distinctly vs
+pz_created/pz_generated; source="dhl_delivery_bridge" disambiguates
+further.
+RULING (operator, 2026-07-03): dev_seed_inventory_state EXEMPT from
+Note-minting per operator ruling 2026-07-03: repair tool, not a movement;
+prod-gated (pinned by test); if ever promoted to a production backfill
+mechanism, convert with trigger='legacy_backfill' first. Phase A backend
+movement authority COMPLETE; backend FROZEN for the inventory phase.
+
+### 2026-07-03 — Phase B slices B2+B3 (existing authorities extended only)
+Phase B slices B2 (Promotion Notes panel — the BE-2 v1 viewer as a sixth
+InvPanel on the existing Inventory page, GETs promotion-notes/{batch_id} +
+promotion-note/{note_no:path}) + B3 (proforma-detail :2542 prefers
+persisted client_po; falls back to legacy expression ONLY for
+pre-494c4665 rows where the column is ''). Move Location disposition
+pending operator word — B2/B3 are disposition-independent. Transport note:
+note_no contains slashes (SPN/NNN/YYYY) — the JS transport encodes PER
+SEGMENT (split('/') → encodeURIComponent each → join('/')) so segment
+contents are safe while slashes stay literal path separators for the
+:path route converter; pinned with SPN/001/2026 round-trip.
+DEFECT FOUND BY THE B2 RENDER CHECK (pre-existing, PRODUCTION-AFFECTING,
+page-wide class): Babel-standalone hoists compiled destructure helpers
+(`var _excluded = [...prop names...]`) OUTSIDE each file's IIFE into
+GLOBAL scope; every later-loaded V2 script OVERWRITES the earlier ones.
+Any component using JSX spread-rest destructuring in an earlier-loaded
+file can therefore leak "excluded" props into its spread — proven live:
+window._excluded held another file's Button prop-list, InvInput's rest
+kept onChange, the raw state setter landed on the <input>, and the FIRST
+keystroke into ANY Inventory-hub panel stored the event object into state
+("batchId.trim is not a function") and unmounted the tree. UNTOUCHED
+AuditPanel (Sprint 30) crashed identically — NOT introduced by B2; the
+Inventory hub's typed panels are plausibly broken in production today.
+FIXED IN THIS SLICE for inventory-page.jsx (spread-rest removed from
+InvInput/InvFetchBtn via explicit 'data-testid' destructuring; call sites
+and sprint-30 source pins byte-identical; drop-can't-return pin added).
+FOLLOW-UP REQUIRED (own slice): sweep ALL v2 files for spread-rest
+components exposed to the same collision (grep spread-rest in static/v2)
+— candidates include the Button emitting the observed
+['children','onClick','disabled','title','warn','style'] list.
+
+### 2026-07-03 — C-1 RATIFIED with amendments: "EJ Dashboard Master Authority Establishment"
+1. C-1 OBJECTIVE (renamed): "EJ Dashboard Master Authority Establishment" —
+   NOT table cleanup. Authority established first, consumers migrated after;
+   pattern reusable for C-2..C-7.
+2. MASTER CONSUMPTION RULE (verbatim): "Every business module must consume
+   Masters. No business module may consume Mirrors. No business module may
+   consume wFirma. Mirrors exist only for synchronization. Masters exist only
+   for business logic."
+3. LAYER RESPONSIBILITIES (verbatim): Mirror = wfirma_id, product_code,
+   sync_version, last_sync, hash, deleted_flag — NOTHING else, never business
+   logic. Master = design number, product code, category, status, active,
+   business mapping. Inventory NEVER reads the Mirror — only the Master.
+4. REVISED QUEUE: C-1 Product Authority → C-2 Customer Authority → C-3
+   Inventory-consumes-Masters-only (verification) → C-4 Sample/Returns →
+   C-5 Consignment → C-6 Invoice → C-7 MM Integration.
+5. C-1 SUCCESS CRITERIA (verbatim): one Product Mirror · one Product Master ·
+   Inventory consumes Product Master · no business module consumes Mirror or
+   wFirma directly · architecture reusable for future modules.
+6. PLAN AMENDMENT (one-master criterion overrides b7937266): product_local is
+   NOT a third surface — its business fields fold INTO the Product Master; the
+   table deprecates in place (readers redirected, table retained, nothing
+   deleted).
+C-1 EXECUTES AS FOUR GATED SUB-SLICES (each own pre-flight, R1 scope-lock,
+tests+golden, gated commits, typed SKELETON, STOP for operator "next"; no
+deploy; DB file-copy backup before every migration):
+  C-1a SCHEMA (wfirma_product_mirror 6-cols + product_master authority
+    columns + product_local fold + backfill + standing pin) ← THIS RUN.
+  C-1b WRITE PATH (routes_wfirma create/edit through Master, V1; sync
+    Mirror-first then Master resolve; V6 reservations reroute).
+  C-1c CONSUMER MIGRATION (~13 read sites → Master; split tables +
+    product_local dead-read; xfail list → zero).
+  C-1d VERIFICATION (completion audit; Inventory→Master-only greps; pin fully
+    green; census appended; success criteria answered line-by-line).
+
+### 2026-07-03 — C-1a COMPLETE + C-1b RULING (write-path reroute, operator-approved)
+C-1a DONE @ `6c2fde43` (feat(c1a-product-authority)): wfirma_product_mirror
+(exactly 6 cols) + product_master authority cols + product_local fold + collision-
+safe idempotent backfill (verify tree: mirror_rows=4, status_set=0, local_folded=0,
+1 real wfirma_id collision surfaced). Standing pin `test_master_consumption_rule.py`
++ golden 160/160. Discovery @ `a4720dd3`.
+
+C-1b MEASURED FACT (reports/inspection/2026-07-03T-c1b-writepath-discovery.md): the
+C-1a baseline of 8 was LOOSE — the current pin flags only 6 REAL business files;
+routes_master_data.py + routes_admin.py were PHANTOMS (they contain zero forbidden
+patterns, only `product_master` which is not forbidden). Crude(substring) and
+precise(access-only) pins flag the IDENTICAL 6-file set.
+
+C-1b OPERATOR RULING (2026-07-03): **Path B + honest baseline 4.**
+- Path B: reroute ONLY the 3 real wFirma client calls (get_product_by_code /
+  create_product / edit_product) through Master-first reservation_db sync-layer
+  helpers; the write GATE (`settings.wfirma_create_product_allowed`) STAYS in the
+  route (honors operator constraint "unchanged in gating"). Rejected Path A
+  (crude-pin literal-drain: would force the gate control-flow into a persistence
+  module + rename endpoints + scrub docstrings = layering regression, high churn).
+- Pin REFINED (in-scope per R1 "the consumption pin"): `_FORBIDDEN` crude substrings
+  → precise access (strip comments+docstrings; match `.get_product_by_code(` /
+  `.create_product(` / `.edit_product(` / def/import get_product_by_code /
+  table-context wfirma_products|_mapping|_mirror) + a POSITIVE-CONTROL test proving a
+  synthetic `wfirma_client.create_product(` / `FROM wfirma_products` is still flagged.
+  Provably NOT a file-set loosening (crude≡precise set today); it only drops
+  false-positive reasons (the gate-flag name, function identifiers, prose).
+- BASELINE corrected to reality: KNOWN = the real remaining offenders after C-1b =
+  {routes_dashboard, routes_packing, routes_proforma, routes_wfirma_capabilities}
+  = **4** (phantoms routes_master_data + routes_admin dropped as never-offended;
+  the 2 rerouted files leave). count pin 8→4. Trajectory to 0 by C-1d.
+
+C-1b WRITE-SEQUENCE SEMANTICS (operator verbatim, recorded):
+App-initiated create/edit: (1) MASTER row written FIRST (local business authority;
+status 'mapping_required'); (2) wFirma push via the EXISTING gated client call,
+gating UNCHANGED; (3) on wFirma success: MIRROR written (wfirma_id, hash,
+sync_version, last_sync) — the ONLY place sync identity is written — + master.status
+→ 'mapped'; (4) on failure/flag-off: MASTER remains (sync-pending), MIRROR untouched,
+response honest. Sync-initiated (poll/webhook): Mirror first, Master resolved second.
+Old split-table writes at these sites are REDIRECTED not duplicated — no dual-writes.
+V6: routes_reservations product read → Master accessor (reservation_db); no direct
+wfirma_* / get_product_by_code remains in the file.
+R1 file list: routes_wfirma.py, routes_reservations.py, reservation_db.py, the two
+route test files + the consumption pin, PROJECT_STATE. No deploy.
+
+C-1b REVIEW OUTCOME (pre-commit 4-lens adversarial workflow): 12 must-fix
+confirmed → 11 fixed in-scope (mirror TOCTOU/IntegrityError-safe; create/edit
+mirror-failure defensive-wrapped; resolve surfaces mirror-collision as
+failed_detail; create mirror+status atomic in one txn; sync_names _reservation_db
+hoisted; resolve tests 3/4/5 strengthened with DB-readback; pin comment-stripper
+tab-hash; V6/edit test assertions). Build record:
+reports/implement/2026-07-03T210000Z/c1b-writepath-reroute.md. GATE-4 salvage
+finding (out of R1 scope): routes_reservations router is NOT registered in
+service/app/main.py → all reservation endpoints (incl. V6 sync-by-codes) are dead
+in production (404/405); PRE-EXISTING (root cause of the 6 test_api_* failures).
+Disposition = SCHEDULED via task chip task_d6fdfca9 ("Register routes_reservations
+router in main.py"). The V6 authority reroute is correct regardless; registration
+is a separate reachability bug.
+
+### 2026-07-03 — C-1c RULING (operator, verbatim R4) + 3-stage resumed plan
+OPERATOR RULING (verbatim): "Q1 refine. Q2 migrate all three real read surfaces:
+packing, dashboard, proforma. Q3 out. Q4 separate. Refine the pin so it measures
+real product authority access: SQL reads of wfirma_products, wfdb.get_product*,
+wfdb.list_products, direct wFirma product API calls. Do not count prose strings or
+status messages. C-1c should migrate real reads only. Proforma cache write at 4527
+is a separate write slice. routes_wfirma_capabilities write path is a separate
+slice. No string-gaming. No mutation before refined pin + declared scope. No deploy."
+ANTI-GAMING RULE (recorded): editing string literals / prose / status keys to
+change pin counts is FORBIDDEN — the refined pin makes it pointless (prose is not
+measured), and the rule makes it a violation.
+PLAN: STAGE 0 = pin refinement + honest baseline (commit alone) → STAGE 1 = read
+migration in risk order (1a dashboard, 1b packing, 1c capabilities READS where
+separable from write control-flow, 1d proforma READS output-equivalence-gated) →
+STAGE 2 = residual declaration (the two follow-up write slices: C-1w1
+proforma-write @4527, C-1w2 capabilities-write path). Scoping evidence: 011c5db2.
+STAGE 0 RESULT (refined pin, honest baseline): the real-access detector measures
+5 files, not 4 — routes_wfirma.py RE-APPEARS (8 wfirma_db accessor sites: 5 reads
++ 3 upsert writes) because C-1b removed its wFirma CLIENT calls but LEFT its
+wfirma_db accessor reads/writes as the C-1c-deprecating reader path; the refined
+pin now measures that honestly. KNOWN baseline = {routes_wfirma_capabilities,
+routes_proforma, routes_wfirma, routes_dashboard, routes_packing} = 5. STAGE 1
+migrates the 3 NAMED read surfaces (dashboard, packing, proforma) → post-STAGE-1
+baseline = 3 (proforma-write, capabilities, wfirma). ADDED RESIDUAL (DEVIATION,
+needs ruling): routes_wfirma reads(5)+writes(3) — not in the named C-1c scope;
+fold its reads into C-1c or give it its own slice. Evidence:
+reports/implement/2026-07-03T234500Z/c1c-stage0-pin-refinement.md.
+STAGE 1 DONE (1a-1c): 1a dashboard `eafc5504` (readiness→Master status), 1b packing
+`d284f9ab` (lane-readiness→get_product_master_statuses accessor), 1c capabilities
+`feeb1fbe` (3 separable diagnostic searches→sync-layer passthrough; inseparable
+pre-write reads LEFT per R3). Pin 5→4→3. 1d proforma reads STOPPED (fiscal): the
+~12 reads dominantly produce wfirma_product_id (good_id) that flows into the
+INVOICE/proforma PAYLOAD, and the MIRROR is incomplete by construction (the legacy
+write paths — capabilities create/adopt, proforma write@4527, routes_wfirma
+upsert — write wfirma_products but NOT the mirror), so routing proforma reads to
+the mirror now would CHANGE payload good_ids → output-equivalence gate FAILS.
+ORDERING CORRECTION: fiscal-payload reads must migrate AFTER the write slices make
+the mirror the complete authority. STAGE 2 RESIDUAL (pin xfail=3): C-1w1 proforma
+write@4527, C-1w2 capabilities write path (+inseparable reads), routes_wfirma
+reads+writes; then 1d proforma reads (output-equivalence-gated) LAST → C-1d.
+Evidence: reports/implement/2026-07-04T001500Z/c1c-stage1-2-migration-and-residual.md.
+
+### 2026-07-04 — C-1w1 RULING (operator, verbatim R4) + sequence lock
+OPERATOR RULING (verbatim): "Proceed with C-1w1 first" + sequence lock:
+C-1w1 → C-1w2 → routes_wfirma → 1d proforma reads → C-1d verification. Proforma
+READS stay untouched until all product write paths populate the mirror.
+C-1w1 SEMANTICS (operator): the write at routes_proforma.py:4527 becomes
+Master-first + mirror-writing (same sequence C-1b proved: Master row → gated
+wFirma push unchanged in gating → on confirmed id, mirror upsert collision-safe +
+status flip). Legacy wfirma_products cache write at this site: redirected, no
+dual-write left (grep-prove). Customs-value-freeze: identity/sync fields only,
+ZERO value recomputation. OUTPUT-EQUIVALENCE GATE required (regenerate proforma
+XML/payloads for known verify-DB drafts before/after — byte-identical value fields
++ good_ids; any change = STOP/revert/report). R1 = routes_proforma.py (4527 region
+ONLY) + reservation_db.py (C-1b helper reuse; additive only if missing) + affected
+tests + consumption pin (residual update) + PROJECT_STATE + DECISIONS.
+C-1w1 CONTRADICTION + RULING (operator, 2026-07-04): site 4527 registers the
+service-charge (freight/insurance) → wFirma-product-id mapping in the
+wfirma_products cache, and that cache is READ by the not-yet-migrated proforma
+payload builder (wfdb.get_product(ct) @1385/4464/1558/7845 → the service-charge
+line good_id). So "redirect the cache write / no dual-write" is INCOMPATIBLE with
+the output-equivalence gate (removing the cache write → good_id vanishes → payload
+changes → FAIL), because the reads are deferred to 1d. Operator RULING =
+**Transitional dual-write**: add Master-first + mirror write at 4527, KEEP the
+wfirma_products cache write (un-migrated reads stay intact → output-equivalence
+PASSES + mirror becomes complete); the cache write is removed as a CLEANUP AFTER
+1d migrates the reads. Disclosed as a DEVIATION from "no dual-write" (the phased
+write-both → migrate-reads → drop-old-write sequence).
+
+### 2026-07-03 — Phase-C Constitution RECORDED verbatim (replaces the DEFERRED marker)
+The operator provided the verbatim "EJ Dashboard Phase-C Constitution (Final)"
+text. It is now recorded VERBATIM (R4 — not reconstructed, not paraphrased) as the
+standing Phase-C preamble in CLAUDE.md ("## EJ Dashboard Phase-C Constitution
+(Final) — standing Phase-C preamble") and reproduced verbatim here. The advisor
+reconciliation notes (from 574a6932) are kept adjacent below, marked as advisor
+(NOT operator text).
+
+--- BEGIN OPERATOR VERBATIM ---
+EJ Dashboard Phase-C Constitution (Final)
+
+0. Mission — Implement only inside the existing EJ Dashboard architecture. The
+objective is not to create software. The objective is to extend the existing
+business system without introducing any new authority.
+1. Existing Authorities (Immutable) — Claude must first identify the authority
+before writing a single line of code. There are only these authorities. wFirma →
+(API / Webhook) → Mirror Layer → EJ Dashboard Masters (Product Master, Customer
+Master, Warehouse, Invoice, Packing, Inventory) → All business modules. Nothing is
+allowed to bypass this chain.
+2. Product Authority — This is now fixed forever. wFirma Product → Product Mirror
+(sync only) → Product Master (EJ Dashboard authority) → Inventory, Reservation,
+Packing, Invoice, Sample, Consignment, Returns. Inventory MUST NEVER read directly
+from wFirma.
+3. Customer Authority — wFirma Customer → Customer Mirror → Customer Master →
+Inventory, Invoice, Packing, Consignment, Returns. Inventory must never call wFirma
+customer APIs.
+4. Design Number Rule (NEW) — Product Code remains the immutable system identifier.
+Design Number becomes the business identifier. Mapping: Product Code → Design
+Number. Product Master owns this mapping. Only Product Master may edit it.
+Everything else reads it. No module may maintain another Design Number table.
+5. wFirma Custom Field Rule — The new custom field created inside wFirma becomes
+the sync source. Example: Product Code ABC001 → Custom Field Design Number =
+RG-10025 → Mirror → Product Master → Inventory. Inventory never asks wFirma for
+Design Number. It always comes through Product Master.
+6. Product Master Structure — Minimal authority: wFirma ID, Product Code, Design
+Number, Status, Sync Version, Last Sync, Active. No duplicated business
+information. No second master.
+7. Customer Master Structure — Existing Customer Master remains authority. Mirror
+only synchronizes. No new customer tables. No duplicate cache.
+8. Warehouse Documents — These stay inside wFirma: PZ, WZ, MM, Warehouse, Invoice.
+The app mirrors them. The app never becomes the fiscal authority.
+9. Sample Workflow — Main Warehouse → MM → Sample Warehouse → Customer → Return →
+MM → Main Warehouse. Every movement produces a document. Inventory stores workflow
+state. wFirma stores warehouse documents.
+10. Consignment Workflow — Main Warehouse → MM → Consignment Warehouse → Customer.
+Monthly: Customer reports sold items → Select sold pieces → Create Invoice →
+Invoice creates WZ only from Consignment Warehouse. No second WZ from Main
+Warehouse. This permanently removes the double-WZ problem.
+11. Product Selection — Never type IDs. Never paste IDs. Always: Customer → Product
+→ Design Number → Checkbox → Execute. Barcode remains optional. Search remains
+optional.
+12. Inventory UI — Inventory UI is exactly the supplied wireframe. Never redesign.
+Never simplify. Never invent. Wireframe is the UI authority.
+13. Existing Pages Rule — No new pages. Never. If functionality belongs to
+Inventory, extend Inventory. Do not create Inventory2, MoveStockPage2, SamplePage2,
+ProductPage2. Everything extends the existing authority page.
+14. Existing Backend Rule — No duplicate services. No duplicate APIs. No duplicate
+routes. No duplicate mirrors. Extend existing services.
+15. Authority Violation — Immediately STOP if code does this: Inventory → wFirma
+API. Correct path: Inventory → Product Master → Mirror → wFirma.
+16. Implementation Order (Locked) — 1. Product Master Authority → 2. Customer
+Master Authority → 3. Reservation → 4. Inventory → 5. Sample → 6. Consignment → 7.
+Returns → 8. Invoice Selection → 9. MM Integration → 10. Webhook Synchronization.
+Nothing may skip this order.
+17. Scope Rules — Every slice must declare: Authority owner, Existing page,
+Existing API, Existing DB, Existing service. If any of these cannot be identified,
+STOP.
+18. No Creativity Rule — Claude must not invent architecture, invent workflow,
+invent fields, invent tables, invent pages, invent APIs. If information is missing,
+STOP.
+19. Research Rule — If work involves wFirma, Claude must search wFirma API
+documentation, webhook documentation, existing repository, existing mirror — before
+proposing code. Never guess a wFirma capability.
+20. Final Rule — Before writing code Claude must prove: This feature extends
+EXISTING AUTHORITY → EXISTING PAGE → EXISTING SERVICE → EXISTING DATABASE →
+EXISTING API. If any arrow cannot be proven, STOP and ask.
+Application Authority Rule — The EJ Dashboard application is the operational
+authority. wFirma is an external ERP. Claude must always start by identifying which
+existing EJ Dashboard module owns the business process. The implementation must
+extend that module. It must never start from wFirma and build inward. It must start
+from the existing EJ Dashboard authority and extend outward to wFirma only through
+the approved sync layer.
+--- END OPERATOR VERBATIM ---
+
+ADVISOR RECONCILIATION (operator-provided in the PART A message; marked as
+advisor reconciliation, NOT operator constitution text — to be recorded ALONGSIDE
+the verbatim constitution once provided):
+ (a) §6 reading — ASSUMPTION: §6 = the LOGICAL view of the product authority; the
+     physical layering stays as ratified and built (Mirror = the 6 sync fields
+     only; Master = business fields incl. status / is_active). Reversible on
+     operator word.
+ (b) §16 mapping: locked order step 1 (Product) = C-1a..C-1d; step 2 (Customer) =
+     C-2; steps 3–10 renumber the old queue; MM = step 9; Webhook Sync = step 10.
+ (c) §4/§5 intake: Design Number custom-field sync = NEW scope, gated on
+     OPERATOR-INPUT (field created in wFirma + its API name + whether the goods
+     API returns custom fields — added as item #3 on the wFirma email list, after
+     MM (#1) and contractor_id (#2)). Research rule §19 applies: no capability
+     guessing.
+
+### 2026-07-03 — C-1b.1 micro-slice: reservations router registration (GATE-4 finding closed)
+Origin: the C-1b GATE-4 finding (task_d6fdfca9) — `routes_reservations` router was
+NEVER registered in `service/app/main.py`, so ALL reservation endpoints (queue,
+import-sales-packing, process-pending, reset, and the V6 sync-by-codes) were
+unreachable in production (404, or 405 where the wfirma_capabilities catch-all
+`PUT /wfirma/products/{product_code:path}` shadowed the path). This was the root
+cause of the 6 pre-existing `test_reservation_queue.py::test_api_*` failures.
+FIX (R1 list = main.py + test_reservation_queue.py + PROJECT_STATE): registered
+`reservations_router` in main.py IMMEDIATELY BEFORE `wfirma_capabilities_router`
+(so the concrete POST route resolves before the catch-all; comment explains the
+ordering) + added an HTTP-level registration-regression smoke test
+(`test_reservations_router_is_registered_and_http_reachable`).
+ROUTE-TABLE PROOF: all 6 reservation paths resolve to their handlers; the
+capabilities catch-all `PUT /wfirma/products/{product_code:path}` is INTACT; NO
+duplicate (path, method) under /api/v1.
+BASELINE UPDATE: the 6 `test_api_*` failures previously recorded as "pre-existing"
+(C-1b evidence + the C-1b DECISIONS note above) are now GREEN — full
+test_reservation_queue.py 21/21; smoke + golden 160/160 unaffected. (The C-1b
+evidence report's "pre-existing" wording was accurate AT C-1b time and is left as
+historical record; test-baseline.md never listed these — no contract change.)
+SINGLE-LANE GOVERNANCE: the parallel task session (branch `claude/eager-swirles-*`,
+task_d6fdfca9) is superseded — this fix was reimplemented on deploy/latest. That
+branch must be ABANDONED / NOT merged. I did NOT delete its worktree/branch (it is
+a separate, possibly-active session — deleting it could corrupt that session); the
+operator / that session should discard it uncommitted. Pin unaffected: precise
+consumption baseline stays at 4 (this slice touched no product-authority read site).
+
+### 2026-07-03 — Phase C QUEUE REORDER (operator) + MASTER-FIRST RULE (verbatim)
+QUEUE (operator, verbatim order): C-0 Authority Cleanup (read-only) → C-1
+Product Master Authority → C-2 Customer Master Authority → C-3 Sample/Returns
+READ endpoints → C-4 Consignment → C-5 Invoice Selection → C-6 MM Integration.
+Part 2 (Sample/Returns READ) SUPERSEDED — it becomes C-3 (build masters
+first, or the reads get built on the fragmented structure and need refactor).
+RATIONALE (operator, verbatim): "अगर अभी Sample READ API बना देंगे, तो वह भी
+fragmented Product/Customer structure पर बनेगी। मतलब बाद में फिर refactor
+करना पड़ेगा।"
+MASTER-FIRST RULE (operator, verbatim — also in CLAUDE.md constitution):
+"कोई भी नया module या API बनाने से पहले Claude Code यह सिद्ध करेगा कि वह किस
+existing EJ Dashboard Master को consume कर रहा है। यदि Product या Customer की
+जानकारी चाहिए, तो केवल EJ Dashboard Product Master या Customer Master से
+मिलेगी। Inventory, Sample, Returns, Consignment, Invoice, Packing, PZ और WZ
+में direct wFirma queries निषिद्ध हैं। यदि किसी feature के लिए existing Master
+पर्याप्त नहीं है, तो STOP करके Master Authority बढ़ाई जाएगी। Feature उस Master
+को bypass करके नहीं बनेगा।"
+C-0 PLAN (this run): reports/inspection/2026-07-03T-master-authority-cleanup-plan.md
+— V1-V7→slice map, C-1 Product Master + C-2 Customer Master target designs,
+migration mechanics, ready-to-run C-1/C-2 pre-flight slice specs. C-0 audit
+half already done (b48b9f1c). All PROPOSED-NOT-DONE; awaiting operator
+ratification of C-1 before any mutation.
+
+### 2026-07-03 — PERMANENT RULE: APPLICATION AUTHORITY (one application = EJ Dashboard; operator-ratified, verbatim)
+"There is only ONE application. EJ Dashboard. Every module belongs to EJ
+Dashboard. 'PZ App' is NOT an application. 'PZ' is only one workflow/module
+inside EJ Dashboard. Claude Code must never create architecture that treats
+PZ, Inventory, Sample, Consignment or Returns as separate applications.
+Everything extends the existing EJ Dashboard authority."
+COMPANION (verbatim): every future feature begins with "मैं EJ Dashboard के
+किस existing module को extend कर रहा हूँ?" — no answer = STOP. No new page, no
+new authority, no new master, no direct wFirma mapping.
+SCOPE NOTE (R1): this rule changes architecture decisions and documents going
+forward. It does NOT authorize renaming files/paths/services/tables containing
+"PZ" — any rename is a separate operator-approved slice.
+Also recorded in the CLAUDE.md constitution ("APPLICATION AUTHORITY RULE").
+The Q0 EJ-Dashboard authority census + the authority-violation cleanup list
+are appended to the Integration Architecture Audit
+(reports/inspection/2026-07-03T-integration-architecture-audit.md, amendment
+atop b9f5664c): Product Master = FRAGMENTED (split tables, no single
+authority), Consignment/WZ = ABSENT, Sample/Returns = REAL-but-write-only,
+Customer Master = REAL-but-fragmented (2 name-keyed caches). 7 authority
+violations catalogued (worst: 2 customer caches + 2 product mirrors =
+module-grown masters keyed by mutable client_name / split across DBs).
+
+### 2026-07-03 — PERMANENT RULE: authority-first for inventory features (operator-ratified, verbatim)
+"No new inventory feature may be implemented until Claude Code first
+identifies which existing authority it extends: Product Mirror, Customer
+Master, Inventory V2, or wFirma. If no authority exists, STOP and ask before
+writing code."
+Phase C gate-0 = the Integration Architecture Audit
+(reports/inspection/2026-07-03T-integration-architecture-audit.md) — the
+frozen-architecture proposal (authority map, canonical mirror set, per-object
+sync strategy, ordered Phase-C queue) + the consolidated OPERATOR-INPUT list
+(§E-merged). No inventory code proceeds until the audit's authority map is
+operator-approved.
+
+### 2026-07-03 — Phase B B1: Overview KPI tile polish (operator ruling "c")
+OPERATOR RULING (verbatim): "DEFER Sample/Returns to Phase C. Do B1 KPI polish
+now. No pending-scaffold tabs. No fake read data. Sample/Returns read
+endpoints become a separate backend slice later."
+TAB STRATEGY ASSUMPTION REVERSED by this ruling: LIVE-TABS-ONLY — a tab exists
+only when it carries real data; pending badges are allowed only on elements
+INSIDE live sections, never as scaffold tabs. (Supersedes the earlier
+mapping-gate "tab-by-tab scaffold" option.)
+PHASE-C INTAKE gains: sample/returns READ endpoints (writes exist; reads are
+the gap found in the Sample/Returns scope-verify a2126333) — a separate
+backend slice with a freeze exception when scheduled.
+B1 BUILD: Stage-2 overview tiles restyled to the wireframe InvStatTile design
+(design/inventory-page.design.jsx :28-43); real numbers from
+/inventory/stage2/aggregate ONLY (Final stock=WAREHOUSE_STOCK, Samples
+out=SAMPLE_OUT, Returns=RFC+RTP). Consignment = a clean tile with
+BACKEND-PENDING · PHASE C badge (aggregate genuinely returns not-available).
+The raw diagnostic limitations paragraph is REMOVED from the UI — that content
+stays in the API response (data.limitations) for engineers. No new tabs, no
+layout restructure beyond the tile row.
+
+### 2026-07-03 — Phase B Sample/Returns tabs: SCOPE-VERIFY STOP (premise wrong — modules are write-only)
+OPERATOR CONTRACT (verbatim, recorded for when the slice proceeds): Authority
+= existing Inventory V2 page only · existing Customer Master only · existing
+Inventory backend only · existing navigation only · no new page · no duplicate
+UI · wireframe is design authority. Backend = existing endpoints only; missing
+→ "BACKEND-PENDING · PHASE C", never mock rows / fake counters / invented
+documents. UI = match the wireframe; no developer forms, no raw IDs, no
+batch-number text boxes, no internal DB fields. Customer authority = existing
+Customer Master only. Inventory authority = existing module only. Selection =
+checkbox multi-select · optional barcode search/scan (never mandatory) ·
+design/style search · Excel where appropriate. Documents = every movement
+document-driven; absent generation → BACKEND-PENDING · PHASE C, no
+placeholders.
+AUTHORITY-FIRST PERMANENT RULE (verbatim): "Before any UI coding begins,
+identify the existing authority page that will be modified. If it cannot be
+identified with certainty, STOP and ask. Never create a second implementation
+while searching for the correct location." Identified authority: InventoryPage
+(post-fold 0cee8173). Wireframe present (sha256:f7dd5e3889…).
+SCOPE-VERIFY FINDING (read-only, HEAD, exhaustive) → STOP per the operator's
+"anything uncertain → STOP and ask": the sample/returns modules are
+WRITE-ONLY. routes_inventory_sample = 2 POST (sample-out, sample-return),
+routes_inventory_returns = 3 POST (return-from-client, return-to-producer,
+return-from-producer). ZERO GET/list endpoints; no read of sample_out_events /
+returns_events anywhere; no list functions in the writers. The ONLY live
+sample/returns data is COUNTS from /inventory/stage2/aggregate (SAMPLE_OUT
+count; combined RETURNED_FROM_CLIENT+RETURNED_TO_PRODUCER count) — already
+shown by the Inventory hub Stage2Panel. Therefore the wireframe's four
+list-centric tabs (Sample Out / Sample Return / Client Return / Return to
+Producer — Sample ID, issued-to, return-by, condition, RMA, RTP, AWB-out
+columns) have NO read feed and would be ~90% BACKEND-PENDING · PHASE C. The
+"cheapest real parity" premise is materially wrong (writes ≠ readable tables).
+OPTIONS surfaced to operator (see report
+reports/inspection/2026-07-03T-sample-returns-scope-stop.md): (a) build the
+honest pending-scaffold now (mostly badges); (b) add read endpoints first
+(small backend slice — needs a freeze exception; backend is frozen for the
+inventory phase); (c) defer Sample/Returns to Phase C and do B1 KPI polish now
+(recommended). No UI built; slice HELD for operator decision.
+
+### 2026-07-03 — Phase B FOLD: Move Location → Inventory Move Stock modal (Lesson M relocation)
+OPERATOR RULES (verbatim): "Fold Move Location into existing V2 Inventory. No
+standalone Move Location page. No duplicate Inventory authority. Existing V2
+Inventory remains code authority. Wireframe remains UI/UX authority. Implement
+the modal/action exactly from the wireframe. Retire move-location-page.jsx
+only after parity is proven. No raw internal-ID paste inputs. No fake backend
+data. Pending tabs allowed only with honest 'backend-pending — Phase C' badge.
+No deploy."
+LESSON M RELOCATION: the Move Location capability is RELOCATED into the
+Inventory authority as a Move Stock modal/action; the standalone page is
+retired parity-gated. Operator approval: the "fold" word 2026-07-03 + Phase-B
+rule "No Move Location page" + prior screenshot rejection of the engineer-form
+page. Net page count DECREASES by one; zero new pages/routes.
+DESIGN-TENSION RESOLUTION (load-bearing, recorded so it isn't re-litigated):
+the wireframe MoveStockModal (design lines 1023-1142) selects a stock_unit by
+a PASTE input + qty — which the operator rule "no raw internal-ID paste"
+FORBIDS. The only non-paste live selection feed is BY-LOCATION
+(GET /warehouse/locations → GET /warehouse/locations/{code}/inventory; the
+location feed carries scan_code, compatible with movePieceLocation). So the
+fold selects: source-location SELECT → pieces-at-location CHECKBOX list →
+destination-location SELECT → note → sequential per-piece movePieceLocation
+→ per-piece results + five error states + synthetic-disable (ALL behavior
+carried from move-location-page, restyled to the wireframe modal). PENDING-
+BADGED (backend-pending — Phase C, never a paste box): (a) selecting
+freshly-received stock not yet placed at a location (old page's batch-loader
+paste box; the non-paste feed for this is net-new), (b) the wireframe's
+"Stage transition" move-type (needs promotion/sample/return write UIs).
+PARITY GATE can FAIL: if the render check cannot demonstrate a real
+located→located move, the page STAYS and this is reported (not retired).
+
+### 2026-07-03 — UI DEVELOPMENT RULE (operator-ratified; rides with the Inventory mapping gate)
+Three permanent rules for all V2 UI work, effective now:
+1. DESIGN-IN-HAND PRECONDITION: no Inventory (or any wireframed-surface) UI
+   slice starts until the design authority is on the box and read. The
+   Inventory design authority is durable at
+   docs/design/inventory-page.design.jsx (readable extract) +
+   docs/design/estrella-dashboard-wireframe.html (the operator's canonical
+   dropped authority-of-record, 2026-07-03 — same design bundle, compiled
+   standalone; the mapping gate stands against it unchanged). "The builder
+   has never seen the design" was the root cause of the engineer-form UI; it
+   is now fixed.
+2. SPEC-BY-REFERENCE: parity slices cite the design element they port
+   (file+component/tab in docs/design/), not a re-described spec — the
+   wireframe is the single UI authority, existing V2 Inventory is the single
+   code authority, no duplicate page.
+3. PARITY GATE THAT CAN FAIL: a UI slice is not done until a render check
+   against the design passes (cold origin, real data via throwaway storage);
+   the gate may FAIL and block the slice. No deploy until render/parity passes.
+Mapping gate for Inventory: reports/inspection/2026-07-03T150000Z-inventory-mapping-gate.md
+(design = 11-tab merchandising screen; V2 = 6-panel read-only hub; most of the
+gap is FROZEN behind Phase-C backend; buildable now = B1 KPI polish, the fold
+(step 6, wireframe-confirmed as MoveStockModal), Sample/Returns tabs). B2/B3
+already shipped (0602ddd3). Disposition (i) FOLD confirmed by the design
+(no standalone move page exists in the wireframe). AWAITING operator: slice
+order + fold retirement-scope confirmation + tab-adoption strategy.
+
+### 2026-07-03 — V2-wide spread-rest collision sweep (Babel _excluded global hoist)
+MECHANISM (so no future session rediscovers it): Babel-standalone compiles
+JSX object-REST destructuring `function C({ a, b, ...rest })` by hoisting a
+`var _excluded = ['a','b']` to the transformed script's top level. V2 loads
+each *.jsx as a classic <script type="text/babel"> with NO module wrapper,
+so every file's `_excluded`/`_excluded2`/… land in the SHARED global scope
+and the LAST-loaded script wins for that name. A component's compiled body
+closes over the bare global `_excluded`, so a later file's list silently
+replaces an earlier component's — leaking "excluded" props (e.g. onChange)
+into `{...rest}`, which then lands the raw state setter on a DOM input; the
+first keystroke stores the SyntheticEvent into state and crashes the tree
+(the B2 render-check defect; the collider was TbBtn in proforma-detail.jsx
+:22, loaded 27th, whose list ['children','onClick','disabled','title',
+'warn','style'] was observed in window._excluded). NB: plain object-literal
+spreads (`{...prev}`, `...style`) are NOT this — they compile to idempotent
+_extends and are safe.
+CENSUS: 4 rest-destructure components across 2 files — components.jsx Card
+(:379), Btn (:393), Input (:453) [loaded 4th]; proforma-detail.jsx TbBtn
+(:22) [loaded 27th, the collider] — PLUS inventory-page.jsx InvInput/
+InvFetchBtn already fixed in 0602ddd3.
+FIX IDIOM (the 0602ddd3 idiom, applied V2-wide): replace `...rest` with
+EXPLICIT named destructuring of the exact forwarded attrs (census-complete:
+Btn←data-testid/title/aria-label, Card/Input/TbBtn←data-testid) and apply
+them as explicit JSX attributes. Zero behavior change; no `_excluded`
+emitted.
+RULE (pinned): spread-rest destructuring is FORBIDDEN in V2 JSX
+(Babel-standalone hoists helpers globally; last-loaded wins). Drop-can't-
+return pin greps all v2/*.jsx for `...rest`/`...props` destructures.
+
+### 2026-07-03 — wFirma MM: BUSINESS model answered; API capability still open
+OPERATOR ANSWER (verbatim): "wFirma MM answer: yes, consignment issue
+should use MM from MAIN STOCK to CONSIGNMENT STOCK, not WZ."
+This settles the BUSINESS model (consignment issue = MM internal transfer
+between MAIN and CONSIGNMENT warehouses; never a sale WZ; invoice consumes
+CONSIGNMENT-warehouse stock — the double-stock-out guard stands). It does
+NOT yet settle the API VEHICLE: MM remains absent from wfirma_client's
+registry, python-wfirma's documented types, and all repo docs (scope
+6d6d9d64 §B) — the wFirma-support confirmation / sandbox probe from the §E
+checklist is still the gating item for the consignment build.
+BACKUP (operator, verbatim): "Backup task still needs to be done before any
+risky cleanup." — OQ-INFRA-BACKUP-TASK remains OPEN; findings #5/#7 stay
+blocked behind it.
+
+## Phase-C Wave 2 ratified + executed (2026-07-03)
+
+- **Operator ratification (verbatim):** "RATIFIED. Wave 2 begins." with four amendments recorded in `.claude/campaigns/phase-c-master/DECISIONS.md`:
+  1. C-3g slice #1 pin → 0 (product consumption TRUE ZERO, `KNOWN_PRODUCT_VIOLATION_FILES = {}`).
+  2. R2-census INSPECTOR dispositions: 3 sync-layer files whitelisted with citations; 3 dev-tools files exempt; 0 business-logic files.
+  3. R3 batched as test-health pass with storage-leak as first commit on a single lane (no parallel lanes).
+  4. users.db import-time trap: record as lesson + task, not chased in Wave 2 scope.
+- **Wave 2 campaign execution boundary:** Wave 2 halted at the Wave-2 boundary per CAMPAIGN_OS §5a; Wave 3 (Entire UI U-1..U-6) awaits operator ratification (OQ-WAVE3-RATIFICATION).
+- **C-4a skipped** (2026-07-03): OI-17 (wFirma MM API capability — does MM exist in wFirma API?) remains OPEN; C-4 (Consignment/Sample/Returns UI) is hard-gated on that answer.
+
 ## Authority-Model Separation — six separate authorities (2026-06-22)
 
 - **Binding (operator-approved, permanent, no flag):** import, product master, proforma,
@@ -5763,6 +6666,12 @@ Group D — Tests (3 new files):
 - **Proforma product description authority = `description_engine`/`product_descriptions`** (2026-06-21): the canonical source for per-line product description is the same `description_engine`/`product_descriptions` table shared with PZ and customs. PR #677 displays it read-only in the proforma panel (`description_bilingual`/`_pl`/`_en` + source badge). This is the permanent authority for the display surface.
 - **Display-only; wFirma line-name posting is NOT affected** (2026-06-21): the wFirma posted line name originates from `design_no`/`product_code` (`routes_proforma.py:1553/7254`). Whether the posted line name should ADOPT the canonical description is a separate accounting/legal decision tracked as BACKLOG B-013. No code may alter the posted-line source without an explicit operator decision here.
 - **V1 remains the active proforma surface; V2 cutover is Atlas-V2 scope** (2026-06-21): PR #677 patches V1 minimally (Lesson F). V2 cutover (`proforma-v2.html` / `v2/proforma-detail.jsx`) is the operator-approved Atlas-V2 work tracked as BACKLOG B-014. No V2 cutover may occur without an explicit operator decision.
+
+## Next 3 actions in queue (refreshed 2026-07-03 — Phase-C Wave 2 backend COMPLETE on deploy/latest; main HEAD `c7c0e14e`)
+
+1. **Deploy Phase-C Wave 2 backend to `C:\PZ`** — target: 7-agent deploy ritual GO + operator executes CP4 playbook (`service/docs/ops/c3g-deploy-note.md`: mirror backfill re-run + goods-id-99 collision resolution + service-registry backfill + returns/sample event-table migrations) + PZService restart + GATE-6 health endpoint + smoke. Gating: OQ-WAVE2-DEPLOY open; no UI files in wave-2 (GATE 6 = backend endpoint smoke only); `deploy/latest` branch must not diverge before deploy.
+2. **Wave-3 ratification** — target: operator "RATIFIED. Wave 3 begins." on the Wave-3 document in `.claude/campaigns/phase-c-master/`; Wave 3 = Entire UI U-1..U-6 (Inventory, Sample, Returns, Consignment, Invoice, MM Integration). Gating: OQ-WAVE3-RATIFICATION open; W3-A1 precondition requires Wave-2 backend deployed (action 1 above must close first); operator reads CAMPAIGN_OS §5a before ratifying.
+3. **Execute agent-tuning Issues #709 + #694 (GATE 4 ISSUE dispositions — repeated-weak frontend-flow-reviewer + backend-safety-reviewer)** — target: both reviewer prompts hardened; next campaign scorecard Evidence ≥4/5 for both agents. Gating: Issues #709 + #694 OPEN; requires agent-prompt-refiner session or direct prompt edits; independent of Wave 3.
 
 ## Next 3 actions in queue (refreshed 2026-06-22 — PR #726 OPENED; main HEAD `85da2ef`)
 
@@ -6418,6 +7327,139 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - ~~**Reconcile `4c797e4` with origin/main**~~ — **DONE 2026-05-13T16:00Z** via PR #77 (SHA `1ee83e52`). `4c797e4` confirmed as ancestor of origin/main (swept in via PR #76 branch). JSONL updated: `PENDING_RETROACTIVE` → reconciliation-close record appended. `local-commit-deploys.jsonl` + `lesson-d-local-commit-only-deploys.md` both updated. Lead coordinator backstop added.
 - ~~**All known issues resolved on main**~~ — **DONE 2026-05-19** (Campaign V6). #223/#224 CLOSED. Pydantic: 0 warnings. ZC429 tab-mount tests: FIXED (31/31 pass). P2 flag correction: `P2_LIVE_ENABLED=true` + `shadow_mode=true`. 160/160 golden, 340+ tests PASS. No outstanding code issues on local main.
 
+### 2026-07-01 — CLAUDE.md trimmed to 41,875 chars + Frontend Authority Constitution added
+
+§3 hard rules (PATH GUARD, 6 Gates, 6 Observation rules, Anti-HOLD, BFC mandate, Lessons A-N, Financial, Verification) preserved byte-identical (32/32 diff PASS). §4 prose compressed (C-1..C-8); Lesson N triplication fixed; stale BFC phase table removed. Floor is ~42k: hard-rule set is genuinely that large; further reduction requires deleting a rule (prohibited). 40k target is a soft advisory, accepted over.
+
+### 2026-07-03 — Phase-C Inventory Master Campaign LAUNCHED (verbatim R4 operator ruling)
+
+OPERATOR RULING (verbatim):
+"Launch Master Campaign. Campaign auto-continues through successive waves only
+while the validated architecture remains consistent with the next wave. If evidence
+invalidates the assumptions of a future wave, the campaign stops, proposes a manifest
+amendment, and waits for that architectural decision before proceeding."
+
+ARCHITECTURE CONFIDENCE GATE (operator, verbatim, FINAL PRE-LAUNCH AMENDMENT item 1):
+"Continue automatically only while the architecture assumptions required for the
+next wave remain valid."
+
+BUDGET (operator, verbatim item 3, initial estimates, amendable): Wave 1: 8h ·
+Wave 2: 11h · Wave 3: 6h · Wave 4: 5h. Health checks record Consumed/Remaining/Forecast
+per wave; >1.5x → self-assessment ledger entry (scope-vs-estimate); >2x →
+manifest-revision proposal at next boundary. Budget overrun alone is never a silent
+scope cut.
+
+PLATFORM: `.claude/campaigns/phase-c-master/` — eight documents: CAMPAIGN_OS.md ·
+MASTER_MANIFEST.md · RUNTIME.md · DECISIONS.md · OPEN_ITEMS.md · SELF_ASSESSMENT.md ·
+KNOWLEDGE.md · WIREFRAME_AUTHORITY.md. Authored fresh in-session under explicit operator
+authorization ("Author the platform here", 2026-07-03) — the R1–R3 design rounds have no
+record on this machine (verified: tree, git history all branches, session transcripts,
+upload channel). All content cites repo evidence (audit b9f5664c+b48b9f1c, wireframe
+inspection 2026-07-02, this DECISIONS section, git log); underivable slices marked
+"TBD — populate from Phase 0".
+
+WAVE SCOPE: Wave 1 = C-1 remainder (C-1w2, C-1e [needs ruling — OI-18], C-1f, C-1d) +
+C-2 Customer Authority (C-2a/b/c). Wave 2 = Sample/Returns reads + SALES_TRANSIT +
+merchandising columns (C-3a..C-3e). Wave 3 = Consignment + invoice-from-consignment
+(C-4a..C-6a; OI-1/OI-17 gated). Wave 4 = MM sync + webhooks (C-7a..C-9a; OI-gated).
+WAVE ASSUMPTIONS register (operator item 1): MASTER_MANIFEST.md §3 — Wave 2:
+sample/returns event tables sufficient for reads, movement model per audit, MM answer
+state; Wave 3: Wave-2 reads live, wireframe unchanged; Wave 4: webhook/API capabilities
+per Phase 0 findings.
+
+EXECUTION: Load Platform (eight documents) → Phase 0 (research first, validate
+knowledge, populate registers) → Wave 1 → auto-continue per the Confidence Gate. Commit
+every slice; update RUNTIME.md. Stop only at hard stops, CP3/CP4, invalidated wave
+assumptions, or campaign end. Chat contact: hard stops · CP1/CP2 skeleton+status ·
+wave-boundary confidence stops (with amendment proposal) · CP3 screenshots · CP4
+pre-execution · unresolvable OI · campaign end.
+
+Cross-reference: `.claude/campaigns/phase-c-master/DECISIONS.md` · MASTER_MANIFEST.md §5.
+
+### 2026-07-03 — Phase-C Master Campaign: OPERATOR VERDICT — six rulings + stop-line (verbatim R4)
+
+RULING 1 (OI-18 = Option (a)): C-1e proceeds as its own slice (C-1w1/C-1w2 pattern;
+mirror-first transitional dual-write ×3, Master/passthrough reads ×5; pin 2 → 1).
+Sequence: C-1e → Mirror Completeness Proof (grep evidence, the ratified check) →
+C-1f (1d proforma fiscal reads, output-equivalence) → C-1d audit.
+
+RULING 2 — WAVE STRUCTURE RESTORED (verbatim): "Wave 1 Authority · Wave 2 Backend ·
+Wave 3 Entire UI · Wave 4 Synchronization. UI is never merged into backend. Backend
+complete first. UI exactly once." MASTER_MANIFEST amended before leaving Wave 1:
+Wave 2 = ALL inventory backend (sample/returns reads, movement, merchandising/batch
+reads, consignment MODEL where OI permits, document trails) — ZERO UI; Wave 3 = the
+complete wireframe UI built once (CP3 recognition gate); Wave 4 = MM integration +
+webhook synchronization. Registers + budgets re-derived; UI items moved W2→W3.
+
+RULING 3 — PERMANENT RATIFICATION RULE (verbatim, CAMPAIGN_OS §5a): "Whenever the
+manifest is authored or materially reconstructed from repository evidence instead of
+an already-ratified manifest, the next wave requires operator ratification before
+execution."
+
+RULING 4 — GOVERNANCE DURABILITY LESSON (verbatim, LESSONS_LEARNED.md #1): "Problem:
+Governance prompts never reached disk. Why: Chat transport silently dropped long
+prompts. Rule: Every governance change must create a durable artifact. If the artifact
+does not exist, the governance change did not happen." Companion mechanic (CAMPAIGN_OS
+§8a): every governance-bearing order is ACKNOWLEDGED by naming the artifact + SHA it
+produced; an order without its artifact is treated as never received.
+
+RULING 5 — DIRTY-TREE PROTECTION (verbatim, CAMPAIGN_OS §9): "Agent must never
+execute: git stash, git clean, git reset --hard unless explicitly authorized." Slice
+pre-flight: "Dirty Tree Protection — Record: modified files, untracked files. Restore
+verification before commit." (Paid cost: 46-entry stash incident during C-1w2.)
+
+RULING 6: Continue per the OS — C-1e now → C-1f → C-1d.
+
+OPERATOR STOP-LINE (verbatim, binding): "After C-1d, STOP for operator ratification of
+the restored Wave 2-4 plan. Do not enter Wave 2 automatically because the manifest was
+reconstructed from repo evidence."
+
+Artifacts: platform DECISIONS.md verdict entry · CAMPAIGN_OS §5a/§8a/§9 ·
+LESSONS_LEARNED.md (#1 governance durability, #2 dirty-tree) · MASTER_MANIFEST
+restored-wave amendment · OPEN_ITEMS OI-18 ANSWERED. Wave-1 slices already landed:
+C-1w2 `3833627c` · C-2a `18fb89ad` · C-2b `60a34f9e` · C-2c `0d0bf78d`.
+
+---
+
+### 2026-07-03 — Phase-C WAVE 2 RATIFIED (operator, verbatim, four amendments)
+
+OPERATOR: "RATIFIED. Wave 2 begins." Amendments: (1) C-3g (transitional dual-write
+cleanup + cache-passthrough retirement) is Wave 2 slice #1 — product pin to TRUE 0
+before C-3b onward. (2) Residual-2 census: INSPECTOR verifies each of the 6
+out-of-pin files; sync-layer services → whitelist WITH file:line citation; business
+logic → migrate slice + scope proposal; dev tools → exempt-by-purpose, documented.
+(3) Residual-3: one batched test-health slice inside Wave 2 — storage-leak fix
+absorbed as its first commit, landed on deploy/latest (single-lane; side worktrees
+closed). (4) users.db import-time creation → LESSONS_LEARNED entry + follow-up task
+(fresh-checkout trap), not chased now. Rules unchanged: ZERO UI; C-3a migration =
+verify tree only (prod apply = CP4/deploy operator ritual); C-4a only if OI-17
+answered, wave completes without it otherwise; stop conditions unchanged.
+
+Canonical detail: `.claude/campaigns/phase-c-master/DECISIONS.md` (Wave-2 ratification
+entry). Effect: Wave 2 (Backend) ACTIVE on `deploy/latest`.
+
+### 2026-07-03 — Phase-C verdict: grade A- + CONSENT ARTIFACT RULE + Wave-3 triple verification (verbatim R4)
+
+OPERATOR VERDICT (verbatim): "Campaign grade A-. Deploy gate design approved.
+Acknowledgment handling was not strict enough: 'Acknowledgment received' was
+recorded without the exact phrase verifiably on record. Wave 3 begins ONLY
+after three verifications: (1) Production deployment complete. (2) Mirror
+backfill complete with zero unresolved collisions. (3) Production smoke and
+health checks green. No new governance rules; only the eight documents evolve."
+
+CONSENT ARTIFACT RULE (verbatim, LESSONS_LEARNED.md #5): "for irreversible
+boundaries (deploy, prod writes, CP4/CP5), the operator's exact acknowledgment
+phrase must be quoted verbatim in the durable record BEFORE any execution line
+is written. A paraphrase, a --continue, or an inferred consent is a
+non-acknowledgment. If the record cannot prove the phrase was given, the
+acknowledgment did not happen."
+
+Retro-cure on record: the wave12 Lesson-D acknowledgment was the operator's
+explicit selection of the exact option text "I acknowledge LOCAL-COMMIT-ONLY"
+(2026-07-03). Campaign HOLDS at CP4-handover; deploy operator-executed via
+runbook (a6e15149 → hardened 1e43f8bc); agent scope on deploy report =
+read-only tail only; pz-deploy-guard boundary permanent.
+
 ---
 
 # ASSUMPTIONS
@@ -6430,6 +7472,42 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ---
 
 # OPEN QUESTIONS
+
+## OQ-WAVE3-RATIFICATION: Phase-C Wave 3 (Entire UI) awaiting operator ratification (2026-07-03, OPEN — campaign holds at Wave-2 boundary per CAMPAIGN_OS §5a)
+
+- **Question**: Phase-C CAMPAIGN_OS §5a requires explicit operator ratification before each wave begins. Wave 2 backend is COMPLETE on `deploy/latest`. Wave 3 covers the entire UI layer (U-1..U-6: Inventory, Sample, Returns, Consignment, Invoice, MM Integration). Has the operator read the Wave-3 document in `.claude/campaigns/phase-c-master/` and issued "RATIFIED. Wave 3 begins."?
+- **Who can answer**: Operator (Amit) — read CAMPAIGN_OS §1 load order + Wave-3 document; issue ratification word.
+- **Impact if unanswered**: Campaign is frozen at Wave-2 boundary; no UI slice for Inventory/Sample/Returns/Consignment/Invoice/MM may be dispatched; B1 KPI polish and fold slices already built are the frontier.
+- **Precondition (W3-A1)**: Wave-2 backend deployed to `C:\PZ` and smoke-verified (OQ-WAVE2-DEPLOY must close first) — otherwise Wave 3 UI is built on an undeployed backend.
+- **Candidate path to closure**: OQ-WAVE2-DEPLOY closes → Operator reads Wave-3 doc → "RATIFIED. Wave 3 begins." → DECISIONS records date + amendments → this OQ moves to DECISIONS.
+
+## OQ-WAVE2-DEPLOY: Phase-C Wave 2 backend deploy to C:\PZ pending (2026-07-03, OPEN — 7-agent ritual + CP4 preconditions)
+
+- **Question**: Phase-C Wave 2 backend is on `deploy/latest` branch but NOT yet deployed to `C:\PZ`. Has the 7-agent deploy ritual been executed, the CP4 playbook from `service/docs/ops/c3g-deploy-note.md` applied (mirror backfill re-run + goods-id-99 collision resolution + service-registry backfill + returns/sample event-table migrations), PZService restarted, and smoke-verified green?
+- **Who can answer**: Operator (Amit) — execute 7-agent gate, run CP4 steps, restart PZService; orchestrator verifies health endpoint + smoke after restart.
+- **Impact if unanswered**: Wave-2 backend enhancements (product consumption pin, service-product registry, C-3g NameError fix, new inventory endpoints) are not live; Wave-3 ratification (OQ-WAVE3-RATIFICATION) is blocked on this closing first (W3-A1 precondition).
+- **Candidate path to closure**: 7-agent gate GO → operator executes CP4 → PZService restart → health endpoint + smoke green → FACTS records deploy SHA + date → this OQ closes and OQ-WAVE3-RATIFICATION precondition clears.
+
+## OQ-INFRA-BACKUP-TASK: has Amit created the backup scheduled task? (2026-07-03, OPEN — highest-value checkbox on the board)
+
+- **Question**: Infra health pass d67d3722 finding #1 — the B7 backup service is fully built (backup_service.py: online-backup API + WAL checkpoint + 7/4/12 retention + manifest + admin API + CLI + runbook) but the Windows Task Scheduler job was never created. Last valid backup: 2026-06-14. Has the operator run the runbook's `schtasks` creation (daily `run_backup.py` + prune) and has the first manifest landed in C:\PZ-backups?
+- **Who can answer**: Amit (operator) — two `schtasks` lines per service/docs/ops/backup-runbook.md; zero code.
+- **Impact if unanswered**: no automated backup of any production DB; Guardian backup_freshness stays degraded; findings #5 (off-box copy) and #7 (debris cleanup) stay blocked behind it.
+- **Candidate path to closure**: Amit confirms task created + first manifest verified → DECISIONS record + Guardian green confirmation → #5 unblocks.
+
+## OQ-WFIRMA-MM-ANSWER: does the wFirma API support MM inter-warehouse transfer? (2026-07-03, HALF-ANSWERED — business model settled (MM Main→Consignment, operator verbatim in DECISIONS); the API-capability question is STILL OPEN and still gates the consignment build)
+
+- **Question**: MM (przesunięcie międzymagazynowe) is absent from the client registry, python-wfirma's types, and all repo docs (scope 6d6d9d64 §B). Amit asks wFirma support: is MM available via API? Also from §E: WZ add via API vs invoice-auto-WZ; consignment warehouse existence; sandbox availability.
+- **Who can answer**: Amit via wFirma support; §E checklist persisted at reports/inspection/2026-07-03T-wfirma-section-e-operator-checklist.md.
+- **Impact if unanswered**: consignment flow (MM Main→Consignment + invoice-from-consignment) and the sale-out-leg WZ shape cannot lock scope.
+- **Candidate path to closure**: answers land → consignment model decision + sale-out-leg slice spec.
+
+## OQ-B71B-DIRECT-WFIRMA-PZ: should a PZ booked directly inside wFirma auto-promote stock? (2026-07-02, ANSWERED (a) — CLOSED same day; see DECISIONS "slice B×7-1b BE-1")
+
+- **Question**: BE-1 (auto-promotion hook, slice B×7-1b) fires `run_stock_promotion()` from the two app-pipeline PZ writers (`routes_wfirma.py:2738`, `global_pz_push.py:619` — both emit EV_WFIRMA_PZ_CREATED). A PZ booked DIRECTLY in wFirma (bypassing Atlas, e.g. operator working in wFirma UI) is invisible today — the webhook scheduler carries no warehouse-document events. Option (a): app-pipeline PZs only for now; direct-wFirma PZs handled manually via the future exception page; poll/webhook extension parked as BE-1c. Option (b): the extension is required before the feature counts as done. Advisor lean: (a).
+- **Who can answer**: Operator (Amit) — business call on whether direct-wFirma PZ booking is a real workflow that must promote automatically.
+- **Impact if unanswered**: BE-1 build prompt is held; the auto-promotion slice cannot lock scope.
+- **Candidate path to closure**: Amit answers (a) or (b) → advisor ships the BE-1 build prompt same turn → decision recorded in DECISIONS with the honest note that direct-booked PZs won't promote yet (if (a)).
 
 ## OQ-PR726-MERGE: PR #726 (import PZ / sales-authority split) awaiting merge (2026-06-22, OPEN)
 

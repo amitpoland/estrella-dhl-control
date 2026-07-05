@@ -129,6 +129,21 @@ def _mirror_to_reservation_mapping(
         # Imported lazily so the auto-register service stays importable
         # in environments where reservation_db's own deps are absent.
         from . import reservation_db
+        # Mirror Completeness (2026-07-03 ruled check): the canonical
+        # wfirma_product_mirror is written FIRST — every confirmed-id product
+        # write path must populate the mirror before slice 1d re-points the
+        # fiscal reads to it. Collision (one wfirma_id, two codes) is a data
+        # error surfaced to the caller as a warning string.
+        if (wfirma_product_id or "").strip():
+            _mres = reservation_db.upsert_product_mirror(
+                rdb_path,
+                wfirma_id=str(wfirma_product_id).strip(),
+                product_code=product_code,
+                name=wfirma_name or "",
+            )
+            if _mres.get("collision"):
+                return (f"mirror collision: wfirma_id {wfirma_product_id} already "
+                        f"owned by {_mres.get('owner')!r} — operator must resolve")
         reservation_db.upsert_wfirma_product_mapping(
             rdb_path,
             product_code      = product_code,
@@ -368,6 +383,31 @@ def _register_one(
         return out
 
     # 5. Mirror locally only on confirmed success.
+    # Mirror Completeness (2026-07-03 ruled check): canonical mirror FIRST
+    # (C-1w1 no-divergence-window ordering) — on mirror failure/collision the
+    # cache is NOT written; operator re-runs and the second pass adopts the
+    # now-existing wFirma product (existing_mapped) and re-mirrors.
+    try:
+        from . import reservation_db as _rdb_mc
+        _rdb_mc.init_reservation_db(_reservation_db_path())
+        _mres = _rdb_mc.upsert_product_mirror(
+            _reservation_db_path(),
+            wfirma_id=str(result.wfirma_id).strip(),
+            product_code=product_code,
+            name=block.get("name_pl") or "",
+        )
+        if _mres.get("collision"):
+            out["status"] = "failed"
+            out["error"]  = (f"mirror collision after create: wfirma_id "
+                             f"{result.wfirma_id} already owned by "
+                             f"{_mres.get('owner')!r} — operator must resolve")
+            out["wfirma_product_id"] = result.wfirma_id
+            return out
+    except Exception as exc:
+        out["status"] = "failed"
+        out["error"]  = f"canonical mirror failed after create: {type(exc).__name__}: {exc}"
+        out["wfirma_product_id"] = result.wfirma_id
+        return out
     try:
         wfdb.upsert_product(
             product_code      = product_code,

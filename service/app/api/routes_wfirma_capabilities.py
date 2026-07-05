@@ -34,6 +34,7 @@ from ..services import description_engine as deng
 from ..services import wfirma_capabilities as wfc
 from ..services import wfirma_client
 from ..services import wfirma_db as wfdb
+from ..services import reservation_db as rdb   # sync-layer passthrough (C-1c)
 from ..services import wfirma_product_auto_register as _wfar
 from ..services import wfirma_customer_auto_resolve as _wfcar
 
@@ -229,23 +230,37 @@ class ProductMappingRequest(BaseModel):
 @router.get("/products", dependencies=[_auth])
 def list_products(sync_status: Optional[str] = None) -> JSONResponse:
     """List locally registered product_code → wFirma product_id mappings."""
-    rows = wfdb.list_products(sync_status=sync_status)
+    rows = wfdb.list_products(sync_status=sync_status)  # C-3g: direct sync-layer read (wFirma-setup surface, product-pin whitelisted)
     return JSONResponse({"count": len(rows), "products": rows})
 
 
 @router.put("/products/{product_code:path}", dependencies=[_auth])
 def upsert_product(product_code: str, req: ProductMappingRequest) -> JSONResponse:
     """Register or update a product mapping (manual or post-API-sync)."""
-    row_id = wfdb.upsert_product(
-        product_code,
-        wfirma_product_id=req.wfirma_product_id,
-        product_name_pl=req.product_name_pl,
-        unit=req.unit,
-        vat_rate=req.vat_rate,
-        warehouse_id=req.warehouse_id,
-        sync_status=req.sync_status,
+    _db_path = settings.storage_root / "reservation_queue.db"
+    rdb.init_reservation_db(_db_path)
+    _reg = rdb.register_product_identity(  # C-1w2: mirror-first dual-write via sync layer
+        _db_path,
+        wfirma_id=req.wfirma_product_id or "",
+        product_code=product_code,
+        cache_kwargs=dict(
+            product_code=product_code,
+            wfirma_product_id=req.wfirma_product_id,
+            product_name_pl=req.product_name_pl,
+            unit=req.unit,
+            vat_rate=req.vat_rate,
+            warehouse_id=req.warehouse_id,
+            sync_status=req.sync_status,
+        ),
     )
-    return JSONResponse({"ok": True, "id": row_id, "product_code": product_code})
+    if _reg.get("collision"):
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "wfirma_id_collision",
+                    "wfirma_id": req.wfirma_product_id,
+                    "owner_product_code": _reg.get("owner")},
+        )
+    return JSONResponse({"ok": True, "id": _reg.get("cache_row_id"), "product_code": product_code})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -307,7 +322,9 @@ def search_good(
     The operator uses the response to confirm a mapping via PUT /products/{code}.
     """
     try:
-        result = wfirma_client.get_product_by_code(product_code)
+        # C-1c: live wFirma read via the sync-layer passthrough, not a direct
+        # wfirma_client call in a business route (§2). Read-only, behaviour identical.
+        result = rdb.lookup_wfirma_product(product_code)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -370,7 +387,8 @@ def search_and_compare_good(
     # 1. Live wFirma search (read-only)
     wfirma_error = ""
     try:
-        wf_product = wfirma_client.get_product_by_code(product_code)
+        # C-1c: sync-layer passthrough (read-only), not a direct wfirma_client call.
+        wf_product = rdb.lookup_wfirma_product(product_code)
     except Exception as exc:
         wf_product = None
         wfirma_error = f"{type(exc).__name__}: {exc}"
@@ -437,7 +455,8 @@ def search_goods_bulk(req: BulkGoodsSearchRequest) -> JSONResponse:
     looked_up: dict = {}
     for pc in seen_index:
         try:
-            result = wfirma_client.get_product_by_code(pc)
+            # C-1c: sync-layer passthrough (read-only), not a direct wfirma_client call.
+            result = rdb.lookup_wfirma_product(pc)
             looked_up[pc] = {
                 "product_code": pc,
                 "found":        result is not None,
@@ -512,7 +531,7 @@ def create_good_from_product_code(
 
     # ── 1. Search wFirma first (read-only) ─────────────────────────────────
     try:
-        existing = wfirma_client.get_product_by_code(pc)
+        existing = rdb.lookup_wfirma_product(pc)  # C-1w2: sync-layer passthrough
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -522,14 +541,28 @@ def create_good_from_product_code(
 
     if existing is not None:
         # Persist mapping locally; do NOT call create_product.
-        wfdb.upsert_product(
-            product_code      = pc,
-            wfirma_product_id = existing.wfirma_id,
-            product_name_pl   = existing.name or "",
-            unit              = existing.unit or "szt.",
-            vat_rate          = "23",
-            sync_status       = "matched",
+        _db_path = settings.storage_root / "reservation_queue.db"
+        rdb.init_reservation_db(_db_path)
+        _reg = rdb.register_product_identity(  # C-1w2: mirror-first dual-write via sync layer
+            _db_path,
+            wfirma_id=existing.wfirma_id or "",
+            product_code=pc,
+            cache_kwargs=dict(
+                product_code      = pc,
+                wfirma_product_id = existing.wfirma_id,
+                product_name_pl   = existing.name or "",
+                unit              = existing.unit or "szt.",
+                vat_rate          = "23",
+                sync_status       = "matched",
+            ),
         )
+        if _reg.get("collision"):
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "wfirma_id_collision",
+                        "wfirma_id": existing.wfirma_id,
+                        "owner_product_code": _reg.get("owner")},
+            )
         return JSONResponse({
             "ok":                True,
             "status":            "existing_mapped",
@@ -570,7 +603,7 @@ def create_good_from_product_code(
     )
 
     try:
-        result = wfirma_client.create_product(
+        result = rdb.create_wfirma_product(  # C-1w2: sync-layer passthrough
             product_code = pc,
             name         = wf_name,
             unit         = "szt.",
@@ -596,14 +629,28 @@ def create_good_from_product_code(
             "error":        "goods/add returned no wfirma_id — refusing fake mapping",
         })
 
-    wfdb.upsert_product(
-        product_code      = pc,
-        wfirma_product_id = result.wfirma_id,
-        product_name_pl   = block.get("name_pl") or "",
-        unit              = "szt.",
-        vat_rate          = "23",
-        sync_status       = "matched",
+    _db_path = settings.storage_root / "reservation_queue.db"
+    rdb.init_reservation_db(_db_path)
+    _reg = rdb.register_product_identity(  # C-1w2: mirror-first dual-write via sync layer
+        _db_path,
+        wfirma_id=result.wfirma_id,
+        product_code=pc,
+        cache_kwargs=dict(
+            product_code      = pc,
+            wfirma_product_id = result.wfirma_id,
+            product_name_pl   = block.get("name_pl") or "",
+            unit              = "szt.",
+            vat_rate          = "23",
+            sync_status       = "matched",
+        ),
     )
+    if _reg.get("collision"):
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "wfirma_id_collision",
+                    "wfirma_id": result.wfirma_id,
+                    "owner_product_code": _reg.get("owner")},
+        )
 
     return JSONResponse({
         "ok":                True,
@@ -697,7 +744,7 @@ def adopt_existing_product(
 
     # 1. Search wFirma — MUST find for /adopt to apply
     try:
-        existing = wfirma_client.get_product_by_code(pc)
+        existing = rdb.lookup_wfirma_product(pc)  # C-1w2: sync-layer passthrough
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -738,14 +785,30 @@ def adopt_existing_product(
 
     # 3. Persist the local mirror (wFirma side untouched).
     try:
-        wfdb.upsert_product(
-            product_code      = pc,
-            wfirma_product_id = existing.wfirma_id,
-            product_name_pl   = existing.name or "",
-            unit              = existing.unit or "szt.",
-            vat_rate          = "23",
-            sync_status       = "matched",
+        _db_path = settings.storage_root / "reservation_queue.db"
+        rdb.init_reservation_db(_db_path)
+        _reg = rdb.register_product_identity(  # C-1w2: mirror-first dual-write via sync layer
+            _db_path,
+            wfirma_id=existing.wfirma_id or "",
+            product_code=pc,
+            cache_kwargs=dict(
+                product_code      = pc,
+                wfirma_product_id = existing.wfirma_id,
+                product_name_pl   = existing.name or "",
+                unit              = existing.unit or "szt.",
+                vat_rate          = "23",
+                sync_status       = "matched",
+            ),
         )
+        if _reg.get("collision"):
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "wfirma_id_collision",
+                        "wfirma_id": existing.wfirma_id,
+                        "owner_product_code": _reg.get("owner")},
+            )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -819,7 +882,7 @@ def update_and_adopt_product(
 
     # 1. Search wFirma — MUST find for /update-and-adopt to apply
     try:
-        existing = wfirma_client.get_product_by_code(pc)
+        existing = rdb.lookup_wfirma_product(pc)  # C-1w2: sync-layer passthrough
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -839,14 +902,14 @@ def update_and_adopt_product(
         )
 
     # 2. Push the edit to wFirma (identity-preserving — code/unit/vat
-    #    are never mutated by wfirma_client.edit_product).
+    #    are never mutated by rdb.edit_wfirma_product).
     edit_kwargs = {}
     if new_name:
         edit_kwargs["name"] = new_name
     if new_desc:
         edit_kwargs["description"] = new_desc
     try:
-        edit_result = wfirma_client.edit_product(
+        edit_result = rdb.edit_wfirma_product(  # C-1w2: sync-layer passthrough
             existing.wfirma_id, **edit_kwargs,
         )
     except Exception as exc:
@@ -860,14 +923,30 @@ def update_and_adopt_product(
 
     # 3. Persist local mirror with the updated name.
     try:
-        wfdb.upsert_product(
-            product_code      = pc,
-            wfirma_product_id = existing.wfirma_id,
-            product_name_pl   = edit_result.get("name") or new_name or existing.name or "",
-            unit              = edit_result.get("unit") or existing.unit or "szt.",
-            vat_rate          = "23",
-            sync_status       = "matched",
+        _db_path = settings.storage_root / "reservation_queue.db"
+        rdb.init_reservation_db(_db_path)
+        _reg = rdb.register_product_identity(  # C-1w2: mirror-first dual-write via sync layer
+            _db_path,
+            wfirma_id=existing.wfirma_id or "",
+            product_code=pc,
+            cache_kwargs=dict(
+                product_code      = pc,
+                wfirma_product_id = existing.wfirma_id,
+                product_name_pl   = edit_result.get("name") or new_name or existing.name or "",
+                unit              = edit_result.get("unit") or existing.unit or "szt.",
+                vat_rate          = "23",
+                sync_status       = "matched",
+            ),
         )
+        if _reg.get("collision"):
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "wfirma_id_collision",
+                        "wfirma_id": existing.wfirma_id,
+                        "owner_product_code": _reg.get("owner")},
+            )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -959,7 +1038,7 @@ def create_and_adopt_product(
     # 1. Search wFirma — MUST NOT find for /create-and-adopt to apply.
     #    Prevents duplicate creation under UI races.
     try:
-        existing = wfirma_client.get_product_by_code(pc)
+        existing = rdb.lookup_wfirma_product(pc)  # C-1w2: sync-layer passthrough
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -997,7 +1076,7 @@ def create_and_adopt_product(
 
     # 3. Create via goods/add.
     try:
-        result = wfirma_client.create_product(
+        result = rdb.create_wfirma_product(  # C-1w2: sync-layer passthrough
             product_code = pc,
             name         = wf_name,
             unit         = "szt.",
@@ -1023,14 +1102,30 @@ def create_and_adopt_product(
 
     # 4. Persist local mirror only on confirmed wFirma success.
     try:
-        wfdb.upsert_product(
-            product_code      = pc,
-            wfirma_product_id = result.wfirma_id,
-            product_name_pl   = block.get("name_pl") or "",
-            unit              = "szt.",
-            vat_rate          = "23",
-            sync_status       = "matched",
+        _db_path = settings.storage_root / "reservation_queue.db"
+        rdb.init_reservation_db(_db_path)
+        _reg = rdb.register_product_identity(  # C-1w2: mirror-first dual-write via sync layer
+            _db_path,
+            wfirma_id=result.wfirma_id,
+            product_code=pc,
+            cache_kwargs=dict(
+                product_code      = pc,
+                wfirma_product_id = result.wfirma_id,
+                product_name_pl   = block.get("name_pl") or "",
+                unit              = "szt.",
+                vat_rate          = "23",
+                sync_status       = "matched",
+            ),
         )
+        if _reg.get("collision"):
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "wfirma_id_collision",
+                        "wfirma_id": result.wfirma_id,
+                        "owner_product_code": _reg.get("owner")},
+            )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -1098,7 +1193,7 @@ def adopt_pending_found_for_batch(
         for r in invoice_rows
         if (r.get("product_code") or "").strip()
     })
-    cache = wfdb.get_products_batch(codes) if codes else {}
+    cache = wfdb.get_products_batch(codes) if codes else {}  # C-3g: direct sync-layer read (wFirma-setup surface)
 
     adopted: List[str] = []
     skipped: List[dict] = []
@@ -1304,7 +1399,7 @@ def refresh_good_name_from_block(product_code: str) -> JSONResponse:
         })
 
     # ── 2. Local mapping must exist with non-empty wfirma_product_id ──────
-    local = wfdb.get_product(pc)
+    local = wfdb.get_product(pc)  # C-3g: direct sync-layer read (wFirma-setup surface)
     wfirma_product_id = (local or {}).get("wfirma_product_id") or ""
     if not local or not wfirma_product_id:
         return JSONResponse({
@@ -1337,10 +1432,10 @@ def refresh_good_name_from_block(product_code: str) -> JSONResponse:
 
     # ── 4. Live wFirma edit (only path with external write) ───────────────
     try:
-        result = wfirma_client.edit_product(
-            wfirma_product_id = wfirma_product_id,
-            name              = description_line,
-            description       = description_block,
+        result = rdb.edit_wfirma_product(  # C-1w2: sync-layer passthrough
+            wfirma_product_id,
+            name        = description_line,
+            description = description_block,
         )
     except Exception as exc:
         log.warning("[%s] goods/edit failed: %s", pc, exc)
@@ -1357,15 +1452,29 @@ def refresh_good_name_from_block(product_code: str) -> JSONResponse:
     # description_engine.name_pl returns). The full description_line stays
     # reconstructible via description_engine — no need to cache it locally.
     name_pl = (block.get("name_pl") or "").strip()
-    wfdb.upsert_product(
-        product_code      = pc,
-        wfirma_product_id = wfirma_product_id,
-        product_name_pl   = name_pl,
-        unit              = (local or {}).get("unit") or "szt.",
-        vat_rate          = (local or {}).get("vat_rate") or "23",
-        warehouse_id      = (local or {}).get("warehouse_id") or "",
-        sync_status       = "matched",
+    _db_path = settings.storage_root / "reservation_queue.db"
+    rdb.init_reservation_db(_db_path)
+    _reg = rdb.register_product_identity(  # C-1w2: mirror-first dual-write via sync layer
+        _db_path,
+        wfirma_id=wfirma_product_id,
+        product_code=pc,
+        cache_kwargs=dict(
+            product_code      = pc,
+            wfirma_product_id = wfirma_product_id,
+            product_name_pl   = name_pl,
+            unit              = (local or {}).get("unit") or "szt.",
+            vat_rate          = (local or {}).get("vat_rate") or "23",
+            warehouse_id      = (local or {}).get("warehouse_id") or "",
+            sync_status       = "matched",
+        ),
     )
+    if _reg.get("collision"):
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "wfirma_id_collision",
+                    "wfirma_id": wfirma_product_id,
+                    "owner_product_code": _reg.get("owner")},
+        )
 
     return JSONResponse({
         "ok":                True,
@@ -1907,7 +2016,7 @@ def shipment_setup_detail(batch_id: str) -> JSONResponse:
     mapped_map = {}
     try:
         if all_codes:
-            mapped_map = _wfdb.get_products_batch(all_codes) or {}
+            mapped_map = wfdb.get_products_batch(all_codes) or {}  # C-3g: direct sync-layer read (wFirma-setup surface)
     except Exception as exc:
         out["errors"].append("wfirma_products lookup failed: " + str(exc))
 

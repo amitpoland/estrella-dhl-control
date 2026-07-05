@@ -258,6 +258,18 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _connect(db_path: Path) -> sqlite3.Connection:
+    """Tuned connection — WAL + busy_timeout per the dhl_thread_lock idiom
+    (dhl_thread_lock.py:126-129; infra health pass d67d3722 finding #2):
+    this DB has FastAPI-handler AND APScheduler writers, so every connection
+    must wait out a competing writer (busy_timeout FIRST, so the WAL flip
+    itself waits) instead of failing 'database is locked' immediately."""
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
 def init_db(db_path: Path) -> None:
     """Create the customer_master table. Idempotent.
 
@@ -267,7 +279,7 @@ def init_db(db_path: Path) -> None:
     skipped via try/except)."""
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS customer_master (
                 id                       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -657,7 +669,7 @@ def upsert_customer(db_path: Path, c: CustomerMaster) -> int:
         "updated_at":              now,
     }
 
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         existing = conn.execute(
             "SELECT id FROM customer_master WHERE bill_to_contractor_id = ?",
@@ -759,7 +771,7 @@ def upsert_identity_only(
 
     init_db(db_path)
     now = _now_iso()
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         existing = conn.execute(
             "SELECT id FROM customer_master WHERE bill_to_contractor_id = ?",
@@ -845,7 +857,7 @@ def get_customer(db_path: Path, bill_to_contractor_id: str) -> Optional[Customer
     """Read by wFirma contractor id. Returns None if absent."""
     if not Path(db_path).is_file():
         return None
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT * FROM customer_master WHERE bill_to_contractor_id = ?",
@@ -867,7 +879,7 @@ def update_vat_eu_result(
     Returns True if a row was updated, False if the contractor was not found.
     Caller is responsible for audit logging.
     """
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute(
             "UPDATE customer_master "
             "SET vat_eu_valid=?, vat_eu_validated_at=? "
@@ -906,7 +918,7 @@ def list_customers(db_path: Path,
         sql += " AND active = ?"; params.append(1 if active else 0)
     sql += " ORDER BY datetime(updated_at) DESC, id DESC LIMIT ?"
     params.append(int(limit))
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(sql, params).fetchall()
@@ -926,7 +938,7 @@ def delete_customer(db_path: Path, bill_to_contractor_id: str) -> bool:
     """
     if not Path(db_path).is_file():
         return False
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute(
             "DELETE FROM customer_master WHERE bill_to_contractor_id = ?",
             (bill_to_contractor_id,),
@@ -943,7 +955,7 @@ def soft_delete_customer(db_path: Path, bill_to_contractor_id: str) -> bool:
     if not Path(db_path).is_file():
         return False
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute(
             "UPDATE customer_master SET active = 0, deleted_at = ?, updated_at = ? "
             "WHERE bill_to_contractor_id = ?",
@@ -957,7 +969,7 @@ def restore_customer(db_path: Path, bill_to_contractor_id: str) -> bool:
     if not Path(db_path).is_file():
         return False
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute(
             "UPDATE customer_master SET active = 1, deleted_at = NULL, updated_at = ? "
             "WHERE bill_to_contractor_id = ?",
@@ -1086,3 +1098,37 @@ def get_effective_defaults(customer: "CustomerMaster") -> Dict[str, Any]:
     out["insurance_enabled"]         = c.insurance_enabled
 
     return out
+
+
+# ── C-2b: sync-layer passthroughs (customer authority) ───────────────────────
+# Business routes call THESE instead of importing wfirma_client customer
+# functions directly (Constitution §3: Module → Customer Master → Mirror →
+# wFirma; the forbidden identifier must live only in the whitelisted sync
+# layer).  Behaviour is identical passthrough — zero logic change.
+# Modelled on reservation_db.lookup_wfirma_product (C-1c, commit feeb1fbe).
+
+def search_wfirma_customer(name: str, nip: Optional[str] = None):
+    """Search wFirma for a contractor by name or NIP, via the Customer Master
+    sync layer.  Signature mirrors wfirma_client.search_customer exactly.
+
+    C-2b rationale: business routes (routes_proforma — V4) must not call
+    wfirma_client.search_customer directly (Constitution §3, authority-
+    violation V4).  Re-pointing to the wfirma_customer_mirror is gated on
+    equivalence verification (later slice); this passthrough is the
+    call-path migration step.
+    """
+    from .wfirma_client import search_customer  # lazy — keeps the forbidden
+    return search_customer(name, nip)           # identifier inside sync layer
+
+
+def lookup_wfirma_contractor(contractor_id: str):
+    """Fetch a single wFirma contractor by id, via the Customer Master sync
+    layer.  Signature mirrors wfirma_client.fetch_contractor_by_id exactly.
+
+    C-2b rationale: business routes (routes_proforma V4, routes_ledgers V5,
+    routes_suppliers V7) must not call wfirma_client.fetch_contractor_by_id
+    directly (Constitution §3).  This passthrough relocates the call into the
+    authority's service layer without changing any behaviour.
+    """
+    from .wfirma_client import fetch_contractor_by_id  # lazy — sync layer only
+    return fetch_contractor_by_id(contractor_id)

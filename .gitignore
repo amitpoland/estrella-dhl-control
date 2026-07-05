@@ -4,6 +4,9 @@ __pycache__/
 *.pyo
 *.pyd
 *.log
+# Carve-out: reports/authority-census/**/*.log are audit evidence
+# (D-4 drift, D-5 extras) — tracked, not transient.
+!reports/authority-census/**/*.log
 # Virtual env
 venv/
 .venv/

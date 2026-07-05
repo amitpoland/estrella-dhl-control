@@ -337,6 +337,27 @@ def _png_to_image_block(png_bytes: bytes) -> Dict[str, str]:
     }
 
 
+# Expense-review extension (2026-07-03): standalone supplier-invoice uploads
+# may be PNG/JPEG photos rather than PDFs. Image bytes go to the model as-is;
+# PDF handling (rasterize_pdf) is untouched.
+_IMAGE_MEDIA_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
+
+
+def _image_file_to_blocks(path: str) -> List[Dict[str, str]]:
+    """Read a PNG/JPEG file into a single gateway image block. [] on failure."""
+    media_type = _IMAGE_MEDIA_TYPES.get(Path(path).suffix.lower())
+    if media_type is None:
+        return []
+    try:
+        raw = Path(path).read_bytes()
+    except Exception as exc:
+        log.warning("[vision_extractor] cannot read image %s: %s", path, exc)
+        return []
+    if not raw:
+        return []
+    return [{"media_type": media_type, "data": base64.b64encode(raw).decode("ascii")}]
+
+
 def extract_fields_via_vision(
     pdf_path: str,
     doc_kind: str,
@@ -718,7 +739,10 @@ def _build_invoice_lineitem_prompt() -> Tuple[str, str]:
     schema_desc = (
         "{\n"
         '  "supplier": string|null,                    // seller / exporter name\n'
+        '  "supplier_address": string|null,            // seller address block as printed; null if not shown\n'
+        '  "supplier_gstin": string|null,              // seller GST identification number if shown\n'
         '  "invoice_no": string|null,\n'
+        '  "invoice_date": "YYYY-MM-DD"|null,          // normalised; null if not legible or ambiguous\n'
         '  "currency": string|null,                    // ISO code you actually see, e.g. "USD"\n'
         '  "fob_usd": number|null,                     // total goods value, USD only\n'
         '  "freight_usd": number|null,                 // freight / shipping charge, USD only; null if not shown\n'
@@ -730,12 +754,19 @@ def _build_invoice_lineitem_prompt() -> Tuple[str, str]:
         '      "description": string,                  // the goods description text\n'
         '      "hsn": string|null,                     // HS / customs code if shown\n'
         '      "quantity": number|null,\n'
+        '      "unit": string|null,                    // unit label if shown, e.g. "pcs"\n'
         '      "unit_price": number|null,\n'
         '      "total": number|null,\n'
         '      "gross_weight_g": number|null,          // grams\n'
         '      "net_weight_g": number|null             // grams\n'
         "    }\n"
         "  ],\n"
+        '  "subtotal": number|null,                    // pre-tax subtotal in the invoice currency, as printed\n'
+        '  "tax_details": [                            // [] when no tax lines are shown\n'
+        '    {"tax_type": string, "rate": number|null, "amount": number|null}\n'
+        "  ],\n"
+        '  "total_amount": number|null,                // grand total in the invoice currency, as printed\n'
+        '  "needs_review": [string],                   // names of fields you are NOT confident about\n'
         '  "confidence": number,                       // 0..1 in the values above\n'
         '  "source_page": number|null,\n'
         '  "source_reason": string                     // the label/heading you read the table from\n'
@@ -751,7 +782,8 @@ def _build_invoice_lineitem_prompt() -> Tuple[str, str]:
     )
     user = (
         "This is a commercial invoice scan. Extract the supplier, invoice number, "
-        "currency, total goods value (FOB), and every goods line you can read.\n\n"
+        "currency, total goods value (FOB), the invoice grand total "
+        "(total_amount), and every goods line you can read.\n\n"
         "Return ONLY a single JSON object (no prose, no markdown fences) matching "
         f"exactly this schema:\n\n{schema_desc}\n\n"
         "Rules:\n"
@@ -766,6 +798,19 @@ def _build_invoice_lineitem_prompt() -> Tuple[str, str]:
         "- If a field is not visible, use null. Do NOT use 0 to mean 'unknown'.\n"
         "- If the line-item table is unreadable, set itemization_available=false and "
         "line_items=[]. A partial but honest result beats invented rows.\n"
+        "- 'total_amount' is the invoice grand total in the invoice currency, "
+        "exactly as printed on the document's total line. Never compute it "
+        "yourself from the lines; null if not legibly present.\n"
+        "- The fields supplier_address, supplier_gstin, invoice_date, unit, subtotal, "
+        "tax_details and needs_review are SECONDARY. If one is not legibly present, "
+        "use null (or [] for the lists) and move on — never guess a value to fill "
+        "them, and never let them reduce the care you give the primary fields "
+        "(supplier, invoice_no, currency, the line items, total_amount, and the "
+        "USD totals).\n"
+        "- 'invoice_date' must be normalised to YYYY-MM-DD; if the printed date is "
+        "ambiguous, use null and add 'invoice_date' to needs_review.\n"
+        "- 'needs_review' lists the names of fields you are not confident about or "
+        "that were illegible/ambiguous; [] when everything you reported is clear.\n"
         "- 'source_reason' must quote the table heading / label you read from."
     )
     return system, user
@@ -786,6 +831,9 @@ def _validate_line_item(item: Any) -> Optional[Dict[str, Any]]:
     hsn = item.get("hsn")
     if hsn is not None and str(hsn).strip():
         clean["hsn"] = str(hsn).strip()
+    unit = item.get("unit")
+    if unit is not None and str(unit).strip():
+        clean["unit"] = str(unit).strip()
     for src, dst in (
         ("quantity", "quantity"),
         ("unit_price", "unit_price_usd"),
@@ -821,7 +869,8 @@ def validate_invoice_extraction(
 
     clean: Dict[str, Any] = {}
 
-    for f in ("supplier", "invoice_no", "source_reason"):
+    for f in ("supplier", "invoice_no", "source_reason",
+              "supplier_address", "supplier_gstin"):
         v = data.get(f)
         if v is not None and str(v).strip():
             clean[f] = str(v).strip()
@@ -833,6 +882,62 @@ def validate_invoice_extraction(
             clean["currency"] = cur_s
         elif cur_s:
             errors.append(f"currency={cur!r} rejected (not an ISO-like code)")
+
+    # Invoice grand total (invoice currency, as printed) — core accounting
+    # field, same care level as supplier / invoice_no (operator ruling
+    # 2026-07-03). Absent stays absent — never fabricated, never computed.
+    tot = _coerce_money(data.get("total_amount"))
+    if tot is not None:
+        clean["total_amount"] = tot
+
+    # Expense-review extension (2026-07-03): optional secondary fields for the
+    # supplier-invoice draft flow. Each is set ONLY when the model returned a
+    # usable value — absence stays absent, so a consumer can distinguish "not
+    # on this document" from a fabricated default.
+    d = data.get("invoice_date")
+    if d is not None and str(d).strip():
+        d_s = str(d).strip()
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d_s):
+            clean["invoice_date"] = d_s
+        else:
+            errors.append(f"invoice_date={d!r} rejected (not YYYY-MM-DD)")
+
+    sub = _coerce_money(data.get("subtotal"))
+    if sub is not None:
+        clean["subtotal"] = sub
+
+    raw_taxes = data.get("tax_details")
+    if isinstance(raw_taxes, list):
+        taxes: List[Dict[str, Any]] = []
+        for tx in raw_taxes:
+            if not isinstance(tx, dict):
+                errors.append("dropped a non-object tax_details entry")
+                continue
+            tt = tx.get("tax_type")
+            if tt is None or not str(tt).strip():
+                errors.append("dropped a tax_details entry with no tax_type")
+                continue
+            entry: Dict[str, Any] = {"tax_type": str(tt).strip()}
+            rate = tx.get("rate")  # a 0% rate is legal — _coerce_money (rejects 0) does not apply
+            if rate is not None and not isinstance(rate, bool):
+                try:
+                    rf = float(rate)
+                    if 0 <= rf <= 100:
+                        entry["rate"] = round(rf, 4)
+                except (TypeError, ValueError):
+                    pass
+            amt = _coerce_money(tx.get("amount"))
+            if amt is not None:
+                entry["amount"] = amt
+            taxes.append(entry)
+        if taxes:
+            clean["tax_details"] = taxes
+
+    nr = data.get("needs_review")
+    if isinstance(nr, list):
+        nr_clean = [str(x).strip() for x in nr if x is not None and str(x).strip()]
+        if nr_clean:
+            clean["needs_review"] = nr_clean
 
     fob = _coerce_money(data.get("fob_usd"))
     if fob is not None:
@@ -911,13 +1016,21 @@ def extract_invoice_lineitems_via_vision(
         prov["failed_layers"].append("ai_gateway_unavailable")
         return prov
 
-    pages = rasterize_pdf(pdf_path)
-    prov["pages_rasterized"] = len(pages)
-    if not pages:
-        prov["failed_layers"].append("rasterize_failed")
-        return prov
-
-    images = [_png_to_image_block(png) for _, png in pages]
+    if Path(pdf_path).suffix.lower() in _IMAGE_MEDIA_TYPES:
+        # Standalone supplier-invoice upload (PNG/JPEG photo) — no rasterize
+        # step; pages_rasterized stays 0. PDF callers take the branch below,
+        # byte-identical to the pre-extension behavior.
+        images = _image_file_to_blocks(pdf_path)
+        if not images:
+            prov["failed_layers"].append("rasterize_failed")
+            return prov
+    else:
+        pages = rasterize_pdf(pdf_path)
+        prov["pages_rasterized"] = len(pages)
+        if not pages:
+            prov["failed_layers"].append("rasterize_failed")
+            return prov
+        images = [_png_to_image_block(png) for _, png in pages]
     system, user = _build_invoice_lineitem_prompt()
 
     attempts = [
@@ -934,7 +1047,12 @@ def extract_invoice_lineitems_via_vision(
             service_name="vision_extractor",
             object_id=object_id,
             risk_level="high",
-            max_tokens=2400,
+            # 2400 → 2800 (2026-07-03): headroom for the optional secondary
+            # fields (subtotal / tax_details / needs_review / unit) so a long
+            # line-item table can never be truncated into unparseable JSON by
+            # the schema extension. Cap only — cost rises only when the model
+            # actually has those fields to report.
+            max_tokens=2800,
             **knobs,
         )
         if raw is None:

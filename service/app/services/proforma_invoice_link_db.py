@@ -118,11 +118,25 @@ def validate(link: ProformaInvoiceLink) -> List[str]:
 
 # ── DB lifecycle ─────────────────────────────────────────────────────────────
 
+def _connect(db_path: Path, isolation_level: str = "") -> sqlite3.Connection:
+    """Tuned connection — WAL + busy_timeout per the dhl_thread_lock idiom
+    (dhl_thread_lock.py:126-129; infra health pass d67d3722 finding #2):
+    this DB has FastAPI-handler AND APScheduler (enrichment) writers, so
+    every connection must wait out a competing writer (busy_timeout FIRST,
+    so the WAL flip itself waits) instead of failing 'database is locked'
+    immediately. isolation_level default matches sqlite3.connect's own."""
+    conn = sqlite3.connect(str(db_path), timeout=30.0,
+                           isolation_level=isolation_level)
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
 def init_db(db_path: Path) -> None:
     """Create the table if missing. Idempotent. Runs additive migrations."""
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS proforma_invoice_links (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -149,6 +163,21 @@ def init_db(db_path: Path) -> None:
                 raise
         # Phase 1: also ensure the drafts table + events table exist.
         _ensure_drafts_table(conn)
+        # C-3g: service-charge product metadata registry (PROFORMA authority).
+        # Holds ONLY display/config metadata for service-charge line emission
+        # (freight/insurance). The wFirma identity (wfirma_product_id) is NOT
+        # stored here — wfirma_product_mirror is the sole identity authority.
+        # Replaces the retired wfirma_products cache dependency for service
+        # charges (Phase-C C-3g; C-1d declared residuals 1+2).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS service_product_registry (
+                charge_type  TEXT PRIMARY KEY,
+                product_name TEXT NOT NULL DEFAULT '',
+                vat_rate     TEXT NOT NULL DEFAULT '23',
+                unit         TEXT NOT NULL DEFAULT 'szt.',
+                updated_at   TEXT NOT NULL
+            )
+        """)
         conn.commit()
 
 
@@ -193,7 +222,7 @@ def create_pending_link(db_path: Path, link: ProformaInvoiceLink) -> int:
     if not link.converted_at:
         link = replace(link, converted_at=_now_utc_iso())
 
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         try:
             cur = conn.execute(
@@ -241,7 +270,7 @@ def mark_issued(db_path: Path,
         raise ValueError("invoice_id and invoice_number are required to mark issued")
     if Decimal(invoice_total) <= 0:
         raise ValueError(f"invoice_total must be > 0, got {invoice_total}")
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute(
             """
             UPDATE proforma_invoice_links
@@ -264,7 +293,7 @@ def mark_failed(db_path: Path, proforma_id: str, *, notes: str) -> None:
     """Promote a pending link to failed (e.g. wFirma rejected the add)."""
     if not (notes or "").strip():
         raise ValueError("notes is required when marking failed")
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute(
             """
             UPDATE proforma_invoice_links
@@ -282,7 +311,7 @@ def mark_failed(db_path: Path, proforma_id: str, *, notes: str) -> None:
 def get_link_by_proforma(db_path: Path, proforma_id: str) -> Optional[ProformaInvoiceLink]:
     if not Path(db_path).exists():
         return None
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
             "SELECT * FROM proforma_invoice_links WHERE proforma_id = ? LIMIT 1",
@@ -295,7 +324,7 @@ def get_link_by_proforma(db_path: Path, proforma_id: str) -> Optional[ProformaIn
 def get_link_by_invoice(db_path: Path, invoice_id: str) -> Optional[ProformaInvoiceLink]:
     if not Path(db_path).exists():
         return None
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
             "SELECT * FROM proforma_invoice_links WHERE invoice_id = ? LIMIT 1",
@@ -326,7 +355,7 @@ def set_pz_doc_id(db_path: Path, proforma_id: str, pz_doc_id: str) -> None:
             f"proforma_id={proforma_id!r} already has pz_doc_id={existing!r}; "
             f"refusing to overwrite with {pz_doc_id!r}"
         )
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute(
             "UPDATE proforma_invoice_links SET wfirma_pz_doc_id = ? WHERE proforma_id = ?",
             (str(pz_doc_id), str(proforma_id)),
@@ -350,7 +379,7 @@ def list_links(db_path: Path,
         where = "WHERE status = ?"
         args.append(status)
     args.append(int(limit))
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
             f"SELECT * FROM proforma_invoice_links {where} ORDER BY id DESC LIMIT ?",
@@ -739,7 +768,7 @@ def record_draft_birth_block(
         return
     now = _now_utc_iso()
     try:
-        with sqlite3.connect(str(db_path)) as conn:
+        with _connect(db_path) as conn:
             _ensure_drafts_table(conn)
             conn.execute(
                 """
@@ -779,7 +808,7 @@ def resolve_draft_birth_block(
         return
     now = _now_utc_iso()
     try:
-        with sqlite3.connect(str(db_path)) as conn:
+        with _connect(db_path) as conn:
             _ensure_drafts_table(conn)
             conn.execute(
                 "UPDATE proforma_draft_birth_blocks "
@@ -801,7 +830,7 @@ def list_draft_birth_blocks(
     if not (batch_id or "").strip():
         return []
     try:
-        with sqlite3.connect(str(db_path)) as conn:
+        with _connect(db_path) as conn:
             _ensure_drafts_table(conn)
             conn.row_factory = sqlite3.Row
             sql = (
@@ -866,7 +895,7 @@ def migrate_draft_to_canonical_name(
         return report
 
     now = _now_utc_iso()
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         _ensure_drafts_table(conn)
 
@@ -1129,7 +1158,7 @@ def freeze_draft_vat_context(
     Called at draft creation and, if not yet set, at first post attempt.
     """
     now = _now_utc_iso()
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         # Do NOT call _ensure_drafts_table here — the draft row exists,
         # the columns exist (added by startup migration), and calling it
@@ -1149,7 +1178,7 @@ def get_draft(
 ) -> Optional[ProformaDraft]:
     if not Path(db_path).exists():
         return None
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         _ensure_drafts_table(conn)
         cur = conn.execute(
@@ -1197,7 +1226,7 @@ def upsert_pending_draft(
     sc_json = json.dumps(parsed, ensure_ascii=False, sort_keys=True)
 
     init_db(db_path)
-    with sqlite3.connect(str(db_path), isolation_level="DEFERRED") as conn:
+    with _connect(db_path, isolation_level="DEFERRED") as conn:
         conn.row_factory = sqlite3.Row
         _ensure_drafts_table(conn)
 
@@ -1241,7 +1270,7 @@ def mark_draft_failed(db_path: Path, batch_id: str, client_name: str,
                       *, notes: str) -> None:
     if not (notes or "").strip():
         raise ValueError("notes is required when marking failed")
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         _ensure_drafts_table(conn)
         cur = conn.execute(
             "UPDATE proforma_drafts SET status='failed', notes=?, updated_at=? "
@@ -1276,7 +1305,7 @@ def mark_draft_cancelled_for_reissue(
         f"cancelled_for_reissue: deleted_wfirma_id={deleted_wfirma_id} "
         f"reason={reason}"
     )
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         _ensure_drafts_table(conn)
         cur = conn.execute(
             "UPDATE proforma_drafts "
@@ -1325,7 +1354,7 @@ def adopt_issued_draft(
     now   = _now_utc_iso()
 
     init_db(db_path)
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         _ensure_drafts_table(conn)
 
@@ -1401,7 +1430,7 @@ def mark_draft_issued(db_path: Path, batch_id: str, client_name: str,
     if not (wfirma_proforma_id or "").strip():
         raise ValueError("wfirma_proforma_id is required to mark issued")
     fullnumber = (wfirma_proforma_fullnumber or "").strip()
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         _ensure_drafts_table(conn)
         if fullnumber:
             cur = conn.execute(
@@ -1445,7 +1474,7 @@ def write_postposting_enrichment(
     """
     if not isinstance(draft_id, int) or draft_id <= 0:
         raise ValueError(f"draft_id must be a positive int, got {draft_id!r}")
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         _ensure_drafts_table(conn)
         cur = conn.execute(
             "UPDATE proforma_drafts "
@@ -1506,7 +1535,7 @@ def _record_draft_event(
         raise ValueError("detail_json must be a JSON object or array")
 
     init_db(db_path)
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         _ensure_drafts_table(conn)
         cur = conn.execute(
             """
@@ -1533,7 +1562,7 @@ def list_draft_events(
     """
     if not Path(db_path).exists():
         return []
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         _ensure_drafts_table(conn)
         rows = conn.execute(
@@ -1549,7 +1578,7 @@ def get_draft_by_id(db_path: Path, draft_id: int) -> Optional[ProformaDraft]:
     """Fetch a draft by its primary key. Returns None if not found."""
     if not Path(db_path).exists():
         return None
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         _ensure_drafts_table(conn)
         row = conn.execute(
@@ -1575,7 +1604,7 @@ def clone_draft(db_path: Path, source_id: int) -> ProformaDraft:
     import json as _json
     now = _now_utc_iso()
     init_db(db_path)
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         _ensure_drafts_table(conn)
 
@@ -1643,7 +1672,7 @@ def list_drafts_for_batch(db_path: Path, batch_id: str) -> List[ProformaDraft]:
     """Return every draft row for a batch, oldest-first."""
     if not Path(db_path).exists():
         return []
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         _ensure_drafts_table(conn)
         rows = conn.execute(
@@ -1738,7 +1767,7 @@ def search_drafts(
     if conditions:
         where_clause = "WHERE " + " AND ".join(conditions)
 
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         _ensure_drafts_table(conn)
 
@@ -1796,7 +1825,7 @@ def list_attention_drafts(
     attention_states = ("draft", "editing", "approved", "post_failed", "posting")
     placeholders = ", ".join("?" for _ in attention_states)
 
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         _ensure_drafts_table(conn)
         rows = conn.execute(
@@ -1968,7 +1997,7 @@ def auto_create_draft_from_sales_packing(
 
     init_db(db_path)
     now = _now_utc_iso()
-    with sqlite3.connect(str(db_path), isolation_level="DEFERRED") as conn:
+    with _connect(db_path, isolation_level="DEFERRED") as conn:
         conn.row_factory = sqlite3.Row
         _ensure_drafts_table(conn)
 
@@ -2127,6 +2156,67 @@ EDITABLE_LINE_FIELDS = (
 )
 
 ALLOWED_SERVICE_CHARGE_TYPES = ("freight", "insurance")
+
+
+# ── C-3g: service-charge product metadata registry ───────────────────────────
+# PROFORMA-authority store for service-charge line emission metadata
+# (display label, informational vat_rate, unit). Identity (wfirma_product_id)
+# lives ONLY in wfirma_product_mirror — never here.
+
+def upsert_service_product_meta(
+    db_path: Path,
+    charge_type: str,
+    *,
+    product_name: str = "",
+    vat_rate: str = "23",
+    unit: str = "szt.",
+) -> None:
+    """Insert or replace the emission metadata for a service charge type."""
+    ct = (charge_type or "").strip().lower()
+    if ct not in ALLOWED_SERVICE_CHARGE_TYPES:
+        raise ValueError(
+            f"charge_type {charge_type!r} not allowed; "
+            f"expected one of {ALLOWED_SERVICE_CHARGE_TYPES}"
+        )
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO service_product_registry "
+            "(charge_type, product_name, vat_rate, unit, updated_at) "
+            "VALUES (?,?,?,?,?) "
+            "ON CONFLICT(charge_type) DO UPDATE SET "
+            "product_name=excluded.product_name, vat_rate=excluded.vat_rate, "
+            "unit=excluded.unit, updated_at=excluded.updated_at",
+            (ct, (product_name or "").strip(), (vat_rate or "23").strip(),
+             (unit or "szt.").strip(), _now_utc_iso()),
+        )
+        conn.commit()
+
+
+def get_service_product_meta(db_path: Path, charge_type: str) -> Optional[Dict[str, Any]]:
+    """Return {product_name, vat_rate, unit} for a charge type, or None."""
+    ct = (charge_type or "").strip().lower()
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT charge_type, product_name, vat_rate, unit, updated_at "
+            "FROM service_product_registry WHERE charge_type=?", (ct,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_all_service_product_meta(db_path: Path) -> Dict[str, Dict[str, Any]]:
+    """Return {charge_type: {product_name, vat_rate, unit, updated_at}}."""
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT charge_type, product_name, vat_rate, unit, updated_at "
+            "FROM service_product_registry"
+        ).fetchall()
+    return {r["charge_type"]: dict(r) for r in rows}
+
 
 # Keys that must never appear in formula_basis — they would bleed
 # customs / import cost data into a service charge formula.
@@ -2358,7 +2448,7 @@ def _commit_draft_update(
         args.append(new_sales_price_invoice_ref)
 
     args.append(int(draft_id))
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         _ensure_drafts_table(conn)
         cur = conn.execute(
@@ -3168,7 +3258,7 @@ def purge_cancelled_draft(
             f"{d.wfirma_proforma_fullnumber!r} — "
             f"cannot purge a draft with an assigned number"
         )
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.execute(
             "DELETE FROM proforma_draft_events WHERE draft_id = ?", (draft_id,)
         )
@@ -3850,6 +3940,9 @@ __all__ = [
     "EDITABLE_DRAFT_FIELDS",
     "EDITABLE_LINE_FIELDS",
     "ALLOWED_SERVICE_CHARGE_TYPES",
+    "upsert_service_product_meta",
+    "get_service_product_meta",
+    "get_all_service_product_meta",
     "_FORBIDDEN_FORMULA_BASIS_PREFIXES",
     "DraftNotFound",
     "DraftNotEditable",

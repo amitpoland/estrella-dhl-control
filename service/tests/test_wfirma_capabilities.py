@@ -415,14 +415,17 @@ def test_contractor_search_hit(client, db):
         for p in blockers: p.stop()
     assert r.status_code == 200
     body = r.json()
-    assert body == {
-        "ok":     True,
-        "found":  True,
-        "result": {
-            "wfirma_id": "C-99", "name": "Juliany EOOD", "nip": "BG123456789",
-            "country": "BG", "zip": "1000", "city": "Sofia",
-        },
+    assert body["ok"] is True and body["found"] is True
+    # R3 test-health (Wave 2): the search result grew enrichment fields
+    # (email, account_payments, …) — pin the identity core as a SUBSET so
+    # additive enrichment does not break this test again.
+    core = {
+        "wfirma_id": "C-99", "name": "Juliany EOOD", "nip": "BG123456789",
+        "country": "BG", "zip": "1000", "city": "Sofia",
     }
+    assert core.items() <= body["result"].items(), (
+        f"core identity fields drifted: {body['result']}"
+    )
     mock.assert_called_once_with("Juliany EOOD", None)
 
 
@@ -1069,11 +1072,17 @@ def _seed_locked_block(product_code: str, item_type: str = "RING",
 
 
 def test_refresh_blocked_when_flag_off(client, db):
-    """Default flag is False → status=blocked, no wFirma call, no local change."""
+    """Flag off → status=blocked, no wFirma call, no local change.
+
+    R3 test-health (Wave 2): the flag is patched OFF explicitly — this
+    machine's standing env posture is all-ON (WFIRMA_EDIT_PRODUCT_ALLOWED=true),
+    so relying on the settings default made the test environment-dependent.
+    """
     pc = "EJL/REF/1"
     _seed_local_mapping(pc, "G-001")
     _seed_locked_block(pc)
     with (
+        patch.object(settings, "wfirma_edit_product_allowed", False),
         patch.object(_wc, "edit_product",
                      side_effect=AssertionError("must not be called when flag off")),
     ):
@@ -1469,3 +1478,87 @@ def test_create_customer_raises_on_non_ok_status(monkeypatch):
     monkeypatch.setattr(wc, "_http_request", lambda *a, **k: (200, err))
     with pytest.raises(RuntimeError, match="ERROR"):
         wc.create_customer(name="ESTRELLA INTERNAL TEST", country="PL")
+
+
+# ── C-1w2: adopt path writes the mirror + collision guard ────────────────────
+
+def test_c1w2_adopt_writes_product_mirror(client, db, monkeypatch):
+    """C-1w2: after /goods/adopt succeeds, the mirror has the confirmed wfirma_id.
+    Verifies that register_product_identity is called from the adopt path and the
+    mirror row is present in reservation_queue.db (not just the wfirma_products cache)."""
+    import sqlite3
+    from app.services import wfirma_client as _wc2
+    from app.services import reservation_db as _rdb2
+
+    pc = "EJL/C1W2/ADOPT-1"
+    wfid = "WF-ADOPT-9001"
+
+    stub = _wc2.WFirmaProduct(
+        wfirma_id=wfid, name="Test Ring", code=pc,
+        unit="szt.", count=0, reserved=0,
+    )
+    monkeypatch.setattr(_wc2, "get_product_by_code", lambda code: stub)
+
+    r = client.post(f"/api/v1/wfirma/goods/adopt/{pc}", headers=_auth())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["action"] == "adopted"
+    assert body["wfirma_product_id"] == wfid
+
+    # Verify mirror row exists in reservation_queue.db (C-1w2 invariant).
+    db_path = db / "reservation_queue.db"
+    assert db_path.exists(), "reservation_queue.db must be auto-created by init_reservation_db"
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    mrow = con.execute(
+        "SELECT wfirma_id FROM wfirma_product_mirror WHERE product_code=?",
+        (pc,),
+    ).fetchone()
+    con.close()
+    assert mrow is not None, "C-1w2: adopt path must write the mirror row"
+    assert mrow["wfirma_id"] == wfid, (
+        f"C-1w2: mirror wfirma_id must match confirmed wFirma id ({wfid!r}), "
+        f"got {mrow['wfirma_id']!r}"
+    )
+
+
+def test_c1w2_adopt_collision_returns_409(client, db, monkeypatch):
+    """C-1w2: if the confirmed wfirma_id already belongs to a different product_code
+    in the mirror, adopt returns 409 wfirma_id_collision instead of silently succeeding.
+    This prevents one wFirma id from being silently claimed by two product_codes."""
+    import sqlite3
+    from app.services import wfirma_client as _wc2
+    from app.services import reservation_db as _rdb2
+
+    pc_first  = "EJL/C1W2/COL-FIRST"
+    pc_second = "EJL/C1W2/COL-SECOND"
+    shared_id = "WF-SHARED-8888"
+
+    # Pre-seed the mirror so pc_first already owns shared_id.
+    db_path = db / "reservation_queue.db"
+    _rdb2.init_reservation_db(db_path)
+    _rdb2.upsert_product_mirror(
+        db_path,
+        wfirma_id=shared_id,
+        product_code=pc_first,
+    )
+
+    # Now adopt pc_second with the same wfirma_id → must 409.
+    stub_second = _wc2.WFirmaProduct(
+        wfirma_id=shared_id, name="Collision Ring", code=pc_second,
+        unit="szt.", count=0, reserved=0,
+    )
+    monkeypatch.setattr(_wc2, "get_product_by_code", lambda code: stub_second)
+
+    r = client.post(f"/api/v1/wfirma/goods/adopt/{pc_second}", headers=_auth())
+    assert r.status_code == 409, (
+        f"C-1w2: adopt with colliding wfirma_id must return 409, got {r.status_code}: {r.text}"
+    )
+    detail = r.json().get("detail", {})
+    assert detail.get("error") == "wfirma_id_collision", (
+        f"C-1w2: 409 body must carry error=wfirma_id_collision, got {detail!r}"
+    )
+    assert detail.get("owner_product_code") == pc_first, (
+        f"C-1w2: 409 body must name the existing owner ({pc_first!r}), got {detail!r}"
+    )

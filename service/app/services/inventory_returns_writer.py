@@ -352,6 +352,11 @@ def return_from_producer_to_stock(
             f"unexpected database constraint: {exc}",
         ) from exc
 
+    # Direct transition BY DESIGN — this is a RETURN to stock
+    # (RETURNED_TO_PRODUCER → WAREHOUSE_STOCK), not a Temp Warehouse →
+    # Final Stock promotion: no Stock Promotion Note is written here
+    # (PROJECT_STATE DECISIONS "BE-2b" boundary). A new WAREHOUSE_STOCK
+    # transition in this file must justify itself against that boundary.
     inventory_state_engine.transition(
         scan_code=scan_code,
         to_state=WAREHOUSE_STOCK,

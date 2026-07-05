@@ -46,6 +46,9 @@ from fastapi.responses import JSONResponse
 from ..core.logging import get_logger
 from ..core.security import require_api_key
 from ..services import wfirma_client
+from ..services.customer_master_db import (    # C-2b V5 reroute
+    lookup_wfirma_contractor as _cmd_lookup_contractor,
+)
 from ..services.ledger_aggregator import (
     aggregate_invoice_ledger,
     aggregate_statement,
@@ -152,7 +155,7 @@ def get_client_invoice_ledger(
     # Preflight: confirm contractor exists. Same pattern as the Phase 5
     # /post receiver-preflight.
     try:
-        rcv = wfirma_client.fetch_contractor_by_id(cid)
+        rcv = _cmd_lookup_contractor(cid)  # C-2b V5
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -285,7 +288,7 @@ def _build_statement_dict(
 
     # Preflight contractor.
     try:
-        rcv = wfirma_client.fetch_contractor_by_id(cid)
+        rcv = _cmd_lookup_contractor(cid)  # C-2b V5
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -475,3 +478,200 @@ def get_client_statement_pdf(
             "Content-Disposition": f'inline; filename="{filename}"',
         },
     )
+
+
+# ── Wave 4 Item 4 — Client Balance roster ──────────────────────────────────
+#
+# GET /api/v1/ledgers/clients
+#
+# Read-only roster: the Customer Master client list JOINed with per-client
+# balance figures computed by REUSING the documented Statement authority
+# (aggregate_statement over invoices/find + payments/find — same path as
+# /clients/{id}/statement.json). No local balance mirror; balances are
+# computed live per client and fault-isolated so one client's wFirma failure
+# does not fail the whole roster.
+#
+# SPLIT (operator ruling 2026-07-05) — column authority status:
+#   Open (outstanding)          DOCUMENTED  — totals_per_currency.outstanding
+#   Currency / State            DOCUMENTED  — derived from the same totals
+#   YTD (invoiced in period)    DOCUMENTED  — totals_per_currency.invoiced,
+#                                             default window = year-to-date
+#   Overdue (invoice-age)       DOCUMENTED  — aging total minus "current"
+#                                             bucket (invoice_age basis)
+#   Overdue (due-date)          BACKEND PENDING — blocked by the PHASE10A.5
+#                                             payment-state probe (see top of
+#                                             file); invoice-age substituted,
+#                                             basis disclosed, never relabelled
+#   Last 30d (rolling receipts) BACKEND PENDING — no existing authority emits
+#                                             a rolling-window receipts figure
+from datetime import datetime, timezone   # noqa: E402
+from decimal import Decimal               # noqa: E402
+
+from ..core.config import settings        # noqa: E402
+from ..services.customer_master_db import (   # noqa: E402
+    list_customers as _cm_list_customers,
+)
+
+_CM_DB_PATH = settings.storage_root / "customer_master.sqlite"
+
+
+def _sum_ccy(m: Dict[str, Any]) -> Decimal:
+    """Sum a {currency: numeric-string} map into a Decimal (bad values skipped)."""
+    tot = Decimal("0")
+    for v in m.values():
+        try:
+            tot += Decimal(str(v))
+        except Exception:
+            pass
+    return tot
+
+
+def _roster_row_from_statement(default_currency: str,
+                               stmt: Dict[str, Any]) -> Dict[str, Any]:
+    """Reduce a Phase-10B statement dict to the Client-Balance roster summary.
+
+    Reuses ``aggregate_statement`` output verbatim — NO new payment logic is
+    introduced here. Overdue is the invoice-age aged figure (aging total minus
+    the ``current`` bucket); due-date overdue is NOT computed (architecture §7).
+    """
+    totals = stmt.get("totals_per_currency", {}) or {}
+    aging  = stmt.get("aging_per_currency", {}) or {}
+    ccys   = sorted(totals.keys())
+
+    open_by_ccy     = {c: totals[c].get("outstanding", "0.00") for c in ccys}
+    invoiced_by_ccy = {c: totals[c].get("invoiced", "0.00") for c in ccys}
+
+    aged_by_ccy: Dict[str, str] = {}
+    for c in ccys:
+        a = aging.get(c, {}) or {}
+        try:
+            aged = Decimal(str(a.get("total", "0"))) - Decimal(str(a.get("current", "0")))
+        except Exception:
+            aged = Decimal("0")
+        aged_by_ccy[c] = f"{aged:.2f}"
+
+    open_total = _sum_ccy(open_by_ccy)
+    single = ccys[0] if len(ccys) == 1 else None
+    if single:
+        currency = single
+    elif len(ccys) > 1:
+        currency = "multi"
+    else:
+        currency = default_currency or "—"
+
+    return {
+        "balance_available":               True,
+        "currencies":                      ccys,
+        "currency":                        currency,
+        "open":                            (open_by_ccy[single] if single else None),
+        "open_by_currency":                open_by_ccy,
+        # Invoice-age basis ONLY — due-date overdue is Backend Pending.
+        "overdue_invoice_age":             (aged_by_ccy[single] if single else None),
+        "overdue_invoice_age_by_currency": aged_by_ccy,
+        "overdue_due_date":                None,   # Backend Pending (PHASE10A.5)
+        # YTD = invoiced within the (default year-to-date) statement window.
+        "ytd_invoiced":                    (invoiced_by_ccy[single] if single else None),
+        "ytd_invoiced_by_currency":        invoiced_by_ccy,
+        "last_30d":                        None,   # Backend Pending
+        "state":                           ("outstanding" if open_total > 0 else "clear"),
+    }
+
+
+def _unavailable_row(base: Dict[str, Any], default_currency: str,
+                     note: str) -> Dict[str, Any]:
+    """Honest placeholder row when a client has no balance (no contractor id,
+    or the live wFirma read failed). No fabricated figures."""
+    return {
+        **base,
+        "balance_available":   False,
+        "currency":            default_currency or "—",
+        "open":                None,
+        "overdue_invoice_age": None,
+        "overdue_due_date":    None,
+        "ytd_invoiced":        None,
+        "last_30d":            None,
+        "state":               "unknown",
+        "note":                note,
+    }
+
+
+@router.get("/clients", dependencies=[_auth])
+def list_client_balances(
+    from_:   str = Query("", alias="from",
+                          description="Window start YYYY-MM-DD; default = Jan 1 this year"),
+    to:      str = Query("", description="Window end YYYY-MM-DD; default = today UTC"),
+    start:   int = Query(0, ge=0),
+    limit:   int = Query(25, ge=1, le=100),
+    country: str = Query("", description="Filter by ISO-3166 alpha-2 country"),
+    q:       str = Query("", description="Case-insensitive name substring"),
+) -> JSONResponse:
+    """Read-only Client Balance roster (Wave 4 Item 4).
+
+    Client identity is owned by the **Customer Master**; balance / invoice /
+    payment figures are owned by the existing **Statement authority**
+    (``aggregate_statement``). This endpoint only JOINs the two — it holds no
+    balance state of its own and creates no mirror.
+
+    Balances are computed **live per client** (contractor preflight +
+    invoices/find + payments/find each), so keep ``limit`` small. A per-client
+    wFirma failure yields an honest ``balance_available:false`` row rather than
+    failing the roster.
+
+    Outcomes:
+      200 — roster JSON (rows may be empty)
+      400 — invalid date / ``from > to``
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    df = (from_ or "").strip() or f"{today[:4]}-01-01"
+    dt = (to or "").strip() or today
+    df = _validate_date("from", df)
+    dt = _validate_date("to", dt)
+    if df > dt:
+        raise HTTPException(status_code=400, detail=f"from {df!r} is after to {dt!r}")
+
+    customers = _cm_list_customers(
+        _CM_DB_PATH,
+        country=(country.strip().upper() or None),
+        q=(q.strip() or None),
+        active=True,
+        limit=start + limit,
+    )
+    page = customers[start:start + limit]
+
+    rows = []
+    for cust in page:
+        cid = (getattr(cust, "bill_to_contractor_id", "") or "").strip()
+        base = {
+            "contractor_id": cid,
+            "name":          getattr(cust, "bill_to_name", "") or "",
+            "country":       getattr(cust, "country", "") or "",
+            "vat_id":        getattr(cust, "nip", "") or "",
+        }
+        default_ccy = getattr(cust, "default_currency", "") or ""
+        if not cid:
+            rows.append(_unavailable_row(base, default_ccy, "no wFirma contractor id"))
+            continue
+        try:
+            stmt = _build_statement_dict(cid, df, dt, dt)
+        except HTTPException:
+            rows.append(_unavailable_row(
+                base, default_ccy, "balance unavailable (wFirma read failed)"))
+            continue
+        rows.append({**base, **_roster_row_from_statement(default_ccy, stmt)})
+
+    return JSONResponse({
+        "period":       {"from": df, "to": dt},
+        "start":        start,
+        "limit":        limit,
+        "count":        len(rows),
+        "rows":         rows,
+        "column_status": {
+            "open":                 "documented",
+            "currency":             "documented",
+            "state":                "documented",
+            "ytd_invoiced":         "documented (invoiced in period)",
+            "overdue_invoice_age":  "documented (invoice-age basis)",
+            "overdue_due_date":     "backend_pending (PHASE10A.5 probe)",
+            "last_30d":             "backend_pending",
+        },
+    })

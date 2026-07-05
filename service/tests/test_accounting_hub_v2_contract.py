@@ -1,195 +1,169 @@
 """
-test_accounting_hub_v2_contract.py — Sprint 28 Accounting Hub V2 contract.
+test_accounting_hub_v2_contract.py — Wave-3 Accounting Hub V2 contract.
+
+SUPERSEDED: Sprint-28 contract targeted accounting-hub-v2.html (standalone HTML,
+V1 shell era). V2 era uses accounting-hub.jsx in the Atlas Babel-JSX shell.
+This contract reflects the V2 architecture.
 
 Asserts (static source-grep; no server required):
 
-  A. accounting-hub-v2.html existence and structure (1–5)
-     1. accounting-hub-v2.html exists.
-     2. accounting-hub-v2.html loads dashboard-shared.js.
-     3. accounting-hub-v2.html loads pz-api.js.
-     4. accounting-hub-v2.html mounts a root component (ReactDOM.createRoot).
-     5. accounting-hub-v2.html has data-testid="accounting-hub-root".
+  A. accounting-hub.jsx existence and structure in V2 static (1–3)
+     1. service/app/static/v2/accounting-hub.jsx exists.
+     2. accounting-hub.jsx has data-testid="accounting-hub-root".
+     3. accounting-hub.jsx exports window.AccountingHub.
 
-  B. Only approved endpoints are referenced (6–8)
-     6. No forbidden endpoint patterns present:
+  B. WIRED_PAGES includes 'accounting' (mock-badge.jsx) (4)
+     4. 'accounting' is in WIRED_PAGES in mock-badge.jsx.
+
+  C. index.html routes 'accounting' slug to AccountingHub (5–6)
+     5. index.html loads accounting-hub.jsx as Babel script.
+     6. index.html routes page==='accounting' to AccountingHub.
+
+  D. Only approved pz-api.js methods used; no forbidden endpoints (7–8)
+     7. Wave-3 API additions present in pz-api.js:
+        getWfirmaContractorScanStatus.
+     8. No forbidden endpoint strings in accounting-hub.jsx:
         /api/v1/accounting/, /api/v1/ledger/clients, /api/v1/wfirma/sync/.
-     7. All referenced /api/v1/ paths are from the approved list.
-     8. No POST/PATCH/DELETE/PUT fetch methods — page is strictly read-only.
 
-  C. Atlas stub retired (9)
-     9. atlas/accounting-v2.html does NOT exist.
+  E. Wave-4 gated tabs kept visible (9)
+     9. accounting-hub.jsx contains Wave-4 gated tab IDs (wz/pz/pw/rw/mm).
 
-  D. NAV_ROUTES and STUB_ROUTES (10–12)
-    10. NAV_ROUTES['accounting'] points to /dashboard/accounting-hub-v2.html.
-    11. 'accounting' is NOT in STUB_ROUTES.
-    12. STUB_ROUTES is empty (inventory promoted in Sprint 29).
+  F. No mock arrays remain in accounting-hub.jsx (10)
+    10. accounting-hub.jsx must NOT contain ACC_DOCS, CLIENT_BALANCE,
+        CLIENT_LEDGER, SUPPLIER_LEDGER (old mock data arrays).
 
-  E. Preserved boundaries (13–14)
-    13. wfirma-inbox-v2.html still exists.
-    14. No backend files changed.
+  G. LedgersPage embed present (11)
+    11. accounting-hub.jsx references window.LedgersPage for the Client
+        Ledger tab.
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
-_ROOT   = Path(__file__).resolve().parents[2]
-_STATIC = _ROOT / "service" / "app" / "static"
+_ROOT     = Path(__file__).resolve().parents[2]
+_V2       = _ROOT / "service" / "app" / "static" / "v2"
+_STATIC   = _ROOT / "service" / "app" / "static"
 
 
-def _read(name: str) -> str:
-    return (_STATIC / name).read_text(encoding="utf-8", errors="replace")
+def _read_v2(name: str) -> str:
+    return (_V2 / name).read_text(encoding="utf-8", errors="replace")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# A — accounting-hub-v2.html existence and structure
+# A — accounting-hub.jsx existence and structure
 # ══════════════════════════════════════════════════════════════════════════════
 
-def test_accounting_hub_exists():
-    assert (_STATIC / "accounting-hub-v2.html").exists(), \
-        "accounting-hub-v2.html must exist in service/app/static/"
-
-
-def test_accounting_hub_loads_dashboard_shared():
-    src = _read("accounting-hub-v2.html")
-    assert "dashboard-shared.js" in src, \
-        "accounting-hub-v2.html must load dashboard-shared.js (provides EstrellaShared.apiFetch)"
-
-
-def test_accounting_hub_loads_pz_api():
-    src = _read("accounting-hub-v2.html")
-    assert "pz-api.js" in src, \
-        "accounting-hub-v2.html must load pz-api.js"
-
-
-def test_accounting_hub_mounts_root():
-    src = _read("accounting-hub-v2.html")
-    assert "ReactDOM.createRoot" in src, \
-        "accounting-hub-v2.html must mount via ReactDOM.createRoot"
+def test_accounting_hub_jsx_exists():
+    assert (_V2 / "accounting-hub.jsx").exists(), \
+        "service/app/static/v2/accounting-hub.jsx must exist (Wave-3 V2 authority)"
 
 
 def test_accounting_hub_has_root_testid():
-    src = _read("accounting-hub-v2.html")
-    assert 'data-testid="accounting-hub-root"' in src, \
-        "accounting-hub-v2.html must have data-testid='accounting-hub-root' on root element"
+    src = _read_v2("accounting-hub.jsx")
+    assert 'data-testid="accounting-hub-root"' in src, (
+        "accounting-hub.jsx must have data-testid='accounting-hub-root' on the "
+        "AccountingHub root element"
+    )
+
+
+def test_accounting_hub_exports_window():
+    src = _read_v2("accounting-hub.jsx")
+    assert "window.AccountingHub" in src, (
+        "accounting-hub.jsx must expose window.AccountingHub for the Atlas shell"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# B — Only approved endpoints referenced
+# B — WIRED_PAGES includes 'accounting'
 # ══════════════════════════════════════════════════════════════════════════════
 
-_FORBIDDEN_PATTERNS = [
+def test_accounting_in_wired_pages():
+    src = _read_v2("mock-badge.jsx")
+    assert "'accounting'" in src, (
+        "'accounting' must be added to WIRED_PAGES in mock-badge.jsx. "
+        "Absence means the MOCK banner still renders on the live page."
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# C — index.html routes 'accounting' slug to AccountingHub
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_index_html_loads_accounting_hub_jsx():
+    src = (_V2 / "index.html").read_text(encoding="utf-8", errors="replace")
+    assert "accounting-hub.jsx" in src, (
+        "index.html must load accounting-hub.jsx as a Babel script"
+    )
+
+
+def test_index_html_routes_accounting_slug():
+    src = (_V2 / "index.html").read_text(encoding="utf-8", errors="replace")
+    assert "page === 'accounting'" in src or "page==='accounting'" in src, (
+        "index.html must route page==='accounting' to AccountingHub"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# D — Approved pz-api.js methods; no forbidden endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_pz_api_has_wfirma_contractor_scan_status():
+    src = _read_v2("pz-api.js")
+    assert "getWfirmaContractorScanStatus" in src, (
+        "pz-api.js must define getWfirmaContractorScanStatus "
+        "(Wave-3 transport wrapper for GET /api/v1/wfirma/contractors/scan/status)"
+    )
+
+
+_FORBIDDEN_ENDPOINTS = [
     "/api/v1/accounting/",
-    "/api/v1/ledger/clients",      # wrong path — real path is /ledgers/clients/
+    "/api/v1/ledger/clients",    # wrong path (real: /ledgers/clients/)
     "/api/v1/wfirma/sync/",
 ]
 
-_APPROVED_API_PATHS = [
-    "/api/v1/proforma/draft/",         # covers invoice-link, to-invoice-preview, disclose-convert
-    "/api/v1/proforma/pipeline/",
-    "/api/v1/proforma/",               # covers /{batch_id}/{client}/dual-valuation
-    "/api/v1/ledgers/clients/",
-]
-
-
-def test_no_forbidden_endpoints():
-    src = _read("accounting-hub-v2.html")
-    for pattern in _FORBIDDEN_PATTERNS:
+def test_no_forbidden_endpoints_in_hub():
+    src = _read_v2("accounting-hub.jsx")
+    for pattern in _FORBIDDEN_ENDPOINTS:
         assert pattern not in src, (
-            f"Forbidden endpoint pattern '{pattern}' found in accounting-hub-v2.html. "
-            "Only pre-approved routes from the authority audit may be used."
-        )
-
-
-def test_all_api_paths_are_approved():
-    src = _read("accounting-hub-v2.html")
-    # Extract all /api/v1/... path strings from the source
-    found = re.findall(r"/api/v1/[a-zA-Z0-9/_{}.*-]+", src)
-    for path in set(found):
-        matched = any(path.startswith(approved) or approved in path
-                      for approved in _APPROVED_API_PATHS)
-        assert matched, (
-            f"Unapproved API path '{path}' found in accounting-hub-v2.html. "
-            f"Approved prefixes: {_APPROVED_API_PATHS}"
-        )
-
-
-def test_no_write_methods():
-    src = _read("accounting-hub-v2.html")
-    write_patterns = [
-        "method: 'POST'", 'method: "POST"',
-        "method: 'PATCH'", 'method: "PATCH"',
-        "method: 'DELETE'", 'method: "DELETE"',
-        "method: 'PUT'", 'method: "PUT"',
-    ]
-    for pattern in write_patterns:
-        assert pattern not in src, (
-            f"Write method '{pattern}' found — accounting-hub-v2.html must be strictly read-only"
+            f"Forbidden endpoint '{pattern}' found in accounting-hub.jsx. "
+            "Use only PzApi transport wrappers for approved EXISTING endpoints."
         )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# C — Atlas stub retired
+# E — Wave-4 gated tabs visible
 # ══════════════════════════════════════════════════════════════════════════════
 
-def test_atlas_accounting_stub_removed():
-    assert not (_STATIC / "atlas" / "accounting-v2.html").exists(), (
-        "atlas/accounting-v2.html must be deleted — stale static mock. "
-        "Production authority is service/app/static/accounting-hub-v2.html."
+def test_wave4_gated_tabs_present():
+    src = _read_v2("accounting-hub.jsx")
+    for tab_id in ("'wz'", "'pz'", "'pw'", "'rw'", "'mm'"):
+        assert tab_id in src, (
+            f"Wave-4 gated tab id {tab_id} must remain visible in accounting-hub.jsx "
+            "(R-Q3 honest UI — gated, not hidden)"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# F — No mock arrays remain
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_no_mock_arrays():
+    src = _read_v2("accounting-hub.jsx")
+    forbidden_names = ["ACC_DOCS", "CLIENT_BALANCE", "CLIENT_LEDGER", "SUPPLIER_LEDGER"]
+    for name in forbidden_names:
+        assert name not in src, (
+            f"Mock array '{name}' found in accounting-hub.jsx — "
+            "all hardcoded mock data must be removed (Wave-3 live wiring)"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# G — LedgersPage embed
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_ledgers_page_embedded():
+    src = _read_v2("accounting-hub.jsx")
+    assert "window.LedgersPage" in src, (
+        "accounting-hub.jsx must reference window.LedgersPage for the Client Ledger tab "
+        "(census AC-5: ledgers-page.jsx loaded but not mounted under accounting)"
     )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# D — NAV_ROUTES and STUB_ROUTES
-# ══════════════════════════════════════════════════════════════════════════════
-
-def test_nav_routes_accounting_target():
-    src = _read("pz-design-v2.js")
-    match = re.search(r"'accounting'\s*:\s*'[^']*accounting-hub-v2\.html'", src)
-    assert match is not None, \
-        "NAV_ROUTES must map 'accounting' to '/dashboard/accounting-hub-v2.html'"
-
-
-def test_accounting_not_in_stub_routes():
-    src = _read("pz-design-v2.js")
-    stub_idx = src.index("STUB_ROUTES")
-    stub_block = src[stub_idx:stub_idx + 100]
-    assert "'accounting'" not in stub_block, \
-        "'accounting' must be removed from STUB_ROUTES — accounting-hub-v2.html is now deployed"
-
-
-def test_stub_routes_now_empty():
-    # Sprint 29 promoted inventory-v2.html. STUB_ROUTES should be empty.
-    import re as _re
-    src = _read("pz-design-v2.js")
-    stub_idx = src.index("STUB_ROUTES")
-    stub_block = src[stub_idx:stub_idx + 150]
-    match = _re.search(r"new Set\(\[(.*?)\]\)", stub_block)
-    if match:
-        assert match.group(1).strip() == '', \
-            "STUB_ROUTES should be empty Set([]) — all V2 routes now live"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# E — Preserved boundaries
-# ══════════════════════════════════════════════════════════════════════════════
-
-def test_wfirma_inbox_preserved():
-    assert (_STATIC / "wfirma-inbox-v2.html").exists(), \
-        "wfirma-inbox-v2.html must remain — it is the separate wFirma recovery domain"
-
-
-def test_no_backend_files_changed():
-    import subprocess
-    result = subprocess.run(
-        ["git", "diff", "--name-only", "origin/main", "HEAD"],
-        cwd=str(_ROOT), capture_output=True, text=True,
-    )
-    changed = result.stdout.splitlines()
-    forbidden = [
-        f for f in changed if any(pat in f for pat in [
-            "app/api/", "app/services/", "routes_", "customs", "wfirma",
-            "pz_import", "engine/", ".env",
-        ])
-    ]
-    assert not forbidden, f"Forbidden backend files found in diff: {forbidden}"

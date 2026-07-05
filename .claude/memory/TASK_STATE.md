@@ -17,6 +17,38 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
+- **Task:** Phase-C Inventory Master Campaign (platform `.claude/campaigns/phase-c-master/`) —
+  launched 2026-07-03 per operator FINAL PRE-LAUNCH AMENDMENT (verbatim R4).
+- **Started:** 2026-07-03
+- **Status:** BLOCKED-HOLD (CP4/CP5 — operator executes the prod deploy runbook)
+- **Deploy state:** gate READY-TO-DEPLOY (7/7); Lesson-D ACKNOWLEDGED; candidate
+  `84c292de` in C:\PZ-deploy-w12; pz-deploy-guard makes the sync operator-only →
+  runbook = reports/deploy/2026-07-03-wave12-operator-runbook.md (REVISED to the
+  operator's 5-section spec: backup-first w/ EstrellaDBBackup RED warning —
+  task confirmed ABSENT; ordered deploy steps; collision report file + ruling
+  table; post-deploy verification incl. prod output-equivalence + C-1f
+  mapped-charge exercise; .bak rollback). **Wave order LOCKED (operator verdict,
+  verbatim R4):** Wave 3 only after (1) production deploy (2) post-deploy
+  verification (3) mirror collision report CLEAN (4) SEPARATE Wave-3
+  ratification. On operator "deploy done + verification green + collision
+  report clean": jsonl append + W3-A1 → VALID, then WAIT for ratification (4).
+  Lesson recorded: LESSONS_LEARNED.md #4 (gate coverage proven, not assumed).
+- **HOLD reason:** §5a ratification rule: every wave of the reconstructed
+  manifest needs operator ratification at the preceding boundary. WAVE 2
+  (Backend) COMPLETE 2026-07-03 under "RATIFIED. Wave 2 begins." (+4
+  amendments, recorded `0d12fa60`). Wave-2 ledger: R3 storage-leak `2f44ffba`
+  · C-3g `568c05b2` · R2-census `be0b1252` · R3 batch `9044640e` · C-3a/b/c
+  `fee3b087` · C-3d `e8d275cd` · C-3e/f + boundary docs (git log tail).
+  C-4a SKIPPED per ratification (OI-17 OPEN — "wave completes without it").
+  Confidence Gate at boundary: NO INVALIDATED assumptions; W3-A1 AT-RISK
+  (prod deploy of the Wave-2 backend = operator 7-agent ritual + CP4; payload
+  `service/docs/ops/c3g-deploy-note.md` — mirror backfill + collision check +
+  service-registry backfill + returns/sample migrations). Resume: operator
+  ratifies Wave 3 (Entire UI) → U-1..U-6; W3-A1 must be LIVE before UI slices
+  close (CP3). Runtime: `.claude/campaigns/phase-c-master/RUNTIME.md`.
+
+## Prior task — Architecture Review (COMPLETE)
+
 - **Task:** Architecture Review — gate between Phase A and Phase C/D.
 - **Started:** 2026-06-28
 - **Status:** COMPLETE

@@ -95,12 +95,9 @@ def _stub_route_lookups(monkeypatch):
         "wfirma_customer_id": "WF-CUST-1",
         "normalized_name": name.upper(),
     })
-    monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom_wfirma.db"),
-                         raising=False)
-    monkeypatch.setattr(
-        wfdb, "get_product",
-        lambda code: {"product_code": code, "wfirma_product_id": f"WFP-{code}"},
-    )
+    # C-3g: good-id resolution is mirror-only — stub the mirror helper
+    # (the retired wfdb.get_product cache fallback is no longer consulted).
+    monkeypatch.setattr(rp, "_c1f_mirror_good_id", lambda code: f"WFP-{code}")
     monkeypatch.setattr(
         wfirma_client, "decide_proforma_vat_context",
         lambda **kw: {"context": "domestic", "vat_code": "23",

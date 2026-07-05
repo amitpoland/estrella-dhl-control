@@ -190,11 +190,16 @@ class TestWiredPages:
         assert "'coverage'" in src, "'coverage' not found in WIRED_PAGES"
 
     def test_wired_pages_count_18(self):
+        # B×7-1 promoted move_location as the 19th wired page; Phase B FOLD
+        # (2026-07-03, PROJECT_STATE DECISIONS "Phase B FOLD") RETIRED it —
+        # folded into the Inventory page as the Move Stock modal — so the
+        # count returns to 18 (net page count decreased by one).
         src = _read(MOCK_BADGE)
         match = re.search(r"const WIRED_PAGES\s*=\s*\[([^\]]+)\]", src)
         assert match, "WIRED_PAGES array not found"
         entries = [e.strip().strip("'\"") for e in match.group(1).split(",") if e.strip()]
-        assert len(entries) == 18, f"Expected 18 WIRED_PAGES entries (100%), found {len(entries)}: {entries}"
+        assert len(entries) == 18, f"Expected 18 WIRED_PAGES entries, found {len(entries)}: {entries}"
+        assert "move_location" not in entries, "move_location must be gone (Phase B FOLD)"
 
     def test_all_18_slugs_present(self):
         """Every V2 page slug must be in WIRED_PAGES."""

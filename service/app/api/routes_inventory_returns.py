@@ -199,3 +199,65 @@ def post_return_from_producer(
         )
     except ReturnsError as e:
         raise _map_returns_error(e)
+
+
+# ── C-3c: returns register read (Phase-C Wave 2 — backend only) ──────────────
+
+_ALLOWED_RETURN_DIRECTIONS = {
+    "from_client", "to_producer", "restock", "producer_restock",
+    "producer_to_rma",
+}
+
+
+@router.get("/returns")
+def list_returns(
+    direction: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 500,
+) -> dict:
+    """List returns records from returns_events. 'to_producer' rows carry a
+    resolution status ('open' until the linked producer_restock event lands,
+    then 'resolved'); other directions are terminal evidence ('recorded').
+    Read-only — never mutates inventory_state, never calls wFirma. Backs the
+    Goods Return / Return to Producer wireframe tabs (UI wiring is Wave 3 / U-2).
+
+    Query params:
+      direction — one of from_client | to_producer | restock |
+                  producer_restock | producer_to_rma (omit for all)
+      status    — 'open' | 'resolved' | 'recorded' (omit for all)
+      limit     — max rows scanned (1..2000, default 500)
+
+    Errors:
+      400 INVALID_INPUT (bad direction/status value)
+      503 DB_UNAVAILABLE, MIGRATION_PENDING
+    """
+    from ..services import warehouse_db as wdb
+    if wdb._db_path is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "DB_UNAVAILABLE", "detail": "warehouse_db not initialised"},
+        )
+    if not wdb.ensure_returns_schema():
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "MIGRATION_PENDING",
+                    "detail": "returns_events migration not applied — run "
+                              "draft_20260512_175238_returns_events"},
+        )
+    d = (direction or "").strip().lower() or None
+    if d is not None and d not in _ALLOWED_RETURN_DIRECTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_INPUT",
+                    "detail": f"direction must be one of "
+                              f"{sorted(_ALLOWED_RETURN_DIRECTIONS)}"},
+        )
+    st = (status or "").strip().lower() or None
+    if st not in (None, "open", "resolved", "recorded"):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_INPUT",
+                    "detail": "status must be 'open', 'resolved' or 'recorded'"},
+        )
+    records = wdb.list_returns_records(direction=d, status=st, limit=limit)
+    return {"ok": True, "count": len(records), "returns": records}

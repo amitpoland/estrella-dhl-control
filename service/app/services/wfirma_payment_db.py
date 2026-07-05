@@ -26,9 +26,21 @@ log = logging.getLogger(__name__)
 SYNC_COOLDOWN_SECONDS = 3600  # re-sync per contractor at most once per hour
 
 
+def _connect(db_path: Path) -> sqlite3.Connection:
+    """Tuned connection — WAL + busy_timeout per the dhl_thread_lock idiom
+    (dhl_thread_lock.py:126-129; infra health pass d67d3722 finding #2):
+    APScheduler-thread writer with no lock protection before this; every
+    connection now waits out a competing writer (busy_timeout FIRST, so the
+    WAL flip itself waits) instead of failing 'database is locked'."""
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
 def init_payment_db(db_path: Path) -> None:
     """Create payment_state.db and all Phase 4A tables if not already present."""
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS wfirma_payment_snapshots (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,7 +87,7 @@ def get_contractors_due_for_sync(
         return []
 
     placeholders = ",".join("?" * len(all_contractor_ids))
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             f"SELECT contractor_id, last_synced_at FROM payment_sync_state "
@@ -128,7 +140,7 @@ def insert_payment_snapshot(
     INSERT OR IGNORE payment snapshot.
     Returns True when the row was newly inserted, False when already present.
     """
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO wfirma_payment_snapshots
                (payment_id, contractor_id, invoice_id, payment_date, value, value_pln,
@@ -148,7 +160,7 @@ def mark_contractor_synced(
     new_count: int,
 ) -> None:
     """Upsert last_synced_at and accumulate snapshot_count for a contractor."""
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO payment_sync_state "
             "(contractor_id, last_synced_at, snapshot_count) VALUES (?, NULL, 0)",
@@ -164,7 +176,7 @@ def mark_contractor_synced(
 
 def get_snapshot_count(db_path: Path) -> int:
     """Total payment snapshots (for diagnostics)."""
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         return conn.execute(
             "SELECT COUNT(*) FROM wfirma_payment_snapshots"
         ).fetchone()[0]
@@ -172,7 +184,7 @@ def get_snapshot_count(db_path: Path) -> int:
 
 def get_sync_state(db_path: Path) -> List[dict]:
     """Per-contractor sync state (for diagnostics)."""
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(r) for r in conn.execute(
             "SELECT contractor_id, last_synced_at, snapshot_count "

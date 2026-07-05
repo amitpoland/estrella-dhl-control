@@ -6,62 +6,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-### Root-level regression (run before ANY live batch or PR)
-```bash
-make verify        # Fast gate: unit tests + format checks (~2s) — required before every batch
-make verify-full   # Full gate: unit + golden PDF pipeline (~30s) — required before PRs
-make reference     # Regenerate reference_batch/ expected outputs (only when intentionally changing golden constants)
-make install-hooks # Install pre-commit hook that blocks on test failure
-```
+Root regression (before every live batch): `make verify` — fast unit tests + format checks (~2s). Before PRs: `make verify-full` — unit + golden PDF pipeline (~30s). Regenerate golden: `make reference` (only when intentionally changing golden constants). Install pre-commit hook that blocks on test failure: `make install-hooks`.
 
-### Service development
-```bash
-cd service
-make install  # pip install -r requirements.txt
-make dev      # uvicorn app.main:app --reload --port 8000
-make verify   # Run PZ regression tests inside service/
-```
+Service dev: `cd service && make install` (pip install requirements) / `make dev` (uvicorn app.main:app --reload --port 8000) / `make verify` (PZ regression inside service/).
 
-### Running individual tests
-```bash
-# From repo root (targets root-level test suite)
-pytest test_pz_regression.py -k "test_golden_duty_totals" -v
+Individual tests: `pytest test_pz_regression.py -k "<test_name>" -v` (root); `cd service && pytest tests/test_routes_pz.py -v` (FastAPI suite, 748 files); `cd service && pytest tests/ -m smoke -v` (fast smoke subset).
 
-# From service/ (targets FastAPI test suite, 748 files)
-cd service && pytest tests/test_routes_pz.py -v
-cd service && pytest tests/ -m smoke -v   # Fast smoke subset only
-```
+Root-level CLI: `python pz_import_processor.py --invoices <invoice.xlsx> --zc429 <zc429.pdf> --rate <r> --pdf --xlsx --doc-no <PZ/NNN/YYYY>`.
 
-### Root-level PZ engine CLI
-```bash
-python pz_import_processor.py --invoices invoice.xlsx --zc429 zc429.pdf --rate 4.2 --pdf --xlsx --doc-no PZ/001/2026
-```
+Full command surface: see the Makefile at repo root and `service/Makefile`.
 
 ---
 
 ## Architecture
 
 ### Repo layout
-```
-estrella-dhl-control/
-├── service/              # FastAPI backend (production service, port 47213)
-│   ├── app/
-│   │   ├── main.py       # FastAPI entry point — imports 50+ route modules
-│   │   ├── api/          # 70 route modules (routes_*.py)
-│   │   ├── services/     # 214 service modules — all business logic lives here
-│   │   ├── agents/       # Decision engines (proposal, cowork coordinator)
-│   │   ├── core/         # Config, audit, guards, circuit breaker, security
-│   │   ├── auth/         # JWT + session authentication
-│   │   └── static/       # HTML + vanilla JS (V1) and React/JSX (V2 under static/v2/)
-│   └── tests/            # 748 pytest files
-├── pz_import_processor.py     # Standalone CLI: invoice → PDF/XLSX export
-├── customs_description_engine.py  # Polish customs description generator
-├── pz_calculator.py           # Landed-cost calculation engine
-├── test_pz_regression.py      # 90 golden regression tests
-├── reference_batch/           # Golden expected outputs for regression
-├── docs/                      # Operational markdown (52 files)
-└── .claude/                   # Agents, campaigns, memory, contracts, skills
-```
+
+- `service/app/` — FastAPI backend (production service, port 47213). Entry `main.py` (imports 50+ route modules); `api/` (~70 `routes_*.py`); `services/` (~214 service modules — all business logic); `agents/` (decision engines); `core/` (config, audit, guards, circuit breaker, security); `auth/` (JWT + session); `static/` (V1 HTML + Vanilla JS; V2 under `static/v2/*.jsx`).
+- `service/tests/` — 748 pytest files.
+- Root engine files — `pz_import_processor.py` (standalone CLI + only calculation path), `pz_calculator.py`, `customs_description_engine.py`, `test_pz_regression.py` (90 golden regression tests).
+- `reference_batch/` — golden expected outputs. `docs/` — operational markdown (52 files). `.claude/` — agents, campaigns, memory, contracts, skills.
 
 ### Key architectural facts
 
@@ -132,6 +96,139 @@ produced `0c22cfb` direct-to-main and `6ad62a6` on a competing branch). A second
 session must be read-only or must use a separate git worktree.
 
 Elaboration: `service/docs/ops/working-tree-convention.md` (rule 6).
+
+---
+
+## EJ Dashboard Phase-C Constitution (Final) — standing Phase-C preamble (operator-ratified 2026-07-03, VERBATIM R4)
+
+> The text below is the operator's exact wording (R4 — not reconstructed, not
+> paraphrased). It is the governing preamble for all Phase-C work.
+
+**EJ Dashboard Phase-C Constitution (Final)**
+
+**0. Mission**
+Implement only inside the existing EJ Dashboard architecture. The objective is not to create software. The objective is to extend the existing business system without introducing any new authority.
+
+**1. Existing Authorities (Immutable)**
+Claude must first identify the authority before writing a single line of code. There are only these authorities.
+wFirma → (API / Webhook) → Mirror Layer → EJ Dashboard Masters (Product Master, Customer Master, Warehouse, Invoice, Packing, Inventory) → All business modules
+Nothing is allowed to bypass this chain.
+
+**2. Product Authority**
+This is now fixed forever.
+wFirma Product → Product Mirror (sync only) → Product Master (EJ Dashboard authority) → Inventory, Reservation, Packing, Invoice, Sample, Consignment, Returns
+Inventory MUST NEVER read directly from wFirma.
+
+**3. Customer Authority**
+wFirma Customer → Customer Mirror → Customer Master → Inventory, Invoice, Packing, Consignment, Returns
+Inventory must never call wFirma customer APIs.
+
+**4. Design Number Rule (NEW)**
+Product Code remains the immutable system identifier. Design Number becomes the business identifier. Mapping: Product Code → Design Number. Product Master owns this mapping. Only Product Master may edit it. Everything else reads it. No module may maintain another Design Number table.
+
+**5. wFirma Custom Field Rule**
+The new custom field created inside wFirma becomes the sync source. Example: Product Code ABC001 → Custom Field Design Number = RG-10025 → Mirror → Product Master → Inventory. Inventory never asks wFirma for Design Number. It always comes through Product Master.
+
+**6. Product Master Structure**
+Minimal authority: wFirma ID, Product Code, Design Number, Status, Sync Version, Last Sync, Active. No duplicated business information. No second master.
+
+**7. Customer Master Structure**
+Existing Customer Master remains authority. Mirror only synchronizes. No new customer tables. No duplicate cache.
+
+**8. Warehouse Documents**
+These stay inside wFirma: PZ, WZ, MM, Warehouse, Invoice. The app mirrors them. The app never becomes the fiscal authority.
+
+**9. Sample Workflow**
+Main Warehouse → MM → Sample Warehouse → Customer → Return → MM → Main Warehouse. Every movement produces a document. Inventory stores workflow state. wFirma stores warehouse documents.
+
+**10. Consignment Workflow**
+Main Warehouse → MM → Consignment Warehouse → Customer. Monthly: Customer reports sold items → Select sold pieces → Create Invoice → Invoice creates WZ only from Consignment Warehouse. No second WZ from Main Warehouse. This permanently removes the double-WZ problem.
+
+**11. Product Selection**
+Never type IDs. Never paste IDs. Always: Customer → Product → Design Number → Checkbox → Execute. Barcode remains optional. Search remains optional.
+
+**12. Inventory UI**
+Inventory UI is exactly the supplied wireframe. Never redesign. Never simplify. Never invent. Wireframe is the UI authority.
+
+**13. Existing Pages Rule**
+No new pages. Never. If functionality belongs to Inventory, extend Inventory. Do not create Inventory2, MoveStockPage2, SamplePage2, ProductPage2. Everything extends the existing authority page.
+
+**14. Existing Backend Rule**
+No duplicate services. No duplicate APIs. No duplicate routes. No duplicate mirrors. Extend existing services.
+
+**15. Authority Violation**
+Immediately STOP if code does this: Inventory → wFirma API. Correct path: Inventory → Product Master → Mirror → wFirma.
+
+**16. Implementation Order (Locked)**
+1. Product Master Authority → 2. Customer Master Authority → 3. Reservation → 4. Inventory → 5. Sample → 6. Consignment → 7. Returns → 8. Invoice Selection → 9. MM Integration → 10. Webhook Synchronization. Nothing may skip this order.
+
+**17. Scope Rules**
+Every slice must declare: Authority owner, Existing page, Existing API, Existing DB, Existing service. If any of these cannot be identified, STOP.
+
+**18. No Creativity Rule**
+Claude must not invent architecture, invent workflow, invent fields, invent tables, invent pages, invent APIs. If information is missing, STOP.
+
+**19. Research Rule**
+If work involves wFirma, Claude must search wFirma API documentation, webhook documentation, existing repository, existing mirror — before proposing code. Never guess a wFirma capability.
+
+**20. Final Rule**
+Before writing code Claude must prove: This feature extends EXISTING AUTHORITY → EXISTING PAGE → EXISTING SERVICE → EXISTING DATABASE → EXISTING API. If any arrow cannot be proven, STOP and ask.
+
+**Application Authority Rule**
+The EJ Dashboard application is the operational authority. wFirma is an external ERP. Claude must always start by identifying which existing EJ Dashboard module owns the business process. The implementation must extend that module. It must never start from wFirma and build inward. It must start from the existing EJ Dashboard authority and extend outward to wFirma only through the approved sync layer.
+
+**Advisor reconciliation (NOT operator text — advisor notes, recorded 574a6932):**
+(a) §6 = the LOGICAL view of the product authority; the physical layering stays as built (Mirror = the six sync fields only; Master = business fields incl. status / is_active). Reversible on operator word. (b) §16 mapping to execution: step 1 (Product) = C-1a..C-1d; step 2 (Customer) = C-2; steps 3–10 renumber the old queue (MM = step 9, Webhook Sync = step 10). (c) §4/§5 Design Number custom-field sync = NEW scope, gated on OPERATOR-INPUT (field created in wFirma + its API name + whether the goods API returns custom fields — wFirma email item #3, after MM (#1) and contractor_id (#2)); §19 research rule applies.
+
+---
+
+## APPLICATION AUTHORITY RULE (permanent, operator-ratified 2026-07-03)
+
+There is only ONE application: **EJ Dashboard**. Every module belongs to EJ
+Dashboard. "PZ App" is NOT an application. "PZ" is only one workflow/module
+inside EJ Dashboard. Claude Code must never create architecture that treats
+PZ, Inventory, Sample, Consignment or Returns as separate applications.
+Everything extends the existing EJ Dashboard authority.
+
+**Companion rule (start every feature with this question):** *"मैं EJ
+Dashboard के किस existing module को extend कर रहा हूँ?"* ("Which existing EJ
+Dashboard module am I extending?") — no answer = **STOP**. No new page, no new
+authority, no new master, no direct wFirma mapping. Every module reaches wFirma
+only through: `<module> → EJ Dashboard <Master> → Mirror → wFirma`. A module
+that calls wFirma product/customer APIs directly, or grows its own
+customer/product table, is an **AUTHORITY VIOLATION**.
+
+**Scope note (this rule is architectural, not a rename mandate):** it governs
+architecture decisions and documents going forward. It does NOT authorize
+renaming files, paths, services, or tables containing "PZ" — any such rename
+is a separate operator-approved slice. The violation cleanup list lives in
+`reports/inspection/2026-07-03T-integration-architecture-audit.md` (amendment).
+
+**MASTER-FIRST RULE (permanent, operator-ratified 2026-07-03):** कोई भी नया
+module या API बनाने से पहले Claude Code यह सिद्ध करेगा कि वह किस existing EJ
+Dashboard Master को consume कर रहा है। यदि Product या Customer की जानकारी
+चाहिए, तो केवल EJ Dashboard **Product Master** या **Customer Master** से
+मिलेगी। Inventory, Sample, Returns, Consignment, Invoice, Packing, PZ और WZ
+में **direct wFirma queries निषिद्ध हैं।** यदि किसी feature के लिए existing
+Master पर्याप्त नहीं है, तो **STOP** करके Master Authority बढ़ाई जाएगी।
+Feature उस Master को bypass करके नहीं बनेगा। (In short: prove which Master you
+consume before building; Product/Customer facts come only from the Product
+Master / Customer Master; direct wFirma queries from any module are
+forbidden; if the Master is insufficient, STOP and extend the Master — never
+bypass it.)
+
+**MASTER CONSUMPTION RULE (permanent, operator-ratified 2026-07-03):** "Every
+business module must consume Masters. No business module may consume Mirrors.
+No business module may consume wFirma. Mirrors exist only for synchronization.
+Masters exist only for business logic." **LAYER RESPONSIBILITIES:** a **Mirror**
+holds ONLY `wfirma_id, product_code, sync_version, last_sync, hash,
+deleted_flag` — nothing else, never business logic. A **Master** holds design
+number, product code, category, status, active, business mapping. **Inventory
+NEVER reads the Mirror — only the Master.** Enforced by the standing pin
+`service/tests/test_master_consumption_rule.py` (mirror schema = exactly the six
+columns; no business module reads wFirma/mirror for product data — the known
+violation list shrinks per C-1 sub-slice and must reach zero by C-1d; new
+violations fail immediately).
 
 ---
 
@@ -321,19 +418,6 @@ analogous to a salvage finding and MUST receive exactly one
 disposition per GATE 4: SCHEDULED, ISSUE, or REJECTED. "Recommendation
 noted" is not a valid disposition for an observer verdict either.
 
-### Deferred meta-agents (logged here for traceability)
-
-Two meta-agents are intentionally deferred until two campaigns under
-this observation layer establish a baseline:
-
-- `agent-prompt-refiner` — reads scorecards across a 7-day window,
-  drafts refined prompts as PRs (never mutates prompts directly).
-- `pattern-historian` — scans recent campaign reports for repeated
-  patterns and proposes CLAUDE.md amendments or new gates.
-
-Decision criteria + implementation rules captured in the deferred
-issue filed alongside the PR that introduces this section.
-
 ---
 
 ## ANTI-HOLD AND WORKFLOW COMPLETION
@@ -448,63 +532,55 @@ When an operator opens a screen, all four must be immediately visible:
 
 ### Canonical status API response shape
 
-All `GET /api/v1/.../status` endpoints return this structure:
-
-```json
-{
-  "healthy":           true,
-  "running":           false,
-  "last_started_at":   "2026-06-30T09:15:00+00:00",
-  "last_completed_at": "2026-06-30T09:15:04+00:00",
-  "duration_ms":       4123,
-  "processed":         64,
-  "created":           3,
-  "updated":           7,
-  "skipped":           54,
-  "errors":            0,
-  "last_error":        null
-}
-```
-
-Field mapping to DB state layers: `processed` = total seen, `created` = new inserts,
-`updated` = COALESCE fills, `skipped` = rejected (bad country/name/etc.), `errors` = exception count.
-`running` is derived from `last_started_at > last_completed_at`.
+`GET /api/v1/.../status` returns JSON with fields: `healthy` (bool), `running` (bool — derived from `last_started_at > last_completed_at`), `last_started_at` (ISO 8601), `last_completed_at` (ISO 8601), `duration_ms` (int), `processed` (total seen), `created` (new inserts), `updated` (COALESCE fills), `skipped` (rejected: bad country/name/etc.), `errors` (exception count), `last_error` (string or null). Full contract + example: `docs/patterns/status-endpoint.md`.
 
 ### Canonical UI layout (Client Master as reference)
 
-```
-Customers
-+ New Client   ↻ Sync from wFirma   ⇅ Full Contractor Scan
-
-Status
-──────────────────────────────────────────────
-Last automatic scan   30 Jun 09:15   ✅ healthy
-Last manual scan      30 Jun 08:42
-Contractors imported  3
-Updated               7
-Skipped               54
-Errors                0
-[View Log]
-```
+Toolbar row: `+ New Client   ↻ Sync from wFirma   ⇅ Full Contractor Scan`. Status panel below: last automatic scan (timestamp + health icon), last manual scan, contractors imported / updated / skipped / errors counts, `[View Log]` link. Full mockup + spec: `docs/patterns/status-endpoint.md`.
 
 ### Applying this standard to existing phases
 
-Features that are Automation-complete but Business-incomplete (as of 2026-06-30):
-
-| Feature | Missing layers |
-|---|---|
-| Phase 3 — Customer Sync | Business API + UI + Observability |
-| Phase 3B — Full Contractor Scan | Business API + UI + Observability |
-| Phase 4A — Payment Sync | Business API + UI + Observability |
-
-These phases are not closed. Their PR status reflects scheduler implementation only.
-Close requires all four layers.
+Current phase status: see PROJECT_STATE.md FACTS.
 
 ### Enforcement
 
 `reviewer-challenge` and `frontend-flow-reviewer` must flag any PR that claims
 "feature complete" but has no corresponding `POST /api/v1/.../action` endpoint and
 no status panel. A scheduler-only implementation is a draft, not a shipped feature.
+
+---
+
+## FRONTEND AUTHORITY CONSTITUTION (V2 = consolidation authority)
+
+V2 is the current frontend authority for all consolidation and new development.
+This is the consolidation authority, NOT a commitment to V2 as the permanent
+architecture. A future rebuild is a separate, separately-approved decision and
+does not weaken these rules while V2 is the authority.
+
+PROHIBITIONS (hard — no exception without a formal PROJECT_STATE.md DECISIONS entry):
+- No duplicate page for a module that already has a canonical page.
+- No new standalone HTML page (login / auth / static shell excepted).
+- No new parallel React app.
+- No feature work in legacy / frozen pages.
+- No "temporary" second implementation.
+
+ONE-AUTHORITY REQUIREMENT — every business module has exactly:
+- one canonical URL
+- one canonical React file/folder
+- one API wrapper path
+- one backend authority
+
+PRE-DEVELOPMENT CHECK (run before ANY frontend work; all five must pass):
+1. Identify the module.
+2. Identify the canonical URL.
+3. Identify the canonical frontend file/folder.
+4. Identify the backend authority.
+5. Prove no duplicate page is being created.
+
+STOP CONDITION: if canonical authority is unclear, STOP and ask the operator.
+Do not develop in both places. Do not pick a canonical silently.
+
+Binds: GATE 1, frontend-flow-reviewer, Lesson F, Lesson M.
 
 ---
 
@@ -569,9 +645,6 @@ Lesson M.
 
 ### Lesson M — Planned operator-visible capability must not be removed, hidden, collapsed, replaced, or silently relocated (2026-06-07)
 **GATE 1 + reviewer-challenge + frontend-flow-reviewer.** Five-state UI truth model: `available` / `unavailable` / `planned` / `backend-pending` / `deprecated`. Removal only when formal cancellation is recorded in PROJECT_STATE.md DECISIONS (date + reason + capability named). Capability suppression without cancellation record = incomplete PR. Full detail: invoke `/engineering-lessons`.
-
-### Lesson N — Import, product master, proforma, warehouse receipt, barcode traceability, and sales linkage are SEPARATE authorities (2026-06-22)
-**GATE 1 + reviewer-challenge + frontend-flow-reviewer + backend-safety-reviewer.** Six separate authorities (PRODUCT / PROFORMA / IMPORT_PZ / WAREHOUSE / SALES) each own their own gates. Warning → hard blocker requires: (a) named business rule (accounting/customs/duplicate-write/quantity-risk) AND (b) a regression test. Warehouse receipt = operator quantity confirmation, NOT mandatory per-piece scan (unless `serial_controlled=true`). Full detail: invoke `/engineering-lessons`.
 
 ### Lesson N — Advisory-class readiness signals must never block fiscal actions; only true fiscal risk blocks Approve / Post / Convert / Reservation (2026-06-23)
 
@@ -644,13 +717,9 @@ a named business rule + test is incomplete by this lesson.
 
 ## Frontend Design Standard
 
-**V1 pages** (`shipment-detail.html`, `dashboard.html`) — frozen except critical fixes (Lesson F). Work governed by `.claude/skills/frontend-design.md`.
+Governed by `.claude/skills/frontend-design.md` and the FRONTEND AUTHORITY CONSTITUTION above. Also see Lesson F. Stack (both V1 and V2): Vanilla HTML + Babel JSX — no bundler, no TypeScript, no Tailwind. Generic frontend-ui agent defaults to TypeScript + Tailwind — those do NOT apply here.
 
-**V2 pages** (`proforma-v2.html` and later) — governed by `docs/v2-architecture-plan.md` + Lesson F discipline rules. Authority-clean first, visual polish last.
-
-**Stack (both V1 and V2)**: Vanilla HTML + Babel JSX (no bundler, no TypeScript, no Tailwind). Generic frontend-ui agent defaults to TypeScript + Tailwind — those do not apply here.
-
-Key rules (full detail in skill file):
+Unique hard rules (verbatim; full detail in skill file):
 - Use CSS custom properties (`--bg`, `--text`, `--badge-*`, `--accent`) — never hardcoded hex
 - Use shared components from `dashboard-shared.js` (`Btn`, `Badge`, `Card`, `Sel`, `Toast`)
 - Every write button must label exactly what it writes; no auto-save
@@ -660,7 +729,7 @@ Key rules (full detail in skill file):
 
 Invoke skill: before any UI implementation, before any `frontend-flow-reviewer` run.
 
-**Design intelligence layer**: `.claude/skills/ui-ux-pro-max` is installed as a supplemental search tool for accessibility, UX guidelines, and layout best practices. It is subordinate to `frontend-design.md`. Use via `python3 .claude/skills/ui-ux-pro-max/scripts/search.py`. Read `EJ_OVERRIDES.md` inside the skill directory before applying any output — stack defaults (Tailwind, TypeScript) do not apply here.
+Design intelligence layer: `.claude/skills/ui-ux-pro-max` is a supplemental search tool for accessibility, UX guidelines, layout best practices. Subordinate to `frontend-design.md`. Read `EJ_OVERRIDES.md` inside the skill directory before applying any output — stack defaults (Tailwind, TypeScript) do not apply here.
 
 ---
 
@@ -681,38 +750,15 @@ generic third-party skill raw.
 
 ---
 
-## Available integration
+## Available integration + System architecture + Required workflow
 
-Zoho Cliq MCP connector (use for all Cliq operations):
-- **Connector ID:** `mcp__1760d1e3-ee15-43d5-af3a-3528cf9a21ce`
-- **Org ID:** `60014108075`
-- **Tool:** `ZohoCliq_Post_message_in_a_channel`
-- **Production channel:** `pz` (ID: `O190928000006027001`)
+Zoho Cliq MCP connector (all Cliq operations): connector `mcp__1760d1e3-ee15-43d5-af3a-3528cf9a21ce`, org `60014108075`, tool `ZohoCliq_Post_message_in_a_channel`, production channel `pz` (ID `O190928000006027001`). Webhook fallback: `CLIQ_WEBHOOK_URL`. "Processing…" acknowledgment via webhook → bot chat; final batch result via Estrella Cliq MCP → `#PZ` channel; dashboard resend via webhook (OAuth fallback) → `#PZ`.
 
-| Path | Tool | Target |
-|------|------|--------|
-| "Processing…" acknowledgment | webhook (`CLIQ_WEBHOOK_URL`) | bot chat |
-| Final batch result | Estrella Cliq MCP → `Post_message_in_a_channel` | `#PZ` channel |
-| Resend from dashboard | webhook → `post_to_channel` (OAuth fallback) | `#PZ` channel |
+`process_batch()` in the Python engine is the ONLY calculation path — never recalculate landed cost, freight, duty, totals, or notes outside it. All outputs render from the same validated `process_batch()` result object. Cliq is not the calculation engine.
 
----
+Live batch: **Step A** `make verify` (stop on failure) → **Step B** engine (CLI or `process_batch()`; CLI syntax via `/pz-shipment`) → **Step C** generate PDF + XLSX (both required — either absent = failed, exit non-zero) → **Step D** post summary + files to Cliq (amendment flags explicit, not hidden).
 
-## System architecture
-
-- `process_batch()` is the only calculation path. Never recalculate landed cost, freight, duty, totals, or notes outside the Python engine.
-- All outputs must render from the same validated `process_batch()` result object.
-- Do not treat Cliq as the calculation engine.
-
-> For full architecture detail: invoke `pz-shipment`.
-
----
-
-## Required workflow
-
-- **Step A:** Run `make verify` before any live batch. If it fails: stop, do not process, report reason.
-- **Step B:** Run engine via CLI or `process_batch()`. For CLI syntax and flags: invoke `pz-shipment`.
-- **Step C:** Always generate PDF + XLSX. If either absent: treat as failed, report honestly, exit non-zero.
-- **Step D:** Post summary + files to Cliq. If amendment flags present: say so explicitly. Do not hide.
+Full architecture, CLI flags, MCP step sequence: invoke `/pz-shipment`.
 
 ---
 
@@ -740,18 +786,13 @@ If `--strict-match` enabled: any confirmed mismatch must fail the run.
 
 ---
 
-## Required Cliq posting format
+## Required Cliq posting format + WorkDrive automation flow
 
-Three scenarios: success, partial (VERIFY-GAP present), and failure. Each must include doc_no, line count, net, gross, and duty totals. Failure messages must state "No final files were posted." Partial messages must list all gaps explicitly. Amendment flags must not be hidden.
+Three Cliq posting scenarios (success / partial VERIFY-GAP / failure): each includes doc_no, line count, net, gross, duty totals. Failure messages must state "No final files were posted." Partial messages must list all gaps explicitly. Amendment flags must not be hidden. Full format blocks: invoke `pz-shipment`.
 
-> For exact format blocks: invoke `pz-shipment`.
+WorkDrive architecture: local storage = truth; WorkDrive REST = primary upload; TrueSync = optional mirror only (NEVER a success condition); Cliq = immediate notification layer. Full MCP step sequence: invoke `pz-shipment`.
 
----
-
-## WorkDrive automation flow
-
-Architecture: local storage = truth; WorkDrive REST = primary upload; TrueSync = optional mirror only (NEVER a success condition); Cliq = immediate notification layer. For MCP step sequence: invoke `pz-shipment`.
-
+WorkDrive / Cliq hard one-liners (verbatim):
 - **Never search WorkDrive for files** — resource IDs come from the API response
 - **Never wait for TrueSync** — it is not a cloud upload path
 - **Never block Cliq notification** because WorkDrive failed — always post immediately
@@ -797,37 +838,9 @@ Anti-drift gate: read §1 of `.claude/campaigns/atlas-v2.md` before firing any s
 
 ## 9. Action execution after Cowork result
 
-### Architecture
+Chain: **Cowork Intelligence → PZ Validation → PZ Automation → SMTP Send → Audit.** Coworker returns exact structured data only; it does NOT send emails.
 
-```
-Cowork Intelligence → PZ Validation → PZ Automation → SMTP Send → Audit
-```
-
-Coworker should NOT directly send emails. It returns exact structured data only.
-
-For full architecture, flow, implementation details, and draft type reference: invoke `cowork-integration`.
-
-### Cowork result validation rules
-
-`cowork_result_processor.py` must reject any financial field mutation.
-
-`cowork_action_runner.py` executes only through existing PZ App services.
-
-**Draft validation (cowork_result_processor.py):**
-- Type must be in `ALLOWED_DRAFT_TYPES`
-- Must NOT contain forbidden fields: `to`, `cc`, `bcc`, `from`, `attachments`, `files`
-- AWB in draft must match audit AWB
-- Must have `subject` and `body`
-- Invalid drafts are dropped (not blocking — evidence still written)
-
-**Draft execution (cowork_action_runner.py):**
-- PZ App injects correct recipients from `email_routing.py` based on draft type
-- PZ App decides attachments from audit state (never from Cowork)
-- PZ App sends via `email_service.queue_email` only
-- Sender always `import@estrellajewels.eu`
-
-### Cowork must NEVER directly
-
+Cowork must NEVER directly:
 - Modify CIF / duty / invoice totals
 - Send emails
 - Close shipments
@@ -835,6 +848,8 @@ For full architecture, flow, implementation details, and draft type reference: i
 - Choose email recipients (PZ App controls routing)
 - Attach files to emails (PZ App controls attachments)
 - Override sender identity
+
+Full architecture, draft validation, execution rules, draft type reference: invoke `cowork-integration`.
 
 ---
 

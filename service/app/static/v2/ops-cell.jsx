@@ -837,16 +837,18 @@ function CapPill({ label, ok, warn }) {
 // POST diagnostic actions visible but disabled: "Diagnostic POST exists but
 // execution requires explicit operator approval."
 
+// R-Q3 (2026-07-04): honest Disabled/Planned/Backend-Required labels per operator ruling
 const CLI_TOOLS = [
   { id: 'check_dhl',  name: 'check_dhl_config',           desc: 'Validate DHL Express IMAP + SMTP + classifier rules',
-    cmd: 'python3 -m app.tools.check_dhl_config',          hasRoute: false },
+    cmd: 'python3 -m app.tools.check_dhl_config',          hasRoute: false, rq3Label: 'Disabled' },
   { id: 'check_wf',   name: 'check_wfirma_config',        desc: '10-check diagnostic for wFirma reservation gate',
-    cmd: 'python3 -m app.tools.check_wfirma_config',       hasRoute: false },
+    cmd: 'python3 -m app.tools.check_wfirma_config',       hasRoute: false, rq3Label: 'Disabled' },
   { id: 'regen',      name: 'regenerate_stale_batches',    desc: 'Re-run audit / outputs for batches >7d stale',
-    cmd: 'python3 -m app.tools.regenerate_stale_batches',   hasRoute: false },
+    cmd: 'python3 -m app.tools.regenerate_stale_batches',   hasRoute: false, rq3Label: 'Disabled' },
   { id: 'monitor',    name: 'run_active_shipment_monitor', desc: 'Sweep active shipments for tracking + email updates',
     cmd: 'python3 -m service.scripts.run_active_shipment_monitor', hasRoute: true,
-    disabledReason: 'Diagnostic POST exists but execution requires explicit operator approval.' },
+    disabledReason: 'Diagnostic POST exists but execution requires explicit operator approval.',
+    rq3Label: 'Backend Required' },
 ];
 
 function _DiagKpiStrip({ health, version, storage, locks }) {
@@ -983,7 +985,7 @@ function _DiagCliSection() {
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                 <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{t.name}</code>
-                <StatusChip kind={t.hasRoute ? 'info' : 'neutral'}>{t.hasRoute ? 'POST available' : 'CLI only'}</StatusChip>
+                <StatusChip kind={t.rq3Label === 'Backend Required' ? 'warning' : t.rq3Label === 'Planned' ? 'purple' : 'neutral'}>{t.rq3Label}</StatusChip>
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-2)' }}>{t.desc}</div>
               <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, color: 'var(--text-3)', display: 'block', marginTop: 4 }}>{t.cmd}</code>

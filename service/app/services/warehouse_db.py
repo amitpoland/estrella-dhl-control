@@ -1035,3 +1035,103 @@ def count_open_overdue_samples_for_recipient(
             (recipient_client_name, threshold_iso),
         ).fetchone()
     return int(row["n"]) if row else 0
+
+
+# ── C-3b/C-3c: read/list registers (Phase-C Wave 2 — backend only) ──────────
+# Read-only projections over the two evidence tables. Never mutate
+# inventory_state; never call wFirma. Pairing semantics match the writers:
+#   sample: a 'return' row links its origin 'out' row via
+#           linked_origin_event_id (fallback: same scan_code, later
+#           occurred_at — mirrors count_open_overdue_samples_for_recipient).
+#   returns: a 'producer_restock' row links its origin 'to_producer' row via
+#           linked_origin_event_id (inventory_returns_writer:309).
+
+def list_sample_records(
+    status: Optional[str] = None,
+    recipient_client_name: Optional[str] = None,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    """Sample register: one record per 'out' event with its paired 'return'
+    event when present. status filter: 'open' | 'returned'. Read-only."""
+    if _db_path is None:
+        return []
+    limit = max(1, min(int(limit or 500), 2000))
+    with _connect() as con:
+        rows = con.execute(
+            """SELECT o.id                    AS sample_id,
+                      o.scan_code             AS scan_code,
+                      o.recipient_client_name AS recipient_client_name,
+                      o.recipient_client_id   AS recipient_client_id,
+                      o.sample_reason         AS sample_reason,
+                      o.expected_return_date  AS expected_return_date,
+                      o.operator              AS out_operator,
+                      o.occurred_at           AS out_at,
+                      o.notes                 AS notes,
+                      r.id                    AS return_event_id,
+                      r.occurred_at           AS returned_at,
+                      r.operator              AS return_operator
+               FROM sample_out_events o
+               LEFT JOIN sample_out_events r
+                 ON r.direction = 'return'
+                AND (r.linked_origin_event_id = o.id
+                     OR (r.linked_origin_event_id = ''
+                         AND r.scan_code = o.scan_code
+                         AND r.occurred_at >= o.occurred_at))
+               WHERE o.direction = 'out'
+               ORDER BY o.occurred_at DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    out: List[Dict[str, Any]] = []
+    want_recipient = (recipient_client_name or "").strip().lower()
+    for r in rows:
+        rec = dict(r)
+        rec["status"] = "returned" if rec.get("return_event_id") else "open"
+        if status and rec["status"] != status:
+            continue
+        if want_recipient and want_recipient not in (
+            rec.get("recipient_client_name") or ""
+        ).lower():
+            continue
+        out.append(rec)
+    return out
+
+
+def list_returns_records(
+    direction: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    """Returns register: one record per returns_events row; 'to_producer'
+    rows carry resolution state ('open' until a 'producer_restock' row links
+    back via linked_origin_event_id, then 'resolved'). Other directions are
+    terminal evidence rows (status 'recorded'). Read-only."""
+    if _db_path is None:
+        return []
+    limit = max(1, min(int(limit or 500), 2000))
+    with _connect() as con:
+        rows = con.execute(
+            """SELECT e.*,
+                      p.id          AS resolution_event_id,
+                      p.occurred_at AS resolved_at
+               FROM returns_events e
+               LEFT JOIN returns_events p
+                 ON p.direction = 'producer_restock'
+                AND p.linked_origin_event_id = e.id
+               ORDER BY e.occurred_at DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        rec = dict(r)
+        if rec.get("direction") == "to_producer":
+            rec["status"] = "resolved" if rec.get("resolution_event_id") else "open"
+        else:
+            rec["status"] = "recorded"
+        if direction and rec.get("direction") != direction:
+            continue
+        if status and rec["status"] != status:
+            continue
+        out.append(rec)
+    return out

@@ -2360,6 +2360,9 @@ def proforma_readiness(batch_id: str) -> Dict[str, Any]:
     from ..core.config import settings as _s
     from ..services import wfirma_db as wfdb
     from ..services import document_db as ddb
+    from ..services import reservation_db as rdb   # Product Master authority (C-1c)
+    _rdb_path = _s.storage_root / "reservation_queue.db"
+    rdb.init_reservation_db(_rdb_path)
 
     out: Dict[str, Any] = {
         "batch_id": batch_id,
@@ -2405,14 +2408,16 @@ def proforma_readiness(batch_id: str) -> Dict[str, Any]:
         out["products"]["total"] = len(codes)
         mapped = 0
         for c in codes:
-            wp = wfdb.get_product(c)
-            if wp and wp.get("wfirma_product_id") and wp.get("sync_status") == "matched":
+            # C-1c: product readiness via the Product Master (status='mapped'),
+            # not the wfirma_db split cache. The Master is the authority (§2).
+            pm = rdb.get_product_master(_rdb_path, c)
+            if pm and pm.get("status") == "mapped":
                 mapped += 1
         out["products"]["mapped"]  = mapped
         out["products"]["missing"] = max(0, len(codes) - mapped)
         if out["products"]["missing"]:
             blockers.append(
-                f"{out['products']['missing']} product code(s) not in wfirma_products"
+                f"{out['products']['missing']} product code(s) not mapped in the Product Master"
             )
     except Exception as exc:
         out["errors"].append(f"products read failed: {exc}")

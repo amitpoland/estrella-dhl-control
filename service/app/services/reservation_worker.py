@@ -208,6 +208,7 @@ def sync_wfirma_products_by_codes(
     """
     matched: List[str] = []
     missing: List[str] = []
+    collisions: List[str] = []   # mirror-refused one-id-two-codes data errors
     now = _now()
 
     for code in product_codes:
@@ -239,6 +240,24 @@ def sync_wfirma_products_by_codes(
             missing.append(code)
         else:
             warehouse_id = getattr(product, "warehouse_id", "") or ""
+            # Mirror Completeness (2026-07-03 ruled check): canonical mirror
+            # FIRST — every confirmed-id sync path populates
+            # wfirma_product_mirror before the legacy mapping row. Collision
+            # (one wfirma_id, two codes) is logged and counted; the mapping
+            # row is still written so the legacy consumers keep today's
+            # behaviour until 1d.
+            _mres = rdb.upsert_product_mirror(
+                db_path,
+                wfirma_id=str(product.wfirma_id),
+                product_code=code,
+                name=str(product.name or ""),
+            )
+            if _mres.get("collision"):
+                log.warning(
+                    "mirror collision for %s: wfirma_id %s already owned by %r",
+                    code, product.wfirma_id, _mres.get("owner"),
+                )
+                collisions.append(code)
             rdb.upsert_wfirma_product_mapping(
                 db_path,
                 product_code=code,
@@ -252,7 +271,7 @@ def sync_wfirma_products_by_codes(
             )
             matched.append(code)
 
-    return {"matched": matched, "missing": missing}
+    return {"matched": matched, "missing": missing, "collisions": collisions}
 
 
 # ── 4. refresh_queue_readiness ────────────────────────────────────────────────

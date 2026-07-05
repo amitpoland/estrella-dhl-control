@@ -367,6 +367,48 @@ def reconcile_billed_lines(
     }
 
 
+# ── C-3g: registered-goods sync-state query (product authority) ──────────────
+# The wFirma-goods sync state (confirmed wfirma_product_id + the display name
+# as last synced to wFirma) is owned by the sync layer (wfirma_db). Business
+# surfaces that need it — resolve-drift detection, sync-names before-value,
+# invoice line-name enrichment — ask the product authority through this
+# narrow, purpose-named API instead of reading raw cache rows. Replaces the
+# retired transitional passthroughs get_cached_product/_batch/
+# list_cached_products (Phase-C C-3g; C-1d declared residual 2).
+
+def get_registered_goods_state(product_code: str) -> Optional[Dict[str, Any]]:
+    """Return {"wfirma_product_id", "product_name"} for a code, or None.
+
+    ``product_name`` is the goods display name as last synced to wFirma —
+    NOT the legal description (that is the description_engine's authority).
+    """
+    from . import wfirma_db as _wfdb  # sync layer — authority-internal read
+    if _wfdb._db_path is None:
+        return None
+    row = _wfdb.get_product(product_code)
+    if not row:
+        return None
+    return {
+        "wfirma_product_id": (row.get("wfirma_product_id") or "").strip(),
+        "product_name":      (row.get("product_name") or "").strip(),
+    }
+
+
+def get_registered_goods_state_batch(codes: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Batch form of get_registered_goods_state: {code: state} for known codes."""
+    from . import wfirma_db as _wfdb  # sync layer — authority-internal read
+    if _wfdb._db_path is None or not codes:
+        return {}
+    rows = _wfdb.get_products_batch(list(codes)) or {}
+    return {
+        code: {
+            "wfirma_product_id": (r.get("wfirma_product_id") or "").strip(),
+            "product_name":      (r.get("product_name") or "").strip(),
+        }
+        for code, r in rows.items() if r
+    }
+
+
 __all__ = [
     "PackingAuthorityUnavailable",
     "resolve_batch_product_authority",
@@ -376,4 +418,6 @@ __all__ = [
     "reconcile_billed_ambiguity",
     "analyze_product_code_billing",
     "reconcile_billed_lines",
+    "get_registered_goods_state",
+    "get_registered_goods_state_batch",
 ]

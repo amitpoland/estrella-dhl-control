@@ -371,6 +371,15 @@ def init_document_db(db_path: Path) -> None:
             ("currency",     "TEXT NOT NULL DEFAULT ''"),
             ("total_value",  "REAL NOT NULL DEFAULT 0.0"),
             ("price_source", "TEXT NOT NULL DEFAULT ''"),
+            # ── client_po + invoice_no (2026-07-02, PROJECT_STATE DECISIONS
+            # "client_po + invoice_no silent-drop fix"): both parsed at intake
+            # (routes_packing dict :1434/:1443) but omitted from the INSERT
+            # since inception — silently dropped at this boundary. Additive,
+            # idempotent; legacy rows default '' (backfill is a separate
+            # decision). client_po is the consignment contract-linkage
+            # prerequisite (Cons.ID ↔ Client PO ↔ Proforma).
+            ("client_po",    "TEXT NOT NULL DEFAULT ''"),
+            ("invoice_no",   "TEXT NOT NULL DEFAULT ''"),
         ):
             try:
                 con.execute(
@@ -2005,8 +2014,9 @@ def store_sales_packing_lines(
                        (id, batch_id, sales_document_id, client_name, client_ref,
                         product_code, design_no, bag_id, quantity, remarks,
                         unit_price, currency, total_value, price_source,
+                        client_po, invoice_no,
                         client_contractor_id, created_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         str(uuid.uuid4()), batch_id, sales_document_id,
                         str(ln.get("client_name", "")),
@@ -2020,6 +2030,8 @@ def store_sales_packing_lines(
                         str(ln.get("currency", "") or "").upper(),
                         float(ln.get("total_value", 0) or 0),
                         str(ln.get("price_source", "") or ""),
+                        str(ln.get("client_po", "") or ""),
+                        str(ln.get("invoice_no", "") or ""),
                         line_cid,
                         now,
                     ),
@@ -2078,8 +2090,9 @@ def replace_sales_packing_lines(
                        (id, batch_id, sales_document_id, client_name, client_ref,
                         product_code, design_no, bag_id, quantity, remarks,
                         unit_price, currency, total_value, price_source,
+                        client_po, invoice_no,
                         client_contractor_id, created_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         str(uuid.uuid4()), batch_id, sales_document_id,
                         str(ln.get("client_name", "")),
@@ -2093,6 +2106,8 @@ def replace_sales_packing_lines(
                         str(ln.get("currency", "") or "").upper(),
                         float(ln.get("total_value", 0) or 0),
                         str(ln.get("price_source", "") or ""),
+                        str(ln.get("client_po", "") or ""),
+                        str(ln.get("invoice_no", "") or ""),
                         line_cid,
                         now,
                     ),

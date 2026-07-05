@@ -113,6 +113,77 @@
       return _get(`${BASE}/proforma/search${qs}`);
     },
 
+    // GET /api/v1/accounting/documents/{doc_type}  (Wave 4 Item 3A — wFirma invoices/find)
+    // doc_type ∈ { invoice, credit_note }. Returns { ok, data: { doc_type, wfirma_type, rows[], count } }
+    listAccountingDocs: (docType, start, limit) => {
+      const qs = '?' + new URLSearchParams({ start: start || 0, limit: limit || 25 }).toString();
+      return _get(`${BASE}/accounting/documents/${encodeURIComponent(docType)}${qs}`);
+    },
+
+    // GET /api/v1/ledgers/clients  (Wave 4 Item 4 — Client Balance roster)
+    // params: { from?, to?, start?, limit?, country?, q? }. Default window = YTD.
+    // Returns { ok, data: { period, count, rows[], column_status } }
+    // rows[]: { contractor_id, name, open, overdue_invoice_age, ytd_invoiced,
+    //           last_30d (null · Backend Pending), currency, state, balance_available }
+    listClientBalances: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/ledgers/clients${qs}`);
+    },
+
+    // GET /api/v1/analytics/phase-a  (Wave 4 Item 1A — reuse for Last wFirma Sync)
+    // Read-only. Returns { ok, data: { wfirma_sync: { last_exported_at, exported,
+    //           pending, last_exported_doc, ... }, ... } }. No new endpoint.
+    getAnalyticsPhaseA: () => _get(`${BASE}/analytics/phase-a`),
+
+    // POST /api/v1/wfirma/sync/payments-pull  (Wave 4 Item 7 — PULL-ONLY)
+    // READ-ONLY vs wFirma (payments/find GET) → local payment_state.db snapshot.
+    // Bounded to one contractor. NOT a push; no wFirma mutation.
+    // Returns { ok, data: { new, existing, contractor_id, direction:'PULL' } }
+    pullPayments: (contractorId) =>
+      _post(`${BASE}/wfirma/sync/payments-pull`, { contractor_id: contractorId }),
+
+    // POST /api/v1/packing/{batch_id}/upload (multipart — EXISTING authority).
+    // Wave 4 Item 8: reuse-only. Parses the packing file, upserts packing lines,
+    // and idempotently creates/syncs proforma drafts by (batch_id, client_name).
+    // NO new endpoint, no wFirma write. batchId MUST be an explicit real batch —
+    // never auto-picked. No JSON headers (browser sets the multipart boundary).
+    // Returns { ok, data: { batch_id, file, total_rows, matched_count,
+    //           unmatched_count, inserted_count, suggested_client_name, ... } }
+    uploadPackingList: async (batchId, file, forceReextract) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      const qs = forceReextract ? '?force_reextract=true' : '';
+      try {
+        const data = await _apiFetch(
+          `${BASE}/packing/${encodeURIComponent(batchId)}/upload${qs}`,
+          { method: 'POST', body: fd });
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, status: err.status || 0, error: err.message || String(err), type: err.type };
+      }
+    },
+
+    // POST /api/v1/packing/{batch_id}/upload (multipart — EXISTING authority).
+    // Wave 4 Item 8: reuse-only. Parses the packing file, upserts packing lines,
+    // and idempotently creates/syncs proforma drafts by (batch_id, client_name).
+    // NO new endpoint, no wFirma write. batchId MUST be an explicit real batch —
+    // never auto-picked. No JSON headers (browser sets the multipart boundary).
+    // Returns { ok, data: { batch_id, file, total_rows, matched_count,
+    //           unmatched_count, inserted_count, suggested_client_name, ... } }
+    uploadPackingList: async (batchId, file, forceReextract) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      const qs = forceReextract ? '?force_reextract=true' : '';
+      try {
+        const data = await _apiFetch(
+          `${BASE}/packing/${encodeURIComponent(batchId)}/upload${qs}`,
+          { method: 'POST', body: fd });
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, status: err.status || 0, error: err.message || String(err), type: err.type };
+      }
+    },
+
     // GET /api/v1/proforma/drafts/{batch_id}
     // Returns { ok, data: { ok, batch_id, drafts[], count } }
     getProformaDrafts: (batchId) =>
@@ -383,6 +454,69 @@
     confirmReceipt: (batchId, lines, sourceDocuments) =>
       _postM(`${BASE}/warehouse/receipt/confirm`,
         { batch_id: batchId, lines: lines, source_documents: sourceDocuments || null }),
+
+    // -- Inventory: Move Stock (slice B×7-1) ------------------------------
+    // GET /api/v1/inventory/state/{batch_id}
+    // INVENTORY read authority: counts + per-piece list.
+    // { batch_id, as_of, counts, pieces:[{scan_code, state, product_code,
+    //   design_no, updated_at, synthetic?, source?}], total, synthetic,
+    //   source, degraded }. Honest-empty: unknown batch -> 200 with total=0.
+    // synthetic:true pieces are C13A purchase-transit projections (not movable).
+    getInventoryState: (batchId) =>
+      _get(`${BASE}/inventory/state/${encodeURIComponent(batchId)}`),
+
+    // -- Warehouse: locations + per-location inventory (Phase B fold) -----
+    // The NON-PASTE selection feed for the Move Stock modal (operator rule:
+    // no raw internal-ID paste; select from lists). Both GET, read-only.
+    // GET /api/v1/warehouse/locations  → { count, locations:[{location_code,
+    //   warehouse, active, …}] }
+    getWarehouseLocations: () =>
+      _get(`${BASE}/warehouse/locations`),
+
+    // GET /api/v1/warehouse/locations/{code}/inventory → { location_code,
+    //   count, items:[{scan_code, design_no, product_code, batch_id,
+    //   current_status, …}] } — items carry scan_code (movePieceLocation key).
+    getLocationInventory: (locationCode) =>
+      _get(`${BASE}/warehouse/locations/${String(locationCode).split('/').map(encodeURIComponent).join('/')}/inventory`),
+
+    // -- Inventory: Stock Promotion Notes (Phase B slice B2) --------------
+    // GET /api/v1/inventory/promotion-notes/{batch_id}
+    // { batch_id, total, notes:[header…] } — honest-empty: total=0.
+    getPromotionNotes: (batchId) =>
+      _get(`${BASE}/inventory/promotion-notes/${encodeURIComponent(batchId)}`),
+
+    // GET /api/v1/inventory/promotion-note/{note_no:path}
+    // note_no contains SLASHES (SPN/NNN/YYYY) and the backend route uses a
+    // :path converter — encode PER SEGMENT so segment contents stay safe
+    // while the slashes remain literal path separators. Do NOT
+    // encodeURIComponent the whole id (that would send %2F).
+    // 404 -> { detail: { code: "NOTE_NOT_FOUND", … } }.
+    getPromotionNote: (noteNo) =>
+      _get(`${BASE}/inventory/promotion-note/${String(noteNo).split('/').map(encodeURIComponent).join('/')}`),
+
+    // POST /api/v1/inventory/pieces/{piece_id}/location
+    //   body: { to_location, operator, idempotency_key, note? }
+    // LOCAL metadata-only write — moves physical location; does NOT change
+    // inventory_state; NO wFirma/fiscal write. Idempotent on (piece, key):
+    // replays return status:"replayed" with the prior event_id.
+    // Operator identity rides in the BODY (backend contract) — action-proposals
+    // precedent: _call (no X-Operator) + _resolveOperator(); a blank operator
+    // REFUSES to POST.
+    movePieceLocation: (pieceId, { toLocation, operator, idempotencyKey, note } = {}) => {
+      const op = ((operator || '') || _resolveOperator() || '').trim();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required -- move cancelled.' });
+      const body = {
+        to_location:     toLocation,
+        operator:        op,
+        idempotency_key: idempotencyKey,
+      };
+      const n = (note || '').trim();
+      if (n) body.note = n;
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/location`, body);
+    },
 
     // -- Action proposals (Inbox 2B.3b write wiring) ----------------------
     // Attribution rides in the BODY (approved_by / rejected_by) per the
@@ -666,6 +800,370 @@
         expected_updated_at: updatedAt || '',
         apply: applyList || [],
       }),
+
+    // ── Supplier Invoice OCR — extraction drafts + operator review ──────────
+
+    // POST /api/v1/supplier-invoice-ocr/upload (multipart). No JSON headers —
+    // the browser sets the multipart boundary. 422/503 bodies still carry a
+    // draft_id (file + row are persisted even when extraction fails).
+    uploadSupplierInvoice: async (file) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        const data = await _apiFetch(`${BASE}/supplier-invoice-ocr/upload`, {
+          method: 'POST',
+          body: fd,
+        });
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, status: err.status || 0, error: err.message || String(err), type: err.type };
+      }
+    },
+
+    // GET /api/v1/supplier-invoice-ocr/drafts?status=&limit=&offset=
+    listSupplierInvoiceDrafts: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/supplier-invoice-ocr/drafts${qs}`);
+    },
+
+    // GET /api/v1/supplier-invoice-ocr/drafts/{draft_id}
+    getSupplierInvoiceDraft: (draftId) =>
+      _get(`${BASE}/supplier-invoice-ocr/drafts/${encodeURIComponent(draftId)}`),
+
+    // POST /api/v1/supplier-invoice-ocr/drafts/{draft_id}/confirm
+    // _post (NOT _postM): operator identity is derived SERVER-SIDE from the
+    // session (require_role) — an X-Operator header would be ignored.
+    confirmSupplierInvoiceDraft: (draftId, confirmedFields) =>
+      _post(`${BASE}/supplier-invoice-ocr/drafts/${encodeURIComponent(draftId)}/confirm`, {
+        confirmed_fields: confirmedFields,
+      }),
+
+    // POST /api/v1/supplier-invoice-ocr/drafts/{draft_id}/reject
+    rejectSupplierInvoiceDraft: (draftId) =>
+      _post(`${BASE}/supplier-invoice-ocr/drafts/${encodeURIComponent(draftId)}/reject`, {}),
+
+    // ── Inventory: Sample Out register — Wave-3 U-1 ────────────────────────
+    // GET /api/v1/inventory/samples?status=&recipient=&limit=
+    // → { ok, count, samples: [{sample_id, scan_code, recipient_client_name,
+    //     recipient_client_id, sample_reason, expected_return_date, out_operator,
+    //     out_at, notes, return_event_id, returned_at, return_operator, status}] }
+    // status filter: 'open' | 'returned' (omit for all)
+    // Authority: routes_inventory_sample.py:149 (C-3b, Wave-2 backend LIVE)
+    getInventorySamples: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/inventory/samples${qs}`);
+    },
+
+    // POST /api/v1/inventory/pieces/{piece_id}/sample-out
+    //   body: { operator, recipient_client_name, recipient_client_id?,
+    //           expected_return_date, sample_reason, idempotency_key, notes? }
+    // Moves piece WAREHOUSE_STOCK → SAMPLE_OUT. Idempotent on (scan_code, key).
+    // Authority: routes_inventory_sample.py:91
+    issueSampleOut: (pieceId, payload) => {
+      const op = ((payload && payload.operator) || _resolveOperator() || '').trim();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required — sample-out cancelled.' });
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/sample-out`,
+        { ...payload, operator: op });
+    },
+
+    // ── Inventory: Sample Return — Wave-3 U-1 page 2 ──────────────────────
+    // POST /api/v1/inventory/pieces/{piece_id}/sample-return
+    //   body: { operator, idempotency_key, notes? }
+    // Moves piece SAMPLE_OUT → WAREHOUSE_STOCK. Idempotent on (scan_code, key).
+    // Authority: routes_inventory_sample.py:125 (LIVE)
+    recordSampleReturn: (pieceId, payload) => {
+      const op = ((payload && payload.operator) || _resolveOperator() || '').trim();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required — sample-return cancelled.' });
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/sample-return`,
+        { ...payload, operator: op });
+    },
+
+    // ── Inventory: Client Return register — Wave-3 U-2 page 3 ─────────────
+    // GET /api/v1/inventory/returns?direction=from_client&status=&limit=
+    // → { ok, count, returns: [{id, scan_code, direction, operator,
+    //     source_holder_name, return_reason, received_at, notes,
+    //     occurred_at, created_at, status}] }
+    // direction fixed to from_client for this tab. status filter: 'recorded' (omit for all).
+    // Authority: routes_inventory_returns.py:212 (C-3a/C-3c, Wave-2 backend LIVE)
+    getInventoryReturns: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/inventory/returns${qs}`);
+    },
+
+    // POST /api/v1/inventory/pieces/{piece_id}/return-from-client
+    //   body: { operator, return_reason, origin_context, received_at,
+    //           idempotency_key, source_holder_name?, notes? }
+    // Moves piece WAREHOUSE_STOCK|SAMPLE_OUT → RETURNED_FROM_CLIENT.
+    // Idempotent on (scan_code, idempotency_key).
+    // return_reason enum: warranty_claim | customer_refused |
+    //   post_sample_review_reject | dimension_issue |
+    //   quality_complaint | wrong_item_shipped | other
+    // Authority: routes_inventory_returns.py:116 (C-3a, LIVE)
+    recordClientReturn: (pieceId, payload) => {
+      const op = ((payload && payload.operator) || _resolveOperator() || '').trim();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required — client-return cancelled.' });
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/return-from-client`,
+        { ...payload, operator: op });
+    },
+
+    // ── Inventory: Return to Producer register — Wave-3 U-2 page 4 ───────────
+    // GET /api/v1/inventory/returns?direction=to_producer&status=&limit=
+    // → { ok, count, returns: [{id, scan_code, direction, operator,
+    //     producer_name, producer_id, return_reason, dispatch_reference,
+    //     expected_resolution_date, notes, occurred_at, created_at,
+    //     resolution_event_id, resolved_at, status}] }
+    // status filter: 'open' (awaiting/in-transit) | 'resolved' (confirmed) (omit=all)
+    // Authority: routes_inventory_returns.py:212 (C-3c, Wave-2 backend LIVE)
+    getProducerReturns: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/inventory/returns${qs}`);
+    },
+
+    // POST /api/v1/inventory/pieces/{piece_id}/return-to-producer
+    //   body: { operator, producer_name, idempotency_key,
+    //           return_reason?, dispatch_reference?, producer_id?,
+    //           expected_resolution_date?, notes? }
+    // Moves piece WAREHOUSE_STOCK | RETURNED_FROM_CLIENT → RETURNED_TO_PRODUCER.
+    // Idempotent on (scan_code, idempotency_key).
+    // return_reason enum: defect | dimension_out_of_spec | quality_reject |
+    //   post_inspection_reject | recall | other
+    // Authority: routes_inventory_returns.py:148 (LIVE)
+    returnToProducer: (pieceId, payload) => {
+      const op = ((payload && payload.operator) || _resolveOperator() || '').trim();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required — return-to-producer cancelled.' });
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/return-to-producer`,
+        { ...payload, operator: op });
+    },
+
+    // POST /api/v1/inventory/pieces/{piece_id}/return-from-producer
+    //   body: { operator, idempotency_key, notes? }
+    // Restock leg: RETURNED_TO_PRODUCER → WAREHOUSE_STOCK.
+    // Idempotent on (scan_code, idempotency_key).
+    // Authority: routes_inventory_returns.py:181 (LIVE)
+    returnFromProducer: (pieceId, payload) => {
+      const op = ((payload && payload.operator) || _resolveOperator() || '').trim();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required — return-from-producer cancelled.' });
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/return-from-producer`,
+        { ...payload, operator: op });
+    },
+
+    // ── Inventory: Temp Sale register — Wave-3 U-3 page 5 ─────────────────
+    // GET /api/v1/inventory/state/{batch_id}
+    // → { ok:true, batch_id, as_of, counts:{state: int}, pieces:[{scan_code,
+    //     state, product_code, design_no, updated_at}], total, source, degraded? }
+    // Callers filter pieces to state==='SALES_TRANSIT'.
+    // Authority: routes_inventory.py:74 (GET /api/v1/inventory/state/{batch_id}, LIVE)
+    // Cross-batch aggregate: NO endpoint exists — tab uses per-batch picker.
+    // Lesson-M note (IV-TS-1): cross-batch SALES_TRANSIT aggregate not backed
+    // by any live endpoint; per-batch read is the only available authority.
+    getInventoryBatchState: (batchId) =>
+      _get(`${BASE}/inventory/state/${encodeURIComponent(batchId)}`),
+
+    // GET /api/v1/inventory/movements/{batch_id}
+    // → { ok:true, batch_id, count, events:[{id, scan_code, from_state,
+    //     to_state, trigger, occurred_at, operator, note}], document_trails }
+    // Used by TempSaleTab to extract client_name from the invoice_issued
+    // transition note field ("invoice issue: {client_name}").
+    // Authority: routes_inventory.py:203 (C-3f, LIVE)
+    getInventoryMovements: (batchId, limit) => {
+      const qs = limit ? `?limit=${encodeURIComponent(limit)}` : '';
+      return _get(`${BASE}/inventory/movements/${encodeURIComponent(batchId)}${qs}`);
+    },
+
+    // ── Inventory: Temp Purchase merchandising register — Wave-3 U-3 page 7 ──
+    // GET /api/v1/inventory/merchandising/{batch_id}
+    // → { ok:true, batch_id, count, rows:[{
+    //     scan_code, product_code, design_no, batch_no,
+    //     pack_sr, ctg, client_po,
+    //     karat, color, quality, dia_wt, size, qty, uom,
+    //     gross_weight, net_weight, state }] }
+    //
+    // C-3e joined read (packing_lines ⋈ inventory_state per piece):
+    //   - pack_sr/ctg/client_po/design/karat/color/quality/dia_wt/qty from packing_lines
+    //   - state from inventory_state (current engine state of each scan_code)
+    // Client-side: filter rows where state === 'PURCHASE_TRANSIT' for Temp Purchase tab.
+    // Honest empty: unknown batch_id → rows=[] (HTTP 200).
+    // Authority: routes_inventory.py:127 (C-3e, LIVE)
+    // Cross-batch aggregate: NO endpoint exists — tab uses per-batch picker.
+    getMerchandisingView: (batchId) =>
+      _get(`${BASE}/inventory/merchandising/${encodeURIComponent(batchId)}`),
+
+    // ── Inventory: Final Stock location view — Wave-3 page 9 ─────────────────
+    // Authority: R-Q4 (DECISIONS.md 2026-07-04): "Final Stock = location/bag-assigned
+    // inventory. Temp Warehouse = received but not yet assigned."
+    //
+    // Strategy: load all warehouse locations, then per-location inventory filtered
+    // to a given batch. Returns a flat list of items that have a non-empty
+    // current_location — these are the Final Stock pieces for the batch.
+    //
+    // Two sequential calls:
+    //   1. GET /api/v1/warehouse/locations  → location list
+    //   2. GET /api/v1/warehouse/locations/{code}/inventory  → per location (parallel)
+    //      filter client-side to items.batch_id === batchId
+    //
+    // Returns: { ok, items: [{scan_code, product_code, design_no, bag_id,
+    //   current_location, batch_id, current_status, updated_at}], locationCount }
+    //
+    // The shared disjoint predicate (exported for TempWarehouseTab amendment):
+    //   isLocationAssigned(item) ← item.current_location is non-empty
+    //
+    // Cross-tab disjoint guarantee: FinalStockTab = isLocationAssigned(item) for
+    // WAREHOUSE_STOCK pieces; TempWarehouseTab amendment = !isLocationAssigned(scan_code)
+    // for WAREHOUSE_STOCK rows. Shared predicate: PzApi.isLocationAssigned.
+    //
+    // Honest empty: unknown batch → items=[] (HTTP 200 from both endpoints).
+    // No new backend route — reuses existing getWarehouseLocations +
+    //   getLocationInventory (pz-api.js:402/408, routes_warehouse.py:184/190).
+    isLocationAssigned: (item) => !!(item && item.current_location && item.current_location.trim() !== ''),
+
+    getWarehouseLocationInventory: async (batchId) => {
+      // Step 1: load all active locations
+      const locRes = await _get(`${BASE}/warehouse/locations`);
+      if (!locRes.ok) return locRes;
+      const locs = (locRes.data && locRes.data.locations) || [];
+      if (locs.length === 0) return { ok: true, status: 200, data: { items: [], locationCount: 0 } };
+
+      // Step 2: load inventory for each location in parallel, filter to batch
+      const perLoc = await Promise.all(
+        locs.map(loc =>
+          _get(`${BASE}/warehouse/locations/${String(loc.location_code).split('/').map(encodeURIComponent).join('/')}/inventory`)
+        )
+      );
+
+      const items = [];
+      perLoc.forEach((res, idx) => {
+        if (!res.ok) return;
+        const locItems = (res.data && res.data.items) || [];
+        locItems.forEach(it => {
+          // Filter to the requested batch; include only assigned (non-empty location) rows
+          if (it.batch_id === batchId && it.current_location && it.current_location.trim() !== '') {
+            items.push(it);
+          }
+        });
+      });
+
+      return { ok: true, status: 200, data: { items, locationCount: locs.length } };
+    },
+
+    // ── Wave-3 Documents Hub transport additions ─────────────────────────────
+    // These are transport-only wrappers for EXISTING endpoints.
+    // All endpoints were live before this wave; these wrappers were absent from
+    // pz-api.js. Added after getWarehouseLocationInventory per the build brief.
+    // No new backend routes — EXISTING authorities only (DECISIONS.md constraint).
+
+    // GET /api/v1/dashboard/batches/{batch_id}/files
+    // Returns file availability for a batch folder: pz_pdf, xlsx, sad, sources…
+    // Authority: routes_dashboard.py:558 (GET /batches/{batch_id}/files)
+    // Used by: Documents Hub OtherDocs tab, PZ kanban Download button
+    getBatchFiles: (batchId) =>
+      _get(`${BASE}/dashboard/batches/${encodeURIComponent(batchId)}/files`),
+
+    // ── Wave-3 Accounting Hub transport additions ─────────────────────────────
+    // Transport-only wrappers for EXISTING endpoints.
+    // No new backend routes — EXISTING authorities only (DECISIONS.md constraint).
+
+    // GET /api/v1/wfirma/contractors/scan/status
+    // Contractor sync status: healthy, running, last_started_at,
+    // last_completed_at, duration_ms, processed, created, updated, skipped,
+    // errors, last_error.
+    // Authority: routes_wfirma_contractors.py:117
+    // Used by: Accounting Hub wFirma Sync tab
+    getWfirmaContractorScanStatus: () =>
+      _get(`${BASE}/wfirma/contractors/scan/status`),
+
+    // ── Wave-3 Shipment Detail transport additions ────────────────────────────
+    // Transport-only wrappers for EXISTING endpoints.
+    // No new backend routes — EXISTING authorities only (DECISIONS.md constraint).
+
+    // GET /api/v1/tracking/shipment/{batch_id}/timeline
+    // Full shipment timeline: chronological audit events with timestamps.
+    // Authority: routes_tracking.py (get_shipment_timeline)
+    // Used by: shipment-detail-page.jsx TimelineTab (SD-7 gap closure)
+    getShipmentTimeline: (batchId) =>
+      _get(`${BASE}/tracking/shipment/${encodeURIComponent(batchId)}/timeline`),
+
+    // ── Wave-3 Dashboard transport additions ─────────────────────────────────
+    // Transport-only wrappers for EXISTING endpoints.
+    // No new backend routes — EXISTING authorities only (DECISIONS.md constraint).
+
+    // GET /api/v1/webhooks/wfirma/status
+    // wFirma sync scheduler heartbeat: scheduler_running, last_tick_at,
+    // last_completed_at, next_tick_at, queue state, snapshot totals.
+    // Authority: routes_webhooks_wfirma_status.py
+    // Used by: wireframe-update.jsx OperationalStatusStrip (D-5 gap closure)
+    getWfirmaWebhookStatus: () =>
+      _get(`${BASE}/webhooks/wfirma/status`),
+
+    // GET /api/v1/deploy/status
+    // Deployment health: live SHA, deployed_at, GATE 2 state, verification results.
+    // Authority: routes_deploy_status.py
+    // Used by: wireframe-update.jsx OperationalStatusStrip (D-5 gap closure)
+    getDeployStatus: () =>
+      _get(`${BASE}/deploy/status`),
+
+    // ── Wave-3 Proforma List + Detail transport additions ─────────────────────
+    // Transport-only wrappers for EXISTING endpoints.
+    // No new backend routes — EXISTING authorities only (DECISIONS.md constraint).
+
+    // GET /api/v1/proforma/pipeline/{batch_id}
+    // Batch-level pipeline state: aggregated draft lifecycle, reservation stats,
+    // pipeline_stage label, and per-state counts.
+    // Authority: routes_proforma.py (get_batch_pipeline)
+    // Used by: proforma-list.jsx PipelineKpiStrip (PL-1 gap closure)
+    getProformaPipeline: (batchId) =>
+      _get(`${BASE}/proforma/pipeline/${encodeURIComponent(batchId)}`),
+
+    // GET /api/v1/proforma/search
+    // Cross-batch proforma search.
+    // Auth params: client_name, batch_id, draft_state, currency, date_from,
+    //              date_to, page, page_size.
+    // Authority: routes_proforma.py (search_proforma_drafts)
+    // Used by: proforma-list.jsx cross-batch search (PL-2 gap closure)
+    searchProformaDrafts: (params) =>
+      _get(`${BASE}/proforma/search${params ? '?' + new URLSearchParams(params).toString() : ''}`),
+
+    // GET /api/v1/proforma/draft/{draft_id}/events
+    // Audit event trail for a draft: array of {event_type, created_at, detail}.
+    // Authority: routes_proforma.py (get_draft_events)
+    // Used by: proforma-detail.jsx ProformaHistoryTab (PD-5 gap closure)
+    getDraftEvents: (draftId) =>
+      _get(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/events`),
+
+    // GET /api/v1/proforma/draft/{draft_id}/suggest-service-charges
+    // Combined freight + insurance suggestion from Customer Master.
+    // Authority: routes_proforma.py (suggest_service_charges)
+    // Used by: proforma-detail.jsx ServiceChargesPanel (PL-5 gap closure)
+    suggestServiceCharges: (draftId) =>
+      _get(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/suggest-service-charges`),
+
+    // POST /api/v1/proforma/draft/{draft_id}/apply-service-charges
+    // Apply Customer Master freight/insurance as service charges.
+    // Authority: routes_proforma.py (apply_service_charges)
+    // Used by: proforma-detail.jsx ServiceChargesPanel (PL-5 gap closure)
+    applyServiceCharges: (draftId, body) =>
+      _post(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/apply-service-charges`, body),
+
+    // PUT /api/v1/proforma/service-products/{charge_type}
+    // Register a wFirma product for a service charge type.
+    // Authority: routes_proforma.py (put_service_product)
+    // Used by: proforma-detail.jsx ServiceProductRegistryPanel (PL-5 gap closure)
+    putServiceProduct: (chargeType, body) =>
+      _put(`${BASE}/proforma/service-products/${encodeURIComponent(chargeType)}`, body),
 
   });
 })();

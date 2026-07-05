@@ -2130,6 +2130,11 @@ def _scan_status_path() -> "Path":
 def _write_scan_status(status: Dict[str, Any]) -> None:
     """Atomically write the scan status to disk. Non-fatal on failure."""
     try:
+        # Import was MISSING — every lane-a status write failed with a
+        # swallowed NameError (live prod WARNING 2026-07-02 14:06; infra
+        # health pass d67d3722 finding #3). Local aliased import per this
+        # file's idiom (:2038, :2874).
+        from ..utils.io import write_json_atomic  # noqa: PLC0415
         write_json_atomic(_scan_status_path(), status)
     except Exception as exc:
         log.warning("[lane-a] status write failed (non-fatal): %s", exc)

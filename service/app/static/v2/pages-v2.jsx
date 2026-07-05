@@ -988,6 +988,7 @@ function ActionProposalsPage() {
 // ════════════════════════════════════════════════════════════════════════════
 // Reports — financial, sales, purchase, shipping (date-filtered)
 // ════════════════════════════════════════════════════════════════════════════
+// R-Q3 (2026-07-04): honest MOCK notice — no confirmed reports backend
 function ReportsPage() {
   const [period, setPeriod] = React.useState('mtd');
   const [tab, setTab] = React.useState('financial');
@@ -1004,6 +1005,16 @@ function ReportsPage() {
 
   return (
     <div style={{ padding: '20px 32px', overflowY: 'auto', flex: 1 }}>
+      {/* R-Q3: honest gate — no confirmed reports backend */}
+      <div style={{
+        padding: '10px 16px', marginBottom: 14,
+        background: 'var(--badge-amber-bg, #FFF8E1)',
+        border: '1px solid var(--badge-amber-border, #FFD54F)',
+        borderRadius: 6, fontSize: 12,
+        color: 'var(--badge-amber-text, #B45309)', fontWeight: 500,
+      }}>
+        ⚠ Reports data is illustrative — no confirmed backend endpoint. Data shown is design-time placeholder only.
+      </div>
       {/* Date range bar */}
       <Card style={{ padding: 14, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Period</div>

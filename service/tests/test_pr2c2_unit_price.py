@@ -157,9 +157,15 @@ def test_auto_create_draft_carries_unit_price_through():
 # the function returns a 400-blocked response before reaching start_post or
 # any wFirma call.
 
-def test_zero_price_blocks_proforma_post_preview():
+def test_zero_price_blocks_proforma_post_preview(tmp_path, monkeypatch):
     import importlib
     from app.api import routes_proforma
+
+    # R3 test-health: isolate storage — the per-document customer authority
+    # (routes_proforma ~:538) opens customer_master.sqlite under
+    # settings.storage_root; unpatched, that WAL-touches the LIVE store and
+    # trips the conftest storage-leak guard on trees where the file exists.
+    monkeypatch.setattr(routes_proforma.settings, "storage_root", tmp_path)
 
     zero_lines = json.dumps([
         {"product_code": "EJL-RNG-417G", "qty": 1.0, "unit_price": 0.0, "currency": "EUR"},

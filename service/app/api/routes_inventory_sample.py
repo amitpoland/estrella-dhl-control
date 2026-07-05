@@ -142,3 +142,50 @@ def post_sample_return(piece_id: str, payload: SampleReturnRequest) -> dict:
         )
     except SampleOutError as e:
         raise _map_sample_error(e)
+
+
+# ── C-3b: sample register read (Phase-C Wave 2 — backend only) ───────────────
+
+@router.get("/samples")
+def list_samples(
+    status: Optional[str] = None,
+    recipient: Optional[str] = None,
+    limit: int = 500,
+) -> dict:
+    """List sample records: one per sample-out event, paired with its return
+    event when present. Read-only — never mutates inventory_state, never
+    calls wFirma. Backs the Sample Out / Sample Return wireframe tabs
+    (UI wiring is Wave 3 / U-1).
+
+    Query params:
+      status    — 'open' | 'returned' (omit for all)
+      recipient — case-insensitive substring on recipient_client_name
+      limit     — max out-events scanned (1..2000, default 500)
+
+    Errors:
+      400 INVALID_INPUT (bad status value)
+      503 DB_UNAVAILABLE, MIGRATION_PENDING
+    """
+    from ..services import warehouse_db as wdb
+    if wdb._db_path is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "DB_UNAVAILABLE", "detail": "warehouse_db not initialised"},
+        )
+    if not wdb.ensure_sample_out_schema():
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "MIGRATION_PENDING",
+                    "detail": "sample_out_events migration not applied"},
+        )
+    st = (status or "").strip().lower() or None
+    if st not in (None, "open", "returned"):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_INPUT",
+                    "detail": "status must be 'open' or 'returned'"},
+        )
+    records = wdb.list_sample_records(
+        status=st, recipient_client_name=recipient, limit=limit,
+    )
+    return {"ok": True, "count": len(records), "samples": records}

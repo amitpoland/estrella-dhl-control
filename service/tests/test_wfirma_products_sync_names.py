@@ -93,12 +93,14 @@ def test_endpoint_calls_edit_product_not_create():
 
 
 def test_endpoint_persists_via_upsert_product():
+    # C-1e: sync-names write path migrated to rdb.register_product_identity
+    # (mirror-first dual-write). wfirma_db.upsert_product removed from this endpoint.
     body = _route_body()
     chunk = body[body.find("wfirma_products_sync_names"):]
     end = chunk.find("@router", 1)
     if end > 0:
         chunk = chunk[:end]
-    assert "wfirma_db.upsert_product" in chunk
+    assert "rdb.register_product_identity" in chunk
 
 
 def test_endpoint_logs_timeline_event():

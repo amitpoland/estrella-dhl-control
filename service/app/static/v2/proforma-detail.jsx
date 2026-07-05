@@ -10,25 +10,35 @@
 //   GET /api/v1/proforma/draft/{id}/events           → history tab
 //   POST /api/v1/proforma/preview/{batch_id}/{cn}    → reservation / blocking reasons
 
+// HTML detail tab spec (pinned wireframe): Overview · Items · Source & Extraction ·
+// Logistics · Documents · Audit Trail. Customer Mapping + Reservation are existing
+// EJ Extensions (preserved per the EJ Extension rule — never removed).
 const PROFORMA_TABS = [
-  { id: 'overview',         label: 'Overview'         },
-  { id: 'lines',            label: 'Lines'            },
-  { id: 'customer_mapping', label: 'Customer Mapping' },
-  { id: 'reservation',      label: 'Reservation'      },
-  { id: 'history',          label: 'History'          },
+  { id: 'overview',         label: 'Overview'            },
+  { id: 'lines',            label: 'Items'               },  // HTML "Items" = editable line items
+  { id: 'source',           label: 'Source & Extraction' },  // HTML tab — Backend Pending
+  { id: 'logistics',        label: 'Logistics'           },  // HTML tab — Backend Pending
+  { id: 'documents',        label: 'Documents'           },  // HTML tab — Backend Pending
+  { id: 'history',          label: 'Audit Trail'         },  // HTML "Audit Trail" = history
+  { id: 'customer_mapping', label: 'Customer Mapping'    },  // EJ Extension
+  { id: 'reservation',      label: 'Reservation'         },  // EJ Extension
 ];
 
 // ── Toolbar button ────────────────────────────────────────────────────────────
-function TbBtn({ children, onClick, disabled, title, warn, style: xs, ...rest }) {
+// The COLLIDER from the B2 render-check defect: this file loads 27th, and its
+// hoisted `_excluded` (['children','onClick','disabled','title','warn','style'])
+// overwrote earlier files' helpers. Explicit 'data-testid' destructuring, NOT
+// spread-rest (PROJECT_STATE DECISIONS "V2-wide spread-rest collision sweep").
+function TbBtn({ children, onClick, disabled, title, warn, style: xs, 'data-testid': testid }) {
   const [hov, setHov] = React.useState(false);
   return (
     <button
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
       title={title}
+      data-testid={testid}
       onMouseEnter={() => !disabled && setHov(true)}
       onMouseLeave={() => setHov(false)}
-      {...rest}
       style={{
         background: (hov && !disabled)
           ? (warn ? 'var(--badge-amber-bg)' : 'var(--row-hover)')
@@ -1831,12 +1841,126 @@ function ProformaPartyCards({
         )}
 
         {addrApplyError && (
-          <span data-testid="addr-apply-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginLeft: 4 }}>
+          <span data-testid="addr-apply-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginLeft: 4 }}>
             {addrApplyError}
           </span>
         )}
       </div>
     </React.Fragment>
+  );
+}
+
+// ── Wave 4 Item 11: Source & Extraction tab (advisory, read-only) ───────────
+// WIRED: GET /api/v1/proforma/draft/{id}/extraction — a thin read composition
+// over EXISTING authorities (draft editable_lines + Customer Master + Product
+// Master + Import/Packing). Every signal here is ADVISORY (Lesson N): it never
+// blocks Approve / Post / Convert, and it writes nothing.
+function SourceExtractionTab({ draftId }) {
+  const [data,    setData]    = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error,   setError]   = React.useState(null);
+
+  React.useEffect(() => {
+    if (!draftId) { setLoading(false); return; }
+    let alive = true;
+    setLoading(true); setError(null);
+    window.EstrellaShared.apiFetch(`/api/v1/proforma/draft/${draftId}/extraction`)
+      .then(d => { if (alive) { setData(d); setLoading(false); } })
+      .catch(e => { if (alive) { setError(e && e.message ? e.message : 'Failed to load'); setLoading(false); } });
+    return () => { alive = false; };
+  }, [draftId]);
+
+  const box  = { padding: '16px 18px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12.5, lineHeight: 1.6 };
+  const conf = (c) => (c === null || c === undefined) ? '—' : `${Math.round(c * 100)}%`;
+
+  const docs           = (data && data.source_documents) || [];
+  const lines          = (data && data.lines) || [];
+  const cm             = (data && data.customer_match) || null;
+  const custUnmatched  = !!(data && data.customer_unmatched);
+  const unmatchedCount = (data && data.unmatched_count) || 0;
+
+  return (
+    <div data-testid="pf-detail-source" style={{ padding: 20 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Source &amp; Extraction</div>
+      <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12 }}>
+        Advisory only — extraction confidence and match status never block Approve, Post, or Convert.
+      </div>
+
+      {loading && <div data-testid="pf-source-loading" style={{ ...box, color: 'var(--text-3)' }}>Loading extraction…</div>}
+      {!loading && error && <div data-testid="pf-source-error" style={{ ...box, color: 'var(--badge-red-text)', borderColor: 'var(--badge-red-text)' }}>Could not load: {error}</div>}
+
+      {!loading && !error && (
+        <React.Fragment>
+          {/* Packing-list source (Import/Packing authority) */}
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', margin: '4px 0 6px' }}>Packing-list source</div>
+          {docs.length === 0
+            ? <div data-testid="pf-source-nodocs" style={{ ...box, color: 'var(--text-3)' }}>No packing document recorded for this batch.</div>
+            : <div style={{ ...box, padding: 0, overflow: 'hidden' }}>
+                {docs.map((doc, i) => (
+                  <div key={doc.document_id || i} data-testid="pf-source-doc" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '8px 14px', borderBottom: i < docs.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                    <span style={{ color: 'var(--text)' }}>{doc.file_name || doc.invoice_no || doc.document_id}</span>
+                    <span style={{ color: 'var(--text-3)' }}>{doc.extraction_status}</span>
+                  </div>
+                ))}
+              </div>}
+
+          {/* Customer Master match (advisory) */}
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', margin: '14px 0 6px' }}>Customer Master match</div>
+          <div data-testid="pf-source-customer" style={{ ...box }}>
+            <span style={{ color: custUnmatched ? 'var(--badge-amber-text)' : 'var(--text)', fontWeight: 600 }}>
+              {custUnmatched
+                ? (cm && cm.ambiguous ? 'Ambiguous — needs operator mapping' : 'Unmatched — needs operator mapping')
+                : (cm && (cm.resolved_wfirma_name || 'Matched'))}
+            </span>
+            {cm && cm.match_strategy && cm.match_strategy !== 'none' && (
+              <span style={{ color: 'var(--text-3)', marginLeft: 8 }}>· {cm.match_strategy}</span>
+            )}
+          </div>
+
+          {/* Per-row extraction + Product Master match */}
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', margin: '14px 0 6px' }}>
+            Rows &amp; extraction
+            {unmatchedCount > 0 && (
+              <span data-testid="pf-source-unmatched-count" style={{ color: 'var(--badge-amber-text)', fontWeight: 600, marginLeft: 8 }}>
+                {unmatchedCount} unmatched
+              </span>
+            )}
+          </div>
+          {lines.length === 0
+            ? <div style={{ ...box, color: 'var(--text-3)' }}>No draft lines.</div>
+            : <div style={{ ...box, padding: 0, overflow: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ color: 'var(--text-3)', textAlign: 'left' }}>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Product</th>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Design</th>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Confidence</th>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Product Master</th>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Review</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lines.map((ln, i) => (
+                      <tr key={ln.line_id || i} data-testid="pf-source-row" style={{ borderTop: '1px solid var(--border)', background: ln.unmatched ? 'var(--badge-amber-bg, transparent)' : 'transparent' }}>
+                        <td style={{ padding: '8px 12px', color: 'var(--text)' }}>{ln.product_code || <span style={{ color: 'var(--badge-amber-text)' }}>— no code</span>}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-2, var(--text))' }}>{ln.design_no || '—'}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-2, var(--text))' }}>{conf(ln.extracted_confidence)}</td>
+                        <td style={{ padding: '8px 12px' }}>
+                          {ln.product_matched
+                            ? <span style={{ color: 'var(--badge-green-text, #2e7d32)' }}>✓ matched</span>
+                            : <span data-testid="pf-source-row-unmatched" style={{ color: 'var(--badge-amber-text)' }}>unmatched</span>}
+                        </td>
+                        <td style={{ padding: '8px 12px', color: ln.requires_manual_review ? 'var(--badge-amber-text)' : 'var(--text-3)' }}>
+                          {ln.requires_manual_review ? 'manual' : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>}
+        </React.Fragment>
+      )}
+    </div>
   );
 }
 
@@ -1969,13 +2093,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // Ready only when the batch full-gate AND this draft's client document are ready.
   const reservationReady = !!(reservationPreview &&
     reservationPreview.ready_to_create && reservationDoc && reservationDoc.ready);
-  // Reservation blockers are surfaced at TWO distinct scopes so a BATCH-level
-  // warehouse blocker (e.g. "84 packing line(s) not yet scanned" — counts the
-  // whole batch's packing, NOT this draft's billed lines) is never mistaken for a
-  // Draft blocker. batch_blocking_reasons (warehouse + wFirma config) block every
-  // client in the batch; reservationDoc.blocking_reasons are THIS draft/client's
-  // own. The CREATE GATE (reservationReady) is unchanged — this only clarifies the
-  // DISPLAY (Lesson F rule 5: reflect backend truth, never re-derive it).
+  // Reservation signals are surfaced at TWO distinct scopes. Warehouse scan
+  // signals (e.g. "84 packing line(s) not yet scanned" — counts the whole
+  // batch's packing, NOT this draft's billed lines) arrive as batch_advisories:
+  // ADVISORY, never a blocker (authority separation 2026-06-22, Lesson N).
+  // batch_blocking_reasons carry infrastructure/wFirma-config blockers that
+  // block every client in the batch; reservationDoc.blocking_reasons are THIS
+  // draft/client's own. The CREATE GATE (reservationReady) is unchanged — this
+  // only clarifies the DISPLAY (Lesson F rule 5: reflect backend truth, never
+  // re-derive it).
   const reservationBatchReasons = ((reservationPreview && reservationPreview.batch_blocking_reasons) || []).filter(Boolean);
   const reservationDraftReasons = ((reservationDoc && reservationDoc.blocking_reasons) || []).filter(Boolean);
   // Authority separation (2026-06-22): warehouse scan completeness and sales-data
@@ -2115,6 +2241,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     origin:   ln.origin || (liveDraft.origin_country) || (companyProfile && companyProfile.country) || '—',
     purity:   ln.purity || '',
     currency: ln.currency || draftCurrency,
+    _raw:     ln,  // PD-2: preserved for design_no column in ProformaLinesTab
   }));
 
   // Ambiguity line evidence: candidate product_code → packing-line context so
@@ -2477,7 +2604,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     },
     buyer:    { vat: customer.vatEu },
     carrier:  liveDraft.batch_id ? {
-      name:        'DHL Express',
+      // Honest source: the actual shipment/batch carrier when known, else '—'.
+      // Do NOT assume DHL — an AWB/batch_id existing does not imply a carrier.
+      name:        liveDraft.carrier || liveDraft.carrier_name || '—',
       awb:         liveDraft.batch_id,
       service:     'EXPRESS WORLDWIDE',
       incoterm:    liveDraft.incoterm || 'DAP',
@@ -2537,7 +2666,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // authority; number them sequentially.
         sr:           i + 1,
         ctg:          _cmrItemLabel(ln.item_type || pk.item_type),  // Pendant / Ring / Earrings
-        client_po:    pk.invoice_no || ln.client_ref || '',
+        // Phase B slice B3 (PROJECT_STATE DECISIONS "Phase B slices B2+B3"):
+        // client_po is PERSISTED since 494c4665 — prefer the real column;
+        // the invoice_no||client_ref expression is the legacy FALLBACK only
+        // for pre-fix rows where the column backfilled to ''.
+        client_po:    pk.client_po || pk.invoice_no || ln.client_ref || '',
         product_code: ln.product_code || pk.product_code || '—',
         design:       ln.design_no    || pk.design_no    || '—',
         kt:           (pk.metal || '').split('/')[0] || '', // "14KT"
@@ -2979,7 +3112,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         borderBottom: '1px solid var(--border)',
       }}>
         {PROFORMA_TABS.map(t => (
-          <button key={t.id} onClick={() => setActiveTab(t.id)} style={{
+          <button key={t.id} data-testid={`tab-${t.id}`} onClick={() => setActiveTab(t.id)} style={{
             padding: '12px 14px', background: 'none', border: 'none', cursor: 'pointer',
             borderBottom: `2px solid ${activeTab === t.id ? 'var(--accent)' : 'transparent'}`,
             color: activeTab === t.id ? 'var(--text)' : 'var(--text-2)',
@@ -3029,9 +3162,167 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                   .then(r => r && r.ok && draftHook && draftHook.reload && draftHook.reload());
               }}
             />
+            {/* PL-5: Service Product Registry Panel — wires GET/PUT /proforma/service-products */}
+            <ServiceProductRegistryPanel />
           </React.Fragment>
         )}
         {activeTab === 'lines' && <ProformaLinesTab lines={lines} currency={draftCurrency} />}
+        {activeTab === 'source' && (
+          <SourceExtractionTab draftId={draft && draft.id} />
+        )}
+        {activeTab === 'logistics' && (() => {
+          // REUSE-ONLY read view (Wave 4 Item 12). Composes ONLY data this component
+          // already computes from existing authorities — the CMR document authority
+          // (cmrPreviewData), the draft's billed editable_lines, and matched batch
+          // packing rows (net/gross weight enrichment). No new fetch, no new endpoint,
+          // no new authority. Advisory transport summary — NEVER a fiscal gate.
+          const _car = cmrPreviewData.carrier || {};
+          const _wl  = _cmrAggPackingLines.lines || [];
+          const _netTotal = _wl.reduce((s, r) => s + (Number(r.net_weight) || 0), 0);
+          // Gross total via the same per-line packing enrichment used for CMR.
+          const _grossTotal = (liveDraft.editable_lines || []).reduce((s, ln) => {
+            const pk = _enrichPacking(ln); const g = Number(pk.gross_weight) || 0; return s + g;
+          }, 0);
+          const _fmtKg = (v) => (Number(v) > 0 ? Number(v).toFixed(3) + ' kg' : '—');
+          const _kv = (k, v, testid) => (
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '6px 0', borderBottom: '1px solid var(--border)' }} data-testid={testid}>
+              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{k}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', textAlign: 'right' }}>{v}</span>
+            </div>
+          );
+          return (
+            <div data-testid="pf-detail-logistics" style={{ padding: 20 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Logistics</div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 16, lineHeight: 1.5 }}>
+                Read-only transport summary composed from this draft's billed lines, matched packing rows, and the CMR document authority. Advisory — never a fiscal gate.
+              </div>
+
+              {/* Carrier / route — reuses cmrPreviewData.carrier + derived CMR number */}
+              <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 16px', marginBottom: 16 }} data-testid="pf-logistics-carrier">
+                {_kv('Carrier', _car.name || '—', 'pf-logistics-carrier-name')}
+                {_kv('Service', _car.service || '—', 'pf-logistics-service')}
+                {_kv('Incoterm', _car.incoterm || '—', 'pf-logistics-incoterm')}
+                {_kv('Route', [_car.origin, _car.destination].filter(v => v && v !== '—').join('  →  ') || '—', 'pf-logistics-route')}
+                {_kv('CMR No.', cmrPreviewData.cmr_no || '—', 'pf-logistics-cmr-no')}
+                {_kv('Total pieces', _cmrTotalPcs > 0 ? _cmrTotalPcs : '—', 'pf-logistics-pieces')}
+              </div>
+
+              {/* Weights by item type — reuses _cmrAggPackingLines (net) + packing enrichment (gross) */}
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>Weights &amp; package profile</div>
+              {_wl.length > 0 ? (
+                <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 12 }} data-testid="pf-logistics-weights">
+                  <thead>
+                    <tr style={{ textAlign: 'left', color: 'var(--text-3)', fontSize: 11 }}>
+                      <th style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>Item type</th>
+                      <th style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', textAlign: 'right' }}>Qty</th>
+                      <th style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', textAlign: 'right' }}>Net weight</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {_wl.map((r, i) => (
+                      <tr key={i} data-testid="pf-logistics-weight-row">
+                        <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', fontSize: 12 }}>{r.item_type}</td>
+                        <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', fontSize: 12, textAlign: 'right' }}>{Number(r.qty) || 0}</td>
+                        <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', fontSize: 12, textAlign: 'right' }}>{_fmtKg(r.net_weight)}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ fontWeight: 700 }} data-testid="pf-logistics-weight-total">
+                      <td style={{ padding: '6px 8px', fontSize: 12 }}>Total</td>
+                      <td style={{ padding: '6px 8px', fontSize: 12, textAlign: 'right' }}>{_cmrTotalPcs > 0 ? _cmrTotalPcs : '—'}</td>
+                      <td style={{ padding: '6px 8px', fontSize: 12, textAlign: 'right' }}>{_fmtKg(_netTotal)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }} data-testid="pf-logistics-weights-empty">No packing weight data matched for this draft's lines yet.</div>
+              )}
+              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }} data-testid="pf-logistics-gross-total">Gross weight (enriched): <strong>{_fmtKg(_grossTotal)}</strong></div>
+              {cmrPreviewData.goods_summary ? (
+                <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12 }} data-testid="pf-logistics-goods-summary">Goods: {cmrPreviewData.goods_summary}</div>
+              ) : null}
+
+              {/* Honest Backend-Pending advisories — structural gaps, not fabricated data */}
+              <div style={{ padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 11.5, lineHeight: 1.6, marginTop: 4 }} data-testid="pf-logistics-pending">
+                <strong style={{ color: 'var(--badge-amber-text)' }}>Backend Pending:</strong> live AWB tracking number and the per-shipment box / package profile are not shown here — the real AWB is held in the secure label store (not a queryable read authority), and box selection is captured at label-generation time. Generate a DHL AWB from the toolbar to record them.
+              </div>
+            </div>
+          );
+        })()}
+        {activeTab === 'documents' && (() => {
+          // REUSE-ONLY read manifest (Wave 4 Item 13). Lists the documents this
+          // proforma draft can produce, each with its REAL availability state and
+          // the EXISTING action to obtain it. No new endpoint, authority, fetch,
+          // or write path — reuses handleDownloadPdf (proforma PDF), the Print
+          // Preview modal (CMR / Packing List), and in-component draft state.
+          // Existing Print/Download flows are preserved, not replaced.
+          const _openPreview = (t) => { setPreviewDocType(t); setShowPreview(true); };
+          const _proformaNo  = liveDraft.wfirma_proforma_fullnumber || (draft && draft.wfirma_proforma_fullnumber) || '';
+          const _invoiceNo   = liveDraft.wfirma_invoice_number || (liveDraft.wfirma_invoice_id ? String(liveDraft.wfirma_invoice_id) : '');
+          const _docs = [
+            {
+              key: 'proforma', name: 'Proforma PDF',
+              authority: _proformaNo ? `wFirma proforma ${_proformaNo}` : 'wFirma proforma document',
+              available: canPrint,
+              action: canPrint ? { label: '↓ Download', onClick: handleDownloadPdf, testid: 'pf-doc-proforma-download' } : null,
+              pending: canPrint ? null : 'Available after this draft is posted to wFirma (⇪ Post to wFirma).',
+            },
+            {
+              key: 'cmr', name: 'CMR (transport)',
+              authority: cmrPreviewData.cmr_no || 'CMR document (generated)',
+              available: true,
+              action: { label: '◫ Preview', onClick: () => _openPreview('cmr'), testid: 'pf-doc-cmr-preview' },
+              pending: null,
+            },
+            {
+              key: 'packing', name: 'Packing List',
+              authority: 'Packing list (generated)',
+              available: true,
+              action: { label: '◫ Preview', onClick: () => _openPreview('packing'), testid: 'pf-doc-packing-preview' },
+              pending: null,
+            },
+            {
+              key: 'invoice', name: 'Invoice PDF',
+              authority: _invoiceNo ? `wFirma invoice ${_invoiceNo}` : 'wFirma invoice document',
+              available: false,
+              action: null,
+              pending: alreadyConverted
+                ? `Invoice ${_invoiceNo || 'created'} — the PDF is served by wFirma; the app does not expose an invoice-PDF download endpoint yet.`
+                : 'Available after Convert to Invoice (toolbar).',
+            },
+          ];
+          return (
+            <div data-testid="pf-detail-documents" style={{ padding: 20 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Documents</div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 16, lineHeight: 1.5 }}>
+                Read-only manifest — each row shows the real document authority and the existing action to view or download it. No document is fabricated.
+              </div>
+              {_docs.map((d) => (
+                <div key={d.key} data-testid={`pf-doc-row-${d.key}`}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 14px', marginBottom: 8, background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{d.name}</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>{d.authority}</div>
+                    {d.pending ? (
+                      <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }} data-testid={`pf-doc-pending-${d.key}`}>
+                        <strong>Backend Pending:</strong> {d.pending}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div style={{ flexShrink: 0 }}>
+                    {d.action ? (
+                      <button onClick={d.action.onClick} data-testid={d.action.testid}
+                        style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
+                        {d.action.label}
+                      </button>
+                    ) : (
+                      <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 999 }} data-testid={`pf-doc-unavailable-${d.key}`}>Not available</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
         {activeTab === 'customer_mapping' && (
           <ProformaCustomerMappingTab customer={customer} />
         )}
@@ -3286,7 +3577,7 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
             Suggestions (Customer Master, {suggestion.draft_currency || '—'}):
           </div>
           {suggestion.applyError && (
-            <div data-testid="charge-apply-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginBottom: 6 }}>
+            <div data-testid="charge-apply-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginBottom: 6 }}>
               {suggestion.applyError}
             </div>
           )}
@@ -3382,8 +3673,123 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
         </div>
       )}
       {suggestion && suggestion.error && (
-        <div data-testid="charge-suggestion-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginTop: 6 }}>
+        <div data-testid="charge-suggestion-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginTop: 6 }}>
           {suggestion.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── PL-5 — Service Product Registry Panel ────────────────────────────────────
+// Gap PL-5: getServiceProducts (pz-api.js:134, backend live at
+// GET /api/v1/proforma/service-products) was never called by any V2 JSX page.
+//
+// This panel shows the freight/insurance charge-type → wFirma product mappings.
+// Authority: GET /api/v1/proforma/service-products (read) +
+//            PUT /api/v1/proforma/service-products/{charge_type} (register)
+// Placed in ProformaOverviewTab below ServiceChargesPanel when
+// canEdit === true (editing state only).
+function ServiceProductRegistryPanel() {
+  const { useState, useEffect } = React;
+  const [products, setProducts] = useState(null);
+  const [loading, setLoading]   = useState(true);
+  const [editing, setEditing]   = useState(null);  // charge_type being edited
+  const [editVal, setEditVal]   = useState('');
+  const [saving, setSaving]     = useState(false);
+  const [saveErr, setSaveErr]   = useState(null);
+
+  const load = () => {
+    setLoading(true);
+    window.PzApi.getServiceProducts()
+      .then(r => { setProducts(r && r.ok !== false ? (r.data || r) : null); setLoading(false); })
+      .catch(() => { setProducts(null); setLoading(false); });
+  };
+  useEffect(() => { load(); }, []);
+
+  const handleSave = (chargeType) => {
+    if (!editVal.trim()) return;
+    setSaving(true); setSaveErr(null);
+    window.PzApi.putServiceProduct(chargeType, { wfirma_product_id: editVal.trim() })
+      .then(r => {
+        setSaving(false);
+        if (r && r.ok !== false) { setEditing(null); setEditVal(''); load(); }
+        else setSaveErr((r && r.error) || 'Save failed');
+      })
+      .catch(e => { setSaving(false); setSaveErr(e.message || String(e)); });
+  };
+
+  const rows = Array.isArray(products) ? products
+    : (products && Array.isArray(products.mappings)) ? products.mappings
+    : [];
+
+  return (
+    <div data-testid="service-product-registry-panel"
+      style={{ marginTop: 20, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>Service Charge → wFirma Product Registry</span>
+        {loading && <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Loading…</span>}
+      </div>
+      {!loading && rows.length === 0 && (
+        <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 8 }}>
+          No mappings registered. Map a charge type to its wFirma product ID to enable automatic line creation on Post.
+        </div>
+      )}
+      {rows.map(r => (
+        <div key={r.charge_type} data-testid={`service-product-row-${r.charge_type}`}
+          style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px', marginBottom: 4,
+            background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6 }}>
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text)', width: 80, textTransform: 'capitalize' }}>
+            {r.charge_type}</span>
+          {editing === r.charge_type ? (
+            <>
+              <input value={editVal} onChange={e => setEditVal(e.target.value)}
+                placeholder="wFirma product ID"
+                data-testid={`service-product-input-${r.charge_type}`}
+                style={{ flex: 1, padding: '4px 8px', fontSize: 12, borderRadius: 4,
+                  border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }}
+              />
+              {saveErr && <span style={{ fontSize: 11, color: 'var(--badge-red-text)' }}>{saveErr}</span>}
+              <Btn variant="primary" small disabled={saving || !editVal.trim()}
+                data-testid={`service-product-save-${r.charge_type}`}
+                onClick={() => handleSave(r.charge_type)}>
+                {saving ? '…' : '✓'}
+              </Btn>
+              <Btn variant="ghost" small onClick={() => { setEditing(null); setSaveErr(null); }}>✕</Btn>
+            </>
+          ) : (
+            <>
+              <span style={{ flex: 1, fontFamily: 'monospace', fontSize: 11, color: r.wfirma_product_id ? 'var(--text)' : 'var(--text-3)' }}>
+                {r.wfirma_product_id || '(not mapped)'}
+              </span>
+              <Btn variant="ghost" small data-testid={`service-product-edit-${r.charge_type}`}
+                onClick={() => { setEditing(r.charge_type); setEditVal(r.wfirma_product_id || ''); setSaveErr(null); }}>
+                ✎
+              </Btn>
+            </>
+          )}
+        </div>
+      ))}
+      {/* Allow adding an unmapped type */}
+      {!loading && (
+        <div style={{ marginTop: 6 }}>
+          {editing === '__new__' ? (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input value={editVal} onChange={e => setEditVal(e.target.value)}
+                placeholder="freight  OR  insurance"
+                data-testid="service-product-new-type"
+                style={{ flex: 1, padding: '4px 8px', fontSize: 12, borderRadius: 4,
+                  border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }}
+              />
+              {saveErr && <span style={{ fontSize: 11, color: 'var(--badge-red-text)' }}>{saveErr}</span>}
+              <Btn variant="ghost" small onClick={() => { setEditing(null); setSaveErr(null); }}>✕</Btn>
+            </div>
+          ) : (
+            <Btn variant="ghost" small data-testid="service-product-add-new"
+              onClick={() => { setEditing('__new__'); setEditVal(''); setSaveErr(null); }}>
+              + Add mapping
+            </Btn>
+          )}
         </div>
       )}
     </div>
@@ -3427,7 +3833,7 @@ function ProformaBuyerEditModal({ fields, saving, error, onChange, onSave, onClo
         {F('Country code', 'country', 'e.g. LT')}
         {F('VAT EU number', 'vat_id', 'e.g. LT123456789')}
         {error && (
-          <div data-testid="buyer-edit-error" style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginBottom: 8 }}>
+          <div data-testid="buyer-edit-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginBottom: 8 }}>
             {error}
           </div>
         )}
@@ -3698,53 +4104,79 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
 }
 
 // ── Lines tab ─────────────────────────────────────────────────────────────────
+// PD-2 gap closure: expanded from 8 to 12 columns per wireframe spec.
+// Added columns: Design No, Description EN, Purity (dedicated col), Currency.
+// Amount columns labelled with draft currency (historical field names unitEur/netEur
+// carry draft-currency amounts; NOT always EUR).
 function ProformaLinesTab({ lines, currency }) {
-  // Amount columns are labelled with the DRAFT currency (e.g. USD), never a
-  // hardcoded EUR. The underlying line fields are named unitEur/netEur for
-  // historical reasons but carry the draft-currency amount.
   const cur = currency || 'EUR';
+  // PD-2: 12 columns
+  const COL_HEADERS = [
+    { label: '#',          align: 'left',  width: 36 },
+    { label: 'PRODUCT',    align: 'left',  width: 90 },
+    { label: 'DESIGN NO',  align: 'left',  width: 90 },
+    { label: 'DESC (PL)',  align: 'left',  width: 160 },
+    { label: 'DESC (EN)',  align: 'left',  width: 140 },
+    { label: 'PURITY',     align: 'left',  width: 70 },
+    { label: 'HS CODE',    align: 'left',  width: 80 },
+    { label: 'ORIGIN',     align: 'left',  width: 55 },
+    { label: 'CUR',        align: 'left',  width: 45 },
+    { label: 'QTY',        align: 'right', width: 50 },
+    { label: `UNIT ${cur}`,align: 'right', width: 80 },
+    { label: `NET ${cur}`, align: 'right', width: 90 },
+  ];
   return (
     <div>
       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>
         Line items ({lines.length})
       </div>
-      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'auto', boxShadow: '0 1px 3px var(--shadow)' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
           <thead>
             <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-              {['#', 'SKU', 'DESCRIPTION', 'HS CODE', 'ORIGIN', 'QTY', `UNIT ${cur}`, `NET ${cur}`].map((h, i) => (
-                <th key={h} style={{ padding: '9px 12px', textAlign: i >= 5 ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em' }}>{h}</th>
+              {COL_HEADERS.map(h => (
+                <th key={h.label} style={{ padding: '9px 10px', textAlign: h.align, fontSize: 10, fontWeight: 700,
+                  color: 'var(--text-3)', letterSpacing: '0.08em', whiteSpace: 'nowrap',
+                  minWidth: h.width }}>{h.label}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {lines.length === 0 && (
               <tr>
-                <td colSpan="8" style={{ padding: '28px 14px', textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>
+                <td colSpan={COL_HEADERS.length} style={{ padding: '28px 14px', textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>
                   No line items — draft not yet built from packing upload.
                 </td>
               </tr>
             )}
             {lines.map((line, i) => (
-              <tr key={line.lineId || line.seq} style={{ borderBottom: i < lines.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
-                <td style={{ padding: '11px 12px', fontSize: 11, color: 'var(--text-3)' }}>{line.seq}</td>
-                <td style={{ padding: '11px 12px', fontFamily: 'monospace', fontSize: 11, fontWeight: 600, color: 'var(--text-2)' }}>{line.sku}</td>
-                <td style={{ padding: '11px 12px' }}>
-                  <div style={{ fontSize: 12, fontWeight: 600 }}>{line.desc}</div>
-                  {line.purity && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{line.purity}</div>}
+              <tr key={line.lineId || line.seq} data-testid={`line-row-${i}`}
+                style={{ borderBottom: i < lines.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
+                <td style={{ padding: '10px 10px', fontSize: 11, color: 'var(--text-3)' }}>{line.seq}</td>
+                <td style={{ padding: '10px 10px', fontFamily: 'monospace', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{line.sku}</td>
+                <td style={{ padding: '10px 10px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>
+                  {line._raw && line._raw.design_no ? line._raw.design_no : '—'}
                 </td>
-                <td style={{ padding: '11px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)' }}>{line.hsCode}</td>
-                <td style={{ padding: '11px 12px', fontSize: 11, color: 'var(--text-2)' }}>{line.origin}</td>
-                <td style={{ padding: '11px 12px', textAlign: 'right', fontSize: 12, fontWeight: 600 }}>{line.qty}</td>
-                <td style={{ padding: '11px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12 }}>{line.unitEur.toFixed(2)}</td>
-                <td style={{ padding: '11px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 13, fontWeight: 700 }}>{line.netEur.toFixed(2)}</td>
+                <td style={{ padding: '10px 10px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{line.desc_pl || line.desc || '—'}</div>
+                </td>
+                <td style={{ padding: '10px 10px' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-2)' }}>{line.desc_en || '—'}</div>
+                </td>
+                <td style={{ padding: '10px 10px', fontSize: 11, color: 'var(--text-3)' }}>{line.purity || '—'}</td>
+                <td style={{ padding: '10px 10px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)' }}>{line.hsCode}</td>
+                <td style={{ padding: '10px 10px', fontSize: 11, color: 'var(--text-2)' }}>{line.origin}</td>
+                <td style={{ padding: '10px 10px', fontSize: 11, color: 'var(--text-3)' }}>{line.currency || cur}</td>
+                <td style={{ padding: '10px 10px', textAlign: 'right', fontSize: 12, fontWeight: 600 }}>{line.qty}</td>
+                <td style={{ padding: '10px 10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12 }}>{line.unitEur.toFixed(2)}</td>
+                <td style={{ padding: '10px 10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 13, fontWeight: 700 }}>{line.netEur.toFixed(2)}</td>
               </tr>
             ))}
           </tbody>
           <tfoot>
             <tr style={{ borderTop: '2px solid var(--border)', background: 'var(--bg-subtle)' }}>
-              <td colSpan="7" style={{ padding: '11px 12px', textAlign: 'right', fontSize: 12, fontWeight: 700 }}>Total · {cur}</td>
-              <td style={{ padding: '11px 12px', textAlign: 'right', fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--accent)' }} data-testid="proforma-lines-total">
+              <td colSpan={COL_HEADERS.length - 1} style={{ padding: '11px 10px', textAlign: 'right', fontSize: 12, fontWeight: 700 }}>Total · {cur}</td>
+              <td style={{ padding: '11px 10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--accent)' }} data-testid="proforma-lines-total">
                 {lines.length > 0 ? lines.reduce((s, l) => s + l.netEur, 0).toFixed(2) : '—'}
               </td>
             </tr>

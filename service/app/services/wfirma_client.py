@@ -1160,18 +1160,63 @@ def edit_product(
 
 def get_stock(wfirma_good_id: str) -> Dict[str, float]:
     """
-    Get current stock and reserved quantities for a good.
+    Get current stock and reserved quantities for a good (C-9a — double-stock-out
+    verification read).
 
     Returns {"count": float, "reserved": float, "available": float}
-    Raises NotImplementedError — live calls not yet enabled.
+    where available = count - reserved.
 
-    API: GET goods/get (or goods/find with id condition)
-    Auth: API Key headers
-    Key fields: count (current stock), reserved (currently reserved)
+    Raises ValueError when wfirma_good_id is empty.
+    Raises RuntimeError on HTTP error, non-OK wFirma status, or when the good id
+    is not found (a stock check for a missing good is an error, not zero stock).
+    Raises ConnectionError on network failure.
+
+    API: GET goods/find (conditions.id.eq) — reuses the live goods read path
+    (mirrors get_product_by_code); no new HTTP layer, no caching.
+    Auth: API Key headers (shared transport).
+    Key fields: count (current stock), reserved (currently reserved).
     """
-    raise NotImplementedError(
-        "get_stock: live wFirma API calls not yet enabled."
-    )
+    if not wfirma_good_id or not str(wfirma_good_id).strip():
+        raise ValueError("get_stock: wfirma_good_id is required")
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <goods>
+    <parameters>
+      <conditions>
+        <condition>
+          <field>id</field>
+          <operator>eq</operator>
+          <value>{_esc(str(wfirma_good_id).strip())}</value>
+        </condition>
+      </conditions>
+      <page><start>0</start><limit>1</limit></page>
+    </parameters>
+  </goods>
+</api>"""
+    http_status, response_text = _http_request("GET", "goods", "find", body)
+    if http_status >= 400:
+        raise RuntimeError(f"goods/find HTTP {http_status}")
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(f"goods/find wFirma status={code}: {desc}")
+    root = ET.fromstring(response_text)
+    node = root.find(".//good")
+    if node is None:
+        raise RuntimeError(f"get_stock: no good found for id={wfirma_good_id}")
+
+    def _f(tag: str) -> float:
+        try:
+            return float(_find_text(node, tag) or 0)
+        except (ValueError, TypeError):
+            return 0.0
+
+    count = _f("count")
+    reserved = _f("reserved")
+    return {
+        "count": count,
+        "reserved": reserved,
+        "available": count - reserved,
+    }
 
 
 # ── VAT Codes ─────────────────────────────────────────────────────────────────
@@ -2309,6 +2354,69 @@ def fetch_invoices_for_contractor(
         if start >= _INVOICE_LEDGER_SAFETY_CAP:
             break
     return out
+
+
+def list_invoices_by_type(wfirma_type: str, start: int = 0, limit: int = 25) -> Dict[str, Any]:
+    """
+    Wave 4 (Item 3A) — read-only accounting document list: one page of
+    ``invoices/find`` filtered by wFirma invoice type. Reuses the proven
+    invoices/find transport (auth, pagination, retry, error handling, XML parse);
+    wFirma remains the authority (no local mirror, no duplicate data).
+
+    wfirma_type: "normal" (Invoice) or "correction" (Credit Note).
+    Returns {"rows": [{number, date, party, net, tax, gross, currency, state,
+    wfirma_id}], "count": int}.
+
+    Raises ValueError on an unsupported type; RuntimeError on HTTP/non-OK status;
+    ConnectionError on network failure. Never calls invoices/add|edit|delete.
+    """
+    t = (wfirma_type or "").strip()
+    if t not in ("normal", "correction"):
+        raise ValueError("list_invoices_by_type: type must be 'normal' or 'correction'")
+    try:
+        start_i = max(0, int(start))
+        limit_i = max(1, min(int(limit), _INVOICE_LEDGER_PAGE_LIMIT))
+    except (TypeError, ValueError):
+        start_i, limit_i = 0, 25
+
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<api><invoices><parameters>'
+          '<conditions>'
+            f'<condition><field>type</field><operator>eq</operator><value>{_esc(t)}</value></condition>'
+          '</conditions>'
+          f'<page><start>{start_i}</start><limit>{limit_i}</limit></page>'
+        '</parameters></invoices></api>'
+    )
+    http_status, response_text = _http_request("GET", "invoices", "find", body)
+    if http_status >= 400:
+        raise RuntimeError(f"invoices/find HTTP {http_status}")
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(f"invoices/find wFirma status={code}: {desc}")
+    root = ET.fromstring(response_text)
+
+    def _f(node, *tags):
+        for tag in tags:
+            v = node.findtext(tag)
+            if v and v.strip():
+                return v.strip()
+        return "—"
+
+    rows = []
+    for inv in root.findall(".//invoice"):
+        rows.append({
+            "number":    _f(inv, "fullnumber", "number", "id"),
+            "date":      _f(inv, "date"),
+            "party":     _f(inv, "contractor_detail/name", "contractor/name"),
+            "net":       _f(inv, "netto", "total_netto"),
+            "tax":       _f(inv, "tax", "vat"),
+            "gross":     _f(inv, "brutto", "total", "total_brutto"),
+            "currency":  _f(inv, "currency"),
+            "state":     _f(inv, "paymentstate", "state"),
+            "wfirma_id": inv.findtext("id") or "",
+        })
+    return {"rows": rows, "count": len(rows)}
 
 
 # ── Phase 10B — payments/find wrapper for Statement of Account ─────────────

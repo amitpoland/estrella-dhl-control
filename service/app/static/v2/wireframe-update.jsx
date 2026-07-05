@@ -65,34 +65,88 @@ function PendingBtn({ label, level = 'backend', onClick }) {
 }
 
 // ── 2. Operational Status Strip ───────────────────────────────────────────
+// W3 D-5 gap closure: replaced hardcoded mock with live reads from existing
+// backend endpoints. Two authorities:
+//   GET /api/v1/webhooks/wfirma/status  → wFirma sync scheduler heartbeat
+//   GET /api/v1/health                  → engine health (pz engine, SAD parser)
+// Both are auth-gated (X-API-Key via EstrellaShared.apiFetch).
+// Polled once at mount; auto-refreshes every 60 seconds.
+// No fake data. If an endpoint is unavailable the item shows 'unavailable'.
 function OperationalStatusStrip() {
-  const items = [
-    { name:'wFirma',        status:'ok',   meta:'last sync 4 min ago'   , level:'active' },
-    { name:'DHL Inbox',     status:'ok',   meta:'2 unread, polled 30s ago', level:'active' },
-    { name:'Email Queue',   status:'warn', meta:'3 awaiting approval'   , level:'partial' },
-    { name:'Cliq Webhook',  status:'ok',   meta:'last event 1 min ago'  , level:'active' },
-    { name:'Cowork Bridge', status:'idle', meta:'no active tasks'       , level:'partial' },
-    { name:'WorkDrive',     status:'ok',   meta:'token valid · 14h left', level:'active' },
-  ];
-  const dotColor = s => s==='ok' ? '#22A06B' : s==='warn' ? '#D4A853' : s==='down' ? '#C0321A' : '#8A9AB0';
+  const { useState, useEffect } = React;
+  const [wfirmaStatus, setWfirmaStatus] = useState(null);
+  const [healthStatus, setHealthStatus] = useState(null);
+  const [ts, setTs] = useState(Date.now());
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      window.EstrellaShared.apiFetch('/api/v1/webhooks/wfirma/status')
+        .then(r => { if (!cancelled) setWfirmaStatus(r && r.ok !== false ? r : null); })
+        .catch(() => { if (!cancelled) setWfirmaStatus(null); });
+      window.EstrellaShared.apiFetch('/api/v1/health')
+        .then(r => { if (!cancelled) setHealthStatus(r && r.ok !== false ? r : null); })
+        .catch(() => { if (!cancelled) setHealthStatus(null); });
+      if (!cancelled) setTs(Date.now());
+    };
+    load();
+    const id = setInterval(load, 60000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  // Derive items from live data
+  const _dot = s => s === 'ok' ? '#22A06B' : s === 'warn' ? '#D4A853' : s === 'down' ? '#C0321A' : '#8A9AB0';
+  const _ago = iso => {
+    if (!iso) return null;
+    const ms = Date.now() - new Date(iso).getTime();
+    if (isNaN(ms) || ms < 0) return null;
+    const m = Math.floor(ms / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
+  };
+
+  // wFirma sync item (authority: GET /api/v1/webhooks/wfirma/status)
+  const wfItem = (() => {
+    if (!wfirmaStatus) return { name: 'wFirma Sync', status: 'down', meta: 'unavailable' };
+    const healthy = wfirmaStatus.scheduler_running === true;
+    const last = _ago(wfirmaStatus.last_completed_at || wfirmaStatus.last_tick_at);
+    const meta = healthy
+      ? (last ? `synced ${last}` : 'running')
+      : (last ? `last seen ${last}` : 'not running');
+    return { name: 'wFirma Sync', status: healthy ? 'ok' : 'warn', meta };
+  })();
+
+  // PZ engine health item (authority: GET /api/v1/health)
+  const engineItem = (() => {
+    if (!healthStatus) return { name: 'PZ Engine', status: 'down', meta: 'unavailable' };
+    const ok = healthStatus.status === 'ok' || healthStatus.healthy === true;
+    return { name: 'PZ Engine', status: ok ? 'ok' : 'warn', meta: ok ? 'healthy' : 'degraded' };
+  })();
+
+  const items = [wfItem, engineItem];
+  const fmtTs = new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
   return (
-    <div style={{
+    <div data-testid="operational-status-strip" style={{
       display:'flex', alignItems:'center', gap:18, flexWrap:'wrap',
-      padding:'7px 24px', background:'var(--bg-subtle)',
+      padding:'5px 24px', background:'var(--bg-subtle)',
       borderBottom:'1px solid var(--border)', fontSize:11,
       color:'var(--text-2)',
     }}>
       <span style={{ fontWeight:700, color:'var(--text)', letterSpacing:'0.04em' }}>System</span>
       {items.map(i => (
         <span key={i.name} style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
-          <span style={{ width:7, height:7, borderRadius:'50%', background:dotColor(i.status) }}/>
+          <span style={{ width:7, height:7, borderRadius:'50%', background:_dot(i.status) }}/>
           <span style={{ fontWeight:600, color:'var(--text)' }}>{i.name}</span>
           <span style={{ color:'var(--text-3)' }}>· {i.meta}</span>
         </span>
       ))}
       <span style={{ flex:1 }}/>
-      <a href="#" style={{ color:'var(--accent-text)', textDecoration:'underline', fontWeight:600 }}>System health →</a>
+      <span style={{ fontSize:9.5, color:'var(--text-3)', fontFamily:'monospace' }}>polled {fmtTs}</span>
+      <a href="#" onClick={e => { e.preventDefault(); window.location.hash = '#api_status'; }}
+        style={{ color:'var(--accent-text)', textDecoration:'underline', fontWeight:600 }}>System health →</a>
     </div>
   );
 }
@@ -335,16 +389,130 @@ function CoverageMapPage() {
 const CoverageMatrix = CoverageMapPage;
 
 // ── 4. Action Center page ─────────────────────────────────────────────────
+// R-Q2 (2026-07-04): Action Center is operator authority; AI Bridge = backend capability behind it.
+// Data: loads recent batches via PzApi.listBatches(), then fetches proposals per batch from
+// GET /api/v1/action-proposals/{batch_id}. Aggregates pending_review proposals cross-batch.
+// AI Bridge is surfaced as a right-rail panel (backend capability), NOT a separate page.
 function ActionCenterPage() {
-  const queue = [
-    { id:'A-2487', kind:'Proforma · approve & issue',         client:'Aurum Trading',   amount:'EUR 4,820', risk:'low',    age:'12 min', level:'partial' },
-    { id:'A-2486', kind:'PZ · adopt into wFirma',             ref:'AWB 2412-441',       amount:'PLN 18,400', risk:'low',   age:'34 min', level:'active' },
-    { id:'A-2485', kind:'Sample Out · release from stock',    client:'Levi Joaillerie', amount:'EUR 1,260', risk:'medium', age:'1h 04m', level:'partial' },
-    { id:'A-2484', kind:'Credit limit · raise to EUR 25k',    client:'Maison Élise',    amount:'',          risk:'high',   age:'2h 11m', level:'partial' },
-    { id:'A-2483', kind:'Goods Return · receive from client', client:'Aurum Trading',   amount:'EUR 920',   risk:'medium', age:'3h 28m', level:'backend' },
-    { id:'A-2482', kind:'Return to Producer · open RMA',      ref:'PI 2025/418',        amount:'EUR 2,100', risk:'low',    age:'5h 02m', level:'future' },
-  ];
+  const { useState, useEffect } = React;
+  const [proposals, setProposals] = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState(null);
+
+  // Derive a human-readable age string from an ISO timestamp
+  const _age = iso => {
+    if (!iso) return '—';
+    const ms = Date.now() - new Date(iso).getTime();
+    if (isNaN(ms) || ms < 0) return '—';
+    const m = Math.floor(ms / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    return h < 24 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d`;
+  };
+
+  // Map proposal confidence/risk field to a display risk level
+  const _risk = p => {
+    const c = (p.confidence || '').toLowerCase();
+    if (c === 'high' || c === 'critical') return 'high';
+    if (c === 'medium' || c === 'moderate') return 'medium';
+    return 'low';
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        // Step 1: load recent batches (existing endpoint, no new routes)
+        const batchRes = await window.PzApi.listBatches();
+        if (!batchRes || !batchRes.ok) {
+          if (!cancelled) { setError('Could not load batch list'); setLoading(false); }
+          return;
+        }
+        const batches = Array.isArray(batchRes.data)
+          ? batchRes.data
+          : ((batchRes.data && batchRes.data.batches) || []);
+
+        // Step 2: fetch proposals for up to 20 most-recent batches in parallel
+        const recentBatches = batches.slice(0, 20);
+        const results = await Promise.allSettled(
+          recentBatches.map(b => {
+            const batchId = b.batch_id || b.id || b.doc_no;
+            if (!batchId) return Promise.resolve(null);
+            return window.EstrellaShared.apiFetch(
+              '/api/v1/action-proposals/' + encodeURIComponent(batchId)
+            );
+          })
+        );
+
+        // Step 3: aggregate pending_review proposals across batches
+        const all = [];
+        results.forEach(r => {
+          if (r.status !== 'fulfilled' || !r.value) return;
+          const payload = r.value;
+          const list = Array.isArray(payload.proposals) ? payload.proposals
+                     : Array.isArray(payload) ? payload
+                     : [];
+          list.forEach(p => {
+            if ((p.status || '') === 'pending_review') all.push(p);
+          });
+        });
+
+        if (!cancelled) { setProposals(all); setLoading(false); }
+      } catch (e) {
+        if (!cancelled) { setError(String(e)); setLoading(false); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const riskColor = r => r==='high' ? 'var(--badge-red-text)' : r==='medium' ? 'var(--badge-amber-text)' : 'var(--badge-green-text)';
+
+  const renderQueue = () => {
+    if (loading) return (
+      <tr><td colSpan={8} style={{ padding:'24px 10px', textAlign:'center', color:'var(--text-3)', fontSize:12 }}>Loading proposals…</td></tr>
+    );
+    if (error) return (
+      <tr><td colSpan={8} style={{ padding:'24px 10px', textAlign:'center', color:'var(--badge-red-text)', fontSize:12 }}>Error: {error}</td></tr>
+    );
+    if (!proposals.length) return (
+      <tr><td colSpan={8} style={{ padding:'24px 10px', textAlign:'center', color:'var(--text-3)', fontSize:12 }}>No pending proposals — queue is clear.</td></tr>
+    );
+    return proposals.map(p => {
+      const risk = _risk(p);
+      const refText = p.batch_id || p.reference || '—';
+      const amountText = (p.draft && p.draft.amount) ? p.draft.amount : '—';
+      return (
+        <tr key={p.proposal_id || p.id} style={{ borderBottom:'1px solid var(--border-subtle)' }}>
+          <td style={{ padding:'8px 10px', fontFamily:'ui-monospace, monospace', fontSize:11, color:'var(--text-2)' }}>
+            {(p.proposal_id || p.id || '').slice(0, 8)}
+          </td>
+          <td style={{ padding:'8px 10px', color:'var(--text)' }}>
+            {(p.type || p.kind || '').replace(/_/g, ' ')}
+          </td>
+          <td style={{ padding:'8px 10px', color:'var(--text-2)' }}>{refText}</td>
+          <td style={{ padding:'8px 10px', color:'var(--text)', fontWeight:600 }}>{amountText}</td>
+          <td style={{ padding:'8px 10px', color:riskColor(risk), fontWeight:600, textTransform:'capitalize' }}>{risk}</td>
+          <td style={{ padding:'8px 10px', color:'var(--text-3)' }}>{_age(p.created_at)}</td>
+          <td style={{ padding:'8px 10px' }}>
+            <span style={{ fontSize:10, padding:'2px 7px', borderRadius:4, background:'rgba(212,168,83,0.12)', color:'var(--accent)', fontWeight:600, textTransform:'uppercase', letterSpacing:'0.04em' }}>
+              pending review
+            </span>
+          </td>
+          <td style={{ padding:'8px 10px', textAlign:'right' }}>
+            <button data-testid="action-center-review-btn" style={{
+              padding:'5px 10px', fontSize:11, fontWeight:600,
+              border:'1px solid var(--accent-border)',
+              background:'var(--accent)', color:'var(--accent-text)',
+              borderRadius:6, cursor:'pointer',
+            }}>Review</button>
+          </td>
+        </tr>
+      );
+    });
+  };
 
   return (
     <div style={{ padding:'18px 32px 32px', overflowY:'auto', flex:1, display:'flex', gap:18 }}>
@@ -352,7 +520,11 @@ function ActionCenterPage() {
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
           <h3 style={{ margin:0, fontSize:14, color:'var(--text)' }}>Pending operator actions</h3>
-          <FeatureStatus level="approval" label="Approval required"/>
+          {!loading && !error && (
+            <span style={{ fontSize:11, padding:'2px 8px', borderRadius:10, background:'rgba(212,168,83,0.15)', color:'var(--accent)', fontWeight:700 }}>
+              {proposals.length}
+            </span>
+          )}
           <span style={{ flex:1 }}/>
           <PendingBtn label="Bulk approve" level="backend"/>
         </div>
@@ -366,26 +538,7 @@ function ActionCenterPage() {
               </tr>
             </thead>
             <tbody>
-              {queue.map(a => (
-                <tr key={a.id} style={{ borderBottom:'1px solid var(--border-subtle)' }}>
-                  <td style={{ padding:'8px 10px', fontFamily:'ui-monospace, monospace', fontSize:11, color:'var(--text-2)' }}>{a.id}</td>
-                  <td style={{ padding:'8px 10px', color:'var(--text)' }}>{a.kind}</td>
-                  <td style={{ padding:'8px 10px', color:'var(--text-2)' }}>{a.client || a.ref}</td>
-                  <td style={{ padding:'8px 10px', color:'var(--text)', fontWeight:600 }}>{a.amount || '—'}</td>
-                  <td style={{ padding:'8px 10px', color:riskColor(a.risk), fontWeight:600, textTransform:'capitalize' }}>{a.risk}</td>
-                  <td style={{ padding:'8px 10px', color:'var(--text-3)' }}>{a.age}</td>
-                  <td style={{ padding:'8px 10px' }}><FeatureStatus level={a.level}/></td>
-                  <td style={{ padding:'8px 10px', textAlign:'right' }}>
-                    <button disabled={a.level!=='partial' && a.level!=='active'} style={{
-                      padding:'5px 10px', fontSize:11, fontWeight:600,
-                      border:'1px solid var(--accent-border)',
-                      background: (a.level==='partial'||a.level==='active') ? 'var(--accent)' : 'var(--bg-subtle)',
-                      color:(a.level==='partial'||a.level==='active') ? 'var(--accent-text)' : 'var(--text-3)',
-                      borderRadius:6, cursor:(a.level==='partial'||a.level==='active') ? 'pointer' : 'not-allowed',
-                    }}>Review</button>
-                  </td>
-                </tr>
-              ))}
+              {renderQueue()}
             </tbody>
           </table>
         </div>
@@ -396,7 +549,7 @@ function ActionCenterPage() {
         <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:14 }}>
           <div style={{ fontSize:11, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6 }}>Today</div>
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
-            {[['Approved','24'],['Auto-executed','11'],['Rejected','3'],['SLA breaches','1']].map(([k,v])=> (
+            {[['Approved','—'],['Auto-executed','—'],['Rejected','—'],['SLA breaches','—']].map(([k,v])=> (
               <div key={k} style={{ padding:8, background:'var(--bg-subtle)', borderRadius:6 }}>
                 <div style={{ fontFamily:'"DM Serif Display", serif', fontSize:22, color:'var(--text)' }}>{v}</div>
                 <div style={{ fontSize:10, color:'var(--text-3)' }}>{k}</div>
@@ -412,6 +565,19 @@ function ActionCenterPage() {
             <li>Returns / RMA → ops + finance</li>
             <li>Auto-execute: PZ adopt &lt; PLN 50k</li>
           </ul>
+        </div>
+        {/* AI Bridge panel — backend capability that feeds this queue */}
+        <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:14 }}>
+          <div style={{ fontSize:11, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6 }}>
+            AI Bridge
+            <span style={{ marginLeft:6, fontSize:10, padding:'1px 5px', borderRadius:3, background:'var(--bg-subtle)', color:'var(--text-3)', fontWeight:400, textTransform:'none' }}>backend capability</span>
+          </div>
+          <div style={{ fontSize:11, color:'var(--text-2)', lineHeight:1.6, marginBottom:8 }}>
+            AI Bridge analyses shipments and generates the proposals in this queue. It does not take actions — it proposes them for operator approval.
+          </div>
+          <a href="#/automation" style={{ display:'inline-block', fontSize:11, fontWeight:600, color:'var(--accent)', textDecoration:'none' }}>
+            View AI Bridge status →
+          </a>
         </div>
       </aside>
     </div>
@@ -481,24 +647,13 @@ function IdentityMappingPage() {
     ]}/>;
 }
 
-function MoveStockPage() {
-  return <StubPage
-    title="Move Stock"
-    description="Move identified items from Temp Warehouse → Final Stock once Identity / Mapping is confirmed and customs is verified. Approval required."
-    status="backend"
-    columns={['Lot','Item','From','To','Qty','Status']}
-    rows={[
-      ['LOT-2412-441-A','EJ-D-00412','Temp Warehouse','Final Stock', '12', 'Pending mapping'],
-      ['LOT-2412-441-B','EJ-D-00413','Temp Warehouse','Final Stock', '8',  'Mapping required'],
-      ['LOT-2412-552',  'EJ-D-00420','Temp Warehouse','Final Stock', '20', 'Ready · awaiting approval'],
-    ]}
-    endpoints={[
-      'POST /api/v1/inventory/move           (single lot)',
-      'POST /api/v1/inventory/move/bulk',
-      'GET  /api/v1/inventory/move/preview?lot=…',
-      'POST /api/v1/inventory/move/{id}/approve',
-    ]}/>;
-}
+// B×7-1 (2026-07-02): the MoveStockPage stub was RETIRED here — the live page
+// now owns the name (move-stock-page.jsx, loaded EARLIER in index.html; keeping
+// the stub caused a window-global last-write collision that silently rendered
+// the mock over the live page — the same defect class slice-03 removed for
+// ReportsPage). Sprint-31 playbook step P3: mock retired, functions deleted.
+// The stub's advertised endpoints were FICTIONAL (superseded per PROJECT_STATE
+// DECISIONS "slice B×7-1"). Each future B-slice retires its own stub the same way.
 
 function SampleOutPage() {
   return <StubPage
@@ -576,7 +731,8 @@ function ReturnToProducerPage() {
 Object.assign(window, {
   FeatureStatus, PendingBtn, OperationalStatusStrip,
   CoverageMapPage, CoverageMatrix, ActionCenterPage,
-  IdentityMappingPage, MoveStockPage,
+  IdentityMappingPage,
+  // MoveStockPage retired (B×7-1) — live page owns the name; see comment above.
   SampleOutPage, SampleReturnPage,
   GoodsReturnPage, ReturnToProducerPage,
 });

@@ -1100,73 +1100,23 @@ def _promote_to_warehouse_stock(batch_id: str) -> int:
     WAREHOUSE_STOCK or beyond, are skipped.
 
     Returns the number of lines promoted (0 on any failure).
+
+    B×7-1b BE-1 (2026-07-02, PROJECT_STATE DECISIONS "slice B×7-1b BE-1"):
+    the promotion loop that used to live here is now the shared authority
+    services/stock_promotion.run_stock_promotion() — the same function the
+    wFirma PZ writers call (Business Feature Completeness: ONE shared
+    function, no Logic A / Logic B). This wrapper keeps the historical
+    signature and int return for the PZ-generation call site and for the
+    pre-existing test_warehouse_stock_promotion.py pins.
     """
-    promoted = 0
-    try:
-        from ..services import packing_db as _pdb
-        from ..services import inventory_state_engine as _ise
-
-        lines = _pdb.get_packing_lines_for_batch(batch_id)
-        for line in lines:
-            try:
-                sc = line.get("scan_code") or _pdb._compute_scan_code(line)
-                if not sc:
-                    continue
-                st = _ise.get_state(sc)
-                if st is None or st.get("state") != _ise.PURCHASE_TRANSIT:
-                    continue
-                _ise.transition(scan_code=sc, to_state=_ise.WAREHOUSE_STOCK)
-                promoted += 1
-            except Exception as _row_exc:
-                log.warning("[%s] WAREHOUSE_STOCK promote skipped for one line: %s",
-                            batch_id, _row_exc)
-                # Best-effort per-line failure mirror — never raises into the loop.
-                # Bounded payload: error str truncated to 200 chars.
-                try:
-                    from ..services.batch_service import get_output_dir as _get_output_dir
-                    _audit_path_fail = _get_output_dir(batch_id) / "audit.json"
-                    tl.log_event(
-                        _audit_path_fail,
-                        tl.EV_INVENTORY_TRANSITION_FAILED,
-                        trigger_source = "pz_pipeline",
-                        actor          = "system",
-                        detail = {
-                            "batch_id":   batch_id,
-                            "scan_code":  line.get("scan_code") or _pdb._compute_scan_code(line) or "",
-                            "to_state":   "warehouse_stock",
-                            "error":      str(_row_exc)[:200],
-                        },
-                    )
-                except Exception as _tl_exc:
-                    log.warning(
-                        "[%s] inventory transition failure mirror failed (non-fatal): %s",
-                        batch_id, _tl_exc,
-                    )
-    except Exception as _outer:
-        log.warning("[%s] WAREHOUSE_STOCK promote best-effort failure: %s",
-                    batch_id, _outer)
-
-    # ── Best-effort timeline mirror — never breaks the PZ pipeline ───────────
-    # One per-batch summary event regardless of promoted count, mirroring the
-    # EV_PZ_GENERATED idiom that fires four lines above the call site.
-    try:
-        from ..services.batch_service import get_output_dir as _get_output_dir
-        _audit_path = _get_output_dir(batch_id) / "audit.json"
-        tl.log_event(
-            _audit_path,
-            tl.EV_INVENTORY_WAREHOUSE_STOCK_PROMOTED,
-            trigger_source = "pz_pipeline",
-            actor          = "system",
-            detail = {
-                "batch_id": batch_id,
-                "promoted": promoted,
-            },
-        )
-    except Exception as _tl_exc:
-        log.warning("[%s] WAREHOUSE_STOCK promote mirror event failed (non-fatal): %s",
-                    batch_id, _tl_exc)
-
-    return promoted
+    from ..services.stock_promotion import run_stock_promotion
+    result = run_stock_promotion(
+        batch_id,
+        trigger  = "pz_generated",
+        source   = "pz_pipeline",
+        operator = "system",
+    )
+    return int(result.get("promoted", 0))
 
 
 def _stamp_sad_imported(output_dir: Path, sad_name: str) -> None:

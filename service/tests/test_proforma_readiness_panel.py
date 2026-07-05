@@ -289,13 +289,22 @@ class TestProformaReadinessAggregator:
         _seed_invoice_lines(isolated_dbs / "documents.db", bid, [
             ("EJL/PZ-1", "PCS RING"),
         ])
-        # Mirror the product
+        # Mirror the product (legacy split cache — now a dead-read after C-1c)
         from app.services import wfirma_db as wfdb
         wfdb.upsert_product(
             product_code      = "EJL/PZ-1",
             wfirma_product_id = "WF-PZ-1",
             sync_status       = "matched",
         )
+        # C-1c: the readiness endpoint reads the Product Master (status='mapped'),
+        # not the wfirma_db cache — seed the Master as the authority. (The
+        # isolated_dbs fixture hand-creates reservation_queue.db with only two
+        # tables, so ensure the full schema exists first.)
+        from app.services import reservation_db as rdb
+        _rdb = isolated_dbs / "reservation_queue.db"
+        rdb.init_reservation_db(_rdb)
+        rdb.upsert_product_master(_rdb, "EJL/PZ-1", "D-PZ-1")
+        rdb.set_product_master_status(_rdb, "EJL/PZ-1", "mapped")
         # SAD present in audit
         _seed_audit(isolated_dbs / "outputs", bid,
                     customs_declaration={"mrn": "PL12345"})

@@ -16,9 +16,18 @@ const NAV_TREE = [
   // P2 ("operator can observe truth") cannot be satisfied — the page exists
   // but is not reachable. Observer only; Lane A/B remain the sole authority.
   { id: 'dhl',       label: 'DHL',       icon: '✈' },
-  { id: 'proforma',  label: 'Pro Forma', icon: '📋' },
-  { id: 'documents', label: 'Documents', icon: '📄' },
+  { id: 'proforma',  label: 'Pro Forma', icon: '▤' },
+  { id: 'documents', label: 'Documents', icon: '▭' },
   { id: 'accounting', label: 'Accounting', icon: '⊞', badge: 'NEW' },
+  // Supplier invoice OCR review — foreign-invoice extraction drafts. Draft
+  // store only; no wFirma write (expenses/add unverified).
+  { id: 'supplier_invoice_review', label: 'Supplier Invoices', icon: '🧾', badge: 'NEW' },
+  // Phase B FOLD (2026-07-03, PROJECT_STATE DECISIONS "Phase B FOLD"): the
+  // g_inventory NAV group (Stock Hub + Move Location) is COLLAPSED back to a
+  // single flat Inventory entry — Move Location was folded into the Inventory
+  // page as the Move Stock modal (Lesson M relocation), so there is no second
+  // inventory sibling to group. The wireframe's Inventory is one nav entry
+  // with tabs/actions inside.
   { id: 'inventory', label: 'Inventory', icon: '◫' },
   { id: 'reports',   label: 'Reports',   icon: '≡' },
 
@@ -32,6 +41,7 @@ const NAV_TREE = [
     { id: 'automation',   label: 'Automation' },
     { id: 'intelligence', label: 'Intelligence Hub' },
     { id: 'coverage',     label: 'Coverage Map' },
+    { id: 'shipping_ops', label: 'Shipping Ops' },
   ]},
 ];
 
@@ -321,7 +331,7 @@ function TopBar({ onNewShipment, onToggleDark, isDark, onOpenSearch }) {
         borderRadius: 6, padding: '5px 10px', cursor: 'pointer',
         fontSize: 14, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 4,
       }}>
-        {isDark ? '☀' : '🌿'}
+        {isDark ? '☀' : '☾'}
       </button>
 
       <button onClick={onNewShipment} style={{
@@ -335,7 +345,10 @@ function TopBar({ onNewShipment, onToggleDark, isDark, onOpenSearch }) {
       </button>
 
       <button style={{ background: 'none', border: 'none', cursor: 'pointer', position: 'relative', padding: 4 }}>
-        <span style={{ fontSize: 18, color: 'var(--text-2)' }}>🔔</span>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-2)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-label="Notifications" role="img">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+          <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+        </svg>
         <span style={{ position: 'absolute', top: 2, right: 2, width: 8, height: 8, borderRadius: '50%', background: '#C0321A', border: '1.5px solid var(--card)' }}></span>
       </button>
 
@@ -368,9 +381,13 @@ function PageHeader({ title, subtitle, actions }) {
   );
 }
 
-function Card({ children, style, onClick, ...rest }) {
+// No spread-rest (PROJECT_STATE DECISIONS "V2-wide spread-rest collision
+// sweep"): Babel-standalone hoists `_excluded` to global scope and a
+// later-loaded file overwrites it. Explicit 'data-testid' destructuring is
+// census-complete (Card only ever receives data-testid) and collision-safe.
+function Card({ children, style, onClick, 'data-testid': testid }) {
   return (
-    <div onClick={onClick} {...rest} style={{
+    <div onClick={onClick} data-testid={testid} style={{
       background: 'var(--card)', borderRadius: 8,
       border: '1px solid var(--border)',
       boxShadow: '0 1px 3px var(--shadow)',
@@ -379,10 +396,13 @@ function Card({ children, style, onClick, ...rest }) {
   );
 }
 
-// Forwards `...rest` (data-testid, title, aria-*) to the <button> element —
-// same contract as the Btn in v2/dashboard-shared.js. Without this, every
-// data-testid placed on a Btn usage silently vanishes from the rendered DOM.
-function Btn({ children, onClick, variant = 'default', small, disabled, style: extraStyle, ...rest }) {
+// Forwards data-testid / title / aria-label to the <button> — same contract
+// as the Btn in v2/dashboard-shared.js (without which a data-testid on a Btn
+// usage silently vanishes). Explicit destructuring, NOT spread-rest: the
+// _excluded global-hoist collision (DECISIONS "V2-wide spread-rest collision
+// sweep") forbids `...rest` in V2 JSX; the census confirms these three attrs
+// are the complete forwarded set.
+function Btn({ children, onClick, variant = 'default', small, disabled, style: extraStyle, 'data-testid': testid, title, 'aria-label': ariaLabel }) {
   const variants = {
     default: { background: 'var(--text)', color: 'var(--card)', border: '1px solid var(--text)' },
     // `primary` = alias for gold/accent (C20A parity with the Btn in v2/dashboard-shared.js).
@@ -396,7 +416,7 @@ function Btn({ children, onClick, variant = 'default', small, disabled, style: e
   };
   const v = variants[variant] || variants.default;
   return (
-    <button onClick={onClick} disabled={disabled} {...rest} style={{
+    <button onClick={onClick} disabled={disabled} data-testid={testid} title={title} aria-label={ariaLabel} style={{
       ...v, borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer',
       padding: small ? '4px 10px' : '7px 14px',
       fontSize: small ? 11 : 12, fontWeight: 600,
@@ -442,9 +462,11 @@ function FormField({ label, children, hint }) {
   );
 }
 
-function Input({ value, onChange, placeholder, type = 'text', style: s, ...rest }) {
+// Explicit 'data-testid' destructuring, NOT spread-rest (DECISIONS "V2-wide
+// spread-rest collision sweep"). Census: Input only receives data-testid.
+function Input({ value, onChange, placeholder, type = 'text', style: s, 'data-testid': testid }) {
   return (
-    <input value={value} onChange={onChange} placeholder={placeholder} type={type} {...rest} style={{
+    <input value={value} onChange={onChange} placeholder={placeholder} type={type} data-testid={testid} style={{
       width: '100%', padding: '8px 10px', borderRadius: 6,
       border: '1px solid var(--border)', fontSize: 12, color: 'var(--text)',
       background: 'var(--bg-subtle)', outline: 'none', boxSizing: 'border-box', ...s,
