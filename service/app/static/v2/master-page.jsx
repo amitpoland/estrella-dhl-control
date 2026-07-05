@@ -388,6 +388,62 @@ function RecordDetailModal({ record, entityLabel, onClose }) {
   );
 }
 
+// ── ScanStatusPanel — Phase 3B authority port ─────────────────────────────
+// Displays contractor scan health, last run, and counters (Clients tab only).
+// Ported from customer-master-v2.html (legacy) into this authority file.
+function ScanStatusPanel({ status, onRefresh }) {
+  if (!status) return null;
+  const fmtTs = s => s ? s.replace('T', ' ').slice(0, 19) + ' UTC' : '—';
+  const healthColor = status.healthy ? 'var(--badge-green-text)' : 'var(--badge-red-text)';
+  const healthBg    = status.healthy ? 'var(--badge-green-bg)'   : 'var(--badge-red-bg)';
+  const healthBdr   = status.healthy ? 'var(--badge-green-border)' : 'var(--badge-red-border)';
+  return (
+    <div data-testid="scan-status-panel" style={{
+      background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+      borderRadius: 7, padding: '10px 14px', marginTop: 10, marginBottom: 2, fontSize: 12,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontWeight: 600, color: 'var(--text-2)', fontSize: 11 }}>Full Contractor Scan</span>
+        {status.running ? (
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', padding: '2px 7px',
+            borderRadius: 20, fontSize: 10, fontWeight: 600, border: '1px solid',
+            background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
+            borderColor: 'var(--badge-amber-border)',
+          }} data-testid="scan-badge-running">⏳ running</span>
+        ) : (
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', padding: '2px 7px',
+            borderRadius: 20, fontSize: 10, fontWeight: 600, border: '1px solid',
+            background: healthBg, color: healthColor, borderColor: healthBdr,
+          }} data-testid="scan-badge-health">
+            {status.healthy ? '✅ healthy' : '⚠ error'}
+          </span>
+        )}
+        <button onClick={onRefresh} style={{
+          marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer',
+          color: 'var(--text-3)', fontSize: 12, padding: '2px 5px',
+        }} title="Refresh scan status" data-testid="btn-scan-status-refresh">↻</button>
+      </div>
+      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+        <div><span style={{ color: 'var(--text-3)' }}>Last run</span> <strong>{fmtTs(status.last_completed_at)}</strong></div>
+        <div><span style={{ color: 'var(--text-3)' }}>Processed</span> <strong data-testid="scan-stat-processed">{status.processed ?? '—'}</strong></div>
+        <div><span style={{ color: 'var(--badge-green-text)' }}>Created</span> <strong data-testid="scan-stat-created">{status.created ?? '—'}</strong></div>
+        <div><span style={{ color: 'var(--badge-blue-text)' }}>Updated</span> <strong data-testid="scan-stat-updated">{status.updated ?? '—'}</strong></div>
+        <div><span style={{ color: 'var(--text-3)' }}>Skipped</span> <strong data-testid="scan-stat-skipped">{status.skipped ?? '—'}</strong></div>
+        {status.errors > 0 && (
+          <div><span style={{ color: 'var(--badge-red-text)' }}>Errors</span> <strong data-testid="scan-stat-errors">{status.errors}</strong></div>
+        )}
+      </div>
+      {status.last_error && (
+        <div style={{ marginTop: 6, color: 'var(--badge-red-text)', fontSize: 11 }} data-testid="scan-last-error">
+          {status.last_error}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MasterPage() {
   const [entity, setEntity] = React.useState('clients');
   const [role, setRole] = React.useState('admin');
@@ -396,6 +452,9 @@ function MasterPage() {
   const [viewRecord, setViewRecord] = React.useState(null);
   // Step 3: record selected for Client Detail edit modal (null = closed).
   const [editRecord, setEditRecord] = React.useState(null);
+  // Phase 3B: contractor scan state (clients tab only).
+  const [scanStatus, setScanStatus] = React.useState(null);
+  const [scanRunning, setScanRunning] = React.useState(false);
 
   // Per-entity data cache: { entityId: { records: [], loading: bool, error: string|null } }
   const [cache, setCache] = React.useState({});
@@ -470,6 +529,31 @@ function MasterPage() {
       });
     }, 0);
   };
+
+  // ── Phase 3B: contractor scan callbacks (clients tab only)
+  const loadScanStatus = React.useCallback(async () => {
+    const res = await PzApi.getContractorScanStatus();
+    if (res.ok) setScanStatus(res.data.scan);
+  }, []);
+
+  React.useEffect(() => {
+    if (entity === 'clients') loadScanStatus();
+  }, [entity, loadScanStatus]);
+
+  const runFullScan = React.useCallback(async () => {
+    setScanRunning(true);
+    const res = await PzApi.runContractorScan();
+    setScanRunning(false);
+    if (res.ok) {
+      setScanStatus(res.data.scan);
+      // Reload clients table to reflect any newly created records
+      setCache(prev => {
+        const next = { ...prev };
+        delete next['clients'];
+        return next;
+      });
+    }
+  }, []);
 
   return (
     <div data-testid="master-data-page" style={{ padding: '20px 32px', overflowY: 'auto', flex: 1 }}>
@@ -641,15 +725,31 @@ function MasterPage() {
             </div>
           )}
 
-          {/* Sprint 38b: wFirma sync buttons for entities with sync endpoints */}
-          {(entity === 'clients' || entity === 'suppliers') && (
-            <div data-testid={'wfirma-sync-section-' + entity} style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Btn variant="outline" small disabled title={WRITE_DISABLED_REASON} data-testid={'btn-wfirma-sync-' + entity}>
+          {/* Sprint 38b: wFirma sync section — suppliers keep disabled stub; clients get Full Scan (Phase 3B) */}
+          {entity === 'suppliers' && (
+            <div data-testid="wfirma-sync-section-suppliers" style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Btn variant="outline" small disabled title={WRITE_DISABLED_REASON} data-testid="btn-wfirma-sync-suppliers">
                 {'⟳'} Sync from wFirma
               </Btn>
               <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
                 Preview + apply endpoint available — write operations disabled in Sprint 38b (read-only mapping extension)
               </span>
+            </div>
+          )}
+          {entity === 'clients' && (
+            <div data-testid="wfirma-sync-section-clients" style={{ marginTop: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Btn variant="outline" small disabled title={WRITE_DISABLED_REASON} data-testid="btn-wfirma-sync-clients">
+                  {'⟳'} Sync from wFirma
+                </Btn>
+                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                  Preview + apply — write operations disabled in Sprint 38b
+                </span>
+                <Btn variant="primary" small onClick={runFullScan} disabled={scanRunning} data-testid="btn-full-contractor-scan">
+                  {scanRunning ? '⏳ Scanning…' : '⇅ Full Scan'}
+                </Btn>
+              </div>
+              <ScanStatusPanel status={scanStatus} onRefresh={loadScanStatus} />
             </div>
           )}
 
@@ -693,4 +793,4 @@ function MasterPage() {
   );
 }
 
-Object.assign(window, { MasterPage, RecordDetailModal, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner });
+Object.assign(window, { MasterPage, RecordDetailModal, ScanStatusPanel, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner });

@@ -581,6 +581,16 @@
     searchWfirmaContractors: (q) =>
       _get(`${BASE}/wfirma/contractors/search?q=${encodeURIComponent(q || '')}`),
 
+    // POST /api/v1/wfirma/contractors/scan — triggers full contractor scan (skips 6h cooldown)
+    // Returns { ok, data: { scan: { healthy, running, last_started_at, last_completed_at, processed, created, updated, skipped, errors, last_error } } }
+    runContractorScan: () =>
+      _post(`${BASE}/wfirma/contractors/scan`),
+
+    // GET /api/v1/wfirma/contractors/scan/status — read-only scan state
+    // Returns { ok, data: { scan: { ... same shape ... } } }
+    getContractorScanStatus: () =>
+      _get(`${BASE}/wfirma/contractors/scan/status`),
+
     // GET /api/v1/wfirma/goods/search?q=
     searchWfirmaGoods: (q) =>
       _get(`${BASE}/wfirma/goods/search?q=${encodeURIComponent(q || '')}`),
