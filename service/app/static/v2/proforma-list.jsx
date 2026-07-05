@@ -417,6 +417,8 @@ function ProformaCrossBatchLanding({ onDrill }) {
   const [loading, setLoading] = React.useState(true);
   const [error, setError]     = React.useState(null);
   const [selected, setSelected] = React.useState({});
+  const [showImport, setShowImport] = React.useState(false);
+  const [showCreate, setShowCreate] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -452,8 +454,9 @@ function ProformaCrossBatchLanding({ onDrill }) {
           <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 3 }}>Packing List is the source · extraction → review → push to wFirma</div>
         </div>
         <div data-testid="pf-landing-toolbar" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button data-testid="pf-tb-import" disabled title="Open a shipment batch to import a packing list (batch-scoped action)" style={disWrite}>↙ Import Packing List</button>
-          <button data-testid="pf-tb-create" disabled title="Open a shipment batch to create a draft (batch-scoped action)" style={disWrite}>+ Create Draft</button>
+          <button data-testid="pf-tb-import" onClick={() => setShowImport(true)} title="Import a packing list (source document → extract → review → create draft)"
+            style={{ padding: '6px 12px', borderRadius: 5, border: '1px solid var(--accent-border)', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>↙ Import Packing List</button>
+          <button data-testid="pf-tb-create" onClick={() => setShowCreate(true)} title="Create a draft — choose source" style={enWrite}>+ Create Draft</button>
           <button data-testid="pf-tb-push" disabled={!selRow} onClick={() => selRow && onDrill && onDrill(selRow)}
             title={selRow ? 'Push the selected draft to wFirma (opens its confirmed post)' : selRows.length > 1 ? 'Bulk push needs operator approval (new financial write)' : 'Select exactly one draft to push to wFirma'}
             style={selRow ? enWrite : disWrite}>↑ Push to wFirma{selRows.length ? ` (${selRows.length})` : ''}</button>
@@ -520,7 +523,125 @@ function ProformaCrossBatchLanding({ onDrill }) {
           </table>
         </div>
       )}
+
+      {showCreate && (
+        <PfCreateSourceModal
+          onClose={() => setShowCreate(false)}
+          onPickImport={() => { setShowCreate(false); setShowImport(true); }}
+          onOtherSource={() => setShowCreate(false)}
+        />
+      )}
+      {showImport && <PfImportWizardModal onClose={() => setShowImport(false)} />}
     </div>
+  );
+}
+
+// ── Proforma Import / Create modals (FULL HTML PORT — workflow parity) ─────────
+// Full interaction is present; only execution is Backend Pending / Authority Gap.
+// Selectors prove authority: Customer→Customer Master, Product→Product Master.
+function _pfOverlay(children, onClose, width) {
+  return (
+    <div data-testid="pf-modal-overlay" onClick={onClose}
+      style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div onClick={e => e.stopPropagation()}
+        style={{ width: width || 560, maxWidth: '92vw', maxHeight: '88vh', overflowY: 'auto', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, boxShadow: '0 12px 40px var(--shadow)' }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+function PfCreateSourceModal({ onClose, onPickImport, onOtherSource }) {
+  const opts = [
+    { icon: '📄', label: 'From Packing List', desc: 'Upload Excel/PDF · auto-extract & match (recommended)', act: onPickImport },
+    { icon: '📦', label: 'From Shipment', desc: 'Pull logistics from an existing shipment', act: onOtherSource },
+    { icon: '✎', label: 'Manual Entry', desc: 'Build line items by hand — no auto-match', act: onOtherSource },
+    { icon: '⎘', label: 'Clone Existing', desc: 'Copy an existing draft', act: onOtherSource },
+  ];
+  return _pfOverlay(
+    <div data-testid="pf-create-modal" style={{ padding: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Create Draft</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>Choose source</div>
+        </div>
+        <button data-testid="pf-create-close" onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 18, color: 'var(--text-3)', cursor: 'pointer' }}>×</button>
+      </div>
+      <div style={{ marginBottom: 14, padding: '8px 12px', background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)', borderRadius: 6, fontSize: 11.5, color: 'var(--badge-blue-text)' }}>
+        Packing List import is the recommended source. Manual entry is for exceptions only — no extraction or auto-match.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {opts.map(o => (
+          <button key={o.label} data-testid={`pf-create-src-${o.label.replace(/\s+/g, '-').toLowerCase()}`} onClick={o.act}
+            style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}>
+            <span style={{ fontSize: 20 }}>{o.icon}</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{o.label}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{o.desc}</div>
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>, onClose, 560,
+  );
+}
+function PfImportWizardModal({ onClose }) {
+  const [step, setStep] = React.useState(0);
+  const steps = ['Upload', 'Extraction', 'Mapping', 'Create draft'];
+  const bodies = [
+    (
+      <div>
+        <div style={{ border: '1px dashed var(--border)', borderRadius: 8, padding: '28px 16px', textAlign: 'center', background: 'var(--bg-subtle)' }}>
+          <div style={{ fontSize: 22 }}>📄</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginTop: 6 }}>Drop packing list here</div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>Excel (.xlsx) or PDF · the only accepted source document</div>
+        </div>
+        <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 12, lineHeight: 1.5 }}>The system extracts customer, product rows, quantities, prices, weights and package data — then matches against Customer &amp; Product master. Proforma, CMR and logistics are generated from this source.</div>
+      </div>
+    ),
+    (
+      <div>{[['Rows detected', '— · Backend Pending'], ['Customer block', '— · Backend Pending'], ['Weights', '— · Backend Pending'], ['Packages', '— · Backend Pending'], ['AI confidence', '— · Backend Pending']].map(([k, v]) => (
+        <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}><span style={{ color: 'var(--text-2)' }}>{k}</span><span style={{ color: 'var(--text-3)', fontFamily: 'monospace' }}>{v}</span></div>
+      ))}</div>
+    ),
+    (
+      <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6 }}>
+        <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 8 }}>Customer match → resolved against <strong>Customer Master</strong> (authority) · <em>Backend Pending</em></div>
+        <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }}>Product rows → resolved against <strong>Product Master</strong> (authority); unmatched rows are flagged in the Items tab for operator mapping · <em>Backend Pending</em></div>
+      </div>
+    ),
+    (
+      <div style={{ textAlign: 'center', padding: '8px 0' }}>
+        <div style={{ fontSize: 24, color: 'var(--badge-amber-text)' }}>⚠</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginTop: 6 }}>Draft ready for operator review</div>
+        <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 6, lineHeight: 1.5 }}>A draft proforma will be created in Operator Review state. Nothing is pushed to wFirma yet.</div>
+        <div data-testid="pf-import-authority-gap" style={{ marginTop: 12, padding: '8px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-amber-text)' }}>AUTHORITY GAP · POST /api/v1/proforma/upload-packing-list not yet deployed (DC-12) — execution pending operator approval.</div>
+      </div>
+    ),
+  ];
+  const btnBase = { padding: '6px 14px', borderRadius: 5, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
+  return _pfOverlay(
+    <div data-testid="pf-import-modal" style={{ padding: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Source Document</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>Import Packing List</div>
+        </div>
+        <button data-testid="pf-import-close" onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 18, color: 'var(--text-3)', cursor: 'pointer' }}>×</button>
+      </div>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
+        {steps.map((s, i) => (
+          <div key={s} style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, opacity: i <= step ? 1 : 0.5 }}>
+            <span style={{ width: 18, height: 18, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, background: i <= step ? 'var(--accent)' : 'var(--bg-subtle)', color: i <= step ? 'var(--accent-text)' : 'var(--text-3)', border: '1px solid var(--border)' }}>{i + 1}</span>
+            <span style={{ fontSize: 10.5, fontWeight: i === step ? 700 : 400, color: i === step ? 'var(--text)' : 'var(--text-3)' }}>{s}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ minHeight: 150 }}>{bodies[step]}</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
+        <button data-testid="pf-import-back" onClick={() => (step === 0 ? onClose() : setStep(step - 1))} style={{ ...btnBase, background: 'var(--card)', color: 'var(--text-2)', border: '1px solid var(--border)' }}>{step === 0 ? 'Cancel' : '← Back'}</button>
+        <button data-testid="pf-import-next" onClick={() => (step < 3 ? setStep(step + 1) : onClose())} style={{ ...btnBase, background: 'var(--accent)', color: 'var(--accent-text)', border: '1px solid var(--accent-border)' }}>{step < 3 ? 'Continue →' : 'Create draft'}</button>
+      </div>
+    </div>, onClose, 640,
   );
 }
 
