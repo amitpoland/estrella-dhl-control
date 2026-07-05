@@ -863,12 +863,117 @@ function AccKpiTile({ label, value, hint, accent }) {
 // KPI figures / doc counts, so they render honestly ("—" · Backend Pending) per the
 // HYBRID ruling — never fabricated. The document map is a static diagram (no backend).
 // Additive landing: no new endpoint, no write path; existing tabs unchanged.
-function _AccKpi({ label }) {
+// Wave 4 Item 1A — pure reducer for CURRENCY-AWARE Sales Receivable.
+// Sums outstanding PER currency across /ledgers/clients rows. NEVER sums across
+// currencies (operator ruling): PLN/EUR/USD stay separate. Unavailable rows and
+// unparseable values are skipped. Returns [{ currency, amount:"0.00" }] sorted.
+// Exposed on window for the reducer unit test (no cross-currency total is ever
+// produced by this function — there is no single-number code path).
+function accReceivableByCurrency(rows) {
+  const byCcy = {};
+  (rows || []).forEach(r => {
+    if (!r || r.balance_available === false) return;
+    const obc = r.open_by_currency;
+    if (obc && typeof obc === 'object') {
+      Object.keys(obc).forEach(ccy => {
+        const v = parseFloat(obc[ccy]);
+        if (!isNaN(v)) byCcy[ccy] = (byCcy[ccy] || 0) + v;
+      });
+    } else if (r.currency && r.currency !== 'multi' && r.open != null) {
+      const v = parseFloat(r.open);
+      if (!isNaN(v)) byCcy[r.currency] = (byCcy[r.currency] || 0) + v;
+    }
+  });
+  return Object.keys(byCcy).sort().map(ccy => ({ currency: ccy, amount: byCcy[ccy].toFixed(2) }));
+}
+if (typeof window !== 'undefined') { window._accReceivableByCurrency = accReceivableByCurrency; }
+
+// Backend-Pending KPI tile (Sales Overdue, Supplier Payable — Item 1B).
+function _AccKpi({ label, pendingNote }) {
   return (
     <div data-testid="acc-ov-kpi" style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px', flex: 1, minWidth: 150 }}>
       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
       <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--text-3)', marginTop: 6, fontFamily: '"DM Serif Display", serif' }}>—</div>
-      <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>Backend Pending</div>
+      <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>Backend Pending{pendingNote ? ` — ${pendingNote}` : ''}</div>
+    </div>
+  );
+}
+
+// Live Sales Receivable tile — per-currency, never a mixed total.
+function _AccReceivableKpi({ state }) {
+  let body, hint;
+  if (state.loading) { body = '—'; hint = 'Loading…'; }
+  else if (state.error) { body = '—'; hint = 'wFirma read unavailable'; }
+  else {
+    const rows = state.receivable || [];
+    if (rows.length === 0) { body = '0.00'; hint = 'No open receivables'; }
+    else {
+      body = (
+        <div data-testid="acc-ov-receivable-values">
+          {rows.map(r => (
+            <div key={r.currency} data-testid={`acc-ov-receivable-${r.currency}`} style={{ fontSize: rows.length > 1 ? 16 : 24, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace', lineHeight: 1.35 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-3)', marginRight: 6, fontFamily: 'inherit' }}>{r.currency}</span>{r.amount}
+            </div>
+          ))}
+        </div>
+      );
+      hint = rows.length > 1 ? 'Per currency — not summed' : 'Outstanding';
+    }
+  }
+  return (
+    <div data-testid="acc-ov-kpi-receivable" style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px', flex: 1, minWidth: 150 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Sales Receivable</div>
+      <div style={{ marginTop: 6, fontFamily: '"DM Serif Display", serif', fontSize: 24, fontWeight: 700, color: 'var(--text)' }}>{body}</div>
+      <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{hint}</div>
+    </div>
+  );
+}
+
+// Live Last wFirma Sync tile — reuses analytics/phase-a wfirma_sync.
+function _AccLastSyncKpi({ state }) {
+  let body, hint;
+  if (state.loading) { body = '—'; hint = 'Loading…'; }
+  else if (state.error) { body = '—'; hint = 'analytics unavailable'; }
+  else {
+    const sync = state.sync || {};
+    body = sync.last_exported_at ? String(sync.last_exported_at).replace('T', ' ') : '—';
+    hint = sync.last_exported_at
+      ? `${sync.exported != null ? sync.exported + ' exported' : ''}${sync.last_exported_doc ? ' · ' + sync.last_exported_doc : ''}`.trim() || 'last export'
+      : 'no export recorded';
+  }
+  return (
+    <div data-testid="acc-ov-kpi-lastsync" style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px', flex: 1, minWidth: 150 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Last wFirma Sync</div>
+      <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginTop: 6, fontFamily: 'monospace' }}>{body}</div>
+      <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{hint}</div>
+    </div>
+  );
+}
+
+// Overview KPI row — fetches the two reused endpoints; Item 1B tiles stay pending.
+function AccountingOverviewKpis() {
+  const [recv, setRecv] = React.useState({ loading: true, error: null, receivable: null });
+  const [sync, setSync] = React.useState({ loading: true, error: null, sync: null });
+  React.useEffect(() => {
+    let cancelled = false;
+    window.PzApi.listClientBalances({ limit: 100 }).then(res => {
+      if (cancelled) return;
+      if (!res || !res.ok) { setRecv({ loading: false, error: (res && res.error) || 'Load failed', receivable: null }); return; }
+      setRecv({ loading: false, error: null, receivable: accReceivableByCurrency((res.data && res.data.rows) || []) });
+    }).catch(e => { if (!cancelled) setRecv({ loading: false, error: (e && e.message) || String(e), receivable: null }); });
+    window.PzApi.getAnalyticsPhaseA().then(res => {
+      if (cancelled) return;
+      if (!res || !res.ok) { setSync({ loading: false, error: (res && res.error) || 'Load failed', sync: null }); return; }
+      setSync({ loading: false, error: null, sync: (res.data && res.data.wfirma_sync) || {} });
+    }).catch(e => { if (!cancelled) setSync({ loading: false, error: (e && e.message) || String(e), sync: null }); });
+    return () => { cancelled = true; };
+  }, []);
+  return (
+    <div style={{ display: 'flex', gap: 12, margin: '14px 0', flexWrap: 'wrap' }}>
+      <_AccReceivableKpi state={recv} />
+      <_AccKpi label="Sales Overdue" pendingNote="due-date authority pending" />
+      <_AccKpi label="Supplier Payable" pendingNote="supplier ledger authority pending" />
+      <_AccLastSyncKpi state={sync} />
     </div>
   );
 }
@@ -899,12 +1004,8 @@ function AccountingOverview({ onJump }) {
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>Accounting</h2>
         <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 3 }}>Proforma · Invoice · WZ · PZ · PW · RW · MM · Client Balance · Client Ledger · Supplier Ledger — all mapped from wFirma</div>
       </div>
-      <div style={{ display: 'flex', gap: 12, margin: '14px 0', flexWrap: 'wrap' }}>
-        <_AccKpi label="Sales Receivable" />
-        <_AccKpi label="Sales Overdue" />
-        <_AccKpi label="Supplier Payable" />
-        <_AccKpi label="Last wFirma Sync" />
-      </div>
+      <AccountingOverviewKpis />
+
       <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
         <_AccDocPanel title="Sales documents" onJump={onJump} rows={[{ label: 'Proforma issued', to: 'pi' }, { label: 'Invoices issued', to: 'inv' }, { label: 'Credit notes', to: 'cn' }, { label: 'WZ releases', to: 'wz' }]} />
         <_AccDocPanel title="Warehouse documents" onJump={onJump} rows={[{ label: 'PZ (external receipt)', to: 'pz' }, { label: 'PW (internal receipt)', to: 'pw' }, { label: 'RW (internal release)', to: 'rw' }, { label: 'MM (transfer)', to: 'mm' }]} />

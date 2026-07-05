@@ -130,6 +130,11 @@
       return _get(`${BASE}/ledgers/clients${qs}`);
     },
 
+    // GET /api/v1/analytics/phase-a  (Wave 4 Item 1A — reuse for Last wFirma Sync)
+    // Read-only. Returns { ok, data: { wfirma_sync: { last_exported_at, exported,
+    //           pending, last_exported_doc, ... }, ... } }. No new endpoint.
+    getAnalyticsPhaseA: () => _get(`${BASE}/analytics/phase-a`),
+
     // POST /api/v1/packing/{batch_id}/upload (multipart — EXISTING authority).
     // Wave 4 Item 8: reuse-only. Parses the packing file, upserts packing lines,
     // and idempotently creates/syncs proforma drafts by (batch_id, client_name).
