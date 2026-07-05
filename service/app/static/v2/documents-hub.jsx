@@ -314,6 +314,21 @@ function PiKanban({ toast, reload }) {
         />
       )}
 
+      {/* Flow legend — wireframe parity (W3-docs); static guide, no wiring change */}
+      <div
+        data-testid="documents-hub-pi-flow"
+        style={{ marginBottom: 12, padding: '8px 14px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11.5, color: 'var(--text-2)', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}
+      >
+        <span style={{ fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: 10 }}>Flow</span>
+        <span><strong style={{ color: 'var(--text)' }}>1.</strong> Upload sales packing list or manual entry</span>
+        <span style={{ color: 'var(--text-3)' }}>→</span>
+        <span><strong style={{ color: 'var(--text)' }}>2.</strong> Draft created in app</span>
+        <span style={{ color: 'var(--text-3)' }}>→</span>
+        <span><strong style={{ color: 'var(--text)' }}>3.</strong> Operator approves</span>
+        <span style={{ color: 'var(--text-3)' }}>→</span>
+        <span><strong style={{ color: 'var(--text)' }}>4.</strong> One click → post to wFirma</span>
+      </div>
+
       {/* Kanban 3-lane grid */}
       <div
         data-testid="documents-hub-pi-kanban"
