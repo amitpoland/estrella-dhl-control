@@ -40,6 +40,30 @@ Item 3 (Accounting document grids) is split by wFirma documentation status:
   (`warehouse_document_p_z/get/{id}`). No documented list/find endpoint exists for WZ/PW/RW/MM.
   The UI keeps honest `Backend Pending`; the route returns 404 for these types. → Sandbox task below.
 
+## Item 4 — Client Balance roster — DONE (SPLIT) (2026-07-05)
+
+`GET /api/v1/ledgers/clients` (existing **ledgers** authority — no new `/ledger`
+prefix, no duplicate authority). Joins the **Customer Master** roster with
+per-client balances computed by REUSING the documented **Statement authority**
+(`aggregate_statement` over `invoices/find` + `payments/find`). No local mirror;
+balances computed live per client and fault-isolated. Commit `4e0b58b3`.
+Golden 160/160; 11 tests (4 reducer + 7 route). UI: `AccClientBalance` live roster.
+
+Column authority split:
+- **Open / Currency / State / YTD (invoiced in period) / Overdue (invoice-age)** — DOCUMENTED, done.
+- **Overdue (due-date)** — BACKEND PENDING → blocked by the PHASE10A.5 payment-state
+  probe (see `routes_ledgers.py` header TODO). Invoice-age figure substituted, basis
+  disclosed in UI + `column_status`, never relabelled as due-date overdue.
+- **Last 30d (rolling receipts)** — BACKEND PENDING → no existing authority emits a
+  rolling-window receipts figure; would require a second windowed statement pass.
+
+### Backend-Pending follow-ups recorded (Item 4)
+
+| Ref | Gap | Authority owner | Blocker / needed | Affected UI |
+|---|---|---|---|---|
+| I4-BP1 | Client Balance **due-date Overdue** column | Statement authority | PHASE10A.5 probe: confirm `<paymentdate>`/`<paymentstate>` on invoice reads before due-date aging is allowed (architecture §7) | `AccClientBalance` Overdue cell (invoice-age shown, disclosed) |
+| I4-BP2 | Client Balance **Last 30d** column | Statement authority | Rolling 30-day receipts aggregation — needs a second windowed `aggregate_statement` pass or a new documented aggregator; not invented here | `AccClientBalance` Last 30d cell (`—`, Backend Pending) |
+
 ## Sandbox Verification Tasks (permanent — NO execution without explicit operator approval)
 
 These probe UNDOCUMENTED wFirma capabilities against the sandbox company
