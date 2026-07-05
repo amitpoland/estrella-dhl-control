@@ -509,10 +509,11 @@ def capture_live(browser) -> tuple:
     # Use the specific acc-rail selector (NOT generic tab-strip discovery which
     # collides with the Setup subnav). The accounting hub renders left-rail buttons
     # with data-testid="acc-rail-<id>" (AccRailGroup in accounting-hub.jsx:135).
+    # Rebuilt AccountingHub rail (FULL HTML PORT) — document-type order matching
+    # WF_ACC_TAB_TEXTS 1:1, so accounting_tab_{i} pairs with the wireframe tab i.
     ACC_RAIL_IDS = [
-        "purchase", "proforma", "ledger", "sync", "master", "audit",
-        # gated (W4) — still screenshotted to document current state
-        "wz", "pz", "pw", "rw", "mm",
+        "overview", "pi", "inv", "cn", "wz", "pz", "pw", "rw", "mm",
+        "balance", "clientLedger", "supplierLedger", "wfirma",
     ]
     # 'sync' and 'master' are group='navigate' — clicking them navigates AWAY
     # from accounting, destroying the rail DOM. Re-navigate to accounting before
@@ -555,7 +556,9 @@ STATIC_PAIRS = [
     ("dashboard",           "dashboard"),
     ("inbox",               "inbox"),
     ("shipments",           "shipments"),
-    ("shipment_detail",     "shipment_detail"),
+    # shipment_detail removed: the wireframe has no reachable detail screen distinct
+    # from the shipments list, so a side-by-side was a list-vs-detail mispair. The
+    # live shipment detail is captured as live-only (no HTML counterpart — accepted).
     ("proforma",            "proforma_list"),
     ("documents",           "documents"),
     ("accounting",          "accounting"),
@@ -611,20 +614,23 @@ def build_pairs(wf_screens: dict, live_screens: dict):
     # Accounting sub-tab pairs
     # Live rail IDs (by index in ACC_RAIL_IDS): purchase(0), proforma(1),
     # ledger(2), sync(3), master(4), audit(5), wz(6), pz(7), pw(8), rw(9), mm(10)
+    # Rebuilt rail is 1:1 with WF_ACC_TAB_TEXTS order — every wireframe accounting
+    # tab now has a live counterpart (Invoice/Credit Note/Client Balance/Supplier
+    # Ledger were added in the FULL HTML PORT).
     ACC_WF_TO_LIVE_IDX = {
-        "overview":       0,   # purchase ledger — best overview match
-        "proforma":       1,   # proforma rail
-        "invoice":        None, # no dedicated invoice rail in live
-        "credit_note":    None, # no dedicated credit-note rail in live
-        "wz":             6,
-        "pz":             7,
-        "pw":             8,
-        "rw":             9,
-        "mm":             10,
-        "client_balance": None, # no dedicated balance rail in live
-        "client_ledger":  2,    # ledger rail
-        "supplier_ledger":None, # no supplier ledger rail in live
-        "wfirma_sync":    3,    # sync rail
+        "overview":        0,
+        "proforma":        1,
+        "invoice":         2,
+        "credit_note":     3,
+        "wz":              4,
+        "pz":              5,
+        "pw":              6,
+        "rw":              7,
+        "mm":              8,
+        "client_balance":  9,
+        "client_ledger":   10,
+        "supplier_ledger": 11,
+        "wfirma_sync":     12,
     }
     for wf_slug, live_idx in ACC_WF_TO_LIVE_IDX.items():
         wf_key = f"accounting_tab_{wf_slug}"

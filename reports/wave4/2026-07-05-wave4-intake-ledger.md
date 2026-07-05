@@ -1,0 +1,25 @@
+# Wave 4 Intake Ledger — genuine backend work discovered in Wave 3
+
+**Date:** 2026-07-05 · **Type:** implementation ledger only — no design, no implementation, no estimates. This is the official Wave 4 intake. Every item is a genuine backend gap surfaced while porting the UI to the pinned wireframe (all rendered with honest `Backend Pending` / `Authority Gap`).
+
+| # | Page | Workflow | Panel | Control | Authority | Existing endpoint | Missing endpoint | R/W | Financial? | Inventory? | Accounting? | wFirma? | Owner | Priority | Reuse opportunity |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | Accounting | Overview | KPI tiles | Sales Receivable / Sales Overdue / Supplier Payable / Last-Sync | Accounting Authority | — | `GET /accounting/summary` (aggregate) | R | Yes | No | Yes | Yes | pz-purchase-accounting | P2 | Aggregate existing invoice/ledger reads |
+| 2 | Accounting | Overview | Sales/Warehouse doc-count panels | count rows (12/28/1/18 · 9/1/2/4) | Accounting Authority | — | `GET /accounting/counts` | R | No | No | Yes | Yes | pz-purchase-accounting | P3 | Count existing docs by type |
+| 3 | Accounting | Document grids | Invoice / Credit Note / WZ / PW / RW / MM grids | table rows + View | Accounting Authority | — | `GET /accounting/{type}` | R | Yes | Partial (WZ/PZ/PW/RW/MM) | Yes | Yes | pz-purchase-accounting + wfirma-integration | P1 | Mirror `/dashboard/batches` (PZ) + `/proforma/search` (PI) shape |
+| 4 | Accounting | Ledgers | Client Balance | table (Open/Overdue/YTD) | Accounting + Customer Master | — | `GET /ledger/clients` | R | Yes | No | Yes | Yes | finance-accounting-logic | P1 | Join customer_master + invoice/payment |
+| 5 | Accounting | Ledgers | Supplier Ledger | dropdown + Debit/Credit/Balance | Accounting + Supplier Master | — | `GET /ledger/suppliers` | R | Yes | No | Yes | Yes | finance-accounting-logic | P2 | Supplier data + PZ postings |
+| 6 | Accounting | Ledgers | Client Ledger | (LIVE — reused) | Accounting | LedgersPage (existing) | — | R | Yes | No | Yes | Yes | — | Done | Already wired |
+| 7 | Accounting | System | wFirma Sync (inline) | Sync-all-now · Re-sync per row · mapping table | wFirma | webhook status (partial) | `POST /wfirma/sync/{type}` + `GET /wfirma/sync/status` | R+W | No | No | Yes | Yes | wfirma-integration | P2 | Existing `wfirma_client` + webhook scheduler |
+| 8 | Proforma | Import | Import Packing List wizard | Create-draft (step 4) | Proforma Authority + Customer/Product Master | extraction + create paths (partial) | `POST /proforma/upload-packing-list` (DC-12) | W | Yes (creates draft) | No | No | No | sales-proforma + document-intelligence | P1 | Existing extraction + `/proforma/create` + `/import-sales-prices` |
+| 9 | Proforma | List | toolbar | Print | Proforma Authority | — | `GET /proforma/{id}/print` (or reuse doc-output) | R | No | No | No | No | document-intelligence | P3 | Existing document-output / Print Preview modal |
+| 10 | Proforma | List | selection toolbar | bulk Push to wFirma / Send | Proforma + wFirma / Email | per-draft `/post`, `/send-email` | bulk wrapper endpoint (or client loop) | W | Yes | No | No | Yes | sales-proforma + wfirma-integration | P3 | Loop existing per-draft confirmed flows |
+| 11 | Proforma Detail | tabs | Source & Extraction | extraction data | Proforma + Customer/Product Master | draft read (partial) | `GET /proforma/draft/{id}/extraction` | R | No | No | No | No | document-intelligence | P2 | Draft `editable_lines` + extraction engine |
+| 12 | Proforma Detail | tabs | Logistics | carrier/AWB/CMR/weights | Carrier + Shipment Authority | draft/shipment read (partial) | `GET /proforma/draft/{id}/logistics` | R | No | No | No | No | dhl-customs | P3 | Shipment/packing data already in the batch |
+| 13 | Proforma Detail | tabs | Documents | generated PDFs list | Proforma Authority | Print Preview modal (existing) | `GET /proforma/draft/{id}/documents` | R | No | No | No | No | document-intelligence | P3 | Existing doc-generation output |
+
+## Notes
+- Items 6 (Client Ledger) is already wired (reuse) — listed for completeness, not Wave-4 work.
+- Every UI for the above is already built and renders `Backend Pending` / `Authority Gap` (UI-before-backend); Wave 4 only wires execution.
+- No new authority, master, or write path is proposed here — this ledger only identifies. Priority is relative (P1 = unblocks the most UI), not an estimate.
+- Gating OIs (from `phase-c-master/OPEN_ITEMS.md`) still apply to the wFirma-write items (OI-1 MM API, OI-3 WZ, OI-4 get_stock, OI-7/9/10/11 webhooks).
