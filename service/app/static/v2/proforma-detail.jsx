@@ -10,12 +10,18 @@
 //   GET /api/v1/proforma/draft/{id}/events           → history tab
 //   POST /api/v1/proforma/preview/{batch_id}/{cn}    → reservation / blocking reasons
 
+// HTML detail tab spec (pinned wireframe): Overview · Items · Source & Extraction ·
+// Logistics · Documents · Audit Trail. Customer Mapping + Reservation are existing
+// EJ Extensions (preserved per the EJ Extension rule — never removed).
 const PROFORMA_TABS = [
-  { id: 'overview',         label: 'Overview'         },
-  { id: 'lines',            label: 'Lines'            },
-  { id: 'customer_mapping', label: 'Customer Mapping' },
-  { id: 'reservation',      label: 'Reservation'      },
-  { id: 'history',          label: 'History'          },
+  { id: 'overview',         label: 'Overview'            },
+  { id: 'lines',            label: 'Items'               },  // HTML "Items" = editable line items
+  { id: 'source',           label: 'Source & Extraction' },  // HTML tab — Backend Pending
+  { id: 'logistics',        label: 'Logistics'           },  // HTML tab — Backend Pending
+  { id: 'documents',        label: 'Documents'           },  // HTML tab — Backend Pending
+  { id: 'history',          label: 'Audit Trail'         },  // HTML "Audit Trail" = history
+  { id: 'customer_mapping', label: 'Customer Mapping'    },  // EJ Extension
+  { id: 'reservation',      label: 'Reservation'         },  // EJ Extension
 ];
 
 // ── Toolbar button ────────────────────────────────────────────────────────────
@@ -3045,6 +3051,30 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           </React.Fragment>
         )}
         {activeTab === 'lines' && <ProformaLinesTab lines={lines} currency={draftCurrency} />}
+        {activeTab === 'source' && (
+          <div data-testid="pf-detail-source" style={{ padding: 20 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Source &amp; Extraction</div>
+            <div style={{ padding: '16px 18px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 12.5, lineHeight: 1.6 }}>
+              Packing-list source, extraction confidence, and per-row master matching (Customer → <strong>Customer Master</strong>, Product → <strong>Product Master</strong>); unmatched rows flag here for operator mapping. <strong style={{ color: 'var(--badge-amber-text)' }}>— Backend Pending</strong>
+            </div>
+          </div>
+        )}
+        {activeTab === 'logistics' && (
+          <div data-testid="pf-detail-logistics" style={{ padding: 20 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Logistics</div>
+            <div style={{ padding: '16px 18px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 12.5, lineHeight: 1.6 }}>
+              Carrier, AWB, CMR number, gross/net weights, boxes and package profile. <strong style={{ color: 'var(--badge-amber-text)' }}>— Backend Pending</strong>
+            </div>
+          </div>
+        )}
+        {activeTab === 'documents' && (
+          <div data-testid="pf-detail-documents" style={{ padding: 20 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Documents</div>
+            <div style={{ padding: '16px 18px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 12.5, lineHeight: 1.6 }}>
+              Generated documents — Proforma · CMR · Packing List · Invoice PDFs (Print Preview available from the toolbar). <strong style={{ color: 'var(--badge-amber-text)' }}>— Backend Pending</strong>
+            </div>
+          </div>
+        )}
         {activeTab === 'customer_mapping' && (
           <ProformaCustomerMappingTab customer={customer} />
         )}
