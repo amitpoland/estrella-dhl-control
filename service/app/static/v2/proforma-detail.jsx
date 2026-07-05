@@ -1850,6 +1850,120 @@ function ProformaPartyCards({
   );
 }
 
+// ── Wave 4 Item 11: Source & Extraction tab (advisory, read-only) ───────────
+// WIRED: GET /api/v1/proforma/draft/{id}/extraction — a thin read composition
+// over EXISTING authorities (draft editable_lines + Customer Master + Product
+// Master + Import/Packing). Every signal here is ADVISORY (Lesson N): it never
+// blocks Approve / Post / Convert, and it writes nothing.
+function SourceExtractionTab({ draftId }) {
+  const [data,    setData]    = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error,   setError]   = React.useState(null);
+
+  React.useEffect(() => {
+    if (!draftId) { setLoading(false); return; }
+    let alive = true;
+    setLoading(true); setError(null);
+    window.EstrellaShared.apiFetch(`/api/v1/proforma/draft/${draftId}/extraction`)
+      .then(d => { if (alive) { setData(d); setLoading(false); } })
+      .catch(e => { if (alive) { setError(e && e.message ? e.message : 'Failed to load'); setLoading(false); } });
+    return () => { alive = false; };
+  }, [draftId]);
+
+  const box  = { padding: '16px 18px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12.5, lineHeight: 1.6 };
+  const conf = (c) => (c === null || c === undefined) ? '—' : `${Math.round(c * 100)}%`;
+
+  const docs           = (data && data.source_documents) || [];
+  const lines          = (data && data.lines) || [];
+  const cm             = (data && data.customer_match) || null;
+  const custUnmatched  = !!(data && data.customer_unmatched);
+  const unmatchedCount = (data && data.unmatched_count) || 0;
+
+  return (
+    <div data-testid="pf-detail-source" style={{ padding: 20 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Source &amp; Extraction</div>
+      <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12 }}>
+        Advisory only — extraction confidence and match status never block Approve, Post, or Convert.
+      </div>
+
+      {loading && <div data-testid="pf-source-loading" style={{ ...box, color: 'var(--text-3)' }}>Loading extraction…</div>}
+      {!loading && error && <div data-testid="pf-source-error" style={{ ...box, color: 'var(--danger, #c0392b)', borderColor: 'var(--danger, #c0392b)' }}>Could not load: {error}</div>}
+
+      {!loading && !error && (
+        <React.Fragment>
+          {/* Packing-list source (Import/Packing authority) */}
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', margin: '4px 0 6px' }}>Packing-list source</div>
+          {docs.length === 0
+            ? <div data-testid="pf-source-nodocs" style={{ ...box, color: 'var(--text-3)' }}>No packing document recorded for this batch.</div>
+            : <div style={{ ...box, padding: 0, overflow: 'hidden' }}>
+                {docs.map((doc, i) => (
+                  <div key={doc.document_id || i} data-testid="pf-source-doc" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '8px 14px', borderBottom: i < docs.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                    <span style={{ color: 'var(--text)' }}>{doc.file_name || doc.invoice_no || doc.document_id}</span>
+                    <span style={{ color: 'var(--text-3)' }}>{doc.extraction_status}</span>
+                  </div>
+                ))}
+              </div>}
+
+          {/* Customer Master match (advisory) */}
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', margin: '14px 0 6px' }}>Customer Master match</div>
+          <div data-testid="pf-source-customer" style={{ ...box }}>
+            <span style={{ color: custUnmatched ? 'var(--badge-amber-text)' : 'var(--text)', fontWeight: 600 }}>
+              {custUnmatched
+                ? (cm && cm.ambiguous ? 'Ambiguous — needs operator mapping' : 'Unmatched — needs operator mapping')
+                : (cm && (cm.resolved_wfirma_name || 'Matched'))}
+            </span>
+            {cm && cm.match_strategy && cm.match_strategy !== 'none' && (
+              <span style={{ color: 'var(--text-3)', marginLeft: 8 }}>· {cm.match_strategy}</span>
+            )}
+          </div>
+
+          {/* Per-row extraction + Product Master match */}
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', margin: '14px 0 6px' }}>
+            Rows &amp; extraction
+            {unmatchedCount > 0 && (
+              <span data-testid="pf-source-unmatched-count" style={{ color: 'var(--badge-amber-text)', fontWeight: 600, marginLeft: 8 }}>
+                {unmatchedCount} unmatched
+              </span>
+            )}
+          </div>
+          {lines.length === 0
+            ? <div style={{ ...box, color: 'var(--text-3)' }}>No draft lines.</div>
+            : <div style={{ ...box, padding: 0, overflow: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ color: 'var(--text-3)', textAlign: 'left' }}>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Product</th>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Design</th>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Confidence</th>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Product Master</th>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Review</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lines.map((ln, i) => (
+                      <tr key={ln.line_id || i} data-testid="pf-source-row" style={{ borderTop: '1px solid var(--border)', background: ln.unmatched ? 'var(--badge-amber-bg, transparent)' : 'transparent' }}>
+                        <td style={{ padding: '8px 12px', color: 'var(--text)' }}>{ln.product_code || <span style={{ color: 'var(--badge-amber-text)' }}>— no code</span>}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-2, var(--text))' }}>{ln.design_no || '—'}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-2, var(--text))' }}>{conf(ln.extracted_confidence)}</td>
+                        <td style={{ padding: '8px 12px' }}>
+                          {ln.product_matched
+                            ? <span style={{ color: 'var(--badge-green-text, #2e7d32)' }}>✓ matched</span>
+                            : <span data-testid="pf-source-row-unmatched" style={{ color: 'var(--badge-amber-text)' }}>unmatched</span>}
+                        </td>
+                        <td style={{ padding: '8px 12px', color: ln.requires_manual_review ? 'var(--badge-amber-text)' : 'var(--text-3)' }}>
+                          {ln.requires_manual_review ? 'manual' : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>}
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
@@ -3052,12 +3166,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         )}
         {activeTab === 'lines' && <ProformaLinesTab lines={lines} currency={draftCurrency} />}
         {activeTab === 'source' && (
-          <div data-testid="pf-detail-source" style={{ padding: 20 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Source &amp; Extraction</div>
-            <div style={{ padding: '16px 18px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 12.5, lineHeight: 1.6 }}>
-              Packing-list source, extraction confidence, and per-row master matching (Customer → <strong>Customer Master</strong>, Product → <strong>Product Master</strong>); unmatched rows flag here for operator mapping. <strong style={{ color: 'var(--badge-amber-text)' }}>— Backend Pending</strong>
-            </div>
-          </div>
+          <SourceExtractionTab draftId={draft && draft.id} />
         )}
         {activeTab === 'logistics' && (
           <div data-testid="pf-detail-logistics" style={{ padding: 20 }}>

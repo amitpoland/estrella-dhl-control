@@ -4485,6 +4485,149 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
     })
 
 
+# ── Wave 4 Item 11: Source & Extraction advisory read ────────────────────────
+
+@router.get("/draft/{draft_id}/extraction", dependencies=[_auth])
+def get_proforma_draft_extraction(draft_id: int) -> JSONResponse:
+    """Wave 4 Item 11 — Source & Extraction advisory read model (REUSE-ONLY).
+
+    Read-only, ADVISORY. Composes the packing-list source, per-row extraction
+    confidence, and per-row Customer Master / Product Master match status for a
+    single proforma draft from EXISTING authorities only — no new authority, no
+    new parser/matcher, no write:
+
+      * Proforma draft (this row + ``editable_lines`` via ``_draft_to_full``) —
+        the authority record.
+      * Customer Master via ``_resolve_customer`` — the SAME block the draft GET
+        returns; read-only against the local ``wfirma_customers`` mirror.
+      * Product Master via ``reservation_db.list_product_masters``.
+      * Import/Packing authority via ``packing_db`` (``extracted_confidence``,
+        ``requires_manual_review``, source documents), joined to draft lines by
+        ``product_code`` within the draft's ``batch_id``.
+
+    Every downstream read is wrapped so the endpoint never 500s on a partial
+    batch — missing packing/master data degrades to advisory nulls, mirroring
+    the defensive draft GET. Per Lesson N every signal here is ADVISORY: nothing
+    returned may block Approve / Post / Convert. 404 only when the draft id does
+    not exist.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    full = _draft_to_full(d)
+    batch_id = d.batch_id or ""
+
+    # Customer Master match — reuse the exact block the draft GET surfaces.
+    try:
+        customer_match = _resolve_customer(d.client_name or "", batch_id=batch_id)
+        _enrich_customer_resolution_with_email(customer_match)
+    except Exception as exc:
+        log.warning("draft %s extraction customer match failed (non-fatal): %s",
+                    draft_id, exc)
+        customer_match = {
+            "raw_input":            d.client_name or "",
+            "normalized_name":      "",
+            "found":                False,
+            "ambiguous":            False,
+            "match_strategy":       "none",
+            "customer":             None,
+            "wfirma_customer_id":   "",
+            "resolved_wfirma_name": "",
+            "candidates":           [],
+        }
+    customer_unmatched = (not bool(customer_match.get("found"))
+                          or bool(customer_match.get("ambiguous")))
+
+    # Product Master index — reuse the reservation_db authority (same source the
+    # draft GET uses for item_type fallback). product_code -> master row.
+    pm_index: Dict[str, Dict[str, Any]] = {}
+    try:
+        from ..services import reservation_db as _rdb
+        rdb_path = settings.storage_root / "reservation_queue.db"
+        if rdb_path.exists():
+            for pm in (_rdb.list_product_masters(rdb_path) or []):
+                code = str(pm.get("product_code") or "").strip()
+                if code and code not in pm_index:
+                    pm_index[code] = pm
+    except Exception as exc:
+        log.warning("draft %s extraction product_master unavailable "
+                    "(non-fatal): %s", draft_id, exc)
+
+    # Import/Packing authority — extraction confidence + manual-review flag per
+    # product_code, plus the source packing documents for this batch.
+    pk_index: Dict[str, Dict[str, Any]] = {}
+    source_documents: List[Dict[str, Any]] = []
+    try:
+        for pl in (pdb.get_packing_lines_for_batch(batch_id) or []):
+            code = str(pl.get("product_code") or "").strip()
+            if code and code not in pk_index:
+                pk_index[code] = pl
+        for pdoc in (pdb.get_packing_documents_for_batch(batch_id) or []):
+            spath = str(pdoc.get("source_file_path") or "")
+            fname = spath.replace("\\", "/").rsplit("/", 1)[-1] if spath else ""
+            source_documents.append({
+                "document_id":       pdoc.get("id") or "",
+                "file_name":         fname,
+                "invoice_no":        pdoc.get("invoice_no") or "",
+                "parser_name":       pdoc.get("parser_name") or "",
+                "extraction_status": pdoc.get("extraction_status") or "pending",
+                "created_at":        pdoc.get("created_at") or "",
+            })
+    except Exception as exc:
+        log.warning("draft %s extraction packing read failed (non-fatal): %s",
+                    draft_id, exc)
+
+    # Per-line advisory composition. product_matched := line has a product_code
+    # AND that code exists in Product Master. unmatched := NOT product_matched.
+    out_lines: List[Dict[str, Any]] = []
+    unmatched_count = 0
+    for ln in (full.get("editable_lines") or []):
+        pc = str(ln.get("product_code") or "").strip()
+        pm = pm_index.get(pc) if pc else None
+        pk = pk_index.get(pc) if pc else None
+        product_matched = bool(pc) and pm is not None
+        if not product_matched:
+            unmatched_count += 1
+        conf = None
+        needs_review = False
+        if pk is not None:
+            try:
+                conf = float(pk.get("extracted_confidence", 0) or 0)
+            except Exception:
+                conf = None
+            needs_review = bool(pk.get("requires_manual_review"))
+        out_lines.append({
+            "line_id":                ln.get("line_id"),
+            "product_code":           pc,
+            "design_no":              (pk or {}).get("design_no")
+                                      or ln.get("design_no") or "",
+            "name":                   ln.get("name_pl")
+                                      or ln.get("description_bilingual") or "",
+            "quantity":               ln.get("quantity")
+                                      or (pk or {}).get("quantity"),
+            "product_matched":        product_matched,
+            "product_master_ref":     (pm.get("product_code") if pm else None),
+            "extracted_confidence":   conf,
+            "requires_manual_review": needs_review,
+            "unmatched":              (not product_matched),
+        })
+
+    return JSONResponse({
+        "ok":                 True,
+        "draft_id":           int(draft_id),
+        "batch_id":           batch_id,
+        "source_documents":   source_documents,
+        "customer_match":     customer_match,
+        "customer_unmatched": customer_unmatched,
+        "lines":              out_lines,
+        "unmatched_count":    unmatched_count,
+        # Lesson N — this whole payload is advisory; it never gates a fiscal action.
+        "advisory":           True,
+    })
+
+
 # ── Sprint-24: clone endpoint ─────────────────────────────────────────────────
 
 @router.post("/draft/{draft_id}/clone", dependencies=[_auth])
