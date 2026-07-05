@@ -120,6 +120,16 @@
       return _get(`${BASE}/accounting/documents/${encodeURIComponent(docType)}${qs}`);
     },
 
+    // GET /api/v1/ledgers/clients  (Wave 4 Item 4 — Client Balance roster)
+    // params: { from?, to?, start?, limit?, country?, q? }. Default window = YTD.
+    // Returns { ok, data: { period, count, rows[], column_status } }
+    // rows[]: { contractor_id, name, open, overdue_invoice_age, ytd_invoiced,
+    //           last_30d (null · Backend Pending), currency, state, balance_available }
+    listClientBalances: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/ledgers/clients${qs}`);
+    },
+
     // GET /api/v1/proforma/drafts/{batch_id}
     // Returns { ok, data: { ok, batch_id, drafts[], count } }
     getProformaDrafts: (batchId) =>
