@@ -455,14 +455,21 @@ function ProformaCrossBatchLanding({ onDrill }) {
           <button data-testid="pf-tb-import" disabled title="Open a shipment batch to import a packing list (batch-scoped action)" style={disWrite}>↙ Import Packing List</button>
           <button data-testid="pf-tb-create" disabled title="Open a shipment batch to create a draft (batch-scoped action)" style={disWrite}>+ Create Draft</button>
           <button data-testid="pf-tb-push" disabled={!selRow} onClick={() => selRow && onDrill && onDrill(selRow)}
-            title={selRow ? 'Push the selected draft to wFirma (opens its confirmed post)' : 'Select exactly one draft to push to wFirma'}
-            style={selRow ? enWrite : disWrite}>↑ Push to wFirma</button>
+            title={selRow ? 'Push the selected draft to wFirma (opens its confirmed post)' : selRows.length > 1 ? 'Bulk push needs operator approval (new financial write)' : 'Select exactly one draft to push to wFirma'}
+            style={selRow ? enWrite : disWrite}>↑ Push to wFirma{selRows.length ? ` (${selRows.length})` : ''}</button>
           <button data-testid="pf-tb-send" disabled={!selRow} onClick={() => selRow && onDrill && onDrill(selRow)}
-            title={selRow ? 'Send the selected draft (opens its confirmed send)' : 'Select exactly one draft to send'}
-            style={selRow ? enWrite : disWrite}>✉ Send</button>
-          <button data-testid="pf-tb-print" disabled title="Print — backend-gated (no print endpoint)" style={disWrite}>⎙ Print</button>
+            title={selRow ? 'Send the selected draft (opens its confirmed send)' : selRows.length > 1 ? 'Bulk send needs operator approval (new financial write)' : 'Select exactly one draft to send'}
+            style={selRow ? enWrite : disWrite}>✉ Send{selRows.length ? ` (${selRows.length})` : ''}</button>
+          <button data-testid="pf-tb-print" disabled title="Print — backend-gated (no print endpoint)" style={disWrite}>⎙ Print{selRows.length ? ` (${selRows.length})` : ''}</button>
         </div>
       </div>
+
+      {selRows.length > 0 && (
+        <div data-testid="pf-landing-selbar" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, padding: '8px 14px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-border)', borderRadius: 8 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{selRows.length} selected</span>
+          <button data-testid="pf-selbar-clear" onClick={() => setSelected({})} style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: 0 }}>Clear</button>
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
         <_PfKpi label="Extracting"      value={kpi.extracting} />
