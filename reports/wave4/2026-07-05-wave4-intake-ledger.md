@@ -390,3 +390,62 @@ unaffected (frontend-only). One environmental setup error
 (`test_v2_prod_unauth_redirects_to_login` — prod-mode fixture needs `API_KEY`
 env; unrelated). Full click-through blocked in the verify clone by session login;
 not fabricated. Commit SHA below.
+
+## Item 10 — Proforma bulk Push / bulk Send — AUTHORITY ANALYSIS ONLY (STOP) (2026-07-05)
+
+Analysis only — no code, no endpoint, no bulk wire, no DB change. This is a
+protected financial-write surface.
+
+**Classification: B** — a bulk surface would be a NEW endpoint over the EXISTING
+single-draft write authority; operator approval required. (Not C: the
+financial-write engine already exists. Not A: no bulk authority exists. Not D:
+wFirma writes are documented and already used per-draft.)
+
+**Authority map:** list toolbar `pf-tb-push` / `pf-tb-send` → (single select)
+`onDrill(selRow)` → detail confirmed per-draft flow →
+`POST /api/v1/proforma/draft/{id}/post` (`routes_proforma.py:8238`) +
+`POST /api/v1/proforma/draft/{id}/send-email` (`:6688`) → wFirma proforma create /
+SMTP queue.
+
+**Existing single-draft authority (both heavily guarded):**
+- Post: settings gate `wfirma_create_proforma_allowed` (default False, CP4);
+  `confirm_token=YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA`; `expected_updated_at`
+  optimistic lock; `X-Operator`; forced readiness revalidation at post-time;
+  zero-price + hs_code + live receiver preflight; state machine
+  approved→posting→posted/post_failed; already-posted → 409.
+- Send: `confirm_token`; terminal-state guard; requires `wfirma_proforma_id`
+  (must be posted first); recipient resolve; CRLF sanitisation; durable queue
+  before SMTP (Lesson E); duplicate-pending → 409.
+
+**Bulk authority exists:** NO — no bulk endpoint; `start_post` /
+`send_proforma_email` are strictly per-draft; `searchProformaDrafts` is read-only.
+
+**Idempotency verdict:** per-draft SAFE (post: `expected_updated_at`→409
+DraftConflict + already-posted `wfirma_proforma_id`→409; send:
+`queue_email._find_pending_duplicate`→409). Bulk-level: NO batch idempotency key
+— a bulk trigger has no dedupe of its own.
+
+**Partial-failure verdict:** UNDEFINED — a loop yields mixed outcomes
+(posted / 400 blocked / 409 conflict / post_failed) with no aggregated contract;
+fabricated-batch-success risk if the UI claims success while some drafts failed.
+
+**Status-guard verdict:** STRONG per-draft (approved-state + forced revalidation +
+already-posted 409 for post; posted + non-terminal + PDF + recipient for send) —
+prevents re-push/re-send per draft, but only within a single call.
+
+**Risk level:** HIGH — protected financial-write surface; a bulk auto-confirm
+would bypass the per-draft explicit confirm-token guard; partial-failure + bulk
+idempotency are undesigned.
+
+**Approval required:** YES.
+
+**Recommendation:** Keep bulk Push/Send buttons VISIBLE but disabled on
+multi-select with the existing honest Authority-Gap reason (current React already
+complies — `proforma-list.jsx` disables both on `selRows.length > 1` with "Bulk
+push/send needs operator approval (new financial write)"; single-select routes to
+the confirmed per-draft flow, Item 9). Do NOT build a client-side loop or a bulk
+endpoint without operator approval AND a design that (a) preserves per-draft
+confirmation, (b) defines partial-failure/aggregation semantics, (c) adds a bulk
+idempotency key, (d) respects the CP4 `wfirma_create_proforma_allowed` gate.
+Disposition (GATE 4): SCHEDULED — pending operator approval. **STOP for
+implementation.** No React change made (current gating already correct).
