@@ -41,8 +41,35 @@ def test_payments_pull_invokes_only_pull_processor():
         assert body["new"] == 2 and body["existing"] == 1
         assert body["contractor_id"] == "123"
         # ONLY the read/pull processor was called, once, with the contractor id.
+        # The processor signature is keyword-only (bare `*`), so the route MUST
+        # pass keyword args — assert on kwargs, never positional.
         assert m.call_count == 1
-        assert m.call_args.args[0] == "123"
+        assert m.call_args.kwargs["contractor_id"] == "123"
+        assert not m.call_args.args  # no positional args — keyword-only contract
+    finally:
+        _teardown()
+
+
+def test_payments_pull_call_convention_matches_keyword_only_signature():
+    """Regression (deploy-gate BLOCKER 2026-07-06): the route must call
+    sync_payments_for_contractor with KEYWORD args. Its real signature is
+    keyword-only (bare ``*``); a positional call raises TypeError → HTTP 500.
+
+    ``autospec=True`` makes the mock enforce the real function signature, so a
+    positional call fails here exactly as it would in production. This test
+    fails on the pre-fix positional call and passes on the keyword call.
+    """
+    c = _client()
+    try:
+        with patch("app.api.routes_wfirma_sync_pull.sync_payments_for_contractor",
+                   autospec=True, return_value=(0, 0, None)) as m, \
+             patch("app.services.wfirma_payment_db.init_payment_db"):
+            r = c.post("/api/v1/wfirma/sync/payments-pull", json={"contractor_id": "C-9"})
+        # No TypeError / 500 — the keyword-only signature was honoured.
+        assert r.status_code == 200, r.text
+        assert m.call_args.kwargs["contractor_id"] == "C-9"
+        assert set(m.call_args.kwargs) == {"contractor_id", "payment_db", "now"}
+        assert not m.call_args.args
     finally:
         _teardown()
 

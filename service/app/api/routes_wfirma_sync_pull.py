@@ -68,7 +68,11 @@ def payments_pull(body: PaymentsPullRequest) -> dict:
     init_payment_db(db_path)
     now = datetime.now(timezone.utc).isoformat()
 
-    new_count, existing_count, err = sync_payments_for_contractor(cid, db_path, now)
+    new_count, existing_count, err = sync_payments_for_contractor(
+        contractor_id=cid,
+        payment_db=db_path,
+        now=now,
+    )
     if err:
         raise HTTPException(status_code=502, detail=f"wFirma payments read failed: {err}")
     return {
