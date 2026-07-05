@@ -977,20 +977,65 @@ function AccountingOverviewKpis() {
     </div>
   );
 }
-function _AccDocPanel({ title, rows, onJump }) {
+// Doc-count panel (Wave 4 Item 2). Each row shows a LIVE count only when a
+// provable count exists in `counts` (keyed by row.to); otherwise the value stays
+// "—" with an honest per-row Backend-Pending reason (from `reasons`). No count is
+// fabricated, approximated, or summed across currencies. Layout is the wireframe's
+// unchanged: label · value · jump. The panel-level "Backend Pending" chip shows
+// only when EVERY row in the panel is still pending.
+function _AccDocPanel({ title, rows, onJump, counts, reasons }) {
+  const _c = counts || {};
+  const _r = reasons || {};
+  const allPending = rows.every(r => typeof _c[r.to] !== 'number');
   return (
     <div style={{ flex: 1, minWidth: 240, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-      <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{title} <span style={{ fontWeight: 400, color: 'var(--text-3)', fontSize: 10 }}>· Backend Pending</span></div>
-      {rows.map((r, i) => (
-        <button key={r.label} data-testid={`acc-ov-jump-${r.to}`} onClick={() => onJump && onJump(r.to)}
-          style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 14px', borderBottom: i < rows.length - 1 ? '1px solid var(--border-subtle)' : 'none', fontSize: 12, color: 'var(--text-2)', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}>
-          <span>{r.label}</span><span style={{ color: 'var(--text-3)', fontFamily: 'monospace' }}>— ›</span>
-        </button>
-      ))}
+      <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{title}{allPending ? <span style={{ fontWeight: 400, color: 'var(--text-3)', fontSize: 10 }}> · Backend Pending</span> : null}</div>
+      {rows.map((r, i) => {
+        const live = typeof _c[r.to] === 'number';
+        return (
+          <button key={r.label} data-testid={`acc-ov-jump-${r.to}`} onClick={() => onJump && onJump(r.to)}
+            style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 14px', borderBottom: i < rows.length - 1 ? '1px solid var(--border-subtle)' : 'none', fontSize: 12, color: 'var(--text-2)', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}>
+            <span>{r.label}</span>
+            {live ? (
+              <span data-testid={`acc-ov-count-${r.to}`} title={_r[r.to] || undefined} style={{ color: 'var(--text)', fontFamily: 'monospace', fontWeight: 700 }}>{_c[r.to]} ›</span>
+            ) : (
+              <span data-testid={`acc-ov-count-${r.to}`} title={_r[r.to] || 'Backend Pending'} style={{ color: 'var(--text-3)', fontFamily: 'monospace' }}>— ›</span>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }
 function AccountingOverview({ onJump }) {
+  // Wave 4 Item 2 — wire ONLY provable doc counts. Proforma has a true unbounded
+  // count (GET /proforma/search → data.total = COUNT(*) of proforma_drafts). All
+  // other counts stay Backend Pending: invoices/credit-notes come from wFirma
+  // invoices/find which returns a PAGE (count = page length, not a grand total);
+  // WZ/PW/RW/MM are Item 3B (undocumented wFirma warehouse-doc reads); PZ has no
+  // warehouse-document total authority (dashboard/batches is a capped import
+  // pipeline proxy, not the wFirma PZ-document count). Read-only; no aggregate
+  // engine, no cache, no cross-currency sum.
+  const [counts, setCounts] = React.useState({});
+  React.useEffect(() => {
+    let cancelled = false;
+    window.PzApi.searchProformaDrafts({ page_size: 1 }).then(res => {
+      if (cancelled) return;
+      const total = res && res.ok && res.data && typeof res.data.total === 'number' ? res.data.total : null;
+      if (typeof total === 'number') setCounts(c => ({ ...c, pi: total }));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  const _reasons = {
+    pi: 'Source: proforma_drafts (all states) · GET /api/v1/proforma/search total',
+    inv: 'Backend Pending — wFirma invoices/find returns a page, not a grand total',
+    cn:  'Backend Pending — wFirma invoices/find returns a page, not a grand total',
+    wz:  'Backend Pending — Item 3B: WZ read undocumented in wFirma',
+    pz:  'Backend Pending — no warehouse-document PZ total authority (batch list is a capped pipeline proxy)',
+    pw:  'Backend Pending — Item 3B: PW read undocumented in wFirma',
+    rw:  'Backend Pending — Item 3B: RW read undocumented in wFirma',
+    mm:  'Backend Pending — Item 3B: MM read undocumented in wFirma',
+  };
   const mapStep = (code, name) => (
     <div style={{ flex: 1, minWidth: 110, background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 12px', textAlign: 'center' }}>
       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.04em' }}>{code}</div>
@@ -1007,8 +1052,8 @@ function AccountingOverview({ onJump }) {
       <AccountingOverviewKpis />
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-        <_AccDocPanel title="Sales documents" onJump={onJump} rows={[{ label: 'Proforma issued', to: 'pi' }, { label: 'Invoices issued', to: 'inv' }, { label: 'Credit notes', to: 'cn' }, { label: 'WZ releases', to: 'wz' }]} />
-        <_AccDocPanel title="Warehouse documents" onJump={onJump} rows={[{ label: 'PZ (external receipt)', to: 'pz' }, { label: 'PW (internal receipt)', to: 'pw' }, { label: 'RW (internal release)', to: 'rw' }, { label: 'MM (transfer)', to: 'mm' }]} />
+        <_AccDocPanel title="Sales documents" onJump={onJump} counts={counts} reasons={_reasons} rows={[{ label: 'Proforma issued', to: 'pi' }, { label: 'Invoices issued', to: 'inv' }, { label: 'Credit notes', to: 'cn' }, { label: 'WZ releases', to: 'wz' }]} />
+        <_AccDocPanel title="Warehouse documents" onJump={onJump} counts={counts} reasons={_reasons} rows={[{ label: 'PZ (external receipt)', to: 'pz' }, { label: 'PW (internal receipt)', to: 'pw' }, { label: 'RW (internal release)', to: 'rw' }, { label: 'MM (transfer)', to: 'mm' }]} />
       </div>
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: 16 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 10 }}>Document map <span style={{ fontWeight: 400, color: 'var(--text-3)' }}>— how sales &amp; warehouse documents connect</span></div>

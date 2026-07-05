@@ -303,3 +303,50 @@ write gap `POST /api/v1/proforma/draft/{id}/generate-documents`
   `test_sprint36_proforma_detail_authority` — 128 passed). Golden/smoke
   unaffected (frontend-only). Full click-through blocked in the verify clone by
   session login + no seeded draft; not fabricated. Commit SHA below.
+
+## Item 2 — Accounting Overview doc-count panels — DONE (REUSE-ONLY, read-only) (2026-07-05)
+
+Operator ruling: REUSE-ONLY / read-only — no new authority, endpoint, aggregate
+engine, cache, mirror, or cross-currency sum; no wFirma write. The Accounting
+**Overview** Sales-documents + Warehouse-documents count panels now show a LIVE
+count **only where one is provable from an existing endpoint**; every other row
+stays honestly Backend Pending with a precise per-row reason. **`pz-api.js`
+untouched** (reuses existing wrappers). Frontend commit — see SHA below.
+
+**Endpoint-semantics analysis (why only one count is wired):**
+- **Proforma issued** → `GET /api/v1/proforma/search` (`searchProformaDrafts`,
+  `page_size:1`) → `data.total`. `search_drafts` computes `total = SELECT
+  COUNT(*) FROM proforma_drafts {where}` — a **true unbounded count**
+  (`proforma_invoice_link_db.py:1775`). Authority = `proforma_drafts`. **WIRED**
+  (live proof: verify server returns `total=6`). Source disclosed in the row
+  `title` ("proforma_drafts, all states").
+- **Invoices issued / Credit notes** → `GET /api/v1/accounting/documents/{type}`
+  returns `count = len(rows)` for ONE page (`wfirma_client.list_invoices_by_type`
+  → `{"rows", "count": len(rows)}`, `wfirma_client.py:2419`); wFirma
+  `invoices/find` gives a page, **not a grand total**. A true count is not
+  provable read-only → **Backend Pending** (reason surfaced).
+- **PZ (external receipt)** → no warehouse-document total authority. The only
+  existing read (`dashboard/batches`) is a capped import pipeline proxy
+  (`_MAX_LIST=300`, deduped, `pz_status` derived from `wfirma_pz_doc_id`), **not**
+  the wFirma PZ-document count → **Backend Pending** (reason surfaced).
+- **WZ / PW / RW / MM** → Item 3B — undocumented wFirma warehouse-doc reads →
+  **Backend Pending**.
+
+**Layout preserved:** same wireframe rows, same jump-to-tab buttons
+(`acc-ov-jump-{to}`). New per-row value cell `acc-ov-count-{to}` shows the live
+number (bold) or `— ›` with a `title` reason. Panel-level "· Backend Pending"
+chip now shows only when EVERY row in that panel is still pending (Warehouse
+panel = all pending → chip stays; Sales panel = has one live count → chip drops).
+
+**Verification:** exact file transforms clean under `@babel/preset-react`
+(matches pinned 7.26.4 standalone); served 200 with the new `acc-ov-count-*` test
+IDs; reused endpoint returns a real `total` at the API layer (reuses the same
+`res.ok`/`res.data.*` pattern already driving the Overview KPI tiles). Structural
++ contract pins green (`test_v2_no_spread_rest`, `test_v2_design_baseline`,
+`test_accounting_hub_v2_contract` [other assertions], `test_routes_accounting` —
+85 passed). Golden/smoke unaffected (frontend-only). Pre-existing unrelated reds
+(reproduced at HEAD with this change stashed): `test_no_forbidden_endpoints_in_hub`
+(the `/api/v1/accounting/{type}` note string predates this slice) and
+`test_pipeline_summary_panel_preserved` (asserts against an HTML shell, not this
+file). Full click-through blocked in the verify clone by session login; not
+fabricated. Commit SHA below.
