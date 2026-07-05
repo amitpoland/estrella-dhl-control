@@ -201,3 +201,61 @@ An unrelated uncommitted deletion of `pz-api.uploadPackingList` sat in the tree
 (`service/app/static/v2/pz-api.js`, −21 lines) — it would regress shipped Item 8
 (`eef901eb`). It was **excluded** from this commit and left untouched for the
 operator to reconcile; Item 11 deliberately routes around `pz-api.js`.
+
+> Follow-up (2026-07-05): re-investigated — HEAD held `uploadPackingList`
+> **twice** (duplicate object key at lines 152 & 173); the operator's WIP deletes
+> the duplicate and keeps the canonical helper at 152 (→ `POST
+> /api/v1/packing/{batch_id}/upload`, still called by the Import wizard). It is a
+> legitimate dedup, **not** an Item 8 regression. No restoration required; the
+> file remains operator WIP. Investigation closed — do not revisit.
+
+## Item 12 — Logistics tab — DONE (REUSE-ONLY, UI-only) (2026-07-05)
+
+Operator ruling: REUSE-ONLY — no new authority, DB, endpoint, service, or write
+path; no shipment mutation; no wFirma write. The Proforma Detail **Logistics**
+`Backend Pending` placeholder is replaced with a live **advisory** read view
+composed ENTIRELY from data `ProformaDetailPage` already computes. **No new
+fetch, no new endpoint, `pz-api.js` untouched.** Frontend commit — see SHA below.
+
+**Authority analysis (§17/§20):** authority owner = **CMR document authority**
+(`cmrPreviewData`) + the draft's billed `editable_lines` + matched batch
+**packing** rows (net/gross-weight enrichment). Existing page = Proforma Detail
+`logistics` tab. No arrow requires a new authority.
+
+Reused, in-component (all already consumed by the rendering CMR preview modal):
+- **Carrier / route / CMR no. / pieces** — `cmrPreviewData.carrier` (name,
+  service, incoterm, origin→destination) + `cmrPreviewData.cmr_no`
+  (`CMR-EJ-{batchId}`) + `_cmrTotalPcs`.
+- **Net weight by item type + total** — `_cmrAggPackingLines` (aggregated ONLY
+  from this draft's billed lines; batch packing rows enrich, never add lines).
+- **Gross weight total** — summed via the same `_enrichPacking(ln).gross_weight`
+  used for the Packing List / CMR.
+- **Goods summary** — `cmrPreviewData.goods_summary`.
+
+**Advisory (Lesson N):** header states "never a fiscal gate"; nothing here gates
+Approve/Post/Convert; empty/missing packing degrades to `—` and an empty-state,
+never an error.
+
+**Honest Backend-Pending (surfaced, not fabricated):** live **AWB tracking
+number** and the **per-shipment box / package profile** are NOT shown — the real
+AWB is held in the secure label store (`carrier_shipments` intentionally omits
+`tracking_ref`; `shipment_db.py:7`), and box selection is captured at
+label-generation time only. The tab points the operator to the toolbar AWB
+generator. (`GET /api/v1/carrier/{batch_id}/shipment` exists but returns only
+state/mode/service and 404s for un-shipped drafts — not wired, to keep this slice
+zero-fetch.)
+
+- `data-testid`: `pf-detail-logistics`, `pf-logistics-carrier[-name]`,
+  `pf-logistics-service|incoterm|route|cmr-no|pieces`, `pf-logistics-weights`
+  (+ `-row`, `-total`, `-empty`), `pf-logistics-gross-total`,
+  `pf-logistics-goods-summary`, `pf-logistics-pending`.
+- **Verification:** exact file transforms clean under `@babel/preset-react`
+  (matches the pinned 7.26.4 in-browser standalone); served 200 by the verify
+  server with all 14 test IDs present; every referenced identifier proven
+  in-scope (already consumed by the CMR preview modal). Structural pins green
+  (`test_v2_no_spread_rest`, `test_v2_design_baseline`,
+  `test_sprint36_proforma_detail_authority` — 183 passed). Golden/smoke
+  unaffected (frontend-only; no engine/route/calc change). Pre-existing unrelated
+  red: `test_toolbar_authority_map::test_print_uses_window_open` (`window.open`
+  absent at HEAD too — not introduced by this slice). Full click-through blocked
+  in the verify clone by session login + no seeded draft; not fabricated.

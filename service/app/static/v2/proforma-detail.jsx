@@ -3168,14 +3168,84 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         {activeTab === 'source' && (
           <SourceExtractionTab draftId={draft && draft.id} />
         )}
-        {activeTab === 'logistics' && (
-          <div data-testid="pf-detail-logistics" style={{ padding: 20 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Logistics</div>
-            <div style={{ padding: '16px 18px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 12.5, lineHeight: 1.6 }}>
-              Carrier, AWB, CMR number, gross/net weights, boxes and package profile. <strong style={{ color: 'var(--badge-amber-text)' }}>— Backend Pending</strong>
+        {activeTab === 'logistics' && (() => {
+          // REUSE-ONLY read view (Wave 4 Item 12). Composes ONLY data this component
+          // already computes from existing authorities — the CMR document authority
+          // (cmrPreviewData), the draft's billed editable_lines, and matched batch
+          // packing rows (net/gross weight enrichment). No new fetch, no new endpoint,
+          // no new authority. Advisory transport summary — NEVER a fiscal gate.
+          const _car = cmrPreviewData.carrier || {};
+          const _wl  = _cmrAggPackingLines.lines || [];
+          const _netTotal = _wl.reduce((s, r) => s + (Number(r.net_weight) || 0), 0);
+          // Gross total via the same per-line packing enrichment used for CMR.
+          const _grossTotal = (liveDraft.editable_lines || []).reduce((s, ln) => {
+            const pk = _enrichPacking(ln); const g = Number(pk.gross_weight) || 0; return s + g;
+          }, 0);
+          const _fmtKg = (v) => (Number(v) > 0 ? Number(v).toFixed(3) + ' kg' : '—');
+          const _kv = (k, v, testid) => (
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '6px 0', borderBottom: '1px solid var(--border)' }} data-testid={testid}>
+              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{k}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', textAlign: 'right' }}>{v}</span>
             </div>
-          </div>
-        )}
+          );
+          return (
+            <div data-testid="pf-detail-logistics" style={{ padding: 20 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Logistics</div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 16, lineHeight: 1.5 }}>
+                Read-only transport summary composed from this draft's billed lines, matched packing rows, and the CMR document authority. Advisory — never a fiscal gate.
+              </div>
+
+              {/* Carrier / route — reuses cmrPreviewData.carrier + derived CMR number */}
+              <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 16px', marginBottom: 16 }} data-testid="pf-logistics-carrier">
+                {_kv('Carrier', _car.name || 'DHL Express', 'pf-logistics-carrier-name')}
+                {_kv('Service', _car.service || '—', 'pf-logistics-service')}
+                {_kv('Incoterm', _car.incoterm || '—', 'pf-logistics-incoterm')}
+                {_kv('Route', [_car.origin, _car.destination].filter(v => v && v !== '—').join('  →  ') || '—', 'pf-logistics-route')}
+                {_kv('CMR No.', cmrPreviewData.cmr_no || '—', 'pf-logistics-cmr-no')}
+                {_kv('Total pieces', _cmrTotalPcs > 0 ? _cmrTotalPcs : '—', 'pf-logistics-pieces')}
+              </div>
+
+              {/* Weights by item type — reuses _cmrAggPackingLines (net) + packing enrichment (gross) */}
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>Weights &amp; package profile</div>
+              {_wl.length > 0 ? (
+                <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 12 }} data-testid="pf-logistics-weights">
+                  <thead>
+                    <tr style={{ textAlign: 'left', color: 'var(--text-3)', fontSize: 11 }}>
+                      <th style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>Item type</th>
+                      <th style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', textAlign: 'right' }}>Qty</th>
+                      <th style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', textAlign: 'right' }}>Net weight</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {_wl.map((r, i) => (
+                      <tr key={i} data-testid="pf-logistics-weight-row">
+                        <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', fontSize: 12 }}>{r.item_type}</td>
+                        <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', fontSize: 12, textAlign: 'right' }}>{Number(r.qty) || 0}</td>
+                        <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', fontSize: 12, textAlign: 'right' }}>{_fmtKg(r.net_weight)}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ fontWeight: 700 }} data-testid="pf-logistics-weight-total">
+                      <td style={{ padding: '6px 8px', fontSize: 12 }}>Total</td>
+                      <td style={{ padding: '6px 8px', fontSize: 12, textAlign: 'right' }}>{_cmrTotalPcs > 0 ? _cmrTotalPcs : '—'}</td>
+                      <td style={{ padding: '6px 8px', fontSize: 12, textAlign: 'right' }}>{_fmtKg(_netTotal)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }} data-testid="pf-logistics-weights-empty">No packing weight data matched for this draft's lines yet.</div>
+              )}
+              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }} data-testid="pf-logistics-gross-total">Gross weight (enriched): <strong>{_fmtKg(_grossTotal)}</strong></div>
+              {cmrPreviewData.goods_summary ? (
+                <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12 }} data-testid="pf-logistics-goods-summary">Goods: {cmrPreviewData.goods_summary}</div>
+              ) : null}
+
+              {/* Honest Backend-Pending advisories — structural gaps, not fabricated data */}
+              <div style={{ padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 11.5, lineHeight: 1.6, marginTop: 4 }} data-testid="pf-logistics-pending">
+                <strong style={{ color: 'var(--badge-amber-text)' }}>Backend Pending:</strong> live AWB tracking number and the per-shipment box / package profile are not shown here — the real AWB is held in the secure label store (not a queryable read authority), and box selection is captured at label-generation time. Generate a DHL AWB from the toolbar to record them.
+              </div>
+            </div>
+          );
+        })()}
         {activeTab === 'documents' && (
           <div data-testid="pf-detail-documents" style={{ padding: 20 }}>
             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Documents</div>
