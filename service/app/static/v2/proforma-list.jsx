@@ -584,41 +584,122 @@ function PfCreateSourceModal({ onClose, onPickImport, onOtherSource }) {
     </div>, onClose, 560,
   );
 }
-function PfImportWizardModal({ onClose }) {
-  const [step, setStep] = React.useState(0);
+// Wave 4 Item 8 (REUSE-ONLY) — wired to the EXISTING authority:
+//   POST /api/v1/packing/{batch_id}/upload
+// That endpoint parses the file, upserts packing lines, and idempotently
+// creates/syncs proforma drafts by (batch_id, client_name). No new endpoint,
+// no new parser, no wFirma write.
+// BATCH DISCIPLINE: batchId is used verbatim and never auto-picked. With no
+// batchId the wizard shows the batch-required state and cannot upload —
+// idempotency only protects the SAME batch_id, so a wrong/guessed batch would
+// create the wrong draft.
+function PfImportWizardModal({ batchId, onClose, onCreated }) {
+  const [step, setStep]   = React.useState(0);
+  const [file, setFile]   = React.useState(null);
+  const [busy, setBusy]   = React.useState(false);
+  const [result, setResult] = React.useState(null);
+  const [error, setError] = React.useState(null);
   const steps = ['Upload', 'Extraction', 'Mapping', 'Create draft'];
-  const bodies = [
-    (
-      <div>
-        <div style={{ border: '1px dashed var(--border)', borderRadius: 8, padding: '28px 16px', textAlign: 'center', background: 'var(--bg-subtle)' }}>
-          <div style={{ fontSize: 22 }}>📄</div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginTop: 6 }}>Drop packing list here</div>
-          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>Excel (.xlsx) or PDF · the only accepted source document</div>
-        </div>
-        <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 12, lineHeight: 1.5 }}>The system extracts customer, product rows, quantities, prices, weights and package data — then matches against Customer &amp; Product master. Proforma, CMR and logistics are generated from this source.</div>
+  const hasBatch = !!batchId;
+
+  const doUpload = () => {
+    if (!hasBatch || !file) return;   // guarded — never fire without a real batch + file
+    setBusy(true); setError(null);
+    window.PzApi.uploadPackingList(batchId, file).then(res => {
+      setBusy(false);
+      if (res && res.ok) { setResult(res.data || {}); onCreated && onCreated(); }
+      else { setError((res && res.error) || 'Upload failed.'); }
+    }).catch(e => { setBusy(false); setError((e && e.message) || String(e)); });
+  };
+
+  // Step 0 — batch-required gate OR file picker
+  const uploadBody = !hasBatch ? (
+    <div data-testid="pf-import-batch-required" style={{ padding: '20px 16px', textAlign: 'center', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 8 }}>
+      <div style={{ fontSize: 22 }}>📂</div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--badge-amber-text)', marginTop: 6 }}>Open a batch first</div>
+      <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 6, lineHeight: 1.5 }}>A packing list is imported <strong>into a specific batch</strong>. Open a shipment / batch, then import from its Pro Forma Drafts view. The batch is never chosen automatically.</div>
+    </div>
+  ) : (
+    <div>
+      <label data-testid="pf-import-dropzone" htmlFor="pf-import-file" style={{ display: 'block', border: '1px dashed var(--border)', borderRadius: 8, padding: '24px 16px', textAlign: 'center', background: 'var(--bg-subtle)', cursor: 'pointer' }}>
+        <div style={{ fontSize: 22 }}>📄</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginTop: 6 }}>{file ? file.name : 'Choose packing list'}</div>
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>Excel (.xlsx) or PDF · the only accepted source document</div>
+      </label>
+      <input id="pf-import-file" data-testid="pf-import-file" type="file" accept=".xlsx,.xls,.pdf"
+        onChange={e => { setFile((e.target.files && e.target.files[0]) || null); setError(null); }}
+        style={{ display: 'none' }} />
+      <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 12, lineHeight: 1.5 }}>
+        Target batch <code style={{ fontSize: 11 }} data-testid="pf-import-target-batch">{batchId}</code>. The system extracts rows, matches Customer &amp; Product master, and creates a draft in Operator Review — idempotent by (batch, client). Nothing is pushed to wFirma.
       </div>
-    ),
+    </div>
+  );
+
+  const infoRow = (k, v) => (
+    <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}>
+      <span style={{ color: 'var(--text-2)' }}>{k}</span><span style={{ color: 'var(--text)', fontFamily: 'monospace' }}>{v}</span>
+    </div>
+  );
+
+  const bodies = [
+    uploadBody,
     (
-      <div>{[['Rows detected', '— · Backend Pending'], ['Customer block', '— · Backend Pending'], ['Weights', '— · Backend Pending'], ['Packages', '— · Backend Pending'], ['AI confidence', '— · Backend Pending']].map(([k, v]) => (
-        <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}><span style={{ color: 'var(--text-2)' }}>{k}</span><span style={{ color: 'var(--text-3)', fontFamily: 'monospace' }}>{v}</span></div>
-      ))}</div>
+      <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6 }}>
+        {infoRow('Selected file', file ? file.name : '— none')}
+        {infoRow('Target batch', batchId || '— none')}
+        <div style={{ marginTop: 10, padding: '8px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }}>Extraction runs server-side on upload — customer, rows, quantities, prices and weights are parsed by the existing packing pipeline.</div>
+      </div>
     ),
     (
       <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6 }}>
-        <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 8 }}>Customer match → resolved against <strong>Customer Master</strong> (authority) · <em>Backend Pending</em></div>
-        <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }}>Product rows → resolved against <strong>Product Master</strong> (authority); unmatched rows are flagged in the Items tab for operator mapping · <em>Backend Pending</em></div>
+        <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 8 }}>Customer match → resolved against <strong>Customer Master</strong> (authority).</div>
+        <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }}>Product rows → resolved against <strong>Product Master</strong>; unmatched rows are flagged in the Items tab for operator mapping.</div>
       </div>
     ),
+    // Step 3 — execute the real upload / show result or error
     (
-      <div style={{ textAlign: 'center', padding: '8px 0' }}>
-        <div style={{ fontSize: 24, color: 'var(--badge-amber-text)' }}>⚠</div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginTop: 6 }}>Draft ready for operator review</div>
-        <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 6, lineHeight: 1.5 }}>A draft proforma will be created in Operator Review state. Nothing is pushed to wFirma yet.</div>
-        <div data-testid="pf-import-authority-gap" style={{ marginTop: 12, padding: '8px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-amber-text)' }}>AUTHORITY GAP · POST /api/v1/proforma/upload-packing-list not yet deployed (DC-12) — execution pending operator approval.</div>
-      </div>
+      result ? (
+        <div data-testid="pf-import-result" style={{ textAlign: 'center', padding: '8px 0' }}>
+          <div style={{ fontSize: 24, color: 'var(--badge-green-text)' }}>✓</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginTop: 6 }}>Packing list imported</div>
+          <div style={{ textAlign: 'left', marginTop: 12 }}>
+            {infoRow('Batch', result.batch_id || batchId)}
+            {infoRow('File', result.file || (file && file.name) || '—')}
+            {infoRow('Rows', result.total_rows != null ? result.total_rows : '—')}
+            {infoRow('Matched', result.matched_count != null ? result.matched_count : '—')}
+            {infoRow('Unmatched', result.unmatched_count != null ? result.unmatched_count : '—')}
+            {infoRow('Client (detected)', result.suggested_client_name || '— assign manually')}
+          </div>
+          <div style={{ marginTop: 12, fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.5 }}>Draft creation ran idempotently for this batch. Review it in Pro Forma Drafts. Nothing was pushed to wFirma.</div>
+        </div>
+      ) : (
+        <div style={{ textAlign: 'center', padding: '8px 0' }}>
+          <div style={{ fontSize: 24, color: hasBatch ? 'var(--accent)' : 'var(--badge-amber-text)' }}>{hasBatch ? '↥' : '⚠'}</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginTop: 6 }}>{hasBatch ? 'Ready to create draft' : 'Batch required'}</div>
+          <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 6, lineHeight: 1.5 }}>
+            {hasBatch
+              ? <>Uploads <code style={{ fontSize: 11 }}>{file ? file.name : '(no file)'}</code> to batch <code style={{ fontSize: 11 }}>{batchId}</code> and creates a draft in Operator Review.</>
+              : <>No batch selected — open a batch and import from its Pro Forma Drafts view.</>}
+          </div>
+          {error && (
+            <div data-testid="pf-import-error" style={{ marginTop: 12, padding: '8px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-red-text)' }}>{error}</div>
+          )}
+        </div>
+      )
     ),
   ];
   const btnBase = { padding: '6px 14px', borderRadius: 5, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
+  const done = !!result;
+  // Next-button enable/label logic per step.
+  const nextDisabled = busy
+    || (step === 0 && hasBatch && !file)   // must pick a file to leave step 0
+    || (step === 3 && !done && (!hasBatch || !file));
+  const nextLabel = step < 3 ? 'Continue →' : (done ? 'Close' : (busy ? 'Uploading…' : 'Create draft'));
+  const onNext = () => {
+    if (step < 3) { setStep(step + 1); return; }
+    if (done) { onClose(); return; }
+    doUpload();
+  };
   return _pfOverlay(
     <div data-testid="pf-import-modal" style={{ padding: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
@@ -638,8 +719,8 @@ function PfImportWizardModal({ onClose }) {
       </div>
       <div style={{ minHeight: 150 }}>{bodies[step]}</div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
-        <button data-testid="pf-import-back" onClick={() => (step === 0 ? onClose() : setStep(step - 1))} style={{ ...btnBase, background: 'var(--card)', color: 'var(--text-2)', border: '1px solid var(--border)' }}>{step === 0 ? 'Cancel' : '← Back'}</button>
-        <button data-testid="pf-import-next" onClick={() => (step < 3 ? setStep(step + 1) : onClose())} style={{ ...btnBase, background: 'var(--accent)', color: 'var(--accent-text)', border: '1px solid var(--accent-border)' }}>{step < 3 ? 'Continue →' : 'Create draft'}</button>
+        <button data-testid="pf-import-back" disabled={busy || done} onClick={() => (step === 0 ? onClose() : setStep(step - 1))} style={{ ...btnBase, background: 'var(--card)', color: 'var(--text-2)', border: '1px solid var(--border)', opacity: (busy || done) ? 0.5 : 1 }}>{step === 0 ? 'Cancel' : '← Back'}</button>
+        <button data-testid="pf-import-next" disabled={nextDisabled} onClick={onNext} style={{ ...btnBase, background: 'var(--accent)', color: 'var(--accent-text)', border: '1px solid var(--accent-border)', opacity: nextDisabled ? 0.5 : 1 }}>{nextLabel}</button>
       </div>
     </div>, onClose, 640,
   );
@@ -665,8 +746,10 @@ function ProformaListPage({ onDrill }) {
 
   // PL-3 modal
   const [showNewModal, setShowNewModal] = useState(false);
-  // PL-4 modal
+  // PL-4 modal (Import prices — TSV into existing draft)
   const [showImportModal, setShowImportModal] = useState(false);
+  // Item 8 — Import Packing List file wizard (POST /packing/{batch_id}/upload)
+  const [showPackingWizard, setShowPackingWizard] = useState(false);
 
   if (!batchId) {
     // Wireframe FULL PORT: the /proforma landing is the cross-batch drafts view.
@@ -689,6 +772,10 @@ function ProformaListPage({ onDrill }) {
           <Btn variant="ghost" small data-testid="btn-import-packing-list"
             onClick={() => setShowImportModal(true)}>
             ↙ Import prices
+          </Btn>
+          <Btn variant="ghost" small data-testid="btn-import-packing-file"
+            onClick={() => setShowPackingWizard(true)}>
+            ↥ Import Packing List
           </Btn>
           <Btn variant="primary" small data-testid="btn-new-proforma-draft"
             onClick={() => setShowNewModal(true)}>
@@ -822,13 +909,24 @@ function ProformaListPage({ onDrill }) {
         />
       )}
 
-      {/* PL-4: Import Packing List Modal */}
+      {/* PL-4: Import Packing List Modal (TSV prices → existing draft) */}
       {showImportModal && (
         <ImportPackingListModal
           batchId={batchId}
           drafts={drafts}
           onClose={() => setShowImportModal(false)}
           onImported={() => { setShowImportModal(false); draftsHook.reload && draftsHook.reload(); }}
+        />
+      )}
+
+      {/* Item 8: Import Packing List file wizard → POST /packing/{batch_id}/upload.
+          batchId is guaranteed non-empty here (the page returns the batch-required
+          landing above when absent), so the upload always targets the real batch. */}
+      {showPackingWizard && (
+        <PfImportWizardModal
+          batchId={batchId}
+          onClose={() => setShowPackingWizard(false)}
+          onCreated={() => { draftsHook.reload && draftsHook.reload(); }}
         />
       )}
     </div>

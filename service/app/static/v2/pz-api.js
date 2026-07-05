@@ -151,6 +151,27 @@
       }
     },
 
+    // POST /api/v1/packing/{batch_id}/upload (multipart — EXISTING authority).
+    // Wave 4 Item 8: reuse-only. Parses the packing file, upserts packing lines,
+    // and idempotently creates/syncs proforma drafts by (batch_id, client_name).
+    // NO new endpoint, no wFirma write. batchId MUST be an explicit real batch —
+    // never auto-picked. No JSON headers (browser sets the multipart boundary).
+    // Returns { ok, data: { batch_id, file, total_rows, matched_count,
+    //           unmatched_count, inserted_count, suggested_client_name, ... } }
+    uploadPackingList: async (batchId, file, forceReextract) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      const qs = forceReextract ? '?force_reextract=true' : '';
+      try {
+        const data = await _apiFetch(
+          `${BASE}/packing/${encodeURIComponent(batchId)}/upload${qs}`,
+          { method: 'POST', body: fd });
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, status: err.status || 0, error: err.message || String(err), type: err.type };
+      }
+    },
+
     // GET /api/v1/proforma/drafts/{batch_id}
     // Returns { ok, data: { ok, batch_id, drafts[], count } }
     getProformaDrafts: (batchId) =>
