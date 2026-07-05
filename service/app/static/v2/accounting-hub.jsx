@@ -30,20 +30,27 @@
 // group: 'navigate'  — button navigates to the canonical authority page
 // group: 'gated'     — visible, backend required (Wave 4)
 const ACC_SECTIONS = [
-  // Live tabs (Wave 3)
-  { id: 'overview',  label: 'Overview',         icon: '▦', group: 'live',     code: null,  color: 'var(--accent)' },
-  { id: 'purchase',  label: 'Purchase Ledger',  icon: '↘', group: 'live',     code: 'PZ',  color: 'var(--accent)' },
-  { id: 'proforma',  label: 'Sales / Proforma', icon: '✎', group: 'live',     code: 'PI',  color: 'var(--badge-blue-text)' },
-  { id: 'ledger',    label: 'Client Ledger',    icon: '☷', group: 'live',     code: 'STM', color: 'var(--badge-green-text)' },
-  { id: 'sync',      label: 'wFirma Sync',      icon: '↻', group: 'navigate', code: null,  color: null },
-  { id: 'master',    label: 'Master Data',      icon: '⊟', group: 'navigate', code: null,  color: null },
-  { id: 'audit',     label: 'Audit Trail',      icon: '◉', group: 'live',     code: 'LOG', color: 'var(--badge-purple-text)' },
-  // Wave-4 gated (doc-register; backend unverified)
-  { id: 'wz',  label: 'WZ — Outbound',     icon: '↗', group: 'gated', code: 'WZ', color: 'var(--badge-purple-text)' },
-  { id: 'pz',  label: 'PZ — Inbound',      icon: '↘', group: 'gated', code: 'PZ', color: 'var(--accent)' },
-  { id: 'pw',  label: 'PW — Internal in',  icon: '⊕', group: 'gated', code: 'PW', color: 'var(--badge-blue-text)' },
-  { id: 'rw',  label: 'RW — Internal out', icon: '⊖', group: 'gated', code: 'RW', color: 'var(--badge-red-text)' },
-  { id: 'mm',  label: 'MM — Transfer',     icon: '⇄', group: 'gated', code: 'MM', color: 'var(--badge-neutral-text)' },
+  // FULL HTML PORT — document-type rail (pinned wireframe f7dd5e38). grp = HTML section.
+  { id: 'overview',       label: 'Overview',         icon: '◈', group: 'live', code: null,  color: 'var(--accent)',           grp: 'top' },
+  // SALES DOCUMENTS
+  { id: 'pi',             label: 'Proforma',         icon: '✎', group: 'live', code: 'PI',  color: 'var(--badge-blue-text)',  grp: 'sales' },
+  { id: 'inv',            label: 'Invoice',          icon: '⊞', group: 'live', code: 'INV', color: 'var(--badge-green-text)', grp: 'sales' },
+  { id: 'cn',             label: 'Credit Note',      icon: '↩', group: 'live', code: 'CN',  color: 'var(--badge-amber-text)', grp: 'sales' },
+  // WAREHOUSE DOCUMENTS
+  { id: 'wz',             label: 'WZ — Outbound',    icon: '↗', group: 'live', code: 'WZ',  color: 'var(--badge-purple-text)',grp: 'wh' },
+  { id: 'pz',             label: 'PZ — Inbound',     icon: '↘', group: 'live', code: 'PZ',  color: 'var(--accent)',           grp: 'wh' },
+  { id: 'pw',             label: 'PW — Internal in', icon: '⊕', group: 'live', code: 'PW',  color: 'var(--badge-blue-text)',  grp: 'wh' },
+  { id: 'rw',             label: 'RW — Internal out',icon: '⊖', group: 'live', code: 'RW',  color: 'var(--badge-red-text)',   grp: 'wh' },
+  { id: 'mm',             label: 'MM — Transfer',    icon: '⇄', group: 'live', code: 'MM',  color: 'var(--badge-neutral-text)',grp: 'wh' },
+  // LEDGERS
+  { id: 'balance',        label: 'Client Balance',   icon: '⊜', group: 'live', code: null,  color: null,                      grp: 'ledger' },
+  { id: 'clientLedger',   label: 'Client Ledger',    icon: '☷', group: 'live', code: 'STM', color: 'var(--badge-green-text)', grp: 'ledger' },
+  { id: 'supplierLedger', label: 'Supplier Ledger',  icon: '☷', group: 'live', code: null,  color: null,                      grp: 'ledger' },
+  // SYSTEM
+  { id: 'wfirma',         label: 'wFirma Sync',      icon: '↻', group: 'live', code: null,  color: null,                      grp: 'system' },
+  // EJ EXTENSIONS — existing capabilities absent from the HTML; preserved (never deleted), relocated here.
+  { id: 'master',         label: 'Master Data',      icon: '⊟', group: 'navigate', code: null, color: null,                   grp: 'ej' },
+  { id: 'audit',          label: 'Audit Trail',      icon: '◉', group: 'live', code: 'LOG', color: 'var(--badge-purple-text)',grp: 'ej' },
 ];
 
 // ── Shared chip styles ─────────────────────────────────────────────────────────
@@ -865,19 +872,20 @@ function _AccKpi({ label }) {
     </div>
   );
 }
-function _AccDocPanel({ title, rows }) {
+function _AccDocPanel({ title, rows, onJump }) {
   return (
     <div style={{ flex: 1, minWidth: 240, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
       <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{title} <span style={{ fontWeight: 400, color: 'var(--text-3)', fontSize: 10 }}>· Backend Pending</span></div>
       {rows.map((r, i) => (
-        <div key={r} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', borderBottom: i < rows.length - 1 ? '1px solid var(--border-subtle)' : 'none', fontSize: 12, color: 'var(--text-2)' }}>
-          <span>{r}</span><span style={{ color: 'var(--text-3)', fontFamily: 'monospace' }}>—</span>
-        </div>
+        <button key={r.label} data-testid={`acc-ov-jump-${r.to}`} onClick={() => onJump && onJump(r.to)}
+          style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 14px', borderBottom: i < rows.length - 1 ? '1px solid var(--border-subtle)' : 'none', fontSize: 12, color: 'var(--text-2)', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}>
+          <span>{r.label}</span><span style={{ color: 'var(--text-3)', fontFamily: 'monospace' }}>— ›</span>
+        </button>
       ))}
     </div>
   );
 }
-function AccountingOverview() {
+function AccountingOverview({ onJump }) {
   const mapStep = (code, name) => (
     <div style={{ flex: 1, minWidth: 110, background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 12px', textAlign: 'center' }}>
       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.04em' }}>{code}</div>
@@ -898,8 +906,8 @@ function AccountingOverview() {
         <_AccKpi label="Last wFirma Sync" />
       </div>
       <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-        <_AccDocPanel title="Sales documents" rows={['Proforma issued', 'Invoices issued', 'Credit notes', 'WZ releases']} />
-        <_AccDocPanel title="Warehouse documents" rows={['PZ (external receipt)', 'PW (internal receipt)', 'RW (internal release)', 'MM (transfer)']} />
+        <_AccDocPanel title="Sales documents" onJump={onJump} rows={[{ label: 'Proforma issued', to: 'pi' }, { label: 'Invoices issued', to: 'inv' }, { label: 'Credit notes', to: 'cn' }, { label: 'WZ releases', to: 'wz' }]} />
+        <_AccDocPanel title="Warehouse documents" onJump={onJump} rows={[{ label: 'PZ (external receipt)', to: 'pz' }, { label: 'PW (internal receipt)', to: 'pw' }, { label: 'RW (internal release)', to: 'rw' }, { label: 'MM (transfer)', to: 'mm' }]} />
       </div>
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: 16 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 10 }}>Document map <span style={{ fontWeight: 400, color: 'var(--text-3)' }}>— how sales &amp; warehouse documents connect</span></div>
@@ -915,77 +923,148 @@ function AccountingOverview() {
   );
 }
 
+// ── Document-type section components (FULL HTML PORT) ──────────────────────────
+// Render the wireframe grid/table structure. GET /accounting/{type}, /ledger/*,
+// POST /wfirma/sync/{type} do NOT exist yet → honest Backend Pending body
+// (UI-before-backend: complete UI rendered; only execution is pending; no fabricated data).
+function _AccGridHeader({ title, code, color, actions }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+      <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--text)', fontFamily: '"DM Serif Display", serif' }}>{title}</h2>
+      {code && <span style={{ fontSize: 9, fontWeight: 700, fontFamily: 'monospace', color: color || 'var(--accent)', background: 'var(--accent-subtle)', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 6px' }}>{code}</span>}
+      <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Source: wFirma</span>
+      <div style={{ flex: 1 }} />
+      {(actions || []).map(a => (
+        <button key={a} disabled title="Backend Pending — endpoint not yet available" style={{ padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11, fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 }}>{a}</button>
+      ))}
+    </div>
+  );
+}
+function _AccPendingTable({ cols, note }) {
+  return (
+    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+          {cols.map((c, i) => <th key={c || i} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{c}</th>)}
+        </tr></thead>
+        <tbody><tr><td colSpan={cols.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>— · Backend Pending{note ? ` · ${note}` : ''}</td></tr></tbody>
+      </table>
+    </div>
+  );
+}
+const _ACC_DOC_TITLES = {
+  inv: { t: 'Invoice', c: 'INV', color: 'var(--badge-green-text)', wh: false },
+  cn:  { t: 'Credit Note', c: 'CN', color: 'var(--badge-amber-text)', wh: false },
+  wz:  { t: 'WZ — Outbound', c: 'WZ', color: 'var(--badge-purple-text)', wh: true },
+  pw:  { t: 'PW — Internal in', c: 'PW', color: 'var(--badge-blue-text)', wh: true },
+  rw:  { t: 'RW — Internal out', c: 'RW', color: 'var(--badge-red-text)', wh: true },
+  mm:  { t: 'MM — Transfer', c: 'MM', color: 'var(--badge-neutral-text)', wh: true },
+};
+function AccDocGrid({ sectionId }) {
+  const m = _ACC_DOC_TITLES[sectionId] || { t: sectionId, c: null, wh: false };
+  const cols = m.wh
+    ? ['Number', 'Date', 'Party', 'Items', 'Linked', 'State', 'wFirma', 'View']
+    : ['Number', 'Date', 'Party', 'Net', 'Tax', 'Gross', 'Cur', 'State', 'wFirma', 'View'];
+  return (
+    <div data-testid={`acc-grid-${sectionId}`} style={{ padding: '20px 28px' }}>
+      <_AccGridHeader title={m.t} code={m.c} color={m.color} actions={['↻ Sync', '↓ Export', `+ New ${m.c || ''}`]} />
+      <_AccPendingTable cols={cols} note="GET /api/v1/accounting/{type}" />
+    </div>
+  );
+}
+function AccClientBalance() {
+  return (
+    <div data-testid="acc-balance" style={{ padding: '20px 28px' }}>
+      <_AccGridHeader title="Client Balance" actions={['↻ Refresh', '↓ Export']} />
+      <_AccPendingTable cols={['Client', 'Open', 'Overdue', 'Last 30d', 'YTD', 'Cur', 'State']} note="GET /api/v1/ledger/clients" />
+    </div>
+  );
+}
+function AccSupplierLedger() {
+  return (
+    <div data-testid="acc-supplier-ledger" style={{ padding: '20px 28px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--text)', fontFamily: '"DM Serif Display", serif' }}>Supplier Ledger</h2>
+        <select data-testid="acc-supplier-select" disabled style={{ fontSize: 11, padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)' }}><option>All suppliers</option></select>
+        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Source: wFirma</span>
+        <div style={{ flex: 1 }} />
+        <button disabled title="Backend Pending" style={{ padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11, fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 }}>↓ Export</button>
+      </div>
+      <_AccPendingTable cols={['Date', 'Supplier', 'Reference', 'Description', 'Debit', 'Credit', 'Balance']} note="GET /api/v1/ledger/suppliers" />
+    </div>
+  );
+}
+function AccWfirmaSyncInline({ onNav }) {
+  const kpis = [['Synced types', '1 pending'], ['Last full sync', 'auto every 6h'], ['Failed events', 'last 24h']];
+  return (
+    <div data-testid="acc-wfirma-sync" style={{ padding: '20px 28px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--text)', fontFamily: '"DM Serif Display", serif' }}>wFirma Sync</h2>
+        <div style={{ flex: 1 }} />
+        <button disabled title="Backend Pending — POST /api/v1/wfirma/sync/{type}" style={{ padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11, fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 }}>↻ Sync all now</button>
+        <button data-testid="acc-wfirma-open-setup" onClick={() => onNav && onNav('wfirma_setup')} title="EJ Extension — open the full wFirma setup" style={{ padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Open full wFirma setup →</button>
+      </div>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+        {kpis.map(([l, n]) => (
+          <div key={l} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 16px', flex: 1, minWidth: 150 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{l}</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-3)', marginTop: 6, fontFamily: '"DM Serif Display", serif' }}>—</div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>Backend Pending · {n}</div>
+          </div>
+        ))}
+      </div>
+      <_AccPendingTable cols={['Local type', 'Code', 'wFirma endpoint', 'Count', 'State', 'Last sync', '']} note="POST /api/v1/wfirma/sync/{type}" />
+    </div>
+  );
+}
+
 function AccountingHub({ onNav }) {
   const [section, setSection] = React.useState('overview');
 
   const handleSection = (id) => {
     const conf = ACC_SECTIONS.find(s => s.id === id);
     if (!conf) return;
-    if (conf.group === 'gated') return; // disabled
-    if (conf.group === 'navigate') {
-      // Navigate to the canonical page — do not mount a duplicate
-      if (id === 'sync'   && onNav) { onNav('wfirma_setup'); return; }
-      if (id === 'master' && onNav) { onNav('master');        return; }
-    }
+    // EJ Extension that lives on its own canonical page — navigate, do not duplicate.
+    if (conf.group === 'navigate' && id === 'master' && onNav) { onNav('master'); return; }
     setSection(id);
   };
 
-  const liveSections     = ACC_SECTIONS.filter(s => ['live','navigate'].includes(s.group));
-  const gatedSections    = ACC_SECTIONS.filter(s => s.group === 'gated');
-
-  const activeConf = ACC_SECTIONS.find(s => s.id === section);
+  const railGroups = [
+    { label: null,                  ids: ['overview'] },
+    { label: 'Sales Documents',     ids: ['pi', 'inv', 'cn'] },
+    { label: 'Warehouse Documents', ids: ['wz', 'pz', 'pw', 'rw', 'mm'] },
+    { label: 'Ledgers',             ids: ['balance', 'clientLedger', 'supplierLedger'] },
+    { label: 'System',              ids: ['wfirma'] },
+    { label: 'EJ Extensions',       ids: ['master', 'audit'] },
+  ];
 
   return (
-    <div
-      data-testid="accounting-hub-root"
-      style={{ flex: 1, display: 'flex', overflow: 'hidden' }}
-    >
-      {/* Left rail */}
-      <div style={{
-        width: 224, flexShrink: 0, background: 'var(--bg-subtle)',
-        borderRight: '1px solid var(--border)', padding: '12px 0',
-        overflowY: 'auto',
-      }}>
-        <AccRailGroup
-          label="Wave 3 — Live"
-          sections={liveSections}
-          active={section}
-          onClick={handleSection}
-        />
-        <AccRailGroup
-          label="Wave 4 — Doc register"
-          sections={gatedSections}
-          active={section}
-          onClick={handleSection}
-        />
-
+    <div data-testid="accounting-hub-root" style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      {/* Left rail — document-type organization (HTML) + preserved EJ Extensions */}
+      <div style={{ width: 224, flexShrink: 0, background: 'var(--bg-subtle)', borderRight: '1px solid var(--border)', padding: '12px 0', overflowY: 'auto' }}>
+        {railGroups.map(g => (
+          <AccRailGroup key={g.label || 'top'} label={g.label}
+            sections={ACC_SECTIONS.filter(s => g.ids.includes(s.id))}
+            active={section} onClick={handleSection} />
+        ))}
         {/* Source note */}
-        <div style={{
-          margin: '16px 14px', padding: 10,
-          background: 'var(--card)', border: '1px solid var(--accent-border)', borderRadius: 6,
-        }}>
-          <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>
-            Source
-          </div>
-          <div style={{ fontSize: 10.5, color: 'var(--text-2)', lineHeight: 1.4 }}>
-            All data mapped from <strong>EJ Dashboard</strong> — purchase from batch register,
-            sales from proforma authority, ledger from wFirma via Client Ledger.
-          </div>
+        <div style={{ margin: '16px 14px', padding: 10, background: 'var(--card)', border: '1px solid var(--accent-border)', borderRadius: 6 }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Source</div>
+          <div style={{ fontSize: 10.5, color: 'var(--text-2)', lineHeight: 1.4 }}>All documents and balances are mapped <strong>from wFirma</strong> · last sync via wFirma Sync.</div>
         </div>
       </div>
 
       {/* Main area */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
-        {section === 'overview' && <AccountingOverview />}
-        {section === 'purchase' && <PurchaseLedgerTab />}
-        {section === 'proforma' && <SalesProformaTab />}
-        {section === 'ledger'   && <ClientLedgerTab />}
-        {section === 'sync'     && <WfirmaSyncTab onNav={onNav} />}
-        {section === 'master'   && <MasterDataTab onNav={onNav} />}
-        {section === 'audit'    && <AuditTrailTab />}
-        {gatedSections.some(s => s.id === section) && (
-          <GatedDocTab conf={activeConf} />
-        )}
+        {section === 'overview'       && <AccountingOverview onJump={setSection} />}
+        {section === 'pi'             && <SalesProformaTab />}
+        {section === 'pz'             && <PurchaseLedgerTab />}
+        {section === 'clientLedger'   && <ClientLedgerTab />}
+        {['inv', 'cn', 'wz', 'pw', 'rw', 'mm'].includes(section) && <AccDocGrid sectionId={section} />}
+        {section === 'balance'        && <AccClientBalance />}
+        {section === 'supplierLedger' && <AccSupplierLedger />}
+        {section === 'wfirma'         && <AccWfirmaSyncInline onNav={onNav} />}
+        {section === 'audit'          && <AuditTrailTab />}
       </div>
     </div>
   );
