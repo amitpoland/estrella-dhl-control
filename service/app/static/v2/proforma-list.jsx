@@ -491,7 +491,7 @@ function ProformaCrossBatchLanding({ onDrill }) {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-                <th style={{ padding: '12px 12px', width: 36 }}><input type="checkbox" checked={allSel} onChange={toggleAll} data-testid="pf-landing-select-all" style={{ cursor: 'pointer' }} /></th>
+                <th style={{ padding: '12px 12px', width: 36 }}><input type="checkbox" checked={allSel} onChange={toggleAll} data-testid="pf-landing-select-all" title="Select all" ref={el => { if (el) el.indeterminate = selRows.length > 0 && !allSel; }} style={{ cursor: 'pointer' }} /></th>
                 {['Draft No', 'Customer', 'Shipment', 'Items', 'Total', 'Match', 'Status'].map(h => (
                   <th key={h} style={{ padding: '12px 14px', textAlign: 'left', fontSize: 10.5, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{h}</th>
                 ))}
