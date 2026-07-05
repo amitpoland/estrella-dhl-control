@@ -350,3 +350,43 @@ IDs; reused endpoint returns a real `total` at the API layer (reuses the same
 `test_pipeline_summary_panel_preserved` (asserts against an HTML shell, not this
 file). Full click-through blocked in the verify clone by session login; not
 fabricated. Commit SHA below.
+
+## Item 9 — Proforma Print (list toolbar) — DONE (REUSE-ONLY, read-only) (2026-07-05)
+
+Operator ruling: REUSE-ONLY / read-only — no new print engine, no duplicate PDF
+route, no wFirma write, no invoice creation, no bulk print. The Proforma **list**
+toolbar Print button (`pf-tb-print`) was disabled with a stale "no print
+endpoint" reason; it now routes a **single selected draft** to the EXISTING
+draft-detail Print/Preview/Download flow via `onDrill(selRow)` — the identical
+pattern the list's Push/Send buttons already use. **`pz-api.js` untouched.**
+
+**Authority analysis (§17/§20):** the print authority already exists in
+`proforma-detail.jsx` — `handleDownloadPdf` → `GET /api/v1/proforma/{batch}/{cn}/
+document.pdf` (`routes_proforma.py:2862`) for a posted proforma, plus the
+client-rendered Print Preview modal (`setPreviewDocType` + `setShowPreview`) for
+any draft. The list Print does NOT introduce a second print path; it navigates to
+that existing detail flow (which honestly gates Download-PDF on
+`wfirma_proforma_id` and always offers Preview — see Item 13). No new endpoint,
+document authority, or wFirma download dependency.
+
+- **Single selection** → button enabled, `onDrill(selRow)` opens the draft detail
+  where the operator Prints / Previews / Downloads (existing flow). Title:
+  "Open the selected draft to Print / Preview / Download its PDF (existing detail
+  flow)".
+- **Multi-select** → disabled, "Bulk print needs existing bulk authority (none
+  yet)" — Backend Pending (no bulk print authority exists; mirrors Push/Send bulk
+  gating).
+- **Zero selection** → disabled, "Select exactly one draft to print".
+- Button stays visible per wireframe; selection count preserved in the label.
+
+**Verification:** exact file transforms clean under `@babel/preset-react`; served
+200 with `disabled={!selRow}` + `onDrill(selRow)` + the new honest title; stale
+"no print endpoint" string gone. Proforma-list + V2 structural pins green
+(`test_proforma_drilldown_contract`, `test_proforma_search_ui`,
+`test_v2_proforma_list_retry_btn`, `test_atlas_v2_sprint1`, `test_v2_no_spread_rest`,
+`test_v2_design_baseline` — 170 passed). `test_toolbar_authority_map` (detail
+Print) unaffected — it reads `proforma-detail.jsx`, not the list. Golden/smoke
+unaffected (frontend-only). One environmental setup error
+(`test_v2_prod_unauth_redirects_to_login` — prod-mode fixture needs `API_KEY`
+env; unrelated). Full click-through blocked in the verify clone by session login;
+not fabricated. Commit SHA below.

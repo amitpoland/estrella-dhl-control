@@ -392,7 +392,8 @@ function ImportPackingListModal({ batchId, drafts, onClose, onImported }) {
 // no new endpoint, no write-path change. Write toolbar actions (Push/Send) route
 // to the existing confirmed per-draft flow (protected-financial-write — not
 // re-triggered here). Batch-context actions (Import/Create) require a batch and
-// are honestly gated with reason (Lesson M). Print is backend-GATED (no endpoint).
+// are honestly gated with reason (Lesson M). Print (single selection) reuses the
+// existing draft-detail Print/Preview/Download flow via onDrill — no new endpoint.
 function _pfBucket(state) {
   const s = String(state || '').toLowerCase();
   if (s.includes('extract')) return 'extracting';
@@ -463,7 +464,9 @@ function ProformaCrossBatchLanding({ onDrill }) {
           <button data-testid="pf-tb-send" disabled={!selRow} onClick={() => selRow && onDrill && onDrill(selRow)}
             title={selRow ? 'Send the selected draft (opens its confirmed send)' : selRows.length > 1 ? 'Bulk send needs operator approval (new financial write)' : 'Select exactly one draft to send'}
             style={selRow ? enWrite : disWrite}>✉ Send{selRows.length ? ` (${selRows.length})` : ''}</button>
-          <button data-testid="pf-tb-print" disabled title="Print — backend-gated (no print endpoint)" style={disWrite}>⎙ Print{selRows.length ? ` (${selRows.length})` : ''}</button>
+          <button data-testid="pf-tb-print" disabled={!selRow} onClick={() => selRow && onDrill && onDrill(selRow)}
+            title={selRow ? 'Open the selected draft to Print / Preview / Download its PDF (existing detail flow)' : selRows.length > 1 ? 'Bulk print needs existing bulk authority (none yet)' : 'Select exactly one draft to print'}
+            style={selRow ? enWrite : disWrite}>⎙ Print{selRows.length ? ` (${selRows.length})` : ''}</button>
         </div>
       </div>
 
