@@ -82,6 +82,27 @@ no wFirma write; no schema change). Commit `eef901eb`. Golden 160/160; smoke 63.
   distinct batch id → distinct URL. Reused endpoint auth = `get_current_user`
   (session) — write path is operator-authenticated server-side.
 
+## Item 1 — Accounting Overview KPIs — SPLIT (2026-07-05)
+
+Operator ruling: no `/accounting/summary` engine; reuse existing endpoints only.
+
+**Item 1A — DONE.** Commit `75f096eb`. Overview KPIs wired to existing endpoints:
+- **Sales Receivable** — CURRENCY-AWARE via `GET /api/v1/ledgers/clients`. Pure
+  reducer `accReceivableByCurrency` sums outstanding **per currency** and NEVER
+  across currencies; mixed currencies render separately, labelled "Per currency —
+  not summed". Reducer unit test (`service/tests/js/test_acc_receivable_reducer.mjs`,
+  `node --test`, 6/6) pins the no-cross-currency-sum rule; in-browser proof
+  (USD+EUR → 2 entries, no combined total).
+- **Last wFirma Sync** — reuses `GET /api/v1/analytics/phase-a`
+  `wfirma_sync.last_exported_at`. No new endpoint.
+
+**Item 1B — BACKEND PENDING (honest labels):**
+
+| Ref | KPI | Label shown | Blocker |
+|---|---|---|---|
+| I1-BP1 | Sales Overdue (due-date) | "Backend Pending — due-date authority pending" | due-date aging blocked by PHASE10A.5 wFirma payment-state probe ([[I4-BP1]]); invoice-age never presented as due-date |
+| I1-BP2 | Supplier Payable | "Backend Pending — supplier ledger authority pending" | no supplier-ledger / AP authority exists (Item 5 unbuilt); source = undocumented wFirma expenses/wydatki reads (SVT-class) |
+
 ## Sandbox Verification Tasks (permanent — NO execution without explicit operator approval)
 
 These probe UNDOCUMENTED wFirma capabilities against the sandbox company
