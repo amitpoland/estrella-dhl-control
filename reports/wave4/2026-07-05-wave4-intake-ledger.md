@@ -160,3 +160,44 @@ any sandbox request until the operator explicitly approves it.
 | **Environment** | `test.api2.wfirma.pl` sandbox company ONLY. Never production |
 | **Gating OIs** | OI-1 (MM API), OI-3 (WZ add vs invoice-auto-emit) — see `phase-c-master/OPEN_ITEMS.md` |
 | **Status** | RECORDED — awaiting explicit operator approval to execute |
+
+## Item 11 — Source & Extraction tab — DONE (REUSE-ONLY) (2026-07-05)
+
+Operator ruling: REUSE-ONLY — no new authority, DB, parser, matcher, or
+duplicate service; no financial/inventory/accounting/wFirma write. The Proforma
+Detail **Source & Extraction** `Backend Pending` placeholder is replaced with a
+live **advisory** read. Feature commit `dd36cbf7`. Golden 160/160; smoke 63;
+3 new route tests.
+
+**New thin endpoint** `GET /api/v1/proforma/draft/{draft_id}/extraction`
+(`routes_proforma.py`, `require_api_key`, read-only) — a composition over
+EXISTING authorities, joined by `product_code` within the draft's `batch_id`:
+
+- **Proforma draft** — `_draft_to_full(d).editable_lines` (the authority record).
+- **Customer Master** — `_resolve_customer` + `_enrich_customer_resolution_with_email`
+  (the SAME block the draft GET returns; local `wfirma_customers` mirror only).
+- **Product Master** — `reservation_db.list_product_masters` (product_code → matched).
+- **Import/Packing** — `packing_db.get_packing_lines_for_batch` (`extracted_confidence`,
+  `requires_manual_review`) + `get_packing_documents_for_batch` (source docs).
+
+**Advisory (Lesson N):** the payload is `advisory:true` and carries no
+`blocking_reasons`/`blockers` — nothing here gates Approve/Post/Convert. Every
+downstream read is wrapped; a partial batch degrades to advisory nulls and the
+endpoint never 500s (404 only when the draft id is absent).
+
+- Frontend `SourceExtractionTab` (`proforma-detail.jsx`) fetches via the existing
+  `EstrellaShared.apiFetch` pattern (same as `disclose-post`); **`pz-api.js` untouched.**
+  Renders packing-list source, per-row confidence, Customer/Product Master match,
+  and an `N unmatched` advisory badge. `data-testid` on panel + rows.
+- **Live proof** (verify server, real draft #1 / `BATCH_PR3B`): tab click →
+  `GET …/draft/1/extraction → 200` → 4 source docs (basenames, no path leak) +
+  11 rows + `Unmatched — needs operator mapping`; console clean; 404 on a
+  nonexistent draft; confidence surfaced on draft #2; nulls (no 500) on drafts
+  with no packing data.
+
+### Working-tree note (not Item 11 scope)
+
+An unrelated uncommitted deletion of `pz-api.uploadPackingList` sat in the tree
+(`service/app/static/v2/pz-api.js`, −21 lines) — it would regress shipped Item 8
+(`eef901eb`). It was **excluded** from this commit and left untouched for the
+operator to reconcile; Item 11 deliberately routes around `pz-api.js`.
