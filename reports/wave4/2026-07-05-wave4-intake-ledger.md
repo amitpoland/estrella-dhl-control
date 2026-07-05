@@ -449,3 +449,60 @@ confirmation, (b) defines partial-failure/aggregation semantics, (c) adds a bulk
 idempotency key, (d) respects the CP4 `wfirma_create_proforma_allowed` gate.
 Disposition (GATE 4): SCHEDULED — pending operator approval. **STOP for
 implementation.** No React change made (current gating already correct).
+
+## Wave 4 CLOSEOUT & DECISION LEDGER (2026-07-05)
+
+Every Wave 4 intake item is now in exactly one terminal state. No safe,
+documented, read-only implementation item remains — all remaining work is blocked
+on an operator decision, a new authority, an undocumented-wFirma sandbox probe, or
+a CP4 fiscal-write gate. Each remaining UI is already visible with honest
+`Backend Pending` / `Authority Gap`.
+
+### 1. DONE (safe reuse shipped)
+| Item | What | Commit |
+|---|---|---|
+| 1A | Overview KPIs: Sales Receivable (per-currency) + Last wFirma Sync | `75f096eb` |
+| 2  | Overview doc-count panels: Proforma count wired; rest honest pending | `ca30ed55` |
+| 3A | Invoice + Credit Note grids (wFirma `invoices/find`) | `1094a9f9` |
+| 4  | Client Balance roster (Open/YTD/Overdue-age) | `4e0b58b3` |
+| 6  | Client Ledger — already reused (not Wave-4 work) | — |
+| 7  | wFirma Sync PULL-ONLY slice (payments-pull + per-source cards) | `6835c642` |
+| 8  | Import Packing List wizard (reuse `packing/{batch}/upload`) | `eef901eb` |
+| 9  | Proforma list Print → existing detail flow | `4bd1dbe4` |
+| 11 | Proforma Detail → Source & Extraction | `dd36cbf7` |
+| 12 | Proforma Detail → Logistics | `8f708047` |
+| 13 | Proforma Detail → Documents | `17ac9299` |
+
+### 2. STOP-gated (each keeps its UI visible + honest reason; no code)
+| Item / Ref | Control | State | Reason |
+|---|---|---|---|
+| **10** | bulk Push / Send | **STOP — operator approval required** | Class B: new bulk endpoint over existing per-draft write; partial-failure + bulk idempotency undesigned; would bypass per-draft confirm-token. GATE 4 SCHEDULED. |
+| **5** | Supplier Ledger + Supplier Payable KPI (I1-BP2) | **STOP — new authority required** | No Supplier Master / AP authority exists; source (wFirma `expenses`/`wydatki`) is undocumented → also SVT-class. |
+| **3B** | WZ / PW / RW / MM grids | **STOP — undocumented wFirma / sandbox required** | No documented list/find for warehouse docs; SVT-1 RECORDED, awaiting operator approval to probe sandbox. |
+| I1-BP1 / I4-BP1 | Sales Overdue (due-date) + Client Balance due-date Overdue | **STOP — undocumented wFirma / sandbox required** | Blocked by PHASE10A.5 payment-state probe (`<paymentdate>`/`<paymentstate>`); invoice-age shown + disclosed, never relabelled. |
+| I4-BP2 | Client Balance Last 30d | **Backend Pending already rendered** | No authority emits a rolling-window receipts figure; would need a new windowed aggregator — not invented. |
+| I7-BP1 | Stock-pull | **Backend Pending already rendered** | `get_stock` is read-only but the sync processor has no persistence target (OI-10). |
+| **CP4** I7-CP4-1..4 | Customer / Product / Goods-edit / Invoice·Proforma push | **CP4 — fiscal write gated** | Each behind its `wfirma_create_*_allowed` flag; separate explicit operator approval each. |
+
+### 3. Operator decisions required
+1. **Item 10** — approve (or decline) a bulk Push/Send orchestration endpoint (with the 4 design conditions), or leave disabled.
+2. **Item 3B / SVT-1** — approve the sandbox probe of WZ/PW/RW/MM `find` on `test.api2.wfirma.pl`.
+3. **Item 5** — approve creating a Supplier Master / AP authority (+ SVT-2 probe of wFirma `expenses`/`wydatki`) or defer.
+4. **Due-date aging (I1-BP1/I4-BP1)** — approve the PHASE10A.5 payment-state field probe.
+5. **CP4 pushes (I7-CP4-1..4)** — approve per-flag as needed.
+
+### 4. Recommended next operator action
+Approve **SVT-1 (Item 3B warehouse-doc probe)** first — it is a read-only sandbox
+probe (lowest risk) that either unblocks four grids like Item 3A or permanently
+confirms them as Authority Gap. Defer the financial-write decisions (10, 5, CP4)
+until the read surface is fully closed.
+
+### 5. Is Wave 4 safe implementation complete?
+**YES.** All safe, documented, read-only reuse is shipped (items 1A, 2, 3A, 4, 7,
+8, 9, 11, 12, 13). Verified at closeout: no remaining safe read-only item; no
+hidden/removed wireframe control (every gated control stays visible with a
+reason); no fabricated data (counts/logistics/documents show `—`/Backend Pending
+where unproven); no duplicate authority; no accidental CP4 write path (all pushes
+flag-gated, pull-only slice proven no-push); operator `pz-api.js` duplicate-removal
+WIP remains untouched (` M`, unstaged). Everything left is a governance decision,
+not an engineering gap.
