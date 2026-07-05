@@ -19,6 +19,9 @@ const NAV_TREE = [
   { id: 'proforma',  label: 'Pro Forma', icon: '▤' },
   { id: 'documents', label: 'Documents', icon: '▭' },
   { id: 'accounting', label: 'Accounting', icon: '⊞', badge: 'NEW' },
+  // Supplier invoice OCR review — foreign-invoice extraction drafts. Draft
+  // store only; no wFirma write (expenses/add unverified).
+  { id: 'supplier_invoice_review', label: 'Supplier Invoices', icon: '🧾', badge: 'NEW' },
   // Phase B FOLD (2026-07-03, PROJECT_STATE DECISIONS "Phase B FOLD"): the
   // g_inventory NAV group (Stock Hub + Move Location) is COLLAPSED back to a
   // single flat Inventory entry — Move Location was folded into the Inventory

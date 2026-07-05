@@ -130,6 +130,27 @@
       return _get(`${BASE}/ledgers/clients${qs}`);
     },
 
+    // POST /api/v1/packing/{batch_id}/upload (multipart — EXISTING authority).
+    // Wave 4 Item 8: reuse-only. Parses the packing file, upserts packing lines,
+    // and idempotently creates/syncs proforma drafts by (batch_id, client_name).
+    // NO new endpoint, no wFirma write. batchId MUST be an explicit real batch —
+    // never auto-picked. No JSON headers (browser sets the multipart boundary).
+    // Returns { ok, data: { batch_id, file, total_rows, matched_count,
+    //           unmatched_count, inserted_count, suggested_client_name, ... } }
+    uploadPackingList: async (batchId, file, forceReextract) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      const qs = forceReextract ? '?force_reextract=true' : '';
+      try {
+        const data = await _apiFetch(
+          `${BASE}/packing/${encodeURIComponent(batchId)}/upload${qs}`,
+          { method: 'POST', body: fd });
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, status: err.status || 0, error: err.message || String(err), type: err.type };
+      }
+    },
+
     // GET /api/v1/proforma/drafts/{batch_id}
     // Returns { ok, data: { ok, batch_id, drafts[], count } }
     getProformaDrafts: (batchId) =>
@@ -736,6 +757,47 @@
         expected_updated_at: updatedAt || '',
         apply: applyList || [],
       }),
+
+    // ── Supplier Invoice OCR — extraction drafts + operator review ──────────
+
+    // POST /api/v1/supplier-invoice-ocr/upload (multipart). No JSON headers —
+    // the browser sets the multipart boundary. 422/503 bodies still carry a
+    // draft_id (file + row are persisted even when extraction fails).
+    uploadSupplierInvoice: async (file) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        const data = await _apiFetch(`${BASE}/supplier-invoice-ocr/upload`, {
+          method: 'POST',
+          body: fd,
+        });
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, status: err.status || 0, error: err.message || String(err), type: err.type };
+      }
+    },
+
+    // GET /api/v1/supplier-invoice-ocr/drafts?status=&limit=&offset=
+    listSupplierInvoiceDrafts: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/supplier-invoice-ocr/drafts${qs}`);
+    },
+
+    // GET /api/v1/supplier-invoice-ocr/drafts/{draft_id}
+    getSupplierInvoiceDraft: (draftId) =>
+      _get(`${BASE}/supplier-invoice-ocr/drafts/${encodeURIComponent(draftId)}`),
+
+    // POST /api/v1/supplier-invoice-ocr/drafts/{draft_id}/confirm
+    // _post (NOT _postM): operator identity is derived SERVER-SIDE from the
+    // session (require_role) — an X-Operator header would be ignored.
+    confirmSupplierInvoiceDraft: (draftId, confirmedFields) =>
+      _post(`${BASE}/supplier-invoice-ocr/drafts/${encodeURIComponent(draftId)}/confirm`, {
+        confirmed_fields: confirmedFields,
+      }),
+
+    // POST /api/v1/supplier-invoice-ocr/drafts/{draft_id}/reject
+    rejectSupplierInvoiceDraft: (draftId) =>
+      _post(`${BASE}/supplier-invoice-ocr/drafts/${encodeURIComponent(draftId)}/reject`, {}),
 
     // ── Inventory: Sample Out register — Wave-3 U-1 ────────────────────────
     // GET /api/v1/inventory/samples?status=&recipient=&limit=

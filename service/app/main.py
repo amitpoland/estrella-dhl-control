@@ -100,6 +100,7 @@ from .api.routes_master_jewelry import (
     warehouses_router  as mj_warehouses_router,
 )
 from .api.routes_finance_postings import router as finance_postings_router
+from .api.routes_supplier_invoice_ocr import router as supplier_invoice_ocr_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -113,6 +114,7 @@ from .services.correction_registry import init_correction_registry
 from .services.intake_lineage     import init_intake_lineage
 from .services.proforma_service_charges_db import init as init_proforma_service_charges
 from .services.tracking_db  import init_tracking_db  # Phase 7.1: enables /search?q=<AWB>
+from .services.supplier_invoice_db import init_db as init_supplier_invoice_db
 # Governance constants — import at module level so assert_no_overlap() runs at startup.
 # If any action appears in both SAFE_AUTONOMOUS and HUMAN_APPROVAL_REQUIRED sets, this
 # raises AssertionError immediately, preventing the service from starting with a
@@ -180,6 +182,7 @@ async def lifespan(app: FastAPI):
     init_intake_lineage(_root / "intake_lineage.db")
     init_proforma_service_charges(_root / "proforma_links.db")
     init_tracking_db(_root  / "tracking_events.db")  # Phase 7.1: AWB search coverage
+    init_supplier_invoice_db(_root / "supplier_invoice_ocr.sqlite")  # Supplier invoice OCR review drafts
     # Product Master canonical-identity registry (PR-1 Foundation).
     # Write-only at this stage — store_invoice_lines projects every
     # minted product_code into product_master. Consumers are NOT
@@ -547,6 +550,7 @@ app.include_router(mj_warehouses_router)             # Phase 3: warehouses maste
 app.include_router(box_types_router)                 # Phase D: box_types master (WF4.5 / Path-DOC outbound label packaging)
 app.include_router(finance_postings_router)         # Phase 6F.3: read-only breakdown endpoint (no writes, no posting/settlement/FX/wFirma coupling; init_db lazy-on-call)
 app.include_router(settings_router)                # Phase 7: company profile (seller identity + bank details)
+app.include_router(supplier_invoice_ocr_router)    # Supplier invoice OCR: extraction drafts + operator review (no wFirma write)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────

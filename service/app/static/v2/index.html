@@ -318,6 +318,7 @@ window.EstrellaShared = {
 <script type="text/babel" src="link-as-sales-backfill.jsx"></script>
 <script type="text/babel" src="proforma-list.jsx"></script>
 <script type="text/babel" src="proforma-detail.jsx"></script>
+<script type="text/babel" src="supplier-invoice-review.jsx"></script>
 <script type="text/babel" src="global-search.jsx"></script>
 <!-- Sprint 31: live DHL cards composed by DhlCustomsPage (window.DhlScanStatus / window.DhlDailySummary). -->
 <script type="text/babel" src="dhl-scan-status.jsx"></script>
@@ -725,6 +726,16 @@ function App() {
             </>
           )}
 
+          {/* Supplier Invoice OCR — foreign-invoice extraction drafts + operator
+              review. Draft store only: confirmed values are the operator's
+              reference for booking the wFirma expense MANUALLY (expenses/add
+              unverified — docs/WFIRMA_API_VALIDATED_MAP.md). */}
+          {!viewerDoc && page === 'supplier_invoice_review' && (
+            <>
+              <PageHeader title="Supplier Invoices" subtitle="Foreign supplier invoice OCR · upload → AI extraction → operator review → confirm. No wFirma write — confirmed drafts are the reference for manual expense booking." />
+              <SupplierInvoiceReviewPage />
+            </>
+          )}
 
           {/* Pro Forma — Screen A (list) */}
           {!viewerDoc && page === 'proforma' && (
