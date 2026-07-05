@@ -817,3 +817,31 @@ acceptance is the operator's word after the ledger is clean.
 | **Accounting** | AccountingHub (6-tab) | **YES** — current = 6 live tabs, **no KSeF panel, no KPO tracker**; wireframe IA = 6 KPI tiles + KSeF panel + KPO tracker (operator judges) | **Decision artifact** `reports/wave3/cp3/accounting-authority-comparison.*`; HOLD Accounting only |
 
 **Dead duplicates flagged for retirement (tracked tasks, not silent delete):** `dashboard-page.jsx`; all Page components in `pages.jsx` + `pages-v2.jsx` (15 components, every one `wired=0` in index.html).
+
+---
+
+## Accounting authority correction — FULL HTML PORT (operator ruling, 2026-07-05)
+
+**The term "Accounting = HYBRID" is RETIRED.** Evidence showed it led to an
+engineering-judgment Overview being built as if it were authority. The prior
+AccountingHub Overview (commit `7ac0201a`) is **NOT accepted as authority** — it
+may be reused **only where it maps 1:1 to the pinned HTML wireframe** (f7dd5e38);
+everything else is discarded.
+
+**New rule (identical to Proforma):** Accounting is a **FULL HTML PORT**. The
+uploaded HTML wireframe is the implementation specification (visual authority);
+existing React is reusable implementation material only; existing backend remains
+the business authority. No engineering-judgment UI.
+
+- **Compliance panels** (KSeF / VAT / JPK / KPO) that exist in the HTML MUST appear
+  in React — never removed, replaced, or simplified. If an endpoint exists, connect
+  it; if not, render the complete panel and mark execution `Backend Pending` /
+  `Authority Gap` (never hide the panel, never fabricate data).
+- **UI before backend:** render the complete UI; only execution may stop.
+- Inventory the actual rendered HTML DOM first (never memory); classify every item
+  (Reuse / Implement / Port / Retire / Authority Gap / Backend Gap); then build 1:1.
+- Acceptance: Wireframe/Interaction/Workflow/Editing/Authority/Visual Missing = 0;
+  only Backend/Authority gaps may remain.
+
+Supersedes the earlier "Accounting HYBRID" wording in this file and in
+ACTIVE_CAMPAIGNS.md for all Accounting work going forward.
