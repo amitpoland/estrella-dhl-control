@@ -2356,6 +2356,69 @@ def fetch_invoices_for_contractor(
     return out
 
 
+def list_invoices_by_type(wfirma_type: str, start: int = 0, limit: int = 25) -> Dict[str, Any]:
+    """
+    Wave 4 (Item 3A) — read-only accounting document list: one page of
+    ``invoices/find`` filtered by wFirma invoice type. Reuses the proven
+    invoices/find transport (auth, pagination, retry, error handling, XML parse);
+    wFirma remains the authority (no local mirror, no duplicate data).
+
+    wfirma_type: "normal" (Invoice) or "correction" (Credit Note).
+    Returns {"rows": [{number, date, party, net, tax, gross, currency, state,
+    wfirma_id}], "count": int}.
+
+    Raises ValueError on an unsupported type; RuntimeError on HTTP/non-OK status;
+    ConnectionError on network failure. Never calls invoices/add|edit|delete.
+    """
+    t = (wfirma_type or "").strip()
+    if t not in ("normal", "correction"):
+        raise ValueError("list_invoices_by_type: type must be 'normal' or 'correction'")
+    try:
+        start_i = max(0, int(start))
+        limit_i = max(1, min(int(limit), _INVOICE_LEDGER_PAGE_LIMIT))
+    except (TypeError, ValueError):
+        start_i, limit_i = 0, 25
+
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<api><invoices><parameters>'
+          '<conditions>'
+            f'<condition><field>type</field><operator>eq</operator><value>{_esc(t)}</value></condition>'
+          '</conditions>'
+          f'<page><start>{start_i}</start><limit>{limit_i}</limit></page>'
+        '</parameters></invoices></api>'
+    )
+    http_status, response_text = _http_request("GET", "invoices", "find", body)
+    if http_status >= 400:
+        raise RuntimeError(f"invoices/find HTTP {http_status}")
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(f"invoices/find wFirma status={code}: {desc}")
+    root = ET.fromstring(response_text)
+
+    def _f(node, *tags):
+        for tag in tags:
+            v = node.findtext(tag)
+            if v and v.strip():
+                return v.strip()
+        return "—"
+
+    rows = []
+    for inv in root.findall(".//invoice"):
+        rows.append({
+            "number":    _f(inv, "fullnumber", "number", "id"),
+            "date":      _f(inv, "date"),
+            "party":     _f(inv, "contractor_detail/name", "contractor/name"),
+            "net":       _f(inv, "netto", "total_netto"),
+            "tax":       _f(inv, "tax", "vat"),
+            "gross":     _f(inv, "brutto", "total", "total_brutto"),
+            "currency":  _f(inv, "currency"),
+            "state":     _f(inv, "paymentstate", "state"),
+            "wfirma_id": inv.findtext("id") or "",
+        })
+    return {"rows": rows, "count": len(rows)}
+
+
 # ── Phase 10B — payments/find wrapper for Statement of Account ─────────────
 
 def fetch_payments_for_contractor(

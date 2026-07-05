@@ -534,6 +534,63 @@ def test_get_stock_http_error_raises_runtime_error():
                 get_stock("987654")
 
 
+# ── Tests: list_invoices_by_type (C-3A — accounting docs via invoices/find) ──
+_XML_INVOICES_OK = """<api>
+  <invoices>
+    <invoice><id>101</id><fullnumber>FV 1/2026</fullnumber><date>2026-04-22</date>
+      <contractor_detail><name>Crown Jewelers Ltd</name></contractor_detail>
+      <netto>19593.50</netto><tax>4506.50</tax><brutto>24100.00</brutto>
+      <currency>USD</currency><paymentstate>paid</paymentstate></invoice>
+    <invoice><id>102</id><fullnumber>FV 2/2026</fullnumber><date>2026-04-20</date>
+      <contractor_detail><name>Aurum Watches GmbH</name></contractor_detail>
+      <netto>14975.61</netto><tax>3444.39</tax><brutto>18420.00</brutto>
+      <currency>EUR</currency><paymentstate>open</paymentstate></invoice>
+  </invoices>
+  <status><code>OK</code></status>
+</api>"""
+
+
+def test_list_invoices_by_type_parses_rows():
+    from app.services.wfirma_client import list_invoices_by_type
+    with _full_settings():
+        with patch("app.services.wfirma_client._requests.request",
+                   return_value=_resp(200, _XML_INVOICES_OK)):
+            out = list_invoices_by_type("normal")
+    assert out["count"] == 2
+    r0 = out["rows"][0]
+    assert r0["number"] == "FV 1/2026"
+    assert r0["party"] == "Crown Jewelers Ltd"
+    assert r0["gross"] == "24100.00"
+    assert r0["currency"] == "USD"
+    assert r0["state"] == "paid"
+    assert r0["wfirma_id"] == "101"
+
+
+def test_list_invoices_by_type_bad_type_raises_value_error():
+    from app.services.wfirma_client import list_invoices_by_type
+    with pytest.raises(ValueError, match="normal|correction"):
+        list_invoices_by_type("bogus")
+
+
+def test_list_invoices_by_type_http_error_raises_runtime_error():
+    from app.services.wfirma_client import list_invoices_by_type
+    with _full_settings():
+        with patch("app.services.wfirma_client._requests.request",
+                   return_value=_resp(500, "err")):
+            with pytest.raises(RuntimeError, match="HTTP 500"):
+                list_invoices_by_type("correction")
+
+
+def test_list_invoices_by_type_status_not_ok_raises_runtime_error():
+    from app.services.wfirma_client import list_invoices_by_type
+    xml = "<api><status><code>ERROR</code><message>bad</message></status></api>"
+    with _full_settings():
+        with patch("app.services.wfirma_client._requests.request",
+                   return_value=_resp(200, xml)):
+            with pytest.raises(RuntimeError, match="status="):
+                list_invoices_by_type("normal")
+
+
 def test_create_proforma_validates_required_args():
     """create_proforma_draft is now implemented; arg validation lives in client."""
     req = ProformaRequest(

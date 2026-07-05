@@ -960,15 +960,61 @@ const _ACC_DOC_TITLES = {
   rw:  { t: 'RW — Internal out', c: 'RW', color: 'var(--badge-red-text)', wh: true },
   mm:  { t: 'MM — Transfer', c: 'MM', color: 'var(--badge-neutral-text)', wh: true },
 };
+// Documented live reads (Wave 4 Item 3A): Invoice / Credit Note via wFirma
+// invoices/find. WZ/PW/RW/MM stay Backend Pending (Item 3B — undocumented).
+const _ACC_DOC_LIVE = { inv: 'invoice', cn: 'credit_note' };
 function AccDocGrid({ sectionId }) {
   const m = _ACC_DOC_TITLES[sectionId] || { t: sectionId, c: null, wh: false };
   const cols = m.wh
     ? ['Number', 'Date', 'Party', 'Items', 'Linked', 'State', 'wFirma', 'View']
     : ['Number', 'Date', 'Party', 'Net', 'Tax', 'Gross', 'Cur', 'State', 'wFirma', 'View'];
+  const docType = _ACC_DOC_LIVE[sectionId];
+  const [st, setSt] = React.useState({ loading: !!docType, error: null, rows: null });
+  React.useEffect(() => {
+    if (!docType) return;
+    let cancelled = false;
+    setSt({ loading: true, error: null, rows: null });
+    window.PzApi.listAccountingDocs(docType).then(res => {
+      if (cancelled) return;
+      if (!res || !res.ok) { setSt({ loading: false, error: (res && res.error) || 'Load failed', rows: null }); return; }
+      setSt({ loading: false, error: null, rows: (res.data && res.data.rows) || [] });
+    }).catch(e => { if (!cancelled) setSt({ loading: false, error: (e && e.message) || String(e), rows: null }); });
+    return () => { cancelled = true; };
+  }, [docType]);
+  const td = { padding: '9px 12px', fontSize: 11.5, color: 'var(--text-2)' };
+  const tdm = { ...td, fontFamily: 'monospace' };
   return (
     <div data-testid={`acc-grid-${sectionId}`} style={{ padding: '20px 28px' }}>
       <_AccGridHeader title={m.t} code={m.c} color={m.color} actions={['↻ Sync', '↓ Export', `+ New ${m.c || ''}`]} />
-      <_AccPendingTable cols={cols} note="GET /api/v1/accounting/{type}" />
+      {!docType && <_AccPendingTable cols={cols} note="GET /api/v1/accounting/{type}" />}
+      {docType && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+              {cols.map(c => <th key={c} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{c}</th>)}
+            </tr></thead>
+            <tbody>
+              {st.loading && <tr><td colSpan={cols.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}><span className="spinner" /> Loading from wFirma…</td></tr>}
+              {st.error && !st.loading && <tr><td colSpan={cols.length} data-testid={`acc-grid-${sectionId}-error`} style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>wFirma read unavailable: {st.error}</td></tr>}
+              {!st.loading && !st.error && st.rows && st.rows.length === 0 && <tr><td colSpan={cols.length} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No {m.t.toLowerCase()} documents.</td></tr>}
+              {!st.loading && !st.error && st.rows && st.rows.map((r, i) => (
+                <tr key={r.wfirma_id || i} data-testid={`acc-grid-${sectionId}-row`} style={{ borderBottom: i < st.rows.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
+                  <td style={{ ...tdm, color: 'var(--text)' }}>{r.number}</td>
+                  <td style={td}>{r.date}</td>
+                  <td style={{ ...td, color: 'var(--text)' }}>{r.party}</td>
+                  <td style={tdm}>{r.net}</td>
+                  <td style={tdm}>{r.tax}</td>
+                  <td style={{ ...tdm, color: 'var(--text)' }}>{r.gross}</td>
+                  <td style={td}>{r.currency}</td>
+                  <td style={{ ...td, fontSize: 11 }}>{r.state}</td>
+                  <td style={{ ...td, fontSize: 11, color: 'var(--text-3)' }}>{r.wfirma_id ? 'wF' : '—'}</td>
+                  <td style={{ ...td, fontSize: 11, color: 'var(--text-3)' }}>View</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

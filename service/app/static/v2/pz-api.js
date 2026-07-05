@@ -113,6 +113,13 @@
       return _get(`${BASE}/proforma/search${qs}`);
     },
 
+    // GET /api/v1/accounting/documents/{doc_type}  (Wave 4 Item 3A — wFirma invoices/find)
+    // doc_type ∈ { invoice, credit_note }. Returns { ok, data: { doc_type, wfirma_type, rows[], count } }
+    listAccountingDocs: (docType, start, limit) => {
+      const qs = '?' + new URLSearchParams({ start: start || 0, limit: limit || 25 }).toString();
+      return _get(`${BASE}/accounting/documents/${encodeURIComponent(docType)}${qs}`);
+    },
+
     // GET /api/v1/proforma/drafts/{batch_id}
     // Returns { ok, data: { ok, batch_id, drafts[], count } }
     getProformaDrafts: (batchId) =>
