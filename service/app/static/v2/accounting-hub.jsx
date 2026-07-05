@@ -31,6 +31,7 @@
 // group: 'gated'     — visible, backend required (Wave 4)
 const ACC_SECTIONS = [
   // Live tabs (Wave 3)
+  { id: 'overview',  label: 'Overview',         icon: '▦', group: 'live',     code: null,  color: 'var(--accent)' },
   { id: 'purchase',  label: 'Purchase Ledger',  icon: '↘', group: 'live',     code: 'PZ',  color: 'var(--accent)' },
   { id: 'proforma',  label: 'Sales / Proforma', icon: '✎', group: 'live',     code: 'PI',  color: 'var(--badge-blue-text)' },
   { id: 'ledger',    label: 'Client Ledger',    icon: '☷', group: 'live',     code: 'STM', color: 'var(--badge-green-text)' },
@@ -849,8 +850,73 @@ function AccKpiTile({ label, value, hint, accent }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Root: AccountingHub
 // ═══════════════════════════════════════════════════════════════════════════════
+// ── AccountingOverview — HYBRID landing (wireframe Overview) ───────────────────
+// Wireframe (accounting-authority-comparison LEFT): 4 KPI + Sales-docs & Warehouse-
+// docs count panels + Document-map diagram. No aggregate endpoints exist for the
+// KPI figures / doc counts, so they render honestly ("—" · Backend Pending) per the
+// HYBRID ruling — never fabricated. The document map is a static diagram (no backend).
+// Additive landing: no new endpoint, no write path; existing tabs unchanged.
+function _AccKpi({ label }) {
+  return (
+    <div data-testid="acc-ov-kpi" style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px', flex: 1, minWidth: 150 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--text-3)', marginTop: 6, fontFamily: '"DM Serif Display", serif' }}>—</div>
+      <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>Backend Pending</div>
+    </div>
+  );
+}
+function _AccDocPanel({ title, rows }) {
+  return (
+    <div style={{ flex: 1, minWidth: 240, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+      <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{title} <span style={{ fontWeight: 400, color: 'var(--text-3)', fontSize: 10 }}>· Backend Pending</span></div>
+      {rows.map((r, i) => (
+        <div key={r} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', borderBottom: i < rows.length - 1 ? '1px solid var(--border-subtle)' : 'none', fontSize: 12, color: 'var(--text-2)' }}>
+          <span>{r}</span><span style={{ color: 'var(--text-3)', fontFamily: 'monospace' }}>—</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+function AccountingOverview() {
+  const mapStep = (code, name) => (
+    <div style={{ flex: 1, minWidth: 110, background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 12px', textAlign: 'center' }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.04em' }}>{code}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 3 }}>{name}</div>
+    </div>
+  );
+  const arrow = <div style={{ alignSelf: 'center', color: 'var(--text-3)', fontSize: 14 }}>→</div>;
+  return (
+    <div data-testid="accounting-overview" style={{ padding: '20px 28px' }}>
+      <div>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>Accounting</h2>
+        <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 3 }}>Proforma · Invoice · WZ · PZ · PW · RW · MM · Client Balance · Client Ledger · Supplier Ledger — all mapped from wFirma</div>
+      </div>
+      <div style={{ display: 'flex', gap: 12, margin: '14px 0', flexWrap: 'wrap' }}>
+        <_AccKpi label="Sales Receivable" />
+        <_AccKpi label="Sales Overdue" />
+        <_AccKpi label="Supplier Payable" />
+        <_AccKpi label="Last wFirma Sync" />
+      </div>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+        <_AccDocPanel title="Sales documents" rows={['Proforma issued', 'Invoices issued', 'Credit notes', 'WZ releases']} />
+        <_AccDocPanel title="Warehouse documents" rows={['PZ (external receipt)', 'PW (internal receipt)', 'RW (internal release)', 'MM (transfer)']} />
+      </div>
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: 16 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 10 }}>Document map <span style={{ fontWeight: 400, color: 'var(--text-3)' }}>— how sales &amp; warehouse documents connect</span></div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {mapStep('PI', 'Proforma')}{arrow}
+          {mapStep('INV', 'Sales Invoice')}{arrow}
+          {mapStep('WZ', 'Outbound release')}{arrow}
+          {mapStep('PZ', 'Inbound receipt')}{arrow}
+          {mapStep('CN', 'Credit Note')}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AccountingHub({ onNav }) {
-  const [section, setSection] = React.useState('purchase');
+  const [section, setSection] = React.useState('overview');
 
   const handleSection = (id) => {
     const conf = ACC_SECTIONS.find(s => s.id === id);
@@ -910,6 +976,7 @@ function AccountingHub({ onNav }) {
 
       {/* Main area */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
+        {section === 'overview' && <AccountingOverview />}
         {section === 'purchase' && <PurchaseLedgerTab />}
         {section === 'proforma' && <SalesProformaTab />}
         {section === 'ledger'   && <ClientLedgerTab />}
