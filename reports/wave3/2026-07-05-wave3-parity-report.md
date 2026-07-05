@@ -46,3 +46,26 @@
 | Accounting | 80% | BLOCKED — operator ruling (Overview-first + doc-type rail) |
 
 **Operator action required:** two rulings — **Accounting** (A/C/Hybrid) and **Proforma** (accept batch-scoped IA, or add cross-batch landing). All other pages VERIFIED. No further autonomous gap-fix work remains (the two open items are architecture/IA decisions, not objective gaps).
+
+---
+
+## UPDATE 2026-07-05 (post-port) — final parity state
+
+Two decision items from the earlier report are now resolved and built:
+
+- **Proforma → 100% PORTED** (`bd425925` + composite `60e865a9`): `/proforma` is now the wireframe cross-batch "Pro Forma Drafts" landing (5 KPI tiles + 7-col table + toolbar), reusing `GET /proforma/search`. UI/Functional(read)/Wireframe Missing = 0. Write toolbar actions render present, routed to the existing confirmed per-draft flow (no new bulk-write trigger). Print backend-GATED.
+- **Accounting → HYBRID Overview landing** (`7ac0201a` + composite `pair-07-accounting.png`): the wireframe Overview is now the default landing (4 KPI + Sales/Warehouse doc-count panels + document-map), honest `— Backend Pending` (no aggregate endpoints; never fabricated). Existing 6 tabs + Wave-4 register preserved and reachable. Overview structure matches the wireframe; the left rail retains the workflow-tab organization per the HYBRID ruling ("existing tabs/routing remain"). UI/Functional/Wireframe Missing = 0; Backend-Gated = the 4 KPI + 8 doc counts.
+
+### Final Wave 3 parity table
+
+| Page | Parity | State |
+|---|---|---|
+| Dashboard | 100% | VERIFIED (Ruling C, LOCKED) |
+| Documents Hub | 100% | VERIFIED (Flow-strip fixed `3048768b`) |
+| Shipment Detail | 100%* | VERIFIED (*no wireframe detail screen; live detail = authority) |
+| Proforma | 100% | PORTED (`bd425925`) |
+| Accounting | Overview 100% · rail per HYBRID | HYBRID landing built (`7ac0201a`) |
+
+**Backend-gated (honest, not fabricated):** Accounting Overview KPI + doc counts (no aggregate endpoints); Proforma Print (no endpoint); Proforma list-level bulk-writes (route to existing per-draft confirmed flow). No console errors. No dead controls (gated controls carry disabled-with-reason titles). CP3 composites regenerated for every changed page.
+
+**FINAL ACCEPTANCE:** Wave 3 wireframe-parity work is complete — every visible wireframe component exists, existing backend wiring preserved, only explicitly backend-gated items remain gated. HOLD for the operator's final CP3 recognition review.
