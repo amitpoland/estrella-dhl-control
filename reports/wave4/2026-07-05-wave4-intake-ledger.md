@@ -259,3 +259,47 @@ zero-fetch.)
   red: `test_toolbar_authority_map::test_print_uses_window_open` (`window.open`
   absent at HEAD too — not introduced by this slice). Full click-through blocked
   in the verify clone by session login + no seeded draft; not fabricated.
+
+## Item 13 — Documents tab — DONE (REUSE-ONLY, UI-only) (2026-07-05)
+
+Operator ruling: REUSE-ONLY / read-only — no new authority, DB, endpoint,
+service, fetch, or write path; no wFirma write; no duplicate document authority;
+existing Print/Download flows preserved (reused, not replaced). The Proforma
+Detail **Documents** `Backend Pending` placeholder is replaced with a real
+read-only **document manifest** — each row shows the document's true authority
+and the EXISTING action to view/download it. **`pz-api.js` untouched.**
+
+**Authority analysis (§17/§20):** no single new authority — the tab is a manifest
+over the documents this draft already produces, each owned by its existing
+authority. Existing page = Proforma Detail `documents` tab.
+
+Per-document reuse (all state/handlers already in `ProformaDetailPage` scope,
+already driven by the toolbar / preview modal that render in production):
+- **Proforma PDF** — authority `GET /api/v1/proforma/{batch}/{cn}/document.pdf`
+  (`routes_proforma.py:2862`). Available iff `canPrint` (`wfirma_proforma_id`);
+  action reuses the existing `handleDownloadPdf` (same URL, same error banner).
+  Not posted → advisory reason.
+- **CMR** — frontend CMR renderer (`cmrPreviewData`); action reuses the existing
+  Print Preview modal via `setPreviewDocType('cmr')` + `setShowPreview(true)`.
+- **Packing List** — frontend packing renderer (`packingListData`); same Preview
+  modal via `setPreviewDocType('packing')`.
+- **Invoice PDF** — wFirma (external). `alreadyConverted` (`wfirma_invoice_id`)
+  surfaces the invoice number; **Backend Pending** to download (served by wFirma;
+  no app invoice-PDF endpoint). Not converted → "after Convert to Invoice".
+
+**Backend Pending (surfaced, not fabricated):** invoice-PDF download (wFirma-served,
+no app endpoint); the toolbar's bundle **Generate Documents** remains the known
+write gap `POST /api/v1/proforma/draft/{id}/generate-documents`
+(`BACKEND_GAP_REGISTER §2`, LOW) — out of scope (write).
+
+- `data-testid`: `pf-detail-documents`, `pf-doc-row-{proforma|cmr|packing|invoice}`,
+  `pf-doc-proforma-download`, `pf-doc-cmr-preview`, `pf-doc-packing-preview`,
+  `pf-doc-pending-{key}`, `pf-doc-unavailable-{key}`.
+- **Verification:** exact file transforms clean under `@babel/preset-react`
+  (matches pinned 7.26.4 standalone); served 200 with all new test IDs; every
+  referenced identifier proven in-scope (`canPrint`, `handleDownloadPdf`,
+  `setShowPreview`, `setPreviewDocType`, `alreadyConverted`, `cmrPreviewData`).
+  Structural pins green (`test_v2_no_spread_rest`, `test_v2_design_baseline`,
+  `test_sprint36_proforma_detail_authority` — 128 passed). Golden/smoke
+  unaffected (frontend-only). Full click-through blocked in the verify clone by
+  session login + no seeded draft; not fabricated. Commit SHA below.

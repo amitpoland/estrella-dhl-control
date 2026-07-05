@@ -3246,14 +3246,81 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             </div>
           );
         })()}
-        {activeTab === 'documents' && (
-          <div data-testid="pf-detail-documents" style={{ padding: 20 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Documents</div>
-            <div style={{ padding: '16px 18px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 12.5, lineHeight: 1.6 }}>
-              Generated documents — Proforma · CMR · Packing List · Invoice PDFs (Print Preview available from the toolbar). <strong style={{ color: 'var(--badge-amber-text)' }}>— Backend Pending</strong>
+        {activeTab === 'documents' && (() => {
+          // REUSE-ONLY read manifest (Wave 4 Item 13). Lists the documents this
+          // proforma draft can produce, each with its REAL availability state and
+          // the EXISTING action to obtain it. No new endpoint, authority, fetch,
+          // or write path — reuses handleDownloadPdf (proforma PDF), the Print
+          // Preview modal (CMR / Packing List), and in-component draft state.
+          // Existing Print/Download flows are preserved, not replaced.
+          const _openPreview = (t) => { setPreviewDocType(t); setShowPreview(true); };
+          const _proformaNo  = liveDraft.wfirma_proforma_fullnumber || (draft && draft.wfirma_proforma_fullnumber) || '';
+          const _invoiceNo   = liveDraft.wfirma_invoice_number || (liveDraft.wfirma_invoice_id ? String(liveDraft.wfirma_invoice_id) : '');
+          const _docs = [
+            {
+              key: 'proforma', name: 'Proforma PDF',
+              authority: _proformaNo ? `wFirma proforma ${_proformaNo}` : 'wFirma proforma document',
+              available: canPrint,
+              action: canPrint ? { label: '↓ Download', onClick: handleDownloadPdf, testid: 'pf-doc-proforma-download' } : null,
+              pending: canPrint ? null : 'Available after this draft is posted to wFirma (⇪ Post to wFirma).',
+            },
+            {
+              key: 'cmr', name: 'CMR (transport)',
+              authority: cmrPreviewData.cmr_no || 'CMR document (generated)',
+              available: true,
+              action: { label: '◫ Preview', onClick: () => _openPreview('cmr'), testid: 'pf-doc-cmr-preview' },
+              pending: null,
+            },
+            {
+              key: 'packing', name: 'Packing List',
+              authority: 'Packing list (generated)',
+              available: true,
+              action: { label: '◫ Preview', onClick: () => _openPreview('packing'), testid: 'pf-doc-packing-preview' },
+              pending: null,
+            },
+            {
+              key: 'invoice', name: 'Invoice PDF',
+              authority: _invoiceNo ? `wFirma invoice ${_invoiceNo}` : 'wFirma invoice document',
+              available: false,
+              action: null,
+              pending: alreadyConverted
+                ? `Invoice ${_invoiceNo || 'created'} — the PDF is served by wFirma; the app does not expose an invoice-PDF download endpoint yet.`
+                : 'Available after Convert to Invoice (toolbar).',
+            },
+          ];
+          return (
+            <div data-testid="pf-detail-documents" style={{ padding: 20 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Documents</div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 16, lineHeight: 1.5 }}>
+                Read-only manifest — each row shows the real document authority and the existing action to view or download it. No document is fabricated.
+              </div>
+              {_docs.map((d) => (
+                <div key={d.key} data-testid={`pf-doc-row-${d.key}`}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 14px', marginBottom: 8, background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{d.name}</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>{d.authority}</div>
+                    {d.pending ? (
+                      <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }} data-testid={`pf-doc-pending-${d.key}`}>
+                        <strong>Backend Pending:</strong> {d.pending}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div style={{ flexShrink: 0 }}>
+                    {d.action ? (
+                      <button onClick={d.action.onClick} data-testid={d.action.testid}
+                        style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
+                        {d.action.label}
+                      </button>
+                    ) : (
+                      <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 999 }} data-testid={`pf-doc-unavailable-${d.key}`}>Not available</span>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
-          </div>
-        )}
+          );
+        })()}
         {activeTab === 'customer_mapping' && (
           <ProformaCustomerMappingTab customer={customer} />
         )}
