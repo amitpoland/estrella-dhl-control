@@ -385,6 +385,128 @@ function ImportPackingListModal({ batchId, drafts, onClose, onImported }) {
   );
 }
 
+// ── ProformaCrossBatchLanding — wireframe FULL PORT of the /proforma landing ───
+// Wireframe (pair-05 LEFT): cross-batch "Pro Forma Drafts" — 5 KPI tiles +
+// drafts table (Draft No · Customer · Shipment · Items · Total · Match · Status)
+// + toolbar. READS ONLY via the existing GET /proforma/search (searchProformaDrafts);
+// no new endpoint, no write-path change. Write toolbar actions (Push/Send) route
+// to the existing confirmed per-draft flow (protected-financial-write — not
+// re-triggered here). Batch-context actions (Import/Create) require a batch and
+// are honestly gated with reason (Lesson M). Print is backend-GATED (no endpoint).
+function _pfBucket(state) {
+  const s = String(state || '').toLowerCase();
+  if (s.includes('extract')) return 'extracting';
+  if (s.includes('push') || s.includes('post')) return 'pushed';
+  if (s.includes('error') || s.includes('fail')) return 'error';
+  if (s.includes('ready')) return 'ready';
+  if (s.includes('review') || s.includes('operator')) return 'operator_review';
+  return 'operator_review';
+}
+
+function _PfKpi({ label, value, accent }) {
+  return (
+    <div data-testid="pf-landing-kpi" style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 16px', flex: 1, minWidth: 120 }}>
+      <div style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: accent || 'var(--text)', marginTop: 4, fontFamily: '"DM Serif Display", serif' }}>{value}</div>
+    </div>
+  );
+}
+
+function ProformaCrossBatchLanding({ onDrill }) {
+  const [rows, setRows]       = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError]     = React.useState(null);
+  const [selected, setSelected] = React.useState({});
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setError(null);
+    window.PzApi.searchProformaDrafts({}).then(res => {
+      if (cancelled) return;
+      if (!res || !res.ok) { setError((res && res.error) || 'Failed to load drafts'); setLoading(false); return; }
+      const d = res.data || {};
+      setRows(d.results || d.rows || d.drafts || []);
+      setLoading(false);
+    }).catch(e => { if (!cancelled) { setError(e.message || String(e)); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, []);
+
+  const kpi = { extracting: 0, operator_review: 0, ready: 0, pushed: 0, error: 0 };
+  rows.forEach(r => { kpi[_pfBucket(r.draft_state)] += 1; });
+
+  const allSel = rows.length > 0 && rows.every(r => selected[r.id || r.draft_id]);
+  const toggleAll = () => allSel ? setSelected({}) : setSelected(Object.fromEntries(rows.map(r => [r.id || r.draft_id, true])));
+  const disWrite = { padding: '6px 12px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11.5, fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 };
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: '20px 32px', background: 'var(--bg)' }} data-testid="proforma-landing-page">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)', margin: 0 }}>Pro Forma Drafts</h2>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 3 }}>Packing List is the source · extraction → review → push to wFirma</div>
+        </div>
+        <div data-testid="pf-landing-toolbar" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button data-testid="pf-tb-import" disabled title="Open a shipment batch to import a packing list (batch-scoped action)" style={disWrite}>↙ Import Packing List</button>
+          <button data-testid="pf-tb-create" disabled title="Open a shipment batch to create a draft (batch-scoped action)" style={disWrite}>+ Create Draft</button>
+          <button data-testid="pf-tb-push" disabled title="Open a draft to push to wFirma (confirmed per-draft write)" style={disWrite}>↑ Push to wFirma</button>
+          <button data-testid="pf-tb-send" disabled title="Open a draft to send (confirmed per-draft email)" style={disWrite}>✉ Send</button>
+          <button data-testid="pf-tb-print" disabled title="Print — backend-gated (no print endpoint)" style={disWrite}>⎙ Print</button>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+        <_PfKpi label="Extracting"      value={kpi.extracting} />
+        <_PfKpi label="Operator Review" value={kpi.operator_review} accent="var(--badge-amber-text)" />
+        <_PfKpi label="Ready"           value={kpi.ready} accent="var(--badge-blue-text)" />
+        <_PfKpi label="Pushed"          value={kpi.pushed} accent="var(--badge-green-text)" />
+        <_PfKpi label="Error"           value={kpi.error} accent="var(--badge-red-text)" />
+      </div>
+
+      {loading && <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-2)' }}><span className="spinner" /> Loading drafts…</div>}
+      {error && !loading && <div data-testid="pf-landing-error" style={{ padding: 24, textAlign: 'center', color: 'var(--badge-red-text)' }}>Failed to load drafts: {error}</div>}
+      {!loading && !error && rows.length === 0 && <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-2)' }}>No proforma drafts yet.</div>}
+
+      {!loading && !error && rows.length > 0 && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                <th style={{ padding: '12px 12px', width: 36 }}><input type="checkbox" checked={allSel} onChange={toggleAll} data-testid="pf-landing-select-all" style={{ cursor: 'pointer' }} /></th>
+                {['Draft No', 'Customer', 'Shipment', 'Items', 'Total', 'Match', 'Status'].map(h => (
+                  <th key={h} style={{ padding: '12px 14px', textAlign: 'left', fontSize: 10.5, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const id = r.id || r.draft_id;
+                const matched = r.customer_resolved ? 'Matched' : r.customer_ambiguous ? 'Ambiguous' : 'Unmatched';
+                const items = r.line_count ?? r.items ?? '—';
+                const total = (r.total != null ? r.total : (r.amount != null ? r.amount : null));
+                return (
+                  <tr key={id || i} data-testid={`pf-landing-row-${id}`} onClick={() => onDrill && onDrill(r)}
+                    style={{ borderBottom: i < rows.length - 1 ? '1px solid var(--border-subtle)' : 'none', cursor: onDrill ? 'pointer' : 'default' }}>
+                    <td style={{ padding: '10px 12px' }} onClick={e => e.stopPropagation()}>
+                      <input type="checkbox" checked={!!selected[id]} onChange={() => setSelected(p => ({ ...p, [id]: !p[id] }))} data-testid={`pf-landing-cb-${id}`} style={{ cursor: 'pointer' }} />
+                    </td>
+                    <td style={{ padding: '10px 14px', fontSize: 12, fontFamily: 'monospace', color: 'var(--text)' }}>{r.wfirma_proforma_fullnumber || id || '—'}</td>
+                    <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text)' }}>{r.client_name || '—'}</td>
+                    <td style={{ padding: '10px 14px', fontSize: 11, fontFamily: 'monospace', color: 'var(--text-2)' }}>{r.batch_id || '—'}</td>
+                    <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-2)' }}>{items}</td>
+                    <td style={{ padding: '10px 14px', fontSize: 12, fontFamily: 'monospace', color: 'var(--text-2)' }}>{total != null ? `${Number(total).toLocaleString()} ${r.currency || ''}`.trim() : '—'}</td>
+                    <td style={{ padding: '10px 14px', fontSize: 11 }}>{matched}</td>
+                    <td style={{ padding: '10px 14px' }}>{window.ProformaStatusChip ? <window.ProformaStatusChip status={r.draft_state} /> : <span style={{ fontSize: 11 }}>{r.draft_state || '—'}</span>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ProformaListPage — main component ─────────────────────────────────────────
 
 function ProformaListPage({ onDrill }) {
@@ -409,14 +531,8 @@ function ProformaListPage({ onDrill }) {
   const [showImportModal, setShowImportModal] = useState(false);
 
   if (!batchId) {
-    return (
-      <div style={{ flex: 1, overflow: 'auto', padding: '20px 32px', background: 'var(--bg)' }}>
-        <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-2)' }}>
-          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>No batch selected</div>
-          <div style={{ fontSize: 13 }}>Navigate here with ?batch_id=&lt;id&gt; to view proforma drafts for a shipment batch.</div>
-        </div>
-      </div>
-    );
+    // Wireframe FULL PORT: the /proforma landing is the cross-batch drafts view.
+    return <ProformaCrossBatchLanding onDrill={onDrill} />;
   }
 
   return (
