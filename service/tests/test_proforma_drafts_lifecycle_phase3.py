@@ -172,6 +172,52 @@ def test_helper_line_edit_updates_one_line(db_path):
     assert other["qty"]        == 1
 
 
+def test_helper_line_product_code_remap_persists(db_path):
+    """Positive product_code remap: mapping a line to a new Product Master code
+    via update_draft_line persists the new code and preserves every other field
+    on that line and leaves sibling lines untouched.
+
+    Proves the write authority the Source & Extraction "Map from Product Master"
+    path relies on: product_code is a first-class EDITABLE_LINE_FIELDS key, not
+    an authority gap. Complements test_helper_line_validation (blank rejection)
+    and test_helper_line_edit_updates_one_line (qty/unit_price persist).
+    """
+    d = _seed_draft(db_path)
+    full = pildb._ensure_line_ids(json.loads(d.editable_lines_json))
+    line_id = full[0]["line_id"]
+    assert full[0]["product_code"] == "RNG-100"
+
+    refreshed = pildb.update_draft_line(
+        db_path, d.id, line_id, {"product_code": "RNG-999"},
+        "alice", d.updated_at,
+    )
+    lines = pildb._ensure_line_ids(json.loads(refreshed.editable_lines_json))
+    by_id = {l["line_id"]: l for l in lines}
+    # Remapped code persisted.
+    assert by_id[line_id]["product_code"] == "RNG-999"
+    # Other fields on the same line preserved (in-place patch, not replace).
+    assert by_id[line_id]["qty"]        == 2
+    assert by_id[line_id]["unit_price"] == 25.50
+    assert by_id[line_id]["design_no"]  == "D100"
+    # Sibling line untouched.
+    other = [l for l in lines if l["line_id"] != line_id][0]
+    assert other["product_code"] == "RNG-200"
+    assert other["unit_price"]   == 100.0
+
+    # Audit event records the remap.
+    with sqlite3.connect(db_path) as cx:
+        cx.row_factory = sqlite3.Row
+        rows = cx.execute(
+            "SELECT event, detail_json FROM proforma_draft_events "
+            "WHERE draft_id=? AND event='draft_line_edited' ORDER BY id DESC",
+            (d.id,),
+        ).fetchall()
+    assert rows, "expected a draft_line_edited audit event"
+    detail = json.loads(rows[0]["detail_json"])
+    assert detail["patch"] == {"product_code": "RNG-999"}
+    assert detail["before"]["product_code"] == "RNG-100"
+
+
 def test_helper_line_validation(db_path):
     d = _seed_draft(db_path)
     line_id = 1
