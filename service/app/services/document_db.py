@@ -408,6 +408,37 @@ def init_document_db(db_path: Path) -> None:
             )
         except sqlite3.OperationalError:
             pass  # column already exists
+        # ── Sales variant identity (Product Master Slice 2) ──────────────
+        # The sales packing file is parsed by the SAME rich extractor as the
+        # purchase side (invoice_packing_extractor.extract_packing), which
+        # already emits these nine variant fields — but they were dropped at
+        # this persistence boundary (schema/store never carried them). Mirror
+        # the purchase packing_lines columns EXACTLY (same types, same
+        # defaults — see packing_db.py:108-158) so a sales row can carry the
+        # full variant signature and Slice 2 can exact-match it against the
+        # Product Master instead of the bounded intersection. Additive,
+        # idempotent, default-safe: legacy rows keep ''/0.0; new and
+        # re-uploaded/re-ingested rows populate. No product_code minting —
+        # variant identity only. Same silent-drop class as client_po/invoice_no
+        # and purchase-side size/diamond_weight/color_weight.
+        for col, ddl in (
+            ("item_type",       "TEXT NOT NULL DEFAULT ''"),
+            ("karat",           "TEXT NOT NULL DEFAULT ''"),
+            ("metal",           "TEXT NOT NULL DEFAULT ''"),
+            ("metal_color",     "TEXT NOT NULL DEFAULT ''"),
+            ("quality_string",  "TEXT NOT NULL DEFAULT ''"),
+            ("stone_type",      "TEXT NOT NULL DEFAULT ''"),
+            ("size",            "TEXT NOT NULL DEFAULT ''"),
+            ("diamond_weight",  "REAL NOT NULL DEFAULT 0.0"),
+            ("color_weight",    "REAL NOT NULL DEFAULT 0.0"),
+        ):
+            try:
+                con.execute(
+                    f"ALTER TABLE sales_packing_lines ADD COLUMN {col} {ddl}"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
         for idx_name, table, col in (
             ("idx_sales_docs_client_cid",  "sales_documents",     "client_contractor_id"),
             ("idx_sales_lines_client_cid", "sales_packing_lines", "client_contractor_id"),
@@ -2015,8 +2046,10 @@ def store_sales_packing_lines(
                         product_code, design_no, bag_id, quantity, remarks,
                         unit_price, currency, total_value, price_source,
                         client_po, invoice_no,
+                        item_type, karat, metal, metal_color, quality_string,
+                        stone_type, size, diamond_weight, color_weight,
                         client_contractor_id, created_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         str(uuid.uuid4()), batch_id, sales_document_id,
                         str(ln.get("client_name", "")),
@@ -2032,6 +2065,16 @@ def store_sales_packing_lines(
                         str(ln.get("price_source", "") or ""),
                         str(ln.get("client_po", "") or ""),
                         str(ln.get("invoice_no", "") or ""),
+                        # ── Slice-2 variant identity (mirror purchase packing_lines) ──
+                        str(ln.get("item_type", "") or ""),
+                        str(ln.get("karat", "") or ""),
+                        str(ln.get("metal", "") or ""),
+                        str(ln.get("metal_color", "") or ""),
+                        str(ln.get("quality_string", "") or ""),
+                        str(ln.get("stone_type", "") or ""),
+                        str(ln.get("size", "") or ""),
+                        float(ln.get("diamond_weight", 0) or 0),
+                        float(ln.get("color_weight", 0) or 0),
                         line_cid,
                         now,
                     ),
@@ -2091,8 +2134,10 @@ def replace_sales_packing_lines(
                         product_code, design_no, bag_id, quantity, remarks,
                         unit_price, currency, total_value, price_source,
                         client_po, invoice_no,
+                        item_type, karat, metal, metal_color, quality_string,
+                        stone_type, size, diamond_weight, color_weight,
                         client_contractor_id, created_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         str(uuid.uuid4()), batch_id, sales_document_id,
                         str(ln.get("client_name", "")),
@@ -2108,6 +2153,16 @@ def replace_sales_packing_lines(
                         str(ln.get("price_source", "") or ""),
                         str(ln.get("client_po", "") or ""),
                         str(ln.get("invoice_no", "") or ""),
+                        # ── Slice-2 variant identity (mirror purchase packing_lines) ──
+                        str(ln.get("item_type", "") or ""),
+                        str(ln.get("karat", "") or ""),
+                        str(ln.get("metal", "") or ""),
+                        str(ln.get("metal_color", "") or ""),
+                        str(ln.get("quality_string", "") or ""),
+                        str(ln.get("stone_type", "") or ""),
+                        str(ln.get("size", "") or ""),
+                        float(ln.get("diamond_weight", 0) or 0),
+                        float(ln.get("color_weight", 0) or 0),
                         line_cid,
                         now,
                     ),
