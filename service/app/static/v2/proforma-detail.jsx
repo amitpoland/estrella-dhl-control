@@ -3205,6 +3205,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 {_kv('Route', [_car.origin, _car.destination].filter(v => v && v !== '—').join('  →  ') || '—', 'pf-logistics-route')}
                 {_kv('CMR No.', cmrPreviewData.cmr_no || '—', 'pf-logistics-cmr-no')}
                 {_kv('Total pieces', _cmrTotalPcs > 0 ? _cmrTotalPcs : '—', 'pf-logistics-pieces')}
+                {/* HTML-parity: CMR preview/download in Logistics. Reuses the existing Print Preview
+                   modal (CMR renderer) — no new endpoint; download = Download PDF inside the preview. */}
+                <div style={{ display: 'flex', gap: 8, paddingTop: 10, marginTop: 4, borderTop: '1px solid var(--border)' }}>
+                  <button data-testid="pf-logistics-cmr-preview"
+                    onClick={() => { setPreviewDocType('cmr'); setShowPreview(true); }}
+                    style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
+                    ◫ Preview / Download CMR
+                  </button>
+                </div>
               </div>
 
               {/* Weights by item type — reuses _cmrAggPackingLines (net) + packing enrichment (gross) */}
