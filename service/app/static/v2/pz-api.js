@@ -438,6 +438,13 @@
     getCarrierShipment: (batchId) =>
       _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`),
 
+    // POST /api/v1/carrier/{batch_id}/shipment/{tracking_ref}/do-not-use
+    // LOCAL operational flag for duplicate/unused labels — never calls DHL,
+    // never voids the AWB, never deletes label PDFs.
+    // body: { reason (required), operator? }
+    markCarrierShipmentDoNotUse: (batchId, trackingRef, body) =>
+      _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment/${encodeURIComponent(trackingRef)}/do-not-use`, body),
+
     // GET /api/v1/carrier/services
     // Returns static DHL Express product code catalogue. No credentials required.
     // Returns: [{ code, name, delivery }]
