@@ -383,6 +383,18 @@ def init_db(db_path: Path) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_box_types_active ON box_types (active)"
         )
+        # Box Profile master extension (2026-07-06) — additive, idempotent.
+        for _alter in (
+            "ALTER TABLE box_types ADD COLUMN carrier TEXT",
+            "ALTER TABLE box_types ADD COLUMN max_weight_kg REAL",
+            "ALTER TABLE box_types ADD COLUMN package_type TEXT",
+            "ALTER TABLE box_types ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                conn.execute(_alter)
+            except sqlite3.OperationalError as _e:
+                if "duplicate column" not in str(_e).lower():
+                    raise
 
         # ── Description mappings — operator-approved metal/purity resolver ──
         # Stores known token → facts approved by a human via Inbox proposal.
@@ -1519,7 +1531,7 @@ def delete_design(db_path: Path, design_code: str) -> bool:
 
 @dataclass
 class BoxType:
-    """One row in box_types — operator-maintained packaging catalogue."""
+    """One row in box_types — operator-maintained packaging catalogue (Box Profile master)."""
     code:            str
     name:            Optional[str] = None
     length_cm:       Optional[float] = None
@@ -1528,6 +1540,10 @@ class BoxType:
     tare_weight_kg:  Optional[float] = None
     active:          bool = True
     notes:           Optional[str] = None
+    carrier:         Optional[str] = None       # e.g. "DHL"; None = any carrier
+    max_weight_kg:   Optional[float] = None
+    package_type:    Optional[str] = None       # item hint, e.g. "jewellery", "ring"
+    sort_order:      int = 0
     id:              Optional[int] = None
     created_at:      Optional[str] = None
     updated_at:      Optional[str] = None
@@ -1548,6 +1564,10 @@ def _row_to_box_type(row: sqlite3.Row) -> BoxType:
         tare_weight_kg = _f("tare_weight_kg"),
         active         = bool(row["active"]) if "active" in keys else True,
         notes          = row["notes"] if "notes" in keys else None,
+        carrier        = row["carrier"] if "carrier" in keys else None,
+        max_weight_kg  = _f("max_weight_kg"),
+        package_type   = row["package_type"] if "package_type" in keys else None,
+        sort_order     = int(row["sort_order"]) if "sort_order" in keys and row["sort_order"] is not None else 0,
         created_at     = row["created_at"] if "created_at" in keys else None,
         updated_at     = row["updated_at"] if "updated_at" in keys else None,
     )
@@ -1591,11 +1611,13 @@ def list_box_types(db_path: Path, *, active: Optional[bool] = True,
         conn.row_factory = sqlite3.Row
         if active is None:
             rows = conn.execute(
-                "SELECT * FROM box_types ORDER BY code ASC LIMIT ?", (limit,)
+                "SELECT * FROM box_types ORDER BY sort_order ASC, code ASC LIMIT ?",
+                (limit,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM box_types WHERE active=? ORDER BY code ASC LIMIT ?",
+                "SELECT * FROM box_types WHERE active=? "
+                "ORDER BY sort_order ASC, code ASC LIMIT ?",
                 (int(active), limit),
             ).fetchall()
     return [_row_to_box_type(r) for r in rows]
@@ -1617,7 +1639,8 @@ def upsert_box_type(db_path: Path, data: Dict[str, Any]) -> BoxType:
         if existing:
             conn.execute(
                 """UPDATE box_types SET name=?, length_cm=?, width_cm=?, height_cm=?,
-                   tare_weight_kg=?, active=?, notes=?, updated_at=? WHERE code=?""",
+                   tare_weight_kg=?, active=?, notes=?, carrier=?, max_weight_kg=?,
+                   package_type=?, sort_order=?, updated_at=? WHERE code=?""",
                 (
                     _clean(data.get("name")),
                     data.get("length_cm"),
@@ -1626,6 +1649,10 @@ def upsert_box_type(db_path: Path, data: Dict[str, Any]) -> BoxType:
                     data.get("tare_weight_kg"),
                     1 if data.get("active", True) else 0,
                     _clean(data.get("notes")),
+                    _clean(data.get("carrier")),
+                    data.get("max_weight_kg"),
+                    _clean(data.get("package_type")),
+                    int(data.get("sort_order") or 0),
                     now,
                     code,
                 ),
@@ -1634,8 +1661,9 @@ def upsert_box_type(db_path: Path, data: Dict[str, Any]) -> BoxType:
             conn.execute(
                 """INSERT INTO box_types
                    (code, name, length_cm, width_cm, height_cm, tare_weight_kg,
-                    active, notes, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    active, notes, carrier, max_weight_kg, package_type,
+                    sort_order, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     code,
                     _clean(data.get("name")),
@@ -1645,6 +1673,10 @@ def upsert_box_type(db_path: Path, data: Dict[str, Any]) -> BoxType:
                     data.get("tare_weight_kg"),
                     1 if data.get("active", True) else 0,
                     _clean(data.get("notes")),
+                    _clean(data.get("carrier")),
+                    data.get("max_weight_kg"),
+                    _clean(data.get("package_type")),
+                    int(data.get("sort_order") or 0),
                     now, now,
                 ),
             )
@@ -1653,6 +1685,46 @@ def upsert_box_type(db_path: Path, data: Dict[str, Any]) -> BoxType:
             "SELECT * FROM box_types WHERE code=?", (code,)
         ).fetchone()
     return _row_to_box_type(row)
+
+
+# Operator-triggered seed catalogue (POST /box-types/seed-defaults).
+# Inserts only codes that do not exist yet — never overwrites operator data.
+DEFAULT_BOX_PROFILES: List[Dict[str, Any]] = [
+    {"code": "DHL-JEWEL-S",  "name": "DHL Small Jewellery Box", "carrier": "DHL",
+     "length_cm": 25, "width_cm": 20, "height_cm": 3,  "tare_weight_kg": 0.10,
+     "max_weight_kg": 2.0, "package_type": "jewellery", "sort_order": 10},
+    {"code": "DHL-RING",     "name": "DHL Ring Box",            "carrier": "DHL",
+     "length_cm": 20, "width_cm": 15, "height_cm": 10, "tare_weight_kg": 0.15,
+     "max_weight_kg": 2.0, "package_type": "ring",      "sort_order": 20},
+    {"code": "DHL-BRACELET", "name": "DHL Bracelet Box",        "carrier": "DHL",
+     "length_cm": 25, "width_cm": 20, "height_cm": 5,  "tare_weight_kg": 0.12,
+     "max_weight_kg": 2.0, "package_type": "bracelet",  "sort_order": 30},
+    {"code": "CUSTOM",       "name": "Custom / Manual",         "carrier": None,
+     "length_cm": None, "width_cm": None, "height_cm": None, "tare_weight_kg": None,
+     "max_weight_kg": None, "package_type": None,       "sort_order": 90,
+     "notes": "Manual dimensions — select and type L/W/H in the AWB modal."},
+]
+
+
+def seed_default_box_types(db_path: Path) -> List[str]:
+    """Insert the default Box Profiles for codes not present yet.
+
+    Idempotent and non-destructive: existing rows (any state, incl. inactive)
+    are never touched. Returns the list of codes actually created.
+    """
+    created: List[str] = []
+    for profile in DEFAULT_BOX_PROFILES:
+        if get_box_type_by_code(db_path, profile["code"]) is None:
+            # get_box_type_by_code filters active=1; check raw existence too
+            with sqlite3.connect(str(Path(db_path))) as conn:
+                exists = conn.execute(
+                    "SELECT 1 FROM box_types WHERE code=?", (profile["code"],)
+                ).fetchone()
+            if exists:
+                continue  # present but inactive — operator's choice, leave it
+            upsert_box_type(db_path, dict(profile))
+            created.append(profile["code"])
+    return created
 
 
 # ── CompanyProfile (Phase 7 — commercial document platform) ──────────────────
