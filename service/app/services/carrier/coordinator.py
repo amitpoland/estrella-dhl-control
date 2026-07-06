@@ -160,6 +160,7 @@ class CarrierCoordinator:
                 simulated=bool(row.get("simulated")),
                 service_product=row.get("service_product"),
                 dimensions_json=row.get("dimensions_json"),
+                replayed=True,
             )
 
         if state == ShipmentState.PENDING:

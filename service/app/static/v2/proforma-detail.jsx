@@ -894,12 +894,15 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
         // rendered every successful booking as a failure and caused operators
         // to retry, double-booking live AWBs (2026-07-06 incident).
         const data = (r && r.ok) ? r.data : null;
-        if (data && data.tracking_ref) {
+        // Success OR idempotency replay both switch to the result view —
+        // a replayed COMPLETE (even a legacy row with null tracking_ref)
+        // means the shipment already exists; never present it as a failure
+        // that invites a retry (2026-07-06 duplicate-AWB incident).
+        if (data && (data.tracking_ref || data.replayed)) {
           setResult(data);
         } else {
           const msg = (r && (r.error || (r.data && (r.data.detail || r.data.error))))
-            || (data ? 'AWB request completed but no tracking number was returned — check server records before retrying.'
-                     : 'AWB creation failed — check backend logs.');
+            || 'AWB creation failed — check backend logs.';
           setApiError(typeof msg === 'object' ? JSON.stringify(msg) : msg);
         }
         setLoading(false);
@@ -938,41 +941,86 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   };
 
   if (result) {
+    const isReplay  = !!result.replayed;
+    const hasRef    = !!result.tracking_ref;
+    const isLegacy  = isReplay && !hasRef;   // pre-migration COMPLETE row: no stored AWB
     return (
       <div style={overlay} onClick={() => { onSuccess && onSuccess(result); onClose(); }} data-testid="awb-generate-modal">
         <div onClick={e => e.stopPropagation()} style={card}>
           <div style={header}>
-            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--badge-green-text)' }}>AWB Created</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--badge-green-text)' }}>
+              {isReplay ? 'AWB Already Exists' : 'AWB Created'}
+            </div>
             <button onClick={() => { onSuccess && onSuccess(result); onClose(); }}
               style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}
               aria-label="Close">×</button>
           </div>
           <div style={{ padding: '24px' }} data-testid="awb-generate-success">
             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
-              DHL Express AWB generated successfully
+              {isReplay
+                ? 'A shipment already exists for these package values — no new DHL shipment was created.'
+                : 'DHL Express AWB generated successfully'}
             </div>
-            <div style={{
-              padding: '16px 18px', background: 'var(--bg-subtle)', borderRadius: 8,
-              border: '1px solid var(--badge-green-border)', marginBottom: 20,
-            }}>
-              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>TRACKING NUMBER (AWB)</div>
+            {isLegacy ? (
               <div style={{
-                fontSize: 22, fontWeight: 800, fontFamily: 'monospace',
-                color: 'var(--badge-green-text)', letterSpacing: 1,
-              }}>{result.tracking_ref}</div>
-              <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-3)' }}>
-                Mode: {result.mode} · State: {result.state}
-                {result.simulated && <span style={{ marginLeft: 8, color: 'var(--badge-amber-text)' }}>(SIMULATED)</span>}
+                padding: '16px 18px', background: 'var(--bg-subtle)', borderRadius: 8,
+                border: '1px solid var(--border)', marginBottom: 20,
+              }} data-testid="awb-legacy-completed">
+                <div style={{ fontSize: 13, color: 'var(--text)' }}>
+                  AWB completed earlier — the tracking number predates the reference store.
+                  {result.saved_labels_exist
+                    ? ' Check the saved labels on the server for this batch.'
+                    : ' No saved label was found on the server for this batch.'}
+                </div>
               </div>
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 20 }}>
-              Label PDF saved to server. Contact ops to retrieve or print the shipping label.
-            </div>
+            ) : (
+              <div style={{
+                padding: '16px 18px', background: 'var(--bg-subtle)', borderRadius: 8,
+                border: '1px solid var(--badge-green-border)', marginBottom: 20,
+              }}>
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>TRACKING NUMBER (AWB)</div>
+                <div style={{
+                  fontSize: 22, fontWeight: 800, fontFamily: 'monospace',
+                  color: 'var(--badge-green-text)', letterSpacing: 1,
+                }} data-testid="awb-tracking-ref">{result.tracking_ref}</div>
+                <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-3)' }}>
+                  Mode: {result.mode} · State: {result.state}
+                  {result.simulated && <span style={{ marginLeft: 8, color: 'var(--badge-amber-text)' }}>(SIMULATED)</span>}
+                </div>
+              </div>
+            )}
+            {(result.label_download_url || result.commercial_documents_url) && (
+              <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+                {result.label_download_url && (
+                  <a href={result.label_download_url} download
+                    style={{ ...inputStyle, width: 'auto', padding: '8px 16px', cursor: 'pointer',
+                             textDecoration: 'none', display: 'inline-block' }}
+                    data-testid="awb-download-label">
+                    ⬇ Download Label PDF
+                  </a>
+                )}
+                {result.commercial_documents_url && (
+                  <a href={result.commercial_documents_url} download
+                    style={{ ...inputStyle, width: 'auto', padding: '8px 16px', cursor: 'pointer',
+                             textDecoration: 'none', display: 'inline-block' }}
+                    data-testid="awb-download-documents">
+                    ⬇ Download Commercial Documents
+                  </a>
+                )}
+              </div>
+            )}
+            {!result.label_download_url && !isLegacy && (
+              <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 20 }}>
+                Label PDF saved to server. Contact ops to retrieve or print the shipping label.
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-              <button
-                onClick={() => { navigator.clipboard && navigator.clipboard.writeText(result.tracking_ref); }}
-                style={{ ...inputStyle, width: 'auto', padding: '8px 16px', cursor: 'pointer' }}
-              >Copy AWB</button>
+              {hasRef && (
+                <button
+                  onClick={() => { navigator.clipboard && navigator.clipboard.writeText(result.tracking_ref); }}
+                  style={{ ...inputStyle, width: 'auto', padding: '8px 16px', cursor: 'pointer' }}
+                >Copy AWB</button>
+              )}
               <Btn variant="primary" onClick={() => { onSuccess && onSuccess(result); onClose(); }}>Done</Btn>
             </div>
           </div>

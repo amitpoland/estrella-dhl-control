@@ -85,6 +85,73 @@ def _get_shipment_db_path() -> Path:
     return root / "carrier_shipments.db"
 
 
+# ── Label / document location helpers ─────────────────────────────────────────
+# The UI never sees filesystem paths — only relative API URLs built here.
+
+import re as _re
+
+_SAFE_REF = _re.compile(r"^[A-Za-z0-9_-]{4,64}$")
+_SAFE_BATCH = _re.compile(r"^[A-Za-z0-9_-]{4,128}$")
+
+
+def _carrier_root() -> Path:
+    from ..core.config import settings
+    return Path(settings.carrier_storage_root or (settings.storage_root / "carrier"))
+
+
+def _label_file(batch_id: str, tracking_ref: str) -> Optional[Path]:
+    """Resolve the saved label PDF for (batch, AWB). None when absent/invalid.
+
+    Mirrors the naming used by the live adapter's _save_label_pdf():
+    labels/{batch_id}-{tracking_ref}.pdf. Inputs are pattern-validated and the
+    resolved path is confined to the labels directory (no traversal).
+    """
+    if not (isinstance(batch_id, str) and isinstance(tracking_ref, str)):
+        return None
+    if not (_SAFE_BATCH.match(batch_id) and _SAFE_REF.match(tracking_ref)):
+        return None
+    labels_dir = (_carrier_root() / "labels").resolve()
+    candidate = (labels_dir / f"{batch_id}-{tracking_ref}.pdf").resolve()
+    if candidate.parent != labels_dir or not candidate.is_file():
+        return None
+    return candidate
+
+
+def _batch_has_any_label(batch_id: str) -> bool:
+    if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
+        return False
+    labels_dir = _carrier_root() / "labels"
+    if not labels_dir.is_dir():
+        return False
+    return any(labels_dir.glob(f"{batch_id}-*.pdf"))
+
+
+def _doc_package_file(batch_id: str) -> Optional[Path]:
+    """Saved commercial-document package for the batch, if one exists.
+
+    Path-DOC currently streams packages without saving; this lights up
+    automatically if/when packages are persisted under doc_packages/.
+    """
+    if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
+        return None
+    pkg_dir = (_carrier_root() / "doc_packages").resolve()
+    if not pkg_dir.is_dir():
+        return None
+    for ext in ("pdf", "zip"):
+        candidate = (pkg_dir / f"{batch_id}.{ext}").resolve()
+        if candidate.parent == pkg_dir and candidate.is_file():
+            return candidate
+    return None
+
+
+_NO_STORE_HEADERS = {
+    # Lesson G — download endpoints must never be cached.
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
 # ── Request body ──────────────────────────────────────────────────────────────
 
 
@@ -214,6 +281,15 @@ def create_shipment(
         result = coordinator.create_shipment(request)
     except CarrierGateError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    # Document link contract — relative API URLs only, never filesystem paths.
+    label_download_url = None
+    if result.tracking_ref and _label_file(batch_id, result.tracking_ref):
+        label_download_url = f"/api/v1/carrier/{batch_id}/label/{result.tracking_ref}"
+    commercial_documents_url = None
+    if _doc_package_file(batch_id):
+        commercial_documents_url = f"/api/v1/carrier/{batch_id}/documents"
+
     return JSONResponse({
         "batch_id": batch_id,
         "idempotency_key": result.idempotency_key,
@@ -221,6 +297,14 @@ def create_shipment(
         "state": result.state.value,
         "tracking_ref": result.tracking_ref,
         "simulated": result.simulated,
+        # Replay indicator: True when served from the stored COMPLETE row —
+        # no adapter call was made, no new DHL shipment was created.
+        "replayed": bool(result.replayed),
+        "label_download_url": label_download_url,
+        "commercial_documents_url": commercial_documents_url,
+        # Legacy pre-migration rows have no stored tracking_ref; tell the UI
+        # whether labels exist on the server for this batch anyway.
+        "saved_labels_exist": _batch_has_any_label(batch_id),
     })
 
 
@@ -360,4 +444,65 @@ async def create_label_package(
         content      = result.content,
         media_type   = result.content_type,
         headers      = headers,
+    )
+
+
+# ── Label / document downloads ───────────────────────────────────────────────
+
+
+@router.get(
+    "/{batch_id}/label/{tracking_ref}",
+    summary="Download the saved DHL label PDF for a batch AWB",
+)
+def download_label(
+    batch_id: str,
+    tracking_ref: str,
+    _auth: None = Depends(require_api_key),
+) -> Response:
+    """Serve the label PDF saved at AWB creation time.
+
+    Inputs are pattern-validated and path-confined to the labels directory;
+    filesystem paths are never exposed. 404 when no label exists.
+    """
+    label = _label_file(batch_id, tracking_ref)
+    if label is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No saved label for batch {batch_id!r} AWB {tracking_ref!r}.",
+        )
+    return Response(
+        content=label.read_bytes(),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="AWB-{tracking_ref}.pdf"',
+            **_NO_STORE_HEADERS,
+        },
+    )
+
+
+@router.get(
+    "/{batch_id}/documents",
+    summary="Download the saved commercial-document package for a batch",
+)
+def download_commercial_documents(
+    batch_id: str,
+    _auth: None = Depends(require_api_key),
+) -> Response:
+    """Serve the saved commercial-document package (invoice + packing list +
+    CN23) when one has been persisted. 404 when none exists — Path-DOC
+    packages generated via POST /label-package are streamed, not saved."""
+    pkg = _doc_package_file(batch_id)
+    if pkg is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No saved commercial-document package for batch {batch_id!r}.",
+        )
+    media = "application/zip" if pkg.suffix == ".zip" else "application/pdf"
+    return Response(
+        content=pkg.read_bytes(),
+        media_type=media,
+        headers={
+            "Content-Disposition": f'attachment; filename="DOCS-{batch_id}{pkg.suffix}"',
+            **_NO_STORE_HEADERS,
+        },
     )
