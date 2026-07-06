@@ -166,8 +166,9 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
                 f"DHL response missing shipmentTrackingNumber. Response keys: {list(data.keys())}"
             )
 
-        # Save label PDF if returned
-        _save_label_pdf(data, request.batch_id, tracking_ref, settings)
+        # Save every returned shipment document (label / waybillDoc / receipt /
+        # invoice) to its own store — each becomes downloadable separately.
+        _save_shipment_documents(data, request.batch_id, tracking_ref, settings)
 
         log.info("AWB created: batch=%s tracking_ref=%s", request.batch_id, tracking_ref)
 
@@ -441,8 +442,14 @@ def _build_shipment_body(
         "outputImageProperties": {
             "printerDPI": 300,
             "encodingFormat": "pdf",
+            # Request the full document set: transport label (attach to
+            # package), waybill document (hand to courier), shipment receipt
+            # (operator/customer copy). Customs invoice is appended below
+            # only when an exportDeclaration exists (DHL requires it).
             "imageOptions": [
-                {"typeCode": "label", "templateName": "ECOM26_84_001"}
+                {"typeCode": "label", "templateName": "ECOM26_84_001"},
+                {"typeCode": "waybillDoc", "isRequested": True},
+                {"typeCode": "receipt", "isRequested": True},
             ],
         },
         "customerDetails": {
@@ -486,6 +493,15 @@ def _build_shipment_body(
     # Brazil: WY (Paperless Trade) required alongside bypassPLTError URL param (DHL CFIT 2026-07-01)
     if _recv_cc.upper() == "BR":
         body["valueAddedServices"] = [{"serviceCode": "WY"}]
+
+    # DHL can only generate the customs/commercial invoice document when an
+    # exportDeclaration is present (requested here for when the non-EU
+    # exportDeclaration builder lands — currently intra-EU bodies never
+    # carry one, so this is inert today).
+    if "exportDeclaration" in body["content"]:
+        body["outputImageProperties"]["imageOptions"].append(
+            {"typeCode": "invoice", "isRequested": True, "invoiceType": "commercial"}
+        )
 
     return body
 
@@ -569,22 +585,46 @@ def _raise_dhl_error(resp: httpx.Response) -> None:
     raise CarrierGateError(f"DHL API {resp.status_code}: {msg}")
 
 
-def _save_label_pdf(data: dict, batch_id: str, tracking_ref: str, settings) -> None:
+# DHL response document typeCode → storage subdirectory. The label keeps its
+# historical location/naming so every existing (legacy) label stays
+# downloadable unchanged. The invoice (DHL customs/commercial document) lands
+# in doc_packages/{batch_id}.pdf — the exact slot the existing
+# /documents endpoint + commercial_documents_url contract already serve.
+_DOC_TYPE_DIRS = {
+    "label":      "labels",
+    "waybillDoc": "waybill_docs",
+    "receipt":    "shipment_receipts",
+}
+
+
+def _save_shipment_documents(data: dict, batch_id: str, tracking_ref: str, settings) -> None:
+    """Persist every base64 document DHL returned, one file per typeCode.
+
+    Non-fatal on any individual failure — the shipment is already booked;
+    a missing file only means its download button stays hidden.
+    """
     docs = data.get("documents") or []
+    root = Path(settings.carrier_storage_root or (settings.storage_root / "carrier"))
+    safe_ref = tracking_ref.replace("/", "_").replace("\\", "_")
     for doc in docs:
-        if doc.get("typeCode") == "label":
-            content_b64 = doc.get("content")
-            if not content_b64:
+        type_code = doc.get("typeCode") or ""
+        content_b64 = doc.get("content")
+        if not content_b64:
+            continue
+        try:
+            pdf_bytes = base64.b64decode(content_b64)
+            if type_code in _DOC_TYPE_DIRS:
+                target_dir = root / _DOC_TYPE_DIRS[type_code]
+                target_dir.mkdir(parents=True, exist_ok=True)
+                path = target_dir / f"{batch_id}-{safe_ref}.pdf"
+            elif type_code == "invoice":
+                target_dir = root / "doc_packages"
+                target_dir.mkdir(parents=True, exist_ok=True)
+                path = target_dir / f"{batch_id}.pdf"
+            else:
+                log.info("Unknown DHL document typeCode %r — skipped", type_code)
                 continue
-            try:
-                pdf_bytes = base64.b64decode(content_b64)
-                root = settings.carrier_storage_root or (settings.storage_root / "carrier")
-                labels_dir = Path(root) / "labels"
-                labels_dir.mkdir(parents=True, exist_ok=True)
-                safe_ref = tracking_ref.replace("/", "_").replace("\\", "_")
-                label_path = labels_dir / f"{batch_id}-{safe_ref}.pdf"
-                label_path.write_bytes(pdf_bytes)
-                log.info("Label saved: %s", label_path)
-            except Exception as exc:
-                log.warning("Label PDF save failed (non-fatal): %s", exc)
-            break
+            path.write_bytes(pdf_bytes)
+            log.info("DHL document saved: type=%s %s", type_code, path)
+        except Exception as exc:
+            log.warning("DHL document save failed (non-fatal, type=%s): %s", type_code, exc)

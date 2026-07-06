@@ -150,7 +150,7 @@ class TestUrlHelpers:
     def test_response_urls_are_relative_api_paths(self):
         """Pin the URL contract format — never a filesystem path."""
         src = (Path(rca.__file__)).read_text(encoding="utf-8")
-        assert '"/api/v1/carrier/{batch_id}/label/{result.tracking_ref}"' in src.replace("f\"", "\"")
+        assert '"/api/v1/carrier/{batch_id}/label/{tracking_ref}"' in src.replace("f\"", "\"")
         assert "label_download_url" in src
         assert "commercial_documents_url" in src
         assert "saved_labels_exist" in src
@@ -197,13 +197,15 @@ class TestModalSourcePins:
 
     def test_download_label_button_present(self):
         src = self._src()
-        assert 'data-testid="awb-download-label"' in src
+        # 2026-07-06 document package: buttons render from a URL list —
+        # the testid is an array literal, the URL source unchanged.
+        assert "'awb-download-label'" in src
         assert "result.label_download_url" in src
 
     def test_commercial_documents_button_conditional(self):
         src = self._src()
-        assert 'data-testid="awb-download-documents"' in src
-        assert "result.commercial_documents_url &&" in src
+        assert "'awb-download-documents'" in src
+        assert "result.commercial_documents_url" in src  # renders only when non-null (list map)
 
     def test_replay_banner_present(self):
         src = self._src()
