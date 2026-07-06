@@ -996,24 +996,22 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
                 </div>
               </div>
             )}
-            {(result.label_download_url || result.commercial_documents_url) && (
-              <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
-                {result.label_download_url && (
-                  <a href={result.label_download_url} download
+            {(result.label_download_url || result.waybill_doc_download_url
+              || result.shipment_receipt_download_url || result.commercial_documents_url) && (
+              <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
+                {[
+                  [result.label_download_url,            '⬇ Transport Label',       'awb-download-label'],
+                  [result.waybill_doc_download_url,      '⬇ Waybill Doc (courier)', 'awb-download-waybill'],
+                  [result.shipment_receipt_download_url, '⬇ Shipment Receipt',      'awb-download-receipt'],
+                  [result.commercial_documents_url,      '⬇ Commercial Documents',  'awb-download-documents'],
+                ].map(([href, label, tid]) => href ? (
+                  <a key={tid} href={href} download
                     style={{ ...inputStyle, width: 'auto', padding: '8px 16px', cursor: 'pointer',
                              textDecoration: 'none', display: 'inline-block' }}
-                    data-testid="awb-download-label">
-                    ⬇ Download Label PDF
+                    data-testid={tid}>
+                    {label}
                   </a>
-                )}
-                {result.commercial_documents_url && (
-                  <a href={result.commercial_documents_url} download
-                    style={{ ...inputStyle, width: 'auto', padding: '8px 16px', cursor: 'pointer',
-                             textDecoration: 'none', display: 'inline-block' }}
-                    data-testid="awb-download-documents">
-                    ⬇ Download Commercial Documents
-                  </a>
-                )}
+                ) : null)}
               </div>
             )}
             {/* Shipment summary — echoes the recorded shipment intent */}
@@ -3371,12 +3369,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                   {_kv('Declared value', carrierShipment.declared_value != null
                     ? `${carrierShipment.declared_value} ${carrierShipment.currency || ''}` : '—', 'pf-logistics-awb-declared')}
                   {_kv('Created', carrierShipment.created_at || '—', 'pf-logistics-awb-created')}
-                  {carrierShipment.label_download_url ? (
-                    <div style={{ paddingTop: 8 }}>
-                      <a href={carrierShipment.label_download_url} download data-testid="pf-logistics-awb-label-download"
-                        style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', textDecoration: 'none', padding: '5px 10px', border: '1px solid var(--border)', borderRadius: 6, display: 'inline-block', background: 'var(--bg)' }}>
-                        ⬇ Download Label PDF
-                      </a>
+                  {(carrierShipment.label_download_url || carrierShipment.waybill_doc_download_url
+                    || carrierShipment.shipment_receipt_download_url) ? (
+                    <div style={{ paddingTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {[
+                        [carrierShipment.label_download_url,            '⬇ Transport Label',  'pf-logistics-awb-label-download'],
+                        [carrierShipment.waybill_doc_download_url,      '⬇ Waybill Doc',      'pf-logistics-awb-waybill-download'],
+                        [carrierShipment.shipment_receipt_download_url, '⬇ Shipment Receipt', 'pf-logistics-awb-receipt-download'],
+                      ].map(([href, label, tid]) => href ? (
+                        <a key={tid} href={href} download data-testid={tid}
+                          style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', textDecoration: 'none', padding: '5px 10px', border: '1px solid var(--border)', borderRadius: 6, display: 'inline-block', background: 'var(--bg)' }}>
+                          {label}
+                        </a>
+                      ) : null)}
                     </div>
                   ) : null}
                 </div>
@@ -3430,10 +3435,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 : 'Available after Convert to Invoice (toolbar).',
             },
             {
-              key: 'dhl_label', name: 'DHL AWB Label',
+              key: 'dhl_label', name: 'DHL Transport Label',
               authority: carrierShipment && carrierShipment.tracking_ref
-                ? `AWB ${carrierShipment.tracking_ref} · carrier label store`
-                : 'DHL Express label (carrier label store)',
+                ? `AWB ${carrierShipment.tracking_ref} · attach to package`
+                : 'DHL transport label — attach to package (carrier label store)',
               available: !!(carrierShipment && carrierShipment.label_download_url),
               action: (carrierShipment && carrierShipment.label_download_url)
                 ? { label: '↓ Download Label', href: carrierShipment.label_download_url, testid: 'pf-doc-dhl-label-download' }
@@ -3443,6 +3448,34 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                     ? (carrierShipment.saved_labels_exist
                         ? 'AWB recorded before the reference store — labels are saved on the server; ask ops or rebook to link one here.'
                         : 'No saved label for this shipment.')
+                    : 'Available after a DHL AWB is generated (⚡ AWB Generate).'),
+            },
+            {
+              key: 'dhl_waybill', name: 'DHL Waybill Doc — Hand to Courier',
+              authority: carrierShipment && carrierShipment.tracking_ref
+                ? `AWB ${carrierShipment.tracking_ref} · hand to courier at pickup`
+                : 'DHL waybill document — hand to courier at pickup',
+              available: !!(carrierShipment && carrierShipment.waybill_doc_download_url),
+              action: (carrierShipment && carrierShipment.waybill_doc_download_url)
+                ? { label: '↓ Download Waybill', href: carrierShipment.waybill_doc_download_url, testid: 'pf-doc-dhl-waybill-download' }
+                : null,
+              pending: (carrierShipment && carrierShipment.waybill_doc_download_url) ? null
+                : (carrierShipment
+                    ? 'No waybill document saved for this shipment (bookings before waybill-doc support, or DHL did not return one).'
+                    : 'Available after a DHL AWB is generated (⚡ AWB Generate).'),
+            },
+            {
+              key: 'dhl_receipt', name: 'DHL Shipment Receipt',
+              authority: carrierShipment && carrierShipment.tracking_ref
+                ? `AWB ${carrierShipment.tracking_ref} · operator/customer receipt`
+                : 'DHL shipment receipt — operator/customer copy',
+              available: !!(carrierShipment && carrierShipment.shipment_receipt_download_url),
+              action: (carrierShipment && carrierShipment.shipment_receipt_download_url)
+                ? { label: '↓ Download Receipt', href: carrierShipment.shipment_receipt_download_url, testid: 'pf-doc-dhl-receipt-download' }
+                : null,
+              pending: (carrierShipment && carrierShipment.shipment_receipt_download_url) ? null
+                : (carrierShipment
+                    ? 'No shipment receipt saved for this shipment (bookings before receipt support, or DHL did not return one).'
                     : 'Available after a DHL AWB is generated (⚡ AWB Generate).'),
             },
             {
