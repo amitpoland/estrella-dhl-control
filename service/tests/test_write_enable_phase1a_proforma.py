@@ -102,7 +102,10 @@ class TestM5InlineEdit:
 
     def test_editable_fields_include_payment_terms(self):
         src = _read(DETAIL)
-        assert "editFields.payment_terms" in src, "Payment terms must be editable"
+        # Payment terms are edited via the pt_* fields (method / days / dates),
+        # not a single editFields.payment_terms token.
+        assert "editFields.pt_method" in src and "editFields.pt_days" in src, \
+            "Payment terms must be editable (pt_method / pt_days)"
 
 
 # =============================================================================
@@ -260,11 +263,12 @@ class TestPzApiTransport:
 # =============================================================================
 
 class TestLessonMPreservation:
-    """CMR, Generate, More buttons must remain visible and disabled.
-    Send button is now conditionally enabled (M2 Phase 1B)."""
+    """Lesson M — operator-visible capabilities preserved. CMR was RELOCATED
+    from the toolbar (tb-cmr) to the Documents tab (pf-doc-cmr-preview) — the
+    capability is preserved, not removed. Generate/More remain disabled toolbar
+    controls; Send is conditionally enabled (M2 Phase 1B)."""
 
     @pytest.mark.parametrize("testid,label_fragment", [
-        ("tb-cmr",      "CMR"),
         ("tb-generate", "Generate"),
         ("tb-more",     "⋯"),
     ])
@@ -272,7 +276,10 @@ class TestLessonMPreservation:
         src = _read(DETAIL)
         assert testid in src, f"Button {testid} must still exist (Lesson M)"
         idx = src.find(f'data-testid="{testid}"')
-        region = src[max(0, idx - 200):idx + 100]
+        # Anchor on the enclosing <TbBtn> element — button title text can be long
+        # (e.g. the M4 backend-gap note), so a fixed char window is unreliable.
+        btn_start = src.rfind("<TbBtn", 0, idx)
+        region = src[btn_start:idx] if btn_start >= 0 else src[max(0, idx - 500):idx]
         assert "disabled" in region, f"Button {testid} must still be disabled"
 
     def test_send_button_exists(self):
@@ -281,19 +288,30 @@ class TestLessonMPreservation:
         assert 'data-testid="tb-send"' in src, "Send button must still exist"
 
     def test_cmr_has_explicit_reason(self):
+        """CMR relocated from the tb-cmr toolbar button to the Documents tab
+        (pf-doc-cmr-preview). Capability preserved (Lesson M relocation), not
+        removed — the toolbar button is intentionally gone."""
         src = _read(DETAIL)
-        assert "CMR print" in src and "no backend PDF generation route" in src
+        assert 'data-testid="tb-cmr"' not in src, \
+            "tb-cmr toolbar button was relocated — must be absent from the toolbar"
+        assert "pf-doc-cmr-preview" in src, \
+            "CMR capability must exist in the Documents tab (pf-doc-cmr-preview)"
 
     def test_generate_has_explicit_reason(self):
+        """tb-generate (document-package) stays disabled with an explicit
+        backend-gap reason (M4: POST /generate-documents)."""
         src = _read(DETAIL)
-        assert "Document generation not yet available" in src
+        assert "generate-documents" in src or "Document-package generation" in src, \
+            "Generate button must carry its explicit backend-gap reason"
 
     def test_no_testids_removed(self):
-        """All original toolbar testids must still be present."""
+        """Still-present toolbar testids must exist. tb-cmr is intentionally
+        excluded — relocated to the Documents tab (see
+        test_cmr_has_explicit_reason)."""
         src = _read(DETAIL)
         required_testids = [
             "tb-edit", "tb-delete", "tb-duplicate", "tb-post",
-            "tb-convert", "tb-preview", "tb-cmr", "tb-send",
+            "tb-convert", "tb-preview", "tb-send",
             "tb-generate", "tb-more", "tb-back",
             "proforma-detail-download-pdf",
         ]
@@ -336,17 +354,26 @@ class TestWindowExports:
 class TestSafetyConstraints:
     """Write enablement must not introduce unsafe operations."""
 
-    def test_no_delete_whole_draft_in_api(self):
-        """pz-api.js must NOT have a deleteWholeDraft transport (deleteDraftLine is fine)."""
-        src = _read(PZ_API)
-        code = "\n".join(ln for ln in src.splitlines() if not ln.strip().startswith("//"))
-        # deleteDraftLine exists for line removal — that's correct.
-        # But there must be no `deleteDraft:` or `deleteWholeDraft` transport
-        # that targets DELETE /draft/{id} without /lines/ in the path.
+    def test_delete_draft_scoped_to_purge_modal(self):
+        """D-(i): PzApi.deleteDraft is a legitimate transport for the scoped
+        Purge feature (hard-delete of local-only cancelled drafts, tb-purge),
+        but it must be CALLED only inside PurgeDraftModal — never in the cancel
+        path or anywhere else in proforma-detail.jsx. Full purge safety is
+        covered by test_proforma_purge_cancelled.py."""
+        src = _read(DETAIL)
+        purge_start = src.find("function PurgeDraftModal")
+        assert purge_start > 0, "PurgeDraftModal must exist (scoped hard-delete)"
+        purge_end = src.find("\nfunction ", purge_start + 1)
+        if purge_end < 0:
+            purge_end = len(src)
         import re
-        matches = re.findall(r'deleteDraft\b(?!Line)', code)
-        assert len(matches) == 0, \
-            "No deleteDraft (whole-draft) transport — M1a uses cancelDraft"
+        calls = list(re.finditer(r'deleteDraft\(', src))
+        assert calls, "expected the scoped deleteDraft() call inside PurgeDraftModal"
+        for m in calls:
+            assert purge_start <= m.start() < purge_end, (
+                "deleteDraft() may only be called inside PurgeDraftModal "
+                f"(found at offset {m.start()}, outside [{purge_start}, {purge_end}])"
+            )
 
     def test_no_wfirma_write_in_invoice_history(self):
         """Prior Invoice modal must be read-only."""
@@ -358,11 +385,22 @@ class TestSafetyConstraints:
             assert "_postM" not in region, "Invoice history modal must not make write calls"
 
     def test_cancel_is_soft_state(self):
-        """Cancel uses PzApi.cancelDraft (POST /cancel), not DELETE."""
+        """Cancel uses PzApi.cancelDraft (POST /cancel), never a hard delete.
+        deleteDraft is confined to the Purge modal (see
+        test_delete_draft_scoped_to_purge_modal); it must never appear in the
+        cancel flow."""
         src = _read(DETAIL)
-        assert "cancelDraft" in src
-        # Verify it does NOT use a DELETE method for draft removal
-        assert "deleteDraft(" not in src
+        assert "cancelDraft" in src, "Cancel flow must use the soft cancelDraft transport"
+        # deleteDraft must exist ONLY inside PurgeDraftModal — nowhere else.
+        purge_start = src.find("function PurgeDraftModal")
+        purge_end = src.find("\nfunction ", purge_start + 1)
+        if purge_end < 0:
+            purge_end = len(src)
+        import re
+        for m in re.finditer(r'deleteDraft\(', src):
+            assert purge_start <= m.start() < purge_end, (
+                "deleteDraft() must be confined to PurgeDraftModal; cancel stays soft"
+            )
 
     def test_edit_does_not_post_to_wfirma(self):
         """Edit mode must not trigger a wFirma post."""
