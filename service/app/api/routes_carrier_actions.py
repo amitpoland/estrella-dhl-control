@@ -8,9 +8,12 @@ POST /api/v1/carrier/{batch_id}/shipment
 
 GET /api/v1/carrier/{batch_id}/shipment
     Returns most-recent recorded shipment for the batch.
-    503 if carrier_api_status == "pending".
-    Returns: batch_id, idempotency_key, mode, state, simulated, error.
-    Note: tracking_ref is never returned — structural DB invariant (column absent).
+    Returns: batch_id, idempotency_key, mode, state, simulated, error, plus the
+    AWB logistics/document contract (tracking_ref, carrier, service_code,
+    box_type_code, weight_kg, dimensions, declared_value, currency, created_at,
+    label_download_url, commercial_documents_url, documents_available,
+    saved_labels_exist). tracking_ref persisted since the 2026-07-06 incident
+    fix; legacy rows return null fields honestly.
 
 POST /api/v1/carrier/{batch_id}/label-package   ← Path-DOC (WF4.5)
     Generates outbound customs/shipping document package.
@@ -85,6 +88,73 @@ def _get_shipment_db_path() -> Path:
     return root / "carrier_shipments.db"
 
 
+# ── Label / document location helpers ─────────────────────────────────────────
+# The UI never sees filesystem paths — only relative API URLs built here.
+
+import re as _re
+
+_SAFE_REF = _re.compile(r"^[A-Za-z0-9_-]{4,64}$")
+_SAFE_BATCH = _re.compile(r"^[A-Za-z0-9_-]{4,128}$")
+
+
+def _carrier_root() -> Path:
+    from ..core.config import settings
+    return Path(settings.carrier_storage_root or (settings.storage_root / "carrier"))
+
+
+def _label_file(batch_id: str, tracking_ref: str) -> Optional[Path]:
+    """Resolve the saved label PDF for (batch, AWB). None when absent/invalid.
+
+    Mirrors the naming used by the live adapter's _save_label_pdf():
+    labels/{batch_id}-{tracking_ref}.pdf. Inputs are pattern-validated and the
+    resolved path is confined to the labels directory (no traversal).
+    """
+    if not (isinstance(batch_id, str) and isinstance(tracking_ref, str)):
+        return None
+    if not (_SAFE_BATCH.match(batch_id) and _SAFE_REF.match(tracking_ref)):
+        return None
+    labels_dir = (_carrier_root() / "labels").resolve()
+    candidate = (labels_dir / f"{batch_id}-{tracking_ref}.pdf").resolve()
+    if candidate.parent != labels_dir or not candidate.is_file():
+        return None
+    return candidate
+
+
+def _batch_has_any_label(batch_id: str) -> bool:
+    if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
+        return False
+    labels_dir = _carrier_root() / "labels"
+    if not labels_dir.is_dir():
+        return False
+    return any(labels_dir.glob(f"{batch_id}-*.pdf"))
+
+
+def _doc_package_file(batch_id: str) -> Optional[Path]:
+    """Saved commercial-document package for the batch, if one exists.
+
+    Path-DOC currently streams packages without saving; this lights up
+    automatically if/when packages are persisted under doc_packages/.
+    """
+    if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
+        return None
+    pkg_dir = (_carrier_root() / "doc_packages").resolve()
+    if not pkg_dir.is_dir():
+        return None
+    for ext in ("pdf", "zip"):
+        candidate = (pkg_dir / f"{batch_id}.{ext}").resolve()
+        if candidate.parent == pkg_dir and candidate.is_file():
+            return candidate
+    return None
+
+
+_NO_STORE_HEADERS = {
+    # Lesson G — download endpoints must never be cached.
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
 # ── Request body ──────────────────────────────────────────────────────────────
 
 
@@ -103,6 +173,7 @@ class ShipmentRequestBody(BaseModel):
     shipment_reference: Optional[str] = None  # internal batch reference
     receiver_vat_id: Optional[str] = None     # receiver EU VAT number
     receiver_eori: Optional[str] = None       # receiver EORI number
+    box_type_code: Optional[str] = None       # Box Master profile selected in the modal
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -209,11 +280,21 @@ def create_shipment(
         shipment_reference=body.shipment_reference,
         receiver_vat_id=body.receiver_vat_id,
         receiver_eori=body.receiver_eori,
+        box_type_code=body.box_type_code,
     )
     try:
         result = coordinator.create_shipment(request)
     except CarrierGateError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    # Document link contract — relative API URLs only, never filesystem paths.
+    label_download_url = None
+    if result.tracking_ref and _label_file(batch_id, result.tracking_ref):
+        label_download_url = f"/api/v1/carrier/{batch_id}/label/{result.tracking_ref}"
+    commercial_documents_url = None
+    if _doc_package_file(batch_id):
+        commercial_documents_url = f"/api/v1/carrier/{batch_id}/documents"
+
     return JSONResponse({
         "batch_id": batch_id,
         "idempotency_key": result.idempotency_key,
@@ -221,6 +302,24 @@ def create_shipment(
         "state": result.state.value,
         "tracking_ref": result.tracking_ref,
         "simulated": result.simulated,
+        # Replay indicator: True when served from the stored COMPLETE row —
+        # no adapter call was made, no new DHL shipment was created.
+        "replayed": bool(result.replayed),
+        "label_download_url": label_download_url,
+        "commercial_documents_url": commercial_documents_url,
+        "documents_available": commercial_documents_url is not None,
+        # Legacy pre-migration rows have no stored tracking_ref; tell the UI
+        # whether labels exist on the server for this batch anyway.
+        "saved_labels_exist": _batch_has_any_label(batch_id),
+        # AWB logistics summary — echoes the shipment intent for display.
+        "carrier": "DHL",
+        "service_code": (result.service_product if isinstance(result.service_product, str)
+                         else (body.product_code or "P")),
+        "box_type_code": body.box_type_code,
+        "weight_kg": body.weight_kg,
+        "dimensions": body.dimensions,
+        "declared_value": body.declared_value,
+        "currency": body.currency,
     })
 
 
@@ -238,6 +337,23 @@ def get_shipment(
             status_code=404,
             detail=f"No shipment found for batch {batch_id!r}.",
         )
+
+    tracking_ref = row.get("tracking_ref")
+    label_download_url = None
+    if tracking_ref and _label_file(batch_id, tracking_ref):
+        label_download_url = f"/api/v1/carrier/{batch_id}/label/{tracking_ref}"
+    commercial_documents_url = (
+        f"/api/v1/carrier/{batch_id}/documents" if _doc_package_file(batch_id) else None
+    )
+
+    import json as _json
+    dimensions = None
+    if row.get("dimensions_json"):
+        try:
+            dimensions = _json.loads(row["dimensions_json"])
+        except (TypeError, ValueError):
+            dimensions = None
+
     return JSONResponse({
         "batch_id": row["batch_id"],
         "idempotency_key": row["idempotency_key"],
@@ -245,6 +361,20 @@ def get_shipment(
         "state": row["state"],
         "simulated": bool(row["simulated"]),
         "error": row["error"],
+        # AWB logistics/document visibility (all additive)
+        "tracking_ref": tracking_ref,
+        "carrier": "DHL",
+        "service_code": row.get("service_product"),
+        "box_type_code": row.get("box_type_code"),
+        "weight_kg": row.get("weight_kg"),
+        "dimensions": dimensions,
+        "declared_value": row.get("declared_value"),
+        "currency": row.get("currency"),
+        "created_at": row.get("created_at"),
+        "label_download_url": label_download_url,
+        "commercial_documents_url": commercial_documents_url,
+        "documents_available": commercial_documents_url is not None,
+        "saved_labels_exist": _batch_has_any_label(batch_id),
     })
 
 
@@ -360,4 +490,65 @@ async def create_label_package(
         content      = result.content,
         media_type   = result.content_type,
         headers      = headers,
+    )
+
+
+# ── Label / document downloads ───────────────────────────────────────────────
+
+
+@router.get(
+    "/{batch_id}/label/{tracking_ref}",
+    summary="Download the saved DHL label PDF for a batch AWB",
+)
+def download_label(
+    batch_id: str,
+    tracking_ref: str,
+    _auth: None = Depends(require_api_key),
+) -> Response:
+    """Serve the label PDF saved at AWB creation time.
+
+    Inputs are pattern-validated and path-confined to the labels directory;
+    filesystem paths are never exposed. 404 when no label exists.
+    """
+    label = _label_file(batch_id, tracking_ref)
+    if label is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No saved label for batch {batch_id!r} AWB {tracking_ref!r}.",
+        )
+    return Response(
+        content=label.read_bytes(),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="AWB-{tracking_ref}.pdf"',
+            **_NO_STORE_HEADERS,
+        },
+    )
+
+
+@router.get(
+    "/{batch_id}/documents",
+    summary="Download the saved commercial-document package for a batch",
+)
+def download_commercial_documents(
+    batch_id: str,
+    _auth: None = Depends(require_api_key),
+) -> Response:
+    """Serve the saved commercial-document package (invoice + packing list +
+    CN23) when one has been persisted. 404 when none exists — Path-DOC
+    packages generated via POST /label-package are streamed, not saved."""
+    pkg = _doc_package_file(batch_id)
+    if pkg is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No saved commercial-document package for batch {batch_id!r}.",
+        )
+    media = "application/zip" if pkg.suffix == ".zip" else "application/pdf"
+    return Response(
+        content=pkg.read_bytes(),
+        media_type=media,
+        headers={
+            "Content-Disposition": f'attachment; filename="DOCS-{batch_id}{pkg.suffix}"',
+            **_NO_STORE_HEADERS,
+        },
     )

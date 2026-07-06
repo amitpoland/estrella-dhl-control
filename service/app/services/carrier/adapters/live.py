@@ -167,6 +167,7 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
             state=ShipmentState.SUBMITTED,
             tracking_ref=tracking_ref,
             simulated=False,
+            service_product=resolved_product,
         )
 
     def get_shipment(self, tracking_ref: str) -> ShipmentResult:
