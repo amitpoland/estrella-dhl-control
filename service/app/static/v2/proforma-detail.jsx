@@ -805,6 +805,10 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [savingMaster,  setSavingMaster]  = React.useState(false);
   const [saveError,     setSaveError]     = React.useState(null);
   const [savedNote,     setSavedNote]     = React.useState(false);
+  // Baseline availability — the gate FAILS VISIBLE, never open (2026-07-06
+  // incident: missing client_contractor_id silently booked AWB 1129315655).
+  // 'missing-id' | 'loading' | 'loaded' | 'failed'
+  const [masterState,   setMasterState]   = React.useState('missing-id');
 
   // Load box types, service catalogue, and carrier status once on mount
   React.useEffect(() => {
@@ -821,11 +825,18 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       .then(r => setCarrierStatus(r && r.ok ? r.data : null))
       .catch(() => setCarrierStatus(null));
     // Customer Master baseline for the save-confirmation comparison.
-    // No contractor id (unmatched client) → no baseline, no prompt, no save.
+    // Missing contractor id or a failed fetch does NOT skip the gate — it
+    // arms the fail-visible baseline panel instead (never fail open).
     if (prefill.client_contractor_id && window.PzApi.getCustomerMaster) {
+      setMasterState('loading');
       window.PzApi.getCustomerMaster(prefill.client_contractor_id)
-        .then(r => setMaster(r && r.ok ? r.data : null))
-        .catch(() => setMaster(null));
+        .then(r => {
+          if (r && r.ok && r.data) { setMaster(r.data); setMasterState('loaded'); }
+          else setMasterState('failed');
+        })
+        .catch(() => setMasterState('failed'));
+    } else {
+      setMasterState('missing-id');
     }
   }, []);
 
@@ -956,6 +967,19 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     }
 
     // Customer Master save-confirmation gate — NO booking until resolved.
+    // FAIL VISIBLE: a missing/unloadable baseline is a blocking panel, not a
+    // silent pass-through (2026-07-06 incident: fail-open booked AWB
+    // 1129315655 uncompared). Booking proceeds ONLY via an explicit operator
+    // choice — matching baseline, No/Yes on the diff panel, or "Continue
+    // without saving" on the baseline panel.
+    if (masterState !== 'loaded' || !master) {
+      setSaveError(null);
+      setSaveConfirm({
+        baselineIssue: masterState === 'missing-id' ? 'missing-id' : 'failed',
+      });
+      return;
+    }
+
     // Differences between modal shipping data and the client's Customer
     // Master record must be explicitly kept-once, saved, or cancelled.
     const cmp = computeMasterDiffs();
@@ -1449,7 +1473,35 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
           {/* Customer Master save-confirmation — booking is HELD until the
               operator picks Yes (save + continue), No (this AWB only), or
               Cancel (no save, no booking). Master is never written silently. */}
-          {saveConfirm && (
+          {saveConfirm && saveConfirm.baselineIssue && (
+            <div style={{
+              padding: '14px 16px', background: 'var(--bg-subtle)', borderRadius: 8,
+              border: '1px solid var(--badge-red-border)', marginBottom: 16,
+            }} data-testid="awb-baseline-panel">
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
+                {saveConfirm.baselineIssue === 'missing-id'
+                  ? 'No Customer Master baseline is available, so shipping details cannot be compared.'
+                  : 'Customer Master could not be loaded, so shipping details cannot be compared.'}
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 10 }}>
+                Nothing will be saved to Customer Master. Book only if you are sure the shipping details above are correct.
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Btn variant="primary"
+                  onClick={() => { setSaveConfirm(null); doBooking(); }}
+                  data-testid="awb-baseline-continue">
+                  Continue without saving
+                </Btn>
+                <Btn variant="ghost"
+                  onClick={() => { setSaveConfirm(null); }}
+                  data-testid="awb-baseline-cancel">
+                  Cancel
+                </Btn>
+              </div>
+            </div>
+          )}
+
+          {saveConfirm && !saveConfirm.baselineIssue && (
             <div style={{
               padding: '14px 16px', background: 'var(--bg-subtle)', borderRadius: 8,
               border: '1px solid var(--badge-amber-border)', marginBottom: 16,

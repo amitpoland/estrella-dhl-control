@@ -4141,6 +4141,11 @@ def _draft_to_summary(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         "id":                         d.id,
         "batch_id":                   d.batch_id,
         "client_name":                d.client_name,
+        # Canonical Customer Master identity — the AWB modal's save-
+        # confirmation gate needs this to fetch its comparison baseline
+        # (2026-07-06 fail-open incident: the field existed in the DB but
+        # was never serialized, so the gate silently booked uncompared).
+        "client_contractor_id":       getattr(d, "client_contractor_id", "") or "",
         "draft_state":                d.draft_state,
         "draft_version":              d.draft_version,
         "currency":                   d.currency,
