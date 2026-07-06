@@ -3166,7 +3166,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             <ServiceProductRegistryPanel />
           </React.Fragment>
         )}
-        {activeTab === 'lines' && <ProformaLinesTab lines={lines} currency={draftCurrency} />}
+        {activeTab === 'lines' && <ProformaLinesTab lines={lines} currency={draftCurrency} onAddLine={() => setEditMode(true)} />}
         {activeTab === 'source' && (
           <SourceExtractionTab draftId={draft && draft.id} />
         )}
@@ -4108,7 +4108,7 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
 // Added columns: Design No, Description EN, Purity (dedicated col), Currency.
 // Amount columns labelled with draft currency (historical field names unitEur/netEur
 // carry draft-currency amounts; NOT always EUR).
-function ProformaLinesTab({ lines, currency }) {
+function ProformaLinesTab({ lines, currency, onAddLine }) {
   const cur = currency || 'EUR';
   // PD-2: 12 columns
   const COL_HEADERS = [
@@ -4145,7 +4145,18 @@ function ProformaLinesTab({ lines, currency }) {
             {lines.length === 0 && (
               <tr>
                 <td colSpan={COL_HEADERS.length} style={{ padding: '28px 14px', textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>
-                  No line items — draft not yet built from packing upload.
+                  <div>No line items — draft not yet built from packing upload.</div>
+                  {/* HTML-parity (atlas-proforma-preview.html · lines tab empty state): ＋ Add line.
+                     Reuses the existing draft Edit surface — no new authority, no parallel line store;
+                     Packing List remains the line source. */}
+                  {onAddLine && (
+                    <button data-testid="lines-add-line" onClick={onAddLine}
+                      style={{ marginTop: 14, padding: '6px 14px', fontSize: 12, fontWeight: 700,
+                        background: 'var(--accent)', color: 'var(--accent-text)',
+                        border: '1px solid var(--accent-border, var(--accent))', borderRadius: 6, cursor: 'pointer' }}>
+                      ＋ Add line
+                    </button>
+                  )}
                 </td>
               </tr>
             )}
@@ -4200,6 +4211,15 @@ function ProformaCustomerMappingTab({ customer }) {
           <div style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.5 }}>
             Customer <strong>{customer.name}</strong> must be mapped to a wFirma record before converting to invoice.
           </div>
+          {/* HTML-parity (atlas-proforma-preview.html · mapping tab): unmatched → Open Customer Master.
+             Customer selection is the Customer Master authority; this navigates there, never a local list. */}
+          <button
+            data-testid="mapping-open-customer-master"
+            onClick={() => { window.location.href = '/v2/master'; }}
+            style={{ marginTop: 14, padding: '7px 16px', fontSize: 12.5, fontWeight: 700,
+              background: 'var(--accent)', color: 'var(--accent-text)', border: '1px solid var(--accent-border, var(--accent))',
+              borderRadius: 6, cursor: 'pointer' }}
+          >Open Customer Master</button>
         </div>
       ) : (
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '20px 24px', boxShadow: '0 1px 3px var(--shadow)' }}>
@@ -4992,6 +5012,16 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
 
           {/* Audit section */}
           <div style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-3)', fontWeight: 700, marginBottom: 10, marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>AUDIT</div>
+          {/* HTML-parity (atlas-proforma-preview.html · convert modal AUDIT): Idempotency key row.
+             The key is reserved server-side pre-call and reused by the Inbox retry proposal so wFirma
+             is never double-charged. No client-minted value is fabricated. */}
+          <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: 14, padding: '5px 0', fontSize: 13 }} data-testid="convert-modal-idempotency">
+            <span style={{ color: 'var(--text-3)' }}>Idempotency key</span>
+            <span style={{ fontSize: 12 }}>
+              Reserved server-side before the call
+              <span style={{ color: 'var(--badge-green-text)', marginLeft: 6 }}>(reused on retry — no double-charge)</span>
+            </span>
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: 14, padding: '5px 0', fontSize: 13 }}>
             <span style={{ color: 'var(--text-3)' }}>Audit row</span>
             <span style={{ fontSize: 12 }}>
