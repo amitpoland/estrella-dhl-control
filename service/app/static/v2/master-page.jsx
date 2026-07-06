@@ -21,6 +21,7 @@ const ENTITY_TYPES = [
   { id: 'fx',        label: 'FX Rates',           icon: '$', singular: 'FX Rate' },
   { id: 'vat',       label: 'VAT Rates',          icon: '%', singular: 'VAT Rate' },
   { id: 'carriers',  label: 'Carriers',           icon: '✈', singular: 'Carrier' },
+  { id: 'box_profiles', label: 'Box Profiles',    icon: '▣', singular: 'Box Profile' },
   { id: 'incoterms', label: 'Incoterms',          icon: '≡', singular: 'Incoterm' },
   { id: 'units',     label: 'Units of Measure',   icon: '⚖', singular: 'Unit' },
   { id: 'users',     label: 'Users',              icon: '◉', singular: 'User' },
@@ -100,6 +101,19 @@ const ENTITY_COLUMNS = {
     { key: 'api_type',     label: 'API type' },
     { key: 'inbox_email',  label: 'Inbox email' },
     { key: 'active',       label: 'Active', toggle: true },
+  ],
+  box_profiles: [
+    { key: 'code',           label: 'Code', mono: true },
+    { key: 'name',           label: 'Name' },
+    { key: 'carrier',        label: 'Carrier' },
+    { key: 'length_cm',      label: 'L (cm)' },
+    { key: 'width_cm',       label: 'W (cm)' },
+    { key: 'height_cm',      label: 'H (cm)' },
+    { key: 'tare_weight_kg', label: 'Tare (kg)' },
+    { key: 'max_weight_kg',  label: 'Max (kg)' },
+    { key: 'package_type',   label: 'Type' },
+    { key: 'sort_order',     label: 'Sort' },
+    { key: 'active',         label: 'Active', toggle: true },
   ],
   incoterms: [
     { key: 'code',                label: 'Code', mono: true },
@@ -303,6 +317,7 @@ function _entityApi(entityId) {
     case 'fx':         return { fetch: () => PzApi.listFxRates(),         extract: d => d.fx_rates || [],   rowKey: r => r.id };
     case 'vat':        return { fetch: () => PzApi.listVatConfig(),       extract: d => d.vat_config || [], rowKey: r => r.id };
     case 'carriers':   return { fetch: () => PzApi.listCarriersConfig(),  extract: d => d.carriers || [],   rowKey: r => r.carrier_code };
+    case 'box_profiles': return { fetch: () => PzApi.listBoxTypes('all'), extract: d => d.box_types || [],  rowKey: r => r.code };
     case 'incoterms':  return { fetch: () => PzApi.listIncoterms(),       extract: d => d.incoterms || [],  rowKey: r => r.code };
     case 'units':      return { fetch: () => PzApi.listUnits(),           extract: d => d.units || [],      rowKey: r => r.code };
     case 'users':      return { fetch: () => PzApi.listUsers(),           extract: d => (Array.isArray(d) ? d : d.users || []), rowKey: r => r.id };
@@ -444,6 +459,103 @@ function ScanStatusPanel({ status, onRefresh }) {
   );
 }
 
+// ── Box Profile edit/create modal — writes via PUT /api/v1/box-types/{code}.
+// Deactivation = active:false toggle (profiles are never deleted).
+function BoxProfileEditModal({ record, onClose, onSaved }) {
+  const isNew = !record.code;
+  const [form, setForm] = React.useState({
+    code:           record.code || '',
+    name:           record.name || '',
+    carrier:        record.carrier || '',
+    length_cm:      record.length_cm != null ? String(record.length_cm) : '',
+    width_cm:       record.width_cm  != null ? String(record.width_cm)  : '',
+    height_cm:      record.height_cm != null ? String(record.height_cm) : '',
+    tare_weight_kg: record.tare_weight_kg != null ? String(record.tare_weight_kg) : '',
+    max_weight_kg:  record.max_weight_kg  != null ? String(record.max_weight_kg)  : '',
+    package_type:   record.package_type || '',
+    sort_order:     record.sort_order != null ? String(record.sort_order) : '0',
+    active:         record.active !== false,
+    notes:          record.notes || '',
+  });
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError]   = React.useState(null);
+  const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
+  const num = (v) => (v === '' || v == null ? null : Number(v));
+
+  const save = async () => {
+    if (saving) return;
+    const code = form.code.trim().toUpperCase();
+    if (!code) { setError('Code is required.'); return; }
+    setSaving(true); setError(null);
+    const res = await PzApi.upsertBoxType(code, {
+      name:           form.name.trim() || null,
+      carrier:        form.carrier.trim() || null,
+      length_cm:      num(form.length_cm),
+      width_cm:       num(form.width_cm),
+      height_cm:      num(form.height_cm),
+      tare_weight_kg: num(form.tare_weight_kg),
+      max_weight_kg:  num(form.max_weight_kg),
+      package_type:   form.package_type.trim() || null,
+      sort_order:     num(form.sort_order) || 0,
+      active:         !!form.active,
+      notes:          form.notes.trim() || null,
+    });
+    setSaving(false);
+    if (res.ok) { onSaved && onSaved(); }
+    else setError(res.error || (res.data && res.data.detail) || 'Save failed.');
+  };
+
+  const field = (label, key, props = {}) => (
+    <div style={{ marginBottom: 10 }}>
+      <label style={{ display: 'block', fontSize: 11, color: 'var(--text-3)', marginBottom: 3 }}>{label}</label>
+      <Input value={form[key]} onChange={e => set(key, e.target.value)}
+        data-testid={'box-field-' + key} {...props} />
+    </div>
+  );
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'var(--overlay, rgba(0,0,0,0.45))', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      data-testid="box-profile-edit-modal">
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--card)', borderRadius: 10, width: 520, maxWidth: '94vw', maxHeight: '90vh', overflowY: 'auto', padding: 20, boxShadow: '0 20px 60px var(--shadow-heavy)' }}>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 14, color: 'var(--text)' }}>
+          {isNew ? 'New Box Profile' : `Edit Box Profile — ${record.code}`}
+        </div>
+        {field('Code *', 'code', { disabled: !isNew, placeholder: 'e.g. DHL-JEWEL-S' })}
+        {field('Name', 'name', { placeholder: 'e.g. DHL Small Jewellery Box' })}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          {field('Carrier (optional)', 'carrier', { placeholder: 'DHL' })}
+          {field('Package type / hint', 'package_type', { placeholder: 'jewellery / ring / bracelet' })}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+          {field('Length (cm)', 'length_cm')}
+          {field('Width (cm)', 'width_cm')}
+          {field('Height (cm)', 'height_cm')}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+          {field('Tare weight (kg)', 'tare_weight_kg')}
+          {field('Max weight (kg)', 'max_weight_kg')}
+          {field('Sort order', 'sort_order')}
+        </div>
+        {field('Notes', 'notes')}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-2)', marginBottom: 14 }}>
+          <input type="checkbox" checked={form.active}
+            onChange={e => set('active', e.target.checked)} data-testid="box-field-active" />
+          Active (inactive profiles stay stored but leave the AWB modal dropdown)
+        </label>
+        {error && (
+          <div style={{ marginBottom: 12, fontSize: 12, color: 'var(--badge-red-text)' }} data-testid="box-edit-error">{error}</div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <Btn variant="outline" small onClick={onClose}>Cancel</Btn>
+          <Btn variant="gold" small onClick={save} disabled={saving} data-testid="btn-save-box-profile">
+            {saving ? 'Saving…' : (isNew ? 'Create Box Profile' : 'Save Box Profile')}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MasterPage() {
   const [entity, setEntity] = React.useState('clients');
   const [role, setRole] = React.useState('admin');
@@ -455,6 +567,9 @@ function MasterPage() {
   // Phase 3B: contractor scan state (clients tab only).
   const [scanStatus, setScanStatus] = React.useState(null);
   const [scanRunning, setScanRunning] = React.useState(false);
+  // Box Profile master: edit/create modal record (null = closed, {} = new).
+  const [boxEdit, setBoxEdit] = React.useState(null);
+  const [seedingBoxes, setSeedingBoxes] = React.useState(false);
 
   // Per-entity data cache: { entityId: { records: [], loading: bool, error: string|null } }
   const [cache, setCache] = React.useState({});
@@ -612,9 +727,29 @@ function MasterPage() {
               <Input data-testid="master-search" value={search} onChange={e => setSearch(e.target.value)} placeholder={'Search ' + currentEntity.label.toLowerCase() + '…'} />
               <Btn variant="outline" small disabled title={writeDisabledReason(entity)} data-testid="btn-export-csv">{'↓'} Export CSV</Btn>
               <Btn variant="outline" small disabled title={writeDisabledReason(entity)} data-testid="btn-import-csv">{'↑'} Import CSV</Btn>
-              <Btn variant="gold" small disabled title={writeDisabledReason(entity)} data-testid="btn-new-record">
-                + New {currentEntity.singular}
-              </Btn>
+              {entity === 'box_profiles' ? (
+                <Btn variant="gold" small disabled={!perms.create}
+                  title={perms.create ? 'Create a new Box Profile (writes to Box Master)' : 'Role has no create permission'}
+                  onClick={() => setBoxEdit({})} data-testid="btn-new-record">
+                  + New Box Profile
+                </Btn>
+              ) : (
+                <Btn variant="gold" small disabled title={writeDisabledReason(entity)} data-testid="btn-new-record">
+                  + New {currentEntity.singular}
+                </Btn>
+              )}
+              {entity === 'box_profiles' && (
+                <Btn variant="outline" small disabled={!perms.create || seedingBoxes}
+                  title="Insert the default DHL profiles (DHL-JEWEL-S, DHL-RING, DHL-BRACELET, CUSTOM). Insert-only — never overwrites."
+                  onClick={async () => {
+                    setSeedingBoxes(true);
+                    const res = await PzApi.seedBoxTypeDefaults();
+                    setSeedingBoxes(false);
+                    if (res.ok) handleReload();
+                  }} data-testid="btn-seed-box-defaults">
+                  {seedingBoxes ? '⏳ Seeding…' : '⇊ Seed DHL defaults'}
+                </Btn>
+              )}
               <Btn variant="outline" small onClick={handleReload} data-testid="btn-reload">{'↻'} Reload</Btn>
             </div>
           </div>
@@ -688,6 +823,12 @@ function MasterPage() {
                                   onClick={() => setEditRecord(r)}
                                   title="Edit client record"
                                   data-testid="btn-edit-record">Edit</Btn>
+                              )}
+                              {entity === 'box_profiles' && (
+                                <Btn small variant="gold" disabled={!perms.edit}
+                                  onClick={() => setBoxEdit(r)}
+                                  title={perms.edit ? 'Edit Box Profile (writes to Box Master)' : 'Role has no edit permission'}
+                                  data-testid="btn-edit-box-profile">Edit</Btn>
                               )}
                             </div>
                           </td>
@@ -776,6 +917,15 @@ function MasterPage() {
         entityLabel={currentEntity ? currentEntity.singular : 'Record'}
         onClose={() => setViewRecord(null)}
       />
+
+      {/* Box Profile master: create/edit modal */}
+      {boxEdit !== null && (
+        <BoxProfileEditModal
+          record={boxEdit}
+          onClose={() => setBoxEdit(null)}
+          onSaved={() => { setBoxEdit(null); handleReload(); }}
+        />
+      )}
 
       {/* Step 3: Client Detail edit modal */}
       {editRecord && (

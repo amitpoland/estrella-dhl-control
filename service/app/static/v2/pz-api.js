@@ -444,11 +444,23 @@
     listCarrierServices: () =>
       _get(`${BASE}/carrier/services`),
 
-    // GET /api/v1/box-types/?active=true
-    // Returns active box type profiles (Box Master). Used to populate the AWB modal dropdown.
-    // Returns: [{ id, code, name, length_cm, width_cm, height_cm, tare_weight_kg, active }]
-    listBoxTypes: (activeOnly = true) =>
-      _get(`${BASE}/box-types/${activeOnly ? '?active=true' : ''}`),
+    // GET /api/v1/box-types/?active=true|all
+    // Box Profile master (Box Master authority). Used by the AWB modal dropdown
+    // (active only) and the Master Data management view ('all').
+    // Returns: { count, box_types: [{ id, code, name, carrier, length_cm, width_cm,
+    //            height_cm, tare_weight_kg, max_weight_kg, package_type,
+    //            sort_order, active, notes }] }
+    listBoxTypes: (active = true) =>
+      _get(`${BASE}/box-types/${active === 'all' ? '?active=all' : (active ? '?active=true' : '?active=false')}`),
+
+    // PUT /api/v1/box-types/{code} — create or update a Box Profile.
+    // Deactivate with { active: false }; profiles are never deleted.
+    upsertBoxType: (code, body) =>
+      _put(`${BASE}/box-types/${encodeURIComponent(code)}`, body),
+
+    // POST /api/v1/box-types/seed-defaults — insert-only default DHL profiles.
+    seedBoxTypeDefaults: () =>
+      _postM(`${BASE}/box-types/seed-defaults`, {}),
 
     // GET /api/v1/warehouse/receipt/{batch_id}
     // WAREHOUSE authority: per-line expected vs confirmed received quantities +
