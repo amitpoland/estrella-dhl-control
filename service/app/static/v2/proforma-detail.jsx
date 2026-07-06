@@ -889,10 +889,17 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       special_instructions: form.special_instructions || null,
     })
       .then(r => {
-        if (r && r.tracking_ref) {
-          setResult(r);
+        // PzApi wraps responses as { ok, data } / { ok:false, error }.
+        // Success MUST be read from r.data.tracking_ref — reading r.tracking_ref
+        // rendered every successful booking as a failure and caused operators
+        // to retry, double-booking live AWBs (2026-07-06 incident).
+        const data = (r && r.ok) ? r.data : null;
+        if (data && data.tracking_ref) {
+          setResult(data);
         } else {
-          const msg = (r && (r.detail || r.error)) || 'AWB creation failed — check backend logs.';
+          const msg = (r && (r.error || (r.data && (r.data.detail || r.data.error))))
+            || (data ? 'AWB request completed but no tracking number was returned — check server records before retrying.'
+                     : 'AWB creation failed — check backend logs.');
           setApiError(typeof msg === 'object' ? JSON.stringify(msg) : msg);
         }
         setLoading(false);

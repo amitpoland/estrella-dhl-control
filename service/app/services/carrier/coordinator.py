@@ -4,8 +4,10 @@ CarrierCoordinator — orchestrates shipment creation with idempotency.
 Shadow-mode flow for create_shipment():
   1. compute_idempotency_key(request)
   2. shipment_db.get_shipment() — check cache
-       COMPLETE  → return deterministic result (adapter is pure; no adapter call needed)
-                   Actually: recompute via adapter (deterministic, zero cost) and return COMPLETE
+       COMPLETE  → return the STORED result (tracking_ref persisted at COMPLETE).
+                   The adapter is NEVER re-invoked for a completed key — the
+                   live adapter would book a new DHL shipment (2026-07-06
+                   duplicate-AWB incident).
        PENDING   → in-flight recovery: re-execute from step 5 (skip DB insert)
        FAILED    → raise CarrierGateError (explicit, not silently retried)
        not found → continue
@@ -145,10 +147,20 @@ class CarrierCoordinator:
         state = ShipmentState(row["state"])
 
         if state == ShipmentState.COMPLETE:
-            # Cache hit — adapter is deterministic so recompute in-memory,
-            # then stamp the final state as COMPLETE.
-            raw = self._adapter.create_shipment(request)
-            return dataclasses.replace(raw, state=ShipmentState.COMPLETE)
+            # Cache hit — return the STORED result. NEVER re-invoke the
+            # adapter for a completed key: the live adapter would create a
+            # brand-new DHL shipment (2026-07-06 duplicate-AWB incident —
+            # 3 duplicate live AWBs booked by "deterministic recompute").
+            return ShipmentResult(
+                idempotency_key=key,
+                mode=ShipmentMode(row["mode"]),
+                state=ShipmentState.COMPLETE,
+                tracking_ref=row.get("tracking_ref"),
+                error=row.get("error"),
+                simulated=bool(row.get("simulated")),
+                service_product=row.get("service_product"),
+                dimensions_json=row.get("dimensions_json"),
+            )
 
         if state == ShipmentState.PENDING:
             # In-flight recovery: the pending row exists but completion never
@@ -217,7 +229,16 @@ class CarrierCoordinator:
             redacted,
         )
 
-        _db_update(self._config.shipment_db_path, key, ShipmentState.COMPLETE)
+        # Persist adapter-truth fields with COMPLETE so a replay can return
+        # the stored result without touching the adapter (incident fix).
+        _db_update(
+            self._config.shipment_db_path,
+            key,
+            ShipmentState.COMPLETE,
+            tracking_ref=raw_result.tracking_ref,
+            mode=raw_result.mode,
+            simulated=raw_result.simulated,
+        )
 
         # Phase 5 — attach request dimensions so they are captured in the DB
         # via the COMPLETE result. service_product is adapter-provided (None
