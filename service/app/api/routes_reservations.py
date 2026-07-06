@@ -227,3 +227,49 @@ async def reset_queue_row(queue_id: int, body: ResetQueueRowBody) -> JSONRespons
         "queue_id":   queue_id,
         "new_status": body.target_status,
     })
+
+
+# ── Product Master sync (Slice 1) ─────────────────────────────────────────────
+
+class ProductMasterSyncBody(BaseModel):
+    dry_run:  bool = False
+    operator: str  = "operator"
+
+
+@router.post("/product-master/sync/{batch_id}", dependencies=[_auth])
+async def product_master_sync(
+    batch_id: str,
+    body: Optional[ProductMasterSyncBody] = None,
+) -> JSONResponse:
+    """Run Now — synchronize the Product Master from a batch's PURCHASE packing
+    list. Composes the existing write-authority chain: product_master (+ variant
+    signature) → design_product_mapping → product_descriptions → wFirma goods
+    mirror (preview only). Never mints product_codes, never creates wFirma
+    products, and the Master stays advisory (gates nothing)."""
+    from ..services.product_master_sync import run_product_master_sync
+    body = body or ProductMasterSyncBody()
+    result = run_product_master_sync(
+        batch_id, dry_run=body.dry_run, operator=body.operator,
+    )
+    return JSONResponse(result)
+
+
+@router.get("/product-master", dependencies=[_auth])
+async def list_product_master(
+    batch_id: Optional[str] = Query(default=None),
+) -> JSONResponse:
+    """Read the Product Master, optionally scoped to a source batch. This is the
+    Master read authority for the operator UI."""
+    db   = _ensure_db()
+    rows = rdb.list_product_masters(db, source_batch_id=batch_id)
+    return JSONResponse({"count": len(rows), "rows": rows})
+
+
+@router.get("/product-master/sync/status", dependencies=[_auth])
+async def product_master_sync_status(
+    batch_id: Optional[str] = Query(default=None),
+) -> JSONResponse:
+    """Product Master sync status — the four completeness questions
+    (running / last run / what happened / errors). Read-only."""
+    from ..services.product_master_sync import get_status
+    return JSONResponse(get_status(batch_id))

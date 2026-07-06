@@ -640,6 +640,30 @@
       return _get(`${BASE}/product-local${qs}`);
     },
 
+    // ── Product Master sync (Slice 1) — read authority + observable Run Now ──
+    // GET /api/v1/product-master[?batch_id=]
+    // Returns { count, rows: [{product_code, design_no, normalized_design_attributes, status, ...}] }
+    listProductMaster: (batchId) => {
+      const qs = batchId ? '?batch_id=' + encodeURIComponent(batchId) : '';
+      return _get(`${BASE}/product-master${qs}`);
+    },
+
+    // GET /api/v1/product-master/sync/status[?batch_id=]
+    // Returns { healthy, running, last_started_at, last_completed_at, processed,
+    //           created, updated, skipped, errors, last_error, ever_run }
+    getProductMasterSyncStatus: (batchId) => {
+      const qs = batchId ? '?batch_id=' + encodeURIComponent(batchId) : '';
+      return _get(`${BASE}/product-master/sync/status${qs}`);
+    },
+
+    // POST /api/v1/product-master/sync/{batch_id}  body { dry_run }
+    // Advisory-only sync from the purchase packing list. Never mints product_codes,
+    // never creates wFirma products (mirror step is preview). Returns the run summary.
+    productMasterSync: (batchId, opts) => {
+      const dryRun = !opts || opts.dryRun !== false;   // default: dry-run first
+      return _post(`${BASE}/product-master/sync/${encodeURIComponent(batchId)}`, { dry_run: !!dryRun });
+    },
+
     // GET /api/v1/designs/[?active=&limit=]
     // Returns { ok, count, designs: [{design_code, display_name, ...}] }
     listDesigns: (params) => {

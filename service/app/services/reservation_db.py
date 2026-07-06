@@ -154,6 +154,27 @@ CREATE INDEX IF NOT EXISTS idx_reservation_queue_batch ON reservation_queue(batc
 CREATE INDEX IF NOT EXISTS idx_reservation_queue_status ON reservation_queue(status);
 CREATE INDEX IF NOT EXISTS idx_reservation_queue_product_code ON reservation_queue(product_code);
 CREATE INDEX IF NOT EXISTS idx_reservation_queue_client ON reservation_queue(client_name);
+
+-- Slice 1 — Product Master sync OBSERVABILITY (status/observability record, NOT
+-- a business master). One row per batch_id records the last run of
+-- run_product_master_sync so the Business API can answer the four completeness
+-- questions (running / last run / what happened / run now). Additive; carries no
+-- business logic and gates nothing.
+CREATE TABLE IF NOT EXISTS product_master_sync_status (
+    batch_id          TEXT PRIMARY KEY,
+    running           INTEGER NOT NULL DEFAULT 0,
+    healthy           INTEGER NOT NULL DEFAULT 1,
+    last_started_at   TEXT NOT NULL DEFAULT '',
+    last_completed_at TEXT NOT NULL DEFAULT '',
+    duration_ms       INTEGER NOT NULL DEFAULT 0,
+    processed         INTEGER NOT NULL DEFAULT 0,
+    created           INTEGER NOT NULL DEFAULT 0,
+    updated           INTEGER NOT NULL DEFAULT 0,
+    skipped           INTEGER NOT NULL DEFAULT 0,
+    errors            INTEGER NOT NULL DEFAULT 0,
+    last_error        TEXT NOT NULL DEFAULT '',
+    updated_at        TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -1151,6 +1172,93 @@ def get_product_master_statuses(db_path: Path, product_codes) -> Dict[str, str]:
     except sqlite3.OperationalError:
         return {}
     return out
+
+
+# ── product_master_sync_status (Slice 1 observability) ───────────────────────
+
+def mark_product_master_sync_started(db_path: Path, batch_id: str) -> None:
+    """Record that a Product Master sync run has STARTED for *batch_id*.
+
+    Sets running=1 and refreshes last_started_at. Idempotent per batch — the
+    single row is upserted. Never raises on a fresh DB (creates schema)."""
+    now = _now()
+    init_reservation_db(db_path)
+    with _connect(db_path) as con:
+        con.execute(
+            """INSERT INTO product_master_sync_status
+                   (batch_id, running, last_started_at, updated_at)
+               VALUES (?, 1, ?, ?)
+               ON CONFLICT(batch_id) DO UPDATE SET
+                   running=1, last_started_at=excluded.last_started_at,
+                   updated_at=excluded.updated_at""",
+            (batch_id, now, now),
+        )
+
+
+def mark_product_master_sync_finished(
+    db_path: Path,
+    batch_id: str,
+    *,
+    processed: int = 0,
+    created:   int = 0,
+    updated:   int = 0,
+    skipped:   int = 0,
+    errors:    int = 0,
+    last_error: str = "",
+    duration_ms: int = 0,
+) -> None:
+    """Record that a Product Master sync run has FINISHED for *batch_id*.
+
+    Sets running=0, refreshes last_completed_at and the outcome counters, and
+    derives healthy = (errors == 0). Additive; gates nothing."""
+    now = _now()
+    init_reservation_db(db_path)
+    healthy = 1 if int(errors or 0) == 0 else 0
+    with _connect(db_path) as con:
+        con.execute(
+            """INSERT INTO product_master_sync_status
+                   (batch_id, running, healthy, last_completed_at, duration_ms,
+                    processed, created, updated, skipped, errors, last_error, updated_at)
+               VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(batch_id) DO UPDATE SET
+                   running=0, healthy=excluded.healthy,
+                   last_completed_at=excluded.last_completed_at,
+                   duration_ms=excluded.duration_ms,
+                   processed=excluded.processed, created=excluded.created,
+                   updated=excluded.updated, skipped=excluded.skipped,
+                   errors=excluded.errors, last_error=excluded.last_error,
+                   updated_at=excluded.updated_at""",
+            (batch_id, healthy, now, int(duration_ms or 0),
+             int(processed or 0), int(created or 0), int(updated or 0),
+             int(skipped or 0), int(errors or 0), (last_error or "")[:500], now),
+        )
+
+
+def get_product_master_sync_status(
+    db_path: Path,
+    batch_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return the sync-status row for *batch_id*, or the most recently updated
+    row when batch_id is None. None when no run has ever been recorded.
+
+    Read-only + side-effect-free: never creates the DB file."""
+    if not Path(db_path).exists():
+        return None
+    try:
+        with _connect(db_path) as con:
+            if batch_id:
+                row = con.execute(
+                    "SELECT * FROM product_master_sync_status WHERE batch_id=?",
+                    (batch_id,),
+                ).fetchone()
+            else:
+                row = con.execute(
+                    "SELECT * FROM product_master_sync_status "
+                    "ORDER BY updated_at DESC LIMIT 1"
+                ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return dict(row) if row else None
 
 
 # ── design_product_mapping ────────────────────────────────────────────────────

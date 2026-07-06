@@ -556,6 +556,214 @@ function BoxProfileEditModal({ record, onClose, onSaved }) {
   );
 }
 
+// ── Slice 1: Product Master Sync panel (Products tab only).
+// Advisory-only. Reads the Product Master (reservation authority, wFirma-goods-bound)
+// and drives the observable purchase-packing → Product Master sync. Dry-run first.
+// This is DISTINCT from the Product Local augmentation table above (see the
+// products mapping banner): the local table augments HS/unit/design; this panel is
+// the purchase-derived Product Master consumed by wFirma goods mapping.
+function _fmtWhen(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso);
+    return d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  } catch (_) { return String(iso); }
+}
+
+function ProductMasterSyncPanel() {
+  const [batchId, setBatchId]       = React.useState('');
+  const [dryRun, setDryRun]         = React.useState(true);   // dry-run first
+  const [running, setRunning]       = React.useState(false);
+  const [status, setStatus]         = React.useState(null);
+  const [lastResult, setLastResult] = React.useState(null);
+  const [pmRows, setPmRows]         = React.useState(null);
+  const [error, setError]           = React.useState(null);
+
+  const loadStatus = React.useCallback((bid) => {
+    PzApi.getProductMasterSyncStatus(bid || undefined).then(res => {
+      setStatus(res.ok ? res.data : null);
+    });
+  }, []);
+
+  const loadMaster = React.useCallback((bid) => {
+    PzApi.listProductMaster(bid || undefined).then(res => {
+      if (res.ok) setPmRows(res.data.rows || []);
+      else { setPmRows(null); setError(res.error || 'Failed to load Product Master'); }
+    });
+  }, []);
+
+  React.useEffect(() => { loadStatus(''); loadMaster(''); }, [loadStatus, loadMaster]);
+
+  const runSync = () => {
+    const bid = batchId.trim();
+    if (!bid) { setError('Enter a batch_id to sync'); return; }
+    setError(null);
+    setRunning(true);
+    PzApi.productMasterSync(bid, { dryRun }).then(res => {
+      setRunning(false);
+      if (res.ok) {
+        setLastResult(res.data);
+        loadStatus(bid);
+        loadMaster(bid);
+      } else {
+        setError(res.error || 'Sync failed');
+      }
+    }).catch(err => { setRunning(false); setError(String(err)); });
+  };
+
+  const healthy = status ? status.healthy : true;
+  const isRunning = status ? status.running : false;
+
+  return (
+    <div data-testid="product-master-sync-panel" style={{ marginTop: 16 }}>
+      <Card style={{ padding: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>Product Master Sync</div>
+          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
+                         color: 'var(--text-3)', border: '1px solid var(--border)', borderRadius: 4, padding: '1px 6px' }}>
+            Advisory
+          </span>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 14 }}>
+          Syncs the Product Master from a batch's <b>purchase packing list</b> (product_master + variant
+          signature → design mapping → descriptions → wFirma goods <i>preview</i>). Never mints product codes,
+          never creates wFirma products, and gates nothing.
+        </div>
+
+        {/* ── Run control ── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+          <Input
+            data-testid="pm-sync-batch-input"
+            value={batchId}
+            onChange={e => setBatchId(e.target.value)}
+            placeholder="batch_id (e.g. SHIPMENT_…)"
+            style={{ minWidth: 280 }}
+          />
+          <label data-testid="pm-sync-dryrun-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-2)', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              data-testid="pm-sync-dryrun"
+              checked={dryRun}
+              onChange={e => setDryRun(e.target.checked)}
+            />
+            Dry-run (preview only)
+          </label>
+          <Btn
+            variant={dryRun ? 'outline' : 'gold'}
+            small
+            disabled={running || !batchId.trim()}
+            onClick={runSync}
+            data-testid="pm-sync-run-btn"
+            title={dryRun ? 'Preview the sync without writing' : 'Run the sync — writes the Product Master (advisory)'}>
+            {running ? '… Running' : (dryRun ? '▷ Preview (dry-run)' : '▷ Run Sync — writes Product Master')}
+          </Btn>
+          <Btn variant="outline" small onClick={() => { loadStatus(batchId.trim()); loadMaster(batchId.trim()); }} data-testid="pm-sync-reload-btn">
+            {'↻'} Refresh
+          </Btn>
+        </div>
+
+        {/* ── Error ── */}
+        {error && (
+          <div data-testid="pm-sync-error" style={{ marginBottom: 12, padding: 10, borderRadius: 6,
+               background: 'var(--badge-red-bg, rgba(220,38,38,0.08))', border: '1px solid var(--badge-red-text, #dc2626)',
+               fontSize: 11, color: 'var(--badge-red-text, #dc2626)' }}>
+            {'⚠ '}{error}
+          </div>
+        )}
+
+        {/* ── Status panel — the four completeness questions ── */}
+        <div data-testid="pm-sync-status" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 14 }}>
+          <_Stat label="State" value={
+            !status || !status.ever_run ? 'Never run'
+              : isRunning ? 'Running…'
+              : healthy ? 'Healthy' : 'Errors'
+          } tone={!status || !status.ever_run ? 'muted' : isRunning ? 'info' : healthy ? 'ok' : 'bad'} testid="pm-stat-state" />
+          <_Stat label="Last completed" value={_fmtWhen(status && status.last_completed_at)} testid="pm-stat-completed" />
+          <_Stat label="Processed / Created" value={status ? `${status.processed || 0} / ${status.created || 0}` : '—'} testid="pm-stat-processed" />
+          <_Stat label="Updated / Skipped" value={status ? `${status.updated || 0} / ${status.skipped || 0}` : '—'} testid="pm-stat-updated" />
+          <_Stat label="Errors" value={status ? String(status.errors || 0) : '—'} tone={status && status.errors ? 'bad' : 'muted'} testid="pm-stat-errors" />
+        </div>
+        {status && status.last_error && (
+          <div data-testid="pm-sync-last-error" style={{ marginBottom: 14, fontSize: 11, color: 'var(--badge-amber-text, #92400e)' }}>
+            Last error: {status.last_error}
+          </div>
+        )}
+
+        {/* ── Last sync result table ── */}
+        {lastResult && (
+          <div data-testid="pm-sync-result" style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 6 }}>
+              Last sync result {lastResult.dry_run ? '(dry-run / preview)' : '(live)'} — {lastResult.batch_id}
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead><tr style={{ background: 'var(--bg-subtle)' }}>
+                  {['processed', 'created', 'updated', 'skipped', 'errors', 'duration_ms'].map(k => (
+                    <th key={k} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid var(--border)' }}>{k.replace('_', ' ')}</th>
+                  ))}
+                </tr></thead>
+                <tbody><tr>
+                  {['processed', 'created', 'updated', 'skipped', 'errors', 'duration_ms'].map(k => (
+                    <td key={k} data-testid={'pm-result-' + k} style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-2)' }}>{lastResult[k] != null ? lastResult[k] : 0}</td>
+                  ))}
+                </tr></tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ── Product Master list (GET /product-master) ── */}
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 6 }}>
+            Product Master {batchId.trim() ? '(batch ' + batchId.trim() + ')' : '(all)'} — {pmRows ? pmRows.length : 0} rows
+          </div>
+          <div style={{ overflowX: 'auto', maxHeight: 320, overflowY: 'auto' }}>
+            <table data-testid="pm-master-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ background: 'var(--bg-subtle)' }}>
+                {['product_code', 'design_no', 'normalized_design_attributes', 'status', 'source_batch_id'].map(k => (
+                  <th key={k} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid var(--border)' }}>{k.replace(/_/g, ' ')}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {(pmRows || []).map((r, i) => (
+                  <tr key={r.product_code || i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                    <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: 'var(--text)', fontWeight: 600 }}>{r.product_code || '—'}</td>
+                    <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.design_no || '—'}</td>
+                    <td style={{ padding: '8px 10px', fontFamily: 'monospace', fontSize: 10.5, color: 'var(--text-3)', wordBreak: 'break-all' }}>{r.normalized_design_attributes || '—'}</td>
+                    <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.status || '—'}</td>
+                    <td style={{ padding: '8px 10px', fontSize: 10.5, color: 'var(--text-3)' }}>{r.source_batch_id || '—'}</td>
+                  </tr>
+                ))}
+                {(!pmRows || pmRows.length === 0) && (
+                  <tr><td colSpan={5} data-testid="pm-master-empty" style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+                    No Product Master rows{batchId.trim() ? ' for this batch' : ''} yet — run a sync from a purchase-packing batch.
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// Small status stat cell for the sync panel.
+function _Stat({ label, value, tone, testid }) {
+  const color = tone === 'ok' ? 'var(--badge-green-text, #16a34a)'
+    : tone === 'bad' ? 'var(--badge-red-text, #dc2626)'
+    : tone === 'info' ? 'var(--accent)'
+    : 'var(--text)';
+  return React.createElement('div', {
+    'data-testid': testid,
+    style: { padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 },
+  },
+    React.createElement('div', { style: { fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 } }, label),
+    React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color } }, value)
+  );
+}
+
 function MasterPage() {
   const [entity, setEntity] = React.useState('clients');
   const [role, setRole] = React.useState('admin');
@@ -906,6 +1114,9 @@ function MasterPage() {
             </div>
           )}
 
+          {/* Slice 1: Product Master Sync panel — Products tab only */}
+          {entity === 'products' && <ProductMasterSyncPanel />}
+
           {/* Sprint 38b: Mapping info banner for focus entities */}
           <MappingInfoBanner entityId={entity} />
         </div>
@@ -943,4 +1154,4 @@ function MasterPage() {
   );
 }
 
-Object.assign(window, { MasterPage, RecordDetailModal, ScanStatusPanel, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner });
+Object.assign(window, { MasterPage, RecordDetailModal, ScanStatusPanel, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner, ProductMasterSyncPanel });
