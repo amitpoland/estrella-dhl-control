@@ -701,6 +701,42 @@ def regenerate_descriptions_for_invoice_lines(
 
 # ── Global Jewellery description path ────────────────────────────────────────
 
+def _english_description_from_item_type(item_type: str) -> str:
+    """Return the canonical legal English description for *item_type*.
+
+    Global / packing-only batches have no per-line English invoice text — only
+    an ``item_type`` column.  A design number is NOT an English description, so
+    it must never be used as ``description_en``.  This helper delegates to the
+    SINGLE English-description authority,
+    ``customs_description_engine.render_product_description_en`` — the same
+    renderer that produces ``product_description_en`` inside
+    ``normalize_item_description`` and that the customs PDF uses.  It is called
+    with empty purity/stones so only the item-type noun is rendered; this is
+    deliberate — the noun carries no metal/stone tokens, so feeding it to
+    ``get_description_block`` leaves the Polish half (``description_pl``)
+    keyword-equivalent to the prior design-number input.  Polish behaviour is
+    unchanged; only the English half is corrected.
+
+    No second translation layer is introduced: ``ITEM_TYPE_EN`` is read solely
+    through the canonical renderer.  When the customs engine is unreachable the
+    helper returns ``""`` (English omitted — the same honest degradation the
+    Polish path already takes via ``_customs_grade_translation``).  Never
+    raises.
+    """
+    if not _normalise_item_type(item_type):
+        return ""
+    cde = _load_customs_engine()
+    if cde is None:
+        return ""
+    try:
+        # Noun only: empty purity + empty stones → no metal/stone tokens.
+        return (cde.render_product_description_en(item_type, "", "") or "").strip()
+    except Exception as exc:  # pragma: no cover — defensive only
+        log.warning("description_engine: render_product_description_en failed "
+                    "for item_type=%r: %s", item_type, exc)
+        return ""
+
+
 def regenerate_descriptions_for_packing_lines(
     *,
     batch_id: str,
@@ -758,7 +794,12 @@ def regenerate_descriptions_for_packing_lines(
             continue
 
         item_type  = str(ln.get("item_type", "") or "").strip()
-        desc_en    = str(ln.get("design_no",  "") or "").strip()
+        # Legal English comes from item_type, NOT design_no.  A design number
+        # is an internal identifier, not an English product description; using
+        # it produced a weak/incorrect English half and degraded the customs-
+        # grade Polish parse.  Delegate to the single English-description
+        # authority (customs_description_engine.render_product_description_en).
+        desc_en    = _english_description_from_item_type(item_type)
 
         if dry_run:
             out["would_write"] += 1
