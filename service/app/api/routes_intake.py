@@ -1064,6 +1064,19 @@ async def shipment_intake(
                         "price_source": "packing_list" if (
                             float(r.get("unit_price", 0) or 0) > 0
                         ) else "",
+                        # ── Slice-2 variant identity: forward the full variant
+                        # set the extractor already produced (previously dropped
+                        # at this boundary). Sales must NEVER invent product_code
+                        # — identity fields only; product_code stays matcher-only.
+                        "item_type":      str(r.get("item_type", "") or ""),
+                        "karat":          str(r.get("karat", "") or ""),
+                        "metal":          str(r.get("metal", "") or ""),
+                        "metal_color":    str(r.get("metal_color", "") or ""),
+                        "quality_string": str(r.get("quality_string", "") or ""),
+                        "stone_type":     str(r.get("stone_type", "") or ""),
+                        "size":           str(r.get("size", "") or ""),
+                        "diamond_weight": float(r.get("diamond_weight", 0) or 0),
+                        "color_weight":   float(r.get("color_weight", 0) or 0),
                     })
                 ddb.store_sales_packing_lines(sales_doc_id, batch_id, line_records)
                 n_rows = len(line_records)
@@ -2301,6 +2314,19 @@ async def sales_packing_reingest(
                 "price_source": "packing_list" if (
                     float(r.get("unit_price", 0) or 0) > 0
                 ) else "",
+                # ── Slice-2 variant identity (mirror the store path). Forward
+                # the extractor's full variant set on re-ingest too so a
+                # corrected/re-uploaded sales file backfills the variant
+                # columns. Identity only — never invents product_code.
+                "item_type":      str(r.get("item_type", "") or ""),
+                "karat":          str(r.get("karat", "") or ""),
+                "metal":          str(r.get("metal", "") or ""),
+                "metal_color":    str(r.get("metal_color", "") or ""),
+                "quality_string": str(r.get("quality_string", "") or ""),
+                "stone_type":     str(r.get("stone_type", "") or ""),
+                "size":           str(r.get("size", "") or ""),
+                "diamond_weight": float(r.get("diamond_weight", 0) or 0),
+                "color_weight":   float(r.get("color_weight", 0) or 0),
             })
 
         # Atomic replace, scoped to (sales_doc_id, batch_id) only.
