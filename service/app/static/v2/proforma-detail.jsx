@@ -796,6 +796,15 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [boxOverridden, setBoxOverridden] = React.useState(false); // true when dims differ from selected box
   const [carrierStatus, setCarrierStatus] = React.useState(null);
   const [boxTypesLoaded, setBoxTypesLoaded] = React.useState(false);
+  // Customer Master save-confirmation workflow: master = this client's stored
+  // record (baseline for the shipping-fields comparison); saveConfirm holds
+  // the pending diff panel; savedNote shows after an approved save. Master
+  // data is NEVER written silently — only via the explicit Yes button.
+  const [master,        setMaster]        = React.useState(null);
+  const [saveConfirm,   setSaveConfirm]   = React.useState(null);
+  const [savingMaster,  setSavingMaster]  = React.useState(false);
+  const [saveError,     setSaveError]     = React.useState(null);
+  const [savedNote,     setSavedNote]     = React.useState(false);
 
   // Load box types, service catalogue, and carrier status once on mount
   React.useEffect(() => {
@@ -811,7 +820,89 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     window.PzApi.getCarrierStatus && window.PzApi.getCarrierStatus()
       .then(r => setCarrierStatus(r && r.ok ? r.data : null))
       .catch(() => setCarrierStatus(null));
+    // Customer Master baseline for the save-confirmation comparison.
+    // No contractor id (unmatched client) → no baseline, no prompt, no save.
+    if (prefill.client_contractor_id && window.PzApi.getCustomerMaster) {
+      window.PzApi.getCustomerMaster(prefill.client_contractor_id)
+        .then(r => setMaster(r && r.ok ? r.data : null))
+        .catch(() => setMaster(null));
+    }
   }, []);
+
+  // Modal field → Customer Master ship_to_* field. This is the complete set
+  // compared before booking; saves write ONLY these ship_to_* fields —
+  // bill_to_* (billing identity) is never touched from the AWB modal.
+  const _SHIP_FIELD_MAP = [
+    ['company_name', 'ship_to_name',    'Receiver company'],
+    ['name',         'ship_to_person',  'Contact name'],
+    ['street',       'ship_to_street',  'Street'],
+    ['city',         'ship_to_city',    'City'],
+    ['postal_code',  'ship_to_zip',     'Postal code'],
+    ['country_code', 'ship_to_country', 'Country'],
+    ['phone',        'ship_to_phone',   'Phone'],
+    ['email',        'ship_to_email',   'Email'],
+  ];
+  // VAT / EORI: compared for awareness only — fiscal identity fields are
+  // edited in Customer Master, never written from a shipping modal.
+  const _INFO_FIELD_MAP = [
+    ['receiver_vat_id', 'vat_eu_number', 'VAT (info only)'],
+    ['receiver_eori',   'eori',          'EORI (info only)'],
+  ];
+
+  const _norm = (v) => (v == null ? '' : String(v)).trim();
+
+  // Diffs between the modal shipping fields and the Customer Master baseline.
+  // null = no baseline available (no contractor id / fetch failed) — booking
+  // proceeds without a prompt because there is nothing to compare or save.
+  const computeMasterDiffs = () => {
+    if (!master) return null;
+    const diffs = [];
+    for (const [formKey, masterKey, label] of _SHIP_FIELD_MAP) {
+      const mv = _norm(master[masterKey]);
+      const fv = _norm(form[formKey]);
+      if (!fv) continue;                     // blank modal value keeps master value
+      const same = (formKey === 'country_code')
+        ? mv.toUpperCase() === fv.toUpperCase()
+        : mv === fv;
+      if (!same) diffs.push({ formKey, masterKey, label, from: mv, to: fv });
+    }
+    const info = [];
+    for (const [formKey, masterKey, label] of _INFO_FIELD_MAP) {
+      const mv = _norm(master[masterKey]);
+      const fv = _norm(form[formKey]);
+      if (fv && mv !== fv) info.push({ formKey, masterKey, label, from: mv, to: fv });
+    }
+    return { diffs, info };
+  };
+
+  // Approved save: write ONLY the changed ship_to_* fields. When the master
+  // had no ship-to address at all this is a brand-new shipping address —
+  // also set ship_to_use_alternate so downstream flows honor it.
+  const saveShippingToMaster = () => {
+    const payload = {};
+    for (const d of saveConfirm.diffs) payload[d.masterKey] = d.to;
+    const hadShipTo = !!(_norm(master.ship_to_street) || _norm(master.ship_to_city));
+    if (!hadShipTo) payload.ship_to_use_alternate = true;
+    setSavingMaster(true);
+    setSaveError(null);
+    window.PzApi.saveCustomerMaster(prefill.client_contractor_id, payload)
+      .then(r => {
+        setSavingMaster(false);
+        if (r && r.ok) {
+          setMaster(prev => ({ ...(prev || {}), ...payload }));
+          setSavedNote(true);
+          setSaveConfirm(null);
+          doBooking();                        // continue AWB booking after successful save
+        } else {
+          // Save failed — do NOT book; the operator asked for save-then-book.
+          setSaveError((r && r.error) || 'Failed to save shipping details to Customer Master.');
+        }
+      })
+      .catch(e => {
+        setSavingMaster(false);
+        setSaveError((e && e.message) || 'Failed to save shipping details to Customer Master.');
+      });
+  };
 
   const _apiStatus = carrierStatus && carrierStatus.carrier_api_status;
   const isPending = !_apiStatus || _apiStatus === 'pending';
@@ -864,6 +955,23 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       return;
     }
 
+    // Customer Master save-confirmation gate — NO booking until resolved.
+    // Differences between modal shipping data and the client's Customer
+    // Master record must be explicitly kept-once, saved, or cancelled.
+    const cmp = computeMasterDiffs();
+    if (cmp && cmp.diffs.length > 0) {
+      const masterPhoneEmpty = !_norm(master.ship_to_phone);
+      const phoneOnly = cmp.diffs.length === 1
+        && cmp.diffs[0].formKey === 'phone' && masterPhoneEmpty;
+      setSaveError(null);
+      setSaveConfirm({ diffs: cmp.diffs, info: cmp.info, phoneOnly });
+      return;
+    }
+
+    doBooking();
+  };
+
+  const doBooking = () => {
     setLoading(true);
     setApiError(null);
 
@@ -1328,13 +1436,77 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             }} data-testid="awb-error">{apiError}</div>
           )}
 
+          {savedNote && (
+            <div style={{
+              padding: '8px 14px', background: 'var(--badge-green-bg)', borderRadius: 6,
+              border: '1px solid var(--badge-green-border)',
+              color: 'var(--badge-green-text)', fontSize: 12, marginBottom: 16,
+            }} data-testid="awb-master-saved-note">
+              Shipping details saved to Customer Master
+            </div>
+          )}
+
+          {/* Customer Master save-confirmation — booking is HELD until the
+              operator picks Yes (save + continue), No (this AWB only), or
+              Cancel (no save, no booking). Master is never written silently. */}
+          {saveConfirm && (
+            <div style={{
+              padding: '14px 16px', background: 'var(--bg-subtle)', borderRadius: 8,
+              border: '1px solid var(--badge-amber-border)', marginBottom: 16,
+            }} data-testid="awb-master-save-confirm">
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
+                {saveConfirm.phoneOnly
+                  ? 'Receiver phone is required by DHL Express. Save this phone to Customer Master shipping contact?'
+                  : 'These shipping details are different from Customer Master. Save them to this customer\'s shipping details?'}
+              </div>
+              <div style={{ fontSize: 11.5, marginBottom: 10 }}>
+                {saveConfirm.diffs.map(d => (
+                  <div key={d.formKey} style={{ display: 'flex', gap: 8, padding: '2px 0' }}
+                    data-testid={`awb-master-diff-${d.formKey}`}>
+                    <span style={{ color: 'var(--text-3)', minWidth: 120 }}>{d.label}</span>
+                    <span style={{ color: 'var(--text-3)', textDecoration: 'line-through' }}>{d.from || '(empty)'}</span>
+                    <span style={{ color: 'var(--text)', fontWeight: 600 }}>→ {d.to}</span>
+                  </div>
+                ))}
+                {saveConfirm.info && saveConfirm.info.map(d => (
+                  <div key={d.formKey} style={{ display: 'flex', gap: 8, padding: '2px 0', color: 'var(--text-3)' }}
+                    data-testid={`awb-master-info-${d.formKey}`}>
+                    <span style={{ minWidth: 120 }}>{d.label}</span>
+                    <span>{d.from || '(empty)'} → {d.to} · not saved from here — edit in Customer Master</span>
+                  </div>
+                ))}
+              </div>
+              {saveError && (
+                <div style={{ fontSize: 11.5, color: 'var(--badge-red-text)', marginBottom: 8 }}
+                  data-testid="awb-master-save-error">{saveError}</div>
+              )}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Btn variant="primary" onClick={saveShippingToMaster} disabled={savingMaster}
+                  data-testid="awb-master-save-yes">
+                  {savingMaster ? 'Saving…'
+                    : (saveConfirm.phoneOnly ? 'Yes' : 'Yes, save to Customer Master and continue')}
+                </Btn>
+                <Btn variant="ghost" disabled={savingMaster}
+                  onClick={() => { setSaveConfirm(null); doBooking(); }}
+                  data-testid="awb-master-save-no">
+                  {saveConfirm.phoneOnly ? 'No, use only once' : 'No, use only for this AWB'}
+                </Btn>
+                <Btn variant="ghost" disabled={savingMaster}
+                  onClick={() => { setSaveConfirm(null); setSaveError(null); }}
+                  data-testid="awb-master-save-cancel">
+                  Cancel
+                </Btn>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ fontSize: 11, color: isPending ? 'var(--badge-amber-text, #92400e)' : 'var(--text-3)' }}>
               {_footerLabel} · batch: <code>{batchId}</code>
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <Btn variant="ghost" onClick={onClose} disabled={loading}>Cancel</Btn>
-              <Btn variant="primary" onClick={handleSubmit} disabled={loading || isPending} data-testid="awb-submit-btn">
+              <Btn variant="primary" onClick={handleSubmit} disabled={loading || isPending || !!saveConfirm} data-testid="awb-submit-btn">
                 {loading ? 'Creating AWB…' : 'Create AWB'}
               </Btn>
             </div>
@@ -4179,6 +4351,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             proforma_number:    _awbProformaNo,
             // Description — default; operator overrides in modal
             description:        'Jewellery',
+            // Client identity — Customer Master baseline for the shipping
+            // save-confirmation workflow (compare + explicit-save target).
+            client_contractor_id: (liveDraft && liveDraft.client_contractor_id)
+              || (draft && draft.client_contractor_id) || '',
+            client_name:        (liveDraft && liveDraft.client_name)
+              || (draft && draft.client_name) || '',
           }}
           onClose={() => setShowAwbModal(false)}
           onSuccess={() => { setShowAwbModal(false); loadCarrierShipment(); }}
