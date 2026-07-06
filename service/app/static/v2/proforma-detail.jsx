@@ -857,6 +857,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     if (!form.country_code)   missing.push('Country code');
     if (!form.description)    missing.push('Description');
     if (missing.length) { setApiError(`Missing required fields: ${missing.join(', ')}`); return; }
+    // DHL rejects receiver contact without a phone (minLength 1) — block
+    // locally with the exact reason instead of a DHL 422 round-trip.
+    if (!(form.phone || '').trim()) {
+      setApiError('Receiver phone is required by DHL Express.');
+      return;
+    }
 
     setLoading(true);
     setApiError(null);
@@ -1223,9 +1229,15 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
             <div>
-              <label htmlFor="awb-phone" style={labelStyle}>Phone</label>
+              <label htmlFor="awb-phone" style={labelStyle}>Phone * (required by DHL)</label>
               <input id="awb-phone" value={form.phone} onChange={e => set('phone', e.target.value)}
                 style={inputStyle} data-testid="awb-field-phone" />
+              {!(form.phone || '').trim() && (
+                <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 3 }}
+                  data-testid="awb-phone-missing-hint">
+                  Receiver phone is required by DHL Express.
+                </div>
+              )}
             </div>
             <div>
               <label htmlFor="awb-email" style={labelStyle}>Email</label>
