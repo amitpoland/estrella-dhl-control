@@ -41,6 +41,8 @@ class ShipmentRequest:
     shipment_reference: Optional[str] = None     # batch/internal ref  → customerReferences AAO
     receiver_vat_id: Optional[str] = None        # DHL registrationNumbers EUV
     receiver_eori: Optional[str] = None          # DHL registrationNumbers EOR
+    box_type_code: Optional[str] = None          # Box Master profile selected in the AWB modal
+                                                 # (display/persistence only — dims already resolved)
 
 
 @dataclass
@@ -54,6 +56,9 @@ class ShipmentResult:
     # Phase 5 — carrier API response fields captured for audit/proforma
     service_product: Optional[str] = None   # e.g. "EXPRESS_WORLDWIDE"
     dimensions_json: Optional[str] = None   # JSON-serialised dimensions dict
+    # True when served from the stored COMPLETE row (idempotency replay) —
+    # no adapter call was made, no new shipment was created.
+    replayed: bool = False
 
 
 class CarrierGateError(Exception):

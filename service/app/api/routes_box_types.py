@@ -28,6 +28,7 @@ from ..services.master_data_db import (
     list_box_types,
     get_box_type_by_code,
     upsert_box_type,
+    seed_default_box_types,
 )
 
 log = get_logger(__name__)
@@ -46,10 +47,14 @@ def _box_type_dict(b: BoxType) -> dict:
         "id":             b.id,
         "code":           b.code,
         "name":           b.name,
+        "carrier":        b.carrier,
         "length_cm":      b.length_cm,
         "width_cm":       b.width_cm,
         "height_cm":      b.height_cm,
         "tare_weight_kg": b.tare_weight_kg,
+        "max_weight_kg":  b.max_weight_kg,
+        "package_type":   b.package_type,
+        "sort_order":     b.sort_order,
         "active":         b.active,
         "notes":          b.notes,
         "created_at":     b.created_at,
@@ -99,6 +104,27 @@ def list_box_types_endpoint(
         "count":     len(recs),
         "box_types": [_box_type_dict(b) for b in recs],
     })
+
+
+@box_types_router.post(
+    "/seed-defaults",
+    dependencies=[_write_auth],
+    summary="Seed the default DHL Box Profiles (insert-only, never overwrites)",
+)
+async def seed_default_box_types_endpoint(request: Request) -> JSONResponse:
+    """Insert the standard Box Profile catalogue for codes that do not exist:
+    DHL-JEWEL-S, DHL-RING, DHL-BRACELET, CUSTOM. Existing rows — active or
+    inactive — are never modified. Idempotent; safe to call repeatedly."""
+    init_db(_DB_PATH)
+    try:
+        created = seed_default_box_types(_DB_PATH)
+    except Exception as exc:
+        log.error("seed_default_box_types failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    if created:
+        audit_safe("box_types", "seed_defaults", ",".join(created),
+                   request=request, before=None, after={"created": created})
+    return JSONResponse({"created": created, "count": len(created)})
 
 
 @box_types_router.get("/{code}", dependencies=[_auth], summary="Get box type by code")

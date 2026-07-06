@@ -272,8 +272,16 @@ def test_get_shipment_returns_state(test_app, tmp_path):
     assert client.get("/api/v1/carrier/MY-BATCH/shipment").json()["state"] == "complete"
 
 
-def test_get_shipment_response_has_no_tracking_ref(test_app, tmp_path):
-    """GET /shipment must never expose tracking_ref — structural DB invariant."""
+def test_get_shipment_returns_tracking_ref_contract(test_app, tmp_path):
+    """GET /shipment returns the AWB logistics contract.
+
+    SUPERSEDED INVARIANT: this test previously asserted tracking_ref was
+    never returned ("structural DB invariant"). That invariant forced the
+    coordinator to re-invoke the adapter on completed replay, which booked
+    duplicate live DHL shipments (2026-07-06 incident). Operator decision
+    2026-07-06: tracking_ref IS persisted and returned. Legacy rows without
+    a stored ref return null honestly. Filesystem paths are never exposed.
+    """
     db_path = tmp_path / "shipments.db"
     shipment_db.init_db(db_path)
     shipment_db.insert_shipment(
@@ -286,7 +294,12 @@ def test_get_shipment_response_has_no_tracking_ref(test_app, tmp_path):
     test_app.dependency_overrides[_get_shipment_db_path] = lambda: db_path
     client = TestClient(test_app)
     data = client.get("/api/v1/carrier/MY-BATCH/shipment").json()
-    assert "tracking_ref" not in data
+    assert "tracking_ref" in data
+    assert data["tracking_ref"] is None          # legacy row: no stored ref
+    assert data["carrier"] == "DHL"
+    assert data["documents_available"] is False
+    assert data["label_download_url"] is None
+    assert str(tmp_path) not in str(data)        # no filesystem path leakage
 
 
 def test_get_shipment_returns_simulated_bool(test_app, tmp_path):

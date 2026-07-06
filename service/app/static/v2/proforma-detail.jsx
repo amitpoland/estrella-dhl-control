@@ -857,6 +857,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     if (!form.country_code)   missing.push('Country code');
     if (!form.description)    missing.push('Description');
     if (missing.length) { setApiError(`Missing required fields: ${missing.join(', ')}`); return; }
+    // DHL rejects receiver contact without a phone (minLength 1) — block
+    // locally with the exact reason instead of a DHL 422 round-trip.
+    if (!(form.phone || '').trim()) {
+      setApiError('Receiver phone is required by DHL Express.');
+      return;
+    }
 
     setLoading(true);
     setApiError(null);
@@ -887,12 +893,23 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       receiver_vat_id:    form.receiver_vat_id || null,
       receiver_eori:      form.receiver_eori || null,
       special_instructions: form.special_instructions || null,
+      box_type_code:      form.box_type_code || null,
     })
       .then(r => {
-        if (r && r.tracking_ref) {
-          setResult(r);
+        // PzApi wraps responses as { ok, data } / { ok:false, error }.
+        // Success MUST be read from r.data.tracking_ref — reading r.tracking_ref
+        // rendered every successful booking as a failure and caused operators
+        // to retry, double-booking live AWBs (2026-07-06 incident).
+        const data = (r && r.ok) ? r.data : null;
+        // Success OR idempotency replay both switch to the result view —
+        // a replayed COMPLETE (even a legacy row with null tracking_ref)
+        // means the shipment already exists; never present it as a failure
+        // that invites a retry (2026-07-06 duplicate-AWB incident).
+        if (data && (data.tracking_ref || data.replayed)) {
+          setResult(data);
         } else {
-          const msg = (r && (r.detail || r.error)) || 'AWB creation failed — check backend logs.';
+          const msg = (r && (r.error || (r.data && (r.data.detail || r.data.error))))
+            || 'AWB creation failed — check backend logs.';
           setApiError(typeof msg === 'object' ? JSON.stringify(msg) : msg);
         }
         setLoading(false);
@@ -931,41 +948,111 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   };
 
   if (result) {
+    const isReplay  = !!result.replayed;
+    const hasRef    = !!result.tracking_ref;
+    const isLegacy  = isReplay && !hasRef;   // pre-migration COMPLETE row: no stored AWB
     return (
       <div style={overlay} onClick={() => { onSuccess && onSuccess(result); onClose(); }} data-testid="awb-generate-modal">
         <div onClick={e => e.stopPropagation()} style={card}>
           <div style={header}>
-            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--badge-green-text)' }}>AWB Created</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--badge-green-text)' }}>
+              {isReplay ? 'AWB Already Exists' : 'AWB Created'}
+            </div>
             <button onClick={() => { onSuccess && onSuccess(result); onClose(); }}
               style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}
               aria-label="Close">×</button>
           </div>
           <div style={{ padding: '24px' }} data-testid="awb-generate-success">
             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
-              DHL Express AWB generated successfully
+              {isReplay
+                ? 'A shipment already exists for these package values — no new DHL shipment was created.'
+                : 'DHL Express AWB generated successfully'}
             </div>
-            <div style={{
-              padding: '16px 18px', background: 'var(--bg-subtle)', borderRadius: 8,
-              border: '1px solid var(--badge-green-border)', marginBottom: 20,
-            }}>
-              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>TRACKING NUMBER (AWB)</div>
+            {isLegacy ? (
               <div style={{
-                fontSize: 22, fontWeight: 800, fontFamily: 'monospace',
-                color: 'var(--badge-green-text)', letterSpacing: 1,
-              }}>{result.tracking_ref}</div>
-              <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-3)' }}>
-                Mode: {result.mode} · State: {result.state}
-                {result.simulated && <span style={{ marginLeft: 8, color: 'var(--badge-amber-text)' }}>(SIMULATED)</span>}
+                padding: '16px 18px', background: 'var(--bg-subtle)', borderRadius: 8,
+                border: '1px solid var(--border)', marginBottom: 20,
+              }} data-testid="awb-legacy-completed">
+                <div style={{ fontSize: 13, color: 'var(--text)' }}>
+                  AWB completed earlier — the tracking number predates the reference store.
+                  {result.saved_labels_exist
+                    ? ' Check the saved labels on the server for this batch.'
+                    : ' No saved label was found on the server for this batch.'}
+                </div>
               </div>
+            ) : (
+              <div style={{
+                padding: '16px 18px', background: 'var(--bg-subtle)', borderRadius: 8,
+                border: '1px solid var(--badge-green-border)', marginBottom: 20,
+              }}>
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>TRACKING NUMBER (AWB)</div>
+                <div style={{
+                  fontSize: 22, fontWeight: 800, fontFamily: 'monospace',
+                  color: 'var(--badge-green-text)', letterSpacing: 1,
+                }} data-testid="awb-tracking-ref">{result.tracking_ref}</div>
+                <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-3)' }}>
+                  Mode: {result.mode} · State: {result.state}
+                  {result.simulated && <span style={{ marginLeft: 8, color: 'var(--badge-amber-text)' }}>(SIMULATED)</span>}
+                </div>
+              </div>
+            )}
+            {(result.label_download_url || result.commercial_documents_url) && (
+              <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+                {result.label_download_url && (
+                  <a href={result.label_download_url} download
+                    style={{ ...inputStyle, width: 'auto', padding: '8px 16px', cursor: 'pointer',
+                             textDecoration: 'none', display: 'inline-block' }}
+                    data-testid="awb-download-label">
+                    ⬇ Download Label PDF
+                  </a>
+                )}
+                {result.commercial_documents_url && (
+                  <a href={result.commercial_documents_url} download
+                    style={{ ...inputStyle, width: 'auto', padding: '8px 16px', cursor: 'pointer',
+                             textDecoration: 'none', display: 'inline-block' }}
+                    data-testid="awb-download-documents">
+                    ⬇ Download Commercial Documents
+                  </a>
+                )}
+              </div>
+            )}
+            {/* Shipment summary — echoes the recorded shipment intent */}
+            <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+                          borderRadius: 8, padding: '10px 16px', marginBottom: 20, fontSize: 12 }}
+              data-testid="awb-result-summary">
+              {[
+                ['Batch',          result.batch_id || batchId],
+                ['Proforma',       (prefill && prefill.proforma_number) || '—'],
+                ['Customer',       form.company_name || form.name || '—'],
+                ['Destination',    [form.city, form.country_code].filter(Boolean).join(', ') || '—'],
+                ['Service',        result.service_code || form.product_code || '—'],
+                ['Weight',         result.weight_kg != null ? `${result.weight_kg} kg` : (form.weight_kg ? `${form.weight_kg} kg` : '—')],
+                ['Dimensions',     result.dimensions
+                                     ? `${result.dimensions.length_cm}×${result.dimensions.width_cm}×${result.dimensions.height_cm} cm`
+                                     : `${form.length_cm}×${form.width_cm}×${form.height_cm} cm`],
+                ['Box type',       result.box_type_code || form.box_type_code || '— (manual dimensions)'],
+                ['Declared value', result.declared_value != null
+                                     ? `${result.declared_value} ${result.currency || ''}`
+                                     : `${form.declared_value} ${form.currency}`],
+              ].map(([k, v]) => (
+                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '3px 0' }}>
+                  <span style={{ color: 'var(--text-3)' }}>{k}</span>
+                  <span style={{ fontWeight: 600, color: 'var(--text)', textAlign: 'right' }}>{v}</span>
+                </div>
+              ))}
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 20 }}>
-              Label PDF saved to server. Contact ops to retrieve or print the shipping label.
-            </div>
+            {!result.label_download_url && !isLegacy && (
+              <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 20 }}>
+                Label PDF saved to server. Contact ops to retrieve or print the shipping label.
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-              <button
-                onClick={() => { navigator.clipboard && navigator.clipboard.writeText(result.tracking_ref); }}
-                style={{ ...inputStyle, width: 'auto', padding: '8px 16px', cursor: 'pointer' }}
-              >Copy AWB</button>
+              {hasRef && (
+                <button
+                  onClick={() => { navigator.clipboard && navigator.clipboard.writeText(result.tracking_ref); }}
+                  style={{ ...inputStyle, width: 'auto', padding: '8px 16px', cursor: 'pointer' }}
+                >Copy AWB</button>
+              )}
               <Btn variant="primary" onClick={() => { onSuccess && onSuccess(result); onClose(); }}>Done</Btn>
             </div>
           </div>
@@ -1063,6 +1150,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
               <input id="awb-declared_value" type="number" min="0" step="0.01" value={form.declared_value}
                 onChange={e => set('declared_value', e.target.value)} style={inputStyle}
                 data-testid="awb-field-declared_value" />
+              {!form.declared_value && (
+                <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 3 }}
+                  data-testid="awb-declared-missing-hint">
+                  Declared value not found from proforma total — enter it manually.
+                </div>
+              )}
             </div>
             <div>
               <label htmlFor="awb-currency" style={labelStyle}>Currency *</label>
@@ -1136,9 +1229,15 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
             <div>
-              <label htmlFor="awb-phone" style={labelStyle}>Phone</label>
+              <label htmlFor="awb-phone" style={labelStyle}>Phone * (required by DHL)</label>
               <input id="awb-phone" value={form.phone} onChange={e => set('phone', e.target.value)}
                 style={inputStyle} data-testid="awb-field-phone" />
+              {!(form.phone || '').trim() && (
+                <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 3 }}
+                  data-testid="awb-phone-missing-hint">
+                  Receiver phone is required by DHL Express.
+                </div>
+              )}
             </div>
             <div>
               <label htmlFor="awb-email" style={labelStyle}>Email</label>
@@ -2338,6 +2437,17 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       .then(d => setDisclosure(d))
       .catch(() => setDisclosure(null));
   }, [draft && draft.id]);
+
+  // WIRED: recorded carrier shipment (GET /api/v1/carrier/{batch_id}/shipment).
+  // Read-only AWB/logistics/document visibility — 404 (no shipment yet) → null.
+  const [carrierShipment, setCarrierShipment] = React.useState(null);
+  const loadCarrierShipment = React.useCallback(() => {
+    if (!draft || !draft.batch_id || !window.PzApi.getCarrierShipment) return;
+    window.PzApi.getCarrierShipment(draft.batch_id)
+      .then(r => setCarrierShipment(r && r.ok ? r.data : null))
+      .catch(() => setCarrierShipment(null));
+  }, [draft && draft.batch_id]);
+  React.useEffect(() => { loadCarrierShipment(); }, [loadCarrierShipment]);
 
   // WIRED: fetch readiness / blocking reasons (POST /api/v1/proforma/preview/{batch_id}/{client_name})
   const batchId    = draft && (draft.batch_id    || '');
@@ -3575,12 +3685,45 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12 }} data-testid="pf-logistics-goods-summary">Goods: {cmrPreviewData.goods_summary}</div>
               ) : null}
 
-              {/* Honest Backend-Pending advisories — structural gaps, not fabricated data */}
-              <div style={{ padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 11.5, lineHeight: 1.6, marginTop: 4 }} data-testid="pf-logistics-pending">
-                <strong style={{ color: 'var(--badge-amber-text)' }}>Backend Pending:</strong> live AWB tracking number and the per-shipment box / package profile are not shown here — the real AWB is held in the secure label store (not a queryable read authority), and box selection is captured at label-generation time. Generate a DHL AWB from the toolbar to record them.
-              </div>
+              {/* DHL AWB / carrier shipment summary — real recorded shipment
+                  (GET /carrier/{batch}/shipment). Honest empty state when none. */}
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)', margin: '14px 0 6px' }}>DHL AWB / carrier shipment</div>
+              {carrierShipment ? (
+                <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 16px', marginBottom: 8 }} data-testid="pf-logistics-awb">
+                  {_kv('Carrier', carrierShipment.carrier || 'DHL', 'pf-logistics-awb-carrier')}
+                  {_kv('AWB / tracking', carrierShipment.tracking_ref
+                    || (carrierShipment.saved_labels_exist
+                        ? 'recorded before reference store — see saved labels'
+                        : '—'), 'pf-logistics-awb-ref')}
+                  {_kv('Service / product', carrierShipment.service_code || '—', 'pf-logistics-awb-service')}
+                  {_kv('Mode', `${carrierShipment.mode || '—'}${carrierShipment.simulated ? ' (simulated)' : ''}`, 'pf-logistics-awb-mode')}
+                  {_kv('Weight', carrierShipment.weight_kg != null ? `${carrierShipment.weight_kg} kg` : '—', 'pf-logistics-awb-weight')}
+                  {_kv('Dimensions', carrierShipment.dimensions
+                    ? `${carrierShipment.dimensions.length_cm}×${carrierShipment.dimensions.width_cm}×${carrierShipment.dimensions.height_cm} cm`
+                    : '—', 'pf-logistics-awb-dims')}
+                  {_kv('Box / package profile', carrierShipment.box_type_code || '— (manual dimensions)', 'pf-logistics-awb-box')}
+                  {_kv('Declared value', carrierShipment.declared_value != null
+                    ? `${carrierShipment.declared_value} ${carrierShipment.currency || ''}` : '—', 'pf-logistics-awb-declared')}
+                  {_kv('Created', carrierShipment.created_at || '—', 'pf-logistics-awb-created')}
+                  {carrierShipment.label_download_url ? (
+                    <div style={{ paddingTop: 8 }}>
+                      <a href={carrierShipment.label_download_url} download data-testid="pf-logistics-awb-label-download"
+                        style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', textDecoration: 'none', padding: '5px 10px', border: '1px solid var(--border)', borderRadius: 6, display: 'inline-block', background: 'var(--bg)' }}>
+                        ⬇ Download Label PDF
+                      </a>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div style={{ padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 11.5, lineHeight: 1.6, marginTop: 4 }} data-testid="pf-logistics-awb-empty">
+                  No DHL AWB recorded for this batch yet. Generate one with ⚡ AWB Generate in the toolbar — the tracking number, service, box profile and label download will appear here.
+                </div>
+              )}
 
-              {/* Real batch-scoped timeline + clearance (reuse-only, local audit) */}
+              {/* Real batch-scoped timeline + clearance (reuse-only, local audit).
+                  Complements the AWB block above — the live AWB is now shown by the
+                  carrier-shipment authority (main), so the old "AWB not shown" advisory
+                  is dropped as no longer accurate. */}
               <LogisticsTracking batchId={liveDraft.batch_id || (draft && draft.batch_id)} />
             </div>
           );
@@ -3629,6 +3772,32 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 ? `Invoice ${_invoiceNo || 'created'} — the PDF is served by wFirma; the app does not expose an invoice-PDF download endpoint yet.`
                 : 'Available after Convert to Invoice (toolbar).',
             },
+            {
+              key: 'dhl_label', name: 'DHL AWB Label',
+              authority: carrierShipment && carrierShipment.tracking_ref
+                ? `AWB ${carrierShipment.tracking_ref} · carrier label store`
+                : 'DHL Express label (carrier label store)',
+              available: !!(carrierShipment && carrierShipment.label_download_url),
+              action: (carrierShipment && carrierShipment.label_download_url)
+                ? { label: '↓ Download Label', href: carrierShipment.label_download_url, testid: 'pf-doc-dhl-label-download' }
+                : null,
+              pending: (carrierShipment && carrierShipment.label_download_url) ? null
+                : (carrierShipment
+                    ? (carrierShipment.saved_labels_exist
+                        ? 'AWB recorded before the reference store — labels are saved on the server; ask ops or rebook to link one here.'
+                        : 'No saved label for this shipment.')
+                    : 'Available after a DHL AWB is generated (⚡ AWB Generate).'),
+            },
+            {
+              key: 'dhl_documents', name: 'DHL Commercial Documents',
+              authority: 'Commercial invoice + packing list + CN23 package',
+              available: !!(carrierShipment && carrierShipment.documents_available),
+              action: (carrierShipment && carrierShipment.commercial_documents_url)
+                ? { label: '↓ Download', href: carrierShipment.commercial_documents_url, testid: 'pf-doc-dhl-documents-download' }
+                : null,
+              pending: (carrierShipment && carrierShipment.documents_available) ? null
+                : 'Not available yet — document packages are generated on demand (⚙ label-package) and are not persisted for download yet.',
+            },
           ];
           return (
             <div data-testid="pf-detail-documents" style={{ padding: 20 }}>
@@ -3656,12 +3825,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                       </button>
                     ) : null}
                     {d.action ? (
-                      <button onClick={d.action.onClick} data-testid={d.action.testid}
-                        style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
-                        {d.action.label}
-                      </button>
+                      d.action.href ? (
+                        <a href={d.action.href} download data-testid={d.action.testid}
+                          style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', textDecoration: 'none', display: 'inline-block' }}>
+                          {d.action.label}
+                        </a>
+                      ) : (
+                        <button onClick={d.action.onClick} data-testid={d.action.testid}
+                          style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
+                          {d.action.label}
+                        </button>
+                      )
                     ) : (!d.secondaryAction ? (
-                      <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 999 }} data-testid={`pf-doc-unavailable-${d.key}`}>Not available</span>
+                      <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 999 }} data-testid={`pf-doc-unavailable-${d.key}`}>{d.key.startsWith('dhl_') ? 'Not available yet' : 'Not available'}</span>
                     ) : null)}
                   </div>
                 </div>
@@ -3808,12 +3984,28 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           }}
         />
       )}
-      {showAwbModal && batchId && (
+      {showAwbModal && batchId && (() => {
+        // Declared value — the SAME total authority the Overview "Amount due"
+        // uses (sum of billed lines in the draft currency), plus service /
+        // shipping charges in the same currency (they post as proforma lines,
+        // so the proforma gross total includes them). No new calculation
+        // authority — this composes the values already on this page.
+        const _awbLinesTotal = lines.reduce((s, l) => s + (Number(l.netEur) || 0), 0);
+        const _awbChargesTotal = (liveDraft.service_charges || []).reduce((s, c) =>
+          s + (((c.currency || draftCurrency) === draftCurrency) ? (Number(c.amount) || 0) : 0), 0);
+        const _awbDeclared = _awbLinesTotal + _awbChargesTotal;
+        // Canonical proforma/order number — same field every panel on this
+        // page displays (never the batch id).
+        const _awbProformaNo = (liveDraft && liveDraft.wfirma_proforma_fullnumber)
+          || (draft && draft.wfirma_proforma_fullnumber)
+          || (draft && draft.doc_no)
+          || (liveDraft && liveDraft.proforma_number) || '';
+        return (
         <AwbGenerateModal
           batchId={batchId}
           prefill={{
-            // Value — from draft authority
-            declared_value:     detail.total_eur ? detail.total_eur.toFixed(2) : '',
+            // Value — Overview total authority (lines + same-currency charges)
+            declared_value:     _awbDeclared > 0 ? _awbDeclared.toFixed(2) : '',
             currency:           draftCurrency || 'EUR',
             // Recipient identity — Customer Master via ship_to / buyer_override
             company_name:       (sto && sto.name)    || (bo && bo.name)    || customer.name || '',
@@ -3827,16 +4019,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             // Customs — Customer Master
             receiver_vat_id:    (bo && (bo.vat_id || bo.vat_eu_number)) || '',
             receiver_eori:      (bo && bo.eori) || '',
-            // References — from draft
-            customer_reference: (draft && draft.doc_no) || (liveDraft && liveDraft.proforma_number) || '',
+            // References — customer ref = canonical proforma number;
+            // shipment ref = internal batch id.
+            customer_reference: _awbProformaNo,
             shipment_reference: batchId || '',
+            // Proforma number for the result summary card (display only)
+            proforma_number:    _awbProformaNo,
             // Description — default; operator overrides in modal
             description:        'Jewellery',
           }}
           onClose={() => setShowAwbModal(false)}
-          onSuccess={() => setShowAwbModal(false)}
+          onSuccess={() => { setShowAwbModal(false); loadCarrierShipment(); }}
         />
-      )}
+        );
+      })()}
       {buyerEditOpen && (
         <ProformaBuyerEditModal
           fields={buyerEditFields}

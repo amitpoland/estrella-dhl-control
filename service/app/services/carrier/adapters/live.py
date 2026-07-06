@@ -97,6 +97,16 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
         self._check_allowlist(request.batch_id)
         self._check_credentials()
 
+        # DHL requires receiverDetails.contactInformation.phone (minLength 1).
+        # Fail fast with a clear local error instead of a DHL 422 round-trip
+        # (2026-07-06: empty-string phone produced "minLength: 1, actual: 0").
+        _recv_phone = (request.recipient_address.get("phone") or "").strip()
+        if not _recv_phone:
+            raise CarrierGateError(
+                "Receiver phone is required by DHL Express — add it in the AWB "
+                "form or in Customer Master for this client."
+            )
+
         from ....core.config import settings
         import datetime
 
@@ -167,6 +177,7 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
             state=ShipmentState.SUBMITTED,
             tracking_ref=tracking_ref,
             simulated=False,
+            service_product=resolved_product,
         )
 
     def get_shipment(self, tracking_ref: str) -> ShipmentResult:
@@ -496,19 +507,36 @@ def _build_shipper_details(settings) -> dict:
 
 
 def _build_receiver_details(addr: dict) -> dict:
+    """Map the recipient address onto DHL receiverDetails.
+
+    DHL's schema rejects empty strings (minLength 1) — optional fields
+    (postalCode, email) are OMITTED when blank, never sent as "". phone is
+    DHL-required and guarded upstream in create_shipment(); it is only
+    included here when non-blank so an empty string can never be emitted.
+    """
+    postal_address: dict = {
+        "cityName":    addr.get("city") or addr.get("cityName") or "",
+        "countryCode": addr.get("country_code") or addr.get("countryCode") or "",
+        "addressLine1": addr.get("street") or addr.get("addressLine1") or "",
+    }
+    postal_code = (addr.get("postal_code") or addr.get("postalCode") or "").strip()
+    if postal_code:
+        postal_address["postalCode"] = postal_code
+
+    contact: dict = {
+        "fullName":    addr.get("name") or addr.get("fullName") or "",
+        "companyName": addr.get("company") or addr.get("name") or "",
+    }
+    phone = (addr.get("phone") or "").strip()
+    if phone:
+        contact["phone"] = phone
+    email = (addr.get("email") or "").strip()
+    if email:
+        contact["email"] = email
+
     return {
-        "postalAddress": {
-            "postalCode":  addr.get("postal_code") or addr.get("postalCode") or "",
-            "cityName":    addr.get("city") or addr.get("cityName") or "",
-            "countryCode": addr.get("country_code") or addr.get("countryCode") or "",
-            "addressLine1": addr.get("street") or addr.get("addressLine1") or "",
-        },
-        "contactInformation": {
-            "fullName":    addr.get("name") or addr.get("fullName") or "",
-            "companyName": addr.get("company") or addr.get("name") or "",
-            "phone":       addr.get("phone") or "",
-            "email":       addr.get("email") or "",
-        },
+        "postalAddress": postal_address,
+        "contactInformation": contact,
     }
 
 

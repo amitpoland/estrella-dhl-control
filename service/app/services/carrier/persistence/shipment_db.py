@@ -4,10 +4,14 @@ Idempotency store and state tracker for carrier shipments.
 Caller provides db_path — no global state, no app startup init required.
 One row per idempotency_key. State transitions are the only allowed mutations.
 
-Structural invariant: tracking_ref (real AWB) is intentionally absent from
-this table. Live AWBs must never be persisted here — they belong in the
-secure label store (Phase D). Shadow simulated refs are also excluded for
-the same schema reason: the idempotency store tracks *state*, not labels.
+tracking_ref: originally excluded by design ("labels live in the label
+store"), but that invariant forced the coordinator to RE-INVOKE the adapter
+on completed-key replay — which, for the live adapter, booked brand-new DHL
+shipments (2026-07-06 duplicate-AWB incident, 3 duplicate live AWBs).
+Superseded by operator decision 2026-07-06: tracking_ref IS persisted at
+COMPLETE so replays return the stored result with zero adapter calls.
+insert_shipment() still rejects LIVE-mode *inserts* — the pre-adapter
+PENDING anchor row carries no AWB; the ref arrives only via update_state().
 """
 from __future__ import annotations
 
@@ -35,6 +39,13 @@ CREATE TABLE IF NOT EXISTS carrier_shipments (
 _ADDITIVE_COLUMNS = [
     ("service_product", "TEXT"),       # carrier service code (e.g. EXPRESS_WORLDWIDE)
     ("dimensions_json", "TEXT"),       # JSON snapshot of ShipmentRequest.dimensions
+    ("tracking_ref", "TEXT"),          # AWB / tracking number, written at COMPLETE
+                                       # (2026-07-06 duplicate-AWB incident fix)
+    # AWB logistics visibility — Proforma V2 Logistics tab summary fields
+    ("weight_kg", "REAL"),
+    ("declared_value", "REAL"),
+    ("currency", "TEXT"),
+    ("box_type_code", "TEXT"),         # Box Master profile chosen in the AWB modal
 ]
 
 
@@ -132,18 +143,35 @@ def update_state(
     idempotency_key: str,
     state: ShipmentState,
     error: Optional[str] = None,
+    *,
+    tracking_ref: Optional[str] = None,
+    mode: Optional[ShipmentMode] = None,
+    simulated: Optional[bool] = None,
 ) -> None:
-    """Advance the state of an existing shipment entry."""
+    """Advance the state of an existing shipment entry.
+
+    At COMPLETE the coordinator also persists the adapter-truth fields
+    (tracking_ref, mode, simulated) so a replay can return the stored
+    result without re-invoking the adapter (2026-07-06 incident fix).
+    Only non-None keyword fields are written.
+    """
+    sets = ["state = ?", "error = ?"]
+    args: list = [state.value, error]
+    if tracking_ref is not None:
+        sets.append("tracking_ref = ?")
+        args.append(tracking_ref)
+    if mode is not None:
+        sets.append("mode = ?")
+        args.append(mode.value)
+    if simulated is not None:
+        sets.append("simulated = ?")
+        args.append(int(simulated))
+    sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
+    args.append(idempotency_key)
     with _connect(db_path) as conn:
         conn.execute(
-            """
-            UPDATE carrier_shipments
-            SET state      = ?,
-                error      = ?,
-                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-            WHERE idempotency_key = ?
-            """,
-            (state.value, error, idempotency_key),
+            f"UPDATE carrier_shipments SET {', '.join(sets)} WHERE idempotency_key = ?",
+            tuple(args),
         )
 
 
@@ -153,6 +181,10 @@ def update_shipment_fields(
     *,
     service_product: Optional[str] = None,
     dimensions_json: Optional[str] = None,
+    weight_kg: Optional[float] = None,
+    declared_value: Optional[float] = None,
+    currency: Optional[str] = None,
+    box_type_code: Optional[str] = None,
 ) -> None:
     """Persist Phase-5 carrier API response fields on an existing row.
 
@@ -165,6 +197,18 @@ def update_shipment_fields(
     if dimensions_json is not None:
         sets.append("dimensions_json = ?")
         args.append(dimensions_json)
+    if weight_kg is not None:
+        sets.append("weight_kg = ?")
+        args.append(float(weight_kg))
+    if declared_value is not None:
+        sets.append("declared_value = ?")
+        args.append(float(declared_value))
+    if currency is not None:
+        sets.append("currency = ?")
+        args.append(currency)
+    if box_type_code is not None:
+        sets.append("box_type_code = ?")
+        args.append(box_type_code)
     if not sets:
         return
     sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")

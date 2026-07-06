@@ -423,10 +423,20 @@
     // body: { recipient_address, declared_value, currency, weight_kg, dimensions,
     //         shipper_account?, special_instructions?,
     //         product_code?, description?, customer_reference?, shipment_reference?,
-    //         receiver_vat_id?, receiver_eori? }
-    // Returns: { batch_id, idempotency_key, mode, state, tracking_ref, simulated }
+    //         receiver_vat_id?, receiver_eori?, box_type_code? }
+    // Returns: { batch_id, idempotency_key, mode, state, tracking_ref, simulated,
+    //            replayed, label_download_url, commercial_documents_url,
+    //            documents_available, saved_labels_exist, carrier, service_code,
+    //            box_type_code, weight_kg, dimensions, declared_value, currency }
     createCarrierShipment: (batchId, body) =>
       _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`, body),
+
+    // GET /api/v1/carrier/{batch_id}/shipment
+    // Most-recent recorded carrier shipment for the batch (404 when none).
+    // Returns the same AWB logistics/document contract as create, plus
+    // created_at + error. Legacy rows return null tracking_ref honestly.
+    getCarrierShipment: (batchId) =>
+      _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`),
 
     // GET /api/v1/carrier/services
     // Returns static DHL Express product code catalogue. No credentials required.
@@ -434,11 +444,23 @@
     listCarrierServices: () =>
       _get(`${BASE}/carrier/services`),
 
-    // GET /api/v1/box-types/?active=true
-    // Returns active box type profiles (Box Master). Used to populate the AWB modal dropdown.
-    // Returns: [{ id, code, name, length_cm, width_cm, height_cm, tare_weight_kg, active }]
-    listBoxTypes: (activeOnly = true) =>
-      _get(`${BASE}/box-types/${activeOnly ? '?active=true' : ''}`),
+    // GET /api/v1/box-types/?active=true|all
+    // Box Profile master (Box Master authority). Used by the AWB modal dropdown
+    // (active only) and the Master Data management view ('all').
+    // Returns: { count, box_types: [{ id, code, name, carrier, length_cm, width_cm,
+    //            height_cm, tare_weight_kg, max_weight_kg, package_type,
+    //            sort_order, active, notes }] }
+    listBoxTypes: (active = true) =>
+      _get(`${BASE}/box-types/${active === 'all' ? '?active=all' : (active ? '?active=true' : '?active=false')}`),
+
+    // PUT /api/v1/box-types/{code} — create or update a Box Profile.
+    // Deactivate with { active: false }; profiles are never deleted.
+    upsertBoxType: (code, body) =>
+      _put(`${BASE}/box-types/${encodeURIComponent(code)}`, body),
+
+    // POST /api/v1/box-types/seed-defaults — insert-only default DHL profiles.
+    seedBoxTypeDefaults: () =>
+      _postM(`${BASE}/box-types/seed-defaults`, {}),
 
     // GET /api/v1/warehouse/receipt/{batch_id}
     // WAREHOUSE authority: per-line expected vs confirmed received quantities +
