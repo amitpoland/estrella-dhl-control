@@ -820,3 +820,38 @@ def test_post_draft_endpoint_exists_in_backend():
     assert "/draft/{draft_id}/post" in src or "draft_id}/post" in src, (
         "POST /api/v1/proforma/draft/{id}/post must exist in routes_proforma.py"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# G. Workflow rail is authority-backed (no fabricated stage)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_workflow_rail_derives_from_draft_state():
+    """The workflow rail must be derived from the real draft_state machine +
+    wFirma authority ids — never a fabricated/hardcoded stage."""
+    src = _src()
+    assert "function WorkflowRail" in src, "WorkflowRail component must exist"
+    code = _code_only(src)
+    # Rank is driven by draft_state values + the two wFirma authority ids.
+    assert "wfirmaProformaId" in code and "wfirmaInvoiceId" in code, (
+        "WorkflowRail must cross-confirm stage with wfirma_proforma_id / "
+        "wfirma_invoice_id authority — not a standalone guess"
+    )
+    for token in ("draft", "approved", "posted", "converted"):
+        assert token in code, f"WorkflowRail rank map must reference draft_state '{token}'"
+
+
+def test_workflow_rail_does_not_fabricate_shipment_stage():
+    """Shipment/customs are SEPARATE authorities (Lesson N) with no draft-level
+    state. The rail must NOT invent a shipment stage; it must point the operator
+    to the separate-authority tabs instead."""
+    src = _src()
+    # The four authority-backed rail nodes are present as literal stage labels.
+    assert "'Review'" in src and "'Posted'" in src and "'Invoiced'" in src, (
+        "WorkflowRail must render the draft_state-backed stages"
+    )
+    # An honest note redirects reservation/shipment/customs to their own tabs.
+    assert 'data-testid="pf-workflow-note"' in src, (
+        "WorkflowRail must carry the separate-authority note (no fabricated "
+        "shipment stage)"
+    )

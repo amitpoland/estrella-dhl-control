@@ -2230,6 +2230,54 @@ function DocumentsRegistry({ batchId }) {
   );
 }
 
+// ── Workflow rail (authority-backed) ───────────────────────────────────────────
+// Derived STRICTLY from the proforma-draft state machine (draft_state), which is
+// always present on the draft and cross-confirmed by the wFirma authority ids
+// (wfirma_proforma_id = posted, wfirma_invoice_id = invoiced). No fabricated
+// stage: reservation loads lazily and shipment/customs are SEPARATE authorities
+// (Lesson N) with no draft-level state — they are pointed to their own tabs, not
+// shown as rail nodes. A wrong stage here would be fake readiness; every node maps
+// to a real, always-available signal.
+function WorkflowRail({ draftState, wfirmaProformaId, wfirmaInvoiceId }) {
+  const st = String(draftState || '').toLowerCase();
+  const railBox = { padding: '10px 24px', background: 'var(--card)', borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)' };
+  if (st === 'cancelled' || st === 'superseded') {
+    return (
+      <div data-testid="pf-workflow-rail" style={railBox}>
+        <span data-testid="pf-workflow-terminal" style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-red-text)' }}>
+          ● {st === 'cancelled' ? 'Cancelled' : 'Superseded'}
+        </span>
+      </div>
+    );
+  }
+  const RANK = { draft: 0, editing: 0, post_failed: 0, approved: 1, posted: 2, converted: 3 };
+  let rank = RANK[st] != null ? RANK[st] : 0;
+  if (wfirmaProformaId && rank < 2) rank = 2;   // proforma document exists → posted
+  if (wfirmaInvoiceId) rank = 3;                 // invoice exists → invoiced
+  const stages = ['Review', 'Approved', 'Posted', 'Invoiced'];
+  return (
+    <div data-testid="pf-workflow-rail" style={{ ...railBox, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      {stages.map((s, i) => {
+        const done = i < rank, cur = i === rank;
+        const color = done ? 'var(--badge-green-text, #2e7d32)' : (cur ? 'var(--accent)' : 'var(--text-3)');
+        return (
+          <React.Fragment key={s}>
+            <span data-testid={`pf-workflow-stage-${s.toLowerCase()}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: (done || cur) ? 700 : 500, color }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, display: 'inline-block' }} />
+              {s}{done ? ' ✓' : ''}
+            </span>
+            {i < stages.length - 1 && <span style={{ color: 'var(--text-3)', fontSize: 11 }}>→</span>}
+          </React.Fragment>
+        );
+      })}
+      <span style={{ flex: 1, minWidth: 12 }} />
+      <span data-testid="pf-workflow-note" style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
+        Reservation, shipment &amp; customs are separate authorities — see their tabs.
+      </span>
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
@@ -3368,6 +3416,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         setBuyerEditError={setBuyerEditError}
         setBuyerEditOpen={setBuyerEditOpen}
         draftState={draftState}
+      />
+
+      {/* ── Workflow rail (authority-backed: draft_state machine) ───────────── */}
+      <WorkflowRail
+        draftState={draftState}
+        wfirmaProformaId={liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id)}
+        wfirmaInvoiceId={liveDraft.wfirma_invoice_id || (draft && draft.wfirma_invoice_id)}
       />
 
       {/* ── Tab strip ──────────────────────────────────────────────────────── */}

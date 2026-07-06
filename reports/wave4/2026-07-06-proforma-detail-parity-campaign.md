@@ -47,7 +47,15 @@ Auth note: `require_api_key` accepts the `pz_session` cookie (`core/security.py:
 ### 5. Final operator workflow seamlessness
 | Gap | Verdict | Authority reused |
 |---|---|---|
-| Cross-tab workflow progress indicator | **IMPLEMENT** | pure UI derived from existing draft state (draft → reservation → convert → invoice) |
+| Cross-tab workflow progress rail | **IMPLEMENT (authority-backed)** | `draft_state` machine (`proforma_invoice_link_db.py`: draft/editing/post_failed → approved → posted → converted), cross-confirmed by `wfirma_proforma_id` (posted) + `wfirma_invoice_id` (invoiced) — always present on the draft |
+| Shipment stage node on the rail | **NOT BUILT (authority absent)** | no draft-level shipment state; AWB not stored on draft; shipment/customs are a SEPARATE authority (Lesson N). Rail omits it and points to the Logistics tab instead |
+
+**Rail decision (operator condition honored):** the state machine EXISTS, so the rail
+was built strictly from it — 4 authority-backed nodes (Review → Approved → Posted →
+Invoiced). Reservation loads lazily (would show a false "not reserved") and shipment
+has no draft-level authority, so neither is a fabricated rail node; both are redirected
+to their own tabs via `pf-workflow-note`. Pinned by
+`test_sprint36_proforma_detail_authority.py::test_workflow_rail_*`.
 
 ## Not in scope / STOP conditions
 - Invoice-PDF endpoint, label-package auto-bundle, live AWB tracking: require new backend
