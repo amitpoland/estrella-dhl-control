@@ -1930,6 +1930,10 @@ function SourceExtractionTab({ draftId, expectedUpdatedAt, onSaved }) {
 
   const box  = { padding: '16px 18px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12.5, lineHeight: 1.6 };
   const conf = (c) => (c === null || c === undefined) ? '—' : `${Math.round(c * 100)}%`;
+  // Confidence coloring (advisory): high ≥85% green, medium ≥60% amber, low <60% red.
+  // Purely visual over the existing extracted_confidence value — no threshold gates any action.
+  const confColor = (c) => (c === null || c === undefined) ? 'var(--text-3)'
+    : (c >= 0.85 ? 'var(--badge-green-text, #2e7d32)' : (c >= 0.60 ? 'var(--badge-amber-text)' : 'var(--badge-red-text)'));
   const iBtn = { padding: '3px 9px', fontSize: 11, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' };
   const iIn  = { padding: '3px 6px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' };
 
@@ -1996,7 +2000,7 @@ function SourceExtractionTab({ draftId, expectedUpdatedAt, onSaved }) {
             </button>
           </div>
           {recheck.msg && <div data-testid="pf-source-recheck-msg" style={{ fontSize: 11, color: 'var(--badge-green-text)', marginBottom: 6 }}>{recheck.msg}</div>}
-          {recheck.err && <div data-testid="pf-source-recheck-err" style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginBottom: 6 }}>Authority Gap · {recheck.err}</div>}
+          {recheck.err && <div data-testid="pf-source-recheck-err" style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginBottom: 6 }}>Re-check failed · {recheck.err}</div>}
           {lines.length === 0
             ? <div style={{ ...box, color: 'var(--text-3)' }}>No draft lines.</div>
             : <div style={{ ...box, padding: 0, overflow: 'auto' }}>
@@ -2034,14 +2038,22 @@ function SourceExtractionTab({ draftId, expectedUpdatedAt, onSaved }) {
                             ? <input data-testid="pf-source-edit-qty" type="number" min="0" step="1" value={editQty} onChange={e => setEditQty(e.target.value)} style={{ ...iIn, width: 64, textAlign: 'right' }} />
                             : (ln.quantity != null ? ln.quantity : '—')}
                         </td>
-                        <td style={{ padding: '8px 12px', color: 'var(--text-2, var(--text))' }}>{conf(ln.extracted_confidence)}</td>
+                        <td style={{ padding: '8px 12px', fontWeight: 600, color: confColor(ln.extracted_confidence) }} data-testid="pf-source-confidence">
+                          <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: confColor(ln.extracted_confidence), marginRight: 6, verticalAlign: 'middle' }} />
+                          {conf(ln.extracted_confidence)}
+                        </td>
                         <td style={{ padding: '8px 12px' }}>
                           {ln.product_matched
                             ? <span style={{ color: 'var(--badge-green-text, #2e7d32)' }}>✓ matched</span>
                             : <span data-testid="pf-source-row-unmatched" style={{ color: 'var(--badge-amber-text)' }}>unmatched</span>}
                         </td>
-                        <td style={{ padding: '8px 12px', color: ln.requires_manual_review ? 'var(--badge-amber-text)' : 'var(--text-3)' }}>
-                          {ln.requires_manual_review ? 'manual' : '—'}
+                        <td style={{ padding: '8px 12px' }} data-testid="pf-source-review-status">
+                          {/* Derived advisory status — never a gate. accepted := matched & no manual flag. */}
+                          {ln.unmatched
+                            ? <span style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>● Needs mapping</span>
+                            : (ln.requires_manual_review
+                                ? <span style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>● Needs review</span>
+                                : <span style={{ color: 'var(--badge-green-text, #2e7d32)', fontWeight: 600 }}>● Accepted</span>)}
                         </td>
                         <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
                           {isEdit ? (
@@ -2063,7 +2075,156 @@ function SourceExtractionTab({ draftId, expectedUpdatedAt, onSaved }) {
                   </tbody>
                 </table>
               </div>}
+
+          {/* Legend + honest scope of the review data. Confidence/status are
+              advisory (Lesson N). A raw extracted-vs-current field diff is NOT
+              shown because no original-extraction snapshot is retained by any
+              authority — the extraction read composes over current line state. */}
+          {lines.length > 0 && (
+            <div data-testid="pf-source-legend" style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8, lineHeight: 1.6 }}>
+              <span style={{ color: 'var(--badge-green-text, #2e7d32)' }}>● ≥85% high</span>{'  ·  '}
+              <span style={{ color: 'var(--badge-amber-text)' }}>● 60–85% medium / needs review</span>{'  ·  '}
+              <span style={{ color: 'var(--badge-red-text)' }}>● &lt;60% low</span>
+              <div data-testid="pf-source-diff-note" style={{ marginTop: 4 }}>
+                <strong style={{ color: 'var(--badge-amber-text)' }}>Backend Pending:</strong> a per-field
+                extracted-vs-current diff is not shown — no original-extraction snapshot is retained; the
+                review reflects current line state against Product Master. Use <em>Edit / Map</em> to correct a row.
+              </div>
+            </div>
+          )}
         </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+// ── Logistics tracking (reuse-only) ─────────────────────────────────────────────
+// Real shipment timeline + customs clearance status, both batch-scoped and read
+// from the LOCAL audit log (no live carrier call). Reuses:
+//   GET /api/v1/tracking/shipment/{batch_id}/timeline   (cookie auth)
+//   GET /api/v1/dhl/clearance-status/{batch_id}
+// Advisory only — never a fiscal gate.
+function LogisticsTracking({ batchId }) {
+  const [tl,      setTl]      = React.useState(null);   // timeline entries
+  const [clr,     setClr]     = React.useState(null);   // clearance status
+  const [loading, setLoading] = React.useState(true);
+  const [err,     setErr]     = React.useState(null);
+
+  React.useEffect(() => {
+    let alive = true;
+    if (!batchId) { setLoading(false); return; }
+    setLoading(true); setErr(null);
+    const af = window.EstrellaShared.apiFetch;
+    Promise.allSettled([
+      af(`/api/v1/tracking/shipment/${encodeURIComponent(batchId)}/timeline`),
+      af(`/api/v1/dhl/clearance-status/${encodeURIComponent(batchId)}`),
+    ]).then(([t, c]) => {
+      if (!alive) return;
+      if (t.status === 'fulfilled') setTl((t.value && t.value.timeline) || []);
+      else setErr((t.reason && t.reason.message) || 'timeline unavailable');
+      if (c.status === 'fulfilled' && c.value && c.value.found !== false) setClr(c.value);
+      setLoading(false);
+    });
+    return () => { alive = false; };
+  }, [batchId]);
+
+  const box = { padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8 };
+  const pick = (e, keys) => { for (const k of keys) { if (e && e[k]) return e[k]; } return ''; };
+
+  return (
+    <div data-testid="pf-logistics-tracking" style={{ marginTop: 16 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>Shipment timeline &amp; clearance</div>
+      {loading && <div data-testid="pf-logistics-tracking-loading" style={{ ...box, fontSize: 12, color: 'var(--text-3)' }}>Loading tracking…</div>}
+
+      {!loading && clr && (
+        <div style={{ ...box, marginBottom: 10 }} data-testid="pf-logistics-clearance">
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12 }}>
+            <span style={{ color: 'var(--text-3)' }}>Customs clearance</span>
+            <span style={{ fontWeight: 700, color: 'var(--text)' }}>{clr.clearance_status || '—'}</span>
+          </div>
+          {clr.clearance_action && <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 3 }}>Action: {clr.clearance_action}</div>}
+          {clr.awb && <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>AWB: <span style={{ fontFamily: 'monospace' }}>{clr.awb}</span>{clr.updated_at ? ` · ${String(clr.updated_at).slice(0,10)}` : ''}</div>}
+        </div>
+      )}
+
+      {!loading && tl && tl.length > 0 && (
+        <div style={{ ...box, padding: 0, overflow: 'hidden' }} data-testid="pf-logistics-timeline">
+          {tl.map((e, i) => (
+            <div key={i} data-testid="pf-logistics-timeline-row" style={{ display: 'flex', gap: 12, padding: '8px 14px', borderBottom: i < tl.length - 1 ? '1px solid var(--border)' : 'none' }}>
+              <span style={{ fontSize: 11, color: 'var(--text-3)', minWidth: 92, fontFamily: 'monospace' }}>{String(pick(e, ['timestamp','time','at','t','date']) || '').slice(0, 16) || '—'}</span>
+              <span style={{ fontSize: 12, color: 'var(--text)', flex: 1 }}>
+                <strong>{pick(e, ['event','status','label','type','stage']) || '—'}</strong>
+                {pick(e, ['location','where','place']) ? <span style={{ color: 'var(--text-3)' }}> · {pick(e, ['location','where','place'])}</span> : null}
+                {pick(e, ['detail','message','note','description']) ? <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>{pick(e, ['detail','message','note','description'])}</div> : null}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!loading && (!tl || tl.length === 0) && !clr && (
+        <div style={{ ...box, fontSize: 11.5, color: 'var(--text-3)' }} data-testid="pf-logistics-timeline-empty">
+          No shipment timeline or clearance events recorded for this batch yet{err ? ` (${err})` : ''}.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Documents registry (reuse-only) ─────────────────────────────────────────────
+// Lists the REAL documents recorded for this shipment (purchase/sales invoice,
+// packing lists) with their extraction/review state. Reuses:
+//   GET /api/v1/upload/shipment/{batch_id}/documents   (cookie auth)
+// Read-only inventory — no fabricated rows, no fake downloads.
+function DocumentsRegistry({ batchId }) {
+  const [docs,    setDocs]    = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [err,     setErr]     = React.useState(null);
+
+  React.useEffect(() => {
+    let alive = true;
+    if (!batchId) { setLoading(false); return; }
+    setLoading(true); setErr(null);
+    window.EstrellaShared.apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/documents`)
+      .then(r => { if (!alive) return; setDocs((r && r.documents) || []); setLoading(false); })
+      .catch(e => { if (!alive) return; setErr((e && e.message) || 'registry unavailable'); setLoading(false); });
+    return () => { alive = false; };
+  }, [batchId]);
+
+  const box = { padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8 };
+  const typeLabel = (t) => ({
+    purchase_invoice: 'Purchase invoice', sales_invoice: 'Sales invoice',
+    purchase_packing_list: 'Purchase packing list', sales_packing_list: 'Sales packing list',
+  }[t] || (t || 'Document'));
+
+  return (
+    <div data-testid="pf-documents-registry" style={{ marginTop: 20 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 4 }}>Shipment documents (source registry)</div>
+      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+        Real documents recorded for this shipment — batch-scoped. Read-only inventory.
+      </div>
+      {loading && <div data-testid="pf-documents-registry-loading" style={{ ...box, fontSize: 12, color: 'var(--text-3)' }}>Loading registry…</div>}
+      {!loading && err && <div data-testid="pf-documents-registry-err" style={{ ...box, fontSize: 11.5, color: 'var(--badge-amber-text)' }}>Registry unavailable · {err}</div>}
+      {!loading && !err && docs && docs.length === 0 && (
+        <div data-testid="pf-documents-registry-empty" style={{ ...box, fontSize: 11.5, color: 'var(--text-3)' }}>No source documents registered for this shipment.</div>
+      )}
+      {!loading && !err && docs && docs.length > 0 && (
+        <div style={{ ...box, padding: 0, overflow: 'hidden' }}>
+          {docs.map((d, i) => (
+            <div key={d.id || d.document_id || i} data-testid="pf-documents-registry-row"
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 14px', borderBottom: i < docs.length - 1 ? '1px solid var(--border)' : 'none' }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)' }}>{typeLabel(d.document_type)}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
+                  {[d.invoice_no || d.file_name || d.suggested_client_name, (d.line_count != null ? `${d.line_count} lines` : null)].filter(Boolean).join(' · ') || '—'}
+                </div>
+              </div>
+              {d.review_state && (
+                <span data-testid="pf-documents-review-state" style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, color: 'var(--text-2)', border: '1px solid var(--border)' }}>{d.review_state}</span>
+              )}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -3363,6 +3524,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               <div style={{ padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 11.5, lineHeight: 1.6, marginTop: 4 }} data-testid="pf-logistics-pending">
                 <strong style={{ color: 'var(--badge-amber-text)' }}>Backend Pending:</strong> live AWB tracking number and the per-shipment box / package profile are not shown here — the real AWB is held in the secure label store (not a queryable read authority), and box selection is captured at label-generation time. Generate a DHL AWB from the toolbar to record them.
               </div>
+
+              {/* Real batch-scoped timeline + clearance (reuse-only, local audit) */}
+              <LogisticsTracking batchId={liveDraft.batch_id || (draft && draft.batch_id)} />
             </div>
           );
         })()}
@@ -3382,7 +3546,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               authority: _proformaNo ? `wFirma proforma ${_proformaNo}` : 'wFirma proforma document',
               available: canPrint,
               action: canPrint ? { label: '↓ Download', onClick: handleDownloadPdf, testid: 'pf-doc-proforma-download' } : null,
-              pending: canPrint ? null : 'Available after this draft is posted to wFirma (⇪ Post to wFirma).',
+              // Print preview (A4 HTML snapshot) — reuse GET /proforma/draft/{id}/preview.html.
+              // Local render, never calls wFirma → available even before posting.
+              secondaryAction: (draft && draft.id) ? { label: '◫ Print preview', onClick: () => { const a = document.createElement('a'); a.href = `/api/v1/proforma/draft/${draft.id}/preview.html`; a.target = '_blank'; a.rel = 'noopener'; document.body.appendChild(a); a.click(); document.body.removeChild(a); }, testid: 'pf-doc-proforma-preview' } : null,
+              pending: canPrint ? null : 'PDF available after this draft is posted to wFirma (⇪ Post to wFirma). Print preview works now.',
             },
             {
               key: 'cmr', name: 'CMR (transport)',
@@ -3426,18 +3593,27 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                       </div>
                     ) : null}
                   </div>
-                  <div style={{ flexShrink: 0 }}>
+                  <div style={{ flexShrink: 0, display: 'flex', gap: 6 }}>
+                    {d.secondaryAction ? (
+                      <button onClick={d.secondaryAction.onClick} data-testid={d.secondaryAction.testid}
+                        style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
+                        {d.secondaryAction.label}
+                      </button>
+                    ) : null}
                     {d.action ? (
                       <button onClick={d.action.onClick} data-testid={d.action.testid}
                         style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
                         {d.action.label}
                       </button>
-                    ) : (
+                    ) : (!d.secondaryAction ? (
                       <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 999 }} data-testid={`pf-doc-unavailable-${d.key}`}>Not available</span>
-                    )}
+                    ) : null)}
                   </div>
                 </div>
               ))}
+
+              {/* Real shipment-document registry (reuse-only, batch-scoped) */}
+              <DocumentsRegistry batchId={liveDraft.batch_id || (draft && draft.batch_id)} />
             </div>
           );
         })()}
@@ -4172,7 +4348,7 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
           )
           : <KvItem k="Sale date" v={detail.sale_date} mono />
         }
-        <KvItem k="Paid" v={`0.00 ${currency}`} muted />
+        <KvItem k="Paid" v="— see Payment status" muted />
 
         <KvItem k="Amount due" v={`${totalEur.toFixed(2)} ${currency}`} />
         <KvItem k="Accounting scheme" v={detail.accounting_scheme || 'Standard'} />
@@ -4217,6 +4393,77 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
           )}
         </div>
       )}
+
+      {/* Payment status — real figures on demand (reuse-only, live wFirma statement) */}
+      <OverviewFinancials contractorId={detail.client_contractor_id} currency={currency} />
+    </div>
+  );
+}
+
+// ── Overview: payment status (reuse-only, load-on-demand) ───────────────────────
+// Real invoiced / received / outstanding for the customer, from the wFirma
+// Statement of Account. Load-on-demand (button) — no automatic live call on
+// every render. Reuses GET /api/v1/ledgers/clients/{contractor_id}/statement.json.
+function OverviewFinancials({ contractorId, currency }) {
+  const [state, setState] = React.useState({ status: 'idle', data: null, err: null });
+
+  const load = () => {
+    if (!contractorId) return;
+    setState({ status: 'loading', data: null, err: null });
+    // Wide default window: last ~2 years to as-of today (browser Date is fine here).
+    const to = new Date();
+    const from = new Date(); from.setFullYear(from.getFullYear() - 2);
+    const iso = (d) => d.toISOString().slice(0, 10);
+    const qs = `from=${iso(from)}&to=${iso(to)}&as_of=${iso(to)}`;
+    window.EstrellaShared.apiFetch(`/api/v1/ledgers/clients/${encodeURIComponent(contractorId)}/statement.json?${qs}`)
+      .then(r => setState({ status: 'done', data: r, err: null }))
+      .catch(e => setState({ status: 'error', data: null, err: (e && e.message) || 'Statement unavailable' }));
+  };
+
+  const box = { padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 };
+  const money = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+
+  if (!contractorId) {
+    return (
+      <div style={box} data-testid="pf-overview-financials-unavailable">
+        <div style={{ fontWeight: 700, fontSize: 11, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>Payment status</div>
+        <div style={{ fontSize: 11.5, color: 'var(--badge-amber-text)' }}>
+          <strong>Backend Pending:</strong> this draft is not resolved to a wFirma contractor, so paid/outstanding cannot be read. Match the customer on the Customer Mapping tab first.
+        </div>
+      </div>
+    );
+  }
+
+  const totals = (state.data && state.data.totals_per_currency) || {};
+  const aging  = (state.data && state.data.aging_per_currency) || {};
+  const ccys   = Object.keys(totals);
+
+  return (
+    <div style={box} data-testid="pf-overview-financials">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <div style={{ fontWeight: 700, fontSize: 11, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Payment status</div>
+        <button data-testid="pf-overview-financials-load" onClick={load} disabled={state.status === 'loading'}
+          style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 5, cursor: 'pointer', opacity: state.status === 'loading' ? 0.6 : 1 }}>
+          {state.status === 'loading' ? '↻ Loading…' : (state.status === 'done' ? '↻ Reload' : '↻ Load payment status (wFirma)')}
+        </button>
+      </div>
+      {state.status === 'idle' && <div style={{ fontSize: 11.5, color: 'var(--text-3)' }}>Live wFirma read — click to load invoiced / received / outstanding for this customer.</div>}
+      {state.status === 'error' && <div style={{ fontSize: 11.5, color: 'var(--badge-amber-text)' }} data-testid="pf-overview-financials-err">Could not load · {state.err}</div>}
+      {state.status === 'done' && ccys.length === 0 && <div style={{ fontSize: 11.5, color: 'var(--text-3)' }}>No invoices on record for this customer in the window.</div>}
+      {state.status === 'done' && ccys.map((cc) => {
+        const t = totals[cc] || {}; const a = aging[cc] || {};
+        return (
+          <div key={cc} data-testid="pf-overview-financials-row" style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--border)' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 3 }}>{cc}</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, fontSize: 11.5 }}>
+              <div><div style={{ color: 'var(--text-3)' }}>Invoiced</div><div style={{ fontWeight: 600, color: 'var(--text)' }}>{money(t.invoiced)}</div></div>
+              <div><div style={{ color: 'var(--text-3)' }}>Received</div><div style={{ fontWeight: 600, color: 'var(--badge-green-text, #2e7d32)' }}>{money(t.received)}</div></div>
+              <div><div style={{ color: 'var(--text-3)' }}>Outstanding</div><div style={{ fontWeight: 700, color: (Number(t.outstanding) > 0 ? 'var(--badge-amber-text)' : 'var(--text)') }}>{money(t.outstanding)}</div></div>
+              <div><div style={{ color: 'var(--text-3)' }}>Overdue (90d+)</div><div style={{ fontWeight: 600, color: 'var(--text)' }}>{money(a['90d'] != null ? a['90d'] : a.total)}</div></div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
