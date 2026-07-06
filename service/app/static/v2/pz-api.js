@@ -423,10 +423,20 @@
     // body: { recipient_address, declared_value, currency, weight_kg, dimensions,
     //         shipper_account?, special_instructions?,
     //         product_code?, description?, customer_reference?, shipment_reference?,
-    //         receiver_vat_id?, receiver_eori? }
-    // Returns: { batch_id, idempotency_key, mode, state, tracking_ref, simulated }
+    //         receiver_vat_id?, receiver_eori?, box_type_code? }
+    // Returns: { batch_id, idempotency_key, mode, state, tracking_ref, simulated,
+    //            replayed, label_download_url, commercial_documents_url,
+    //            documents_available, saved_labels_exist, carrier, service_code,
+    //            box_type_code, weight_kg, dimensions, declared_value, currency }
     createCarrierShipment: (batchId, body) =>
       _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`, body),
+
+    // GET /api/v1/carrier/{batch_id}/shipment
+    // Most-recent recorded carrier shipment for the batch (404 when none).
+    // Returns the same AWB logistics/document contract as create, plus
+    // created_at + error. Legacy rows return null tracking_ref honestly.
+    getCarrierShipment: (batchId) =>
+      _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`),
 
     // GET /api/v1/carrier/services
     // Returns static DHL Express product code catalogue. No credentials required.

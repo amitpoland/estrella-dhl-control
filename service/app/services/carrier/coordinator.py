@@ -281,6 +281,8 @@ class CarrierCoordinator:
                 logging.getLogger(__name__).warning("outbound tracking registration failed", exc_info=True)
 
         # Update the DB row with the enriched fields now that we have them.
+        # weight/value/currency/box come from the request so the Logistics tab
+        # can show the real shipment summary without re-deriving it.
         from .persistence.shipment_db import update_shipment_fields as _db_update_fields
         try:
             _db_update_fields(
@@ -288,6 +290,10 @@ class CarrierCoordinator:
                 key,
                 service_product=complete.service_product,
                 dimensions_json=complete.dimensions_json,
+                weight_kg=request.weight_kg,
+                declared_value=request.declared_value,
+                currency=request.currency,
+                box_type_code=request.box_type_code,
             )
         except Exception:
             pass  # best-effort — state already COMPLETE above

@@ -8,9 +8,12 @@ POST /api/v1/carrier/{batch_id}/shipment
 
 GET /api/v1/carrier/{batch_id}/shipment
     Returns most-recent recorded shipment for the batch.
-    503 if carrier_api_status == "pending".
-    Returns: batch_id, idempotency_key, mode, state, simulated, error.
-    Note: tracking_ref is never returned — structural DB invariant (column absent).
+    Returns: batch_id, idempotency_key, mode, state, simulated, error, plus the
+    AWB logistics/document contract (tracking_ref, carrier, service_code,
+    box_type_code, weight_kg, dimensions, declared_value, currency, created_at,
+    label_download_url, commercial_documents_url, documents_available,
+    saved_labels_exist). tracking_ref persisted since the 2026-07-06 incident
+    fix; legacy rows return null fields honestly.
 
 POST /api/v1/carrier/{batch_id}/label-package   ← Path-DOC (WF4.5)
     Generates outbound customs/shipping document package.
@@ -170,6 +173,7 @@ class ShipmentRequestBody(BaseModel):
     shipment_reference: Optional[str] = None  # internal batch reference
     receiver_vat_id: Optional[str] = None     # receiver EU VAT number
     receiver_eori: Optional[str] = None       # receiver EORI number
+    box_type_code: Optional[str] = None       # Box Master profile selected in the modal
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -276,6 +280,7 @@ def create_shipment(
         shipment_reference=body.shipment_reference,
         receiver_vat_id=body.receiver_vat_id,
         receiver_eori=body.receiver_eori,
+        box_type_code=body.box_type_code,
     )
     try:
         result = coordinator.create_shipment(request)
@@ -302,9 +307,19 @@ def create_shipment(
         "replayed": bool(result.replayed),
         "label_download_url": label_download_url,
         "commercial_documents_url": commercial_documents_url,
+        "documents_available": commercial_documents_url is not None,
         # Legacy pre-migration rows have no stored tracking_ref; tell the UI
         # whether labels exist on the server for this batch anyway.
         "saved_labels_exist": _batch_has_any_label(batch_id),
+        # AWB logistics summary — echoes the shipment intent for display.
+        "carrier": "DHL",
+        "service_code": (result.service_product if isinstance(result.service_product, str)
+                         else (body.product_code or "P")),
+        "box_type_code": body.box_type_code,
+        "weight_kg": body.weight_kg,
+        "dimensions": body.dimensions,
+        "declared_value": body.declared_value,
+        "currency": body.currency,
     })
 
 
@@ -322,6 +337,23 @@ def get_shipment(
             status_code=404,
             detail=f"No shipment found for batch {batch_id!r}.",
         )
+
+    tracking_ref = row.get("tracking_ref")
+    label_download_url = None
+    if tracking_ref and _label_file(batch_id, tracking_ref):
+        label_download_url = f"/api/v1/carrier/{batch_id}/label/{tracking_ref}"
+    commercial_documents_url = (
+        f"/api/v1/carrier/{batch_id}/documents" if _doc_package_file(batch_id) else None
+    )
+
+    import json as _json
+    dimensions = None
+    if row.get("dimensions_json"):
+        try:
+            dimensions = _json.loads(row["dimensions_json"])
+        except (TypeError, ValueError):
+            dimensions = None
+
     return JSONResponse({
         "batch_id": row["batch_id"],
         "idempotency_key": row["idempotency_key"],
@@ -329,6 +361,20 @@ def get_shipment(
         "state": row["state"],
         "simulated": bool(row["simulated"]),
         "error": row["error"],
+        # AWB logistics/document visibility (all additive)
+        "tracking_ref": tracking_ref,
+        "carrier": "DHL",
+        "service_code": row.get("service_product"),
+        "box_type_code": row.get("box_type_code"),
+        "weight_kg": row.get("weight_kg"),
+        "dimensions": dimensions,
+        "declared_value": row.get("declared_value"),
+        "currency": row.get("currency"),
+        "created_at": row.get("created_at"),
+        "label_download_url": label_download_url,
+        "commercial_documents_url": commercial_documents_url,
+        "documents_available": commercial_documents_url is not None,
+        "saved_labels_exist": _batch_has_any_label(batch_id),
     })
 
 

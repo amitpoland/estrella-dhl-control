@@ -887,6 +887,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       receiver_vat_id:    form.receiver_vat_id || null,
       receiver_eori:      form.receiver_eori || null,
       special_instructions: form.special_instructions || null,
+      box_type_code:      form.box_type_code || null,
     })
       .then(r => {
         // PzApi wraps responses as { ok, data } / { ok:false, error }.
@@ -1009,6 +1010,31 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
                 )}
               </div>
             )}
+            {/* Shipment summary — echoes the recorded shipment intent */}
+            <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+                          borderRadius: 8, padding: '10px 16px', marginBottom: 20, fontSize: 12 }}
+              data-testid="awb-result-summary">
+              {[
+                ['Batch',          result.batch_id || batchId],
+                ['Proforma',       (prefill && prefill.proforma_number) || '—'],
+                ['Customer',       form.company_name || form.name || '—'],
+                ['Destination',    [form.city, form.country_code].filter(Boolean).join(', ') || '—'],
+                ['Service',        result.service_code || form.product_code || '—'],
+                ['Weight',         result.weight_kg != null ? `${result.weight_kg} kg` : (form.weight_kg ? `${form.weight_kg} kg` : '—')],
+                ['Dimensions',     result.dimensions
+                                     ? `${result.dimensions.length_cm}×${result.dimensions.width_cm}×${result.dimensions.height_cm} cm`
+                                     : `${form.length_cm}×${form.width_cm}×${form.height_cm} cm`],
+                ['Box type',       result.box_type_code || form.box_type_code || '— (manual dimensions)'],
+                ['Declared value', result.declared_value != null
+                                     ? `${result.declared_value} ${result.currency || ''}`
+                                     : `${form.declared_value} ${form.currency}`],
+              ].map(([k, v]) => (
+                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '3px 0' }}>
+                  <span style={{ color: 'var(--text-3)' }}>{k}</span>
+                  <span style={{ fontWeight: 600, color: 'var(--text)', textAlign: 'right' }}>{v}</span>
+                </div>
+              ))}
+            </div>
             {!result.label_download_url && !isLegacy && (
               <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 20 }}>
                 Label PDF saved to server. Contact ops to retrieve or print the shipping label.
@@ -2079,6 +2105,17 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       .then(d => setDisclosure(d))
       .catch(() => setDisclosure(null));
   }, [draft && draft.id]);
+
+  // WIRED: recorded carrier shipment (GET /api/v1/carrier/{batch_id}/shipment).
+  // Read-only AWB/logistics/document visibility — 404 (no shipment yet) → null.
+  const [carrierShipment, setCarrierShipment] = React.useState(null);
+  const loadCarrierShipment = React.useCallback(() => {
+    if (!draft || !draft.batch_id || !window.PzApi.getCarrierShipment) return;
+    window.PzApi.getCarrierShipment(draft.batch_id)
+      .then(r => setCarrierShipment(r && r.ok ? r.data : null))
+      .catch(() => setCarrierShipment(null));
+  }, [draft && draft.batch_id]);
+  React.useEffect(() => { loadCarrierShipment(); }, [loadCarrierShipment]);
 
   // WIRED: fetch readiness / blocking reasons (POST /api/v1/proforma/preview/{batch_id}/{client_name})
   const batchId    = draft && (draft.batch_id    || '');
@@ -3296,10 +3333,40 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12 }} data-testid="pf-logistics-goods-summary">Goods: {cmrPreviewData.goods_summary}</div>
               ) : null}
 
-              {/* Honest Backend-Pending advisories — structural gaps, not fabricated data */}
-              <div style={{ padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 11.5, lineHeight: 1.6, marginTop: 4 }} data-testid="pf-logistics-pending">
-                <strong style={{ color: 'var(--badge-amber-text)' }}>Backend Pending:</strong> live AWB tracking number and the per-shipment box / package profile are not shown here — the real AWB is held in the secure label store (not a queryable read authority), and box selection is captured at label-generation time. Generate a DHL AWB from the toolbar to record them.
-              </div>
+              {/* DHL AWB / carrier shipment summary — real recorded shipment
+                  (GET /carrier/{batch}/shipment). Honest empty state when none. */}
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)', margin: '14px 0 6px' }}>DHL AWB / carrier shipment</div>
+              {carrierShipment ? (
+                <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 16px', marginBottom: 8 }} data-testid="pf-logistics-awb">
+                  {_kv('Carrier', carrierShipment.carrier || 'DHL', 'pf-logistics-awb-carrier')}
+                  {_kv('AWB / tracking', carrierShipment.tracking_ref
+                    || (carrierShipment.saved_labels_exist
+                        ? 'recorded before reference store — see saved labels'
+                        : '—'), 'pf-logistics-awb-ref')}
+                  {_kv('Service / product', carrierShipment.service_code || '—', 'pf-logistics-awb-service')}
+                  {_kv('Mode', `${carrierShipment.mode || '—'}${carrierShipment.simulated ? ' (simulated)' : ''}`, 'pf-logistics-awb-mode')}
+                  {_kv('Weight', carrierShipment.weight_kg != null ? `${carrierShipment.weight_kg} kg` : '—', 'pf-logistics-awb-weight')}
+                  {_kv('Dimensions', carrierShipment.dimensions
+                    ? `${carrierShipment.dimensions.length_cm}×${carrierShipment.dimensions.width_cm}×${carrierShipment.dimensions.height_cm} cm`
+                    : '—', 'pf-logistics-awb-dims')}
+                  {_kv('Box / package profile', carrierShipment.box_type_code || '— (manual dimensions)', 'pf-logistics-awb-box')}
+                  {_kv('Declared value', carrierShipment.declared_value != null
+                    ? `${carrierShipment.declared_value} ${carrierShipment.currency || ''}` : '—', 'pf-logistics-awb-declared')}
+                  {_kv('Created', carrierShipment.created_at || '—', 'pf-logistics-awb-created')}
+                  {carrierShipment.label_download_url ? (
+                    <div style={{ paddingTop: 8 }}>
+                      <a href={carrierShipment.label_download_url} download data-testid="pf-logistics-awb-label-download"
+                        style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', textDecoration: 'none', padding: '5px 10px', border: '1px solid var(--border)', borderRadius: 6, display: 'inline-block', background: 'var(--bg)' }}>
+                        ⬇ Download Label PDF
+                      </a>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div style={{ padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 11.5, lineHeight: 1.6, marginTop: 4 }} data-testid="pf-logistics-awb-empty">
+                  No DHL AWB recorded for this batch yet. Generate one with ⚡ AWB Generate in the toolbar — the tracking number, service, box profile and label download will appear here.
+                </div>
+              )}
             </div>
           );
         })()}
@@ -3344,6 +3411,32 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 ? `Invoice ${_invoiceNo || 'created'} — the PDF is served by wFirma; the app does not expose an invoice-PDF download endpoint yet.`
                 : 'Available after Convert to Invoice (toolbar).',
             },
+            {
+              key: 'dhl_label', name: 'DHL AWB Label',
+              authority: carrierShipment && carrierShipment.tracking_ref
+                ? `AWB ${carrierShipment.tracking_ref} · carrier label store`
+                : 'DHL Express label (carrier label store)',
+              available: !!(carrierShipment && carrierShipment.label_download_url),
+              action: (carrierShipment && carrierShipment.label_download_url)
+                ? { label: '↓ Download Label', href: carrierShipment.label_download_url, testid: 'pf-doc-dhl-label-download' }
+                : null,
+              pending: (carrierShipment && carrierShipment.label_download_url) ? null
+                : (carrierShipment
+                    ? (carrierShipment.saved_labels_exist
+                        ? 'AWB recorded before the reference store — labels are saved on the server; ask ops or rebook to link one here.'
+                        : 'No saved label for this shipment.')
+                    : 'Available after a DHL AWB is generated (⚡ AWB Generate).'),
+            },
+            {
+              key: 'dhl_documents', name: 'DHL Commercial Documents',
+              authority: 'Commercial invoice + packing list + CN23 package',
+              available: !!(carrierShipment && carrierShipment.documents_available),
+              action: (carrierShipment && carrierShipment.commercial_documents_url)
+                ? { label: '↓ Download', href: carrierShipment.commercial_documents_url, testid: 'pf-doc-dhl-documents-download' }
+                : null,
+              pending: (carrierShipment && carrierShipment.documents_available) ? null
+                : 'Not available yet — document packages are generated on demand (⚙ label-package) and are not persisted for download yet.',
+            },
           ];
           return (
             <div data-testid="pf-detail-documents" style={{ padding: 20 }}>
@@ -3365,12 +3458,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                   </div>
                   <div style={{ flexShrink: 0 }}>
                     {d.action ? (
-                      <button onClick={d.action.onClick} data-testid={d.action.testid}
-                        style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
-                        {d.action.label}
-                      </button>
+                      d.action.href ? (
+                        <a href={d.action.href} download data-testid={d.action.testid}
+                          style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', textDecoration: 'none', display: 'inline-block' }}>
+                          {d.action.label}
+                        </a>
+                      ) : (
+                        <button onClick={d.action.onClick} data-testid={d.action.testid}
+                          style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
+                          {d.action.label}
+                        </button>
+                      )
                     ) : (
-                      <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 999 }} data-testid={`pf-doc-unavailable-${d.key}`}>Not available</span>
+                      <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 999 }} data-testid={`pf-doc-unavailable-${d.key}`}>{d.key.startsWith('dhl_') ? 'Not available yet' : 'Not available'}</span>
                     )}
                   </div>
                 </div>
@@ -3536,11 +3636,14 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             // References — from draft
             customer_reference: (draft && draft.doc_no) || (liveDraft && liveDraft.proforma_number) || '',
             shipment_reference: batchId || '',
+            // Proforma number for the result summary card (display only)
+            proforma_number:    (liveDraft && (liveDraft.wfirma_proforma_fullnumber || liveDraft.proforma_number))
+                                  || (draft && draft.doc_no) || '',
             // Description — default; operator overrides in modal
             description:        'Jewellery',
           }}
           onClose={() => setShowAwbModal(false)}
-          onSuccess={() => setShowAwbModal(false)}
+          onSuccess={() => { setShowAwbModal(false); loadCarrierShipment(); }}
         />
       )}
       {buyerEditOpen && (

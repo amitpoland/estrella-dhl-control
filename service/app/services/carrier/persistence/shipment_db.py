@@ -41,6 +41,11 @@ _ADDITIVE_COLUMNS = [
     ("dimensions_json", "TEXT"),       # JSON snapshot of ShipmentRequest.dimensions
     ("tracking_ref", "TEXT"),          # AWB / tracking number, written at COMPLETE
                                        # (2026-07-06 duplicate-AWB incident fix)
+    # AWB logistics visibility — Proforma V2 Logistics tab summary fields
+    ("weight_kg", "REAL"),
+    ("declared_value", "REAL"),
+    ("currency", "TEXT"),
+    ("box_type_code", "TEXT"),         # Box Master profile chosen in the AWB modal
 ]
 
 
@@ -176,6 +181,10 @@ def update_shipment_fields(
     *,
     service_product: Optional[str] = None,
     dimensions_json: Optional[str] = None,
+    weight_kg: Optional[float] = None,
+    declared_value: Optional[float] = None,
+    currency: Optional[str] = None,
+    box_type_code: Optional[str] = None,
 ) -> None:
     """Persist Phase-5 carrier API response fields on an existing row.
 
@@ -188,6 +197,18 @@ def update_shipment_fields(
     if dimensions_json is not None:
         sets.append("dimensions_json = ?")
         args.append(dimensions_json)
+    if weight_kg is not None:
+        sets.append("weight_kg = ?")
+        args.append(float(weight_kg))
+    if declared_value is not None:
+        sets.append("declared_value = ?")
+        args.append(float(declared_value))
+    if currency is not None:
+        sets.append("currency = ?")
+        args.append(currency)
+    if box_type_code is not None:
+        sets.append("box_type_code = ?")
+        args.append(box_type_code)
     if not sets:
         return
     sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")

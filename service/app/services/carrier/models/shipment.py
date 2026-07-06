@@ -41,6 +41,8 @@ class ShipmentRequest:
     shipment_reference: Optional[str] = None     # batch/internal ref  → customerReferences AAO
     receiver_vat_id: Optional[str] = None        # DHL registrationNumbers EUV
     receiver_eori: Optional[str] = None          # DHL registrationNumbers EOR
+    box_type_code: Optional[str] = None          # Box Master profile selected in the AWB modal
+                                                 # (display/persistence only — dims already resolved)
 
 
 @dataclass
