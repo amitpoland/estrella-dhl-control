@@ -2226,7 +2226,10 @@ function LogisticsTracking({ batchId }) {
   }, [batchId]);
 
   const box = { padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8 };
-  const pick = (e, keys) => { for (const k of keys) { if (e && e[k]) return e[k]; } return ''; };
+  // Return only PRIMITIVE field values — audit-timeline entries carry structured
+  // object details (e.g. detail={clearance_path,...}); rendering an object as a
+  // React child throws (React #31). Objects are skipped so the row degrades to '—'.
+  const pick = (e, keys) => { for (const k of keys) { const v = e && e[k]; if (v != null && typeof v !== 'object') return v; } return ''; };
 
   return (
     <div data-testid="pf-logistics-tracking" style={{ marginTop: 16 }}>
@@ -2289,10 +2292,13 @@ function DocumentsRegistry({ batchId }) {
   }, [batchId]);
 
   const box = { padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8 };
+  // Registry rows can carry object-valued enriched fields — coerce to a safe
+  // primitive so nothing renders a raw object as a React child (React #31).
+  const s = (v) => (v == null || typeof v === 'object') ? '' : v;
   const typeLabel = (t) => ({
     purchase_invoice: 'Purchase invoice', sales_invoice: 'Sales invoice',
     purchase_packing_list: 'Purchase packing list', sales_packing_list: 'Sales packing list',
-  }[t] || (t || 'Document'));
+  }[t] || (s(t) || 'Document'));
 
   return (
     <div data-testid="pf-documents-registry" style={{ marginTop: 20 }}>
@@ -2313,11 +2319,11 @@ function DocumentsRegistry({ batchId }) {
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)' }}>{typeLabel(d.document_type)}</div>
                 <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
-                  {[d.invoice_no || d.file_name || d.suggested_client_name, (d.line_count != null ? `${d.line_count} lines` : null)].filter(Boolean).join(' · ') || '—'}
+                  {[s(d.invoice_no) || s(d.file_name) || s(d.suggested_client_name), (d.line_count != null ? `${d.line_count} lines` : null)].filter(Boolean).join(' · ') || '—'}
                 </div>
               </div>
-              {d.review_state && (
-                <span data-testid="pf-documents-review-state" style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, color: 'var(--text-2)', border: '1px solid var(--border)' }}>{d.review_state}</span>
+              {s(d.review_state) && (
+                <span data-testid="pf-documents-review-state" style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, color: 'var(--text-2)', border: '1px solid var(--border)' }}>{s(d.review_state)}</span>
               )}
             </div>
           ))}
