@@ -1855,23 +1855,81 @@ function ProformaPartyCards({
 // over EXISTING authorities (draft editable_lines + Customer Master + Product
 // Master + Import/Packing). Every signal here is ADVISORY (Lesson N): it never
 // blocks Approve / Post / Convert, and it writes nothing.
-function SourceExtractionTab({ draftId }) {
+function SourceExtractionTab({ draftId, expectedUpdatedAt, onSaved }) {
   const [data,    setData]    = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [error,   setError]   = React.useState(null);
+  // ── Editable review state (reuse-only: PATCH /lines/{id} + enrich-from-product-descriptions) ──
+  const [editing,  setEditing]  = React.useState(null);   // line_id being edited
+  const [editQty,  setEditQty]  = React.useState('');
+  const [editCode, setEditCode] = React.useState('');
+  const [saving,   setSaving]   = React.useState(false);
+  const [rowErr,   setRowErr]   = React.useState({});      // line_id -> message (Authority Gap)
+  const [options,  setOptions]  = React.useState(null);    // Product Master options (lazy)
+  const [recheck,  setRecheck]  = React.useState({ busy: false, msg: null, err: null });
 
-  React.useEffect(() => {
-    if (!draftId) { setLoading(false); return; }
-    let alive = true;
+  const reload = React.useCallback(() => {
+    if (!draftId) { setLoading(false); return Promise.resolve(); }
     setLoading(true); setError(null);
-    window.EstrellaShared.apiFetch(`/api/v1/proforma/draft/${draftId}/extraction`)
-      .then(d => { if (alive) { setData(d); setLoading(false); } })
-      .catch(e => { if (alive) { setError(e && e.message ? e.message : 'Failed to load'); setLoading(false); } });
-    return () => { alive = false; };
+    return window.EstrellaShared.apiFetch(`/api/v1/proforma/draft/${draftId}/extraction`)
+      .then(d => { setData(d); setLoading(false); })
+      .catch(e => { setError(e && e.message ? e.message : 'Failed to load'); setLoading(false); });
   }, [draftId]);
+  React.useEffect(() => { let a = true; if (a) reload(); return () => { a = false; }; }, [reload]);
+
+  // Product Master option list — lazy, reuses GET /proforma/product-options. No hardcoded list.
+  const loadOptions = React.useCallback(() => {
+    if (options) return;
+    window.PzApi.getProductOptions()
+      .then(r => setOptions((r && r.data && r.data.options) || (r && r.options) || []))
+      .catch(() => setOptions([]));
+  }, [options]);
+
+  const startEdit = (ln) => {
+    setEditing(ln.line_id); setEditQty(String(ln.quantity != null ? ln.quantity : ''));
+    setEditCode(ln.product_code || ''); setRowErr(p => ({ ...p, [ln.line_id]: null })); loadOptions();
+  };
+  const cancelEdit = () => { setEditing(null); setSaving(false); };
+
+  const saveRow = (ln) => {
+    if (!expectedUpdatedAt) { setRowErr(p => ({ ...p, [ln.line_id]: 'Authority Gap — draft lock unavailable; reopen the draft and retry.' })); return; }
+    const patch = {};
+    const q = parseFloat(editQty);
+    if (!isNaN(q) && q !== Number(ln.quantity)) patch.qty = q;
+    const code = (editCode || '').trim();
+    if (code && code !== (ln.product_code || '')) patch.product_code = code;   // map from Product Master
+    if (Object.keys(patch).length === 0) { setEditing(null); return; }
+    setSaving(true); setRowErr(p => ({ ...p, [ln.line_id]: null }));
+    window.PzApi.patchDraftLine(draftId, ln.line_id, patch, expectedUpdatedAt)
+      .then(r => {
+        if (r && r.ok === false) throw new Error((r && r.error) || 'Save rejected');
+        setEditing(null); setSaving(false);
+        if (onSaved) onSaved();
+        return reload();
+      })
+      .catch(e => {
+        setSaving(false);
+        const m = (e && e.message) || 'Save failed';
+        // product_code may not be a writable line field on this authority → honest Authority Gap.
+        setRowErr(p => ({ ...p, [ln.line_id]: (patch.product_code ? 'Product-code mapping not writable here (Authority Gap). ' : '') + m }));
+      });
+  };
+
+  const recheckMapping = () => {
+    if (!expectedUpdatedAt) { setRecheck({ busy: false, msg: null, err: 'Authority Gap — draft lock unavailable.' }); return; }
+    setRecheck({ busy: true, msg: null, err: null });
+    window.EstrellaShared.apiFetch(`/api/v1/proforma/draft/${draftId}/enrich-from-product-descriptions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expected_updated_at: expectedUpdatedAt }),
+    })
+      .then(r => { setRecheck({ busy: false, msg: `Re-checked · ${(r && r.enriched_count) || 0} enriched from Product Master`, err: null }); if (onSaved) onSaved(); return reload(); })
+      .catch(e => setRecheck({ busy: false, msg: null, err: (e && e.message) || 'Re-check failed' }));
+  };
 
   const box  = { padding: '16px 18px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12.5, lineHeight: 1.6 };
   const conf = (c) => (c === null || c === undefined) ? '—' : `${Math.round(c * 100)}%`;
+  const iBtn = { padding: '3px 9px', fontSize: 11, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' };
+  const iIn  = { padding: '3px 6px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' };
 
   const docs           = (data && data.source_documents) || [];
   const lines          = (data && data.lines) || [];
@@ -1891,8 +1949,11 @@ function SourceExtractionTab({ draftId }) {
 
       {!loading && !error && (
         <React.Fragment>
-          {/* Packing-list source (Import/Packing authority) */}
-          <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', margin: '4px 0 6px' }}>Packing-list source</div>
+          {/* Packing-list source (Import/Packing authority) — batch-scoped by design */}
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', margin: '4px 0 2px' }}>Batch source documents</div>
+          <div data-testid="pf-source-scope-note" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 6 }}>
+            Source documents are batch-scoped; the rows below are draft-scoped (this proforma only).
+          </div>
           {docs.length === 0
             ? <div data-testid="pf-source-nodocs" style={{ ...box, color: 'var(--text-3)' }}>No packing document recorded for this batch.</div>
             : <div style={{ ...box, padding: 0, overflow: 'hidden' }}>
@@ -1917,15 +1978,23 @@ function SourceExtractionTab({ draftId }) {
             )}
           </div>
 
-          {/* Per-row extraction + Product Master match */}
-          <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', margin: '14px 0 6px' }}>
-            Rows &amp; extraction
-            {unmatchedCount > 0 && (
-              <span data-testid="pf-source-unmatched-count" style={{ color: 'var(--badge-amber-text)', fontWeight: 600, marginLeft: 8 }}>
-                {unmatchedCount} unmatched
-              </span>
-            )}
+          {/* Per-row extraction + Product Master match — editable review path */}
+          <div style={{ display: 'flex', alignItems: 'center', margin: '14px 0 6px' }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)' }}>
+              Rows &amp; extraction
+              {unmatchedCount > 0 && (
+                <span data-testid="pf-source-unmatched-count" style={{ color: 'var(--badge-amber-text)', fontWeight: 600, marginLeft: 8 }}>
+                  {unmatchedCount} unmatched
+                </span>
+              )}
+            </div>
+            <div style={{ flex: 1 }} />
+            <button data-testid="pf-source-recheck" onClick={recheckMapping} disabled={recheck.busy} style={{ ...iBtn, opacity: recheck.busy ? 0.6 : 1 }}>
+              {recheck.busy ? '↻ Re-checking…' : '↻ Re-check mapping (Product Master)'}
+            </button>
           </div>
+          {recheck.msg && <div data-testid="pf-source-recheck-msg" style={{ fontSize: 11, color: 'var(--badge-green-text)', marginBottom: 6 }}>{recheck.msg}</div>}
+          {recheck.err && <div data-testid="pf-source-recheck-err" style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginBottom: 6 }}>Authority Gap · {recheck.err}</div>}
           {lines.length === 0
             ? <div style={{ ...box, color: 'var(--text-3)' }}>No draft lines.</div>
             : <div style={{ ...box, padding: 0, overflow: 'auto' }}>
@@ -1934,16 +2003,35 @@ function SourceExtractionTab({ draftId }) {
                     <tr style={{ color: 'var(--text-3)', textAlign: 'left' }}>
                       <th style={{ padding: '8px 12px', fontWeight: 600 }}>Product</th>
                       <th style={{ padding: '8px 12px', fontWeight: 600 }}>Design</th>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Description</th>
+                      <th style={{ padding: '8px 12px', fontWeight: 600, textAlign: 'right' }}>Qty</th>
                       <th style={{ padding: '8px 12px', fontWeight: 600 }}>Confidence</th>
                       <th style={{ padding: '8px 12px', fontWeight: 600 }}>Product Master</th>
                       <th style={{ padding: '8px 12px', fontWeight: 600 }}>Review</th>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {lines.map((ln, i) => (
-                      <tr key={ln.line_id || i} data-testid="pf-source-row" style={{ borderTop: '1px solid var(--border)', background: ln.unmatched ? 'var(--badge-amber-bg, transparent)' : 'transparent' }}>
-                        <td style={{ padding: '8px 12px', color: 'var(--text)' }}>{ln.product_code || <span style={{ color: 'var(--badge-amber-text)' }}>— no code</span>}</td>
+                    {lines.map((ln, i) => {
+                      const isEdit = editing === ln.line_id;
+                      return (
+                      <React.Fragment key={ln.line_id || i}>
+                      <tr data-testid="pf-source-row" style={{ borderTop: '1px solid var(--border)', background: ln.unmatched ? 'var(--badge-amber-bg, transparent)' : 'transparent' }}>
+                        <td style={{ padding: '8px 12px', color: 'var(--text)' }}>
+                          {isEdit
+                            ? <select data-testid="pf-source-map-select" value={editCode} onChange={e => setEditCode(e.target.value)} style={{ ...iIn, maxWidth: 200 }}>
+                                <option value="">— map from Product Master —</option>
+                                {(options || []).map(o => <option key={o.product_code} value={o.product_code}>{o.product_code}{o.name_pl ? ` · ${o.name_pl}` : ''}</option>)}
+                              </select>
+                            : (ln.product_code || <span style={{ color: 'var(--badge-amber-text)' }}>— no code</span>)}
+                        </td>
                         <td style={{ padding: '8px 12px', color: 'var(--text-2, var(--text))' }}>{ln.design_no || '—'}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-2, var(--text))', maxWidth: 200, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ln.name || '—'}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right' }}>
+                          {isEdit
+                            ? <input data-testid="pf-source-edit-qty" type="number" min="0" step="1" value={editQty} onChange={e => setEditQty(e.target.value)} style={{ ...iIn, width: 64, textAlign: 'right' }} />
+                            : (ln.quantity != null ? ln.quantity : '—')}
+                        </td>
                         <td style={{ padding: '8px 12px', color: 'var(--text-2, var(--text))' }}>{conf(ln.extracted_confidence)}</td>
                         <td style={{ padding: '8px 12px' }}>
                           {ln.product_matched
@@ -1953,8 +2041,23 @@ function SourceExtractionTab({ draftId }) {
                         <td style={{ padding: '8px 12px', color: ln.requires_manual_review ? 'var(--badge-amber-text)' : 'var(--text-3)' }}>
                           {ln.requires_manual_review ? 'manual' : '—'}
                         </td>
+                        <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                          {isEdit ? (
+                            <React.Fragment>
+                              <button data-testid="pf-source-save" onClick={() => saveRow(ln)} disabled={saving} style={{ ...iBtn, marginRight: 6, background: 'var(--accent)', color: 'var(--accent-text)', borderColor: 'var(--accent-border, var(--accent))', opacity: saving ? 0.6 : 1 }}>{saving ? 'Saving…' : 'Save'}</button>
+                              <button data-testid="pf-source-cancel" onClick={cancelEdit} disabled={saving} style={iBtn}>Cancel</button>
+                            </React.Fragment>
+                          ) : (
+                            <button data-testid="pf-source-edit" onClick={() => startEdit(ln)} style={iBtn}>Edit / Map</button>
+                          )}
+                        </td>
                       </tr>
-                    ))}
+                      {rowErr[ln.line_id] && (
+                        <tr><td colSpan={8} data-testid="pf-source-row-error" style={{ padding: '4px 12px 8px', fontSize: 11, color: 'var(--badge-amber-text)' }}>Authority Gap · {rowErr[ln.line_id]}</td></tr>
+                      )}
+                      </React.Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>}
@@ -3168,7 +3271,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         )}
         {activeTab === 'lines' && <ProformaLinesTab lines={lines} currency={draftCurrency} onAddLine={() => setEditMode(true)} />}
         {activeTab === 'source' && (
-          <SourceExtractionTab draftId={draft && draft.id} />
+          <SourceExtractionTab
+            draftId={draft && draft.id}
+            expectedUpdatedAt={liveDraft.updated_at || (draft && draft.updated_at) || ''}
+            onSaved={() => { draftHook && draftHook.reload && draftHook.reload(); }}
+          />
         )}
         {activeTab === 'logistics' && (() => {
           // REUSE-ONLY read view (Wave 4 Item 12). Composes ONLY data this component
