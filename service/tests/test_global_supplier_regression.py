@@ -140,3 +140,71 @@ class TestDescriptionEngineNewFunction:
         """Ensure the original EJL function still exists and is callable."""
         from app.services.description_engine import regenerate_descriptions_for_invoice_lines
         assert callable(regenerate_descriptions_for_invoice_lines)
+
+
+# ── description-authority: packing-line English source ───────────────────────
+#
+# Regression for the Slice-1 follow-up: the Global / packing-only regen path
+# must NOT use design_no as the English description.  A design number is an
+# internal identifier, not legal English.  English must come from item_type
+# via the customs-engine ITEM_TYPE_EN authority.
+
+class TestPackingLineEnglishSource:
+    def test_english_delegates_to_canonical_renderer(self):
+        """EN is produced by the single authority (render_product_description_en),
+        NOT a reimplemented item-type map inside description_engine."""
+        from app.services.description_engine import _english_description_from_item_type
+        assert _english_description_from_item_type("RING") == "Ring"
+        assert _english_description_from_item_type("ring") == "Ring"    # normalised
+        assert _english_description_from_item_type("PENDANT") == "Pendant"
+
+    def test_english_matches_customs_engine_authority(self):
+        """The value must equal what the canonical customs renderer returns
+        directly — proving no second English authority exists."""
+        from app.services.description_engine import (
+            _english_description_from_item_type, _load_customs_engine,
+        )
+        cde = _load_customs_engine()
+        assert cde is not None, "customs_description_engine must be importable"
+        for it in ("RING", "PENDANT", "BRACELET", "SET"):
+            assert (_english_description_from_item_type(it)
+                    == cde.render_product_description_en(it, "", ""))
+
+    def test_english_blank_item_type_is_empty(self):
+        from app.services.description_engine import _english_description_from_item_type
+        assert _english_description_from_item_type("") == ""
+        assert _english_description_from_item_type("   ") == ""
+
+    def test_packing_regen_uses_item_type_not_design_no(self, monkeypatch):
+        """The design_no must never be passed as description_en.
+
+        Captures the get_description_block call and asserts the English source
+        is the item_type-derived noun, not the packing row's design number.
+        """
+        from app.services import description_engine as de
+        from app.services import packing_db as pdb
+
+        captured: Dict[str, Any] = {}
+
+        def _fake_lines(batch_id: str) -> List[Dict[str, Any]]:
+            return [{
+                "product_code": "EJL/26-27/500-1",
+                "item_type":    "RING",
+                "design_no":    "DSN-99887",   # must NOT surface as English
+            }]
+
+        def _fake_block(**kwargs):
+            captured.update(kwargs)
+            return {"product_code": kwargs.get("product_code")}
+
+        monkeypatch.setattr(pdb, "get_packing_lines_for_batch", _fake_lines)
+        monkeypatch.setattr(de, "get_description_block", _fake_block)
+
+        result = de.regenerate_descriptions_for_packing_lines(
+            batch_id="BATCH_X", dry_run=False,
+        )
+
+        assert result["written"] == 1
+        assert captured["item_type"] == "RING"
+        assert captured["description_en"] == "Ring"
+        assert "DSN-99887" not in (captured.get("description_en") or "")
