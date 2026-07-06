@@ -19,6 +19,7 @@ Design rules (Phase -1 approval):
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -31,6 +32,55 @@ from .product_authority_resolver import (
 from ..core.audit import audit_safe
 
 log = logging.getLogger(__name__)
+
+
+# Canonical product-variant identity, derived from the purchase packing document
+# (invoice_packing_extractor writes these fields into packing_lines).  The order
+# is the business-authority order agreed for Slice 1; it is stored verbatim in
+# product_master.normalized_design_attributes so the sales-side exact-variant
+# matcher (Slice 2) can compare against the Master without re-reading packing
+# internals.  This is identity ONLY — it never affects billing or quantity.
+_VARIANT_SIGNATURE_FIELDS = (
+    "design_no", "karat", "metal_color", "diamond_weight",
+    "quality_string", "color_weight", "stone_type", "size",
+)
+
+
+def _sig_text(value: Any) -> str:
+    """Uppercase, trim, collapse internal whitespace — for text variant fields."""
+    return re.sub(r"\s+", " ", str(value or "").strip().upper())
+
+
+def _sig_num(value: Any) -> str:
+    """Normalise a numeric variant field (weights) to a stable string.
+
+    Blank/zero → '' (absent), otherwise up to 3 decimals with trailing zeros
+    trimmed, so ``0.50`` and ``0.5`` produce the identical signature token.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if f == 0:
+        return ""
+    return ("%.3f" % f).rstrip("0").rstrip(".")
+
+
+def build_variant_signature(row: Dict[str, Any]) -> str:
+    """Canonical, order-stable variant signature for one packing row.
+
+    Fields (business-authority order): design_no | karat | metal_color |
+    diamond_weight | quality_string | color_weight | stone_type | size.
+    Text fields are uppercased/trimmed/whitespace-collapsed; weight fields are
+    numeric-normalised.  Pure function — no I/O, no side effects.
+    """
+    parts: List[str] = []
+    for field in _VARIANT_SIGNATURE_FIELDS:
+        if field in ("diamond_weight", "color_weight"):
+            parts.append(_sig_num(row.get(field)))
+        else:
+            parts.append(_sig_text(row.get(field)))
+    return "|".join(parts)
 
 
 def upsert_product_master_from_packing(
@@ -65,6 +115,7 @@ def upsert_product_master_from_packing(
         metal          = str(row.get("metal")        or "").strip()
         item_type      = str(row.get("item_type")    or "").strip()
         source_invoice = str(row.get("invoice_no")   or "").strip()
+        variant_sig    = build_variant_signature(row)
 
         try:
             upsert_product_master(
@@ -77,6 +128,7 @@ def upsert_product_master_from_packing(
                 source_batch_id   = batch_id,
                 last_seen_batch_id= batch_id,
                 confidence        = "packing",
+                normalized_design_attributes = variant_sig,
             )
             audit_safe(
                 # 'upsert' is the canonical valid audit op (VALID_OPS in
@@ -89,6 +141,7 @@ def upsert_product_master_from_packing(
                     "product_code": product_code,
                     "design_no":    design_no,
                     "batch_id":     batch_id,
+                    "variant_signature": variant_sig,
                     "source":       "cpa_packing",
                 },
             )
@@ -229,6 +282,7 @@ def analyze_product_code_billing(
 
 __all__ = [
     "upsert_product_master_from_packing",
+    "build_variant_signature",
     "authority_snapshot",
     "is_billed_product_code_valid",
     "reconcile_billed",
