@@ -14,7 +14,10 @@
 //   .lines[]     { item_type, qty, net_weight, origin }
 //                where: item_type = "Pendant" | "Ring" | "Earrings" | ...  (human-readable)
 //                       qty       = total pieces for this item type
-//                       net_weight = total kg or null when not in packing list
+//                       net_weight = total GRAMS (packing_lines authority stores
+//                                    grams — supplier "NT.WT (GMS)") or null when
+//                                    not in packing list. Display: per-line in g,
+//                                    shipment totals in kg (grams / 1000).
 //                       origin    = country of manufacture (e.g. "India")
 //                Source authority: SALES packing list lines, aggregated by item_type ONLY.
 //                Metal and stone types appear in goods_summary header — NOT per line.
@@ -214,7 +217,7 @@ function EJCMRClassic({ cmrData }) {
               </div>
               <div style={{ padding: "8px 8px", borderRight: "1px solid #E2E8F0", fontSize: 9, color: "#475569" }}>Polybag + Jewellery box</div>
               <div style={{ padding: "8px 8px", borderRight: "1px solid #E2E8F0", textAlign: "right" }} className="ej-num">
-                {l.net_weight != null ? `${Number(l.net_weight).toFixed(3)} kg` : "—"}
+                {l.net_weight != null ? `${Number(l.net_weight).toFixed(3)} g` : "—"}
               </div>
               <div style={{ padding: "8px 8px", textAlign: "right" }} className="ej-num">{Number(l.qty) || 0}</div>
             </div>
@@ -230,7 +233,8 @@ function EJCMRClassic({ cmrData }) {
             <div style={{ padding: "8px", borderRight: "1px solid #CBD5E1" }}>{lines.length} item type(s)</div>
             <div style={{ padding: "8px", borderRight: "1px solid #CBD5E1" }}>1 outer carton</div>
             <div style={{ padding: "8px", textAlign: "right", borderRight: "1px solid #CBD5E1" }} className="ej-num">
-              {_totNw > 0 ? `${_totNw.toFixed(3)} kg` : (totalKg > 0 ? `${totalKg.toFixed(3)} kg` : "—")}
+              {/* Shipment total in kg: _totNw is grams (packing authority) */}
+              {_totNw > 0 ? `${(_totNw / 1000).toFixed(3)} kg` : (totalKg > 0 ? `${totalKg.toFixed(3)} kg` : "—")}
             </div>
             <div style={{ padding: "8px", textAlign: "right" }} className="ej-num">{_totQty || "—"}</div>
           </div>
@@ -293,6 +297,7 @@ function EJCMRModern({ cmrData }) {
   const carrier = d.carrier || null;
   const lines = d.lines || [];
   const _totQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
+  const _totNw  = lines.reduce((s, l) => s + (l.net_weight || 0), 0);  // grams
 
   return (
     <div className="ej-a4">
@@ -421,7 +426,7 @@ function EJCMRModern({ cmrData }) {
                 <td style={{ fontSize: 9.5, color: "#475569" }}>Polybag + Jewellery box</td>
                 <td>{l.origin || "India"}</td>
                 <td className="ej-r ej-num">
-                  {l.net_weight != null ? `${Number(l.net_weight).toFixed(3)} kg` : "—"}
+                  {l.net_weight != null ? `${Number(l.net_weight).toFixed(3)} g` : "—"}
                 </td>
                 <td className="ej-r ej-num">{Number(l.qty) || 0}</td>
               </tr>
@@ -432,10 +437,9 @@ function EJCMRModern({ cmrData }) {
                 <td></td>
                 <td></td>
                 <td className="ej-r ej-num">
+                  {/* Shipment total in kg: line net_weight values are grams */}
                   {_totQty > 0 ? (
-                    lines.reduce((s, l) => s + (l.net_weight || 0), 0) > 0
-                      ? `${lines.reduce((s, l) => s + (l.net_weight || 0), 0).toFixed(3)} kg`
-                      : "—"
+                    _totNw > 0 ? `${(_totNw / 1000).toFixed(3)} kg` : "—"
                   ) : "—"}
                 </td>
                 <td className="ej-r ej-num">{_totQty}</td>

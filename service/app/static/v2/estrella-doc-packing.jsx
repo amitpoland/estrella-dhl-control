@@ -59,6 +59,9 @@ function PKGPartyBox({ n, label, data, border }) {
 // ── Number formatters ────────────────────────────────────────────────────────
 const _pkgFmtMoney = (v) =>
   v == null ? '—' : Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Raw weight value, unit given by the column header: dia/col weights are
+// carats; gross/net weights are GRAMS (packing_lines stores grams — supplier
+// sheet "GR.WT/NT.WT (GMS)"). Never labelled kg.
 const _pkgFmtWt = (v) =>
   v != null && Number(v) > 0 ? Number(v).toFixed(4) : '—';
 
@@ -143,10 +146,10 @@ function EJPackingList({ packingData }) {
               <th style={{ width: 32, textAlign: 'center',  padding: '5px 3px' }}>Kt</th>
               <th style={{ width: 26, textAlign: 'center',  padding: '5px 3px' }}>Col</th>
               <th style={{ width: 52, textAlign: 'center',  padding: '5px 3px' }}>Quality</th>
-              <th style={{ width: 46, textAlign: 'right',   padding: '5px 3px' }}>Dia Wt</th>
-              <th style={{ width: 46, textAlign: 'right',   padding: '5px 3px' }}>Col Wt</th>
-              <th style={{ width: 50, textAlign: 'right',   padding: '5px 3px' }}>Gross Wt</th>
-              <th style={{ width: 46, textAlign: 'right',   padding: '5px 3px' }}>Net Wt</th>
+              <th style={{ width: 46, textAlign: 'right',   padding: '5px 3px' }}>Dia Wt (ct)</th>
+              <th style={{ width: 46, textAlign: 'right',   padding: '5px 3px' }}>Col Wt (ct)</th>
+              <th style={{ width: 50, textAlign: 'right',   padding: '5px 3px' }}>Gross Wt (g)</th>
+              <th style={{ width: 46, textAlign: 'right',   padding: '5px 3px' }}>Net Wt (g)</th>
               <th style={{ width: 30, textAlign: 'right',   padding: '5px 3px' }}>Qty</th>
               <th style={{ width: 64, textAlign: 'right',   padding: '5px 3px' }}>Value&nbsp;({cur})</th>
               <th style={{ width: 76, textAlign: 'right',   padding: '5px 3px' }}>Total Value</th>
