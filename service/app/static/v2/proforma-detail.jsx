@@ -1892,11 +1892,13 @@ function SourceExtractionTab({ draftId, expectedUpdatedAt, onSaved }) {
   const cancelEdit = () => { setEditing(null); setSaving(false); };
 
   const saveRow = (ln) => {
-    if (!expectedUpdatedAt) { setRowErr(p => ({ ...p, [ln.line_id]: 'Authority Gap — draft lock unavailable; reopen the draft and retry.' })); return; }
+    if (!expectedUpdatedAt) { setRowErr(p => ({ ...p, [ln.line_id]: 'Draft lock unavailable — reopen the draft and retry.' })); return; }
     const patch = {};
     const q = parseFloat(editQty);
     if (!isNaN(q) && q !== Number(ln.quantity)) patch.qty = q;
     const code = (editCode || '').trim();
+    // product_code IS a writable editable-line field (EDITABLE_LINE_FIELDS) — remap
+    // persists via PATCH /draft/{id}/lines/{line_id}. No authority gap.
     if (code && code !== (ln.product_code || '')) patch.product_code = code;   // map from Product Master
     if (Object.keys(patch).length === 0) { setEditing(null); return; }
     setSaving(true); setRowErr(p => ({ ...p, [ln.line_id]: null }));
@@ -1909,9 +1911,9 @@ function SourceExtractionTab({ draftId, expectedUpdatedAt, onSaved }) {
       })
       .catch(e => {
         setSaving(false);
-        const m = (e && e.message) || 'Save failed';
-        // product_code may not be a writable line field on this authority → honest Authority Gap.
-        setRowErr(p => ({ ...p, [ln.line_id]: (patch.product_code ? 'Product-code mapping not writable here (Authority Gap). ' : '') + m }));
+        // Genuine failure surface — lock conflict (updated_at mismatch), blank
+        // code, or transport error. NOT an authority gap: the field is writable.
+        setRowErr(p => ({ ...p, [ln.line_id]: (e && e.message) || 'Save failed' }));
       });
   };
 
@@ -2053,7 +2055,7 @@ function SourceExtractionTab({ draftId, expectedUpdatedAt, onSaved }) {
                         </td>
                       </tr>
                       {rowErr[ln.line_id] && (
-                        <tr><td colSpan={8} data-testid="pf-source-row-error" style={{ padding: '4px 12px 8px', fontSize: 11, color: 'var(--badge-amber-text)' }}>Authority Gap · {rowErr[ln.line_id]}</td></tr>
+                        <tr><td colSpan={8} data-testid="pf-source-row-error" style={{ padding: '4px 12px 8px', fontSize: 11, color: 'var(--badge-amber-text)' }}>Save failed · {rowErr[ln.line_id]}</td></tr>
                       )}
                       </React.Fragment>
                       );
