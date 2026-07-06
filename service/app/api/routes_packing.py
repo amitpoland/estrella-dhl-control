@@ -1077,6 +1077,13 @@ async def reprocess_packing_documents(
                         "metal":                 str(r.get("metal", "") or ""),
                         "karat":                 str(r.get("karat", "") or ""),
                         "stone_type":            str(r.get("stone_type", "") or ""),
+                        # Variant identity — preserve on the reprocess path too
+                        # (mirror the upload mapping); previously dropped here.
+                        "metal_color":           str(r.get("metal_color", "") or ""),
+                        "quality_string":        str(r.get("quality_string", "") or ""),
+                        "size":                  str(r.get("size", "") or ""),
+                        "diamond_weight":        float(r.get("diamond_weight", 0) or 0),
+                        "color_weight":          float(r.get("color_weight", 0) or 0),
                         "remarks":               str(r.get("remarks", "") or ""),
                         "extracted_confidence":  float(r.get("extracted_confidence", 0) or 0),
                         "requires_manual_review": bool(r.get("requires_manual_review", False)),
