@@ -42,6 +42,18 @@ _ADVISORY_CHANNEL = "doc_package_advisory"
 
 # ── Input / output types ──────────────────────────────────────────────────────
 
+def package_weight_kg(goods_weight_g: float, tare_weight_kg: float) -> float:
+    """Total package weight in kg from the two weight authorities.
+
+    UNIT AUTHORITY: packing_lines.net_weight / gross_weight are stored in
+    GRAMS (supplier sheet columns "GR.WT/NT.WT (GMS)"); box tare comes from
+    box_types.tare_weight_kg in KG. Grams are converted BEFORE adding:
+        package_weight_kg = goods_weight_g / 1000 + tare_weight_kg
+    Stored data is never rewritten — conversion happens only at composition.
+    """
+    return float(goods_weight_g or 0) / 1000.0 + float(tare_weight_kg or 0)
+
+
 @dataclass
 class LabelPackageInputs:
     """Operator-supplied inputs required to generate the package.
@@ -731,8 +743,7 @@ def render_cn23_pdf(
     currency_final = (inv_totals.get("currency") or ccy or "USD").strip()
 
     goods_weight_g_cn23 = sum(r["weight_g"] for r in goods_rows)
-    tare_g_cn23 = (inputs.tare_weight_kg or 0) * 1000.0
-    declared_weight_kg = (goods_weight_g_cn23 + tare_g_cn23) / 1000.0
+    declared_weight_kg = package_weight_kg(goods_weight_g_cn23, inputs.tare_weight_kg)
 
     prof_ref = ""
     if draft and draft.wfirma_proforma_fullnumber:

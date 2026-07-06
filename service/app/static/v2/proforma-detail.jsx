@@ -3687,7 +3687,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           const _grossTotal = (liveDraft.editable_lines || []).reduce((s, ln) => {
             const pk = _enrichPacking(ln); const g = Number(pk.gross_weight) || 0; return s + g;
           }, 0);
-          const _fmtKg = (v) => (Number(v) > 0 ? Number(v).toFixed(3) + ' kg' : '—');
+          // UNIT AUTHORITY: packing_lines.net_weight / gross_weight are stored
+          // in GRAMS (supplier sheet columns "GR.WT/NT.WT (GMS)"). Per-line
+          // jewellery weights display in grams; shipment-level totals display
+          // in kg via grams / 1000. Stored data is never rewritten.
+          const _fmtG = (v) => (Number(v) > 0 ? Number(v).toFixed(3) + ' g' : '—');
+          const _fmtKgFromG = (g) => (Number(g) > 0 ? (Number(g) / 1000).toFixed(3) + ' kg' : '—');
           const _kv = (k, v, testid) => (
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '6px 0', borderBottom: '1px solid var(--border)' }} data-testid={testid}>
               <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{k}</span>
@@ -3736,20 +3741,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                       <tr key={i} data-testid="pf-logistics-weight-row">
                         <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', fontSize: 12 }}>{r.item_type}</td>
                         <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', fontSize: 12, textAlign: 'right' }}>{Number(r.qty) || 0}</td>
-                        <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', fontSize: 12, textAlign: 'right' }}>{_fmtKg(r.net_weight)}</td>
+                        <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', fontSize: 12, textAlign: 'right' }}>{_fmtG(r.net_weight)}</td>
                       </tr>
                     ))}
                     <tr style={{ fontWeight: 700 }} data-testid="pf-logistics-weight-total">
                       <td style={{ padding: '6px 8px', fontSize: 12 }}>Total</td>
                       <td style={{ padding: '6px 8px', fontSize: 12, textAlign: 'right' }}>{_cmrTotalPcs > 0 ? _cmrTotalPcs : '—'}</td>
-                      <td style={{ padding: '6px 8px', fontSize: 12, textAlign: 'right' }}>{_fmtKg(_netTotal)}</td>
+                      <td style={{ padding: '6px 8px', fontSize: 12, textAlign: 'right' }}>{_fmtG(_netTotal)}</td>
                     </tr>
                   </tbody>
                 </table>
               ) : (
                 <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }} data-testid="pf-logistics-weights-empty">No packing weight data matched for this draft's lines yet.</div>
               )}
-              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }} data-testid="pf-logistics-gross-total">Gross weight (enriched): <strong>{_fmtKg(_grossTotal)}</strong></div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }} data-testid="pf-logistics-gross-total">Gross weight (enriched): <strong>{_fmtKgFromG(_grossTotal)}</strong></div>
               {cmrPreviewData.goods_summary ? (
                 <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12 }} data-testid="pf-logistics-goods-summary">Goods: {cmrPreviewData.goods_summary}</div>
               ) : null}
