@@ -209,3 +209,32 @@ def test_reconcile_billed_clean():
     draft = [{"design_no": "D001", "product_code": "EJL/001-1", "qty": 2}]
     result = reconcile_billed("B1", draft, packing_rows=rows)
     assert result["duplicates"] == []
+
+
+# ── audit op validity ─────────────────────────────────────────────────────────
+
+def test_upsert_uses_valid_audit_op(tmp_path):
+    """The product_master upsert MUST call audit_safe with an op in VALID_OPS.
+
+    Regression: the prior op 'cpa_upsert' was NOT in core/audit.py VALID_OPS, so
+    write_audit rejected it and every product_master audit event silently failed
+    to persist (audit_safe swallows the AuditWriteError). The op must be 'upsert'.
+    """
+    from app.core.audit import VALID_OPS
+
+    db   = _make_reservation_db(tmp_path)
+    rows = [_row("EJL/26-27/001-1"), _row("EJL/26-27/001-2", design_no="D002")]
+
+    captured_ops = []
+
+    def _spy(entity, op, pk, **kwargs):
+        captured_ops.append(op)
+        return 1
+
+    with patch("app.services.cpa_product_service.audit_safe", side_effect=_spy):
+        result = upsert_product_master_from_packing(db, "BATCH-AUDIT", rows)
+
+    assert result["upserted_count"] == 2
+    assert captured_ops == ["upsert", "upsert"]
+    assert all(op in VALID_OPS for op in captured_ops), (
+        f"invalid audit op(s) {captured_ops!r} — must be one of {sorted(VALID_OPS)}")

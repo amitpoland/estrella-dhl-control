@@ -79,7 +79,11 @@ def upsert_product_master_from_packing(
                 confidence        = "packing",
             )
             audit_safe(
-                "product_master", "cpa_upsert", product_code,
+                # 'upsert' is the canonical valid audit op (VALID_OPS in
+                # core/audit.py). The prior 'cpa_upsert' was rejected by
+                # write_audit, so every product_master upsert silently failed
+                # to record an audit event. The provenance stays in after.source.
+                "product_master", "upsert", product_code,
                 actor=actor,
                 after={
                     "product_code": product_code,
