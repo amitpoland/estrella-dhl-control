@@ -192,6 +192,38 @@ _NO_STORE_HEADERS = {
 }
 
 
+# ── Local do-not-use control ──────────────────────────────────────────────────
+# Operational flag for duplicate/unused labels. This is NOT a DHL
+# cancellation or void — no DHL API call is made anywhere on this path and
+# the real tracking number, DB rows, and label PDFs are all preserved.
+
+_DNU_FIELDS = {
+    "do_not_use": False,
+    "do_not_use_reason": None,
+    "do_not_use_at": None,
+    "do_not_use_by": None,
+}
+
+
+def _do_not_use_info(batch_id: str, tracking_ref: Optional[str]) -> dict:
+    """Do-not-use flag fields for (batch, AWB) — safe defaults when unknown."""
+    info = dict(_DNU_FIELDS)
+    if not tracking_ref or not isinstance(tracking_ref, str):
+        return info
+    try:
+        db_path = _get_shipment_db_path()
+        shipment_db.init_db(db_path)
+        row = shipment_db.get_do_not_use(db_path, batch_id, tracking_ref)
+    except Exception:
+        return info
+    if row:
+        info["do_not_use"] = bool(row.get("do_not_use"))
+        info["do_not_use_reason"] = row.get("do_not_use_reason")
+        info["do_not_use_at"] = row.get("do_not_use_at")
+        info["do_not_use_by"] = row.get("do_not_use_by")
+    return info
+
+
 # ── Request body ──────────────────────────────────────────────────────────────
 
 
@@ -341,6 +373,9 @@ def create_shipment(
         # Replay indicator: True when served from the stored COMPLETE row —
         # no adapter call was made, no new DHL shipment was created.
         "replayed": bool(result.replayed),
+        # Local do-not-use flag (duplicate/unused label control; not a DHL void)
+        **_do_not_use_info(batch_id, result.tracking_ref
+                           if isinstance(result.tracking_ref, str) else None),
         **doc_urls,
         "commercial_documents_url": commercial_documents_url,
         "documents_available": commercial_documents_url is not None,
@@ -405,10 +440,68 @@ def get_shipment(
         "declared_value": row.get("declared_value"),
         "currency": row.get("currency"),
         "created_at": row.get("created_at"),
+        # Local do-not-use flag (duplicate/unused label control; not a DHL void)
+        **_do_not_use_info(batch_id, tracking_ref),
         **doc_urls,
         "commercial_documents_url": commercial_documents_url,
         "documents_available": commercial_documents_url is not None,
         "saved_labels_exist": _batch_has_any_label(batch_id),
+    })
+
+
+# ── Local do-not-use marking ──────────────────────────────────────────────────
+
+
+class DoNotUseBody(BaseModel):
+    reason: str                      # mandatory audit reason (e.g. "duplicate of 7010522735")
+    operator: Optional[str] = None   # who marked it, when the UI knows
+
+
+@router.post(
+    "/{batch_id}/shipment/{tracking_ref}/do-not-use",
+    summary="Mark an AWB label as DO NOT USE (local operational flag — NOT a DHL cancellation)",
+)
+def mark_shipment_do_not_use(
+    batch_id: str,
+    tracking_ref: str,
+    body: DoNotUseBody,
+    _auth: None = Depends(require_api_key),
+    db_path: Path = Depends(_get_shipment_db_path),
+) -> JSONResponse:
+    """Set the local do-not-use flag on a recorded shipment.
+
+    This does not cancel anything at DHL — no DHL API call is made, the
+    tracking number is unchanged, and the label PDFs stay on disk for audit.
+    It only marks the label so operators do not print it or hand it to the
+    courier. Marked labels remain downloadable via ?archived=true.
+    """
+    if not (_SAFE_BATCH.match(batch_id or "") and _SAFE_REF.match(tracking_ref or "")):
+        raise HTTPException(status_code=404, detail="Unknown batch or tracking reference.")
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise HTTPException(
+            status_code=422,
+            detail="A reason is required to mark a label as do-not-use (audit trail).",
+        )
+    shipment_db.init_db(db_path)
+    marked = shipment_db.mark_do_not_use(
+        db_path, batch_id, tracking_ref, reason,
+        operator=(body.operator or "").strip() or None,
+    )
+    if marked == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No recorded shipment for batch {batch_id!r} AWB {tracking_ref!r} — "
+                "nothing was marked."
+            ),
+        )
+    return JSONResponse({
+        "batch_id": batch_id,
+        "tracking_ref": tracking_ref,
+        "marked_rows": marked,
+        "dhl_api_called": False,   # explicit: local flag only, never a DHL void
+        **_do_not_use_info(batch_id, tracking_ref),
     })
 
 
@@ -530,11 +623,19 @@ async def create_label_package(
 # ── Label / document downloads ───────────────────────────────────────────────
 
 
-def _serve_shipment_doc(kind: str, batch_id: str, tracking_ref: str) -> Response:
+def _serve_shipment_doc(
+    kind: str, batch_id: str, tracking_ref: str, archived: bool = False,
+) -> Response:
     """Serve one saved DHL shipment document as an attachment PDF.
 
     Pattern-validated + path-confined; filesystem paths never exposed;
     Lesson-G no-store headers. 404 when the document does not exist.
+
+    Labels marked do-not-use are blocked from the primary download (409) so
+    a duplicate/unused label is not printed or handed to DHL by accident.
+    ?archived=true keeps them retrievable for audit — the file is never
+    deleted — with an ARCHIVED-DUPLICATE filename so a printout is
+    unmistakable.
     """
     doc = _shipment_doc_file(kind, batch_id, tracking_ref)
     if doc is None:
@@ -543,6 +644,20 @@ def _serve_shipment_doc(kind: str, batch_id: str, tracking_ref: str) -> Response
             detail=f"No saved {kind} document for batch {batch_id!r} AWB {tracking_ref!r}.",
         )
     prefix = _SHIPMENT_DOC_KINDS[kind][1]
+    dnu = _do_not_use_info(batch_id, tracking_ref)
+    if dnu["do_not_use"] and not archived:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"AWB {tracking_ref} is marked DO NOT USE "
+                f"({dnu['do_not_use_reason'] or 'duplicate/unused label'}). "
+                "Do not print or hand this label to the courier. "
+                "For audit retrieval, download it as an archived duplicate label "
+                "(?archived=true)."
+            ),
+        )
+    if dnu["do_not_use"]:
+        prefix = f"ARCHIVED-DUPLICATE-{prefix}"
     return Response(
         content=doc.read_bytes(),
         media_type="application/pdf",
@@ -560,10 +675,11 @@ def _serve_shipment_doc(kind: str, batch_id: str, tracking_ref: str) -> Response
 def download_label(
     batch_id: str,
     tracking_ref: str,
+    archived: bool = False,
     _auth: None = Depends(require_api_key),
 ) -> Response:
     """Serve the transport label PDF saved at AWB creation time."""
-    return _serve_shipment_doc("label", batch_id, tracking_ref)
+    return _serve_shipment_doc("label", batch_id, tracking_ref, archived=archived)
 
 
 @router.get(
@@ -573,10 +689,11 @@ def download_label(
 def download_waybill_doc(
     batch_id: str,
     tracking_ref: str,
+    archived: bool = False,
     _auth: None = Depends(require_api_key),
 ) -> Response:
     """Serve the waybill document PDF saved at AWB creation time."""
-    return _serve_shipment_doc("waybill-doc", batch_id, tracking_ref)
+    return _serve_shipment_doc("waybill-doc", batch_id, tracking_ref, archived=archived)
 
 
 @router.get(
@@ -586,10 +703,11 @@ def download_waybill_doc(
 def download_shipment_receipt(
     batch_id: str,
     tracking_ref: str,
+    archived: bool = False,
     _auth: None = Depends(require_api_key),
 ) -> Response:
     """Serve the shipment receipt PDF saved at AWB creation time."""
-    return _serve_shipment_doc("receipt", batch_id, tracking_ref)
+    return _serve_shipment_doc("receipt", batch_id, tracking_ref, archived=archived)
 
 
 @router.get(

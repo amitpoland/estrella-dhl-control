@@ -951,6 +951,21 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     const isReplay  = !!result.replayed;
     const hasRef    = !!result.tracking_ref;
     const isLegacy  = isReplay && !hasRef;   // pre-migration COMPLETE row: no stored AWB
+    const isDnu     = !!result.do_not_use;   // LOCAL flag — not a DHL void
+    // Mark this label as do-not-use (duplicate/unused). Local status only:
+    // no DHL API call, tracking number unchanged, PDFs preserved for audit.
+    const markDoNotUse = () => {
+      if (!hasRef) return;
+      if (!window.confirm('This does not cancel anything at DHL. It only marks this label as not to be used or handed to courier.')) return;
+      const reason = window.prompt('Reason (required, stored for audit — e.g. "duplicate label, using other AWB"):', 'duplicate/unused label');
+      if (!reason || !reason.trim()) return;
+      window.PzApi.markCarrierShipmentDoNotUse(result.batch_id || batchId, result.tracking_ref, { reason: reason.trim() })
+        .then(r => {
+          if (r && r.ok) setResult({ ...result, ...r.data });
+          else window.alert((r && r.error) || 'Failed to mark label as do-not-use.');
+        })
+        .catch(e => window.alert((e && e.message) || 'Failed to mark label as do-not-use.'));
+    };
     return (
       <div style={overlay} onClick={() => { onSuccess && onSuccess(result); onClose(); }} data-testid="awb-generate-modal">
         <div onClick={e => e.stopPropagation()} style={card}>
@@ -996,22 +1011,56 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
                 </div>
               </div>
             )}
+            {isDnu && (
+              <div style={{
+                padding: '10px 14px', background: 'var(--badge-red-bg)',
+                border: '1px solid var(--badge-red-border)', borderRadius: 6,
+                color: 'var(--badge-red-text)', fontSize: 12.5, fontWeight: 700, marginBottom: 16,
+              }} data-testid="awb-dnu-badge">
+                DO NOT USE — duplicate/unused label
+                {result.do_not_use_reason ? (
+                  <div style={{ fontWeight: 500, marginTop: 4, fontSize: 11.5 }}>
+                    Reason: {result.do_not_use_reason}
+                    {result.do_not_use_at ? ` · ${result.do_not_use_at}` : ''}
+                  </div>
+                ) : null}
+                <div style={{ fontWeight: 500, marginTop: 4, fontSize: 11 }}>
+                  Local status only — the DHL booking itself is unchanged. Downloads below are archived audit copies.
+                </div>
+              </div>
+            )}
             {(result.label_download_url || result.waybill_doc_download_url
               || result.shipment_receipt_download_url || result.commercial_documents_url) && (
               <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
                 {[
-                  [result.label_download_url,            '⬇ Transport Label',       'awb-download-label'],
-                  [result.waybill_doc_download_url,      '⬇ Waybill Doc (courier)', 'awb-download-waybill'],
-                  [result.shipment_receipt_download_url, '⬇ Shipment Receipt',      'awb-download-receipt'],
-                  [result.commercial_documents_url,      '⬇ Commercial Documents',  'awb-download-documents'],
-                ].map(([href, label, tid]) => href ? (
-                  <a key={tid} href={href} download
+                  // Primary downloads; when marked do-not-use they switch to the
+                  // archived audit variant (?archived=true) — never a courier copy.
+                  [result.label_download_url,            '⬇ Transport Label',       'awb-download-label',     true],
+                  [result.waybill_doc_download_url,      '⬇ Waybill Doc (courier)', 'awb-download-waybill',   true],
+                  [result.shipment_receipt_download_url, '⬇ Shipment Receipt',      'awb-download-receipt',   true],
+                  [result.commercial_documents_url,      '⬇ Commercial Documents',  'awb-download-documents', false],
+                ].map(([href, label, tid, gated]) => href ? (
+                  <a key={tid}
+                    href={(isDnu && gated) ? `${href}?archived=true` : href} download
                     style={{ ...inputStyle, width: 'auto', padding: '8px 16px', cursor: 'pointer',
-                             textDecoration: 'none', display: 'inline-block' }}
+                             textDecoration: 'none', display: 'inline-block',
+                             ...((isDnu && gated) ? { color: 'var(--badge-red-text)', borderColor: 'var(--badge-red-border)' } : {}) }}
                     data-testid={tid}>
-                    {label}
+                    {(isDnu && gated) ? `Archived duplicate label — ${label.replace('⬇ ', '')}` : label}
                   </a>
                 ) : null)}
+              </div>
+            )}
+            {isReplay && hasRef && !isDnu && (
+              <div style={{ marginBottom: 20 }}>
+                <button onClick={markDoNotUse} data-testid="awb-mark-dnu"
+                  style={{ ...inputStyle, width: 'auto', padding: '8px 16px', cursor: 'pointer',
+                           color: 'var(--badge-red-text)', borderColor: 'var(--badge-red-border)', background: 'var(--bg)' }}>
+                  ⚑ Mark as Do Not Use
+                </button>
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
+                  If this label is a duplicate you will not ship, mark it so it is not printed or handed to DHL. This is a local flag — it does not cancel anything at DHL.
+                </div>
               </div>
             )}
             {/* Shipment summary — echoes the recorded shipment intent */}
@@ -2453,6 +2502,22 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   }, [draft && draft.batch_id]);
   React.useEffect(() => { loadCarrierShipment(); }, [loadCarrierShipment]);
 
+  // Mark the recorded AWB label as DO NOT USE — a LOCAL operational flag for
+  // duplicate/unused labels. Never calls DHL, never voids the AWB, never
+  // deletes label PDFs; reason is stored for audit.
+  const markAwbDoNotUse = React.useCallback(() => {
+    if (!carrierShipment || !carrierShipment.tracking_ref || !draft || !draft.batch_id) return;
+    if (!window.confirm('This does not cancel anything at DHL. It only marks this label as not to be used or handed to courier.')) return;
+    const reason = window.prompt('Reason (required, stored for audit — e.g. "duplicate label, using other AWB"):', 'duplicate/unused label');
+    if (!reason || !reason.trim()) return;
+    window.PzApi.markCarrierShipmentDoNotUse(draft.batch_id, carrierShipment.tracking_ref, { reason: reason.trim() })
+      .then(r => {
+        if (r && r.ok) loadCarrierShipment();
+        else window.alert((r && r.error) || 'Failed to mark label as do-not-use.');
+      })
+      .catch(e => window.alert((e && e.message) || 'Failed to mark label as do-not-use.'));
+  }, [carrierShipment, draft && draft.batch_id, loadCarrierShipment]);
+
   // WIRED: fetch readiness / blocking reasons (POST /api/v1/proforma/preview/{batch_id}/{client_name})
   const batchId    = draft && (draft.batch_id    || '');
   const clientName = draft && (draft.client_name || '');
@@ -3709,6 +3774,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                   {_kv('Declared value', carrierShipment.declared_value != null
                     ? `${carrierShipment.declared_value} ${carrierShipment.currency || ''}` : '—', 'pf-logistics-awb-declared')}
                   {_kv('Created', carrierShipment.created_at || '—', 'pf-logistics-awb-created')}
+                  {carrierShipment.do_not_use ? (
+                    <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, color: 'var(--badge-red-text)', fontSize: 12, fontWeight: 700 }} data-testid="pf-logistics-awb-dnu-badge">
+                      DO NOT USE — duplicate/unused label
+                      <div style={{ fontWeight: 500, marginTop: 3, fontSize: 11 }}>
+                        {carrierShipment.do_not_use_reason || 'no reason recorded'}
+                        {carrierShipment.do_not_use_at ? ` · ${carrierShipment.do_not_use_at}` : ''}
+                        {carrierShipment.do_not_use_by ? ` · by ${carrierShipment.do_not_use_by}` : ''}
+                      </div>
+                      <div style={{ fontWeight: 500, marginTop: 3, fontSize: 10.5 }}>
+                        Local status only — nothing was cancelled at DHL. Downloads below are archived audit copies.
+                      </div>
+                    </div>
+                  ) : null}
                   {(carrierShipment.label_download_url || carrierShipment.waybill_doc_download_url
                     || carrierShipment.shipment_receipt_download_url) ? (
                     <div style={{ paddingTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -3717,11 +3795,25 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                         [carrierShipment.waybill_doc_download_url,      '⬇ Waybill Doc',      'pf-logistics-awb-waybill-download'],
                         [carrierShipment.shipment_receipt_download_url, '⬇ Shipment Receipt', 'pf-logistics-awb-receipt-download'],
                       ].map(([href, label, tid]) => href ? (
-                        <a key={tid} href={href} download data-testid={tid}
-                          style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', textDecoration: 'none', padding: '5px 10px', border: '1px solid var(--border)', borderRadius: 6, display: 'inline-block', background: 'var(--bg)' }}>
-                          {label}
+                        <a key={tid} download data-testid={tid}
+                          href={carrierShipment.do_not_use ? `${href}?archived=true` : href}
+                          style={{ fontSize: 12, fontWeight: 600, textDecoration: 'none', padding: '5px 10px', borderRadius: 6, display: 'inline-block', background: 'var(--bg)',
+                                   color: carrierShipment.do_not_use ? 'var(--badge-red-text)' : 'var(--text)',
+                                   border: `1px solid ${carrierShipment.do_not_use ? 'var(--badge-red-border)' : 'var(--border)'}` }}>
+                          {carrierShipment.do_not_use ? `Archived duplicate label — ${label.replace('⬇ ', '')}` : label}
                         </a>
                       ) : null)}
+                    </div>
+                  ) : null}
+                  {(carrierShipment.tracking_ref && !carrierShipment.do_not_use) ? (
+                    <div style={{ paddingTop: 10 }}>
+                      <button onClick={markAwbDoNotUse} data-testid="pf-logistics-awb-mark-dnu"
+                        style={{ fontSize: 12, fontWeight: 600, padding: '5px 10px', borderRadius: 6, cursor: 'pointer', background: 'var(--bg)', color: 'var(--badge-red-text)', border: '1px solid var(--badge-red-border)' }}>
+                        ⚑ Mark as Do Not Use
+                      </button>
+                      <span style={{ fontSize: 10.5, color: 'var(--text-3)', marginLeft: 8 }}>
+                        duplicate/unused label — local flag, does not cancel anything at DHL
+                      </span>
                     </div>
                   ) : null}
                 </div>
@@ -3747,6 +3839,16 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           // Preview modal (CMR / Packing List), and in-component draft state.
           // Existing Print/Download flows are preserved, not replaced.
           const _openPreview = (t) => { setPreviewDocType(t); setShowPreview(true); };
+          // Local do-not-use flag: primary downloads become archived audit
+          // copies (?archived=true) — never a courier-facing action.
+          const _dnu = !!(carrierShipment && carrierShipment.do_not_use);
+          const _dnuBadge = _dnu ? 'DO NOT USE — duplicate/unused label' : null;
+          const _dhlAction = (href, label, testid) => {
+            if (!href) return null;
+            return _dnu
+              ? { label: 'Archived duplicate label', href: `${href}?archived=true`, testid }
+              : { label, href, testid };
+          };
           const _proformaNo  = liveDraft.wfirma_proforma_fullnumber || (draft && draft.wfirma_proforma_fullnumber) || '';
           const _invoiceNo   = liveDraft.wfirma_invoice_number || (liveDraft.wfirma_invoice_id ? String(liveDraft.wfirma_invoice_id) : '');
           const _docs = [
@@ -3789,9 +3891,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 ? `AWB ${carrierShipment.tracking_ref} · attach to package`
                 : 'DHL transport label — attach to package (carrier label store)',
               available: !!(carrierShipment && carrierShipment.label_download_url),
-              action: (carrierShipment && carrierShipment.label_download_url)
-                ? { label: '↓ Download Label', href: carrierShipment.label_download_url, testid: 'pf-doc-dhl-label-download' }
-                : null,
+              badge: _dnuBadge,
+              action: _dhlAction(carrierShipment && carrierShipment.label_download_url,
+                                 '↓ Download Label', 'pf-doc-dhl-label-download'),
               pending: (carrierShipment && carrierShipment.label_download_url) ? null
                 : (carrierShipment
                     ? (carrierShipment.saved_labels_exist
@@ -3805,9 +3907,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 ? `AWB ${carrierShipment.tracking_ref} · hand to courier at pickup`
                 : 'DHL waybill document — hand to courier at pickup',
               available: !!(carrierShipment && carrierShipment.waybill_doc_download_url),
-              action: (carrierShipment && carrierShipment.waybill_doc_download_url)
-                ? { label: '↓ Download Waybill', href: carrierShipment.waybill_doc_download_url, testid: 'pf-doc-dhl-waybill-download' }
-                : null,
+              badge: _dnuBadge,
+              action: _dhlAction(carrierShipment && carrierShipment.waybill_doc_download_url,
+                                 '↓ Download Waybill', 'pf-doc-dhl-waybill-download'),
               pending: (carrierShipment && carrierShipment.waybill_doc_download_url) ? null
                 : (carrierShipment
                     ? 'No waybill document saved for this shipment (bookings before waybill-doc support, or DHL did not return one).'
@@ -3819,9 +3921,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 ? `AWB ${carrierShipment.tracking_ref} · operator/customer receipt`
                 : 'DHL shipment receipt — operator/customer copy',
               available: !!(carrierShipment && carrierShipment.shipment_receipt_download_url),
-              action: (carrierShipment && carrierShipment.shipment_receipt_download_url)
-                ? { label: '↓ Download Receipt', href: carrierShipment.shipment_receipt_download_url, testid: 'pf-doc-dhl-receipt-download' }
-                : null,
+              badge: _dnuBadge,
+              action: _dhlAction(carrierShipment && carrierShipment.shipment_receipt_download_url,
+                                 '↓ Download Receipt', 'pf-doc-dhl-receipt-download'),
               pending: (carrierShipment && carrierShipment.shipment_receipt_download_url) ? null
                 : (carrierShipment
                     ? 'No shipment receipt saved for this shipment (bookings before receipt support, or DHL did not return one).'
@@ -3850,6 +3952,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{d.name}</div>
                     <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>{d.authority}</div>
+                    {d.badge ? (
+                      <div style={{ display: 'inline-block', marginTop: 4, padding: '2px 8px', borderRadius: 4, fontSize: 10.5, fontWeight: 700, background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', border: '1px solid var(--badge-red-border)' }}
+                        data-testid={`pf-doc-dnu-${d.key}`}>
+                        {d.badge}
+                      </div>
+                    ) : null}
                     {d.pending ? (
                       <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }} data-testid={`pf-doc-pending-${d.key}`}>
                         <strong>Backend Pending:</strong> {d.pending}

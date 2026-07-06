@@ -46,6 +46,13 @@ _ADDITIVE_COLUMNS = [
     ("declared_value", "REAL"),
     ("currency", "TEXT"),
     ("box_type_code", "TEXT"),         # Box Master profile chosen in the AWB modal
+    # Local do-not-use control — an OPERATIONAL flag for duplicate/unused
+    # labels. It is NOT a DHL cancellation/void (no DHL API call exists or is
+    # made); the real AWB and its PDFs are preserved for audit.
+    ("do_not_use", "INTEGER NOT NULL DEFAULT 0"),
+    ("do_not_use_reason", "TEXT"),
+    ("do_not_use_at", "TEXT"),
+    ("do_not_use_by", "TEXT"),
 ]
 
 
@@ -173,6 +180,58 @@ def update_state(
             f"UPDATE carrier_shipments SET {', '.join(sets)} WHERE idempotency_key = ?",
             tuple(args),
         )
+
+
+def mark_do_not_use(
+    db_path: Path,
+    batch_id: str,
+    tracking_ref: str,
+    reason: str,
+    operator: Optional[str] = None,
+) -> int:
+    """Mark every shipment row for (batch_id, tracking_ref) as do-not-use.
+
+    Purely local operational status — never calls DHL, never changes the
+    tracking_ref, state, or any booking field. Returns the number of rows
+    marked (0 = no matching shipment).
+    """
+    if not (batch_id and tracking_ref and reason and reason.strip()):
+        return 0
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE carrier_shipments
+               SET do_not_use = 1,
+                   do_not_use_reason = ?,
+                   do_not_use_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                   do_not_use_by = ?,
+                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE batch_id = ? AND tracking_ref = ?
+            """,
+            (reason.strip(), operator, batch_id, tracking_ref),
+        )
+    return cur.rowcount
+
+
+def get_do_not_use(db_path: Path, batch_id: str, tracking_ref: str) -> Optional[dict]:
+    """Return the do-not-use flag fields for (batch_id, tracking_ref), or None.
+
+    None means no shipment row exists for that pair (legacy rows without a
+    stored tracking_ref are never matched — they cannot be marked).
+    """
+    if not (batch_id and tracking_ref):
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT do_not_use, do_not_use_reason, do_not_use_at, do_not_use_by
+              FROM carrier_shipments
+             WHERE batch_id = ? AND tracking_ref = ?
+             ORDER BY do_not_use DESC LIMIT 1
+            """,
+            (batch_id, tracking_ref),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def update_shipment_fields(
