@@ -1144,6 +1144,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
               <input id="awb-declared_value" type="number" min="0" step="0.01" value={form.declared_value}
                 onChange={e => set('declared_value', e.target.value)} style={inputStyle}
                 data-testid="awb-field-declared_value" />
+              {!form.declared_value && (
+                <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 3 }}
+                  data-testid="awb-declared-missing-hint">
+                  Declared value not found from proforma total — enter it manually.
+                </div>
+              )}
             </div>
             <div>
               <label htmlFor="awb-currency" style={labelStyle}>Currency *</label>
@@ -3614,12 +3620,28 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           }}
         />
       )}
-      {showAwbModal && batchId && (
+      {showAwbModal && batchId && (() => {
+        // Declared value — the SAME total authority the Overview "Amount due"
+        // uses (sum of billed lines in the draft currency), plus service /
+        // shipping charges in the same currency (they post as proforma lines,
+        // so the proforma gross total includes them). No new calculation
+        // authority — this composes the values already on this page.
+        const _awbLinesTotal = lines.reduce((s, l) => s + (Number(l.netEur) || 0), 0);
+        const _awbChargesTotal = (liveDraft.service_charges || []).reduce((s, c) =>
+          s + (((c.currency || draftCurrency) === draftCurrency) ? (Number(c.amount) || 0) : 0), 0);
+        const _awbDeclared = _awbLinesTotal + _awbChargesTotal;
+        // Canonical proforma/order number — same field every panel on this
+        // page displays (never the batch id).
+        const _awbProformaNo = (liveDraft && liveDraft.wfirma_proforma_fullnumber)
+          || (draft && draft.wfirma_proforma_fullnumber)
+          || (draft && draft.doc_no)
+          || (liveDraft && liveDraft.proforma_number) || '';
+        return (
         <AwbGenerateModal
           batchId={batchId}
           prefill={{
-            // Value — from draft authority
-            declared_value:     detail.total_eur ? detail.total_eur.toFixed(2) : '',
+            // Value — Overview total authority (lines + same-currency charges)
+            declared_value:     _awbDeclared > 0 ? _awbDeclared.toFixed(2) : '',
             currency:           draftCurrency || 'EUR',
             // Recipient identity — Customer Master via ship_to / buyer_override
             company_name:       (sto && sto.name)    || (bo && bo.name)    || customer.name || '',
@@ -3633,19 +3655,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             // Customs — Customer Master
             receiver_vat_id:    (bo && (bo.vat_id || bo.vat_eu_number)) || '',
             receiver_eori:      (bo && bo.eori) || '',
-            // References — from draft
-            customer_reference: (draft && draft.doc_no) || (liveDraft && liveDraft.proforma_number) || '',
+            // References — customer ref = canonical proforma number;
+            // shipment ref = internal batch id.
+            customer_reference: _awbProformaNo,
             shipment_reference: batchId || '',
             // Proforma number for the result summary card (display only)
-            proforma_number:    (liveDraft && (liveDraft.wfirma_proforma_fullnumber || liveDraft.proforma_number))
-                                  || (draft && draft.doc_no) || '',
+            proforma_number:    _awbProformaNo,
             // Description — default; operator overrides in modal
             description:        'Jewellery',
           }}
           onClose={() => setShowAwbModal(false)}
           onSuccess={() => { setShowAwbModal(false); loadCarrierShipment(); }}
         />
-      )}
+        );
+      })()}
       {buyerEditOpen && (
         <ProformaBuyerEditModal
           fields={buyerEditFields}
