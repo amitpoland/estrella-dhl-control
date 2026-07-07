@@ -15,8 +15,8 @@ filenames, so a future package move updates ONE declaration):
 Complements (does NOT duplicate):
   * test_master_consumption_rule.py — READ authority (no business module reads
     wFirma/mirror for product data; mirror = 6 columns).
-  * test_product_master_foundation.py — product_code minted only by
-    store_invoice_lines.
+  * test_product_master_foundation.py — product_code minted only by the
+    Purchase Import Authority (approved import adapters).
 
 Detection is comment/docstring-stripped, so prose is never mistaken for code.
 """
