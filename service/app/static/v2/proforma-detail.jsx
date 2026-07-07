@@ -2225,7 +2225,7 @@ function ProformaPartyCards({
 // over EXISTING authorities (draft editable_lines + Customer Master + Product
 // Master + Import/Packing). Every signal here is ADVISORY (Lesson N): it never
 // blocks Approve / Post / Convert, and it writes nothing.
-function SourceExtractionTab({ draftId, expectedUpdatedAt, onSaved }) {
+function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
   const [data,    setData]    = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [error,   setError]   = React.useState(null);
@@ -2319,6 +2319,9 @@ function SourceExtractionTab({ draftId, expectedUpdatedAt, onSaved }) {
       <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12 }}>
         Advisory only — extraction confidence and match status never block Approve, Post, or Convert.
       </div>
+
+      {/* Source Bundle — batch-scoped source docs; own loading/error, never gates the extraction UI below. */}
+      <window.SourceBundleCard batchId={batchId} />
 
       {loading && <div data-testid="pf-source-loading" style={{ ...box, color: 'var(--text-3)' }}>Loading extraction…</div>}
       {!loading && error && <div data-testid="pf-source-error" style={{ ...box, color: 'var(--badge-red-text)', borderColor: 'var(--badge-red-text)' }}>Could not load: {error}</div>}
@@ -2550,28 +2553,14 @@ function LogisticsTracking({ batchId }) {
 //   GET /api/v1/upload/shipment/{batch_id}/documents   (cookie auth)
 // Read-only inventory — no fabricated rows, no fake downloads.
 function DocumentsRegistry({ batchId }) {
-  const [docs,    setDocs]    = React.useState(null);
-  const [loading, setLoading] = React.useState(true);
-  const [err,     setErr]     = React.useState(null);
-
-  React.useEffect(() => {
-    let alive = true;
-    if (!batchId) { setLoading(false); return; }
-    setLoading(true); setErr(null);
-    window.EstrellaShared.apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/documents`)
-      .then(r => { if (!alive) return; setDocs((r && r.documents) || []); setLoading(false); })
-      .catch(e => { if (!alive) return; setErr((e && e.message) || 'registry unavailable'); setLoading(false); });
-    return () => { alive = false; };
-  }, [batchId]);
+  // Shared V2 data hook — single fetch implementation, reused by SourceBundleCard.
+  const { documents: docs, loading, error: err } = window.useShipmentDocuments(batchId);
 
   const box = { padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8 };
   // Registry rows can carry object-valued enriched fields — coerce to a safe
   // primitive so nothing renders a raw object as a React child (React #31).
   const s = (v) => (v == null || typeof v === 'object') ? '' : v;
-  const typeLabel = (t) => ({
-    purchase_invoice: 'Purchase invoice', sales_invoice: 'Sales invoice',
-    purchase_packing_list: 'Purchase packing list', sales_packing_list: 'Sales packing list',
-  }[t] || (s(t) || 'Document'));
+  const typeLabel = window.documentTypeLabel;
 
   return (
     <div data-testid="pf-documents-registry" style={{ marginTop: 20 }}>
@@ -3894,6 +3883,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         {activeTab === 'source' && (
           <SourceExtractionTab
             draftId={draft && draft.id}
+            batchId={liveDraft.batch_id || (draft && draft.batch_id) || ''}
             expectedUpdatedAt={liveDraft.updated_at || (draft && draft.updated_at) || ''}
             onSaved={() => { draftHook && draftHook.reload && draftHook.reload(); }}
           />
