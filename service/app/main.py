@@ -700,11 +700,19 @@ def serve_v2_static(path: str, request: Request) -> Response:
     if file_path.suffix == ".jsx":
         mime = "text/javascript"
     mime    = mime or "application/octet-stream"
-    headers = (
-        {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
-        if file_path.suffix in (".html", ".js", ".jsx", ".css")
-        else {"Cache-Control": "public, max-age=3600"}
-    )
+    # Vendor runtime (React / ReactDOM / Babel) is version-pinned + immutable, so cache it
+    # long-lived. Without this it inherits the no-store branch below and is re-fetched on
+    # every bootstrap; the ~38-request /v2 burst (incl. the 3 MB babel.min.js) then saturates
+    # the sync handler and Cloudflare 503s the vendor requests, forcing the CDN fallback.
+    # Scoped strictly to vendor/*.js — all OTHER V2 JS/JSX stay no-store (they change often).
+    if path.startswith("vendor/") and file_path.suffix == ".js":
+        headers = {"Cache-Control": "public, max-age=31536000, immutable"}
+    else:
+        headers = (
+            {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
+            if file_path.suffix in (".html", ".js", ".jsx", ".css")
+            else {"Cache-Control": "public, max-age=3600"}
+        )
     return Response(content=content, media_type=mime, headers=headers)
 
 
