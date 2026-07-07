@@ -78,6 +78,26 @@ start. These rules are mandatory for every deploy AND every recovery sync.
 
 ---
 
+## Deployment Identity Gate (PERMANENT — added 2026-07-07)
+
+**Before any robocopy, capture and record the deployment identity. ABORT if any field does not
+match the approved deployment source.**
+
+```bash
+git remote -v | head -1          # Repository + Remote (must be the canonical origin)
+git branch --show-current        # Branch — MUST be main (or the approved release ref)
+git rev-parse HEAD               # HEAD SHA
+git rev-parse origin/main        # origin/main SHA — HEAD MUST equal this (or the approved SHA)
+git status --short               # Working-tree status — MUST be empty (clean)
+```
+
+Record all six: **Repository · Remote · Branch · HEAD SHA · origin/main SHA · Working-tree status.**
+Proceed ONLY if: Branch = `main` (or approved SHA) · HEAD == origin/main (or approved SHA) · tree
+clean. **Any mismatch → ABORT (do not robocopy).** This is the gate that would have stopped the
+2026-07-07 feature-branch-source skew.
+
+---
+
 ## 7-Agent pre-deploy gate
 
 Every deployment **must** run these agents before any sync or restart.  
@@ -273,16 +293,21 @@ git checkout <last-known-good-sha> -- service/app/
 
 ---
 
-## Required output format for every deployment
+## Required output format for every deployment (Deployment Evidence)
+
+Every deployment report MUST contain all of the following. The first seven are the mandatory
+**Deployment Evidence** fields (added 2026-07-07).
 
 ```
+Deployment Source:       # repo · remote · branch(=main) · HEAD SHA · origin/main SHA · tree status (Identity Gate)
+Deployment Target:       # C:\PZ\app
+Robocopy summary:        # dirs / files / bytes copied · FAILED (must be 0)
+Service restart result:  # sc.exe query PZService -> STATE : RUNNING
+Import verification:      # C:\PZ\logs\pz_stderr.log -> no ImportError (post-incident Rule 5)
+Runtime verification:     # local + public /api/v1/health · V2 runtime gate (Step 7.5)
+Feature verification:     # the deployed feature's own acceptance check
 Pulled SHA:
 Tests:
-Sync result:
-Service status:
-Local health:
-Public health:
-V2 runtime gate:
 Carrier gate:
 Production mutation:
 Rollback command:
