@@ -668,6 +668,14 @@ async def shipment_intake(
                     "metal":                 str(r.get("metal", "") or ""),
                     "karat":                 str(r.get("karat", "") or ""),
                     "stone_type":            str(r.get("stone_type", "") or ""),
+                    # Variant identity — mirror the routes_packing upload mapping.
+                    # Previously dropped here, so packing_lines variant fields were
+                    # empty for every intake-uploaded batch (the primary path).
+                    "metal_color":           str(r.get("metal_color", "") or ""),
+                    "quality_string":        str(r.get("quality_string", "") or ""),
+                    "size":                  str(r.get("size", "") or ""),
+                    "diamond_weight":        _safe_float(r.get("diamond_weight", 0)),
+                    "color_weight":          _safe_float(r.get("color_weight", 0)),
                     "remarks":               str(r.get("remarks", "") or ""),
                     "extracted_confidence":  _safe_float(r.get("extracted_confidence", 0)),
                     "requires_manual_review": bool(r.get("requires_manual_review", False)),
@@ -1565,6 +1573,14 @@ async def add_packing_list(
                     "metal":                 str(r.get("metal", "") or ""),
                     "karat":                 str(r.get("karat", "") or ""),
                     "stone_type":            str(r.get("stone_type", "") or ""),
+                    # Variant identity — mirror the routes_packing upload mapping.
+                    # Previously dropped here, so packing_lines variant fields were
+                    # empty for every intake-uploaded batch (the primary path).
+                    "metal_color":           str(r.get("metal_color", "") or ""),
+                    "quality_string":        str(r.get("quality_string", "") or ""),
+                    "size":                  str(r.get("size", "") or ""),
+                    "diamond_weight":        _safe_float(r.get("diamond_weight", 0)),
+                    "color_weight":          _safe_float(r.get("color_weight", 0)),
                     "remarks":               str(r.get("remarks", "") or ""),
                     "extracted_confidence":  _safe_float(r.get("extracted_confidence", 0)),
                     "requires_manual_review": bool(r.get("requires_manual_review", False)),

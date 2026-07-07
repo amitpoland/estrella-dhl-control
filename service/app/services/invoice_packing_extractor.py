@@ -682,6 +682,25 @@ def _map_headers_with_audit(
     return col_map, mappings
 
 
+def _derive_karat_from_metal(metal: Any) -> str:
+    """Return the karat/purity token from a (possibly combined) metal string.
+
+    The purchase packing templates alias the "Kt" / "Kt/Color" column into
+    ``metal`` (e.g. ``"18KT/Y"``), so the standalone ``karat`` field that the
+    variant signature reads stays empty unless the source literally has a
+    "Karat" column. This lifts the purity token (the segment before any
+    ``"/color"`` suffix) so ``karat`` is populated WITHOUT altering ``metal``.
+    Only returns a token that carries a digit (a real karat/purity such as
+    18KT, 14KT, 585, 950, PT950) so a colour-only value is never mistaken for a
+    karat. Returns ``""`` when nothing usable is present.
+    """
+    m = str(metal or "").strip()
+    if not m:
+        return ""
+    tok = m.split("/", 1)[0].strip()
+    return tok if any(ch.isdigit() for ch in tok) else ""
+
+
 def _row_to_dict(cells: List[Any], col_map: Dict[int, str]) -> Dict[str, Any]:
     row: Dict[str, Any] = {}
     for idx, field in col_map.items():
@@ -910,6 +929,16 @@ def _extract_packing_excel(
                 color_part = color_part.strip().rstrip("-").strip()
                 if color_part and len(color_part) <= 4:
                     d["metal_color"] = color_part
+
+        # Derive the standalone `karat` from the (possibly combined) metal when
+        # the source carried no explicit karat column — the "Kt"/"Kt/Color"
+        # header aliases to `metal`, so without this `karat` stays empty for
+        # "18KT/Y"-style values even though the purity is present. The exact
+        # matcher + spec scorer read `karat`; `metal` is preserved unchanged.
+        if not str(d.get("karat") or "").strip():
+            _kt = _derive_karat_from_metal(d.get("metal"))
+            if _kt:
+                d["karat"] = _kt
 
         # Stamp invoice_no from sheet header if not already on the row
         if invoice_no_from_sheet and not d.get("invoice_no"):
