@@ -1451,11 +1451,15 @@ async def reprocess_packing_documents(
                         "remarks":               str(r.get("remarks", "") or ""),
                     })
                 if line_records:
-                    try:
-                        _ddb.replace_sales_packing_lines(sales_doc_id, batch_id, line_records)
-                    except AttributeError:
-                        # Helper name varies between writers; fall back.
-                        _ddb.store_sales_packing_lines(sales_doc_id, batch_id, line_records)
+                    # Canonical sales authority: faithful reshape (variant fields
+                    # included) + deterministic sales_document_id + idempotent
+                    # replace. Reshapes sp_rows internally; sales_doc_id == doc_id.
+                    _ddb.persist_sales_from_packing(
+                        batch_id, sales_doc_id, sp_rows,
+                        client_name=preserved_client_name,
+                        client_ref=preserved_client_ref,
+                        source_file_path=str(file_path),
+                    )
                     # Reprocess-parity: the sales branch persists rows but the
                     # intake-time shipment_documents.extraction_status stays
                     # 'pending' unless flipped here. The packing card infers
