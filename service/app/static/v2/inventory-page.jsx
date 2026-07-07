@@ -1238,7 +1238,41 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  function SampleReturnTab({ reportExport }) {
+  // Per-row QC cells for the returns registers — fetches the latest QC
+  // disposition for a piece and renders Condition / Inspector / Decision.
+  // Replaces the former "backend-pending" placeholders now that a backend exists.
+  function QcCells({ scanCode, refreshKey, fields }) {
+    const _TD = { padding: '8px 10px', fontSize: 11.5, borderBottom: '1px solid var(--border-subtle)', color: 'var(--text)', verticalAlign: 'middle' };
+    const cols = fields || ['condition', 'inspector', 'decision'];
+    const [latest, setLatest] = useState(undefined);  // undefined=loading, null=none
+    useEffect(() => {
+      let live = true;
+      window.PzApi.getQcDispositions(scanCode).then(res => {
+        if (!live) return;
+        const list = (res.ok && res.data && res.data.dispositions) || [];
+        setLatest(list.length ? list[0] : null);
+      });
+      return () => { live = false; };
+    }, [scanCode, refreshKey]);
+    const decColor = latest && latest.decision === 'write_off' ? 'var(--badge-red-text)'
+      : latest && latest.decision === 'repair' ? 'var(--badge-amber-text)' : 'var(--badge-green-text)';
+    return (<>
+      {cols.map((f) => {
+        if (latest === undefined) return <td key={f} style={{ ..._TD, color: 'var(--text-3)' }}>…</td>;
+        if (latest === null) return (
+          <td key={f} data-testid={'qc-cell-' + f} style={{ ..._TD, color: 'var(--text-3)' }}>
+            {f === 'condition'
+              ? <span style={{ fontStyle: 'italic' }} title="Not yet inspected — use Inspect to record a QC decision">not inspected</span>
+              : '—'}
+          </td>
+        );
+        if (f === 'decision') return <td key={f} data-testid="qc-cell-decision" style={{ ..._TD, fontWeight: 700, color: decColor }}>{latest.decision}</td>;
+        return <td key={f} data-testid={'qc-cell-' + f} style={_TD}>{latest[f] || '—'}</td>;
+      })}
+    </>);
+  }
+
+  function SampleReturnTab({ reportExport, onInspect, qcRefresh }) {
     const [samples, setSamples]       = useState(null);
     const [loading, setLoading]       = useState(true);
     const [error, setError]           = useState('');
@@ -1370,16 +1404,8 @@ function DocumentViewerPage({ doc, onBack }) {
                       <td style={TD}>1</td>
                       <td style={TD}>{s.recipient_client_name || '—'}</td>
                       <td style={{ ...TD, fontSize: 11.5, color: 'var(--text-2)', fontFamily: 'ui-monospace, monospace' }}>{receivedDate}</td>
-                      {/* Condition, Inspector, Decision — QC fields: no backend; Lesson-M honest */}
-                      <td style={{ ...TD, color: 'var(--text-3)' }}>
-                        <span title="backend-pending — QC outcome writes (future slice)" style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-3)' }}>—</span>
-                      </td>
-                      <td style={{ ...TD, color: 'var(--text-3)' }}>
-                        <span title="backend-pending — inspector assignment (future slice)" style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-3)' }}>—</span>
-                      </td>
-                      <td style={{ ...TD, color: 'var(--text-3)' }}>
-                        <span title="backend-pending — QC decision (future slice)" style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-3)' }}>—</span>
-                      </td>
+                      {/* Condition, Inspector, Decision — live from returns_qc_disposition */}
+                      <QcCells scanCode={s.scan_code} refreshKey={qcRefresh} />
                       <td style={TD}>
                         {/* Returned = piece is back in WAREHOUSE_STOCK; status is always "Returned" here */}
                         <span style={{ display: 'inline-flex', alignItems: 'center', background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)', borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
@@ -1387,9 +1413,9 @@ function DocumentViewerPage({ doc, onBack }) {
                         </span>
                       </td>
                       <td style={{ ...TD, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        {/* Inspect action: QC outcome writes have no backend — Lesson-M honest-disabled */}
-                        <button data-testid="sr-btn-inspect" disabled title="backend-pending — QC outcome writes (Inspect/condition/decision) have no backend route yet (future slice)"
-                          style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'not-allowed', opacity: 0.5 }}>
+                        {/* Inspect action → QC Disposition modal (LIVE, session-operatored) */}
+                        <button data-testid="sr-btn-inspect" onClick={() => onInspect && onInspect(s.scan_code)} title="QC disposition — record condition/inspector/decision"
+                          style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'pointer' }}>
                           Inspect
                         </button>
                         {/* View action: no detail endpoint yet — Lesson-M honest-disabled */}
@@ -1571,7 +1597,7 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  function ClientReturnTab({ reportExport }) {
+  function ClientReturnTab({ reportExport, onInspect, qcRefresh }) {
     const [records, setRecords]         = useState(null);
     const [loading, setLoading]         = useState(true);
     const [error, setError]             = useState('');
@@ -1729,14 +1755,8 @@ function DocumentViewerPage({ doc, onBack }) {
                       </td>
                       <td style={TD}>{reasonLabel}</td>
                       <td style={{ ...TD, fontSize: 11.5, color: 'var(--text-2)', fontFamily: 'ui-monospace, monospace' }}>{receivedDate}</td>
-                      {/* Condition — QC field: no backend; Lesson-M honest */}
-                      <td style={{ ...TD, color: 'var(--text-3)' }}>
-                        <span title="backend-pending — QC condition writes (future slice)" style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-3)' }}>—</span>
-                      </td>
-                      {/* Decision — QC field: no backend; Lesson-M honest */}
-                      <td style={{ ...TD, color: 'var(--text-3)' }}>
-                        <span title="backend-pending — QC decision (Restock/Repair/RTP) writes (future slice)" style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-3)' }}>—</span>
-                      </td>
+                      {/* Condition + Decision — live from returns_qc_disposition */}
+                      <QcCells scanCode={r.scan_code} refreshKey={qcRefresh} fields={['condition', 'decision']} />
                       <td style={TD}>
                         {/* Status: from_client rows are always 'recorded' per routes_inventory_returns.py:212 */}
                         <span style={{ display: 'inline-flex', alignItems: 'center', background: 'var(--badge-neutral-bg)', color: 'var(--badge-neutral-text)', border: '1px solid var(--badge-neutral-border)', borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
@@ -1744,9 +1764,9 @@ function DocumentViewerPage({ doc, onBack }) {
                         </span>
                       </td>
                       <td style={{ ...TD, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        {/* Inspect action: QC outcome writes have no backend — Lesson-M honest-disabled */}
-                        <button data-testid="cr-btn-inspect" disabled title="backend-pending — QC outcome writes (Inspect/condition/decision) have no backend route yet (future slice)"
-                          style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'not-allowed', opacity: 0.5 }}>
+                        {/* Inspect action → QC Disposition modal (LIVE, session-operatored) */}
+                        <button data-testid="cr-btn-inspect" onClick={() => onInspect && onInspect(r.scan_code)} title="QC disposition — record condition/inspector/decision"
+                          style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'pointer' }}>
                           Inspect
                         </button>
                         {/* Credit Note: wFirma write — no backend; Lesson-M honest-disabled */}
@@ -2214,6 +2234,170 @@ function DocumentViewerPage({ doc, onBack }) {
   };
 
   // ReturnToProducerModal — submits POST /api/v1/inventory/pieces/{pieceId}/return-to-producer
+  // Returns QC Disposition modal — the backend for sr-btn-inspect / cr-btn-inspect.
+  // Records condition/inspector/decision and drives the piece's lifecycle
+  // transition (restock/repair/write_off) via one privileged, session-operatored
+  // endpoint. Operator is NEVER entered here — it comes from the session.
+  function QCDispositionModal({ piece, onClose, onSuccess }) {
+    const [decision, setDecision]   = useState('restock');
+    const [condition, setCondition] = useState('');
+    const [inspector, setInspector] = useState('');
+    const [notes, setNotes]         = useState('');
+    const [producer, setProducer]   = useState('');
+    const [dispatchRef, setDispatchRef] = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    const [err, setErr]             = useState('');
+    // Write-off is terminal/irreversible in this version → explicit confirmation.
+    const [writeoffConfirmed, setWriteoffConfirmed] = useState(false);
+    // Prior QC decisions for this piece (read-only history).
+    const [history, setHistory] = useState(null);
+
+    useEffect(() => {
+      let live = true;
+      window.PzApi.getQcDispositions(piece).then(res => {
+        if (!live) return;
+        setHistory((res.ok && res.data && res.data.dispositions) ? res.data.dispositions : []);
+      });
+      return () => { live = false; };
+    }, [piece]);
+
+    // Reset the write-off confirmation whenever the decision changes.
+    useEffect(() => { setWriteoffConfirmed(false); }, [decision]);
+
+    function genKey() {
+      return 'qc-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    async function submit() {
+      setErr('');
+      if (decision === 'repair' && !producer.trim()) {
+        setErr('Producer name is required for a Repair disposition.');
+        return;
+      }
+      if (decision === 'write_off' && !writeoffConfirmed) {
+        setErr('Write-off is terminal — tick the confirmation to proceed.');
+        return;
+      }
+      setSubmitting(true);
+      const res = await window.PzApi.qcDisposition(piece, {
+        decision,
+        condition:          condition.trim(),
+        inspector:          inspector.trim(),
+        notes:              notes.trim(),
+        producer_name:      producer.trim(),
+        dispatch_reference: dispatchRef.trim(),
+        idempotency_key:    genKey(),
+      });
+      setSubmitting(false);
+      if (!res.ok) {
+        const detail = (res.data && res.data.detail && res.data.detail.detail) ||
+                       (res.data && res.data.detail) || res.error || ('HTTP ' + res.status);
+        setErr(String(detail));
+        return;
+      }
+      onSuccess(res.data);
+    }
+
+    const lbl = { fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4, display: 'block' };
+    const fld = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, boxSizing: 'border-box' };
+
+    return (
+      <window.Modal title="QC Disposition" onClose={onClose}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }} data-testid="qc-disposition-modal">
+          <div style={{ padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
+            QC of returned piece <strong style={{ color: 'var(--text)', fontFamily: 'ui-monospace, monospace' }}>{piece}</strong>.
+            Decision drives the lifecycle: <strong style={{ color: 'var(--text)' }}>Restock → WAREHOUSE_STOCK · Repair → RETURNED_TO_PRODUCER · Write-off → WRITTEN_OFF</strong>.
+            Requires the piece to be in RETURNED_FROM_CLIENT. Operator is taken from your session.
+          </div>
+
+          <div>
+            <label style={lbl} htmlFor="qc-decision">Decision <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+            <select id="qc-decision" data-testid="qc-decision" value={decision} onChange={e => setDecision(e.target.value)} style={fld}>
+              <option value="restock">Restock (return to warehouse stock)</option>
+              <option value="repair">Repair (send to producer)</option>
+              <option value="write_off">Write-off (scrap — terminal)</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={lbl} htmlFor="qc-condition">Condition</label>
+            <input id="qc-condition" data-testid="qc-condition" value={condition} onChange={e => setCondition(e.target.value)} style={fld} placeholder="e.g. minor scratch, stone loose" />
+          </div>
+
+          <div>
+            <label style={lbl} htmlFor="qc-inspector">Inspector</label>
+            <input id="qc-inspector" data-testid="qc-inspector" value={inspector} onChange={e => setInspector(e.target.value)} style={fld} placeholder="QC inspector name" />
+          </div>
+
+          {decision === 'repair' && (
+            <>
+              <div>
+                <label style={lbl} htmlFor="qc-producer">Producer / supplier name <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+                <input id="qc-producer" data-testid="qc-producer" value={producer} onChange={e => setProducer(e.target.value)} style={fld} placeholder="e.g. Mehta Gems · MUM" />
+              </div>
+              <div>
+                <label style={lbl} htmlFor="qc-dispatch">Dispatch reference (optional)</label>
+                <input id="qc-dispatch" data-testid="qc-dispatch" value={dispatchRef} onChange={e => setDispatchRef(e.target.value)} style={fld} placeholder="waybill / RMA #" />
+              </div>
+            </>
+          )}
+
+          <div>
+            <label style={lbl} htmlFor="qc-notes">Notes</label>
+            <textarea id="qc-notes" data-testid="qc-notes" value={notes} onChange={e => setNotes(e.target.value)} style={{ ...fld, minHeight: 56, resize: 'vertical' }} placeholder="QC notes (optional)" />
+          </div>
+
+          {/* Write-off is terminal / irreversible in this version — explicit confirm. */}
+          {decision === 'write_off' && (
+            <div data-testid="qc-writeoff-warning" style={{ padding: '10px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 12, color: 'var(--badge-red-text)', lineHeight: 1.5 }}>
+              <strong>⚠ Write-off is terminal and irreversible in this version.</strong> The
+              piece moves to WRITTEN_OFF and cannot be restocked, repaired, or reopened.
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, cursor: 'pointer', fontWeight: 600 }}>
+                <input type="checkbox" data-testid="qc-writeoff-confirm" checked={writeoffConfirmed} onChange={e => setWriteoffConfirmed(e.target.checked)} />
+                I understand this write-off is permanent.
+              </label>
+            </div>
+          )}
+
+          {/* Prior QC decisions (read-only history) */}
+          <div data-testid="qc-history">
+            <label style={lbl}>Prior QC decisions</label>
+            {history === null && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>}
+            {history !== null && history.length === 0 && (
+              <div data-testid="qc-history-empty" style={{ fontSize: 12, color: 'var(--text-3)', fontStyle: 'italic' }}>No prior QC decisions for this piece.</div>
+            )}
+            {history !== null && history.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 160, overflowY: 'auto' }}>
+                {history.map((h, i) => (
+                  <div key={h.id || i} data-testid="qc-history-row" style={{ padding: '7px 10px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.5 }}>
+                    <span style={{ fontWeight: 700, color: 'var(--text)', textTransform: 'uppercase' }}>{h.decision}</span>
+                    {' · '}{(h.disposed_at || '').slice(0, 19).replace('T', ' ')}
+                    {' · by '}<strong style={{ color: 'var(--text)' }}>{h.operator || '—'}</strong>
+                    <div style={{ color: 'var(--text-3)', marginTop: 2 }}>
+                      Condition: {h.condition || '—'} · Inspector: {h.inspector || '—'}
+                      {h.producer_name ? (' · Producer: ' + h.producer_name) : ''}
+                      {h.dispatch_reference ? (' · Dispatch: ' + h.dispatch_reference) : ''}
+                      {h.notes ? (' · Notes: ' + h.notes) : ''}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {err && <div data-testid="qc-error" style={{ color: 'var(--badge-red-text)', fontSize: 12, fontWeight: 600 }}>{err}</div>}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button data-testid="qc-cancel" onClick={onClose} disabled={submitting} style={{ padding: '8px 16px', fontSize: 12.5, fontWeight: 600, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-2)', cursor: 'pointer' }}>Cancel</button>
+            <button data-testid="qc-submit" onClick={submit} disabled={submitting || (decision === 'write_off' && !writeoffConfirmed)} style={{ padding: '8px 16px', fontSize: 12.5, fontWeight: 700, borderRadius: 6, border: '1px solid var(--accent-border)', background: (submitting || (decision === 'write_off' && !writeoffConfirmed)) ? 'var(--bg-subtle)' : 'var(--accent-subtle)', color: 'var(--accent-text)', cursor: (submitting || (decision === 'write_off' && !writeoffConfirmed)) ? 'not-allowed' : 'pointer', opacity: (decision === 'write_off' && !writeoffConfirmed) ? 0.55 : 1 }}>
+              {submitting ? 'Submitting…' : 'Apply disposition'}
+            </button>
+          </div>
+        </div>
+      </window.Modal>
+    );
+  }
+
   function ReturnToProducerModal({ onClose, onSuccess }) {
     const [pieceId, setPieceId]     = useState('');
     const [producer, setProducer]   = useState('');
@@ -4954,6 +5138,16 @@ function DocumentViewerPage({ doc, onBack }) {
       setActiveTab('sampleReturn');
     }
 
+    // Returns QC Disposition — the piece scan_code an Inspect button targets.
+    const [qcTarget, setQcTarget] = useState(null);
+    // Bumped on each QC success so the register QcCells re-fetch the new decision.
+    const [qcRefresh, setQcRefresh] = useState(0);
+    function handleInspect(scanCode) { setQcTarget(scanCode); }
+    function handleQcSuccess() {
+      setQcTarget(null);
+      setQcRefresh(n => n + 1);  // force QcCells to re-read the just-applied QC
+    }
+
     const hasExportRows = !!exportMeta && !TABS_WITH_NO_TABLE.includes(activeTab);
     const exportTitle = hasExportRows
       ? 'Export ' + exportMeta.rows.length + ' rows from the current tab as CSV'
@@ -5068,6 +5262,15 @@ function DocumentViewerPage({ doc, onBack }) {
           />
         )}
 
+        {/* Returns QC Disposition modal — triggered by sr-btn-inspect / cr-btn-inspect */}
+        {qcTarget && (
+          <QCDispositionModal
+            piece={qcTarget}
+            onClose={() => setQcTarget(null)}
+            onSuccess={handleQcSuccess}
+          />
+        )}
+
         {/* Move Stock modal — triggered from Overview quick-action or tab content */}
         {showMove && <MoveStockModal onClose={() => setShowMove(false)} />}
 
@@ -5093,10 +5296,10 @@ function DocumentViewerPage({ doc, onBack }) {
           )}
 
           {/* ── Sample Return tab — Wave-3 U-1 page 2 ────────────── */}
-          {activeTab === 'sampleReturn' && <SampleReturnTab reportExport={reportExport} />}
+          {activeTab === 'sampleReturn' && <SampleReturnTab reportExport={reportExport} onInspect={handleInspect} qcRefresh={qcRefresh} />}
 
           {/* ── Client Return tab — Wave-3 U-2 page 3 ───────────── */}
-          {activeTab === 'clientReturn' && <ClientReturnTab reportExport={reportExport} />}
+          {activeTab === 'clientReturn' && <ClientReturnTab reportExport={reportExport} onInspect={handleInspect} qcRefresh={qcRefresh} />}
 
           {/* ── Return to Producer tab — Wave-3 U-2 page 4 ──────── */}
           {activeTab === 'producerReturn' && <ProducerReturnTab reportExport={reportExport} />}

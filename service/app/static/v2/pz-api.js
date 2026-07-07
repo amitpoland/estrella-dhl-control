@@ -1015,6 +1015,30 @@
         { ...payload, operator: op });
     },
 
+    // POST /api/v1/inventory/pieces/{piece_id}/qc-disposition
+    //   body: { decision, condition?, inspector?, notes?, producer_name?,
+    //           dispatch_reference?, idempotency_key }
+    // Returns QC Disposition — decision drives the lifecycle transition:
+    //   restock → WAREHOUSE_STOCK · repair → RETURNED_TO_PRODUCER ·
+    //   write_off → WRITTEN_OFF. Only legal from RETURNED_FROM_CLIENT.
+    // NOTE: operator is DERIVED FROM THE SESSION server-side — never sent from
+    // the client (privileged, role-gated route). Idempotent on (piece, key).
+    // Authority: routes_inventory_returns.py qc-disposition (LIVE)
+    qcDisposition: (pieceId, payload) => {
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/qc-disposition`,
+        { ...payload });
+    },
+
+    // GET /api/v1/inventory/pieces/{piece_id}/qc-dispositions
+    // → { piece_id, dispositions: [{ condition, inspector, decision, notes,
+    //     producer_name, dispatch_reference, operator, disposed_at, ... }] }
+    // Read-only QC history (newest first). Authority: routes_inventory_returns.py (LIVE)
+    getQcDispositions: (pieceId) => {
+      return _call('GET',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/qc-dispositions`);
+    },
+
     // ── Inventory: Temp Sale register — Wave-3 U-3 page 5 ─────────────────
     // GET /api/v1/inventory/state/{batch_id}
     // → { ok:true, batch_id, as_of, counts:{state: int}, pieces:[{scan_code,

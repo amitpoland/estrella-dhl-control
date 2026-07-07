@@ -21,16 +21,50 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Security
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
-from ..core.security import require_api_key
+from ..core.config import settings
+from ..core.security import require_api_key, require_api_key_privileged
+from ..services.inventory_qc_writer import QCError, apply_qc_disposition
 from ..services.inventory_returns_writer import (
     ReturnsError,
     mark_returned_from_client,
     mark_returned_to_producer,
     return_from_producer_to_stock,
 )
+
+_qc_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def resolve_session_operator(
+    key: Optional[str] = Security(_qc_key_header),
+    pz_session: Optional[str] = Cookie(default=None),
+) -> str:
+    """Server-derive the operator identity for a privileged QC write.
+
+    Operator is NEVER client-supplied free-text: it comes from the authenticated
+    session (a named user) or, for trusted X-API-Key automation, a fixed system
+    label. Anonymous callers are rejected (belt-and-suspenders with
+    require_api_key_privileged). In dev (api_key unset) returns a dev label.
+    """
+    import hmac as _hmac  # noqa: PLC0415
+    if key and settings.api_key and _hmac.compare_digest(
+        key.encode("utf-8"), settings.api_key.encode("utf-8")
+    ):
+        return "system:api-key"
+    if pz_session:
+        from ..auth.dependencies import get_current_user_optional  # noqa: PLC0415
+        user = get_current_user_optional(pz_session=pz_session)
+        if user is not None:
+            op = (user.get("username") or user.get("email")
+                  or user.get("id") or "").strip()
+            if op:
+                return str(op)
+    if not settings.api_key:
+        return "dev-operator"  # dev only — auth disabled upstream
+    raise HTTPException(status_code=401, detail="Authentication required")
 
 
 router = APIRouter(
@@ -111,6 +145,84 @@ def _map_returns_error(e: ReturnsError) -> HTTPException:
         status_code=_STATUS_FOR_CODE.get(e.code, 500),
         detail={"code": e.code, "detail": e.detail},
     )
+
+
+class QCDispositionRequest(BaseModel):
+    """QC disposition of a RETURNED_FROM_CLIENT piece. NOTE: no `operator`
+    field — the operator is derived from the authenticated session, never
+    accepted as client free-text."""
+    decision:        str = Field(
+        ..., min_length=1,
+        description="One of: restock (→WAREHOUSE_STOCK), repair "
+                    "(→RETURNED_TO_PRODUCER), write_off (→WRITTEN_OFF).",
+    )
+    condition:       Optional[str] = Field(default="")
+    inspector:       Optional[str] = Field(default="")
+    notes:           Optional[str] = Field(default="")
+    # Required only for decision='repair' (RETURNED_TO_PRODUCER evidence).
+    producer_name:      Optional[str] = Field(default="")
+    dispatch_reference: Optional[str] = Field(default="")
+    idempotency_key: str = Field(..., min_length=1)
+
+
+def _map_qc_error(e: QCError) -> HTTPException:
+    return HTTPException(
+        status_code=_STATUS_FOR_CODE.get(e.code, 500),
+        detail={"code": e.code, "detail": e.message},
+    )
+
+
+@router.post(
+    "/pieces/{piece_id}/qc-disposition",
+    dependencies=[Depends(require_api_key_privileged)],
+)
+def post_qc_disposition(
+    piece_id: str,
+    payload: QCDispositionRequest,
+    operator: str = Depends(resolve_session_operator),
+) -> dict:
+    """Records a QC disposition on a client-returned piece and drives its
+    lifecycle transition via the single state writer. Privileged (role-gated);
+    operator is session-derived. This is the backend for the Returns-tab
+    Inspect actions (sr-btn-inspect / cr-btn-inspect).
+
+    Decision → transition (only legal from RETURNED_FROM_CLIENT):
+      restock → WAREHOUSE_STOCK · repair → RETURNED_TO_PRODUCER ·
+      write_off → WRITTEN_OFF (terminal). No accounting / wFirma side effect.
+
+    Errors:
+      400 INVALID_INPUT
+      403 role not permitted (require_api_key_privileged)
+      404 PIECE_NOT_FOUND
+      409 WRONG_STATE
+      503 DB_UNAVAILABLE
+    """
+    try:
+        return apply_qc_disposition(
+            scan_code=piece_id,
+            decision=payload.decision,
+            operator=operator,
+            idempotency_key=payload.idempotency_key,
+            condition=payload.condition or "",
+            inspector=payload.inspector or "",
+            notes=payload.notes or "",
+            producer_name=payload.producer_name or "",
+            dispatch_reference=payload.dispatch_reference or "",
+        )
+    except QCError as e:
+        raise _map_qc_error(e)
+
+
+@router.get("/pieces/{piece_id}/qc-dispositions")
+def get_qc_dispositions(piece_id: str) -> dict:
+    """Read-only QC disposition history for a piece (newest first). Surfaces the
+    recorded condition / inspector / decision / notes / producer_name /
+    dispatch_reference / operator / disposed_at. Pure read — no mutation."""
+    from ..services import warehouse_db as _wdb  # noqa: PLC0415
+    return {
+        "piece_id": piece_id,
+        "dispositions": _wdb.get_qc_dispositions(piece_id),
+    }
 
 
 @router.post("/pieces/{piece_id}/return-from-client")
