@@ -100,7 +100,7 @@
     'proforma-detail':  '/dashboard/proforma-detail-v2.html',
     'documents':  '/dashboard/documents-v2.html',
     'accounting': '/dashboard/accounting-hub-v2.html',
-    'inventory':  '/dashboard/inventory-v2.html',
+    'inventory':  '/v2/inventory',
     'reports':    '/dashboard/dashboard.html',
     'master':     '/dashboard/customer-master-v2.html',
     'box-types':  '/dashboard/master-data-v2.html',  // Phase D — WF4.5 box types catalog
