@@ -247,25 +247,30 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
               </button>
             ))}
             <div style={{ width: 1, height: 20, background: '#2A3A52', margin: '0 4px' }}/>
-            <button
-              data-testid="preview-download"
-              onClick={() => {
-                // Temporarily remove scale so print renders at true A4 size
-                const sheet = document.querySelector('.ej-preview-sheet');
-                const prevT = sheet ? sheet.style.transform : null;
-                const prevO = sheet ? sheet.style.transformOrigin : null;
-                if (sheet) { sheet.style.transform = 'none'; sheet.style.transformOrigin = 'top left'; }
-                window.print();
-                if (sheet) { sheet.style.transform = prevT; sheet.style.transformOrigin = prevO; }
-              }}
-              style={{
-                padding: '4px 12px', borderRadius: 5, border: '1px solid #2A5A3A',
-                background: '#0B3D2E20', color: '#4CAF82',
-                fontSize: 12, fontWeight: 600, cursor: 'pointer',
-              }}
-            >
-              ↓ Download PDF
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+              <button
+                data-testid="preview-download"
+                onClick={() => {
+                  // Temporarily remove scale so print renders at true A4 size
+                  const sheet = document.querySelector('.ej-preview-sheet');
+                  const prevT = sheet ? sheet.style.transform : null;
+                  const prevO = sheet ? sheet.style.transformOrigin : null;
+                  if (sheet) { sheet.style.transform = 'none'; sheet.style.transformOrigin = 'top left'; }
+                  window.print();
+                  if (sheet) { sheet.style.transform = prevT; sheet.style.transformOrigin = prevO; }
+                }}
+                style={{
+                  padding: '4px 12px', borderRadius: 5, border: '1px solid #2A5A3A',
+                  background: '#0B3D2E20', color: '#4CAF82',
+                  fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                }}
+              >
+                ⎙ Print / Save as PDF
+              </button>
+              <span style={{ fontSize: 9, color: '#5A6A82', lineHeight: 1.3 }}>
+                Opens browser print dialog. Choose "Save as PDF" as destination.
+              </span>
+            </div>
             <button
               onClick={onClose}
               data-testid="preview-close"
@@ -279,6 +284,29 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
             </button>
           </div>
         </div>
+
+        {/* QA warnings — preview only, hidden in print */}
+        {activeType === 'proforma' && docData.warnings && docData.warnings.length > 0 && (
+          <div className="ej-no-print" style={{
+            margin: '8px 16px 0',
+            background: '#2A1A00',
+            border: '1px solid #7C4A00',
+            borderRadius: 6,
+            padding: '8px 12px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+          }}>
+            <div style={{ fontSize: 9.5, fontWeight: 700, color: '#F59E0B', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 2 }}>
+              QA Warnings — fix before printing
+            </div>
+            {docData.warnings.map((w, i) => (
+              <div key={i} style={{ fontSize: 11, color: '#FCD34D', lineHeight: 1.4 }}>
+                ⚠ {w.msg}
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Document body */}
         <div className="ej-preview-body">
@@ -2944,7 +2972,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     unitEur:  parseFloat(ln.unit_price || 0),
     netEur:   parseFloat(ln.unit_price || 0) * parseFloat(ln.qty || 0),
     hsCode:   ln.hs_code || '—',
-    origin:   ln.origin || (liveDraft.origin_country) || (companyProfile && companyProfile.country) || '—',
+    // Origin = goods manufacturing/export country, NOT the seller's country.
+    // companyProfile.country = 'PL' (seller) must NOT be used as origin fallback.
+    origin:   ln.origin || liveDraft.origin_country || '—',
     purity:   ln.purity || '',
     currency: ln.currency || draftCurrency,
     _raw:     ln,  // PD-2: preserved for design_no column in ProformaLinesTab
@@ -3076,7 +3106,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     || (draft && draft.wfirma_proforma_fullnumber)
     || (draft && draft.id ? `Draft #${draft.id}` : 'Draft');
   // Payment due: wfirma_payment_due (post-wFirma) -> due_date -> invoice_date + payment_terms_days
-  const _ptDays = Number(liveDraft.payment_terms_days) || 0;
+  // payment_terms_days is a flat int field; rawPt.days is the same value from the JSON blob.
+  // Check both: the flat field may be absent from older drafts that only have the JSON blob.
+  const _ptDays = Number(liveDraft.payment_terms_days)
+    || (rawPt && typeof rawPt === 'object' ? Number(rawPt.days) : 0)
+    || 0;
   const _dueFallback = (() => {
     if (liveDraft.wfirma_payment_due) return liveDraft.wfirma_payment_due.slice(0, 10);
     if (liveDraft.due_date)           return liveDraft.due_date.slice(0, 10);
@@ -3159,8 +3193,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     total_eur: lines.reduce((s, l) => s + l.netEur, 0),
     total_pln: (fxRate && fxRate > 0)
       ? lines.reduce((s, l) => s + l.netEur, 0) * fxRate : null,
+    // AWB tracking number lives in carrier storage, not in the draft.
+    // batch_id is a system reference, not a DHL tracking number — never show it as AWB.
+    // EJDocCarrierRow renders "AWB pending" when awb is null.
     carrier:  liveDraft.batch_id
-      ? { awb: liveDraft.batch_id, incoterm: liveDraft.incoterm || 'DAP' } : null,
+      ? { awb: null, batch_ref: liveDraft.batch_id, incoterm: liveDraft.incoterm || 'DAP' } : null,
     // EUR first — the document currency leads; sort is stable for the rest.
     // Backend returns flat iban_eur/iban_usd/iban_pln/swift/bank_name fields (not bank_accounts[]).
     // Adapt here so EJDocBank receives a normalised array regardless of future schema changes.
@@ -3177,12 +3214,25 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           }))
           .sort((a, b) => (b.cur === 'EUR') - (a.cur === 'EUR'));
       }
-      // Current shape: flat iban_eur / iban_usd / iban_pln + shared swift/bank_name
+      // Current shape: flat iban_eur / iban_usd / iban_pln + shared swift/bank_name.
+      // Strip "(EURO)" or "(EUR)" currency suffix from bank_name — it's a display artifact
+      // that leaks into non-EUR rows and looks wrong (e.g. USD row showing "Bank (EURO)").
+      const _rawBankName = companyProfile.bank_name || '';
+      const _cleanBankName = _rawBankName.replace(/\s*\((EUR|EURO|PLN|USD)\)\s*$/i, '').trim();
       return [
-        companyProfile.iban_eur ? { cur: 'EUR', iban: companyProfile.iban_eur, swift: companyProfile.swift || '', bank: companyProfile.bank_name || '' } : null,
-        companyProfile.iban_usd ? { cur: 'USD', iban: companyProfile.iban_usd, swift: companyProfile.swift || '', bank: companyProfile.bank_name || '' } : null,
-        companyProfile.iban_pln ? { cur: 'PLN', iban: companyProfile.iban_pln, swift: companyProfile.swift || '', bank: companyProfile.bank_name || '' } : null,
+        companyProfile.iban_eur ? { cur: 'EUR', iban: companyProfile.iban_eur, swift: companyProfile.swift || '', bank: _cleanBankName } : null,
+        companyProfile.iban_usd ? { cur: 'USD', iban: companyProfile.iban_usd, swift: companyProfile.swift || '', bank: _cleanBankName } : null,
+        companyProfile.iban_pln ? { cur: 'PLN', iban: companyProfile.iban_pln, swift: companyProfile.swift || '', bank: _cleanBankName } : null,
       ].filter(Boolean).sort((a, b) => (b.cur === 'EUR') - (a.cur === 'EUR'));
+    })(),
+    // QA warnings — preview-only, not printed. Each: { code, msg }
+    warnings: (() => {
+      const w = [];
+      if (!fxRate) w.push({ code: 'NO_FX_RATE', msg: 'Exchange rate (NBP) not set — PLN total cannot be computed. Set the exchange rate before printing.' });
+      if (!liveDraft.invoice_date) w.push({ code: 'NO_ISSUE_DATE', msg: 'Issue date not set on draft.' });
+      const missingOrigin = lines.filter(l => !l.origin || l.origin === '—');
+      if (missingOrigin.length > 0) w.push({ code: 'MISSING_ORIGIN', msg: `${missingOrigin.length} line(s) have no origin country — verify product authority.` });
+      return w;
     })(),
   };
   // ── cmrData for CMR preview (EJCMRClassic / EJCMRModern) ─────────────────
