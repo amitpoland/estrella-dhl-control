@@ -91,12 +91,20 @@ SAMPLE_OUT             = "SAMPLE_OUT"
 RETURNED_FROM_CLIENT   = "RETURNED_FROM_CLIENT"
 RETURNED_TO_PRODUCER   = "RETURNED_TO_PRODUCER"
 
+# Returns QC Disposition — terminal write-off state. A client-returned piece
+# that QC decides to scrap is retired here (RETURNED_FROM_CLIENT → WRITTEN_OFF).
+# Terminal like CLOSED — never reopens. This is the "separate, scoped flow" the
+# RETURNED_FROM_CLIENT → CLOSED comment (design §4) deferred; write-off is an
+# inventory disposition only and carries NO accounting/wFirma side effect.
+WRITTEN_OFF            = "WRITTEN_OFF"
+
 STATES: frozenset = frozenset({
     PURCHASE_TRANSIT, WAREHOUSE_STOCK,
     DIRECT_DISPATCH_READY, CLIENT_DISPATCHED,
     SALES_TRANSIT, CLOSED,
     SAMPLE_OUT,
     RETURNED_FROM_CLIENT, RETURNED_TO_PRODUCER,
+    WRITTEN_OFF,
 })
 
 # ── C13A — Read-only PURCHASE_TRANSIT projection ────────────────────────────
@@ -295,15 +303,20 @@ LEGAL_TRANSITIONS: Dict[Optional[str], frozenset] = {
     # here (see RETURNS_LIFECYCLE_DESIGN.md §4 for the full list):
     #   * RETURNED_FROM_CLIENT cannot become SAMPLE_OUT / SALES_TRANSIT /
     #     CLIENT_DISPATCHED / DIRECT_DISPATCH_READY / PURCHASE_TRANSIT.
-    #   * RETURNED_FROM_CLIENT → CLOSED is forbidden in this Stage 2
-    #     scope. Write-offs require a separate, scoped flow.
+    #   * RETURNED_FROM_CLIENT → CLOSED stays forbidden (CLOSED is the
+    #     sales-delivery terminal). The scoped write-off flow retires a
+    #     client-returned piece via RETURNED_FROM_CLIENT → WRITTEN_OFF
+    #     instead (Returns QC Disposition), keeping CLOSED semantics clean.
     #   * RETURNED_TO_PRODUCER cannot become SAMPLE_OUT / SALES_TRANSIT /
     #     CLIENT_DISPATCHED / DIRECT_DISPATCH_READY / PURCHASE_TRANSIT.
     #   * RETURNED_TO_PRODUCER → CLOSED is forbidden (CLOSED terminal
     #     rule, §2 of design). Settlement that retires a scan_code
     #     uses a new scan_code; this state does not retire.
-    RETURNED_FROM_CLIENT:  frozenset({WAREHOUSE_STOCK, RETURNED_TO_PRODUCER}),
+    RETURNED_FROM_CLIENT:  frozenset({WAREHOUSE_STOCK, RETURNED_TO_PRODUCER,
+                                      WRITTEN_OFF}),
     RETURNED_TO_PRODUCER:  frozenset({WAREHOUSE_STOCK, RETURNED_FROM_CLIENT}),
+    # WRITTEN_OFF is terminal — a scrapped piece never reopens (mirrors CLOSED).
+    WRITTEN_OFF:           frozenset(),
 }
 
 # Default trigger label for each transition; callers may override.
@@ -323,6 +336,7 @@ DEFAULT_TRIGGER: Dict[tuple, str] = {
     (WAREHOUSE_STOCK,       RETURNED_TO_PRODUCER):  "returned_to_producer_shipped",
     (RETURNED_FROM_CLIENT,  WAREHOUSE_STOCK):       "returned_restocked",
     (RETURNED_FROM_CLIENT,  RETURNED_TO_PRODUCER):  "returned_escalated_to_producer",
+    (RETURNED_FROM_CLIENT,  WRITTEN_OFF):           "qc_written_off",
     (RETURNED_TO_PRODUCER,  WAREHOUSE_STOCK):       "returned_from_producer_restocked",
     (RETURNED_TO_PRODUCER,  RETURNED_FROM_CLIENT):  "returned_from_producer_to_rma",
 }

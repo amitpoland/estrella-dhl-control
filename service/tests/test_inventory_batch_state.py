@@ -32,6 +32,7 @@ CANONICAL_STATES = {
     "SAMPLE_OUT",            # Phase B.1 — added with Sample-out activation
     "RETURNED_FROM_CLIENT",  # Phase B.2 — added with Returns activation
     "RETURNED_TO_PRODUCER",  # Phase B.2 — added with Returns activation
+    "WRITTEN_OFF",           # Returns QC Disposition — write-off terminal state
 }
 
 

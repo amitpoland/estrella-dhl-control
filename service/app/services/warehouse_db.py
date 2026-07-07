@@ -166,6 +166,36 @@ def init_warehouse_db(db_path: Path) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_invstate_events_scan
                 ON inventory_state_events (scan_code, occurred_at);
+
+            -- ── Returns QC disposition (additive; append-only) ──────────────
+            -- One row per QC decision on a client-returned piece. Records the
+            -- inspection outcome (condition / inspector / decision) that DRIVES
+            -- the lifecycle transition performed by inventory_state_engine. It
+            -- NEVER writes inventory_state itself and NEVER touches accounting.
+            -- Idempotency: partial UNIQUE index on (scan_code, idempotency_key).
+            CREATE TABLE IF NOT EXISTS returns_qc_disposition (
+                id                TEXT PRIMARY KEY,
+                return_event_id   TEXT NOT NULL DEFAULT '',
+                piece_id          TEXT NOT NULL,
+                condition         TEXT NOT NULL DEFAULT '',
+                inspector         TEXT NOT NULL DEFAULT '',
+                decision          TEXT NOT NULL,
+                notes             TEXT NOT NULL DEFAULT '',
+                -- producer_name / dispatch_reference are only meaningful for the
+                -- 'repair' decision (→ RETURNED_TO_PRODUCER), whose engine
+                -- evidence contract requires a producer. Empty for restock/write_off.
+                producer_name     TEXT NOT NULL DEFAULT '',
+                dispatch_reference TEXT NOT NULL DEFAULT '',
+                operator          TEXT NOT NULL,
+                disposed_at       TEXT NOT NULL,
+                idempotency_key   TEXT NOT NULL,
+                created_at        TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_returns_qc_idempotency
+                ON returns_qc_disposition (piece_id, idempotency_key);
+            CREATE INDEX IF NOT EXISTS idx_returns_qc_piece
+                ON returns_qc_disposition (piece_id, disposed_at);
         """)
 
 
@@ -986,6 +1016,87 @@ def find_returns_event_by_idempotency(
             (scan_code, idempotency_key),
         ).fetchone()
     return dict(row) if row else None
+
+
+# ── Returns QC disposition (additive, append-only) ──────────────────────────
+
+QC_DECISIONS = frozenset({"restock", "repair", "write_off"})
+
+
+def record_qc_disposition(
+    *,
+    piece_id:        str,
+    decision:        str,
+    operator:        str,
+    idempotency_key: str,
+    condition:       str = "",
+    inspector:       str = "",
+    notes:           str = "",
+    producer_name:   str = "",
+    dispatch_reference: str = "",
+    return_event_id: str = "",
+) -> Dict[str, Any]:
+    """Append one returns_qc_disposition row. Raises sqlite3.IntegrityError if
+    the UNIQUE index on (piece_id, idempotency_key) catches a duplicate; the
+    caller treats that as the replay signal. NEVER mutates inventory_state."""
+    if _db_path is None:
+        raise RuntimeError("warehouse_db not initialised")
+    if not piece_id:
+        raise ValueError("piece_id is required")
+    if decision not in QC_DECISIONS:
+        raise ValueError(f"decision must be one of {sorted(QC_DECISIONS)}, got {decision!r}")
+    if not operator:
+        raise ValueError("operator is required")
+    if not idempotency_key:
+        raise ValueError("idempotency_key is required for record_qc_disposition")
+
+    now = _now()
+    row_id = str(uuid.uuid4())
+    with _connect() as con:
+        con.execute(
+            """INSERT INTO returns_qc_disposition
+               (id, return_event_id, piece_id, condition, inspector, decision,
+                notes, producer_name, dispatch_reference,
+                operator, disposed_at, idempotency_key, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (row_id, return_event_id, piece_id, condition, inspector, decision,
+             notes, producer_name, dispatch_reference,
+             operator, now, idempotency_key, now),
+        )
+        con.commit()
+        r = con.execute(
+            "SELECT * FROM returns_qc_disposition WHERE id=?", (row_id,)
+        ).fetchone()
+    return dict(r) if r else {}
+
+
+def find_qc_disposition_by_idempotency(
+    piece_id: str, idempotency_key: str
+) -> Optional[Dict[str, Any]]:
+    """Replay lookup: the prior returns_qc_disposition row for
+    (piece_id, idempotency_key), or None."""
+    if _db_path is None or not piece_id or not idempotency_key:
+        return None
+    with _connect() as con:
+        row = con.execute(
+            "SELECT * FROM returns_qc_disposition "
+            "WHERE piece_id=? AND idempotency_key=?",
+            (piece_id, idempotency_key),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_qc_dispositions(piece_id: str) -> List[Dict[str, Any]]:
+    """All QC disposition rows for a piece, newest first (read-only)."""
+    if _db_path is None or not piece_id:
+        return []
+    with _connect() as con:
+        rows = con.execute(
+            "SELECT * FROM returns_qc_disposition WHERE piece_id=? "
+            "ORDER BY disposed_at DESC",
+            (piece_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_returns_history(scan_code: str) -> List[Dict[str, Any]]:

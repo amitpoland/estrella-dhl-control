@@ -127,6 +127,7 @@ def test_no_duplicate_stock_across_states(db):
         ise.SAMPLE_OUT:            0,  # Phase B.1 — added with Sample-out activation
         ise.RETURNED_FROM_CLIENT:  0,  # Phase B.2 — added with Returns activation
         ise.RETURNED_TO_PRODUCER:  0,  # Phase B.2 — added with Returns activation
+        ise.WRITTEN_OFF:           0,  # Returns QC Disposition — write-off terminal
     }
 
 

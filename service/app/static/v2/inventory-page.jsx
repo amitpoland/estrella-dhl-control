@@ -1238,7 +1238,7 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  function SampleReturnTab({ reportExport }) {
+  function SampleReturnTab({ reportExport, onInspect }) {
     const [samples, setSamples]       = useState(null);
     const [loading, setLoading]       = useState(true);
     const [error, setError]           = useState('');
@@ -1387,9 +1387,9 @@ function DocumentViewerPage({ doc, onBack }) {
                         </span>
                       </td>
                       <td style={{ ...TD, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        {/* Inspect action: QC outcome writes have no backend — Lesson-M honest-disabled */}
-                        <button data-testid="sr-btn-inspect" disabled title="backend-pending — QC outcome writes (Inspect/condition/decision) have no backend route yet (future slice)"
-                          style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'not-allowed', opacity: 0.5 }}>
+                        {/* Inspect action → QC Disposition modal (LIVE, session-operatored) */}
+                        <button data-testid="sr-btn-inspect" onClick={() => onInspect && onInspect(s.scan_code)} title="QC disposition — record condition/inspector/decision"
+                          style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'pointer' }}>
                           Inspect
                         </button>
                         {/* View action: no detail endpoint yet — Lesson-M honest-disabled */}
@@ -1571,7 +1571,7 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  function ClientReturnTab({ reportExport }) {
+  function ClientReturnTab({ reportExport, onInspect }) {
     const [records, setRecords]         = useState(null);
     const [loading, setLoading]         = useState(true);
     const [error, setError]             = useState('');
@@ -1744,9 +1744,9 @@ function DocumentViewerPage({ doc, onBack }) {
                         </span>
                       </td>
                       <td style={{ ...TD, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        {/* Inspect action: QC outcome writes have no backend — Lesson-M honest-disabled */}
-                        <button data-testid="cr-btn-inspect" disabled title="backend-pending — QC outcome writes (Inspect/condition/decision) have no backend route yet (future slice)"
-                          style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'not-allowed', opacity: 0.5 }}>
+                        {/* Inspect action → QC Disposition modal (LIVE, session-operatored) */}
+                        <button data-testid="cr-btn-inspect" onClick={() => onInspect && onInspect(r.scan_code)} title="QC disposition — record condition/inspector/decision"
+                          style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'pointer' }}>
                           Inspect
                         </button>
                         {/* Credit Note: wFirma write — no backend; Lesson-M honest-disabled */}
@@ -2214,6 +2214,112 @@ function DocumentViewerPage({ doc, onBack }) {
   };
 
   // ReturnToProducerModal — submits POST /api/v1/inventory/pieces/{pieceId}/return-to-producer
+  // Returns QC Disposition modal — the backend for sr-btn-inspect / cr-btn-inspect.
+  // Records condition/inspector/decision and drives the piece's lifecycle
+  // transition (restock/repair/write_off) via one privileged, session-operatored
+  // endpoint. Operator is NEVER entered here — it comes from the session.
+  function QCDispositionModal({ piece, onClose, onSuccess }) {
+    const [decision, setDecision]   = useState('restock');
+    const [condition, setCondition] = useState('');
+    const [inspector, setInspector] = useState('');
+    const [notes, setNotes]         = useState('');
+    const [producer, setProducer]   = useState('');
+    const [dispatchRef, setDispatchRef] = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    const [err, setErr]             = useState('');
+
+    function genKey() {
+      return 'qc-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    async function submit() {
+      setErr('');
+      if (decision === 'repair' && !producer.trim()) {
+        setErr('Producer name is required for a Repair disposition.');
+        return;
+      }
+      setSubmitting(true);
+      const res = await window.PzApi.qcDisposition(piece, {
+        decision,
+        condition:          condition.trim(),
+        inspector:          inspector.trim(),
+        notes:              notes.trim(),
+        producer_name:      producer.trim(),
+        dispatch_reference: dispatchRef.trim(),
+        idempotency_key:    genKey(),
+      });
+      setSubmitting(false);
+      if (!res.ok) {
+        const detail = (res.data && res.data.detail && res.data.detail.detail) ||
+                       (res.data && res.data.detail) || res.error || ('HTTP ' + res.status);
+        setErr(String(detail));
+        return;
+      }
+      onSuccess(res.data);
+    }
+
+    const lbl = { fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4, display: 'block' };
+    const fld = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, boxSizing: 'border-box' };
+
+    return (
+      <window.Modal title="QC Disposition" onClose={onClose}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }} data-testid="qc-disposition-modal">
+          <div style={{ padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
+            QC of returned piece <strong style={{ color: 'var(--text)', fontFamily: 'ui-monospace, monospace' }}>{piece}</strong>.
+            Decision drives the lifecycle: <strong style={{ color: 'var(--text)' }}>Restock → WAREHOUSE_STOCK · Repair → RETURNED_TO_PRODUCER · Write-off → WRITTEN_OFF</strong>.
+            Requires the piece to be in RETURNED_FROM_CLIENT. Operator is taken from your session.
+          </div>
+
+          <div>
+            <label style={lbl} htmlFor="qc-decision">Decision <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+            <select id="qc-decision" data-testid="qc-decision" value={decision} onChange={e => setDecision(e.target.value)} style={fld}>
+              <option value="restock">Restock (return to warehouse stock)</option>
+              <option value="repair">Repair (send to producer)</option>
+              <option value="write_off">Write-off (scrap — terminal)</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={lbl} htmlFor="qc-condition">Condition</label>
+            <input id="qc-condition" data-testid="qc-condition" value={condition} onChange={e => setCondition(e.target.value)} style={fld} placeholder="e.g. minor scratch, stone loose" />
+          </div>
+
+          <div>
+            <label style={lbl} htmlFor="qc-inspector">Inspector</label>
+            <input id="qc-inspector" data-testid="qc-inspector" value={inspector} onChange={e => setInspector(e.target.value)} style={fld} placeholder="QC inspector name" />
+          </div>
+
+          {decision === 'repair' && (
+            <>
+              <div>
+                <label style={lbl} htmlFor="qc-producer">Producer / supplier name <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+                <input id="qc-producer" data-testid="qc-producer" value={producer} onChange={e => setProducer(e.target.value)} style={fld} placeholder="e.g. Mehta Gems · MUM" />
+              </div>
+              <div>
+                <label style={lbl} htmlFor="qc-dispatch">Dispatch reference (optional)</label>
+                <input id="qc-dispatch" data-testid="qc-dispatch" value={dispatchRef} onChange={e => setDispatchRef(e.target.value)} style={fld} placeholder="waybill / RMA #" />
+              </div>
+            </>
+          )}
+
+          <div>
+            <label style={lbl} htmlFor="qc-notes">Notes</label>
+            <textarea id="qc-notes" data-testid="qc-notes" value={notes} onChange={e => setNotes(e.target.value)} style={{ ...fld, minHeight: 56, resize: 'vertical' }} placeholder="QC notes (optional)" />
+          </div>
+
+          {err && <div data-testid="qc-error" style={{ color: 'var(--badge-red-text)', fontSize: 12, fontWeight: 600 }}>{err}</div>}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button data-testid="qc-cancel" onClick={onClose} disabled={submitting} style={{ padding: '8px 16px', fontSize: 12.5, fontWeight: 600, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-2)', cursor: 'pointer' }}>Cancel</button>
+            <button data-testid="qc-submit" onClick={submit} disabled={submitting} style={{ padding: '8px 16px', fontSize: 12.5, fontWeight: 700, borderRadius: 6, border: '1px solid var(--accent-border)', background: submitting ? 'var(--bg-subtle)' : 'var(--accent-subtle)', color: 'var(--accent-text)', cursor: submitting ? 'default' : 'pointer' }}>
+              {submitting ? 'Submitting…' : 'Apply disposition'}
+            </button>
+          </div>
+        </div>
+      </window.Modal>
+    );
+  }
+
   function ReturnToProducerModal({ onClose, onSuccess }) {
     const [pieceId, setPieceId]     = useState('');
     const [producer, setProducer]   = useState('');
@@ -4954,6 +5060,15 @@ function DocumentViewerPage({ doc, onBack }) {
       setActiveTab('sampleReturn');
     }
 
+    // Returns QC Disposition — the piece scan_code an Inspect button targets.
+    const [qcTarget, setQcTarget] = useState(null);
+    function handleInspect(scanCode) { setQcTarget(scanCode); }
+    function handleQcSuccess() {
+      setQcTarget(null);
+      // Nudge a refresh of the two returns registers where Inspect lives.
+      setActiveTab(a => a);  // no tab change; tables reload on their own timers/actions
+    }
+
     const hasExportRows = !!exportMeta && !TABS_WITH_NO_TABLE.includes(activeTab);
     const exportTitle = hasExportRows
       ? 'Export ' + exportMeta.rows.length + ' rows from the current tab as CSV'
@@ -5068,6 +5183,15 @@ function DocumentViewerPage({ doc, onBack }) {
           />
         )}
 
+        {/* Returns QC Disposition modal — triggered by sr-btn-inspect / cr-btn-inspect */}
+        {qcTarget && (
+          <QCDispositionModal
+            piece={qcTarget}
+            onClose={() => setQcTarget(null)}
+            onSuccess={handleQcSuccess}
+          />
+        )}
+
         {/* Move Stock modal — triggered from Overview quick-action or tab content */}
         {showMove && <MoveStockModal onClose={() => setShowMove(false)} />}
 
@@ -5093,10 +5217,10 @@ function DocumentViewerPage({ doc, onBack }) {
           )}
 
           {/* ── Sample Return tab — Wave-3 U-1 page 2 ────────────── */}
-          {activeTab === 'sampleReturn' && <SampleReturnTab reportExport={reportExport} />}
+          {activeTab === 'sampleReturn' && <SampleReturnTab reportExport={reportExport} onInspect={handleInspect} />}
 
           {/* ── Client Return tab — Wave-3 U-2 page 3 ───────────── */}
-          {activeTab === 'clientReturn' && <ClientReturnTab reportExport={reportExport} />}
+          {activeTab === 'clientReturn' && <ClientReturnTab reportExport={reportExport} onInspect={handleInspect} />}
 
           {/* ── Return to Producer tab — Wave-3 U-2 page 4 ──────── */}
           {activeTab === 'producerReturn' && <ProducerReturnTab reportExport={reportExport} />}
