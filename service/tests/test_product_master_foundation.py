@@ -284,55 +284,89 @@ def test_init_reservation_db_idempotent(tmp_path):
 # ── 11. no external calls in new write path ───────────────────────────────
 
 def test_no_external_calls_in_master_write_path():
-    """Source-grep guard — reservation_db.py and the master-write block in
-    document_db.py must stay local-DB only.  Never introduce HTTP, wFirma,
-    SMTP, or DHL dispatch calls into the canonical projection path."""
-    files = [
-        Path(__file__).resolve().parents[1] / "app" / "services" / "reservation_db.py",
-        Path(__file__).resolve().parents[1] / "app" / "services" / "document_db.py",
+    """Source-grep guard — the canonical Product Master identity-projection path
+    must never issue raw NETWORK / SMTP / DHL-dispatch calls.  reservation_db.py
+    (Master owner) and the master-write block in document_db.py stay local-DB only
+    for the identity path.
+
+    Documented exception (C-1w2 wFirma product sync layer): reservation_db.py hosts
+    thin FUNCTION-LOCAL passthroughs to wfirma_client.create_product / edit_product /
+    get_product_by_code.  These are the sync layer's single, centralized boundary —
+    the passthroughs only forward args; the actual network call lives inside
+    wfirma_client, not here — and are already governed as the C-1w2 sync path by
+    test_product_master_authority.py (routes_wfirma = the C-1b route writer,
+    reservation_db = owner).  So ``wfirma_client`` is ALLOWED in reservation_db.py,
+    while the raw egress primitives stay forbidden in BOTH files and document_db.py
+    remains fully wFirma-free."""
+    base = Path(__file__).resolve().parents[1] / "app" / "services"
+    # Raw egress primitives — forbidden in BOTH files, no exceptions.
+    NETWORK = ("requests.", "httpx.", "smtp", "send_email", "dhl_dispatch")
+    checks = [
+        # reservation_db.py: wfirma_client ALLOWED (C-1w2 function-local sync passthrough).
+        (base / "reservation_db.py", NETWORK),
+        # document_db.py: stays fully wFirma-free.
+        (base / "document_db.py",    NETWORK + ("wfirma_client",)),
     ]
-    for f in files:
+    for f, forbidden in checks:
         src = f.read_text(encoding="utf-8")
-        for forbidden in ("requests.", "httpx.", "wfirma_client",
-                          "smtp", "send_email", "dhl_dispatch"):
-            assert forbidden not in src, (
-                f"{f.name} must not reference {forbidden!r} — the canonical "
-                f"identity projection path is local-DB only"
+        for tok in forbidden:
+            assert tok not in src, (
+                f"{f.name} must not reference {tok!r} — the Product Master identity "
+                f"projection path is local-DB only (raw network/mail/dispatch forbidden)."
             )
 
 
-# ── 12. product_code minted only by store_invoice_lines ───────────────────
+# ── 12. product_code minted only by the Purchase Import Authority ─────────
 
-def test_product_code_minted_only_by_store_invoice_lines():
-    """Architectural invariant — only store_invoice_lines mints
-    product_code via the f-string pattern.  No other module may invent a
-    product_code.  Allowed downstream calls *accept* an already-minted
-    product_code (e.g. upsert_product_master, wfirma_product_auto_register)
-    but must never generate one themselves."""
+def test_product_code_minted_only_by_purchase_import():
+    """Architectural invariant — business product_codes may originate ONLY inside
+    the PURCHASE IMPORT AUTHORITY (Charter, adapter model 2026-07-07).  That one
+    authority has multiple approved import ADAPTERS; no consumer module may invent
+    a product_code.  Allowed downstream calls *accept* an already-minted
+    product_code (e.g. upsert_product_master, wfirma_product_auto_register) but
+    never generate one themselves.
+
+    Approved Purchase Import adapters (the ONLY files that may mint):
+      * document_db.py             — store_invoice_lines, Standard Import (invoice_no-pos)
+      * global_packing_parser.py   — Global Jewellery import adapter (invoice_no-serial)
+      * invoice_packing_extractor.py — re-derives the SAME canonical format (Global
+        stamp + legacy pz_rows.json fallback); a re-derivation, not a new mint
+
+    Excluded false positive (NOT a business product_code):
+      * customs_position_aggregator.py — ``product_code = f"{invoice_no}-POS-{seq}"`` is
+        a CUSTOMS-POSITION identifier for the SAD / Customs Description Report, a
+        different identity; the real product_codes are preserved in
+        ``source_packing_codes`` and it never writes packing_lines / product_master."""
     services = Path(__file__).resolve().parents[1] / "app" / "services"
-    # The exact mint pattern in store_invoice_lines.
-    mint_pattern = 'f"{inv_no}-{pos}"'
+    mint_pattern = 'f"{inv_no}-{pos}"'          # the exact store_invoice_lines mint
 
-    hits = []
+    _PURCHASE_IMPORT_ADAPTERS = {
+        "document_db.py",
+        "global_packing_parser.py",
+        "invoice_packing_extractor.py",
+    }
+    _NON_PRODUCT_CODE_FALSE_POSITIVES = {
+        "customs_position_aggregator.py",       # customs-position id, not a mint
+    }
+
+    minting_files = set()
     for f in services.glob("*.py"):
         src = f.read_text(encoding="utf-8")
-        # Look for f-string product-code mints OUTSIDE document_db.
-        if f.name == "document_db.py":
-            continue
         if mint_pattern in src:
-            hits.append(f.name)
-        # Also catch any literal "product_code = f"..." outside document_db.
+            minting_files.add(f.name)
+        # Any literal ``product_code = f"..."`` assignment mints a code.
         for line in src.splitlines():
             stripped = line.strip()
             if (stripped.startswith("product_code = f\"")
                     or stripped.startswith("product_code = f'")):
-                hits.append(f"{f.name}: {stripped[:80]}")
+                minting_files.add(f.name)
 
-    # invoice_packing_extractor.py legitimately re-derives the SAME format
-    # in the legacy pz_rows.json fallback (a historical compatibility path).
-    # That re-derivation is not a new mint — it reproduces the canonical
-    # format from the same inputs.  Allowed.
-    hits = [h for h in hits if "invoice_packing_extractor" not in h]
-    assert not hits, (
-        f"product_code minted outside store_invoice_lines: {hits}"
+    unexpected = (minting_files
+                  - _PURCHASE_IMPORT_ADAPTERS
+                  - _NON_PRODUCT_CODE_FALSE_POSITIVES)
+    assert not unexpected, (
+        f"product_code minted outside the Purchase Import Authority adapters "
+        f"{sorted(_PURCHASE_IMPORT_ADAPTERS)}: {sorted(unexpected)}. Either it is a "
+        f"new import adapter (add it here + a Charter amendment) or a consumer "
+        f"illegally minting (reject — consumers accept codes, never invent them)."
     )
