@@ -1,9 +1,17 @@
 # AGENT_REGISTRY.md — Atlas V2 Canonical Agent Registry
 
 **Source of truth for the agents that are version-controlled in THIS repository.**
-Generated 2026-06-06 by direct inspection of `.claude/agents/*.md` frontmatter
-(not the runtime dispatch menu). **20 repo-installed agents** (15 original + 5 installed
-2026-06-06: reviewer-challenge, ux-flow, integration-boundary, gap-detection,
+Generated 2026-06-06; **refreshed 2026-07-08** by read-only filesystem inspection.
+**27 repo-installed agents** on disk (`.claude/agents/*.md`, excluding the two
+registry docs). The canonical body below (entries 1–20) is unchanged; the **7
+agents added since 2026-06-06** and the current governance notes (model-pins,
+duplicate registrations, the new scoped-implementer class, Senior Execution
+Council, skill-to-agent matrix, by-package guidance) are in the
+**`## 2026-07-08 Registry Refresh`** section at the end of this file. Read that
+section for the current-state view; read the per-agent bodies for detail.
+
+Historical note (kept): the original count was **20** = 15 original + 5 installed
+2026-06-06 (reviewer-challenge, ux-flow, integration-boundary, gap-detection,
 final-consistency-review — all inspect-only).
 
 > **Fresh-session caveat (Lesson B):** the 5 agents installed 2026-06-06 were already
@@ -170,7 +178,107 @@ For final verdicts, use a repo-installed agent from this registry. A runtime-onl
 be independently verified before it influences any production-affecting decision (Lesson B).
 
 **Full runtime enumeration + hazard list:** `.claude/agents/RUNTIME_AGENT_AUDIT.md`
-(2026-06-06). It documents all ~80 dispatchable agents: 15 repo-canonical (this file),
-54 user-level runtime-only (~23 write-capable, incl. EJ-domain-named actors that are
-FORBIDDEN as actors), plus built-ins and wrong-domain plugin agents. Read it before
-dispatching any non-repo `subagent_type`.
+(2026-06-06). It documents the dispatchable agents: repo-canonical (this file),
+54 user-level runtime-only (write-capable domain actors that are FORBIDDEN as
+actors), plus built-ins and wrong-domain plugin agents. Read it before dispatching
+any non-repo `subagent_type`.
+
+---
+
+## 2026-07-08 Registry Refresh
+
+Docs-only refresh (read-only inventory; no agent files changed, none created/removed).
+Supersedes stale counts above. System snapshot:
+**repo agents 27 · global (user-level) agents 54 · skills 9 · commands 14 · hooks 9.**
+
+### 1. Updated agent registry — the 7 agents added since 2026-06-06
+
+The canonical body (entries 1–20) is accurate. These 7 were added afterward and were
+NOT in the original matrix. Five are inspect-only; **two are a NEW capability class —
+scoped implementers** (they carry `Edit`/`Write`/`Bash` but are hard-fenced by
+`.claude/hooks/implement-guard.py` + an `EJ_IMPLEMENT=1` env flag + a one-slice-then-STOP
+prompt contract; they cannot commit/push/PR/deploy).
+
+| # | Agent (`subagent_type`) | Capability | Write target | Group |
+|---|---|---|---|---|
+| 21 | `api-wrapper-inspector` | INSPECT-ONLY | — | Impl-review (pz-api.js vs v2 parity) |
+| 22 | `backend-route-inspector` | INSPECT-ONLY | — | Impl-review (routes vs main.py registration) |
+| 23 | `frontend-authority-inspector` | INSPECT-ONLY | — | Impl-review (one-URL-per-module authority map) |
+| 24 | `navigation-inspector` | INSPECT-ONLY | — | Impl-review (router slug ↔ component) |
+| 25 | `service-scheduler-inspector` | INSPECT-ONLY | — | Impl-review (orphan schedulers/startup jobs) |
+| 26 | `reports-authority-implementer` | **SCOPED-IMPLEMENTER** (Edit/Write/Bash) | slice-03 files only, guarded | Implementation (one slice, then STOP) |
+| 27 | `shipment-authority-implementer` | **SCOPED-IMPLEMENTER** (Edit/Write/Bash/PowerShell) | slice-01 files only, guarded | Implementation (one slice, then STOP) |
+
+> **Capability-legend addendum:** the pre-2026-07 statement "no repo-installed agent has
+> product-code write access" is now qualified — entries 26–27 CAN edit product code, but
+> **only** the specific slice named in their prompt, under `implement-guard.py`, and only
+> when invoked via `/implement-slice`. They cannot commit, push, open a PR, or deploy.
+> Everything else in the repo set remains INSPECT-ONLY or DOCS-WRITE.
+
+### 2. Senior Execution Council (recommended standing mapping)
+
+| Seat | Repo agent(s) | Backing skill |
+|---|---|---|
+| Router / chair | *(orchestrator)* → routes via `ej-dashboard-master` skill | ej-dashboard-master |
+| Architecture | *(runtime)* `system-architect` + `reviewer-challenge` | senior-architect |
+| Backend authority | `backend-safety-reviewer` (+ `backend-route-inspector`, `service-scheduler-inspector`, `api-wrapper-inspector`) | ej-dashboard-fullstack-governance |
+| Frontend authority | `frontend-flow-reviewer` (+ `frontend-authority-inspector`, `navigation-inspector`, `ux-flow`) | frontend-design + ej-dashboard-design |
+| Persistence | `deploy-persistence-storage-reviewer` | ej-dashboard-fullstack-governance |
+| Write-risk / security | `security-write-action-reviewer` + `deploy-security-reviewer` (blocker authority) | fullstack-governance |
+| Devil's advocate | `reviewer-challenge` + `gap-hunter` + `gap-detection` | — |
+| Integration seams | `integration-boundary` | — |
+| Test authority | `test-coverage-reviewer` (+ runtime `browser-verifier`, `testing-verification`) | ej-dashboard-webapp-testing |
+| Deploy authority | the 7 `deploy-*` agents → `deploy-lead-coordinator` (go/no-go) | /deploy gate |
+| Last gate | `final-consistency-review` | — |
+| State / observation | `flow-context-keeper` + `agent-performance-observer` + `adr-historian` | — |
+
+> Rule: council **seats recommend**; the operator + the 7-agent deploy gate own production
+> action. Runtime-only seats (`system-architect`, `browser-verifier`, `testing-verification`)
+> are helpers whose output must be independently verified (Lesson B).
+
+### 3. Skill-to-agent matrix
+
+Agents don't load skills (skills scope the main session); this is the intended pairing.
+
+| Skill | Authority for | Paired agents |
+|---|---|---|
+| `ej-dashboard-master` | routing / minimum-skill selection | *(orchestrator)*, `agent-router` (runtime) |
+| `ej-dashboard-fullstack-governance` | backend / API / persistence / protected domains | `backend-safety-reviewer`, `backend-route-inspector`, `deploy-persistence-storage-reviewer`, `security-write-action-reviewer` |
+| `ej-dashboard-clean-code` | refactor / simplicity / repo safety | any impl-review agent |
+| `frontend-design` + `ej-dashboard-design` | tokens, page authority, duplicate prevention | `frontend-flow-reviewer`, `frontend-authority-inspector`, `navigation-inspector`, `ux-flow` |
+| `ej-dashboard-webapp-testing` | browser / smoke verification | `test-coverage-reviewer` (+ runtime `browser-verifier`) |
+| `ui-ux-pro-max` | **reference only, never authority** (read `EJ_OVERRIDES.md` first) | `ux-flow`, `frontend-flow-reviewer` |
+| `wfirma-api-integration` | wFirma API/webhook/mirror knowledge | runtime `wfirma-integration` (never final authority) |
+| `data-analysis` | cross-DB operational debugging | any inspector |
+| `senior-architect` (global) | architecture patterns | runtime `system-architect` |
+
+### 4. Broken / model-pinned notes
+
+- **Broken:** none — all 27 repo entries verified present on disk; tool grants match frontmatter.
+- **Model-pinned (repo, 7):** `final-consistency-review`, `flow-context-keeper`, `gap-detection`,
+  `integration-boundary`, `reviewer-challenge`, `shipment-authority-implementer`, `ux-flow`.
+- **Model-pinned (global, all 54):** 39 `sonnet`, 11 `opus`, 4 `haiku`.
+- **Duplicate registrations (repo ∩ global — 5):** `final-consistency-review`, `gap-detection`,
+  `integration-boundary`, `reviewer-challenge`, `ux-flow` exist in BOTH trees. The 2026-06-06
+  "0 overlap" note is stale. Hazard: a dispatch may hit the **user-level (Bash-capable) copy**
+  instead of the repo inspect-only copy (Lesson B / the fresh-session caveat at the top). Prefer
+  a fresh session after any agent-file change; treat these 5 as runtime-backed until confirmed.
+- **Availability caveat (Lesson B):** agents added mid-session are not reliably invocable until a
+  session restart. Only repo/canonical agents are governed; runtime-only (global/plugin/built-in)
+  agents are **never final authority**.
+
+### 5. Which agents to use — by package type
+
+| Package type | Lead / primary | Reviewers (parallel) | Gate |
+|---|---|---|---|
+| **Frontend / UI** | runtime `frontend-ui` | `frontend-flow-reviewer`, `frontend-authority-inspector`, `navigation-inspector`, `ux-flow`, `reviewer-challenge` | browser verify → deploy gate |
+| **Backend / API** | runtime `backend-api` | `backend-safety-reviewer`, `backend-route-inspector`, `service-scheduler-inspector`, `api-wrapper-inspector` | `test-coverage-reviewer` → deploy gate |
+| **Database / schema** | runtime `database-storage` | `deploy-persistence-storage-reviewer`, `backend-safety-reviewer` | deploy gate (persistence reviewer) |
+| **wFirma** | runtime `wfirma-integration` (+ `wfirma-api-integration` skill) | `security-write-action-reviewer`, `deploy-security-reviewer` | deploy gate |
+| **Write-action / fiscal** | domain actor | `security-write-action-reviewer` (mandatory), `reviewer-challenge`, `integration-boundary` | deploy gate |
+| **Deployment** | the 7 `deploy-*` agents | — | `deploy-lead-coordinator` go/no-go |
+| **Testing** | runtime `testing-verification`, `browser-verifier` | `test-coverage-reviewer`, `deploy-qa-reviewer` | — |
+| **Architecture / design** | runtime `system-architect` (+ `senior-architect` skill) | `reviewer-challenge`, `integration-boundary`, `gap-hunter` | — |
+| **UX / product review** | `ux-flow` | `frontend-flow-reviewer`, `reviewer-challenge` (+ `ui-ux-pro-max` reference) | — |
+| **Scoped code slice** | `reports-authority-implementer` / `shipment-authority-implementer` (via `/implement-slice`, guarded) | matching domain reviewer | deploy gate |
+| **Governance / post-run** | `flow-context-keeper` | `agent-performance-observer`, `adr-historian` | — |
