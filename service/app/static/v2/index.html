@@ -667,7 +667,7 @@ function App() {
               were removed (they dispatched events the live component does not handle). */}
           {!viewerDoc && page === 'inventory' && (
             <>
-              <PageHeader title="Inventory" subtitle="Read-only inventory hub — live Stage 2 counts, batch / piece / location lookups, and warehouse audit. No write actions." />
+              <PageHeader title="Inventory" subtitle="Inventory hub — Stage 1 & 2 registers, sample-out / returns / move-stock actions, warehouse audit, and live reconciliation." />
               <SubTabStrip active={page} onNav={handleNav} />
               <InventoryPage openViewer={openViewer} />
             </>
