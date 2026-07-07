@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from ..core.security import require_api_key
 from ..services.inventory_batch_state import get_batch_state
 from ..services.inventory_piece_view import get_piece_detail
+from ..services.inventory_reconciliation_service import run_reconciliation
 from ..services.inventory_stage2_aggregator import aggregate_stage2
 
 
@@ -39,6 +40,18 @@ def _validate_as_of(as_of: Optional[str]) -> Optional[str]:
             status_code=422,
             detail=f"Invalid as_of timestamp: {as_of!r} — expected ISO 8601",
         )
+
+
+@router.get("/reconciliation")
+def get_inventory_reconciliation() -> dict:
+    """Read-only Inventory Intelligence reconciliation report (Phase 1).
+
+    Reconciles the inventory authority (inventory_state) against the purchase
+    authority (packing_lines quantity) and the identity authority (product_master,
+    ADVISORY only — never a blocker). Returns per-batch metrics + an advisory
+    health status. GET only; performs NO mutation and offers NO repair suggestions.
+    """
+    return run_reconciliation()
 
 
 @router.get("/stage2/aggregate")
