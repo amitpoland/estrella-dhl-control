@@ -45,6 +45,39 @@ The git repository is a **staging workspace only**.
 
 ---
 
+## Post-incident deployment source rules (PERMANENT — added 2026-07-07)
+
+Origin: 2026-07-07 incident — a `robocopy /XO` sourced from a **feature-branch worktree**
+(`feat/product-master-authority-tests`, not `main`) left `C:\PZ\app` version-skewed: a stale
+`main.py` imported a 0-byte `routes_wfirma_reservation.py` → `ImportError` → PZService failed to
+start. These rules are mandatory for every deploy AND every recovery sync.
+
+1. **Never deploy from a feature-branch worktree.** The robocopy source app tree must be a
+   checkout of clean `main` (or an explicitly approved release SHA) — never a feature/PR branch
+   or a scratch worktree.
+2. **Deployment source must be clean `main` or an explicitly approved release SHA** — fully
+   merged, `git pull --ff-only`, internally consistent (no partial/held commits).
+3. **No `/XO` for a full app sync or a recovery sync.** `/XO` copies newer-only and SKIPS
+   stale/mismatched files → version skew (the 2026-07-07 root cause). A full/recovery app sync
+   must OVERWRITE to match the source exactly (still no `/MIR`; still exclude the forbidden
+   paths in Rule 8). `/XO` is permitted ONLY for a known-incremental top-up where the dest is
+   already a consistent subset of the source.
+4. **Verify the source BEFORE any robocopy** — all three must be clean/expected:
+   ```bash
+   git branch --show-current      # MUST be: main (or the approved release ref)
+   git status --short             # MUST be empty (clean working tree)
+   git rev-parse HEAD             # record + confirm the SHA being deployed
+   ```
+5. **Verify the deployed app IMPORTS cleanly AFTER sync, BEFORE any feature validation:**
+   ```powershell
+   sc.exe query PZService                          # STATE : RUNNING
+   Get-Content C:\PZ\logs\pz_stderr.log -Tail 30   # NO ImportError / module-load traceback
+   ```
+   Any import failure → STOP, do not validate features; the tree is inconsistent — re-sync from
+   clean `main` with an overwriting (non-`/XO`) copy, then re-verify.
+
+---
+
 ## 7-Agent pre-deploy gate
 
 Every deployment **must** run these agents before any sync or restart.  
@@ -127,10 +160,14 @@ python scripts\run_backup.py --backup-root "C:\PZ-backups"
 ### Step 5 — Safe sync to production
 
 ```powershell
-# Allowed: /E /XO (newer-only, no deletes, no overwrite)
-robocopy "C:\PZ-verify\service\app" "C:\PZ\app" /E /XO `
+# PRECONDITION: source is clean `main` (post-incident rules 1-4) — verify branch/status/SHA first.
+# FULL / RECOVERY sync: OVERWRITE to match source exactly. Do NOT use /XO —
+# /XO skips stale/mismatched files and caused the 2026-07-07 version-skew incident.
+robocopy "C:\PZ-verify\service\app" "C:\PZ\app" /E `
   /XD __pycache__ .pytest_cache storage `
   /XF "*.pyc" "*.pyo" "*.zip"
+# /XO is allowed ONLY for a known-incremental top-up (dest already consistent with source).
+# After sync, run the post-incident Rule 5 import check BEFORE any feature validation.
 
 # Robocopy exit codes: 0=nothing to copy, 1=copied, 2=extras retained, 3=both
 # All are SUCCESS.  Exit 4+ = error, stop immediately.
