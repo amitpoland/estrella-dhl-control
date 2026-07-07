@@ -238,13 +238,14 @@ def test_alter_tuple_registers_all_variant_columns_mirroring_purchase():
 # ── 6. intake forwards all 9 keys on BOTH mappings ──────────────────────────
 
 def test_intake_mappings_forward_all_variant_keys():
-    from app.api import routes_intake as ri
-    src = Path(ri.__file__).read_text(encoding="utf-8", errors="replace")
-    # Both the store mapping and the reingest mapping build line_records dicts;
-    # each of the 9 keys must appear at least twice (once per mapping).
+    # Variant forwarding is now CENTRALIZED in the canonical sales-packing
+    # authority (document_db._reshape_sales_line), which every write flow
+    # (intake / re-ingest / reprocess) routes through — so the keys are pinned at
+    # that single location instead of duplicated in each route mapping.
+    from app.services import document_db as ddb
+    canonical = set(ddb._SALES_LINE_TEXT) | set(ddb._SALES_LINE_NUM)
     for f in _TEXT_FIELDS + _REAL_FIELDS:
-        occurrences = len(re.findall(rf'"{f}":\s*(?:str|float)\(r\.get', src))
-        assert occurrences >= 2, (
-            f"variant key {f} forwarded in {occurrences} intake mapping(s); "
-            f"expected both store + reingest mappings"
+        assert f in canonical, (
+            f"variant key {f} not forwarded by document_db._reshape_sales_line — "
+            f"the canonical sales-packing persistence authority"
         )

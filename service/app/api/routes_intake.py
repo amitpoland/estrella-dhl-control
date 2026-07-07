@@ -844,22 +844,11 @@ async def shipment_intake(
                 log.warning("[%s] client-name lookup by contractor_id=%s failed: %s",
                             batch_id, client_cid, exc)
         if not sales_doc_id and (client or client_ref or client_cid):
-            try:
-                sales_doc_id = ddb.store_sales_document(
-                    batch_id=batch_id, document_id=sp_doc_id,
-                    data={
-                        "client_name":      client,
-                        "client_ref":       client_ref,
-                        "document_type":    "sales_packing_list",
-                        "source_file_path": str(path),
-                        "extraction_status": "pending",
-                        # PR-2: project contractor authority at birth.
-                        "client_contractor_id": client_cid,
-                    },
-                )
-            except Exception as exc:
-                log.warning("[%s] sales_document auto-create failed: %s", batch_id, exc)
-                sales_doc_id = ""
+            # Canonical sales authority: the sales_document_id IS the sales-packing
+            # shipment_documents.id (deterministic). persist_sales_from_packing
+            # ensures the sales_documents row below. No random UUID — that
+            # store_sales_document divergence is what duplicated rows on reprocess.
+            sales_doc_id = sp_doc_id
 
         # Parse the sales packing list and store rows in sales_packing_lines.
         # Uses the same EJL excel reader as the purchase side.
@@ -1039,55 +1028,18 @@ async def shipment_intake(
                          batch_id, sales_matcher_summary)
 
             if sp_rows and sales_doc_id:
-                line_records = []
-                for r in sp_rows:
-                    row_currency = str(r.get("currency", "") or "").strip().upper()
-                    final_currency = row_currency or currency_for_doc
-                    line_records.append({
-                        "client_name":  client,
-                        "client_ref":   client_ref,
-                        # Canonical product_code only.  Sources (in order
-                        # of precedence, all canonical EJL/...-N codes):
-                        #   1. parser-emitted pc (rare for sales)
-                        #   2. PND disambiguator's choice
-                        #   3. sales_packing_matcher resolution
-                        # Empty when none of the above resolved — DB
-                        # layer accepts empty.  design_no is NEVER used
-                        # as a product_code fallback.
-                        "product_code": str(r.get("product_code") or ""),
-                        "design_no":    str(r.get("design_no", "") or ""),
-                        "bag_id":       str(r.get("bag_id", "") or ""),
-                        "quantity":     float(r.get("quantity", 0) or 0),
-                        # Preserve the EJL order reference separately (never as
-                        # product_code/design_no) so it stays auditable.
-                        "remarks":      (
-                            ("order_ref=" + str(r.get("order_ref")).strip() + "; "
-                             if str(r.get("order_ref", "") or "").strip() else "")
-                            + str(r.get("client_po", "") or r.get("remarks", "") or "")
-                        ).strip().rstrip(";").strip(),
-                        # Sales pricing (canonical — never substituted by import cost)
-                        "unit_price":   float(r.get("unit_price",  0) or 0),
-                        "total_value":  float(r.get("total_value", 0) or 0),
-                        "currency":     final_currency,
-                        "price_source": "packing_list" if (
-                            float(r.get("unit_price", 0) or 0) > 0
-                        ) else "",
-                        # ── Slice-2 variant identity: forward the full variant
-                        # set the extractor already produced (previously dropped
-                        # at this boundary). Sales must NEVER invent product_code
-                        # — identity fields only; product_code stays matcher-only.
-                        "item_type":      str(r.get("item_type", "") or ""),
-                        "karat":          str(r.get("karat", "") or ""),
-                        "metal":          str(r.get("metal", "") or ""),
-                        "metal_color":    str(r.get("metal_color", "") or ""),
-                        "quality_string": str(r.get("quality_string", "") or ""),
-                        "stone_type":     str(r.get("stone_type", "") or ""),
-                        "size":           str(r.get("size", "") or ""),
-                        "diamond_weight": float(r.get("diamond_weight", 0) or 0),
-                        "color_weight":   float(r.get("color_weight", 0) or 0),
-                    })
-                ddb.store_sales_packing_lines(sales_doc_id, batch_id, line_records)
-                n_rows = len(line_records)
+                # Canonical sales authority: faithful reshape (separate
+                # client_po / remarks / invoice_no + full variant identity) +
+                # deterministic sales_document_id + idempotent replace. Reshapes
+                # sp_rows internally.
+                _repl = ddb.persist_sales_from_packing(
+                    batch_id, sales_doc_id, sp_rows,
+                    client_name=client, client_ref=client_ref,
+                    client_contractor_id=client_cid,
+                    default_currency=currency_for_doc,
+                    source_file_path=str(path),
+                )
+                n_rows = _repl.get("inserted", 0)
                 # PR-1: persist parse status so a successfully parsed+stored
                 # sales packing document is never left silently 'pending'.
                 if sp_doc_id:
@@ -1108,7 +1060,7 @@ async def shipment_intake(
                     client       = client,
                     client_ref   = client_ref,
                     currency     = currency_for_doc,
-                    line_records = line_records,
+                    line_records = _repl.get("lines", []),
                     operator     = "intake",
                     client_contractor_id = client_cid,
                 )
@@ -2304,52 +2256,13 @@ async def sales_packing_reingest(
             log.info("[%s] reingest sales matcher: %s",
                      batch_id, sales_matcher_summary)
 
-        # Build line records with the ladder-resolved currency.
-        line_records: List[Dict[str, Any]] = []
-        for r in sp_rows:
-            row_currency = str(r.get("currency", "") or "").strip().upper()
-            final_currency = row_currency or currency_for_doc
-            line_records.append({
-                "client_name":  client,
-                "client_ref":   client_ref,
-                # Canonical product_code only — no design_no fallback.
-                # See shipment_intake comment block for source order.
-                "product_code": str(r.get("product_code") or ""),
-                "design_no":    str(r.get("design_no", "") or ""),
-                "bag_id":       str(r.get("bag_id", "") or ""),
-                "quantity":     float(r.get("quantity", 0) or 0),
-                # Preserve EJL order reference separately (never as code).
-                "remarks":      (
-                    ("order_ref=" + str(r.get("order_ref")).strip() + "; "
-                     if str(r.get("order_ref", "") or "").strip() else "")
-                    + str(r.get("client_po", "") or r.get("remarks", "") or "")
-                ).strip().rstrip(";").strip(),
-                "unit_price":   float(r.get("unit_price",  0) or 0),
-                "total_value":  float(r.get("total_value", 0) or 0),
-                "currency":     final_currency,
-                "price_source": "packing_list" if (
-                    float(r.get("unit_price", 0) or 0) > 0
-                ) else "",
-                # ── Slice-2 variant identity (mirror the store path). Forward
-                # the extractor's full variant set on re-ingest too so a
-                # corrected/re-uploaded sales file backfills the variant
-                # columns. Identity only — never invents product_code.
-                "item_type":      str(r.get("item_type", "") or ""),
-                "karat":          str(r.get("karat", "") or ""),
-                "metal":          str(r.get("metal", "") or ""),
-                "metal_color":    str(r.get("metal_color", "") or ""),
-                "quality_string": str(r.get("quality_string", "") or ""),
-                "stone_type":     str(r.get("stone_type", "") or ""),
-                "size":           str(r.get("size", "") or ""),
-                "diamond_weight": float(r.get("diamond_weight", 0) or 0),
-                "color_weight":   float(r.get("color_weight", 0) or 0),
-            })
-
-        # Atomic replace, scoped to (sales_doc_id, batch_id) only.
-        repl = ddb.replace_sales_packing_lines(
-            sales_document_id=sales_doc_id,
-            batch_id=batch_id,
-            lines=line_records,
+        # Canonical sales authority: faithful reshape (separate
+        # client_po / remarks / invoice_no + full variant identity) +
+        # deterministic sales_document_id + idempotent replace.
+        repl = ddb.persist_sales_from_packing(
+            batch_id, sales_doc_id, sp_rows,
+            client_name=client, client_ref=client_ref,
+            default_currency=currency_for_doc,
         )
         per_file["before_count"]      = repl["deleted"]
         per_file["deleted_count"]     = repl["deleted"]
@@ -2367,7 +2280,7 @@ async def sales_packing_reingest(
             client       = client,
             client_ref   = client_ref,
             currency     = currency_for_doc,
-            line_records = line_records,
+            line_records = repl.get("lines", []),
             operator     = operator or "reingest",
         )
         if currency_source == "missing":

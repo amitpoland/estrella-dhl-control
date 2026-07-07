@@ -2174,6 +2174,106 @@ def replace_sales_packing_lines(
     return {"deleted": int(deleted), "inserted": int(inserted)}
 
 
+# ── Canonical sales-persistence authority (Package 1) ────────────────────────
+# ONE writer for every sales-packing persistence flow (first-time intake, sales
+# re-ingest, packing reprocess). Supersedes the divergent legacy pair
+# store_sales_document (random UUID) + store_sales_packing_lines (plain INSERT,
+# lossy reshape) which produced duplicate / orphaned sales_packing_lines when a
+# batch was intaken then reprocessed (random id != deterministic id -> the
+# idempotent replace DELETE never matched the intake rows). No schema change; no
+# external flows.
+_SALES_LINE_TEXT = ("product_code", "design_no", "bag_id", "client_po", "remarks",
+                    "invoice_no", "item_type", "karat", "metal", "metal_color",
+                    "quality_string", "stone_type", "size")
+_SALES_LINE_NUM = ("unit_price", "total_value", "diamond_weight", "color_weight")
+
+
+def _reshape_sales_line(
+    r: Dict[str, Any], client_name: str, client_ref: str,
+    client_contractor_id: str, default_currency: str,
+) -> Dict[str, Any]:
+    """Faithful sales-line reshape — the SINGLE canonical mapping.
+
+    client_po / remarks / invoice_no each keep their OWN column (the legacy
+    intake path collapsed client_po into remarks and dropped invoice_no). Full
+    variant identity is forwarded (the reprocess path previously omitted it).
+    price_source reports the factual source, never a hardcoded 'packing_list'.
+    """
+    qty = r.get("quantity")
+    if qty is None:
+        qty = r.get("qty", 0)
+    cur = str(r.get("currency", "") or "").upper() or str(default_currency or "").upper()
+    up = float(r.get("unit_price", 0) or 0)
+    out = {
+        "client_name":          client_name,
+        "client_ref":           client_ref,
+        "client_contractor_id": client_contractor_id,
+        "quantity":             float(qty or 0),
+        "currency":             cur,
+        # Sales price comes from the packing list — keep the canonical
+        # 'packing_list' label when a price is present (an explicit row
+        # price_source still wins); never leak the currency source here.
+        "price_source":         r.get("price_source") or ("packing_list" if up > 0 else ""),
+    }
+    for k in _SALES_LINE_TEXT:
+        v = r.get(k)
+        out[k] = "" if v is None else str(v)
+    for k in _SALES_LINE_NUM:
+        out[k] = float(r.get(k, 0) or 0)
+    return out
+
+
+def persist_sales_from_packing(
+    batch_id:             str,
+    shipment_document_id: str,
+    parsed_rows:          List[Dict[str, Any]],
+    *,
+    client_name:          str = "",
+    client_ref:           str = "",
+    client_contractor_id: str = "",
+    default_currency:     str = "",
+    source_file_path:     str = "",
+    document_type:        str = "sales_packing_list",
+) -> Dict[str, Any]:
+    """THE canonical sales-packing persistence authority.
+
+    Every sales-packing write flow — first-time intake, sales re-ingest, packing
+    reprocess — MUST route through here. It:
+      1. ensures a sales_documents row whose id == shipment_document_id
+         (deterministic, via ensure_sales_document_id) — never a random UUID,
+      2. reshapes parsed_rows faithfully (separate client_po/remarks/invoice_no
+         + full variant identity),
+      3. idempotently replaces sales_packing_lines for
+         (shipment_document_id, batch_id) via replace_sales_packing_lines.
+    Idempotent: re-running for the same document (intake->reprocess, or a second
+    reprocess) yields exactly one row set — no duplicate, no divergent id.
+
+    Returns {"deleted", "inserted", "sales_document_id"}.
+    """
+    if _db_path is None or not batch_id or not shipment_document_id:
+        return {"deleted": 0, "inserted": 0, "sales_document_id": ""}
+    try:
+        ensure_sales_document_id(
+            batch_id, shipment_document_id,
+            client_name=client_name,
+            document_type=document_type,
+            source_file_path=source_file_path,
+            client_contractor_id=client_contractor_id,
+        )
+    except Exception as exc:
+        log.warning("[%s] persist_sales_from_packing: ensure_sales_document_id "
+                    "failed (non-fatal): %s", batch_id, exc)
+    lines = [
+        _reshape_sales_line(r, client_name, client_ref, client_contractor_id,
+                            default_currency)
+        for r in (parsed_rows or [])
+    ]
+    result = replace_sales_packing_lines(shipment_document_id, batch_id, lines)
+    result["sales_document_id"] = shipment_document_id
+    result["lines"] = lines   # reshaped rows, for callers that seed a proforma draft
+    return result
+
+
 def backfill_contractor_ids(batch_id: str) -> Dict[str, int]:
     """PR-2 reconciliation: project ``client_contractor_id`` from the
     authoritative ``shipment_documents`` rows onto ``sales_documents`` and
