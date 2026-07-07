@@ -178,6 +178,37 @@ Invoke-WebRequest http://127.0.0.1:47213/api/v1/carrier/STAGE0-TEST/shipment `
 Get-Content C:\PZ\logs\pz_stderr.log -Tail 20
 ```
 
+### Step 7.5 — V2 runtime boot gate (PERMANENT — added 2026-07-07)
+
+**Vendor authority.** `service/scripts/download-v2-vendor.ps1` is the **canonical vendor
+authority** for the /v2/ runtime — it owns the pinned versions of React, ReactDOM, and
+`@babel/standalone`. The files under `service/app/static/v2/vendor/` are **generated
+artifacts** produced by that script: never hand-edit them; regenerate via the script and keep
+it in lock-step with the CDN-fallback pins in `static/v2/index.html`. Guard:
+`service/tests/test_v2_babel_pin.py`.
+
+**V2 boots React/ReactDOM/Babel local-first with a CDN fallback. On EVERY V2 deployment,
+after sync + restart and BEFORE the V2 module deployment is considered complete, verify ALL:**
+
+```powershell
+# 1. Vendor present (real files, not just .gitkeep)
+Get-ChildItem C:\PZ\app\static\v2\vendor\*.js | Select Name,Length
+#    -> react.production.min.js, react-dom.production.min.js, babel.min.js (all non-zero)
+```
+Then load `https://pz.estrellajewels.eu/v2/index.html` and confirm in the browser console:
+- [ ] **Vendor present** — the three `*.js` above exist and are non-zero.
+- [ ] **React loaded** — `window.React.version` is defined.
+- [ ] **ReactDOM loaded** — `window.ReactDOM` is defined.
+- [ ] **Babel loaded** — `window.Babel` is defined.
+- [ ] **Atlas shell booted** — page renders (no boot-guard "Estrella Atlas — JavaScript error").
+- [ ] **Local-first confirmed** — `window.__vnd_react`, `__vnd_rdom`, `__vnd_babel` are all **false**
+      (vendor served locally; CDN fallback not exercised).
+
+**If any check fails: STOP — do not proceed with V2 module deployment.** The V2 runtime is
+broken (missing/mismatched vendor). Regenerate via `download-v2-vendor.ps1` on `C:\PZ`,
+re-sync, restart, and re-verify. A true `__vnd_*` flag in production means vendor is absent and
+the shell is depending on the external CDN — a reliability regression, not an acceptable state.
+
 ---
 
 ## Rollback procedures
@@ -214,6 +245,7 @@ Sync result:
 Service status:
 Local health:
 Public health:
+V2 runtime gate:
 Carrier gate:
 Production mutation:
 Rollback command:
