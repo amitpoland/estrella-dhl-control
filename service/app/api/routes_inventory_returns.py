@@ -213,6 +213,18 @@ def post_qc_disposition(
         raise _map_qc_error(e)
 
 
+@router.get("/pieces/{piece_id}/qc-dispositions")
+def get_qc_dispositions(piece_id: str) -> dict:
+    """Read-only QC disposition history for a piece (newest first). Surfaces the
+    recorded condition / inspector / decision / notes / producer_name /
+    dispatch_reference / operator / disposed_at. Pure read — no mutation."""
+    from ..services import warehouse_db as _wdb  # noqa: PLC0415
+    return {
+        "piece_id": piece_id,
+        "dispositions": _wdb.get_qc_dispositions(piece_id),
+    }
+
+
 @router.post("/pieces/{piece_id}/return-from-client")
 def post_return_from_client(
     piece_id: str, payload: ReturnFromClientRequest,

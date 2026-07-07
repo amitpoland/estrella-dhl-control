@@ -236,3 +236,64 @@ def test_resolve_operator_api_key_is_system_label(monkeypatch):
     from app.api.routes_inventory_returns import resolve_session_operator
     monkeypatch.setattr(_cfg.settings, "api_key", "secret", raising=False)
     assert resolve_session_operator(key="secret", pz_session=None) == "system:api-key"
+
+
+# ── Phase 2b: read-back, history visibility, write-off confirm, no-mutation ──
+
+def test_read_endpoint_returns_qc_history(monkeypatch, tmp_path):
+    cli = _client(monkeypatch, tmp_path, api_key="", env="dev")
+    _seed_returned_from_client("SC-RD")
+    cli.post("/api/v1/inventory/pieces/SC-RD/qc-disposition",
+             json={"decision": "restock", "condition": "ok", "inspector": "qc7", "idempotency_key": "r1"})
+    resp = cli.get("/api/v1/inventory/pieces/SC-RD/qc-dispositions")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["piece_id"] == "SC-RD"
+    assert isinstance(body["dispositions"], list) and len(body["dispositions"]) == 1
+    d = body["dispositions"][0]
+    # all recorded fields are visible
+    for f in ("condition", "inspector", "decision", "notes", "producer_name",
+              "dispatch_reference", "operator", "disposed_at"):
+        assert f in d, f"read-back missing field {f}"
+    assert d["decision"] == "restock" and d["condition"] == "ok" and d["inspector"] == "qc7"
+    assert d["operator"] == "dev-operator"
+
+
+def test_read_endpoint_is_read_only(monkeypatch, tmp_path):
+    cli = _client(monkeypatch, tmp_path, api_key="", env="dev")
+    _seed_returned_from_client("SC-RO")
+    before = ise.get_state("SC-RO")["state"]
+    n_before = len(wdb.get_qc_dispositions("SC-RO"))
+    cli.get("/api/v1/inventory/pieces/SC-RO/qc-dispositions")
+    cli.get("/api/v1/inventory/pieces/SC-RO/qc-dispositions")
+    assert ise.get_state("SC-RO")["state"] == before          # state unchanged
+    assert len(wdb.get_qc_dispositions("SC-RO")) == n_before   # no rows created
+
+
+_IP = Path(_SVC) / "app" / "static" / "v2" / "inventory-page.jsx"
+_API = Path(_SVC) / "app" / "static" / "v2" / "pz-api.js"
+
+
+def test_stale_backend_pending_placeholders_removed():
+    src = _IP.read_text(encoding="utf-8")
+    # the register QC columns must no longer claim "backend-pending" for QC writes
+    assert "backend-pending — QC outcome writes (future slice)" not in src
+    assert "backend-pending — QC condition writes" not in src
+    assert "backend-pending — QC decision" not in src
+    # live QC cells are wired instead
+    assert "function QcCells(" in src and "<QcCells" in src
+
+
+def test_qc_history_panel_and_reader_present():
+    src = _IP.read_text(encoding="utf-8")
+    assert 'data-testid="qc-history"' in src           # inline history panel
+    assert "getQcDispositions(" in src                 # modal + cells fetch history
+    assert "getQcDispositions:" in _API.read_text(encoding="utf-8")  # api wrapper
+
+
+def test_writeoff_confirmation_required_in_ui():
+    src = _IP.read_text(encoding="utf-8")
+    assert 'data-testid="qc-writeoff-confirm"' in src
+    assert "terminal and irreversible" in src
+    # submit is guarded on the write-off confirmation
+    assert "decision === 'write_off' && !writeoffConfirmed" in src
