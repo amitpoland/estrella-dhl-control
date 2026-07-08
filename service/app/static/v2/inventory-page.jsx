@@ -2398,6 +2398,201 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // PieceDetailDrawer — Package C1: read-only piece detail + unified timeline
+  // + action buttons (Correct / Archive). Fetches GET /api/v1/inventory/pieces/{id}
+  // on open. Uses existing correction/archive modals — no new authority.
+  function PieceDetailDrawer({ pieceId, onClose, onCorrect }) {
+    const [detail, setDetail] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+
+    useEffect(() => {
+      if (!pieceId) return;
+      setLoading(true);
+      setError('');
+      setDetail(null);
+      window.PzApi.getInventoryPieceState(pieceId).then(res => {
+        setLoading(false);
+        if (!res.ok) { setError(res.error || ('HTTP ' + res.status)); return; }
+        setDetail(res.data || res);
+      }).catch(e => { setLoading(false); setError(e.message || 'Network error'); });
+    }, [pieceId]);
+
+    if (!pieceId) return null;
+
+    const STATE_COLORS = {
+      PURCHASE_TRANSIT: { bg: 'var(--badge-blue-bg)', text: 'var(--badge-blue-text)', border: 'var(--badge-blue-border)' },
+      WAREHOUSE_STOCK:  { bg: 'var(--badge-green-bg)', text: 'var(--badge-green-text)', border: 'var(--badge-green-border)' },
+      SALES_TRANSIT:    { bg: 'var(--badge-amber-bg)', text: 'var(--badge-amber-text)', border: 'var(--badge-amber-border)' },
+      CLIENT_DISPATCHED:{ bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+      CLOSED:           { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+      WRITTEN_OFF:      { bg: 'var(--badge-red-bg)', text: 'var(--badge-red-text)', border: 'var(--badge-red-border)' },
+    };
+
+    const KIND_LABELS = {
+      lifecycle: { label: 'Lifecycle', color: 'var(--badge-blue-text)' },
+      movement:  { label: 'Movement',  color: 'var(--badge-green-text)' },
+      sample:    { label: 'Sample',    color: 'var(--badge-amber-text)' },
+      returns:   { label: 'Returns',   color: 'var(--badge-amber-text)' },
+      correction:{ label: 'Correction',color: 'var(--accent-text)' },
+      reversal:  { label: 'Reversal',  color: 'var(--badge-red-text)' },
+    };
+
+    const st = detail && detail.state;
+    const stColor = st ? (STATE_COLORS[st.current_state] || STATE_COLORS.WAREHOUSE_STOCK) : null;
+    const loc = detail && detail.location;
+    const timeline = (detail && detail.timeline) || [];
+    const limitations = (detail && detail.limitations) || [];
+
+    const overlayStyle = {
+      position: 'fixed', inset: 0, zIndex: 9998,
+      background: 'rgba(0,0,0,0.35)', display: 'flex', justifyContent: 'flex-end',
+    };
+    const drawerStyle = {
+      width: 520, maxWidth: '92vw', height: '100vh', overflowY: 'auto',
+      background: 'var(--card)', borderLeft: '1px solid var(--border)',
+      boxShadow: '-4px 0 24px var(--shadow)', padding: '24px 20px 32px',
+    };
+    const sectionTitle = { fontSize: 11.5, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8, marginTop: 20 };
+    const fieldRow = { display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12.5, borderBottom: '1px solid var(--border-subtle)' };
+    const fieldLabel = { color: 'var(--text-3)', fontWeight: 600 };
+    const fieldValue = { color: 'var(--text)', fontFamily: 'ui-monospace, monospace', fontSize: 11.5 };
+
+    return (
+      <div style={overlayStyle} onClick={e => { if (e.target === e.currentTarget) onClose(); }} data-testid="piece-detail-overlay">
+        <div style={drawerStyle} data-testid="piece-detail-drawer" role="dialog" aria-label={'Piece detail: ' + pieceId}>
+          {/* Header */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Piece Detail</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', fontFamily: 'ui-monospace, monospace', marginTop: 2 }}>{pieceId}</div>
+            </div>
+            <button data-testid="piece-detail-close" onClick={onClose}
+              style={{ padding: '4px 12px', fontSize: 13, fontWeight: 700, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-2)', cursor: 'pointer' }}
+              aria-label="Close piece detail">✕</button>
+          </div>
+
+          {loading && <div style={{ padding: '32px 0', textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>Loading piece detail…</div>}
+
+          {error && (
+            <div data-testid="piece-detail-error" style={{ padding: '12px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 12.5, color: 'var(--badge-red-text)' }}>
+              {error}
+            </div>
+          )}
+
+          {detail && !detail.found && !loading && (
+            <div data-testid="piece-detail-not-found" style={{ padding: '24px 0', textAlign: 'center', color: 'var(--text-3)', fontSize: 13, fontStyle: 'italic' }}>
+              Piece not found in inventory state.
+            </div>
+          )}
+
+          {detail && detail.found && (
+            <>
+              {/* State + identity */}
+              <div style={sectionTitle}>Identity &amp; State</div>
+              <div style={{ background: 'var(--bg-subtle)', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border-subtle)' }}>
+                {st && (
+                  <>
+                    <div style={fieldRow}>
+                      <span style={fieldLabel}>State</span>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', background: stColor.bg, color: stColor.text, border: '1px solid ' + stColor.border, borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
+                        {st.current_state}
+                      </span>
+                    </div>
+                    <div style={fieldRow}>
+                      <span style={fieldLabel}>Product Code</span>
+                      <span style={fieldValue}>{st.product_code || '(blank)'}</span>
+                    </div>
+                    <div style={fieldRow}>
+                      <span style={fieldLabel}>Design No</span>
+                      <span style={fieldValue}>{st.design_no || '(blank)'}</span>
+                    </div>
+                    <div style={fieldRow}>
+                      <span style={fieldLabel}>Batch ID</span>
+                      <span style={fieldValue}>{st.batch_id || '(blank)'}</span>
+                    </div>
+                    <div style={fieldRow}>
+                      <span style={fieldLabel}>Created</span>
+                      <span style={fieldValue}>{st.created_at || '—'}</span>
+                    </div>
+                    <div style={{ ...fieldRow, borderBottom: 'none' }}>
+                      <span style={fieldLabel}>Updated</span>
+                      <span style={fieldValue}>{st.updated_at || '—'}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Location */}
+              <div style={sectionTitle}>Location</div>
+              <div style={{ background: 'var(--bg-subtle)', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border-subtle)' }}>
+                {loc ? (
+                  <>
+                    <div style={fieldRow}>
+                      <span style={fieldLabel}>Current Location</span>
+                      <span style={{ ...fieldValue, fontWeight: 600, color: 'var(--badge-green-text)' }}>{loc.location_code || '—'}</span>
+                    </div>
+                    <div style={{ ...fieldRow, borderBottom: 'none' }}>
+                      <span style={fieldLabel}>Assigned At</span>
+                      <span style={fieldValue}>{loc.assigned_at || loc.event_time || '—'}</span>
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12.5, color: 'var(--text-3)', fontStyle: 'italic' }}>No location assigned</div>
+                )}
+              </div>
+
+              {/* Actions */}
+              <div style={sectionTitle}>Actions</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button data-testid="piece-detail-correct"
+                  onClick={() => {
+                    if (onCorrect && st) onCorrect({ scan_code: pieceId, product_code: st.product_code, design_no: st.design_no, batch_id: st.batch_id });
+                  }}
+                  style={{ padding: '7px 14px', fontSize: 12.5, fontWeight: 600, borderRadius: 6, border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)', color: 'var(--accent-text)', cursor: 'pointer' }}>
+                  Correct Identity
+                </button>
+              </div>
+
+              {/* Degradation warnings */}
+              {detail.degraded && limitations.length > 0 && (
+                <div data-testid="piece-detail-degraded" style={{ marginTop: 16, padding: '8px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 8, fontSize: 12, color: 'var(--badge-amber-text)' }}>
+                  <strong>Degraded:</strong> {limitations.join('; ')}
+                </div>
+              )}
+
+              {/* Unified Timeline */}
+              <div style={sectionTitle}>Timeline ({timeline.length} events)</div>
+              <div style={{ maxHeight: 360, overflowY: 'auto', border: '1px solid var(--border-subtle)', borderRadius: 8, background: 'var(--bg-subtle)' }}>
+                {timeline.length === 0 && (
+                  <div style={{ padding: '20px 0', textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5, fontStyle: 'italic' }}>No events recorded.</div>
+                )}
+                {timeline.map((evt, idx) => {
+                  const kindMeta = KIND_LABELS[evt.kind] || { label: evt.kind, color: 'var(--text-3)' };
+                  return (
+                    <div key={evt.event_id || idx} data-testid="piece-timeline-event"
+                      style={{ padding: '8px 12px', borderBottom: idx < timeline.length - 1 ? '1px solid var(--border-subtle)' : 'none', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                      <div style={{ minWidth: 72, flexShrink: 0 }}>
+                        <span style={{ display: 'inline-block', fontSize: 10, fontWeight: 700, color: kindMeta.color, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{kindMeta.label}</span>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12.5, color: 'var(--text)', lineHeight: 1.4 }}>{evt.summary}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
+                          {evt.occurred_at ? new Date(evt.occurred_at).toLocaleString() : '—'}
+                          {evt.operator ? (' · ' + evt.operator) : ''}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // IdentityCorrectionModal — Engineering OS Inventory Correction (Package A +
   // D-identity slice). Fixes blank/wrong product_code, design_no, or batch_id
   // on an existing piece via the single-writer inventory_state_engine — never
@@ -3292,7 +3487,7 @@ function DocumentViewerPage({ doc, onBack }) {
   //
   // Stage-1 Document layer info banner: per wireframe verbatim.
 
-  function TempPurchaseTab({ openViewer, onShowMove, reportExport }) {
+  function TempPurchaseTab({ openViewer, onShowMove, reportExport, onCorrect, onViewPiece }) {
     const [batchId, setBatchId]   = useState('');
     const [loading, setLoading]   = useState(false);
     const [error, setError]       = useState('');
@@ -3508,6 +3703,18 @@ function DocumentViewerPage({ doc, onBack }) {
                             style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)', color: 'var(--accent-text)', cursor: 'pointer' }}>
                             Receive
                           </button>
+                          {/* View piece — Package C1: opens PieceDetailDrawer */}
+                          <button data-testid="tp-btn-view"
+                            onClick={() => onViewPiece && onViewPiece(sc)}
+                            style={{ marginLeft: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+                            View
+                          </button>
+                          {/* Correct — Package C1: wires onCorrect to TempPurchase rows */}
+                          <button data-testid="tp-btn-correct"
+                            onClick={() => onCorrect && onCorrect(r)}
+                            style={{ marginLeft: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+                            Correct
+                          </button>
                         </td>
                       </tr>
                     );
@@ -3589,7 +3796,7 @@ function DocumentViewerPage({ doc, onBack }) {
   // Accessibility: focus ring on all interactive buttons (outline:2px solid var(--accent));
   //   aria-label on icon-only/action buttons; color contrast via existing tokens.
 
-  function FinalStockTab({ openViewer, onShowMove, reportExport, onCorrect }) {
+  function FinalStockTab({ openViewer, onShowMove, reportExport, onCorrect, onViewPiece }) {
     const [batchId, setBatchId]   = useState('');
     const [loading, setLoading]   = useState(false);
     const [error, setError]       = useState('');
@@ -3824,6 +4031,15 @@ function DocumentViewerPage({ doc, onBack }) {
                         <td style={{ ...TD, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, color: 'var(--text-3)' }}
                             title="wFirma ref not in location API — future: join wfirma_product_mirror (IV-FS-2)">{wfRef}</td>
                         <td style={{ ...TD, textAlign: 'center', whiteSpace: 'nowrap' }}>
+                          {/* View — Package C1: opens PieceDetailDrawer with unified timeline */}
+                          <button data-testid="fs-btn-view"
+                            aria-label={'View piece detail ' + scanCode}
+                            onClick={() => onViewPiece && onViewPiece(r.scan_code)}
+                            style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)', color: 'var(--accent-text)', cursor: 'pointer', outline: 'none' }}
+                            onFocus={e => e.currentTarget.style.outline = '2px solid var(--accent)'}
+                            onBlur={e => e.currentTarget.style.outline = 'none'}>
+                            View
+                          </button>
                           {/* Trace — dispatches openViewer (existing DocumentViewerPage authority) */}
                           <button data-testid="fs-btn-trace"
                             aria-label={'Trace stock unit ' + scanCode}
@@ -3948,7 +4164,7 @@ function DocumentViewerPage({ doc, onBack }) {
   //   c) AWB and Recv Date columns → honest "—" (not in C-3e response).
   //   d) Discrepancies KPI → "—" (not computable from per-piece rows alone).
 
-  function TempWarehouseTab({ openViewer, onShowMove, reportExport }) {
+  function TempWarehouseTab({ openViewer, onShowMove, reportExport, onCorrect, onViewPiece }) {
     const [batchId, setBatchId]       = useState('');
     const [loading, setLoading]       = useState(false);
     const [error, setError]           = useState('');
@@ -4225,6 +4441,18 @@ function DocumentViewerPage({ doc, onBack }) {
                             })}
                             style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
                             View doc
+                          </button>
+                          {/* View piece — Package C1: opens PieceDetailDrawer */}
+                          <button data-testid="tw-btn-view"
+                            onClick={() => onViewPiece && onViewPiece(sc)}
+                            style={{ marginLeft: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)', color: 'var(--accent-text)', cursor: 'pointer' }}>
+                            View
+                          </button>
+                          {/* Correct — Package C1: wires onCorrect to TempWarehouse rows */}
+                          <button data-testid="tw-btn-correct"
+                            onClick={() => onCorrect && onCorrect(r)}
+                            style={{ marginLeft: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+                            Correct
                           </button>
                         </td>
                       </tr>
@@ -5547,6 +5775,10 @@ function DocumentViewerPage({ doc, onBack }) {
     function handleCorrect(row) { setCorrectionTarget(row); }
     function handleCorrectionSuccess() { setCorrectionTarget(null); }
 
+    // Piece Detail Drawer (Package C1) — read-only detail + unified timeline.
+    const [viewPieceId, setViewPieceId] = useState(null);
+    function handleViewPiece(scanCode) { setViewPieceId(scanCode); }
+
     // Inventory Reversal (Package B) — forward-correction back to WAREHOUSE_STOCK.
     const [showReversal, setShowReversal] = useState(false);
     function handleReversalSuccess() { setShowReversal(false); }
@@ -5710,6 +5942,15 @@ function DocumentViewerPage({ doc, onBack }) {
           />
         )}
 
+        {/* Piece Detail Drawer — Package C1: read-only detail + unified timeline */}
+        {viewPieceId && (
+          <PieceDetailDrawer
+            pieceId={viewPieceId}
+            onClose={() => setViewPieceId(null)}
+            onCorrect={(row) => { setViewPieceId(null); handleCorrect(row); }}
+          />
+        )}
+
         {/* Tab strip — uses handleTabChange (clears exportMeta on switch) */}
         <InvTabStrip active={activeTab} onChange={handleTabChange} />
 
@@ -5749,6 +5990,8 @@ function DocumentViewerPage({ doc, onBack }) {
               openViewer={openViewer}
               onShowMove={() => setShowMove(true)}
               reportExport={reportExport}
+              onCorrect={handleCorrect}
+              onViewPiece={handleViewPiece}
             />
           )}
 
@@ -5758,6 +6001,8 @@ function DocumentViewerPage({ doc, onBack }) {
               openViewer={openViewer}
               onShowMove={() => setShowMove(true)}
               reportExport={reportExport}
+              onCorrect={handleCorrect}
+              onViewPiece={handleViewPiece}
             />
           )}
 
@@ -5770,6 +6015,7 @@ function DocumentViewerPage({ doc, onBack }) {
               onShowMove={() => setShowMove(true)}
               reportExport={reportExport}
               onCorrect={handleCorrect}
+              onViewPiece={handleViewPiece}
             />
           )}
 

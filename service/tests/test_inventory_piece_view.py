@@ -144,6 +144,10 @@ def test_no_write_methods_on_pieces_path():
         "/api/v1/inventory/pieces/{piece_id}/return-from-client",    # Returns — POST (Phase B.2)
         "/api/v1/inventory/pieces/{piece_id}/return-to-producer",    # Returns — POST (Phase B.2)
         "/api/v1/inventory/pieces/{piece_id}/return-from-producer",  # Returns — POST (Phase B.2)
+        "/api/v1/inventory/pieces/{piece_id}/qc-disposition",        # QC disposition — POST (Returns QC)
+        "/api/v1/inventory/pieces/{piece_id}/correction/identity",   # Identity correction — POST (Package A)
+        "/api/v1/inventory/pieces/{piece_id}/correction/archive-proposal",  # Archive proposal — POST (Package A)
+        "/api/v1/inventory/pieces/{piece_id}/reversal/{reversal_target}",  # Transit reversal — POST (Package B)
     }
     for route in routes:
         path = getattr(route, "path", "")

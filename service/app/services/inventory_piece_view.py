@@ -37,10 +37,12 @@ from . import warehouse_db
 # Mirrors causality: a state transition logically precedes the side-effect
 # write that records it, which precedes any sample evidence row.
 _KIND_PRIORITY: Dict[str, int] = {
-    "lifecycle": 0,
-    "movement":  1,
-    "sample":    2,
-    "returns":   3,
+    "lifecycle":   0,
+    "movement":    1,
+    "sample":      2,
+    "returns":     3,
+    "correction":  4,
+    "reversal":    5,
 }
 
 
@@ -186,6 +188,78 @@ def _returns_entries(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def _correction_summary(row: Dict[str, Any]) -> str:
+    ctype = (row.get("correction_type") or "").strip()
+    if ctype == "archive_proposal":
+        status = (row.get("status") or "proposed").strip()
+        return f"archive proposal ({status})"
+    changes: List[str] = []
+    if row.get("old_product_code") != row.get("new_product_code"):
+        changes.append(f"product_code: {row.get('old_product_code') or '(blank)'} -> {row.get('new_product_code') or '(blank)'}")
+    if row.get("old_design_no") != row.get("new_design_no"):
+        changes.append(f"design_no: {row.get('old_design_no') or '(blank)'} -> {row.get('new_design_no') or '(blank)'}")
+    if row.get("old_batch_id") != row.get("new_batch_id"):
+        changes.append(f"batch_id: {row.get('old_batch_id') or '(blank)'} -> {row.get('new_batch_id') or '(blank)'}")
+    if changes:
+        return "identity correction: " + "; ".join(changes)
+    return "identity correction"
+
+
+def _reversal_summary(row: Dict[str, Any]) -> str:
+    frm = (row.get("from_state") or "").strip()
+    to = (row.get("to_state") or "").strip()
+    reason = (row.get("reason") or "").strip()
+    base = f"reversal {frm} -> {to}" if frm else f"reversal -> {to}"
+    if reason:
+        return f"{base} ({reason})"
+    return base
+
+
+def _correction_entries(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for r in rows or []:
+        out.append({
+            "kind":        "correction",
+            "occurred_at": r.get("created_at") or "",
+            "operator":    r.get("operator")   or "",
+            "event_id":    r.get("id")         or "",
+            "summary":     _correction_summary(r),
+            "detail": {
+                "correction_type":  r.get("correction_type")  or "",
+                "old_product_code": r.get("old_product_code") or "",
+                "new_product_code": r.get("new_product_code") or "",
+                "old_design_no":    r.get("old_design_no")    or "",
+                "new_design_no":    r.get("new_design_no")    or "",
+                "old_batch_id":     r.get("old_batch_id")     or "",
+                "new_batch_id":     r.get("new_batch_id")     or "",
+                "reason":           r.get("reason")           or "",
+                "status":           r.get("status")           or "",
+            },
+        })
+    return out
+
+
+def _reversal_entries(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for r in rows or []:
+        out.append({
+            "kind":        "reversal",
+            "occurred_at": r.get("created_at") or "",
+            "operator":    r.get("operator")   or "",
+            "event_id":    r.get("id")         or "",
+            "summary":     _reversal_summary(r),
+            "detail": {
+                "from_state":        r.get("from_state")        or "",
+                "to_state":          r.get("to_state")          or "",
+                "reversal_type":     r.get("reversal_type")     or "",
+                "reason":            r.get("reason")            or "",
+                "original_event_id": r.get("original_event_id") or "",
+                "notes":             r.get("notes")             or "",
+            },
+        })
+    return out
+
+
 def _sort_key(entry: Dict[str, Any]) -> Tuple[str, int, str]:
     return (
         entry.get("occurred_at") or "",
@@ -281,6 +355,20 @@ def get_piece_detail(piece_id: str, as_of: Optional[str] = None) -> Dict[str, An
         limitations.append(f"returns_events: {e!s}"
                            or "returns_events: reader failed")
 
+    try:
+        correction_rows = warehouse_db.get_corrections(piece_id)
+    except Exception as e:
+        correction_rows = []
+        limitations.append(f"inventory_corrections: {e!s}"
+                           or "inventory_corrections: reader failed")
+
+    try:
+        reversal_rows = warehouse_db.get_reversals(piece_id)
+    except Exception as e:
+        reversal_rows = []
+        limitations.append(f"inventory_reversals: {e!s}"
+                           or "inventory_reversals: reader failed")
+
     # 4. Compose unified timeline. Server-side merge + sort by
     #    (occurred_at asc, kind priority asc, event_id asc).
     merged: List[Dict[str, Any]] = []
@@ -288,6 +376,8 @@ def get_piece_detail(piece_id: str, as_of: Optional[str] = None) -> Dict[str, An
     merged.extend(_movement_entries(movement_rows))
     merged.extend(_sample_entries(sample_rows))
     merged.extend(_returns_entries(returns_rows))
+    merged.extend(_correction_entries(correction_rows))
+    merged.extend(_reversal_entries(reversal_rows))
     merged.sort(key=_sort_key)
 
     return {
