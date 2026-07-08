@@ -907,6 +907,24 @@
       return _get(`${BASE}/inventory/samples${qs}`);
     },
 
+    // ── WF-2: Inventory Fiscal Reconciliation (READ-ONLY) ─────────────────
+    // Dashboard operational stock vs wFirma fiscal quantity. No writes, no
+    // auto-correction. Authority: routes_inventory.py fiscal-reconciliation.
+    // GET /api/v1/inventory/fiscal-reconciliation?warehouse_id=&warehouse=&product=&severity=&difference_type=&search=
+    // → { generated_at, fiscal_source, summary, differences[], warehouses[] }
+    getFiscalReconciliation: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/inventory/fiscal-reconciliation${qs}`);
+    },
+    // POST /api/v1/inventory/fiscal-reconciliation/run?warehouse_id= — Run Now (records an audit run)
+    runFiscalReconciliation: (warehouseId) => {
+      const qs = warehouseId ? '?warehouse_id=' + encodeURIComponent(warehouseId) : '';
+      return _call('POST', `${BASE}/inventory/fiscal-reconciliation/run${qs}`, {});
+    },
+    // GET /api/v1/inventory/fiscal-reconciliation/status — last recorded run
+    getFiscalReconciliationStatus: () =>
+      _get(`${BASE}/inventory/fiscal-reconciliation/status`),
+
     // POST /api/v1/inventory/pieces/{piece_id}/sample-out
     //   body: { operator, recipient_client_name, recipient_client_id?,
     //           expected_return_date, sample_reason, idempotency_key, notes? }

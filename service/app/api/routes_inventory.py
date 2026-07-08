@@ -16,6 +16,7 @@ from ..core.security import require_api_key
 from ..services.inventory_batch_state import get_batch_state
 from ..services.inventory_piece_view import get_piece_detail
 from ..services.inventory_reconciliation_service import run_reconciliation
+from ..services import inventory_fiscal_reconciliation_service as fiscal_recon
 from ..services.inventory_stage2_aggregator import aggregate_stage2
 
 
@@ -52,6 +53,53 @@ def get_inventory_reconciliation() -> dict:
     health status. GET only; performs NO mutation and offers NO repair suggestions.
     """
     return run_reconciliation()
+
+
+# ── WF-2: Fiscal reconciliation (Dashboard operational vs wFirma fiscal) ──────
+# Read-only. Compares operational piece-stock (inventory_state) against wFirma
+# fiscal quantity (goods/find by warehouse_id). Never writes either system; the
+# only write is WF-2's own audit-run record. No auto-correction.
+
+@router.get("/fiscal-reconciliation")
+def get_fiscal_reconciliation(
+    warehouse_id: Optional[str] = Query(None, description="wFirma warehouse id to read (default: configured/all)"),
+    warehouse: Optional[str] = Query(None, description="filter results by warehouse id"),
+    product: Optional[str] = Query(None, description="filter results by product code (substring)"),
+    severity: Optional[str] = Query(None, description="filter by LOW|MEDIUM|HIGH|CRITICAL"),
+    difference_type: Optional[str] = Query(None, description="filter by difference type"),
+    search: Optional[str] = Query(None, description="free-text filter"),
+) -> dict:
+    """Read-only fiscal reconciliation report (a VIEW — not recorded as a run).
+
+    Compares Dashboard operational on-hand stock against wFirma fiscal quantity
+    and returns a classified, severity-ranked difference report. Performs NO
+    mutation and offers NO automatic correction. When wFirma is unavailable the
+    report is honestly marked ``fiscal_source="unavailable"``.
+    """
+    return fiscal_recon.run_fiscal_reconciliation(
+        warehouse_id=warehouse_id, record=False,
+        warehouse=warehouse or "", product=product or "",
+        severity=severity or "", difference_type=difference_type or "",
+        search=search or "",
+    )
+
+
+@router.post("/fiscal-reconciliation/run")
+def run_fiscal_reconciliation_now(
+    warehouse_id: Optional[str] = Query(None, description="wFirma warehouse id to read (default: configured/all)"),
+) -> dict:
+    """Run Now — executes the read-only reconciliation and records an audit run.
+
+    Records only run METADATA (timestamp, warehouse, duration, counts) to WF-2's
+    own audit DB. Writes nothing to inventory_state, wFirma, or any Master.
+    """
+    return fiscal_recon.run_fiscal_reconciliation(warehouse_id=warehouse_id, record=True)
+
+
+@router.get("/fiscal-reconciliation/status")
+def get_fiscal_reconciliation_status() -> dict:
+    """Canonical status for the reconciliation surface (last recorded run)."""
+    return fiscal_recon.get_status()
 
 
 @router.get("/stage2/aggregate")
