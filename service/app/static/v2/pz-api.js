@@ -1076,6 +1076,21 @@
         `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/corrections`);
     },
 
+    reverseToStock: (pieceId, reversalTarget, payload) => {
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/reversal/${encodeURIComponent(reversalTarget)}`,
+        payload);
+    },
+
+    getReversals: (pieceId) => {
+      return _call('GET',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/reversals`);
+    },
+
+    getInventoryPieceState: (pieceId) => {
+      return _get(`${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}`);
+    },
+
     // ── Inventory: Temp Sale register — Wave-3 U-3 page 5 ─────────────────
     // GET /api/v1/inventory/state/{batch_id}
     // → { ok:true, batch_id, as_of, counts:{state: int}, pieces:[{scan_code,

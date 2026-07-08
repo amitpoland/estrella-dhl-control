@@ -1,34 +1,23 @@
-"""Returns write routes — Phase B.2.
+"""Returns, corrections, and reversal write routes.
 
   POST /api/v1/inventory/pieces/{piece_id}/return-from-client
-       — Inbound: WAREHOUSE_STOCK | SAMPLE_OUT → RETURNED_FROM_CLIENT.
-
   POST /api/v1/inventory/pieces/{piece_id}/return-to-producer
-       — Outbound: WAREHOUSE_STOCK | RETURNED_FROM_CLIENT
-                   → RETURNED_TO_PRODUCER.
-
   POST /api/v1/inventory/pieces/{piece_id}/return-from-producer
-       — Restock: RETURNED_TO_PRODUCER → WAREHOUSE_STOCK.
-
   POST /api/v1/inventory/pieces/{piece_id}/correction/identity
-       — Correct product_code / design_no / batch_id (no state change).
-
   POST /api/v1/inventory/pieces/{piece_id}/correction/archive-proposal
-       — Propose an over-scan / duplicate piece for archive (proposal only).
-
   GET  /api/v1/inventory/pieces/{piece_id}/corrections
-       — Read-only correction audit timeline.
+  POST /api/v1/inventory/pieces/{piece_id}/reversal/{reversal_target}
+  GET  /api/v1/inventory/pieces/{piece_id}/reversals
 
 All endpoints require X-API-Key (router-level Depends(require_api_key))
 and a caller-supplied `idempotency_key`. Replay returns the prior
-event_id (same scan_code + idempotency_key). Correction/QC writes are
-additionally role-gated (require_api_key_privileged) with a session-derived
-operator — never client free-text.
+event_id (same scan_code + idempotency_key). Correction/QC/reversal
+writes are additionally role-gated (require_api_key_privileged) with a
+session-derived operator — never client free-text.
 
 Single-writer discipline preserved: this router never UPDATEs
 inventory_state directly. All state changes via transition(); identity
-corrections via inventory_state_engine.correct_identity() (a deliberate,
-narrower single-writer sibling — see that function's docstring).
+corrections via correct_identity(); reversals via reverse_to_stock().
 """
 from __future__ import annotations
 
@@ -51,6 +40,10 @@ from ..services.inventory_returns_writer import (
     mark_returned_from_client,
     mark_returned_to_producer,
     return_from_producer_to_stock,
+)
+from ..services.inventory_reversal_writer import (
+    ReversalError,
+    reverse_to_stock,
 )
 
 _qc_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -213,6 +206,35 @@ class ArchiveProposalRequest(BaseModel):
 def _map_correction_error(e: CorrectionError) -> HTTPException:
     return HTTPException(
         status_code=_STATUS_FOR_CODE.get(e.code, 500),
+        detail={"code": e.code, "detail": e.message},
+    )
+
+
+class ReversalRequest(BaseModel):
+    """Reverse a transit state back to WAREHOUSE_STOCK. NOTE: no `operator`
+    field — session-derived. Only SALES_TRANSIT and CLIENT_DISPATCHED are
+    reversible. Terminal states (CLOSED, WRITTEN_OFF) have no successors."""
+    reason:             str = Field(
+        ..., min_length=1,
+        description=(
+            "Transit reasons: wrong_invoice_link, cancelled_dispatch, "
+            "operator_error, system_error, other."
+        ),
+    )
+    idempotency_key:    str = Field(..., min_length=1)
+    original_event_id:  Optional[str] = Field(
+        default="",
+        description="inventory_state_events.id of the transition being reversed",
+    )
+    notes:              Optional[str] = Field(default="")
+
+
+_REVERSAL_STATUS_FOR_CODE = {**_STATUS_FOR_CODE}
+
+
+def _map_reversal_error(e: ReversalError) -> HTTPException:
+    return HTTPException(
+        status_code=_REVERSAL_STATUS_FOR_CODE.get(e.code, 500),
         detail={"code": e.code, "detail": e.message},
     )
 
@@ -497,3 +519,75 @@ def list_returns(
         )
     records = wdb.list_returns_records(direction=d, status=st, limit=limit)
     return {"ok": True, "count": len(records), "returns": records}
+
+
+# ── Package B: inventory reversal (forward-correction back to WAREHOUSE_STOCK) ─
+
+_REVERSAL_TARGET_MAP = {
+    "sales-transit": "SALES_TRANSIT",
+    "dispatched":   "CLIENT_DISPATCHED",
+}
+
+
+@router.post(
+    "/pieces/{piece_id}/reversal/{reversal_target}",
+    dependencies=[Depends(require_api_key_privileged)],
+)
+def post_reversal(
+    piece_id: str,
+    reversal_target: str,
+    payload: ReversalRequest,
+    operator: str = Depends(resolve_session_operator),
+) -> dict:
+    """Reverse a transit state back to WAREHOUSE_STOCK.
+    Forward correction only — never deletes history, never touches
+    Product Master / accounting / wFirma. Privileged (role-gated);
+    operator is session-derived. Idempotent on (piece_id, idempotency_key).
+
+    reversal_target path param:
+      sales-transit | dispatched
+
+    Terminal states (CLOSED, WRITTEN_OFF) have no successors and are NOT
+    reversible through this endpoint.
+
+    Errors:
+      400 INVALID_INPUT (bad target, bad reason enum)
+      403 role not permitted (require_api_key_privileged)
+      409 WRONG_STATE (piece is not in expected_from state)
+      503 DB_UNAVAILABLE
+    """
+    expected_from = _REVERSAL_TARGET_MAP.get(reversal_target)
+    if expected_from is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_INPUT",
+                "detail": f"reversal_target must be one of "
+                          f"{sorted(_REVERSAL_TARGET_MAP.keys())}, "
+                          f"got {reversal_target!r}",
+            },
+        )
+    try:
+        return reverse_to_stock(
+            scan_code=piece_id,
+            operator=operator,
+            reason=payload.reason,
+            idempotency_key=payload.idempotency_key,
+            expected_from=expected_from,
+            original_event_id=payload.original_event_id or "",
+            notes=payload.notes or "",
+        )
+    except ReversalError as e:
+        raise _map_reversal_error(e)
+
+
+@router.get("/pieces/{piece_id}/reversals")
+def get_reversals(piece_id: str) -> dict:
+    """Read-only reversal audit timeline for a piece (newest first).
+    Surfaces from_state, to_state, reversal_type, reason, operator,
+    approval_reference, original_event_id, notes, created_at. Pure read."""
+    from ..services import warehouse_db as _wdb  # noqa: PLC0415
+    return {
+        "piece_id": piece_id,
+        "reversals": _wdb.get_reversals(piece_id),
+    }
