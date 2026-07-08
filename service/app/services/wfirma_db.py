@@ -242,6 +242,25 @@ def upsert_customer(
         return row_id
 
 
+def backfill_contractor_id(row_id: str, contractor_id: str) -> bool:
+    """WF-3 non-destructive migration helper. Fill ``wfirma_customer_id`` on a
+    legacy ``wfirma_customers`` row ONLY when it is currently empty. The write is
+    keyed by the row id (never by name) and never overwrites an existing id, so
+    it is rollback-safe (original data preserved) and idempotent (a second run
+    fills nothing). Returns True iff a row was newly filled.
+    """
+    cid = (contractor_id or "").strip()
+    if _db_path is None or not row_id or not cid:
+        return False
+    with _lock, _connect() as con:
+        cur = con.execute(
+            "UPDATE wfirma_customers SET wfirma_customer_id=?, updated_at=? "
+            "WHERE id=? AND (wfirma_customer_id IS NULL OR wfirma_customer_id='')",
+            (cid, _now(), row_id),
+        )
+        return cur.rowcount == 1
+
+
 _ALLOWED_CURRENCIES: frozenset = frozenset({
     "EUR", "USD", "PLN", "GBP", "CHF", "JPY",
 })

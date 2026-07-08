@@ -480,6 +480,29 @@ def upsert_customer_mirror(
     return {"written": True, "reason": None}
 
 
+def get_customer_mirror(db_path: Path, contractor_id: str) -> Optional[Dict[str, Any]]:
+    """Read a single wfirma_customer_mirror row by contractor_id (id-keyed).
+    Read-only; returns None when the id is empty, the DB/table is absent, or no
+    row matches. WF-3: the mirror is one of the id-keyed identity sources the
+    canonical resolver consults (never a name lookup)."""
+    cid = (contractor_id or "").strip()
+    if not cid:
+        return None
+    p = Path(db_path)
+    if not p.exists():
+        return None
+    try:
+        with _connect(p) as con:
+            r = con.execute(
+                "SELECT contractor_id, client_name, sync_version, last_sync, "
+                "deleted_flag FROM wfirma_customer_mirror WHERE contractor_id=?",
+                (cid,),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return dict(r) if r else None
+
+
 def backfill_customer_authority(
     db_path: Path,
     wfirma_db_path: Optional[Path] = None,
