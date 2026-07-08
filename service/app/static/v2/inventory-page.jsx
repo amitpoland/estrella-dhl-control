@@ -2398,6 +2398,222 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
+  // IdentityCorrectionModal — Engineering OS Inventory Correction (Package A +
+  // D-identity slice). Fixes blank/wrong product_code, design_no, or batch_id
+  // on an existing piece via the single-writer inventory_state_engine — never
+  // a lifecycle transition, never a Product Master write. Operator is taken
+  // from the session (never entered here). Also hosts the lightweight,
+  // non-terminal "Propose archive" action for case 6 (over-scan/duplicate) —
+  // a proposal only, never an auto-apply, never a physical delete.
+  function IdentityCorrectionModal({ piece, onClose, onSuccess }) {
+    const origProductCode = (piece.product_code || '').trim();
+    const origDesignNo    = (piece.design_no    || '').trim();
+    const origBatchId     = (piece.batch_id     || '').trim();
+
+    const [productCode, setProductCode] = useState(origProductCode);
+    const [designNo, setDesignNo]       = useState(origDesignNo);
+    const [batchIdF, setBatchIdF]       = useState(origBatchId);
+    const [reason, setReason]           = useState('');
+    const [submitting, setSubmitting]   = useState(false);
+    const [err, setErr]                 = useState('');
+
+    // Prior corrections for this piece (read-only audit timeline).
+    const [history, setHistory] = useState(null);
+
+    // Secondary, low-emphasis archive-proposal action (case 6) — collapsed by default.
+    const [archiveOpen, setArchiveOpen]         = useState(false);
+    const [archiveReason, setArchiveReason]     = useState('');
+    const [archiveSubmitting, setArchiveSubmitting] = useState(false);
+    const [archiveErr, setArchiveErr]           = useState('');
+    const [archiveDone, setArchiveDone]         = useState(false);
+
+    function loadHistory() {
+      window.PzApi.getCorrections(piece.scan_code).then(res => {
+        setHistory((res.ok && res.data && res.data.corrections) ? res.data.corrections : []);
+      });
+    }
+
+    useEffect(() => { loadHistory(); }, [piece.scan_code]);
+
+    function genKey(prefix) {
+      return prefix + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    const pcChanged  = productCode.trim() !== origProductCode;
+    const dnChanged  = designNo.trim()    !== origDesignNo;
+    const bidChanged = batchIdF.trim()    !== origBatchId;
+    const anyChanged = pcChanged || dnChanged || bidChanged;
+
+    async function submit() {
+      setErr('');
+      if (!reason.trim()) {
+        setErr('Reason is required.');
+        return;
+      }
+      if (!anyChanged) {
+        setErr('Change at least one field (product code, design no, or batch id) before applying a correction.');
+        return;
+      }
+      const payload = { reason: reason.trim(), idempotency_key: genKey('ic') };
+      if (pcChanged)  payload.product_code = productCode.trim();
+      if (dnChanged)  payload.design_no    = designNo.trim();
+      if (bidChanged) payload.batch_id     = batchIdF.trim();
+
+      setSubmitting(true);
+      const res = await window.PzApi.correctIdentity(piece.scan_code, payload);
+      setSubmitting(false);
+      if (!res.ok) {
+        const detail = (res.data && res.data.detail && res.data.detail.detail) ||
+                       (res.data && res.data.detail) || res.error || ('HTTP ' + res.status);
+        setErr(String(detail));
+        return;
+      }
+      onSuccess(res.data);
+    }
+
+    async function submitArchive() {
+      setArchiveErr('');
+      if (!archiveReason.trim()) {
+        setArchiveErr('Reason is required.');
+        return;
+      }
+      setArchiveSubmitting(true);
+      const res = await window.PzApi.proposeArchive(piece.scan_code, {
+        reason: archiveReason.trim(),
+        idempotency_key: genKey('ap'),
+      });
+      setArchiveSubmitting(false);
+      if (!res.ok) {
+        const detail = (res.data && res.data.detail && res.data.detail.detail) ||
+                       (res.data && res.data.detail) || res.error || ('HTTP ' + res.status);
+        setArchiveErr(String(detail));
+        return;
+      }
+      setArchiveDone(true);
+      loadHistory();
+    }
+
+    const lbl  = { fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4, display: 'block' };
+    const hint = { fontSize: 10.5, color: 'var(--text-3)', marginTop: 3 };
+    const fld  = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, boxSizing: 'border-box' };
+
+    return (
+      <window.Modal title="Correct Identity" onClose={onClose}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }} data-testid="identity-correction-modal">
+          <div style={{ padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
+            Correcting identity for piece <strong style={{ color: 'var(--text)', fontFamily: 'ui-monospace, monospace' }}>{piece.scan_code}</strong>.
+            This fixes a blank or wrong product code, design no, or batch id — it never changes the piece's
+            lifecycle state. Edit only the field(s) that are wrong; leave the rest as-is. Operator is taken from your session.
+          </div>
+
+          <div>
+            <label style={lbl} htmlFor="ic-product-code">Product code</label>
+            <input id="ic-product-code" data-testid="correction-product-code" value={productCode} onChange={e => setProductCode(e.target.value)} style={fld} placeholder="e.g. ABC001" />
+            <div style={hint}>Current: {origProductCode || '(blank)'}</div>
+          </div>
+
+          <div>
+            <label style={lbl} htmlFor="ic-design-no">Design no</label>
+            <input id="ic-design-no" data-testid="correction-design-no" value={designNo} onChange={e => setDesignNo(e.target.value)} style={fld} placeholder="e.g. RG-10025" />
+            <div style={hint}>Current: {origDesignNo || '(blank)'}</div>
+          </div>
+
+          <div>
+            <label style={lbl} htmlFor="ic-batch-id">Batch id</label>
+            <input id="ic-batch-id" data-testid="correction-batch-id" value={batchIdF} onChange={e => setBatchIdF(e.target.value)} style={fld} placeholder="e.g. SHIPMENT_…_924c4e59" />
+            <div style={hint}>Current: {origBatchId || '(blank)'}</div>
+          </div>
+
+          {/* Old → new preview — only the field(s) actually being changed */}
+          {anyChanged && (
+            <div data-testid="correction-preview" style={{ padding: '10px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 8, fontSize: 12, color: 'var(--text)', lineHeight: 1.6 }}>
+              <strong>Preview of change:</strong>
+              {pcChanged  && <div>Product code: <s>{origProductCode || '(blank)'}</s> → <strong>{productCode.trim() || '(blank)'}</strong></div>}
+              {dnChanged  && <div>Design no: <s>{origDesignNo || '(blank)'}</s> → <strong>{designNo.trim() || '(blank)'}</strong></div>}
+              {bidChanged && <div>Batch id: <s>{origBatchId || '(blank)'}</s> → <strong>{batchIdF.trim() || '(blank)'}</strong></div>}
+            </div>
+          )}
+
+          <div>
+            <label style={lbl} htmlFor="ic-reason">Reason <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+            <textarea id="ic-reason" data-testid="correction-reason" value={reason} onChange={e => setReason(e.target.value)} style={{ ...fld, minHeight: 56, resize: 'vertical' }} placeholder="Why is this correction needed?" />
+          </div>
+
+          {err && <div data-testid="correction-error" style={{ color: 'var(--badge-red-text)', fontSize: 12, fontWeight: 600 }}>{err}</div>}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button data-testid="correction-cancel" onClick={onClose} disabled={submitting} style={{ padding: '8px 16px', fontSize: 12.5, fontWeight: 600, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-2)', cursor: 'pointer' }}>Cancel</button>
+            <button data-testid="correction-submit" onClick={submit} disabled={submitting} style={{ padding: '8px 16px', fontSize: 12.5, fontWeight: 700, borderRadius: 6, border: '1px solid var(--accent-border)', background: submitting ? 'var(--bg-subtle)' : 'var(--accent-subtle)', color: 'var(--accent-text)', cursor: submitting ? 'not-allowed' : 'pointer' }}>
+              {submitting ? 'Applying…' : 'Apply correction'}
+            </button>
+          </div>
+
+          {/* Prior corrections (read-only audit timeline) */}
+          <div data-testid="correction-history">
+            <label style={lbl}>Correction history</label>
+            {history === null && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>}
+            {history !== null && history.length === 0 && (
+              <div data-testid="correction-history-empty" style={{ fontSize: 12, color: 'var(--text-3)', fontStyle: 'italic' }}>No prior corrections for this piece.</div>
+            )}
+            {history !== null && history.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 160, overflowY: 'auto' }}>
+                {history.map((h, i) => (
+                  <div key={h.id || i} data-testid="correction-history-row" style={{ padding: '7px 10px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.5 }}>
+                    <span style={{ fontWeight: 700, color: 'var(--text)', textTransform: 'uppercase' }}>{h.correction_type}</span>
+                    {' · '}{(h.created_at || '').slice(0, 19).replace('T', ' ')}
+                    {' · by '}<strong style={{ color: 'var(--text)' }}>{h.operator || '—'}</strong>
+                    {h.correction_type === 'identity' && (
+                      <div style={{ color: 'var(--text-3)', marginTop: 2 }}>
+                        {h.old_product_code !== h.new_product_code ? ('Product code: ' + (h.old_product_code || '(blank)') + ' → ' + (h.new_product_code || '(blank)') + '. ') : ''}
+                        {h.old_design_no !== h.new_design_no ? ('Design no: ' + (h.old_design_no || '(blank)') + ' → ' + (h.new_design_no || '(blank)') + '. ') : ''}
+                        {h.old_batch_id !== h.new_batch_id ? ('Batch id: ' + (h.old_batch_id || '(blank)') + ' → ' + (h.new_batch_id || '(blank)') + '. ') : ''}
+                        {' Reason: '}{h.reason || '—'}
+                      </div>
+                    )}
+                    {h.correction_type === 'archive_proposal' && (
+                      <div style={{ color: 'var(--text-3)', marginTop: 2 }}>
+                        Status: {h.status || 'proposed'} · Reason: {h.reason || '—'}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Propose archive — case 6 (over-scan/duplicate). Secondary, low-emphasis,
+              collapsed by default. Proposal only — never auto-applied, never a
+              physical delete of the piece or its history. No terminal reversal UI. */}
+          <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+            {!archiveOpen && !archiveDone && (
+              <button data-testid="correction-archive-toggle" onClick={() => setArchiveOpen(true)} style={{ padding: '6px 12px', fontSize: 11.5, fontWeight: 600, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-2)', cursor: 'pointer' }}>
+                This piece is an over-scan / duplicate — propose for archive review
+              </button>
+            )}
+            {archiveDone && (
+              <div data-testid="correction-archive-done" style={{ fontSize: 12, color: 'var(--text-2)' }}>Archive proposal recorded — pending review. It has not been deleted or removed from stock.</div>
+            )}
+            {archiveOpen && !archiveDone && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 11.5, color: 'var(--text-3)', lineHeight: 1.5 }}>
+                  Proposal only — a supervisor reviews it separately. This never auto-applies and never physically deletes the piece or its audit history.
+                </div>
+                <textarea data-testid="correction-archive-reason" value={archiveReason} onChange={e => setArchiveReason(e.target.value)} style={{ ...fld, minHeight: 44, resize: 'vertical' }} placeholder="Why is this an over-scan / duplicate?" />
+                {archiveErr && <div data-testid="correction-archive-error" style={{ color: 'var(--badge-red-text)', fontSize: 12, fontWeight: 600 }}>{archiveErr}</div>}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <button data-testid="correction-archive-cancel" onClick={() => { setArchiveOpen(false); setArchiveReason(''); setArchiveErr(''); }} disabled={archiveSubmitting} style={{ padding: '6px 12px', fontSize: 11.5, fontWeight: 600, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-2)', cursor: 'pointer' }}>Cancel</button>
+                  <button data-testid="correction-archive-submit" onClick={submitArchive} disabled={archiveSubmitting} style={{ padding: '6px 12px', fontSize: 11.5, fontWeight: 700, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: archiveSubmitting ? 'not-allowed' : 'pointer' }}>
+                    {archiveSubmitting ? 'Submitting…' : 'Submit archive proposal'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </window.Modal>
+    );
+  }
+
   function ReturnToProducerModal({ onClose, onSuccess }) {
     const [pieceId, setPieceId]     = useState('');
     const [producer, setProducer]   = useState('');
@@ -3207,7 +3423,7 @@ function DocumentViewerPage({ doc, onBack }) {
   // Accessibility: focus ring on all interactive buttons (outline:2px solid var(--accent));
   //   aria-label on icon-only/action buttons; color contrast via existing tokens.
 
-  function FinalStockTab({ openViewer, onShowMove, reportExport }) {
+  function FinalStockTab({ openViewer, onShowMove, reportExport, onCorrect }) {
     const [batchId, setBatchId]   = useState('');
     const [loading, setLoading]   = useState(false);
     const [error, setError]       = useState('');
@@ -3469,6 +3685,16 @@ function DocumentViewerPage({ doc, onBack }) {
                             onFocus={e => e.currentTarget.style.outline = '2px solid var(--accent)'}
                             onBlur={e => e.currentTarget.style.outline = 'none'}>
                             Move
+                          </button>
+                          {/* Correct — Engineering OS Inventory Correction (Package A + D-identity).
+                              Opens IdentityCorrectionModal with the full row so current values prefill. */}
+                          <button data-testid="fs-btn-correct"
+                            aria-label={'Correct identity for stock unit ' + scanCode}
+                            onClick={() => onCorrect && onCorrect(r)}
+                            style={{ marginLeft: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer', outline: 'none' }}
+                            onFocus={e => e.currentTarget.style.outline = '2px solid var(--accent)'}
+                            onBlur={e => e.currentTarget.style.outline = 'none'}>
+                            Correct
                           </button>
                         </td>
                       </tr>
@@ -5148,6 +5374,13 @@ function DocumentViewerPage({ doc, onBack }) {
       setQcRefresh(n => n + 1);  // force QcCells to re-read the just-applied QC
     }
 
+    // Inventory Correction (identity fix) — the full row an operator's Correct
+    // button targets, so the modal can prefill current values without a
+    // separate read call. Engineering OS Inventory Correction Package A.
+    const [correctionTarget, setCorrectionTarget] = useState(null);
+    function handleCorrect(row) { setCorrectionTarget(row); }
+    function handleCorrectionSuccess() { setCorrectionTarget(null); }
+
     const hasExportRows = !!exportMeta && !TABS_WITH_NO_TABLE.includes(activeTab);
     const exportTitle = hasExportRows
       ? 'Export ' + exportMeta.rows.length + ' rows from the current tab as CSV'
@@ -5274,6 +5507,15 @@ function DocumentViewerPage({ doc, onBack }) {
         {/* Move Stock modal — triggered from Overview quick-action or tab content */}
         {showMove && <MoveStockModal onClose={() => setShowMove(false)} />}
 
+        {/* Identity Correction modal — triggered by fs-btn-correct (Final Stock Actions column) */}
+        {correctionTarget && (
+          <IdentityCorrectionModal
+            piece={correctionTarget}
+            onClose={() => setCorrectionTarget(null)}
+            onSuccess={handleCorrectionSuccess}
+          />
+        )}
+
         {/* Tab strip — uses handleTabChange (clears exportMeta on switch) */}
         <InvTabStrip active={activeTab} onChange={handleTabChange} />
 
@@ -5333,6 +5575,7 @@ function DocumentViewerPage({ doc, onBack }) {
               openViewer={openViewer}
               onShowMove={() => setShowMove(true)}
               reportExport={reportExport}
+              onCorrect={handleCorrect}
             />
           )}
 

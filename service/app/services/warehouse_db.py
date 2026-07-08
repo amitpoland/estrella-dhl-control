@@ -196,6 +196,35 @@ def init_warehouse_db(db_path: Path) -> None:
                 ON returns_qc_disposition (piece_id, idempotency_key);
             CREATE INDEX IF NOT EXISTS idx_returns_qc_piece
                 ON returns_qc_disposition (piece_id, disposed_at);
+
+            -- ── Inventory Correction (additive; append-only) ─────────────────
+            -- One row per identity correction (product_code / design_no /
+            -- batch_id) or archive proposal (over-scan / duplicate piece) on a
+            -- scanned piece. Records who / when / old value / new value /
+            -- reason. NEVER mutates inventory_state itself and NEVER performs
+            -- a physical delete of audit history — corrections are append-only.
+            -- Idempotency: UNIQUE index on (scan_code, idempotency_key).
+            CREATE TABLE IF NOT EXISTS inventory_corrections (
+                id                TEXT PRIMARY KEY,
+                scan_code         TEXT NOT NULL,
+                correction_type   TEXT NOT NULL,
+                old_product_code  TEXT NOT NULL DEFAULT '',
+                new_product_code  TEXT NOT NULL DEFAULT '',
+                old_design_no     TEXT NOT NULL DEFAULT '',
+                new_design_no     TEXT NOT NULL DEFAULT '',
+                old_batch_id      TEXT NOT NULL DEFAULT '',
+                new_batch_id      TEXT NOT NULL DEFAULT '',
+                reason            TEXT NOT NULL,
+                operator          TEXT NOT NULL,
+                status            TEXT NOT NULL DEFAULT 'applied',
+                idempotency_key   TEXT NOT NULL,
+                created_at        TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_inv_corrections_idempotency
+                ON inventory_corrections (scan_code, idempotency_key);
+            CREATE INDEX IF NOT EXISTS idx_inv_corrections_scan
+                ON inventory_corrections (scan_code, created_at);
         """)
 
 
@@ -719,17 +748,41 @@ def get_movement_history(scan_code: str) -> List[Dict[str, Any]]:
 
 
 def get_inventory_at_location(location_code: str) -> List[Dict[str, Any]]:
-    """All scannable items currently sitting at the given location."""
+    """All scannable items currently sitting at the given location.
+
+    Identity fields (product_code/design_no/batch_id) are overlaid from
+    inventory_state (the identity-correction authority) when a non-blank
+    value exists there. inventory_current_location remains the physical-
+    location cache only — this function never writes to it.
+    """
     if _db_path is None or not location_code:
         return []
     with _connect() as con:
         rows = con.execute(
-            """SELECT * FROM inventory_current_location
-               WHERE current_location=?
-               ORDER BY updated_at DESC""",
+            """SELECT icl.*,
+                      ist.product_code AS state_product_code,
+                      ist.design_no    AS state_design_no,
+                      ist.batch_id     AS state_batch_id
+               FROM inventory_current_location icl
+               LEFT JOIN inventory_state ist ON ist.scan_code = icl.scan_code
+               WHERE icl.current_location=?
+               ORDER BY icl.updated_at DESC""",
             (location_code,),
         ).fetchall()
-    return [dict(r) for r in rows]
+    items = []
+    for r in rows:
+        it = dict(r)
+        state_product_code = it.pop("state_product_code", None)
+        state_design_no    = it.pop("state_design_no", None)
+        state_batch_id     = it.pop("state_batch_id", None)
+        if state_product_code:
+            it["product_code"] = state_product_code
+        if state_design_no:
+            it["design_no"] = state_design_no
+        if state_batch_id:
+            it["batch_id"] = state_batch_id
+        items.append(it)
+    return items
 
 
 # ── Sample-out helpers (Phase B.1) ───────────────────────────────────────
@@ -1095,6 +1148,97 @@ def get_qc_dispositions(piece_id: str) -> List[Dict[str, Any]]:
             "SELECT * FROM returns_qc_disposition WHERE piece_id=? "
             "ORDER BY disposed_at DESC",
             (piece_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Inventory Correction (additive, append-only) ────────────────────────────
+
+CORRECTION_TYPES = frozenset({"identity", "archive_proposal"})
+
+
+def record_correction(
+    *,
+    scan_code:          str,
+    correction_type:    str,
+    reason:             str,
+    operator:           str,
+    idempotency_key:    str,
+    old_product_code:   str = "",
+    new_product_code:   str = "",
+    old_design_no:      str = "",
+    new_design_no:      str = "",
+    old_batch_id:        str = "",
+    new_batch_id:        str = "",
+    status:             str = "applied",
+) -> Dict[str, Any]:
+    """Append one inventory_corrections row. Raises sqlite3.IntegrityError if
+    the UNIQUE index on (scan_code, idempotency_key) catches a duplicate; the
+    caller treats that as the replay signal. NEVER mutates inventory_state."""
+    if _db_path is None:
+        raise RuntimeError("warehouse_db not initialised")
+    if not scan_code:
+        raise ValueError("scan_code is required")
+    if correction_type not in CORRECTION_TYPES:
+        raise ValueError(
+            f"correction_type must be one of {sorted(CORRECTION_TYPES)}, got {correction_type!r}"
+        )
+    if not operator:
+        raise ValueError("operator is required")
+    if not reason or not reason.strip():
+        raise ValueError("reason is required")
+    if not idempotency_key:
+        raise ValueError("idempotency_key is required for record_correction")
+
+    now = _now()
+    row_id = str(uuid.uuid4())
+    with _connect() as con:
+        con.execute(
+            """INSERT INTO inventory_corrections
+               (id, scan_code, correction_type,
+                old_product_code, new_product_code,
+                old_design_no, new_design_no,
+                old_batch_id, new_batch_id,
+                reason, operator, status, idempotency_key, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (row_id, scan_code, correction_type,
+             old_product_code, new_product_code,
+             old_design_no, new_design_no,
+             old_batch_id, new_batch_id,
+             reason, operator, status, idempotency_key, now),
+        )
+        con.commit()
+        r = con.execute(
+            "SELECT * FROM inventory_corrections WHERE id=?", (row_id,)
+        ).fetchone()
+    return dict(r) if r else {}
+
+
+def find_correction_by_idempotency(
+    scan_code: str, idempotency_key: str
+) -> Optional[Dict[str, Any]]:
+    """Replay lookup: the prior inventory_corrections row for
+    (scan_code, idempotency_key), or None."""
+    if _db_path is None or not scan_code or not idempotency_key:
+        return None
+    with _connect() as con:
+        row = con.execute(
+            "SELECT * FROM inventory_corrections "
+            "WHERE scan_code=? AND idempotency_key=?",
+            (scan_code, idempotency_key),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_corrections(scan_code: str) -> List[Dict[str, Any]]:
+    """All correction rows for a scan_code, newest first (read-only audit timeline)."""
+    if _db_path is None or not scan_code:
+        return []
+    with _connect() as con:
+        rows = con.execute(
+            "SELECT * FROM inventory_corrections WHERE scan_code=? "
+            "ORDER BY created_at DESC",
+            (scan_code,),
         ).fetchall()
     return [dict(r) for r in rows]
 
