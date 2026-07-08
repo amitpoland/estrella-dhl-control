@@ -47,7 +47,7 @@ def _cm_path(explicit: Optional[Path] = None) -> Path:
     if explicit is not None:
         return Path(explicit)
     from ..core.config import settings
-    return Path(settings.storage_root) / "customer_master.db"
+    return Path(settings.storage_root) / "customer_master.sqlite"
 
 
 def _res_path(explicit: Optional[Path] = None) -> Path:

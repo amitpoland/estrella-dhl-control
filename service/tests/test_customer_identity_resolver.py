@@ -222,3 +222,15 @@ class TestAuthoritySeparation:
         assert "backfill_contractor_id(" in src            # legacy id-fill (by row id)
         assert "backfill_customer_authority(" in src        # mirror population (by contractor_id)
         assert "upsert_customer(" not in src                # never the name-keyed legacy writer
+
+
+class TestCanonicalPaths:
+    """The default store paths must match the codebase-canonical filenames, or the
+    resolver would silently miss the canonical Customer Master in production."""
+
+    def test_default_customer_master_path_is_canonical(self):
+        assert cir._cm_path().name == "customer_master.sqlite"
+
+    def test_default_reservation_and_wfirma_paths_are_canonical(self):
+        assert cir._res_path().name == "reservation_queue.db"
+        assert cir._wfirma_path().name == "wfirma.db"
