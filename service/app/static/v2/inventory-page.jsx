@@ -948,7 +948,7 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  function SampleOutTab({ onRecordReturn, reportExport }) {
+  function SampleOutTab({ onRecordReturn, reportExport, onViewPiece, onCorrect }) {
     const [samples, setSamples]     = useState(null);
     const [loading, setLoading]     = useState(true);
     const [error, setError]         = useState('');
@@ -1127,9 +1127,15 @@ function DocumentViewerPage({ doc, onBack }) {
                             Record Return
                           </button>
                         )}
-                        <button data-testid="so-btn-view" disabled title="backend-pending — detail view (future slice)"
-                          style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', cursor: 'not-allowed', opacity: 0.6 }}>
+                        <button data-testid="so-btn-view"
+                          onClick={() => onViewPiece && onViewPiece(s.scan_code)}
+                          style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
                           View
+                        </button>
+                        <button data-testid="so-btn-correct"
+                          onClick={() => onCorrect && onCorrect(s)}
+                          style={{ marginLeft: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+                          Correct
                         </button>
                       </td>
                     </tr>
@@ -1272,7 +1278,7 @@ function DocumentViewerPage({ doc, onBack }) {
     </>);
   }
 
-  function SampleReturnTab({ reportExport, onInspect, qcRefresh }) {
+  function SampleReturnTab({ reportExport, onInspect, qcRefresh, onViewPiece, onCorrect }) {
     const [samples, setSamples]       = useState(null);
     const [loading, setLoading]       = useState(true);
     const [error, setError]           = useState('');
@@ -1418,10 +1424,15 @@ function DocumentViewerPage({ doc, onBack }) {
                           style={{ marginRight: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'pointer' }}>
                           Inspect
                         </button>
-                        {/* View action: no detail endpoint yet — Lesson-M honest-disabled */}
-                        <button data-testid="sr-btn-view" disabled title="backend-pending — detail view (future slice)"
-                          style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', cursor: 'not-allowed', opacity: 0.6 }}>
+                        <button data-testid="sr-btn-view"
+                          onClick={() => onViewPiece && onViewPiece(s.scan_code)}
+                          style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
                           View
+                        </button>
+                        <button data-testid="sr-btn-correct"
+                          onClick={() => onCorrect && onCorrect(s)}
+                          style={{ marginLeft: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+                          Correct
                         </button>
                       </td>
                     </tr>
@@ -1597,7 +1608,7 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  function ClientReturnTab({ reportExport, onInspect, qcRefresh }) {
+  function ClientReturnTab({ reportExport, onInspect, qcRefresh, onViewPiece, onCorrect }) {
     const [records, setRecords]         = useState(null);
     const [loading, setLoading]         = useState(true);
     const [error, setError]             = useState('');
@@ -1773,6 +1784,16 @@ function DocumentViewerPage({ doc, onBack }) {
                         <button data-testid="cr-btn-credit-note" disabled title="backend-pending — credit note wFirma write has no backend route yet (future slice; census IV-CR-2)"
                           style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', cursor: 'not-allowed', opacity: 0.6 }}>
                           Credit Note
+                        </button>
+                        <button data-testid="cr-btn-view"
+                          onClick={() => onViewPiece && onViewPiece(r.scan_code)}
+                          style={{ marginLeft: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+                          View
+                        </button>
+                        <button data-testid="cr-btn-correct"
+                          onClick={() => onCorrect && onCorrect(r)}
+                          style={{ marginLeft: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+                          Correct
                         </button>
                       </td>
                     </tr>
@@ -3185,7 +3206,7 @@ function DocumentViewerPage({ doc, onBack }) {
     );
   }
 
-  function ProducerReturnTab({ reportExport }) {
+  function ProducerReturnTab({ reportExport, onViewPiece, onCorrect }) {
     const [records, setRecords]           = useState(null);
     const [loading, setLoading]           = useState(true);
     const [error, setError]               = useState('');
@@ -3417,6 +3438,16 @@ function DocumentViewerPage({ doc, onBack }) {
                             Confirmed ✓
                           </button>
                         )}
+                        <button data-testid="rtp-btn-view"
+                          onClick={() => onViewPiece && onViewPiece(r.scan_code)}
+                          style={{ marginLeft: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+                          View
+                        </button>
+                        <button data-testid="rtp-btn-correct"
+                          onClick={() => onCorrect && onCorrect(r)}
+                          style={{ marginLeft: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+                          Correct
+                        </button>
                       </td>
                     </tr>
                   );
@@ -4517,7 +4548,7 @@ function DocumentViewerPage({ doc, onBack }) {
   //                       wireframe distinction not resolvable from current reads)
   //   Sales-invoice gate = always LOCKED (no delivery_confirmed route exists)
 
-  function TempSaleTab({ reportExport }) {
+  function TempSaleTab({ reportExport, onViewPiece, onCorrect }) {
     const [batchId, setBatchId]       = useState('');
     const [loading, setLoading]       = useState(false);
     const [error, setError]           = useState('');
@@ -4730,6 +4761,16 @@ function DocumentViewerPage({ doc, onBack }) {
                             title="backend-pending — SALES_TRANSIT → CLOSED delivery_confirmed transition has no operator-facing POST route in any routes_*.py; gate enforced by Sales-invoice gate banner (IV-TS-1; future slice: POST /api/v1/inventory/pieces/{id}/confirm-delivery)"
                             style={{ padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--badge-amber-border)', background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', cursor: 'not-allowed', opacity: 0.5 }}>
                             Issue invoice
+                          </button>
+                          <button data-testid="ts-btn-view"
+                            onClick={() => onViewPiece && onViewPiece(p.scan_code)}
+                            style={{ marginLeft: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+                            View
+                          </button>
+                          <button data-testid="ts-btn-correct"
+                            onClick={() => onCorrect && onCorrect(p)}
+                            style={{ marginLeft: 6, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+                            Correct
                           </button>
                         </td>
                       </tr>
@@ -5969,20 +6010,22 @@ function DocumentViewerPage({ doc, onBack }) {
             <SampleOutTab
               onRecordReturn={handleRecordReturn}
               reportExport={reportExport}
+              onViewPiece={handleViewPiece}
+              onCorrect={handleCorrect}
             />
           )}
 
           {/* ── Sample Return tab — Wave-3 U-1 page 2 ────────────── */}
-          {activeTab === 'sampleReturn' && <SampleReturnTab reportExport={reportExport} onInspect={handleInspect} qcRefresh={qcRefresh} />}
+          {activeTab === 'sampleReturn' && <SampleReturnTab reportExport={reportExport} onInspect={handleInspect} qcRefresh={qcRefresh} onViewPiece={handleViewPiece} onCorrect={handleCorrect} />}
 
           {/* ── Client Return tab — Wave-3 U-2 page 3 ───────────── */}
-          {activeTab === 'clientReturn' && <ClientReturnTab reportExport={reportExport} onInspect={handleInspect} qcRefresh={qcRefresh} />}
+          {activeTab === 'clientReturn' && <ClientReturnTab reportExport={reportExport} onInspect={handleInspect} qcRefresh={qcRefresh} onViewPiece={handleViewPiece} onCorrect={handleCorrect} />}
 
           {/* ── Return to Producer tab — Wave-3 U-2 page 4 ──────── */}
-          {activeTab === 'producerReturn' && <ProducerReturnTab reportExport={reportExport} />}
+          {activeTab === 'producerReturn' && <ProducerReturnTab reportExport={reportExport} onViewPiece={handleViewPiece} onCorrect={handleCorrect} />}
 
           {/* ── Temp Sale tab — Wave-3 U-3 page 5 ───────────────── */}
-          {activeTab === 'tempSale' && <TempSaleTab reportExport={reportExport} />}
+          {activeTab === 'tempSale' && <TempSaleTab reportExport={reportExport} onViewPiece={handleViewPiece} onCorrect={handleCorrect} />}
 
           {/* ── Temp Purchase tab — Wave-3 U-3 page 7 ──────────── */}
           {activeTab === 'tempPurchase' && (
