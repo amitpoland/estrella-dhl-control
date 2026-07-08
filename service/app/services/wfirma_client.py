@@ -1219,6 +1219,86 @@ def get_stock(wfirma_good_id: str) -> Dict[str, float]:
     }
 
 
+def list_goods_in_warehouse(
+    warehouse_id: str,
+    *,
+    page_limit: int = 200,
+    max_pages: int = 500,
+) -> List[WFirmaProduct]:
+    """Read every good and its stock in a single wFirma warehouse (READ-ONLY).
+
+    This is the canonical *fiscal inventory* read for WF-2 reconciliation:
+    ``goods/find`` filtered by ``warehouse_id`` (warehouse ids come from
+    ``list_warehouses()``). It pages through the full goods list and returns one
+    ``WFirmaProduct`` per good with its ``count``/``reserved`` in that warehouse.
+
+    No write of any kind. Mirrors the existing single-good read paths
+    (``get_product_by_code`` / ``get_stock``) — same transport, same status
+    handling, same field parsing — only adding the ``warehouse_id`` condition and
+    pagination.
+
+    Raises RuntimeError on HTTP/non-OK wFirma status; ConnectionError on network
+    failure (callers degrade to "fiscal source unavailable" rather than guessing).
+
+    API: GET goods/find (conditions.warehouse_id.eq + page)
+    Auth: API Key headers (shared transport).
+    """
+    wid = str(warehouse_id or "").strip()
+    if not wid:
+        raise ValueError("list_goods_in_warehouse: warehouse_id is required")
+
+    goods: List[WFirmaProduct] = []
+    start = 0
+    for _ in range(max_pages):
+        body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <goods>
+    <parameters>
+      <conditions>
+        <condition>
+          <field>warehouse_id</field>
+          <operator>eq</operator>
+          <value>{_esc(wid)}</value>
+        </condition>
+      </conditions>
+      <page><start>{start}</start><limit>{int(page_limit)}</limit></page>
+    </parameters>
+  </goods>
+</api>"""
+        http_status, response_text = _http_request("GET", "goods", "find", body)
+        if http_status >= 400:
+            raise RuntimeError(f"goods/find HTTP {http_status}")
+        status_code, desc = _parse_status(response_text)
+        if status_code != "OK":
+            raise RuntimeError(f"goods/find wFirma status={status_code}: {desc}")
+        root = ET.fromstring(response_text)
+        nodes = root.findall(".//good")
+        if not nodes:
+            break
+
+        def _f(node, tag: str) -> float:
+            try:
+                return float(_find_text(node, tag) or 0)
+            except (ValueError, TypeError):
+                return 0.0
+
+        for node in nodes:
+            goods.append(WFirmaProduct(
+                wfirma_id=_find_text(node, "id"),
+                name=_find_text(node, "name"),
+                code=_find_text(node, "code"),
+                unit=_find_text(node, "unit") or "szt.",
+                count=_f(node, "count"),
+                reserved=_f(node, "reserved"),
+            ))
+
+        if len(nodes) < int(page_limit):
+            break
+        start += int(page_limit)
+
+    return goods
+
+
 # ── VAT Codes ─────────────────────────────────────────────────────────────────
 
 def find_vat_code_id(rate: int = 23) -> Optional[str]:

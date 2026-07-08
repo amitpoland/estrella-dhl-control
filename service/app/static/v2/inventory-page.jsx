@@ -5683,6 +5683,7 @@ function DocumentViewerPage({ doc, onBack }) {
     { id: 'finalStock',     label: 'Final Stock',        wire: true  },
     { id: 'consignment',    label: 'Consignment',        wire: false },
     { id: 'mapping',        label: 'Identity / Mapping', wire: true  },
+    { id: 'reconciliation', label: 'Reconciliation',     wire: true  },
   ];
 
   function InvTabStrip({ active, onChange }) {
@@ -5740,6 +5741,207 @@ function DocumentViewerPage({ doc, onBack }) {
     setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
   }
 
+  // ── WF-2: Fiscal Reconciliation tab (READ-ONLY) ─────────────────────────────
+  // Compares Dashboard operational stock vs wFirma fiscal quantity. Observes
+  // only — never writes either system, never auto-corrects.
+  const _SEV_STYLE = {
+    CRITICAL: { bg: 'var(--badge-red-bg)',   text: 'var(--badge-red-text)',   border: 'var(--badge-red-border)' },
+    HIGH:     { bg: 'var(--badge-amber-bg)', text: 'var(--badge-amber-text)', border: 'var(--badge-amber-border)' },
+    MEDIUM:   { bg: 'var(--badge-blue-bg)',  text: 'var(--badge-blue-text)',  border: 'var(--badge-blue-border)' },
+    LOW:      { bg: 'var(--bg-subtle)',      text: 'var(--text-2)',           border: 'var(--border)' },
+  };
+
+  function _SevBadge({ sev }) {
+    const s = _SEV_STYLE[sev] || _SEV_STYLE.LOW;
+    return (
+      <span style={{ display: 'inline-block', padding: '2px 8px', fontSize: 11, fontWeight: 700,
+        borderRadius: 4, background: s.bg, color: s.text, border: `1px solid ${s.border}` }}>
+        {sev}
+      </span>
+    );
+  }
+
+  function _ReconCard({ label, value, testid, tone }) {
+    return (
+      <div data-testid={testid} style={{ flex: '1 1 140px', minWidth: 140, padding: '12px 14px',
+        border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg-subtle)' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.04em', color: 'var(--text-2)', textTransform: 'uppercase' }}>{label}</div>
+        <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: tone || 'var(--text)' }}>{value}</div>
+      </div>
+    );
+  }
+
+  function ReconciliationTab() {
+    const [report, setReport]   = useState(null);
+    const [status, setStatus]   = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [running, setRunning] = useState(false);
+    const [error, setError]     = useState('');
+    const [fProduct, setFProduct]   = useState('');
+    const [fSeverity, setFSeverity] = useState('');
+    const [fType, setFType]         = useState('');
+    const [fSearch, setFSearch]     = useState('');
+
+    const api = (typeof window !== 'undefined') ? window.PzApi : null;
+
+    const loadStatus = useCallback(async () => {
+      if (!api || !api.getFiscalReconciliationStatus) return;
+      const r = await api.getFiscalReconciliationStatus();
+      if (r && r.ok !== false) setStatus(r.data || r);
+    }, [api]);
+
+    const loadView = useCallback(async () => {
+      if (!api || !api.getFiscalReconciliation) { setError('Reconciliation API unavailable'); return; }
+      setLoading(true); setError('');
+      const r = await api.getFiscalReconciliation();
+      setLoading(false);
+      if (r && r.ok === false) { setError(r.error || 'Failed to load reconciliation'); return; }
+      setReport(r.data || r);
+    }, [api]);
+
+    const runNow = useCallback(async () => {
+      if (!api || !api.runFiscalReconciliation) return;
+      setRunning(true); setError('');
+      const r = await api.runFiscalReconciliation();
+      setRunning(false);
+      if (r && r.ok === false) { setError(r.error || 'Run failed'); return; }
+      setReport(r.data || r);
+      loadStatus();
+    }, [api, loadStatus]);
+
+    useEffect(() => { loadView(); loadStatus(); }, [loadView, loadStatus]);
+
+    const summary = (report && report.summary) || {};
+    const fiscalUnavailable = report && report.fiscal_source === 'unavailable';
+
+    const diffs = React.useMemo(() => {
+      const all = (report && report.differences) || [];
+      const p = fProduct.trim().toUpperCase();
+      const q = fSearch.trim().toUpperCase();
+      return all.filter(d => {
+        if (fSeverity && d.severity !== fSeverity) return false;
+        if (fType && d.type !== fType) return false;
+        if (p && !String(d.product_code || '').toUpperCase().includes(p)) return false;
+        if (q) {
+          const hay = [d.product_code, d.type, d.detail, d.warehouse_name, d.recommended_action]
+            .map(x => String(x || '')).join(' ').toUpperCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+    }, [report, fProduct, fSeverity, fType, fSearch]);
+
+    const diffTypes = React.useMemo(() => {
+      const s = new Set(((report && report.differences) || []).map(d => d.type));
+      return Array.from(s).sort();
+    }, [report]);
+
+    const selStyle = { padding: '6px 10px', fontSize: 12.5, borderRadius: 5,
+      border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' };
+
+    return (
+      <div data-testid="recon-tab">
+        {/* Toolbar + status */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+          <button data-testid="recon-run" onClick={runNow} disabled={running}
+            style={{ padding: '8px 16px', fontSize: 13, fontWeight: 700, borderRadius: 6,
+              border: '1px solid var(--accent)', background: 'var(--accent)', color: 'var(--accent-fg, #fff)',
+              cursor: running ? 'default' : 'pointer', opacity: running ? 0.6 : 1 }}>
+            {running ? 'Running…' : '↻ Run reconciliation now'}
+          </button>
+          <button data-testid="recon-refresh" onClick={loadView} disabled={loading}
+            style={{ padding: '8px 14px', fontSize: 12.5, fontWeight: 600, borderRadius: 6,
+              border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)',
+              cursor: loading ? 'default' : 'pointer' }}>
+            {loading ? 'Loading…' : 'Refresh view'}
+          </button>
+          <span data-testid="recon-status" style={{ fontSize: 12, color: 'var(--text-2)' }}>
+            {status && status.last_run
+              ? `Last run ${status.last_run.run_at} · source ${status.last_run.fiscal_source} · ${status.last_run.duration_ms}ms · ${status.last_run.objects_checked} checked · ${status.last_run.differences_total} differences`
+              : (status ? `No run recorded yet · fiscal ${status.fiscal_configured ? 'configured' : 'not configured'}` : '…')}
+          </span>
+        </div>
+
+        {error && (
+          <div data-testid="recon-error" style={{ padding: '8px 12px', marginBottom: 12, borderRadius: 6,
+            background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', border: '1px solid var(--badge-red-border)', fontSize: 12.5 }}>
+            {error}
+          </div>
+        )}
+
+        {fiscalUnavailable && (
+          <div data-testid="recon-fiscal-unavailable" style={{ padding: '10px 14px', marginBottom: 14, borderRadius: 6,
+            background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', border: '1px solid var(--badge-amber-border)', fontSize: 12.5 }}>
+            <strong>wFirma fiscal inventory unavailable</strong> — {report.fiscal_unavailable_reason || 'not configured'}.
+            Operational stock is shown below; no fiscal comparison is possible until wFirma is reachable. (This is read-only — nothing was changed.)
+          </div>
+        )}
+
+        {/* Summary cards */}
+        <div data-testid="recon-summary" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+          <_ReconCard testid="recon-card-compared"  label="Total compared"   value={summary.total_compared ?? '—'} />
+          <_ReconCard testid="recon-card-matching"  label="Matching"          value={summary.matching ?? '—'} tone="var(--badge-green-text, var(--text))" />
+          <_ReconCard testid="recon-card-mismatch"  label="Mismatched"        value={summary.mismatched ?? '—'} tone="var(--badge-amber-text, var(--text))" />
+          <_ReconCard testid="recon-card-miss-dash" label="Missing Dashboard" value={summary.missing_dashboard ?? '—'} />
+          <_ReconCard testid="recon-card-miss-wf"   label="Missing wFirma"    value={summary.missing_wfirma ?? '—'} />
+          <_ReconCard testid="recon-card-unmapped"  label="Unknown mappings"  value={summary.unknown_mappings ?? '—'} />
+        </div>
+
+        {/* Filters */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+          <input data-testid="recon-filter-product" value={fProduct} onChange={e => setFProduct(e.target.value)}
+            placeholder="Product code…" style={{ ...selStyle, minWidth: 150 }} />
+          <select data-testid="recon-filter-severity" value={fSeverity} onChange={e => setFSeverity(e.target.value)} style={selStyle}>
+            <option value="">All severities</option>
+            <option value="CRITICAL">Critical</option>
+            <option value="HIGH">High</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="LOW">Low</option>
+          </select>
+          <select data-testid="recon-filter-type" value={fType} onChange={e => setFType(e.target.value)} style={selStyle}>
+            <option value="">All difference types</option>
+            {diffTypes.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <input data-testid="recon-search" value={fSearch} onChange={e => setFSearch(e.target.value)}
+            placeholder="Search…" style={{ ...selStyle, minWidth: 160 }} />
+          <span style={{ fontSize: 12, color: 'var(--text-2)' }}>{diffs.length} shown</span>
+        </div>
+
+        {/* Difference table */}
+        <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
+          <table data-testid="recon-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-subtle)', textAlign: 'left' }}>
+                {['Product', 'Warehouse', 'Type', 'Dashboard qty', 'wFirma qty', 'Difference', 'Severity', 'Recommended action'].map(h => (
+                  <th key={h} style={{ padding: '8px 10px', fontWeight: 700, color: 'var(--text-2)', whiteSpace: 'nowrap', borderBottom: '1px solid var(--border)' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {diffs.length === 0 && (
+                <tr><td colSpan={8} style={{ padding: '16px', textAlign: 'center', color: 'var(--text-2)' }}>
+                  {fiscalUnavailable ? 'No fiscal comparison available.' : (report ? 'No differences — operational and fiscal inventory match for the compared products.' : 'Loading…')}
+                </td></tr>
+              )}
+              {diffs.map((d, i) => (
+                <tr key={i} data-testid="recon-row" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '7px 10px', fontFamily: 'var(--mono, monospace)' }}>{d.product_code || '—'}</td>
+                  <td style={{ padding: '7px 10px' }}>{d.warehouse_name || d.warehouse_id || '—'}</td>
+                  <td style={{ padding: '7px 10px' }}>{d.type}</td>
+                  <td style={{ padding: '7px 10px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{d.dashboard_qty ?? '—'}</td>
+                  <td style={{ padding: '7px 10px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{d.wfirma_qty ?? '—'}</td>
+                  <td style={{ padding: '7px 10px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>{d.difference ?? '—'}</td>
+                  <td style={{ padding: '7px 10px' }}><_SevBadge sev={d.severity} /></td>
+                  <td style={{ padding: '7px 10px', color: 'var(--text-2)' }}>{d.recommended_action}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
   function InventoryPage({ openViewer }) {  // openViewer accepted
     const [showMove, setShowMove]             = useState(false);
     const [activeTab, setActiveTab]           = useState('overview');
@@ -5757,7 +5959,7 @@ function DocumentViewerPage({ doc, onBack }) {
     const [exportHint, setExportHint] = useState('');
 
     // W3-page6b: Tabs that have no exportable table (overview, consignment, mapping).
-    const TABS_WITH_NO_TABLE = ['overview', 'consignment', 'mapping'];
+    const TABS_WITH_NO_TABLE = ['overview', 'consignment', 'mapping', 'reconciliation'];
 
     // Clear export state when the tab changes so the button reflects the new tab.
     const handleTabChange = useCallback((id) => {
@@ -6071,6 +6273,11 @@ function DocumentViewerPage({ doc, onBack }) {
           {/* same endpoints consumed (getWfirmaProducts, getWfirmaCapabilities).     */}
           {/* Also repairs the dangling quick-action from page 6 (Overview tab).      */}
           {activeTab === 'mapping' && <IdentityMappingTab />}
+
+          {/* ── Reconciliation tab — WF-2 (Dashboard operational vs wFirma fiscal) ── */}
+          {/* Read-only: observes and classifies differences; never writes either      */}
+          {/* system and never auto-corrects.                                          */}
+          {activeTab === 'reconciliation' && <ReconciliationTab />}
         </div>
       </div>
     );
