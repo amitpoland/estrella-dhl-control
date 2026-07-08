@@ -10,12 +10,25 @@
   POST /api/v1/inventory/pieces/{piece_id}/return-from-producer
        — Restock: RETURNED_TO_PRODUCER → WAREHOUSE_STOCK.
 
+  POST /api/v1/inventory/pieces/{piece_id}/correction/identity
+       — Correct product_code / design_no / batch_id (no state change).
+
+  POST /api/v1/inventory/pieces/{piece_id}/correction/archive-proposal
+       — Propose an over-scan / duplicate piece for archive (proposal only).
+
+  GET  /api/v1/inventory/pieces/{piece_id}/corrections
+       — Read-only correction audit timeline.
+
 All endpoints require X-API-Key (router-level Depends(require_api_key))
 and a caller-supplied `idempotency_key`. Replay returns the prior
-event_id (same scan_code + idempotency_key).
+event_id (same scan_code + idempotency_key). Correction/QC writes are
+additionally role-gated (require_api_key_privileged) with a session-derived
+operator — never client free-text.
 
 Single-writer discipline preserved: this router never UPDATEs
-inventory_state directly. All state changes via transition().
+inventory_state directly. All state changes via transition(); identity
+corrections via inventory_state_engine.correct_identity() (a deliberate,
+narrower single-writer sibling — see that function's docstring).
 """
 from __future__ import annotations
 
@@ -27,6 +40,11 @@ from pydantic import BaseModel, Field
 
 from ..core.config import settings
 from ..core.security import require_api_key, require_api_key_privileged
+from ..services.inventory_correction_writer import (
+    CorrectionError,
+    apply_identity_correction,
+    propose_archive,
+)
 from ..services.inventory_qc_writer import QCError, apply_qc_disposition
 from ..services.inventory_returns_writer import (
     ReturnsError,
@@ -172,6 +190,33 @@ def _map_qc_error(e: QCError) -> HTTPException:
     )
 
 
+class IdentityCorrectionRequest(BaseModel):
+    """Correct product_code / design_no / batch_id on an existing piece. NOTE:
+    no `operator` field — the operator is derived from the authenticated
+    session, never accepted as client free-text. Omit a field (leave it
+    unset/null) to leave it unchanged."""
+    reason:          str = Field(..., min_length=1)
+    idempotency_key: str = Field(..., min_length=1)
+    product_code:    Optional[str] = Field(default=None)
+    design_no:       Optional[str] = Field(default=None)
+    batch_id:        Optional[str] = Field(default=None)
+
+
+class ArchiveProposalRequest(BaseModel):
+    """Propose an over-scan / duplicate piece for archive review. NOTE: no
+    `operator` field — session-derived. Proposal only — never auto-applied,
+    never a physical delete."""
+    reason:          str = Field(..., min_length=1)
+    idempotency_key: str = Field(..., min_length=1)
+
+
+def _map_correction_error(e: CorrectionError) -> HTTPException:
+    return HTTPException(
+        status_code=_STATUS_FOR_CODE.get(e.code, 500),
+        detail={"code": e.code, "detail": e.message},
+    )
+
+
 @router.post(
     "/pieces/{piece_id}/qc-disposition",
     dependencies=[Depends(require_api_key_privileged)],
@@ -222,6 +267,85 @@ def get_qc_dispositions(piece_id: str) -> dict:
     return {
         "piece_id": piece_id,
         "dispositions": _wdb.get_qc_dispositions(piece_id),
+    }
+
+
+@router.post(
+    "/pieces/{piece_id}/correction/identity",
+    dependencies=[Depends(require_api_key_privileged)],
+)
+def post_identity_correction(
+    piece_id: str,
+    payload: IdentityCorrectionRequest,
+    operator: str = Depends(resolve_session_operator),
+) -> dict:
+    """Correct product_code / design_no / batch_id on an existing piece
+    (Inventory Correction Package A). Privileged (role-gated); operator is
+    session-derived. Never changes lifecycle state, never writes Product
+    Master, never touches inventory_state_events — an identity fix is not a
+    lifecycle transition. Idempotent on (piece_id, idempotency_key).
+
+    Errors:
+      400 INVALID_INPUT
+      403 role not permitted (require_api_key_privileged)
+      404 PIECE_NOT_FOUND
+      503 DB_UNAVAILABLE
+    """
+    try:
+        return apply_identity_correction(
+            scan_code=piece_id,
+            operator=operator,
+            reason=payload.reason,
+            idempotency_key=payload.idempotency_key,
+            product_code=payload.product_code,
+            design_no=payload.design_no,
+            batch_id=payload.batch_id,
+        )
+    except CorrectionError as e:
+        raise _map_correction_error(e)
+
+
+@router.post(
+    "/pieces/{piece_id}/correction/archive-proposal",
+    dependencies=[Depends(require_api_key_privileged)],
+)
+def post_archive_proposal(
+    piece_id: str,
+    payload: ArchiveProposalRequest,
+    operator: str = Depends(resolve_session_operator),
+) -> dict:
+    """Propose an over-scan / duplicate piece for archive review (case 6).
+    Records a PROPOSAL only — never mutates inventory_state, never performs a
+    physical delete. Privileged (role-gated); operator is session-derived.
+    Idempotent on (piece_id, idempotency_key).
+
+    Errors:
+      400 INVALID_INPUT
+      403 role not permitted (require_api_key_privileged)
+      404 PIECE_NOT_FOUND
+      503 DB_UNAVAILABLE
+    """
+    try:
+        return propose_archive(
+            scan_code=piece_id,
+            operator=operator,
+            reason=payload.reason,
+            idempotency_key=payload.idempotency_key,
+        )
+    except CorrectionError as e:
+        raise _map_correction_error(e)
+
+
+@router.get("/pieces/{piece_id}/corrections")
+def get_corrections(piece_id: str) -> dict:
+    """Read-only correction audit timeline for a piece (newest first).
+    Surfaces old/new product_code, design_no, batch_id, reason, operator,
+    status, created_at for every correction/archive-proposal. Pure read —
+    no mutation."""
+    from ..services import warehouse_db as _wdb  # noqa: PLC0415
+    return {
+        "piece_id": piece_id,
+        "corrections": _wdb.get_corrections(piece_id),
     }
 
 

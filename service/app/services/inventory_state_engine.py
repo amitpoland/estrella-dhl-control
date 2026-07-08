@@ -487,6 +487,59 @@ def _has_receive_event(con: sqlite3.Connection, scan_code: str) -> bool:
     return row is not None
 
 
+def correct_identity(
+    *,
+    scan_code:    str,
+    operator:     str,
+    product_code: Optional[str] = None,
+    design_no:    Optional[str] = None,
+    batch_id:     Optional[str] = None,
+) -> Dict[str, Any]:
+    """Correct product_code / design_no / batch_id on an existing inventory_state
+    row WITHOUT changing lifecycle state.
+
+    This is deliberately separate from transition(): LEGAL_TRANSITIONS has no
+    entry mapping any state to itself, so an identity fix cannot be expressed
+    as a transition. It never writes inventory_state_events — that table is
+    the lifecycle-transition audit trail; the append-only inventory_corrections
+    table (see inventory_correction_writer.py) is the audit trail for identity
+    fixes.
+
+    Pass None for a field to leave it unchanged; pass "" explicitly to clear
+    it. At least one of product_code/design_no/batch_id must be provided (not
+    None). Raises ValueError if scan_code is unknown or no field is given.
+    """
+    if not scan_code:
+        raise ValueError("scan_code is required")
+    if not operator:
+        raise ValueError("operator is required (session-derived)")
+    if product_code is None and design_no is None and batch_id is None:
+        raise ValueError("at least one of product_code/design_no/batch_id is required")
+
+    now = _now()
+    with _lock, _connect() as con:
+        prev = con.execute(
+            "SELECT * FROM inventory_state WHERE scan_code=?", (scan_code,)
+        ).fetchone()
+        if prev is None:
+            raise ValueError(f"scan_code {scan_code!r} not found in inventory_state")
+
+        new_product_code = prev["product_code"] if product_code is None else product_code
+        new_design_no    = prev["design_no"]    if design_no    is None else design_no
+        new_batch_id     = prev["batch_id"]     if batch_id     is None else batch_id
+
+        con.execute(
+            """UPDATE inventory_state
+               SET product_code=?, design_no=?, batch_id=?, updated_at=?, updated_by=?
+               WHERE id=?""",
+            (new_product_code, new_design_no, new_batch_id, now, operator, prev["id"]),
+        )
+        row = con.execute(
+            "SELECT * FROM inventory_state WHERE id=?", (prev["id"],)
+        ).fetchone()
+    return dict(row)
+
+
 def transition(
     *,
     scan_code:                str,

@@ -1039,6 +1039,43 @@
         `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/qc-dispositions`);
     },
 
+    // ── Inventory Correction — Engineering OS Package A + D-identity ──────
+    // POST /api/v1/inventory/pieces/{piece_id}/correction/identity
+    //   body: { reason, idempotency_key, product_code?, design_no?, batch_id? }
+    // Fixes blank/wrong product_code, design_no, or batch_id on an existing
+    // piece. Does NOT change lifecycle state. NOTE: operator is DERIVED FROM
+    // THE SESSION server-side — never sent from the client (privileged,
+    // role-gated route). Idempotent on (piece, key).
+    // Authority: routes_inventory_returns.py correction/identity (LIVE)
+    correctIdentity: (pieceId, payload) => {
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/correction/identity`,
+        { ...payload });
+    },
+
+    // POST /api/v1/inventory/pieces/{piece_id}/correction/archive-proposal
+    //   body: { reason, idempotency_key }
+    // Records an archive PROPOSAL for an over-scan / duplicate piece. Never
+    // mutates inventory_state and never physically deletes audit history —
+    // a supervisor reviews the proposal out-of-band. Idempotent on (piece, key).
+    // Authority: routes_inventory_returns.py correction/archive-proposal (LIVE)
+    proposeArchive: (pieceId, payload) => {
+      return _call('POST',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/correction/archive-proposal`,
+        { ...payload });
+    },
+
+    // GET /api/v1/inventory/pieces/{piece_id}/corrections
+    // → { piece_id, corrections: [{ correction_type, old_product_code,
+    //     new_product_code, old_design_no, new_design_no, old_batch_id,
+    //     new_batch_id, reason, operator, status, created_at, ... }] }
+    // Read-only correction audit history (newest first).
+    // Authority: routes_inventory_returns.py (LIVE)
+    getCorrections: (pieceId) => {
+      return _call('GET',
+        `${BASE}/inventory/pieces/${encodeURIComponent(pieceId)}/corrections`);
+    },
+
     // ── Inventory: Temp Sale register — Wave-3 U-3 page 5 ─────────────────
     // GET /api/v1/inventory/state/{batch_id}
     // → { ok:true, batch_id, as_of, counts:{state: int}, pieces:[{scan_code,
