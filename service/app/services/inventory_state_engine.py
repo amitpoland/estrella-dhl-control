@@ -286,11 +286,8 @@ LEGAL_TRANSITIONS: Dict[Optional[str], frozenset] = {
                                       RETURNED_FROM_CLIENT,
                                       RETURNED_TO_PRODUCER}),
     DIRECT_DISPATCH_READY: frozenset({CLIENT_DISPATCHED}),
-    CLIENT_DISPATCHED:     frozenset({CLOSED}),
-    SALES_TRANSIT:         frozenset({CLOSED}),
-    # CLOSED stays terminal. Resolved 2026-05-12 in
-    # RETURNS_LIFECYCLE_DESIGN.md §2: producer replacements use a
-    # new scan_code rather than a CLOSED → anything transition.
+    CLIENT_DISPATCHED:     frozenset({CLOSED, WAREHOUSE_STOCK}),
+    SALES_TRANSIT:         frozenset({CLOSED, WAREHOUSE_STOCK}),
     CLOSED:                frozenset(),
     # Sample-out can now also escalate into RETURNED_FROM_CLIENT
     # (sample came back with a problem). Forbidden by absence:
@@ -315,7 +312,6 @@ LEGAL_TRANSITIONS: Dict[Optional[str], frozenset] = {
     RETURNED_FROM_CLIENT:  frozenset({WAREHOUSE_STOCK, RETURNED_TO_PRODUCER,
                                       WRITTEN_OFF}),
     RETURNED_TO_PRODUCER:  frozenset({WAREHOUSE_STOCK, RETURNED_FROM_CLIENT}),
-    # WRITTEN_OFF is terminal — a scrapped piece never reopens (mirrors CLOSED).
     WRITTEN_OFF:           frozenset(),
 }
 
@@ -339,6 +335,9 @@ DEFAULT_TRIGGER: Dict[tuple, str] = {
     (RETURNED_FROM_CLIENT,  WRITTEN_OFF):           "qc_written_off",
     (RETURNED_TO_PRODUCER,  WAREHOUSE_STOCK):       "returned_from_producer_restocked",
     (RETURNED_TO_PRODUCER,  RETURNED_FROM_CLIENT):  "returned_from_producer_to_rma",
+    # Package B — Transit reversal triggers (forward corrections, not undos).
+    (SALES_TRANSIT,         WAREHOUSE_STOCK):       "reversal_sales_transit_to_stock",
+    (CLIENT_DISPATCHED,     WAREHOUSE_STOCK):       "reversal_dispatch_to_stock",
 }
 
 # Lifecycle states that satisfy a Proforma stock-readiness gate.

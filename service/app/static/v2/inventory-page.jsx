@@ -2583,7 +2583,7 @@ function DocumentViewerPage({ doc, onBack }) {
 
           {/* Propose archive — case 6 (over-scan/duplicate). Secondary, low-emphasis,
               collapsed by default. Proposal only — never auto-applied, never a
-              physical delete of the piece or its history. No terminal reversal UI. */}
+              physical delete of the piece or its history. Terminal reversal UI: Package B (ReversalModal). */}
           <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
             {!archiveOpen && !archiveDone && (
               <button data-testid="correction-archive-toggle" onClick={() => setArchiveOpen(true)} style={{ padding: '6px 12px', fontSize: 11.5, fontWeight: 600, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-2)', cursor: 'pointer' }}>
@@ -2608,6 +2608,172 @@ function DocumentViewerPage({ doc, onBack }) {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      </window.Modal>
+    );
+  }
+
+  function ReversalModal({ onClose, onSuccess }) {
+    const [pieceId, setPieceId]           = useState('');
+    const [reason, setReason]             = useState('');
+    const [originalEventId, setOriginalEventId] = useState('');
+    const [notes, setNotes]               = useState('');
+    const [submitting, setSubmitting]     = useState(false);
+    const [err, setErr]                   = useState('');
+    const [history, setHistory]           = useState(null);
+
+    const REVERSIBLE = {
+      SALES_TRANSIT:     { target: 'sales-transit', label: 'Sales Transit → Warehouse Stock' },
+      CLIENT_DISPATCHED: { target: 'dispatched',    label: 'Dispatched → Warehouse Stock' },
+    };
+
+    const REASONS = ['wrong_invoice_link', 'cancelled_dispatch', 'operator_error', 'system_error', 'other'];
+
+    const [currentState, setCurrentState] = useState(null);
+    const [lookupDone, setLookupDone]     = useState(false);
+    const [lookupErr, setLookupErr]       = useState('');
+
+    async function lookupPiece() {
+      const pid = pieceId.trim();
+      if (!pid) return;
+      setLookupErr('');
+      setCurrentState(null);
+      setLookupDone(false);
+      setHistory(null);
+      setReason('');
+
+      const res = await window.PzApi.getInventoryPieceState(pid);
+      if (!res.ok || (res.data && res.data.found === false)) {
+        setLookupErr('Piece not found or lookup failed.');
+        setLookupDone(true);
+        return;
+      }
+      const stateObj = res.data && res.data.state;
+      const state = (typeof stateObj === 'string') ? stateObj : (stateObj && stateObj.state) || '';
+      setCurrentState(state);
+      setLookupDone(true);
+
+      if (REVERSIBLE[state]) {
+        setReason(REASONS[0]);
+      }
+
+      window.PzApi.getReversals(pid).then(r => {
+        setHistory((r.ok && r.data && r.data.reversals) ? r.data.reversals : []);
+      });
+    }
+
+    function genKey() {
+      return 'rev-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    const info = currentState ? REVERSIBLE[currentState] : null;
+
+    async function submit() {
+      setErr('');
+      if (!info) return;
+      setSubmitting(true);
+      const res = await window.PzApi.reverseToStock(pieceId.trim(), info.target, {
+        reason,
+        idempotency_key:   genKey(),
+        original_event_id: originalEventId.trim(),
+        notes:             notes.trim(),
+      });
+      setSubmitting(false);
+      if (!res.ok) {
+        const detail = (res.data && res.data.detail && res.data.detail.detail) ||
+                       (res.data && res.data.detail) || res.error || ('HTTP ' + res.status);
+        setErr(String(detail));
+        return;
+      }
+      onSuccess(res.data);
+    }
+
+    const lbl = { fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4, display: 'block' };
+    const fld = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12.5, boxSizing: 'border-box' };
+
+    return (
+      <window.Modal title="Reverse to Warehouse Stock" onClose={onClose}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }} data-testid="reversal-modal">
+          <div style={{ padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
+            Forward correction: reverses a transit state back to <strong style={{ color: 'var(--text)' }}>WAREHOUSE_STOCK</strong>.
+            Not an undo — appends a new forward transition. Never deletes history.
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+            <div style={{ flex: 1 }}>
+              <label style={lbl} htmlFor="rev-piece">Scan code <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+              <input id="rev-piece" data-testid="rev-piece-input" value={pieceId} onChange={e => { setPieceId(e.target.value); setLookupDone(false); setCurrentState(null); setLookupErr(''); }} style={fld} placeholder="e.g. SC-001" onKeyDown={e => { if (e.key === 'Enter') lookupPiece(); }} />
+            </div>
+            <button data-testid="rev-lookup" onClick={lookupPiece} disabled={!pieceId.trim()} style={{ padding: '7px 14px', fontSize: 12.5, fontWeight: 600, borderRadius: 6, border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)', color: 'var(--accent-text)', cursor: pieceId.trim() ? 'pointer' : 'not-allowed' }}>
+              Look up
+            </button>
+          </div>
+
+          {lookupErr && <div data-testid="rev-lookup-err" style={{ color: 'var(--badge-red-text)', fontSize: 12, fontWeight: 600 }}>{lookupErr}</div>}
+
+          {lookupDone && currentState && !info && (
+            <div data-testid="rev-not-reversible" style={{ padding: '10px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 8, fontSize: 12, color: 'var(--badge-amber-text)', lineHeight: 1.5 }}>
+              Piece is in <strong>{currentState}</strong> — this state is not reversible. Only SALES_TRANSIT and CLIENT_DISPATCHED can be reversed to WAREHOUSE_STOCK.
+            </div>
+          )}
+
+          {lookupDone && info && (
+            <>
+              <div data-testid="rev-state-info" style={{ padding: '10px 12px', background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)', borderRadius: 8, fontSize: 12, color: 'var(--badge-blue-text)', lineHeight: 1.5 }}>
+                <strong>{info.label}</strong> — transit reversal, standard authorization.
+              </div>
+
+              <div>
+                <label style={lbl} htmlFor="rev-reason">Reason <span style={{ color: 'var(--badge-red-text)' }}>*</span></label>
+                <select id="rev-reason" data-testid="rev-reason" value={reason} onChange={e => setReason(e.target.value)} style={fld}>
+                  {REASONS.map(r => <option key={r} value={r}>{r.replace(/_/g, ' ')}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <label style={lbl} htmlFor="rev-event-id">Original event ID (optional)</label>
+                <input id="rev-event-id" data-testid="rev-event-id" value={originalEventId} onChange={e => setOriginalEventId(e.target.value)} style={fld} placeholder="inventory_state_events.id being reversed" />
+              </div>
+
+              <div>
+                <label style={lbl} htmlFor="rev-notes">Notes</label>
+                <textarea id="rev-notes" data-testid="rev-notes" value={notes} onChange={e => setNotes(e.target.value)} style={{ ...fld, minHeight: 56, resize: 'vertical' }} placeholder="Additional notes (optional)" />
+              </div>
+            </>
+          )}
+
+          {history !== null && (
+            <div data-testid="rev-history">
+              <label style={lbl}>Prior reversals</label>
+              {history.length === 0 && (
+                <div data-testid="rev-history-empty" style={{ fontSize: 12, color: 'var(--text-3)', fontStyle: 'italic' }}>No prior reversals for this piece.</div>
+              )}
+              {history.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 160, overflowY: 'auto' }}>
+                  {history.map((h, i) => (
+                    <div key={h.id || i} data-testid="rev-history-row" style={{ padding: '7px 10px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.5 }}>
+                      <span style={{ fontWeight: 700, color: 'var(--text)', textTransform: 'uppercase' }}>{h.from_state} → {h.to_state}</span>
+                      {' · '}{(h.created_at || '').slice(0, 19).replace('T', ' ')}
+                      {' · by '}<strong style={{ color: 'var(--text)' }}>{h.operator || '—'}</strong>
+                      <div style={{ color: 'var(--text-3)', marginTop: 2 }}>
+                        Reason: {h.reason || '—'}
+                        {h.notes ? (' · Notes: ' + h.notes) : ''}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {err && <div data-testid="rev-error" style={{ color: 'var(--badge-red-text)', fontSize: 12, fontWeight: 600 }}>{err}</div>}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button data-testid="rev-cancel" onClick={onClose} disabled={submitting} style={{ padding: '8px 16px', fontSize: 12.5, fontWeight: 600, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-2)', cursor: 'pointer' }}>Cancel</button>
+            <button data-testid="rev-submit" onClick={submit} disabled={submitting || !info} style={{ padding: '8px 16px', fontSize: 12.5, fontWeight: 700, borderRadius: 6, border: '1px solid var(--accent-border)', background: (submitting || !info) ? 'var(--bg-subtle)' : 'var(--accent-subtle)', color: 'var(--accent-text)', cursor: (submitting || !info) ? 'not-allowed' : 'pointer', opacity: !info ? 0.55 : 1 }}>
+              {submitting ? 'Reversing…' : 'Reverse to Warehouse Stock'}
+            </button>
           </div>
         </div>
       </window.Modal>
@@ -5381,6 +5547,10 @@ function DocumentViewerPage({ doc, onBack }) {
     function handleCorrect(row) { setCorrectionTarget(row); }
     function handleCorrectionSuccess() { setCorrectionTarget(null); }
 
+    // Inventory Reversal (Package B) — forward-correction back to WAREHOUSE_STOCK.
+    const [showReversal, setShowReversal] = useState(false);
+    function handleReversalSuccess() { setShowReversal(false); }
+
     const hasExportRows = !!exportMeta && !TABS_WITH_NO_TABLE.includes(activeTab);
     const exportTitle = hasExportRows
       ? 'Export ' + exportMeta.rows.length + ' rows from the current tab as CSV'
@@ -5445,6 +5615,22 @@ function DocumentViewerPage({ doc, onBack }) {
             }}
           >
             Cycle count
+          </button>
+
+          {/* Reverse to Stock — Package B: forward-correction reversal back to WAREHOUSE_STOCK.
+              Opens ReversalModal (operator enters scan code, modal validates reversible state). */}
+          <button
+            data-testid="inv-hdr-reverse"
+            onClick={() => setShowReversal(true)}
+            title="Reverse a terminal or transit piece back to Warehouse Stock (forward correction — does not delete history)"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '7px 14px', fontSize: 13, fontWeight: 600,
+              border: '1px solid var(--border)', borderRadius: 6,
+              background: 'var(--card)', color: 'var(--text)', cursor: 'pointer',
+            }}
+          >
+            ↩ Reverse to Stock
           </button>
 
           {/* ↓ Export — IV-HDR-3 — live client-side CSV from the active tab's loaded,
@@ -5513,6 +5699,14 @@ function DocumentViewerPage({ doc, onBack }) {
             piece={correctionTarget}
             onClose={() => setCorrectionTarget(null)}
             onSuccess={handleCorrectionSuccess}
+          />
+        )}
+
+        {/* Reversal modal — Package B: forward-correction back to WAREHOUSE_STOCK */}
+        {showReversal && (
+          <ReversalModal
+            onClose={() => setShowReversal(false)}
+            onSuccess={handleReversalSuccess}
           />
         )}
 

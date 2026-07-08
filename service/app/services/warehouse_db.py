@@ -225,6 +225,32 @@ def init_warehouse_db(db_path: Path) -> None:
                 ON inventory_corrections (scan_code, idempotency_key);
             CREATE INDEX IF NOT EXISTS idx_inv_corrections_scan
                 ON inventory_corrections (scan_code, created_at);
+
+            -- ── Inventory Reversal (additive; append-only) ──────────────────
+            -- One row per reversal event (terminal or transit state reversed
+            -- back to WAREHOUSE_STOCK). Records who / why / approval ref /
+            -- original event link. NEVER mutates inventory_state directly —
+            -- the actual state change goes through transition().
+            -- Idempotency: UNIQUE index on (scan_code, idempotency_key).
+            CREATE TABLE IF NOT EXISTS inventory_reversals (
+                id                  TEXT PRIMARY KEY,
+                scan_code           TEXT NOT NULL,
+                from_state          TEXT NOT NULL,
+                to_state            TEXT NOT NULL DEFAULT 'WAREHOUSE_STOCK',
+                reversal_type       TEXT NOT NULL,
+                reason              TEXT NOT NULL,
+                approval_reference  TEXT NOT NULL DEFAULT '',
+                original_event_id   TEXT NOT NULL DEFAULT '',
+                operator            TEXT NOT NULL,
+                idempotency_key     TEXT NOT NULL,
+                notes               TEXT NOT NULL DEFAULT '',
+                created_at          TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_inv_reversals_idempotency
+                ON inventory_reversals (scan_code, idempotency_key);
+            CREATE INDEX IF NOT EXISTS idx_inv_reversals_scan
+                ON inventory_reversals (scan_code, created_at);
         """)
 
 
@@ -1390,3 +1416,98 @@ def list_returns_records(
             continue
         out.append(rec)
     return out
+
+
+# ── Inventory Reversal (additive, append-only) ──────────────────────────────
+
+REVERSAL_TYPES = frozenset({"transit"})
+
+REVERSAL_REASONS_TRANSIT = frozenset({
+    "wrong_invoice_link", "cancelled_dispatch", "operator_error",
+    "system_error", "other",
+})
+
+
+def record_reversal(
+    *,
+    scan_code:          str,
+    from_state:         str,
+    to_state:           str = "WAREHOUSE_STOCK",
+    reversal_type:      str,
+    reason:             str,
+    operator:           str,
+    idempotency_key:    str,
+    approval_reference: str = "",
+    original_event_id:  str = "",
+    notes:              str = "",
+) -> Dict[str, Any]:
+    """Append one inventory_reversals row. Raises sqlite3.IntegrityError on
+    duplicate (scan_code, idempotency_key). NEVER mutates inventory_state."""
+    if _db_path is None:
+        raise RuntimeError("warehouse_db not initialised")
+    if not scan_code:
+        raise ValueError("scan_code is required")
+    if reversal_type not in REVERSAL_TYPES:
+        raise ValueError(
+            f"reversal_type must be one of {sorted(REVERSAL_TYPES)}, got {reversal_type!r}"
+        )
+    if not operator:
+        raise ValueError("operator is required")
+    if not reason or not reason.strip():
+        raise ValueError("reason is required")
+    if not idempotency_key:
+        raise ValueError("idempotency_key is required")
+
+    valid_reasons = REVERSAL_REASONS_TRANSIT
+    if reason not in valid_reasons:
+        raise ValueError(
+            f"reason must be one of {sorted(valid_reasons)} for "
+            f"reversal_type={reversal_type!r}, got {reason!r}"
+        )
+
+    now = _now()
+    row_id = str(uuid.uuid4())
+    with _connect() as con:
+        con.execute(
+            """INSERT INTO inventory_reversals
+               (id, scan_code, from_state, to_state, reversal_type,
+                reason, approval_reference, original_event_id,
+                operator, idempotency_key, notes, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (row_id, scan_code, from_state, to_state, reversal_type,
+             reason, approval_reference, original_event_id,
+             operator, idempotency_key, notes, now),
+        )
+        con.commit()
+        r = con.execute(
+            "SELECT * FROM inventory_reversals WHERE id=?", (row_id,)
+        ).fetchone()
+    return dict(r) if r else {}
+
+
+def find_reversal_by_idempotency(
+    scan_code: str, idempotency_key: str
+) -> Optional[Dict[str, Any]]:
+    """Replay lookup for a prior reversal."""
+    if _db_path is None or not scan_code or not idempotency_key:
+        return None
+    with _connect() as con:
+        row = con.execute(
+            "SELECT * FROM inventory_reversals "
+            "WHERE scan_code=? AND idempotency_key=?",
+            (scan_code, idempotency_key),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_reversals(scan_code: str) -> List[Dict[str, Any]]:
+    """All reversal rows for a scan_code, newest first."""
+    if _db_path is None or not scan_code:
+        return []
+    with _connect() as con:
+        rows = con.execute(
+            "SELECT * FROM inventory_reversals WHERE scan_code=? "
+            "ORDER BY created_at DESC",
+            (scan_code,),
+        ).fetchall()
+    return [dict(r) for r in rows]
