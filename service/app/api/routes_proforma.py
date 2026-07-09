@@ -1539,7 +1539,10 @@ def _build_service_charge_lines(
     return lines, note
 
 
-def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaRequest":
+def _build_proforma_request(
+    preview: Dict[str, Any],
+    client_contractor_id: str = "",
+) -> "wfirma_client.ProformaRequest":
     """
     Build a wfirma_client.ProformaRequest from a ready preview dict.
     Caller-supplied values are NOT used here — every field is derived from
@@ -1554,7 +1557,16 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
     client_name = (preview.get("client_name") or "").strip()
     # Use the same resolver as the preview so a passing preview implies
     # a successful payload build at this point.
-    resolution = _resolve_customer(client_name)
+    # WF-3 Slice 3A: thread the operator-selected contractor.id so the fiscal
+    # payload resolves through the SAME canonical id-first authority as the
+    # preview. Branch 0-pre in _resolve_customer echoes the supplied id
+    # verbatim — it never returns a different contractor.id than the one the
+    # operator selected. When no contractor.id is supplied, or it does not
+    # resolve, the existing name-fallback chain runs UNCHANGED (Rule 6/7).
+    resolution = _resolve_customer(
+        client_name,
+        client_contractor_id=(client_contractor_id or ""),
+    )
     if resolution["ambiguous"]:
         raise ValueError(
             f"multiple wfirma customer candidates for {client_name!r}: "
@@ -1941,7 +1953,12 @@ def proforma_create(
     # that wFirma would reject or, worse, accept by creating a duplicate
     # contractor inline.
     try:
-        req, _legacy_vat_warnings = _build_proforma_request(preview)
+        # WF-3 Slice 3A: pass the draft's operator-selected contractor.id so the
+        # fiscal payload uses the same id-first identity authority as the preview.
+        req, _legacy_vat_warnings = _build_proforma_request(
+            preview,
+            client_contractor_id=getattr(draft, "client_contractor_id", "") or "",
+        )
     except ValueError as exc:
         return JSONResponse({
             "ok":               False,
