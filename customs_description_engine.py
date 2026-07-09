@@ -614,7 +614,12 @@ def process_batch_items(batch: dict) -> list[dict]:
             if _authoritative:
                 _polish   = item.get("_resolved_description_pl") or norm["polish_customs_description"]
                 _material = item.get("_resolved_material_pl")
-                if _material is None:
+                if _material in (None, ""):
+                    # Approved source (e.g. a description-only correction) left
+                    # material empty — fall back to the classifier rather than
+                    # rendering a blank "Material:" field on the customs PDF. If
+                    # that fallback is itself generic, the post-generation
+                    # forbidden-token read-back blocks it.
                     _material = norm["material_pl"]
                 _item_pl  = item.get("_resolved_name_pl") or norm["item_type_pl"]
             else:
@@ -1509,6 +1514,108 @@ def _generate_pdf(
 
 # ── Combined package generator ─────────────────────────────────────────────────
 
+# Lazy bridge to the service-layer Product Description resolver. Mirrors
+# description_engine._load_customs_engine (which imports THIS module) — both
+# imports are runtime/lazy so there is no circular import at module load. In the
+# FastAPI process the service package is importable; in the standalone CLI it is
+# not, and the guard degrades to generation + the post-gen read-back only.
+_DESC_RESOLVER_CACHE = None
+
+
+def _load_description_resolver():
+    global _DESC_RESOLVER_CACHE
+    if _DESC_RESOLVER_CACHE is not None:
+        return _DESC_RESOLVER_CACHE if _DESC_RESOLVER_CACHE is not False else None
+    import importlib
+    for modpath in ("app.services.description_engine",
+                    "service.app.services.description_engine"):
+        try:
+            _DESC_RESOLVER_CACHE = importlib.import_module(modpath)
+            return _DESC_RESOLVER_CACHE
+        except Exception:
+            continue
+    _DESC_RESOLVER_CACHE = False
+    return None
+
+
+_FALLBACK_PDF_FORBIDDEN = (
+    "Wyrób jubilerski", "wyrób jubilerski", "metal szlachetny",
+    "UNKNOWN", "grouped invoice aggregate", "■",
+)
+_FALLBACK_DESC_FORBIDDEN = (
+    "Wyrób jubilerski", "wyrób jubilerski", "metal szlachetny",
+    "UNKNOWN", "grouped invoice aggregate",
+)
+
+
+def _forbidden_token_sets():
+    """Single source: pull the forbidden-token sets from description_engine when
+    reachable, else use the in-module fallback copies."""
+    de = _load_description_resolver()
+    pdf_tok = getattr(de, "PDF_FORBIDDEN_TOKENS", None) if de else None
+    desc_tok = getattr(de, "FORBIDDEN_DESC_TOKENS", None) if de else None
+    return (tuple(pdf_tok) if pdf_tok else _FALLBACK_PDF_FORBIDDEN,
+            tuple(desc_tok) if desc_tok else _FALLBACK_DESC_FORBIDDEN)
+
+
+def _scan_pdf_for_forbidden(path: Optional[str], tokens) -> list:
+    """Return forbidden tokens present in the rendered PDF text (best-effort).
+    Returns [] if the file is missing or cannot be parsed — validation failure
+    must not fabricate a block, matching the route read-back's degrade behaviour."""
+    p = Path(path or "")
+    if not p.is_file():
+        return []
+    try:
+        import pdfplumber  # type: ignore
+        with pdfplumber.open(str(p)) as pdf:
+            text = "\n".join((pg.extract_text() or "") for pg in pdf.pages)
+    except Exception:
+        return []
+    return sorted({t for t in tokens if t in text})
+
+
+def _scan_sad_json_for_forbidden(path: Optional[str], desc_tokens) -> list:
+    """Return forbidden tokens present in the DESCRIPTION fields of the SAD JSON
+    lines (polish_customs_description / material / *_description_pl). Item-type
+    metadata (which may legitimately be "UNKNOWN") is intentionally not scanned."""
+    p = Path(path or "")
+    if not p.is_file():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    hits = set()
+    for ln in (data.get("lines") or []):
+        if not isinstance(ln, dict):
+            continue
+        for field in ("polish_customs_description", "material",
+                      "description_pl", "product_description_pl"):
+            val = str(ln.get(field) or "")
+            for t in desc_tokens:
+                if t in val:
+                    hits.add(t)
+    return sorted(hits)
+
+
+def _blocked_package(batch_id: str, guard: str, **extra) -> dict:
+    """Envelope returned when a guard blocks generation. pdf/json report
+    generated=False so every caller (routes + automation) fails safe and never
+    marks the batch as generated."""
+    stub = {"generated": False, "output_path": None, "filename": None,
+            "items_described": 0, "pdf_hash": None, "blocked": True}
+    return {
+        "pdf":     dict(stub),
+        "json":    {"generated": False, "output_path": None, "filename": None,
+                    "total_lines": 0, "json_hash": None, "blocked": True},
+        "audit":   {"batch_id": batch_id,
+                    "generated_at": datetime.now(timezone.utc).isoformat()},
+        "blocked": True,
+        "guard":   guard,
+        **extra,
+    }
+
+
 def generate_customs_description_package(
     batch: dict,
     awb: str,
@@ -1518,10 +1625,25 @@ def generate_customs_description_package(
     *,
     consignee_name: Optional[str] = None,
     consignor_name: Optional[str] = None,
+    corrections: Optional[dict] = None,
+    enforce_guards: bool = True,
 ) -> dict:
     """
     Generate both the Polish description PDF and the SAD-ready JSON in one call.
     Returns a combined result envelope suitable for the DHL clearance handler.
+
+    FUNCTION-INTERNAL GUARDS (cover ALL callers — routes AND automation):
+      1. Before writing anything, the Product Description resolver stamps the
+         approved description onto every line; if any line has no approved,
+         non-generic description the call returns a BLOCKED envelope
+         (guard="descriptions_missing_for_customs", pdf/json generated=False)
+         and NO file is written.
+      2. After writing, a forbidden-token read-back scans the PDF and the SAD
+         JSON description fields; on any hit it unlinks BOTH files and returns a
+         BLOCKED envelope (guard="polish_desc_forbidden_tokens").
+    Callers translate `blocked` to HTTP 422 (routes) or skip marking the batch
+    generated (automation). Pass enforce_guards=False only for internal reuse
+    that has already validated (e.g. golden/CLI); the default is protective.
 
     Parameters
     ----------
@@ -1542,6 +1664,38 @@ def generate_customs_description_package(
         json  : result from generate_sad_ready_json()
         audit : combined audit envelope
     """
+    batch_id = (
+        batch.get("batch_id") or
+        (batch.get("batch_meta") or {}).get("batch_id") or
+        ""
+    )
+
+    # ── Guard #1 (pre-generation): approved-description resolver + stamp ───────
+    if enforce_guards:
+        _de = _load_description_resolver()
+        if _de is not None:
+            try:
+                _corr = (corrections if corrections is not None
+                         else (batch.get("description_corrections") or {}))
+                # Stamp the exact items the engine will render — _extract_invoices
+                # prefers result.invoices over rows, so stamping its output closes
+                # the result.invoices bypass. The items are the same dict refs the
+                # PDF/SAD builders consume, so the stamp propagates.
+                _invs  = _extract_invoices(batch)
+                _items = [it for inv in _invs for it in (inv.get("items") or [])]
+                if not _items:
+                    _items = batch.get("rows") or []
+                _missing = _de.resolve_and_stamp_customs_descriptions(_items, _corr)
+            except Exception as _gexc:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "customs guard stamp failed (%s) — degrading to post-gen "
+                    "read-back only", _gexc)
+                _missing = None
+            if _missing:
+                return _blocked_package(
+                    batch_id, "descriptions_missing_for_customs", missing=_missing)
+
     pdf_result  = generate_polish_description_pdf(
         batch, awb, output_dir, dhl_email_id=dhl_email_id, date_override=date_override,
         consignee_name=consignee_name,
@@ -1551,11 +1705,24 @@ def generate_customs_description_package(
         batch, awb, output_dir, dhl_email_id=dhl_email_id,
     )
 
-    batch_id = (
-        batch.get("batch_id") or
-        (batch.get("batch_meta") or {}).get("batch_id") or
-        ""
-    )
+    # ── Guard #2 (post-generation): forbidden-token read-back on BOTH files ────
+    if enforce_guards:
+        _pdf_tok, _desc_tok = _forbidden_token_sets()
+        _pdf_path  = (pdf_result or {}).get("output_path")
+        _json_path = (json_result or {}).get("output_path")
+        _hits = sorted(set(
+            _scan_pdf_for_forbidden(_pdf_path, _pdf_tok)
+            + _scan_sad_json_for_forbidden(_json_path, _desc_tok)
+        ))
+        if _hits:
+            for _pth in (_pdf_path, _json_path):
+                try:
+                    if _pth and Path(_pth).is_file():
+                        Path(_pth).unlink()
+                except OSError:
+                    pass
+            return _blocked_package(
+                batch_id, "polish_desc_forbidden_tokens", tokens=_hits)
 
     audit_envelope = {
         "awb":                 re.sub(r"\s+", "", awb),

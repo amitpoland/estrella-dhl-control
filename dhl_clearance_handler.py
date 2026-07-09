@@ -146,6 +146,17 @@ def handle_dhl_customs_email(
             polish_result = pkg.get("pdf") or {}
             # Attach full package for callers that want SAD JSON too
             polish_result["_customs_package"] = pkg
+            # Function-internal guard blocked generation: pkg["pdf"].generated is
+            # already False (so _collect_attachments will not attach it); surface
+            # the guard so the reply pipeline does not treat this as generated.
+            if pkg.get("blocked"):
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "[dhl_clearance_handler] customs package BLOCKED — guard=%s; "
+                    "PDF not generated/attached", pkg.get("guard"),
+                )
+                polish_result["blocked"] = True
+                polish_result["guard"] = pkg.get("guard")
         except Exception as exc:
             polish_result = {"generated": False, "error": str(exc)}
 

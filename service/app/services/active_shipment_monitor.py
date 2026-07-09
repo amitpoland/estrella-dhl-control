@@ -1544,6 +1544,19 @@ def _ensure_polish_description(audit_path: Path, audit: Dict[str, Any]) -> Dict[
         pkg = generate_customs_description_package(
             batch=audit, awb=awb, output_dir=str(out_dir),
         )
+        # Function-internal guard blocked generation (missing approved
+        # description or forbidden token). Do NOT mark the batch generated —
+        # record the block and return so an operator resolves it.
+        if (pkg or {}).get("blocked"):
+            out["skipped"] = True
+            out["block_reason"] = pkg.get("guard")
+            out["block_detail"] = pkg.get("missing") or pkg.get("tokens")
+            log.warning(
+                "[active_shipment_monitor] polish-desc BLOCKED for %s — guard=%s "
+                "(audit NOT marked polish_description_generated)",
+                awb, pkg.get("guard"),
+            )
+            return out
         pdf_result = (pkg or {}).get("pdf") or {}
         if not pdf_result.get("generated"):
             raise RuntimeError(

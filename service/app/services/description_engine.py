@@ -875,8 +875,9 @@ def regenerate_descriptions_for_packing_lines(
 # approved, non-generic description resolves to status="missing_description".
 
 # Generic placeholder strings that must NEVER reach a generated customs
-# document. Kept in sync with the forbidden-token read-back in
-# routes_dhl_clearance.py (single source imported from here).
+# document. THIS is the single source of truth — the route-level and the
+# engine-internal forbidden-token read-backs both import from here (do not
+# re-declare a divergent local copy).
 FORBIDDEN_DESC_TOKENS = (
     "Wyrób jubilerski",
     "wyrób jubilerski",
@@ -884,6 +885,12 @@ FORBIDDEN_DESC_TOKENS = (
     "UNKNOWN",
     "grouped invoice aggregate",
 )
+
+# PDF byte-level read-back set: the description tokens above PLUS the U+25A0
+# BLACK SQUARE glyph that appears when Polish diacritics fail to render (font
+# missing). Only meaningful against rendered PDF text, so it lives here as the
+# superset used by every post-generation PDF read-back.
+PDF_FORBIDDEN_TOKENS = FORBIDDEN_DESC_TOKENS + ("■",)
 
 
 def _contains_forbidden_desc_token(*texts: str) -> Optional[str]:
