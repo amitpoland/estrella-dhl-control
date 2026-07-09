@@ -245,6 +245,38 @@ def _write_draft_audit(
     write_json_atomic(output_dir / "audit.json", audit)
 
 
+# ── PM4 (Phase 4 — Product Master Automation) ─────────────────────────────────
+
+def schedule_product_master_sync(
+    background: BackgroundTasks, batch_id: str, row_count: int,
+) -> bool:
+    """Fire-and-forget the Product Master sync AFTER purchase-packing rows have
+    been stored for a batch.
+
+    Returns True iff a task was scheduled; no-op (returns False) when
+    ``row_count <= 0`` or ``batch_id`` is blank. Reuses the ONE sync authority
+    ``product_master_sync.run_product_master_sync`` — which composes the existing
+    CPA product-master write boundary → design mapping → descriptions → wFirma
+    goods PREVIEW. This path writes NOTHING to the Master directly, mints NO
+    product code, and makes NO wFirma call.
+
+    Failure-isolated: any scheduling error is logged and swallowed so the intake
+    response is never blocked or changed.
+    """
+    try:
+        if not batch_id or int(row_count or 0) <= 0:
+            return False
+        from ..services.product_master_sync import run_product_master_sync
+        background.add_task(run_product_master_sync, batch_id)
+        log.info("[%s] PM4: scheduled product_master_sync (purchase-packing rows=%d)",
+                 batch_id, int(row_count))
+        return True
+    except Exception as exc:  # never break intake
+        log.warning("[%s] PM4: failed to schedule product_master_sync (non-fatal): %s",
+                    batch_id, exc)
+        return False
+
+
 # ── Main intake endpoint ──────────────────────────────────────────────────────
 
 @router.post("/intake", dependencies=[_auth])
@@ -752,6 +784,17 @@ async def shipment_intake(
                         batch_id, _wb_exc)
 
         packing_results.append(pack_summary)
+
+    # ── PM4: auto-sync Product Master after purchase-packing ingest ───────────
+    # Gated on rows actually stored (status == "extracted"); fire-and-forget so
+    # the response is never delayed. The Master is advisory and the sync's wFirma
+    # goods step stays preview — no product_master direct write, no product_code
+    # mint, no wFirma create.
+    _pm4_stored = sum(
+        int(pr.get("rows") or 0) for pr in packing_results
+        if pr.get("status") == "extracted"
+    )
+    schedule_product_master_sync(background, batch_id, _pm4_stored)
 
     # ── D. Save sales documents ───────────────────────────────────────────────
     sales_names: List[str] = []
@@ -1446,6 +1489,7 @@ async def shipment_intake(
 @router.post("/{batch_id}/packing_list", dependencies=[_auth])
 async def add_packing_list(
     batch_id:       str,
+    background:     BackgroundTasks,
     file:           UploadFile,
     supplier_name:  str = Form(default=""),
     invoice_index:  int = Form(default=0),
@@ -1565,6 +1609,13 @@ async def add_packing_list(
     except Exception as exc:
         log.warning("[%s] Backfill packing extraction failed: %s — %s", batch_id, name, exc)
         result_summary = {"status": "extraction_failed", "rows": 0, "error": str(exc)}
+
+    # ── PM4: auto-sync Product Master after a stored purchase-packing backfill ──
+    schedule_product_master_sync(
+        background, batch_id,
+        int(result_summary.get("rows") or 0)
+        if result_summary.get("status") == "extracted" else 0,
+    )
 
     # Timeline event
     if audit_path.exists():
