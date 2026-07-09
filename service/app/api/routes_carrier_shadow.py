@@ -60,3 +60,27 @@ def get_carrier_status(
         "carrier_api_status": settings.carrier_api_status,
         "carrier_plt_status": settings.carrier_plt_status,
     })
+
+
+# ── CW-1: carrier webhook event processing (Run Now + status) ─────────────────
+
+
+@router.post("/events/process")
+def process_carrier_events(
+    batch_id: Optional[str] = Query(default=None),
+    _auth: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Run Now — map stored carrier webhook events into the tracking authority
+    (tracking_db). Idempotent (tracking dedup on source_ref); read-only against
+    every other store; no booking / label / customs / finance side-effects."""
+    from ..services.carrier.event_processor import run_carrier_event_processing
+    return JSONResponse(run_carrier_event_processing(batch_id))
+
+
+@router.get("/events/status")
+def carrier_events_status(
+    _auth: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Four-questions status for the carrier event processor + live event counts."""
+    from ..services.carrier.event_processor import get_status
+    return JSONResponse(get_status())

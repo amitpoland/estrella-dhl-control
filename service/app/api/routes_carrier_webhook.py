@@ -29,7 +29,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from ..services.carrier.models.webhook import DhlWebhookPayload, make_log_safe
@@ -76,6 +76,7 @@ def _get_event_db_path() -> Path:
 @router.post("/dhl", include_in_schema=False)
 async def receive_dhl_webhook(
     request: Request,
+    background: BackgroundTasks,
     dhl_signature: Optional[str] = Header(None, alias="DHL-Signature"),
     secret: str = Depends(_require_webhook_secret),
     db_path: Path = Depends(_get_event_db_path),
@@ -119,9 +120,38 @@ async def receive_dhl_webhook(
     event_type = payload.extract_event_type()
     batch_id = payload.extract_batch_id()
 
+    # CW-1: correlate BEFORE log-safe stripping removes the tracking identifiers.
+    # DHL native events carry a tracking number but no EJ batchId; resolve it via
+    # the carrier shipment record (tracking_ref). The raw tracking number is
+    # still NEVER persisted — only the resolved batch_id lands in the store.
+    if not batch_id:
+        try:
+            from ..services.carrier.models.webhook import _TRACKING_KEYS
+            from ..services.carrier.persistence.shipment_db import (
+                get_batch_by_tracking_ref as _resolve_batch,
+            )
+            tracking_no = next(
+                (str(raw_dict[k]).strip() for k in _TRACKING_KEYS
+                 if raw_dict.get(k)), "",
+            )
+            if tracking_no:
+                shipment_db_path = db_path.parent / "carrier_shipments.db"
+                batch_id = _resolve_batch(shipment_db_path, tracking_no) or ""
+        except Exception:  # correlation is best-effort; never reject the event
+            batch_id = batch_id or ""
+
     _init_event_db(db_path)
     # Strip tracking identifiers before persistence.
     safe_payload = make_log_safe(raw_dict)
     is_new = _insert_event(db_path, event_id, batch_id, event_type, safe_payload)
+
+    # CW-1: fire-and-forget processing of the correlated event into the
+    # tracking authority (tracking_db). Failure-isolated; response unchanged.
+    if is_new and batch_id:
+        try:
+            from ..services.carrier.event_processor import run_carrier_event_processing
+            background.add_task(run_carrier_event_processing, batch_id)
+        except Exception:
+            pass
 
     return JSONResponse({"status": "ok", "accepted": is_new})
