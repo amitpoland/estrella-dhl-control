@@ -135,16 +135,13 @@ def test_engine_sentinel_appears_in_pdf(storage):
             "ZZ_SENTINEL_ENGLISH_DESCRIPTION_ZZ") in text
 
 
-# ── 5. Manual override defeats the auto-default ─────────────────────────────
+# ── 5. Approved manual description is the generation source ─────────────────
 
-def test_manual_override_replaces_auto_for_same_product_code(storage):
-    # First generation creates an auto row keyed by product_code
-    _generate_pdf(storage)
-    auto = ddb.get_product_description("EJL/25-26/1274-3")
-    assert auto is not None
-    assert auto["source"] == "auto"
-
-    # Operator override
+def test_manual_override_surfaces_in_pdf(storage):
+    # Authority model (customs-description-resolver): the approved manual block
+    # (source='manual') is the generation source. Seed it, generate, and prove
+    # BOTH the approved Polish AND approved English surface in the PDF — the
+    # resolver honors the operator's approved description end-to-end.
     deng.set_manual_block(
         product_code   = "EJL/25-26/1274-3",
         item_type      = "RING",
@@ -154,19 +151,32 @@ def test_manual_override_replaces_auto_for_same_product_code(storage):
         purpose_pl     = "Ozdoba",
         description_en = "ZZ_MANUAL_EN_ZZ",
     )
-    pkg2 = _generate_pdf(storage)
-    text = _read_pdf_text(pkg2["pdf"]["output_path"])
+    pkg = _generate_pdf(storage)
+    assert not pkg.get("blocked"), pkg
+    text = _read_pdf_text(pkg["pdf"]["output_path"])
     assert "ZZ_MANUAL_PL_ZZ / ZZ_MANUAL_EN_ZZ" in text
-    # Auto-default Polish description for RING must NOT appear in the
-    # description content row (the legacy "Biżuteria — pierścionek" text)
-    # Note: customs_description_engine generates rich Polish via its own
-    # normaliser, so the simple ITEM_TRANSLATIONS string may not appear at all.
-    # The strong assertion is that the override IS present.
+    # The approved row remains the single manual authority; customs generation
+    # does NOT persist a competing source='auto' row (resolver is authority, so
+    # nothing generic is written to product_descriptions).
+    row = ddb.get_product_description("EJL/25-26/1274-3")
+    assert row is not None and row["source"] == "manual"
 
 
-# ── 6. Repeated generation: at most one product_descriptions row per code ──
+# ── 6. Repeated generation keeps the approved row singular ──────────────────
 
-def test_repeated_generation_no_duplicate_rows(storage):
+def test_repeated_generation_manual_row_stays_singular(storage):
+    # With an approved manual block, repeated generation must not create a
+    # competing/duplicate product_descriptions row (deterministic; generation
+    # persists nothing new because the resolver is the authority).
+    deng.set_manual_block(
+        product_code   = "EJL/25-26/1274-3",
+        item_type      = "RING",
+        name_pl        = "Manual Pierścionek",
+        description_pl = "ZZ_MANUAL_PL_ZZ",
+        material_pl    = "Platyna 950",
+        purpose_pl     = "Ozdoba",
+        description_en = "ZZ_MANUAL_EN_ZZ",
+    )
     for _ in range(3):
         _generate_pdf(storage)
     with sqlite3.connect(str(storage / "documents.db")) as con:

@@ -2959,6 +2959,54 @@ async def get_clearance_status(batch_id: str) -> ClearanceStatusResponse:
     )
 
 
+def _translate_blocked_package(batch_id: str, pkg: dict) -> None:
+    """Translate a function-internal guard block from
+    generate_customs_description_package() into the matching HTTP 422 with
+    row-level detail. No-op when the package was not blocked. Both generate
+    routes call this so their behaviour matches the engine-internal guards that
+    also protect the automation callers."""
+    if not isinstance(pkg, dict) or not pkg.get("blocked"):
+        return
+    guard = pkg.get("guard")
+    if guard == "descriptions_missing_for_customs":
+        log.info("[%s] generation blocked (engine guard): %d line(s) lack an "
+                 "approved customs description", batch_id, len(pkg.get("missing") or []))
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard": guard,
+                "error": "One or more product lines have no approved customs "
+                         "description and would fall back to generic placeholder "
+                         "text. Correct each line before generating.",
+                "code":  guard,
+                "rows":  pkg.get("missing") or [],
+                "hint":  "Use the approved Product Master description or save a "
+                         "shipment correction (action-proposals approve, "
+                         "scope=shipment), then Recheck and regenerate.",
+            },
+        )
+    if guard == "polish_desc_forbidden_tokens":
+        log.warning("[%s] generation blocked (engine read-back): forbidden tokens %s; "
+                    "PDF + SAD JSON unlinked, audit pointers NOT updated",
+                    batch_id, pkg.get("tokens"))
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard":  guard,
+                "error":  "Generated customs document contained forbidden "
+                          "placeholder text. Files were not saved.",
+                "code":   guard,
+                "tokens": pkg.get("tokens") or [],
+                "hint":   "Correct the offending line(s) and regenerate.",
+            },
+        )
+    raise HTTPException(
+        status_code=422,
+        detail={"guard": guard or "generation_blocked",
+                "error": "Generation was blocked by a safety guard."},
+    )
+
+
 @router.post("/generate-description/{batch_id}", dependencies=[_auth, _op_auth])
 async def generate_description(
     batch_id: str,
@@ -3175,6 +3223,53 @@ async def generate_description(
         log.warning("[%s] apply_description_corrections: non-fatal failure: %s",
                     batch_id, _corr_exc)
 
+    # ── Guard: descriptions_missing_for_customs (pre-generation) ──────────────
+    # Every projected line must resolve to an APPROVED, non-generic customs
+    # description via the single Product Description Authority resolver
+    # (description_engine.resolve_product_description_for_customs). This is the
+    # same resolver V1 and V2 rely on through this shared route. A line that
+    # would fall back to generic placeholder text ("Wyrób jubilerski" /
+    # "metal szlachetny") is blocked HERE, before the PDF is built, with a
+    # row-level explanation so the operator sees exactly which line needs a
+    # correction — instead of an opaque post-generation forbidden-token 422.
+    # The post-generation forbidden-token read-back below remains as a backstop.
+    # NOTE (authority): this route-level guard screens audit["rows"] (the DHL
+    # projection) as an EARLY, operator-facing block. The AUTHORITATIVE pre-gen
+    # guard is engine-internal (generate_customs_description_package Guard #1):
+    # it stamps the exact render items (_extract_invoices), fails closed on any
+    # resolver error, and also protects the automation/CLI callers that never
+    # reach this route. This route guard is a UX convenience, not the sole gate.
+    # Resolve + STAMP approved descriptions onto each row so downstream
+    # generation (process_batch_items → SAD JSON → PDF) consumes the resolver's
+    # authoritative value, not the classifier's own text. Returns row-level
+    # detail for any line that cannot be approved (→ block below).
+    from ..services.description_engine import resolve_and_stamp_customs_descriptions  # noqa: PLC0415
+    _missing_desc = resolve_and_stamp_customs_descriptions(
+        audit.get("rows") or [],
+        audit.get("description_corrections") or {},
+    )
+    if _missing_desc:
+        log.info("[%s] generate_description blocked: %d line(s) lack an approved "
+                 "customs description: %s", batch_id, len(_missing_desc),
+                 [m.get("product_code") for m in _missing_desc])
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard":  "descriptions_missing_for_customs",
+                "error":  "One or more product lines have no approved customs "
+                          "description and would fall back to generic "
+                          "placeholder text. Correct each line before "
+                          "generating the Polish description.",
+                "code":   "descriptions_missing_for_customs",
+                "rows":   _missing_desc,
+                "hint":   "For each line: use the approved Product Master "
+                          "description, or save a shipment correction via the "
+                          "Inbox (action-proposals approve, scope=shipment), "
+                          "then Recheck and regenerate. No generic fallback is "
+                          "permitted in a customs document.",
+            },
+        )
+
     try:
         pkg = generate_customs_description_package(
             batch          = audit,
@@ -3183,10 +3278,14 @@ async def generate_description(
             date_override  = date_override,
             consignee_name = _consignee_ov,
             consignor_name = _consignor_ov,
+            corrections    = audit.get("description_corrections") or {},
         )
     except Exception as exc:
         log.error("Customs description generation failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Function-internal guards (also cover automation callers) returned a block.
+    _translate_blocked_package(batch_id, pkg)
 
     pdf_result = pkg.get("pdf") or {}
     if not pdf_result.get("generated"):
@@ -3211,17 +3310,12 @@ async def generate_description(
                 _pdf_text = "\n".join(
                     (p.extract_text() or "") for p in _pdf_v.pages
                 )
-            _FORBIDDEN_TOKENS = (
-                "UNKNOWN",
-                "metal szlachetny",
-                "Wyrób jubilerski",
-                "grouped invoice aggregate",
-                # U+25A0 BLACK SQUARE — appears when Polish diacritics (ś, ż,
-                # ą, ę, ł, ć, ń, ó, ź) fail to render because the PDF font
-                # has no glyph for them. Catching it here prevents corrupted
-                # Polish-description PDFs from ever reaching operators.
-                "■",
-            )
+            # Single source of truth for forbidden tokens (includes the U+25A0
+            # BLACK SQUARE glyph-failure marker). This route-level read-back is a
+            # defense-in-depth backstop; the primary read-back now lives inside
+            # generate_customs_description_package so automation callers are
+            # covered too.
+            from ..services.description_engine import PDF_FORBIDDEN_TOKENS as _FORBIDDEN_TOKENS  # noqa: PLC0415
             _hits = [t for t in _FORBIDDEN_TOKENS if t in _pdf_text]
             if _hits:
                 # Roll back: unlink the bad file, do NOT touch audit pointers.
@@ -3484,6 +3578,49 @@ async def generate_customs_package(
             },
         )
 
+    # Parity with generate_description: apply operator-approved corrections to
+    # the raw row fields before resolving/stamping.
+    try:
+        from ..services.customs_desc_checker import apply_description_corrections  # noqa: PLC0415
+        apply_description_corrections(audit)
+    except Exception as _corr_exc2:
+        log.warning("[%s] apply_description_corrections (pkg): non-fatal failure: %s",
+                    batch_id, _corr_exc2)
+
+    # ── Guard: descriptions_missing_for_customs (pre-generation) ──────────────
+    # Same single-authority resolver as generate_description — no bypass path.
+    # NOTE (authority): like generate_description, this route-level guard screens
+    # audit["rows"] as an EARLY, operator-facing block; the AUTHORITATIVE pre-gen
+    # guard is engine-internal (generate_customs_description_package Guard #1),
+    # which stamps the exact render items and fails closed on any resolver error.
+    # Resolve + STAMP approved descriptions onto each row so downstream
+    # generation (process_batch_items → SAD JSON → PDF) consumes the resolver's
+    # authoritative value, not the classifier's own text. Returns row-level
+    # detail for any line that cannot be approved (→ block below).
+    from ..services.description_engine import resolve_and_stamp_customs_descriptions  # noqa: PLC0415
+    _missing_desc = resolve_and_stamp_customs_descriptions(
+        audit.get("rows") or [],
+        audit.get("description_corrections") or {},
+    )
+    if _missing_desc:
+        log.info("[%s] generate_customs_package blocked: %d line(s) lack an "
+                 "approved customs description: %s", batch_id, len(_missing_desc),
+                 [m.get("product_code") for m in _missing_desc])
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard":  "descriptions_missing_for_customs",
+                "error":  "One or more product lines have no approved customs "
+                          "description and would fall back to generic "
+                          "placeholder text.",
+                "code":   "descriptions_missing_for_customs",
+                "rows":   _missing_desc,
+                "hint":   "Correct each line (approved Product Master "
+                          "description or a shipment correction), then Recheck "
+                          "and regenerate.",
+            },
+        )
+
     _consignee_ov2, _consignor_ov2 = (
         _resolve_customs_identities(batch_id)
         if settings.customs_identity_from_masters
@@ -3499,10 +3636,15 @@ async def generate_customs_package(
             date_override  = body.date_override,
             consignee_name = _consignee_ov2,
             consignor_name = _consignor_ov2,
+            corrections    = audit.get("description_corrections") or {},
         )
     except Exception as exc:
         log.error("generate_customs_package error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Engine-internal guards (missing-description / forbidden-token read-back)
+    # returned a block — translate to the same 422 as generate_description.
+    _translate_blocked_package(batch_id, pkg)
 
     pdf_result  = pkg.get("pdf") or {}
     json_result = pkg.get("json") or {}

@@ -273,6 +273,7 @@ def get_description_block(
     material_pl:    Optional[str] = None,
     purpose_pl:     Optional[str] = None,
     name_pl:        Optional[str] = None,
+    authoritative_pl: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Return the locked description block for *product_code*.
@@ -301,6 +302,37 @@ def get_description_block(
     pc = (product_code or "").strip()
     if not pc:
         raise ValueError("product_code is required")
+
+    # ── Authoritative resolver override ───────────────────────────────────────
+    # When the caller (customs PDF generation) has already resolved the APPROVED
+    # customs description via resolve_product_description_for_customs(), it is the
+    # single source of truth. Return it directly as a pure formatter — do NOT
+    # read or first-write product_descriptions, so a stale/poisoned source='auto'
+    # row can never override the approved value, and no generic default is
+    # persisted. Approved 'manual' rows are already what the resolver returns
+    # here, so this stays consistent with the Product Description Authority.
+    _auth = (authoritative_pl or "").strip()
+    if _auth:
+        eff_en = (description_en or "").strip()
+        eff_mat = (material_pl or "").strip()
+        eff_pur = (purpose_pl or "").strip() or "Ozdoba — biżuteria do noszenia."
+        eff_name = (name_pl or "").strip() or _auth
+        return {
+            "product_code":      pc,
+            "item_type":         _normalise_item_type(item_type),
+            "name_pl":           eff_name,
+            "description_pl":    _auth,
+            "description_en":    eff_en,
+            "material_pl":       eff_mat,
+            "purpose_pl":        eff_pur,
+            "description_block": build_description_block(
+                description_pl=_auth, material_pl=eff_mat,
+                purpose_pl=eff_pur, description_en=eff_en),
+            "description_line":  build_description_line(_auth, eff_en),
+            "source":            "resolver",
+            "created_at":        None,
+            "updated_at":        None,
+        }
 
     existing = ddb.get_product_description(pc)
     if existing is not None:
@@ -820,3 +852,272 @@ def regenerate_descriptions_for_packing_lines(
             })
 
     return out
+
+
+# ── Canonical customs-description resolver (single authority, V1 + V2) ────────
+#
+# The customs Polish-description pipeline (customs_description_engine →
+# process_batch_items → normalize_item_description) is a text classifier that
+# fabricates generic placeholder text ("Wyrób jubilerski", "metal szlachetny")
+# when it cannot classify a line. That generic text is correctly rejected by
+# the post-generation `polish_desc_forbidden_tokens` read-back — but only AFTER
+# the PDF is built, with no per-row explanation. This resolver is the single
+# authority both V1 and V2 consult (via the shared route
+# POST /api/v1/dhl/generate-description/{batch_id}) to decide, per line and
+# BEFORE generation, whether an APPROVED, non-generic description exists.
+#
+# Reuse-only: it consults the existing Product Description Authority
+# (`product_descriptions` table via document_db, source='manual' = approved),
+# shipment-level operator corrections (audit["description_corrections"], written
+# by the existing action-proposals approve route), and the invoice classifier
+# (customs_description_engine.normalize_item_description) — it introduces NO new
+# table and writes nothing. It never returns a generic fallback; a line with no
+# approved, non-generic description resolves to status="missing_description".
+
+# Generic placeholder strings that must NEVER reach a generated customs
+# document. THIS is the single source of truth — the route-level and the
+# engine-internal forbidden-token read-backs both import from here (do not
+# re-declare a divergent local copy).
+FORBIDDEN_DESC_TOKENS = (
+    "Wyrób jubilerski",
+    "wyrób jubilerski",
+    "metal szlachetny",
+    "UNKNOWN",
+    "grouped invoice aggregate",
+)
+
+# PDF byte-level read-back set: the description tokens above PLUS the U+25A0
+# BLACK SQUARE glyph that appears when Polish diacritics fail to render (font
+# missing). Only meaningful against rendered PDF text, so it lives here as the
+# superset used by every post-generation PDF read-back.
+PDF_FORBIDDEN_TOKENS = FORBIDDEN_DESC_TOKENS + ("■",)
+
+
+def _contains_forbidden_desc_token(*texts: str) -> Optional[str]:
+    """Return the first forbidden/generic token found across *texts*, else None."""
+    for t in texts:
+        s = (t or "")
+        for tok in FORBIDDEN_DESC_TOKENS:
+            if tok in s:
+                return tok
+    return None
+
+
+def resolve_product_description_for_customs(
+    product_code: str,
+    invoice_row:  Optional[Dict[str, Any]] = None,
+    product_master: Optional[Dict[str, Any]] = None,
+    corrections:  Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Resolve the approved customs Polish description for one product line.
+
+    Single authority for V1 and V2. Source priority (never fabricates):
+      a. shipment-level operator correction (audit["description_corrections"][pc])
+      b. approved Product Description Authority row (product_descriptions,
+         source='manual')
+      c. safe invoice classifier result — only if it is NON-generic
+      d. STOP → status="missing_description"
+
+    ``product_master`` is accepted for API completeness / future use; the
+    approved description text is owned by ``product_descriptions`` (source
+    ='manual'), not the master identity row.
+
+    Returns dict:
+      {product_code, description_pl, source, status, reason, invoice, row,
+       extracted_description, forbidden_token}
+    where status ∈ {"ok", "missing_description"}, source ∈
+    {"operator_correction_shipment", "product_master_manual",
+     "invoice_classifier", None}.
+    """
+    row = invoice_row or {}
+    pc = (product_code or "").strip()
+    extracted = str(
+        row.get("original_description")
+        or row.get("description")
+        or row.get("desc")
+        or ""
+    ).strip()
+    ctx = {
+        "product_code":          pc,
+        "invoice":               str(row.get("invoice_number") or row.get("invoice_no") or ""),
+        "row":                   row.get("line_position") or row.get("line_order"),
+        "extracted_description": extracted,
+    }
+
+    def _ok(description_pl: str, source: str,
+            material_pl: str = "", name_pl: str = "",
+            description_en: str = "") -> Dict[str, Any]:
+        return {**ctx, "description_pl": description_pl,
+                "material_pl": material_pl or "", "name_pl": name_pl or "",
+                "description_en": description_en or "",
+                "source": source, "status": "ok", "reason": None,
+                "forbidden_token": None}
+
+    def _missing(reason: str, forbidden_token: Optional[str]) -> Dict[str, Any]:
+        return {**ctx, "description_pl": None, "material_pl": "", "name_pl": "",
+                "source": None, "status": "missing_description", "reason": reason,
+                "forbidden_token": forbidden_token}
+
+    if not pc:
+        return _missing("Line has no product_code — cannot resolve an "
+                        "approved description.", None)
+
+    # (a) shipment-level operator correction
+    corr = (corrections or {}).get(pc) or {}
+    corr_pl = str(corr.get("description_pl") or corr.get("material_pl") or "").strip()
+    if corr_pl:
+        bad = _contains_forbidden_desc_token(corr_pl, str(corr.get("material_pl") or ""))
+        if not bad:
+            return _ok(corr_pl, "operator_correction_shipment",
+                       material_pl=str(corr.get("material_pl") or ""),
+                       description_en=str(corr.get("description_en") or ""))
+        # A correction that still contains generic text is not a valid fix.
+        return _missing("Saved correction still contains generic placeholder "
+                        f"text ({bad!r}).", bad)
+
+    # (b) approved Product Description Authority (product_descriptions, manual)
+    try:
+        pd = ddb.get_product_description(pc)
+    except Exception as exc:  # never let a read error fabricate a pass
+        log.warning("resolver: get_product_description(%r) failed: %s", pc, exc)
+        pd = None
+    if pd and str(pd.get("source") or "").strip() == "manual":
+        pd_pl = str(pd.get("description_pl") or "").strip()
+        bad = _contains_forbidden_desc_token(pd_pl, str(pd.get("material_pl") or ""))
+        if pd_pl and not bad:
+            return _ok(pd_pl, "product_master_manual",
+                       material_pl=str(pd.get("material_pl") or ""),
+                       name_pl=str(pd.get("name_pl") or ""),
+                       description_en=str(pd.get("description_en") or ""))
+        # else: an approved row that is empty/generic is not usable — fall through
+
+    # (c) safe invoice classifier — accepted ONLY if non-generic
+    cde = _load_customs_engine()
+    if cde is not None and extracted:
+        try:
+            norm = cde.normalize_item_description(
+                extracted,
+                item_type=_normalise_item_type(str(row.get("item_type", "") or "")),
+                hsn_from_invoice="",
+            )
+        except Exception as exc:
+            log.warning("resolver: normalize_item_description failed for %r: %s", pc, exc)
+            norm = None
+        if norm:
+            desc_pl  = str(norm.get("polish_customs_description") or "").strip()
+            item_pl  = str(norm.get("item_type_pl") or "")
+            mat_pl   = str(norm.get("material_pl") or "")
+            bad = _contains_forbidden_desc_token(desc_pl, item_pl, mat_pl)
+            if desc_pl and not bad:
+                return _ok(desc_pl, "invoice_classifier",
+                           material_pl=mat_pl, name_pl=item_pl)
+            # generic classifier output → block below with the offending token
+            return _missing(
+                "No approved description; the invoice text could not be "
+                "classified and would fall back to generic placeholder text.",
+                bad or "Wyrób jubilerski",
+            )
+
+    # (d) nothing usable
+    return _missing(
+        "No approved product description and no usable invoice description.",
+        None,
+    )
+
+
+def find_missing_customs_descriptions(
+    rows: Any,
+    corrections: Optional[Dict[str, Any]] = None,
+) -> list:
+    """Batch helper for the pre-generation guard.
+
+    Runs :func:`resolve_product_description_for_customs` over every projected
+    row and returns the row-level detail for each line that does NOT resolve to
+    an approved, non-generic description. Empty list ⇒ safe to generate.
+    """
+    missing: list = []
+    for r in (rows or []):
+        if not isinstance(r, dict):
+            continue
+        res = resolve_product_description_for_customs(
+            product_code=str(r.get("product_code") or ""),
+            invoice_row=r,
+            corrections=corrections or {},
+        )
+        if res.get("status") != "ok":
+            missing.append({
+                "invoice":               res["invoice"],
+                "row":                   res["row"],
+                "product_code":          res["product_code"],
+                "extracted_description": res["extracted_description"],
+                "reason":                res["reason"],
+                "forbidden_token":       res["forbidden_token"],
+                "suggested_correction_route":
+                    "POST /api/v1/action-proposals/{proposal_id}/approve "
+                    "(scope=shipment) or set an approved product_descriptions "
+                    "row (source='manual')",
+            })
+    return missing
+
+
+def resolve_and_stamp_customs_descriptions(
+    rows: Any,
+    corrections: Optional[Dict[str, Any]] = None,
+) -> list:
+    """Resolve every row through the canonical authority and STAMP the approved
+    value onto the row so downstream generation (process_batch_items → SAD JSON
+    → Polish Description PDF) consumes the RESOLVER output, not the classifier's
+    own text. This is what makes the resolver the generation *source of truth*,
+    not merely a validation layer.
+
+    For each row that resolves to status="ok" the following authoritative fields
+    are stamped (consumed by customs_description_engine.process_batch_items and
+    _generate_pdf):
+        row["_resolved_description_pl"]  — approved Polish customs description
+        row["_resolved_material_pl"]     — approved material (may be "")
+        row["_resolved_name_pl"]         — approved item-type noun (may be "")
+        row["_resolved_source"]          — provenance
+        row["_desc_authoritative"] = True
+
+    Returns the list of row-level detail for lines that could NOT be approved
+    (identical shape to :func:`find_missing_customs_descriptions`). A non-empty
+    return MUST block generation with 422 descriptions_missing_for_customs — no
+    generic fallback may reach a customs document.
+    """
+    missing: list = []
+    for r in (rows or []):
+        if not isinstance(r, dict):
+            continue
+        res = resolve_product_description_for_customs(
+            product_code=str(r.get("product_code") or ""),
+            invoice_row=r,
+            corrections=corrections or {},
+        )
+        if res.get("status") == "ok":
+            r["_resolved_description_pl"] = res["description_pl"]
+            r["_resolved_material_pl"]    = res.get("material_pl") or ""
+            r["_resolved_name_pl"]        = res.get("name_pl") or ""
+            # Approved English half (operator correction / manual block). Empty
+            # for classifier-sourced rows, where the invoice English is used.
+            r["_resolved_description_en"] = res.get("description_en") or ""
+            r["_resolved_source"]         = res["source"]
+            r["_desc_authoritative"]      = True
+        else:
+            # Never leave a stale authoritative stamp on a now-unapproved row.
+            for k in ("_resolved_description_pl", "_resolved_material_pl",
+                      "_resolved_name_pl", "_resolved_description_en",
+                      "_resolved_source", "_desc_authoritative"):
+                r.pop(k, None)
+            missing.append({
+                "invoice":               res["invoice"],
+                "row":                   res["row"],
+                "product_code":          res["product_code"],
+                "extracted_description": res["extracted_description"],
+                "reason":                res["reason"],
+                "forbidden_token":       res["forbidden_token"],
+                "suggested_correction_route":
+                    "POST /api/v1/action-proposals/{proposal_id}/approve "
+                    "(scope=shipment) or set an approved product_descriptions "
+                    "row (source='manual')",
+            })
+    return missing

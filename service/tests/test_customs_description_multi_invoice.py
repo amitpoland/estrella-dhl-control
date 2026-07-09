@@ -1,18 +1,24 @@
 """
 test_customs_description_multi_invoice.py — Regression for the service-side
-Polish customs description generator (customs_description_engine.py) when
-the audit has multiple invoices but no per-line attribution (the AWB
-6049349806 shape: invoice_names + invoice_totals.product_counts_by_unit only).
+Polish customs description generator (customs_description_engine.py) on the
+aggregate-only shape (the AWB 6049349806 shape: invoice_names +
+invoice_totals.product_counts_by_unit only, no per-line rows/invoices).
+
+AUTHORITY CHANGE (customs-description-resolver): a batch with only aggregate
+totals has NO per-line description authority. The synthetic type-level fallback
+emits generic text ("Wyrób jubilerski" / "metal szlachetny"), which must NEVER
+reach a customs document (Lesson N). Such a batch now BLOCKS before generation
+with row-level `descriptions_missing_for_customs` detail (one row per aggregate
+item type) — it does not produce a generic aggregate PDF.
 
 Pins:
-  - invoice count = len(invoice_names)
-  - invoice numbers parsed from leading numeric token in each invoice_names entry
-  - one item-type group per non-zero entry of product_counts_by_unit
-  - units carried through (PRS for earrings, PCS for rings/pendants)
-  - financial breakdown row shows FOB + freight + insurance
-  - grand total uses CIF (total_cif_usd), not sum of FOB lines
-  - bad-phrase regression: "1 szt. (N/A)", "FAKTURA / INVOICE 1: N/A",
-    "GRAND TOTAL: 11 PCS  |  USD 1,679.00" must be absent
+  - aggregate-only batch → pkg blocked, guard=descriptions_missing_for_customs
+  - one deduped block row per aggregate item type (RING/PENDANT/EARRINGS),
+    reason=aggregate_only_no_description_authority, invoice="aggregate fallback"
+  - NO PDF/SAD file written to disk; no attachment path/filename
+  - synthetic-line helpers (_build_synthetic_lines_from_totals /
+    _extract_invoice_refs_from_names) remain correct — they feed the block-row
+    enumeration, not customs output
 """
 from __future__ import annotations
 
@@ -70,54 +76,36 @@ def _read_pdf_text(pdf_path: str) -> str:
         return "\n".join((p.extract_text() or "") for p in pdf.pages)
 
 
-def test_multi_invoice_synthetic_pdf_content(tmp_path):
+def test_multi_invoice_aggregate_only_blocks_with_row_detail(tmp_path):
+    """Aggregate-only fallback (invoice_totals/product_counts but no per-line
+    items) has NO per-line description authority. It must BLOCK before
+    generation with row-level `descriptions_missing_for_customs` detail — the
+    old behavior (a generic "Wyrób jubilerski" customs PDF) is a Lesson-N
+    violation and is no longer permitted."""
     from customs_description_engine import generate_customs_description_package
 
     audit = _audit_6049349806_shape()
     pkg = generate_customs_description_package(
         batch=audit, awb="6049349806", output_dir=str(tmp_path),
     )
-    pdf = (pkg or {}).get("pdf") or {}
-    assert pdf.get("generated") is True, pdf
-    out_path = pdf["output_path"]
-    assert Path(out_path).is_file()
-    assert Path(out_path).name == "POLISH_DESC_AWB_6049349806_20260507.pdf" \
-        or Path(out_path).name.startswith("POLISH_DESC_AWB_6049349806_")
+    assert pkg["blocked"] is True
+    assert pkg["guard"] == "descriptions_missing_for_customs"
+    # No generic customs document was produced.
+    assert pkg["pdf"]["generated"] is False
+    assert pkg["pdf"]["output_path"] is None
+    assert pkg["json"]["generated"] is False
+    assert not list(Path(tmp_path).glob("*.pdf"))
 
-    text = _read_pdf_text(out_path)
-
-    # Invoice count + numbers
-    assert "4 szt." in text
-    for n in ("121", "122", "123", "124"):
-        assert n in text, f"invoice {n} missing"
-
-    # Item-type groups (one per non-zero product_counts_by_unit entry)
-    assert "RING" in text
-    assert "PENDANT" in text
-    assert "EARRINGS" in text
-
-    # Quantities + units appear in the consolidated summary
-    assert "5 PCS" in text     # rings (consolidated)
-    assert "2 PCS" in text     # pendants (consolidated)
-    assert "4 PRS" in text     # earrings (consolidated)
-
-    # Financial breakdown
-    assert "FOB Value" in text or "Wartość FOB" in text
-    assert "Fracht / Freight" in text
-    assert "Ubezpieczenie / Insurance" in text
-    assert "1,679.00" in text
-    assert "75.00" in text
-    assert "30.00" in text
-
-    # Grand total uses CIF
-    assert "RAZEM CIF" in text
-    assert "1,784.00" in text
-
-    # Bad-phrase regressions
-    assert "1 szt. (N/A)" not in text
-    assert "FAKTURA / INVOICE 1: N/A" not in text
-    assert "GRAND TOTAL: 11 PCS  |  USD 1,679.00" not in text
-    assert "(N/A)" not in text
+    rows = pkg["missing"]
+    assert rows, "expected row-level aggregate detail"
+    for r in rows:
+        assert r["reason"] == "aggregate_only_no_description_authority"
+        assert r["invoice"] == "aggregate fallback"
+        assert r["forbidden_token"] is None
+        assert r["suggested_correction_route"]
+    # One row per aggregate item type (deduped) — operator sees each type.
+    codes = {r["product_code"] for r in rows}
+    assert {"RING", "PENDANT", "EARRINGS"} <= codes
 
 
 def test_invoice_refs_parsed_from_invoice_names():
@@ -147,39 +135,31 @@ def test_synthetic_lines_distributed_across_invoice_numbers():
     assert by_type.get("EARRINGS") == 4
 
 
-def test_pdf_has_per_invoice_blocks_and_consolidated_summary(tmp_path):
-    """End-to-end content check for the new layout."""
+def test_aggregate_only_writes_no_customs_document(tmp_path):
+    """The aggregate-only block must not leave any generated artifact on disk —
+    no generic PDF/SAD JSON reaches the filesystem for the proactive dispatch
+    builder to attach."""
     from customs_description_engine import generate_customs_description_package
     audit = _audit_6049349806_shape()
     pkg = generate_customs_description_package(
         batch=audit, awb="6049349806", output_dir=str(tmp_path),
     )
-    text = _read_pdf_text(pkg["pdf"]["output_path"])
-    # Per-invoice blocks (pdfplumber may collapse the double-space)
-    import re
-    for idx, ref in enumerate(("121", "122", "123", "124"), start=1):
-        assert re.search(rf"FAKTURA / INVOICE {idx}:\s+{ref}", text), \
-            f"missing per-invoice block for index {idx} ref {ref}"
-    # Each invoice has its own subtotal
-    assert text.count("Razem faktura") >= 4
-    # Consolidated summary section present
-    assert "PODSUMOWANIE" in text
-    assert "CONSOLIDATED CUSTOMS SUMMARY" in text
-    # Aggregate qtys per type in summary
-    assert "5 PCS" in text     # RING
-    assert "2 PCS" in text     # PENDANT
-    assert "4 PRS" in text     # EARRINGS
+    assert pkg["blocked"] is True
+    assert pkg["json"]["output_path"] is None
+    # Nothing written to disk (recursively) — no aggregate/generic customs file.
+    assert not list(Path(tmp_path).rglob("*.pdf"))
+    assert not list(Path(tmp_path).rglob("*.json"))
 
 
-def test_proposal_attachment_path_matches_generator_output(tmp_path):
-    """Generator filename pattern must match what the proactive dispatch
-    builder expects: POLISH_DESC_AWB_<AWB>_<DATE>.pdf inside polish_descriptions/."""
+def test_proposal_attachment_absent_when_aggregate_blocked(tmp_path):
+    """When the aggregate-only block fires, there is NO attachment path/filename,
+    so the proactive dispatch builder cannot attach a generic customs PDF."""
     from customs_description_engine import generate_customs_description_package
     audit = _audit_6049349806_shape()
     pkg = generate_customs_description_package(
         batch=audit, awb="6049349806", output_dir=str(tmp_path),
     )
     pdf = pkg["pdf"]
-    name = Path(pdf["output_path"]).name
-    assert name.startswith("POLISH_DESC_AWB_6049349806_")
-    assert name.endswith(".pdf")
+    assert pdf["generated"] is False
+    assert pdf["output_path"] is None
+    assert pdf["filename"] is None
