@@ -362,3 +362,84 @@ def test_automation_callers_fail_safe_on_block():
     assert seg.index('get("blocked")') < seg.index("polish_desc_generated_at")
     dch = Path(settings.engine_dir) / "dhl_clearance_handler.py"
     assert 'get("blocked")' in dch.read_text(encoding="utf-8")
+
+
+# ── GATE-1 hardening: fail-closed + full token coverage ───────────────────────
+
+def test_engine_package_blocks_on_resolver_exception(tmp_path, monkeypatch, no_product_master):
+    # C-1: if the pre-gen resolver stamp RAISES (import break, DB error, code
+    # bug), generation must FAIL CLOSED with a named guard — never silently
+    # degrade to the post-gen read-back only. A customs document must not be
+    # generated from unstamped rows.
+    cde = _engine()
+    # Ensure the engine's lazy bridge resolves to THIS de module, then make the
+    # stamp raise.
+    monkeypatch.setattr(cde, "_DESC_RESOLVER_CACHE", de, raising=False)
+
+    def _boom(*a, **k):
+        raise RuntimeError("simulated resolver import/DB failure")
+
+    monkeypatch.setattr(de, "resolve_and_stamp_customs_descriptions", _boom)
+    wrote = {"pdf": False, "sad": False}
+    monkeypatch.setattr(cde, "generate_polish_description_pdf",
+                        lambda *a, **k: wrote.__setitem__("pdf", True) or {"generated": True})
+    monkeypatch.setattr(cde, "generate_sad_ready_json",
+                        lambda *a, **k: wrote.__setitem__("sad", True) or {"generated": True})
+    batch = {"rows": [{
+        "product_code": "EJL/1", "invoice_number": "E1", "line_position": 1,
+        "description": REAL_RING_DESC, "quantity": 1, "line_total": 100,
+    }]}
+    pkg = cde.generate_customs_description_package(batch, "AWBX", str(tmp_path))
+    assert pkg["blocked"] is True
+    assert pkg["guard"] == "customs_description_guard_error"
+    assert pkg.get("reason")                       # names the failure
+    assert wrote == {"pdf": False, "sad": False}   # nothing written on fail-closed
+
+
+def test_resolver_ignores_manual_row_with_forbidden_description(monkeypatch):
+    # A source='manual' row whose OWN description is generic/poisoned must NOT be
+    # trusted as an approved authority — resolver falls through to the classifier.
+    monkeypatch.setattr(
+        de.ddb, "get_product_description",
+        lambda pc: {"source": "manual", "description_pl": GENERIC, "material_pl": "metal szlachetny"},
+    )
+    res = de.resolve_product_description_for_customs(
+        product_code="EJL/5", invoice_row=_row(product_code="EJL/5"), corrections={},
+    )
+    assert res["source"] != "product_master_manual"
+    assert GENERIC not in (res["description_pl"] or "")
+
+
+def test_resolver_manual_forbidden_plus_placeholder_row_blocks(monkeypatch):
+    # Manual row poisoned AND the invoice line is a placeholder → nothing approved
+    # anywhere → STOP (missing_description), never fabricated text.
+    monkeypatch.setattr(
+        de.ddb, "get_product_description",
+        lambda pc: {"source": "manual", "description_pl": GENERIC},
+    )
+    res = de.resolve_product_description_for_customs(
+        product_code="EJL/380-1",
+        invoice_row=_row(product_code="EJL/380-1", description=PLACEHOLDER_DESC),
+        corrections={},
+    )
+    assert res["status"] == "missing_description"
+
+
+def test_engine_sad_scan_blocks_unknown_as_description(tmp_path):
+    # Inverse of the item_type test: "UNKNOWN" in a DESCRIPTION field IS forbidden.
+    cde = _engine()
+    p = tmp_path / "sad_unknown.json"
+    p.write_text(json.dumps({"lines": [
+        {"item_type": "RING", "polish_customs_description": "UNKNOWN", "material": "złoto"}
+    ]}), encoding="utf-8")
+    assert "UNKNOWN" in cde._scan_sad_json_for_forbidden(str(p), de.FORBIDDEN_DESC_TOKENS)
+
+
+def test_forbidden_tokens_include_all_generic_markers():
+    # Every member of the authority set must have behavioural coverage, not just
+    # the two most common ones (guards against silent token removal).
+    for tok in ("Wyrób jubilerski", "wyrób jubilerski", "metal szlachetny",
+                "UNKNOWN", "grouped invoice aggregate"):
+        assert tok in de.FORBIDDEN_DESC_TOKENS
+    assert de._contains_forbidden_desc_token("Opis: grouped invoice aggregate") == "grouped invoice aggregate"
+    assert de._contains_forbidden_desc_token("UNKNOWN") == "UNKNOWN"

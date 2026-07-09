@@ -3233,6 +3233,12 @@ async def generate_description(
     # row-level explanation so the operator sees exactly which line needs a
     # correction — instead of an opaque post-generation forbidden-token 422.
     # The post-generation forbidden-token read-back below remains as a backstop.
+    # NOTE (authority): this route-level guard screens audit["rows"] (the DHL
+    # projection) as an EARLY, operator-facing block. The AUTHORITATIVE pre-gen
+    # guard is engine-internal (generate_customs_description_package Guard #1):
+    # it stamps the exact render items (_extract_invoices), fails closed on any
+    # resolver error, and also protects the automation/CLI callers that never
+    # reach this route. This route guard is a UX convenience, not the sole gate.
     # Resolve + STAMP approved descriptions onto each row so downstream
     # generation (process_batch_items → SAD JSON → PDF) consumes the resolver's
     # authoritative value, not the classifier's own text. Returns row-level
@@ -3583,6 +3589,10 @@ async def generate_customs_package(
 
     # ── Guard: descriptions_missing_for_customs (pre-generation) ──────────────
     # Same single-authority resolver as generate_description — no bypass path.
+    # NOTE (authority): like generate_description, this route-level guard screens
+    # audit["rows"] as an EARLY, operator-facing block; the AUTHORITATIVE pre-gen
+    # guard is engine-internal (generate_customs_description_package Guard #1),
+    # which stamps the exact render items and fails closed on any resolver error.
     # Resolve + STAMP approved descriptions onto each row so downstream
     # generation (process_batch_items → SAD JSON → PDF) consumes the resolver's
     # authoritative value, not the classifier's own text. Returns row-level

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
@@ -26,6 +27,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 
 # ── Service-side description engine (single source of truth) ─────────────────
@@ -612,7 +615,17 @@ def process_batch_items(batch: dict) -> list[dict]:
             # the route) fall back to the classifier, byte-for-byte as before.
             _authoritative = bool(item.get("_desc_authoritative"))
             if _authoritative:
-                _polish   = item.get("_resolved_description_pl") or norm["polish_customs_description"]
+                _resolved_pl = item.get("_resolved_description_pl")
+                if not _resolved_pl:
+                    # Should never happen: a row is only stamped authoritative when
+                    # the resolver returned a non-empty, non-generic description.
+                    # Log loudly; the classifier fallback here is still caught by
+                    # the post-generation forbidden-token read-back.
+                    log.error(
+                        "authoritative row %s carries an empty resolved "
+                        "description — falling back to classifier",
+                        item.get("product_code") or "")
+                _polish   = _resolved_pl or norm["polish_customs_description"]
                 _material = item.get("_resolved_material_pl")
                 if _material in (None, ""):
                     # Approved source (e.g. a description-only correction) left
@@ -1687,14 +1700,27 @@ def generate_customs_description_package(
                     _items = batch.get("rows") or []
                 _missing = _de.resolve_and_stamp_customs_descriptions(_items, _corr)
             except Exception as _gexc:
-                import logging as _logging
-                _logging.getLogger(__name__).warning(
-                    "customs guard stamp failed (%s) — degrading to post-gen "
-                    "read-back only", _gexc)
-                _missing = None
+                # FAIL CLOSED: a customs document must never be generated from
+                # unstamped rows. If the resolver raises (import break, DB error,
+                # code bug) we block generation with a named guard rather than
+                # silently degrading to the post-gen read-back only.
+                log.error(
+                    "customs description guard raised (%s) — blocking generation "
+                    "(fail-closed)", _gexc)
+                return _blocked_package(
+                    batch_id, "customs_description_guard_error", reason=str(_gexc))
             if _missing:
                 return _blocked_package(
                     batch_id, "descriptions_missing_for_customs", missing=_missing)
+        else:
+            # Resolver not importable in this context (e.g. standalone CLI without
+            # the service package). Pre-gen Guard #1 is inactive; the post-gen
+            # forbidden-token read-back (Guard #2, fallback token tuples) remains
+            # the sole protection. Surface it so the degradation is never silent.
+            log.warning(
+                "description resolver not importable — pre-gen customs guard "
+                "inactive; only the post-generation forbidden-token read-back "
+                "protects this run")
 
     pdf_result  = generate_polish_description_pdf(
         batch, awb, output_dir, dhl_email_id=dhl_email_id, date_override=date_override,

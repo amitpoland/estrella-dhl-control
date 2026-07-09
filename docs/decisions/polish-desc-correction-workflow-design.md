@@ -110,3 +110,28 @@ Lesson M (no capability suppression). Regression tests required:
 2. approved shipment-scope correction → apply_description_corrections → generation passes,
 3. (C/D, after authority) deactivated doc's invoice_lines excluded from projection,
 4. (C/D) re-upload + recheck cannot silently reuse superseded rows.
+
+## Implementation note — strategy actually built (reconciliation, GATE-1 2026-07-09)
+
+The "Generic fallback sites to REMOVE/redirect" mandate above described ONE way to guarantee
+"generic text must never reach PDF/SAD/audit": rewrite each fallback site (L296/L389/L408/L477/L492)
+to emit an UNRESOLVED marker. The implementation instead achieves the same guarantee with a
+**guard-based strategy**, which is the chosen, GATE-1-reviewed design:
+
+- The resolver (`resolve_product_description_for_customs` / `resolve_and_stamp_customs_descriptions`)
+  is the **generation source**: it STAMPs the approved, non-generic description onto the exact render
+  items (`_extract_invoices`), and `process_batch_items` consumes `_resolved_description_pl` verbatim.
+- **Guard #1 (pre-generation, engine-internal, fail-closed):** if any line lacks an approved
+  non-generic description → BLOCK (`descriptions_missing_for_customs`); if the resolver itself raises →
+  BLOCK (`customs_description_guard_error`). No file is written. This covers ALL callers (routes AND
+  automation/CLI), not just the HTTP route.
+- **Guard #2 (post-generation read-back):** scans the rendered PDF + SAD JSON for forbidden tokens;
+  on any hit, unlinks both files and BLOCKs (`polish_desc_forbidden_tokens`). Backstop only.
+
+The legacy fallback strings at L296/L389/L408/L477/L492 remain in the classifier as its internal
+"suggestion" text, but they are unreachable as FINAL customs output: a stamped row overrides them, and
+an unstamped/unresolved row is blocked by Guard #1 before generation (or Guard #2 after). L477/L492 are
+on the PZ/proforma `render_product_description_pl` path, not the customs description path. Redirecting
+the sites in place is deferred (would touch shared PZ/proforma rendering); the guard strategy is the
+authority for the customs path. Follow-up hardening tracked in the PR (endpoint-2 route-level read-back
+parity, forbidden-token single-source de-duplication, resolver-cache lock symmetry).
