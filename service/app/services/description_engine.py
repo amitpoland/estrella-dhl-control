@@ -945,9 +945,11 @@ def resolve_product_description_for_customs(
     }
 
     def _ok(description_pl: str, source: str,
-            material_pl: str = "", name_pl: str = "") -> Dict[str, Any]:
+            material_pl: str = "", name_pl: str = "",
+            description_en: str = "") -> Dict[str, Any]:
         return {**ctx, "description_pl": description_pl,
                 "material_pl": material_pl or "", "name_pl": name_pl or "",
+                "description_en": description_en or "",
                 "source": source, "status": "ok", "reason": None,
                 "forbidden_token": None}
 
@@ -967,7 +969,8 @@ def resolve_product_description_for_customs(
         bad = _contains_forbidden_desc_token(corr_pl, str(corr.get("material_pl") or ""))
         if not bad:
             return _ok(corr_pl, "operator_correction_shipment",
-                       material_pl=str(corr.get("material_pl") or ""))
+                       material_pl=str(corr.get("material_pl") or ""),
+                       description_en=str(corr.get("description_en") or ""))
         # A correction that still contains generic text is not a valid fix.
         return _missing("Saved correction still contains generic placeholder "
                         f"text ({bad!r}).", bad)
@@ -984,7 +987,8 @@ def resolve_product_description_for_customs(
         if pd_pl and not bad:
             return _ok(pd_pl, "product_master_manual",
                        material_pl=str(pd.get("material_pl") or ""),
-                       name_pl=str(pd.get("name_pl") or ""))
+                       name_pl=str(pd.get("name_pl") or ""),
+                       description_en=str(pd.get("description_en") or ""))
         # else: an approved row that is empty/generic is not usable — fall through
 
     # (c) safe invoice classifier — accepted ONLY if non-generic
@@ -1093,12 +1097,16 @@ def resolve_and_stamp_customs_descriptions(
             r["_resolved_description_pl"] = res["description_pl"]
             r["_resolved_material_pl"]    = res.get("material_pl") or ""
             r["_resolved_name_pl"]        = res.get("name_pl") or ""
+            # Approved English half (operator correction / manual block). Empty
+            # for classifier-sourced rows, where the invoice English is used.
+            r["_resolved_description_en"] = res.get("description_en") or ""
             r["_resolved_source"]         = res["source"]
             r["_desc_authoritative"]      = True
         else:
             # Never leave a stale authoritative stamp on a now-unapproved row.
             for k in ("_resolved_description_pl", "_resolved_material_pl",
-                      "_resolved_name_pl", "_resolved_source", "_desc_authoritative"):
+                      "_resolved_name_pl", "_resolved_description_en",
+                      "_resolved_source", "_desc_authoritative"):
                 r.pop(k, None)
             missing.append({
                 "invoice":               res["invoice"],

@@ -635,10 +635,14 @@ def process_batch_items(batch: dict) -> list[dict]:
                     # forbidden-token read-back blocks it.
                     _material = norm["material_pl"]
                 _item_pl  = item.get("_resolved_name_pl") or norm["item_type_pl"]
+                # Approved English half from an operator correction / manual
+                # block (empty for classifier-sourced rows → invoice English).
+                _resolved_en = item.get("_resolved_description_en") or ""
             else:
                 _polish   = norm["polish_customs_description"]
                 _material = norm["material_pl"]
                 _item_pl  = norm["item_type_pl"]
+                _resolved_en = ""
 
             lines.append({
                 "line_order":                     order,
@@ -647,6 +651,7 @@ def process_batch_items(batch: dict) -> list[dict]:
                 "original_description":           desc,
                 "normalized_english_description": norm["normalized_english"],
                 "polish_customs_description":     _polish,
+                "_resolved_description_en":       _resolved_en,
                 "item_type":                      norm["item_type"],
                 "item_type_pl":                   _item_pl,
                 "material":                       _material,
@@ -1266,7 +1271,9 @@ def _generate_pdf(
             # on the upstream item dict. If the engine returns nothing, use
             # inline composition with the same separator / order.
             polish = ln.get("polish_customs_description", "")
-            english = ln.get("original_description", "")
+            # Prefer the resolver-approved English (operator correction / manual
+            # block) when present; otherwise the invoice's own English text.
+            english = ln.get("_resolved_description_en") or ln.get("original_description", "")
             description_line = None
             if _DESCRIPTION_ENGINE is not None:
                 try:
@@ -1629,6 +1636,47 @@ def _blocked_package(batch_id: str, guard: str, **extra) -> dict:
     }
 
 
+def _aggregate_only_missing_rows(batch: dict) -> list:
+    """Row-level block detail for the synthetic aggregate-only fallback.
+
+    When a batch has NO per-line invoice items but carries invoice_totals /
+    product_counts, the engine would otherwise synthesise generic type-level
+    lines (e.g. "Wyrób jubilerski") that have NO approved description authority.
+    Instead of letting that reach the PDF/SAD and be caught only by the opaque
+    post-generation forbidden-token read-back, we surface it BEFORE generation
+    as descriptions_missing_for_customs — one row per aggregate item type — so
+    the operator sees exactly what is missing and how to fix it.
+
+    Returns [] when the batch is not an aggregate-only fallback (no synthetic
+    lines would be produced).
+    """
+    try:
+        syn = _build_synthetic_lines_from_totals(batch)
+    except Exception:
+        syn = []
+    if not syn:
+        return []
+    seen: dict = {}
+    for ln in syn:
+        itype = str(ln.get("item_type") or "UNKNOWN") or "UNKNOWN"
+        if itype in seen:
+            continue
+        seen[itype] = {
+            "invoice":               "aggregate fallback",
+            "row":                   None,
+            "product_code":          itype,
+            "extracted_description": "",
+            "reason":                "aggregate_only_no_description_authority",
+            "forbidden_token":       None,
+            "suggested_correction_route":
+                "This shipment has only aggregate invoice totals (no per-line "
+                "items). Upload/parse the per-line invoice, or add an approved "
+                "product_descriptions row (source='manual') for each product "
+                "type, then Recheck and regenerate.",
+        }
+    return list(seen.values())
+
+
 def generate_customs_description_package(
     batch: dict,
     awb: str,
@@ -1685,19 +1733,30 @@ def generate_customs_description_package(
 
     # ── Guard #1 (pre-generation): approved-description resolver + stamp ───────
     if enforce_guards:
+        # The exact items the engine will render — _extract_invoices prefers
+        # result.invoices over rows, so stamping its output closes the
+        # result.invoices bypass. The items are the same dict refs the PDF/SAD
+        # builders consume, so the stamp propagates.
+        _invs  = _extract_invoices(batch)
+        _items = [it for inv in _invs for it in (inv.get("items") or [])]
+        if not _items:
+            _items = batch.get("rows") or []
+        # Aggregate-only fallback (invoice_totals/product_counts but no per-line
+        # items) has NO per-line description authority. Block it BEFORE
+        # generation with row-level descriptions_missing_for_customs detail —
+        # independent of resolver availability — so the operator never sees only
+        # an opaque post-gen forbidden-token failure for this path.
+        if not _items:
+            _agg_missing = _aggregate_only_missing_rows(batch)
+            if _agg_missing:
+                return _blocked_package(
+                    batch_id, "descriptions_missing_for_customs",
+                    missing=_agg_missing)
         _de = _load_description_resolver()
         if _de is not None:
             try:
                 _corr = (corrections if corrections is not None
                          else (batch.get("description_corrections") or {}))
-                # Stamp the exact items the engine will render — _extract_invoices
-                # prefers result.invoices over rows, so stamping its output closes
-                # the result.invoices bypass. The items are the same dict refs the
-                # PDF/SAD builders consume, so the stamp propagates.
-                _invs  = _extract_invoices(batch)
-                _items = [it for inv in _invs for it in (inv.get("items") or [])]
-                if not _items:
-                    _items = batch.get("rows") or []
                 _missing = _de.resolve_and_stamp_customs_descriptions(_items, _corr)
             except Exception as _gexc:
                 # FAIL CLOSED: a customs document must never be generated from
