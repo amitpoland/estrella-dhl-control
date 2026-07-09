@@ -10,7 +10,7 @@ Referenced by: `deploy_qa_reviewer.md`, `deploy_lead_coordinator.md`, `deploy.md
 | Suite | File / pattern | Required pass count | Failure action |
 |-------|---------------|---------------------|----------------|
 | PZ regression | `tests/test_pz_*.py` | **257** | Unconditional deploy block |
-| Carrier suite | `tests/test_carrier_*.py` | **469** | Unconditional deploy block |
+| Carrier suite | `tests/test_carrier_*.py` | **584** | Unconditional deploy block |
 
 Any test ERROR (not just FAILED) is also an unconditional block.
 Any count below the required threshold is an unconditional block.
@@ -19,7 +19,7 @@ Any count below the required threshold is an unconditional block.
 
 ## Known-failing exclusions
 
-The baseline is **not green** — it carries exactly one tracked, accepted red. Any failure
+The baseline is **not green** — it carries a small set of tracked, accepted reds. Any failure
 listed here is accepted at gate time; any FAILED test NOT listed here, and any ERROR, is an
 unconditional block.
 
@@ -31,17 +31,27 @@ unconditional block.
 | `test_carrier_config_defaults.py::test_dhl_express_api_key_default_is_none` | env: DHL creds set | ENVIRONMENTAL — asserts `Settings().dhl_express_api_key is None`; `DHL_EXPRESS_API_KEY` is set in the deploy/review env → returns the live key. Passes with env cleared (see above). |
 | `test_carrier_config_defaults.py::test_dhl_express_api_secret_default_is_none` | env: DHL creds set | ENVIRONMENTAL — asserts `Settings().dhl_express_api_secret is None`; `DHL_EXPRESS_API_SECRET` set in env. Passes with env cleared. |
 | `test_carrier_config_defaults.py::test_dhl_express_account_number_default_is_none` | env: DHL creds set | ENVIRONMENTAL — asserts `Settings().dhl_express_account_number is None`; `DHL_EXPRESS_ACCOUNT_NUMBER` set in env. Passes with env cleared. |
-| `test_carrier_awb_modal_fields.py::test_box_types_endpoint_returns_correct_shape` (ERROR) | env: DHL creds set | ENVIRONMENTAL — same DHL-env-configured-host root cause as the four config-default rows; setup/error, not a logic failure. Passes with env cleared. |
 
 The PZ suite reports `1 failed, 257 passed` (258 collected). The gate accepts **only** the
 documented failure(s). When #613 is fixed: remove this row and bump the PZ required count to 258.
 
-**Carrier env-conditional exclusions (5, added 2026-07-06):** the five `test_carrier_config_defaults.py`
-+ `box_types` results above verify the *code defaults are unset*; they fail on any host where the
-DHL credentials are configured (the deploy target `C:\PZ` and this review clone both are). They are
-NOT regressions — proven by a clean-env run (`env -u DHL_EXPRESS_* -u CARRIER_* pytest
-tests/test_carrier_config_defaults.py` → 9/9 passed). Carrier suite is now 548 collected
-(543 passed + these 5 env-conditional). The 469 required-pass floor remains satisfied.
+**Carrier env-conditional exclusions (4, reconciled 2026-07-09):** the four
+`test_carrier_config_defaults.py` rows above assert the *code defaults are unset*; they fail on any
+host where the DHL credentials are configured (the deploy target `C:\PZ` and this review clone both
+are). They are NOT regressions — proven by a clean-env full-suite run (all `DHL_EXPRESS_*` +
+`CARRIER_*` unset → **588 passed, 1 skipped, 0 failed, 0 errors**). With creds set (gate-host
+reality) the carrier suite is **589 collected → 584 passed / 4 failed (these env rows) / 1 skipped,
+0 errors**. The 584 required-pass floor is the creds-set worst case.
+
+The former `box_types_endpoint_returns_correct_shape` ERROR exclusion was **removed 2026-07-09**: it
+was not env-conditional but full-suite teardown contamination leaking from four stale carrier tests
+broken by PR #824 (`test_carrier_live_adapter_gate.py` ×3 receiver-phone gate;
+`test_carrier_awb_modal_fields.py::test_receiver_details_email_absent_*` empty-string→omit). With
+those four fixed (test-only), `box_types` and `test_shipment_request_body_forwards_product_code` no
+longer error (0 errors across 3 full-suite runs). One carrier test is now `skip`-superseded in-source
+rather than baseline-listed: `test_carrier_shipment_db.py::test_tracking_ref_not_in_schema`
+(operator decision 2026-07-06 persists `tracking_ref`; surviving AWB-exclusion invariant covered by
+`test_live_result_insert_raises`).
 
 ---
 
@@ -69,3 +79,4 @@ When a new golden batch is committed or a new test is added:
 | 2026-06-23 | 221 | 469 | carrier suite grew by 35 tests — AWB modal upgrade (test_carrier_awb_modal_fields.py): product_code/description/customer_reference/shipment_reference/receiver_eori/receiver_vat_id/email/currency fields + GET /carrier/services endpoint + box_types authority validation |
 | 2026-06-27 | 257 | 469 | PZ 221→257: quantity-validator hardening (#730/#731) merged; 258 collected, 257 passing; #613 formalized as known-failing exclusion |
 | 2026-07-06 | 257 | 469 | PR #818 deploy gate: registered 5 env-conditional carrier exclusions (`test_carrier_config_defaults.py` ×4 + `test_carrier_awb_modal_fields::test_box_types_endpoint_returns_correct_shape` ERROR) — fail only when DHL creds are set in the env (deploy target + review clone); proven 9/9 pass with env cleared. Carrier now 548 collected / 543 passed; 469 floor unchanged. |
+| 2026-07-09 | 257 | 584 | TEST-BASELINE-1 reconciliation (PR #856 gate stragglers). Carrier floor 469→584 (suite grew to 589 collected; 584 pass creds-set / 588 pass clean). Fixed 4 stale carrier tests broken by #824 (`test_carrier_live_adapter_gate.py` ×3 add receiver-phone fixture; `test_carrier_awb_modal_fields` email absent → assert omitted, renamed). Skipped `test_carrier_shipment_db::test_tracking_ref_not_in_schema` (operator decision 2026-07-06 persists tracking_ref). **Removed** the `box_types` ERROR exclusion — it + `test_shipment_request_body_forwards_product_code` were full-suite teardown contamination from those 4 stale tests, gone once fixed (0 errors ×3 runs). No production code changed. Also (outside carrier suite) skipped 3 stale C14A/C16A guards in `test_c18a_unified_proforma_truth.py` (c27.1 `89f68179` deleted the Pro-Forma sales-linkage transit surface; matches the already-skipped copies in `test_c19a_single_authority_renderer.py`). |
