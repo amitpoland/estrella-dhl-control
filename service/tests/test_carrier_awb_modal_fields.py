@@ -115,10 +115,12 @@ def test_receiver_details_email_mapped():
     assert details["contactInformation"]["email"] == "buyer@example.com"
 
 
-def test_receiver_details_email_absent_is_empty_string():
+def test_receiver_details_email_absent_is_omitted():
+    # #824: DHL rejects empty strings (minLength 1) — email is OMITTED when
+    # blank, never emitted as "". Was previously asserted as == "".
     addr = {"name": "Buyer", "city": "London", "country_code": "GB"}
     details = _build_receiver_details(addr)
-    assert details["contactInformation"]["email"] == ""
+    assert "email" not in details["contactInformation"]
 
 
 # ── _build_shipment_body — product_code mapping ───────────────────────────────

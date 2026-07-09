@@ -107,6 +107,12 @@ def test_get_shipment_returns_none_for_missing(tmp_path):
     assert get_shipment(db, "missing") is None
 
 
+@pytest.mark.skip(
+    reason="Superseded by operator decision 2026-07-06: tracking_ref IS now a "
+    "persisted column (duplicate-AWB incident fix — replay returns stored result "
+    "with zero adapter calls). The surviving AWB-exclusion invariant (live results "
+    "never inserted) is covered by test_live_result_insert_raises."
+)
 def test_tracking_ref_not_in_schema(tmp_path):
     """Schema must not include a tracking_ref column — enforces AWB exclusion."""
     db = _db(tmp_path)

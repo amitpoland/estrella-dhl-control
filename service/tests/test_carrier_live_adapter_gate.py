@@ -25,7 +25,9 @@ def _req(batch_id: str = "BATCH-001") -> ShipmentRequest:
     return ShipmentRequest(
         batch_id=batch_id,
         shipper_account="ACC-001",
-        recipient_address={"name": "Test", "country": "PL"},
+        # phone is required by the create_shipment receiver-contact gate (#824);
+        # without it the guards-pass HTTP tests fail before reaching the mock.
+        recipient_address={"name": "Test", "country": "PL", "phone": "+48500600700"},
         declared_value=500.0,
         currency="EUR",
         weight_kg=1.0,
