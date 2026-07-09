@@ -32,6 +32,7 @@ from ..services import document_db as ddb
 from ..services import packing_db  as pdb
 from ..services import warehouse_db as wdb  # noqa: F401  (kept for cross-DB queries)
 from ..services import wfirma_db   as wfdb
+from ..services import customer_identity_resolver as _cir  # WF-3: canonical contractor.id resolver
 from ..services import inventory_state_engine as ise
 from ..services import proforma_invoice_link_db as pildb
 from ..services import wfirma_client
@@ -504,6 +505,41 @@ def _resolve_customer(
         "candidates":           [],
         "advisory":             "",
     }
+
+    # 0-pre. WF-3 canonical contractor.id short-circuit (parity-safe, additive).
+    #     When the draft already carries the operator-selected contractor.id,
+    #     resolve it through the canonical identity authority
+    #     (customer_identity_resolver: Customer Master → mirror → legacy, all
+    #     id-keyed). This ECHOES the operator's own selection verbatim — it never
+    #     invents an id and never returns an id other than the one supplied — so
+    #     it cannot route a document to an unselected contractor. It only
+    #     strengthens the CM-miss case (id present in mirror/legacy but not yet
+    #     in Customer Master), which the existing chain resolved by name. The
+    #     name-fallback branches below are unchanged and run only when no
+    #     contractor.id is supplied (or the id does not resolve). Never blocks:
+    #     any failure falls through to the existing chain.
+    cid_in = (client_contractor_id or "").strip()
+    if cid_in:
+        try:
+            rec = _cir.resolve_by_contractor_id(cid_in)
+            if rec is not None:
+                out.update({
+                    "found":                True,
+                    "match_strategy":       "contractor_id_canonical",
+                    "wfirma_customer_id":   cid_in,   # echo the operator's selection; never a different id
+                    "resolved_wfirma_name": rec.get("name", ""),
+                    "advisory":             (
+                        f"Resolved by operator-selected contractor.id {cid_in} "
+                        f"via {rec.get('source')} — name is display-only."
+                    ),
+                })
+                return out
+        except Exception as _cir_err:  # pragma: no cover — defensive, never block
+            log.warning(
+                "[%s] WF-3 canonical contractor.id resolve failed for cid=%s: %s "
+                "— falling through to existing resolution chain",
+                batch_id, cid_in, _cir_err,
+            )
 
     # 0a. PER-DOCUMENT upload-time client selection — primary authority.
     #     Walks sales_documents → shipment_documents.client_contractor_id
