@@ -8110,7 +8110,17 @@ def _build_proforma_request_from_draft(
             raise ValueError(f"line {idx}: product_code is required")
 
     # Customer resolution (master-data lookup, not pricing)
-    resolution = _resolve_customer(client_name)
+    # WF-3 Slice 3B: resolve the post/convert fiscal payload's contractor with the
+    # SAME id-first authority as the create path (Slice 3A). The draft already
+    # carries the operator-selected contractor.id, so thread it — branch 0-pre in
+    # _resolve_customer echoes the supplied id VERBATIM (never a different id).
+    # When no contractor.id is present, or it does not resolve, the existing
+    # name-fallback chain runs UNCHANGED (no name branch removed). Convert inherits
+    # the contractor.id from the posted proforma XML built here.
+    resolution = _resolve_customer(
+        client_name,
+        client_contractor_id=(getattr(draft, "client_contractor_id", "") or ""),
+    )
     if resolution["ambiguous"]:
         raise ValueError(
             f"multiple wfirma customer candidates for {client_name!r}: "
