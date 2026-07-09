@@ -3175,6 +3175,47 @@ async def generate_description(
         log.warning("[%s] apply_description_corrections: non-fatal failure: %s",
                     batch_id, _corr_exc)
 
+    # ── Guard: descriptions_missing_for_customs (pre-generation) ──────────────
+    # Every projected line must resolve to an APPROVED, non-generic customs
+    # description via the single Product Description Authority resolver
+    # (description_engine.resolve_product_description_for_customs). This is the
+    # same resolver V1 and V2 rely on through this shared route. A line that
+    # would fall back to generic placeholder text ("Wyrób jubilerski" /
+    # "metal szlachetny") is blocked HERE, before the PDF is built, with a
+    # row-level explanation so the operator sees exactly which line needs a
+    # correction — instead of an opaque post-generation forbidden-token 422.
+    # The post-generation forbidden-token read-back below remains as a backstop.
+    # Resolve + STAMP approved descriptions onto each row so downstream
+    # generation (process_batch_items → SAD JSON → PDF) consumes the resolver's
+    # authoritative value, not the classifier's own text. Returns row-level
+    # detail for any line that cannot be approved (→ block below).
+    from ..services.description_engine import resolve_and_stamp_customs_descriptions  # noqa: PLC0415
+    _missing_desc = resolve_and_stamp_customs_descriptions(
+        audit.get("rows") or [],
+        audit.get("description_corrections") or {},
+    )
+    if _missing_desc:
+        log.info("[%s] generate_description blocked: %d line(s) lack an approved "
+                 "customs description: %s", batch_id, len(_missing_desc),
+                 [m.get("product_code") for m in _missing_desc])
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard":  "descriptions_missing_for_customs",
+                "error":  "One or more product lines have no approved customs "
+                          "description and would fall back to generic "
+                          "placeholder text. Correct each line before "
+                          "generating the Polish description.",
+                "code":   "descriptions_missing_for_customs",
+                "rows":   _missing_desc,
+                "hint":   "For each line: use the approved Product Master "
+                          "description, or save a shipment correction via the "
+                          "Inbox (action-proposals approve, scope=shipment), "
+                          "then Recheck and regenerate. No generic fallback is "
+                          "permitted in a customs document.",
+            },
+        )
+
     try:
         pkg = generate_customs_description_package(
             batch          = audit,
@@ -3481,6 +3522,36 @@ async def generate_customs_package(
                 "warnings": _recon["hard_warnings"],
                 "details":  _recon["details"],
                 "hint":     "Re-process the batch or attach a fresh PZ XLSX.",
+            },
+        )
+
+    # ── Guard: descriptions_missing_for_customs (pre-generation) ──────────────
+    # Same single-authority resolver as generate_description — no bypass path.
+    # Resolve + STAMP approved descriptions onto each row so downstream
+    # generation (process_batch_items → SAD JSON → PDF) consumes the resolver's
+    # authoritative value, not the classifier's own text. Returns row-level
+    # detail for any line that cannot be approved (→ block below).
+    from ..services.description_engine import resolve_and_stamp_customs_descriptions  # noqa: PLC0415
+    _missing_desc = resolve_and_stamp_customs_descriptions(
+        audit.get("rows") or [],
+        audit.get("description_corrections") or {},
+    )
+    if _missing_desc:
+        log.info("[%s] generate_customs_package blocked: %d line(s) lack an "
+                 "approved customs description: %s", batch_id, len(_missing_desc),
+                 [m.get("product_code") for m in _missing_desc])
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard":  "descriptions_missing_for_customs",
+                "error":  "One or more product lines have no approved customs "
+                          "description and would fall back to generic "
+                          "placeholder text.",
+                "code":   "descriptions_missing_for_customs",
+                "rows":   _missing_desc,
+                "hint":   "Correct each line (approved Product Master "
+                          "description or a shipment correction), then Recheck "
+                          "and regenerate.",
             },
         )
 

@@ -603,16 +603,37 @@ def process_batch_items(batch: dict) -> list[dict]:
                 # Compute from qty × unit_price if not present
                 line_total = qty * unit_price
 
+            # ── Resolver authority (single source of truth) ─────────────────
+            # When the pre-generation resolver stamped an APPROVED description
+            # onto this row (description_engine.resolve_and_stamp_customs_
+            # descriptions), consume it verbatim — the classifier `norm` is only
+            # a suggestion and must never author the final customs text. Rows
+            # that were NOT stamped (e.g. golden/direct engine calls that bypass
+            # the route) fall back to the classifier, byte-for-byte as before.
+            _authoritative = bool(item.get("_desc_authoritative"))
+            if _authoritative:
+                _polish   = item.get("_resolved_description_pl") or norm["polish_customs_description"]
+                _material = item.get("_resolved_material_pl")
+                if _material is None:
+                    _material = norm["material_pl"]
+                _item_pl  = item.get("_resolved_name_pl") or norm["item_type_pl"]
+            else:
+                _polish   = norm["polish_customs_description"]
+                _material = norm["material_pl"]
+                _item_pl  = norm["item_type_pl"]
+
             lines.append({
                 "line_order":                     order,
                 "invoice_number":                 str(inv_number),
                 "product_code":                   str(item.get("product_code") or ""),
                 "original_description":           desc,
                 "normalized_english_description": norm["normalized_english"],
-                "polish_customs_description":     norm["polish_customs_description"],
+                "polish_customs_description":     _polish,
                 "item_type":                      norm["item_type"],
-                "item_type_pl":                   norm["item_type_pl"],
-                "material":                       norm["material_pl"],
+                "item_type_pl":                   _item_pl,
+                "material":                       _material,
+                "_desc_authoritative":            _authoritative,
+                "_desc_source":                   item.get("_resolved_source") or "",
                 "gold_purity":                    norm["gold_purity_raw"],
                 "stones":                         norm["stones_pl"],
                 "natural_or_lab_grown":           norm["natural_or_lab"],
@@ -1234,6 +1255,12 @@ def _generate_pdf(
                     block = _DESCRIPTION_ENGINE.get_description_block(
                         product_code   = ln.get("product_code") or ln.get("item_type", ""),
                         item_type      = ln.get("item_type", ""),
+                        # Resolver authority: when the line carries an approved,
+                        # resolver-stamped description, pass it as authoritative
+                        # so a stale/poisoned source='auto' product_descriptions
+                        # row can never override it (and nothing generic is
+                        # persisted). Non-authoritative rows keep prior behaviour.
+                        authoritative_pl = polish if ln.get("_desc_authoritative") else None,
                         description_en = english,
                         # Pass the customs engine's richer per-line Polish
                         # so the engine's first-write captures the rich

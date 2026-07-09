@@ -2363,6 +2363,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [confirmingPz, setConfirmingPz] = React.useState(false);
   const [pzPreview, setPzPreview] = React.useState(null);           // BatchBuildResult from pz_preview
   const [pzPreviewLoading, setPzPreviewLoading] = React.useState(false);
+  // Row-level detail from the descriptions_missing_for_customs guard on
+  // Generate Polish Description — persistent panel so the operator sees exactly
+  // which line needs a description (not just a transient toast).
+  const [descBlock, setDescBlock] = React.useState(null);
   const [pzCreateBusy, setPzCreateBusy] = React.useState(false);
   const [pzCreateResult, setPzCreateResult] = React.useState(null); // {status, wfirma_pz_doc_id, ...}
   const [pzCreateConfirm, setPzCreateConfirm] = React.useState(false);
@@ -2988,6 +2992,28 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     } catch (e) {
       onToast(`${label} failed: ${e.message}`, 'error');
     } finally { setBusyKey(key, false); }
+  };
+
+  // Generate Polish Description — parses the descriptions_missing_for_customs
+  // guard (HTTP 422) into a persistent row-level panel so the operator sees
+  // exactly which line lacks an approved description. Other errors fall through
+  // to the standard doAction toast. On success the panel is cleared.
+  const genPolishDescFn = async () => {
+    setDescBlock(null);
+    const res = await fetch(
+      `/api/v1/dhl/generate-description/${encodeURIComponent(batchId)}`,
+      { method: 'POST', credentials: 'include' },
+    );
+    if (!res.ok) {
+      let detail = null;
+      try { detail = (await res.json()).detail; } catch (_) { detail = null; }
+      if (detail && detail.guard === 'descriptions_missing_for_customs' && Array.isArray(detail.rows)) {
+        setDescBlock(detail.rows);
+        throw new Error(`${detail.rows.length} line(s) need an approved product description before generation.`);
+      }
+      const msg = detail ? (detail.error || JSON.stringify(detail)) : `HTTP ${res.status}`;
+      throw new Error(String(msg).slice(0, 240));
+    }
   };
 
   if (loading) return (
@@ -7929,7 +7955,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           <span style={{ fontSize: 11, color: 'var(--badge-red-text)', fontWeight: 600 }}>⚠ Marked generated but file missing</span>
                           <Btn variant="danger" data-testid="btn-repair-polish-desc" disabled={!!busy.genDesc || _pdBlocked}
                             title={_pdBlocked ? 'Blocked: customs CIF unresolved — re-process invoices or confirm the AWB customs value' : 'Re-generate the missing Polish Customs Description PDF'}
-                            onClick={() => doAction('genDesc', 'Repair Polish Description', () => apiFetch(`/api/v1/dhl/generate-description/${encodeURIComponent(batchId)}`, { method: 'POST' }))}>
+                            onClick={() => doAction('genDesc', 'Repair Polish Description', genPolishDescFn)}>
                             {busy.genDesc ? '⟳ Repairing…' : _pdBlocked ? '⚠ Repair (CIF unresolved)' : '⚠ Repair Polish Description'}
                           </Btn>
                         </>
@@ -7937,13 +7963,32 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         <>
                           <Btn variant="outline" data-testid="btn-generate-polish-desc" disabled={!!busy.genDesc || _pdBlocked}
                             title={_pdBlocked ? 'Blocked: customs CIF unresolved — re-process invoices or confirm the AWB customs value' : `Generate Polish Customs Description PDF (Resolved CIF = ${_decCifLabel})`}
-                            onClick={() => doAction('genDesc', 'Generate Polish Description', () => apiFetch(`/api/v1/dhl/generate-description/${encodeURIComponent(batchId)}`, { method: 'POST' }))}>
+                            onClick={() => doAction('genDesc', 'Generate Polish Description', genPolishDescFn)}>
                             {busy.genDesc ? '⟳ Generating…' : _pdBlocked ? '⊞ Polish Desc. (CIF unresolved)' : '⊞ Generate Polish Description'}
                           </Btn>
                           <Btn variant="ghost" disabled title="File not generated yet">
                             ↓ Polish Description
                           </Btn>
                         </>
+                      )}
+
+                      {/* Row-level block from descriptions_missing_for_customs guard */}
+                      {Array.isArray(descBlock) && descBlock.length > 0 && (
+                        <div data-testid="desc-missing-panel" style={{ flexBasis: '100%', marginTop: 6, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', color: 'var(--badge-red-text)', fontSize: 11 }}>
+                          <div style={{ fontWeight: 700, marginBottom: 4 }}>⚠ Product description required — Polish Description blocked ({descBlock.length} line{descBlock.length > 1 ? 's' : ''})</div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                            {descBlock.map((r, i) => (
+                              <div key={i} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                <span style={{ fontWeight: 600 }}>{r.product_code || '(no product code)'}</span>
+                                {r.invoice ? <span style={{ opacity: 0.8 }}>· inv {r.invoice}</span> : null}
+                                {r.row != null ? <span style={{ opacity: 0.8 }}>· row {r.row}</span> : null}
+                                <span style={{ opacity: 0.9 }}>— {r.reason || 'no approved description'}</span>
+                                {r.extracted_description ? <span style={{ opacity: 0.6 }}>[{String(r.extracted_description).slice(0, 40)}]</span> : null}
+                              </div>
+                            ))}
+                          </div>
+                          <div style={{ marginTop: 5, opacity: 0.85 }}>Use the approved Product Master description or save a shipment correction, then Recheck and regenerate. No generic placeholder is permitted in a customs document.</div>
+                        </div>
                       )}
 
                       {/* DSK PDF — only if required by clearance path */}
