@@ -24,9 +24,23 @@ from pydantic import BaseModel
 from ..core.security import require_api_key
 from ..services import wfirma_reservation as wr
 from ..services import wfirma_reservation_create as wrc
+from ..services import reservation_customer_parity as rcp
 
 router = APIRouter(prefix="/api/v1/wfirma", tags=["wfirma"])
 _auth  = Depends(require_api_key)
+
+
+@router.get("/reservation-parity", dependencies=[_auth])
+def reservation_parity(batch_id: str = Query(None, description="optional: limit to one batch")) -> dict:
+    """WF-3 Slice 2B-1 — READ-ONLY reservation customer-resolution parity report.
+
+    Compares, per reservation draft, the current NAME-based resolution against
+    the canonical contractor.id resolver, and classifies each draft. Performs NO
+    write and NO wFirma call; changes NO reservation/proforma/invoice behavior.
+    ``blocked`` is True iff any draft diverges (name resolves to a different id
+    than the operator-selected contractor.id) — the gate for Slice 2B-2.
+    """
+    return rcp.run_reservation_parity(batch_id=batch_id)
 
 
 @router.get("/reservation-preview/{batch_id:path}", dependencies=[_auth])
