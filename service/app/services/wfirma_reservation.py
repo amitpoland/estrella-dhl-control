@@ -50,6 +50,7 @@ from . import warehouse_db as wdb
 from . import warehouse_audit as waudit
 from . import wfirma_capabilities as wfc
 from . import wfirma_db as wfdb
+from . import customer_identity_resolver as _cir  # WF-3: canonical contractor.id resolver
 
 log = get_logger(__name__)
 
@@ -322,13 +323,26 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
 
         customer_ok = bool(client and client.strip())
 
-        # Customer mapping lookup
+        # Customer mapping lookup (existing name-based path — unchanged)
         cust_rec      = wfdb.get_customer(client) if wfdb._db_path is not None else None
         customer_match = bool(
             cust_rec
             and cust_rec.get("wfirma_customer_id")
             and cust_rec.get("match_status") == "matched"
         )
+        # WF-3 Slice 2B-2 — id-first (parity-safe, additive): if the draft carries
+        # the operator-selected contractor.id and it resolves via the canonical
+        # identity authority, the customer is matched by id. This only STRENGTHENS
+        # the gate (id present in mirror/legacy but not matched by display name);
+        # it echoes the operator's own selection and never substitutes a different
+        # contractor. When no id is present or it does not resolve, the name-based
+        # customer_match above stands unchanged.
+        if not customer_match and client_cid:
+            try:
+                if _cir.resolve_by_contractor_id(client_cid) is not None:
+                    customer_match = True
+            except Exception:  # never block preview readiness on the resolver
+                pass
 
         # Aggregate sales rows → invoice product_code groups
         group_qty: Dict[str, float]     = defaultdict(float)

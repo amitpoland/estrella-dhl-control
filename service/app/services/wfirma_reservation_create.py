@@ -38,6 +38,7 @@ from ..core.logging import get_logger
 from . import wfirma_capabilities as wfc
 from . import wfirma_client as wfcli
 from . import wfirma_db as wfdb
+from . import customer_identity_resolver as _cir  # WF-3: canonical contractor.id resolver
 
 log = get_logger(__name__)
 
@@ -58,6 +59,31 @@ GATE_WAREHOUSE_NOT_FOUND      = "WAREHOUSE_NOT_FOUND"
 GATE_VAT_CODE_NOT_FOUND       = "VAT_CODE_NOT_FOUND"
 SUBMIT_RACE_LOST              = "SUBMIT_RACE_LOST"
 SUBMIT_UPSTREAM_ERROR         = "UPSTREAM_ERROR"
+
+
+def _resolve_gate6_customer_id(draft: Dict[str, Any], client_name: str) -> str:
+    """WF-3 Slice 2B-2 — id-first customer resolution for reservation Gate 6.
+
+    Parity-safe and additive: when the draft carries the operator-selected
+    contractor.id AND it resolves via the canonical identity authority
+    (customer_identity_resolver: Customer Master → mirror → legacy, all id-keyed),
+    return that id VERBATIM — this ECHOES the operator's own selection and can
+    never return an id other than the one supplied, so a reservation can never be
+    booked against an unselected contractor. It only strengthens the case where
+    the display-name lookup would have failed/mismatched (id present in
+    mirror/legacy but not matched by the draft's name). When no contractor.id is
+    supplied or it does not resolve, the pre-existing name-based mapping runs
+    UNCHANGED. Returns "" when neither path resolves (Gate 6 then blocks as before).
+    """
+    draft_cid = str((draft or {}).get("client_contractor_id") or "").strip()
+    if draft_cid:
+        try:
+            if _cir.resolve_by_contractor_id(draft_cid) is not None:
+                return draft_cid          # echo the operator's selection; never a different id
+        except Exception:                  # never block on the resolver
+            pass
+    customer = wfdb.get_customer(client_name)
+    return (customer or {}).get("wfirma_customer_id") or ""
 
 
 def create_one_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
@@ -127,9 +153,8 @@ def create_one_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
     if not lines:
         return _fail(GATE_NO_LINES, "Draft has no lines.", draft_id=draft_id)
 
-    # ── Gate 6: customer mapping ─────────────────────────────────────────────
-    customer = wfdb.get_customer(client_name)
-    wfirma_customer_id = (customer or {}).get("wfirma_customer_id") or ""
+    # ── Gate 6: customer mapping (WF-3 Slice 2B-2 id-first — see helper) ──────
+    wfirma_customer_id = _resolve_gate6_customer_id(draft, client_name)
     if not wfirma_customer_id:
         return _fail(
             GATE_CUSTOMER_NOT_MAPPED,
