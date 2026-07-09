@@ -467,6 +467,11 @@ app.include_router(bot_router)
 app.include_router(batch_router)
 app.include_router(debug_router)
 app.include_router(upload_router)
+# Phase 2 route-order fix: tracking_db_router (static GET /events, /events/*) MUST be
+# registered BEFORE tracking_router so its GET /events is not shadowed by
+# tracking_router's catch-all GET /{tracking_no} — both share prefix /api/v1/tracking
+# and route matching is first-registered-wins across include_router calls.
+app.include_router(tracking_db_router)
 app.include_router(tracking_router)
 app.include_router(learning_router)
 app.include_router(proposals_router)
@@ -517,7 +522,8 @@ app.include_router(wfirma_reservation_router)
 app.include_router(wfirma_contractors_router)   # Phase 3B: contractor scan API + status
 app.include_router(dhl_readiness_router)
 app.include_router(batch_readiness_router)
-app.include_router(tracking_db_router)  # /events/* before tracking_router's /{tracking_no}
+# tracking_db_router is registered earlier (immediately before tracking_router) so its
+# static GET /events wins over tracking_router's catch-all GET /{tracking_no}.
 app.include_router(correction_registry_router)
 app.include_router(ledgers_router)
 app.include_router(carrier_webhook_router)
