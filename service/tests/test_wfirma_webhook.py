@@ -237,3 +237,89 @@ def test_require_key_dep_returns_key_when_set(monkeypatch):
     import app.core.config as cfg
     monkeypatch.setattr(cfg.settings, "wfirma_webhook_key", "my-key")
     assert _require_wfirma_webhook_key() == "my-key"
+
+
+# ── multi-key support (webhook-disable incident, 2026-07-10) ─────────────────
+# wFirma issues a DISTINCT webhook_key per webhook registration and a fresh
+# one on re-creation. With only one key honored, any second webhook (e.g. the
+# C8A stock-change webhook) or a re-registered webhook 403s on every delivery;
+# each 403 reply carries no webhook_key, and after 10 consecutive such replies
+# wFirma auto-disables the URL ("No webhook_key key found in JSON reply").
+# WFIRMA_WEBHOOK_KEY therefore accepts a comma-separated key set.
+
+_KEY_A = "wfirma-key-invoices-111"
+_KEY_B = "wfirma-key-stock-222"
+
+
+def _body(key: str, event_id: str = "evt-mk-1") -> bytes:
+    return json.dumps(
+        {"webhook_key": key, "event_type": "goods.stock", "id": event_id}
+    ).encode()
+
+
+def test_multikey_first_key_accepted_and_echoed(tmp_path):
+    client = _app_with_key(tmp_path, key=f"{_KEY_A},{_KEY_B}")
+    r = client.post("/api/v1/webhooks/wfirma", content=_body(_KEY_A), headers=_HEADERS)
+    assert r.status_code == 200
+    assert r.json() == {"webhook_key": _KEY_A}
+
+
+def test_multikey_second_key_accepted_echoed_and_stored(tmp_path):
+    """The handshake echo must return the key THIS webhook sent, verbatim."""
+    client = _app_with_key(tmp_path, key=f"{_KEY_A},{_KEY_B}")
+    r = client.post(
+        "/api/v1/webhooks/wfirma", content=_body(_KEY_B, "evt-mk-2"), headers=_HEADERS
+    )
+    assert r.status_code == 200
+    assert r.json() == {"webhook_key": _KEY_B}
+
+    with sqlite3.connect(str(tmp_path / "events.db")) as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM wfirma_webhook_events WHERE event_id = 'evt-mk-2'"
+        ).fetchone()
+    assert row is not None
+    assert _KEY_B not in row[0]          # secret still never stored
+
+
+def test_multikey_whitespace_tolerated(tmp_path):
+    client = _app_with_key(tmp_path, key=f" {_KEY_A} , {_KEY_B} ")
+    r = client.post("/api/v1/webhooks/wfirma", content=_body(_KEY_B), headers=_HEADERS)
+    assert r.status_code == 200
+    assert r.json() == {"webhook_key": _KEY_B}
+
+
+def test_multikey_wrong_key_still_403(tmp_path):
+    client = _app_with_key(tmp_path, key=f"{_KEY_A},{_KEY_B}")
+    r = client.post(
+        "/api/v1/webhooks/wfirma", content=_body("not-a-key"), headers=_HEADERS
+    )
+    assert r.status_code == 403
+    assert "webhook_key" not in r.json()  # never echo anything on auth failure
+
+
+def test_multikey_partial_key_not_accepted(tmp_path):
+    """A candidate must match exactly — no prefix/substring acceptance."""
+    client = _app_with_key(tmp_path, key=f"{_KEY_A},{_KEY_B}")
+    r = client.post(
+        "/api/v1/webhooks/wfirma", content=_body(_KEY_A[:-1]), headers=_HEADERS
+    )
+    assert r.status_code == 403
+
+
+def test_single_key_backcompat_exact_prefix_behavior(tmp_path):
+    """A single un-commaed value must behave exactly as before the fix."""
+    client = _app_with_key(tmp_path)          # _TEST_KEY, no comma
+    ok = client.post("/api/v1/webhooks/wfirma", content=_VALID_BODY, headers=_HEADERS)
+    bad = client.post(
+        "/api/v1/webhooks/wfirma", content=_body("wrong"), headers=_HEADERS
+    )
+    assert ok.status_code == 200
+    assert ok.json() == {"webhook_key": _TEST_KEY}
+    assert bad.status_code == 403
+
+
+def test_commas_only_key_value_returns_503(tmp_path):
+    """A configured value that parses to ZERO keys must fail closed (503)."""
+    client = _app_with_key(tmp_path, key=" , ,")
+    r = client.post("/api/v1/webhooks/wfirma", content=_body(_KEY_A), headers=_HEADERS)
+    assert r.status_code == 503

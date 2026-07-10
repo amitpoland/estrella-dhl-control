@@ -12,9 +12,16 @@ Security model (applied in order):
                preventing probing from learning the key is unset.
   2. JSON    — HTTP 400 if body is not valid JSON object.
   3. Key     — HTTP 403 if webhook_key field is missing or does not match
-               the configured key (constant-time comparison).
+               ANY configured key (constant-time comparison per candidate).
+               WFIRMA_WEBHOOK_KEY holds a comma-separated set of keys — one
+               per wFirma webhook registration, because wFirma issues a
+               distinct webhook_key per webhook and a fresh one on
+               re-creation. A single value behaves exactly as before.
   4. Store   — Raw payload (webhook_key stripped) written to DB.
-  5. Respond — {"webhook_key": "<echoed key>"} on success.
+  5. Respond — {"webhook_key": "<echoed key>"} on success. wFirma requires
+               the echoed key in the reply JSON; a reply without it counts
+               as a failed delivery and 10 consecutive failures auto-disable
+               the webhook on the wFirma side (manual re-enable only).
 
 Deliberately excluded from Phase 1:
   - No business state mutation.
@@ -100,13 +107,30 @@ async def receive_wfirma_webhook(
     if not provided_key:
         raise HTTPException(status_code=403, detail="Missing or empty webhook_key in payload")
 
-    try:
-        key_valid = hmac.compare_digest(
-            provided_key.encode("utf-8"),
-            configured_key.encode("utf-8"),
+    # wFirma issues a DISTINCT webhook_key per webhook registration (and a new
+    # one whenever a webhook is re-created). WFIRMA_WEBHOOK_KEY therefore
+    # accepts a comma-separated SET of keys — one per registered webhook — so
+    # a second webhook (e.g. the stock-change webhook) or a re-registered one
+    # cannot silently 403 every delivery until wFirma auto-disables the URL
+    # after 10 consecutive replies without an echoed webhook_key.
+    # A single un-commaed value keeps the exact pre-fix behavior.
+    candidate_keys = tuple(k.strip() for k in configured_key.split(",") if k.strip())
+    if not candidate_keys:
+        raise HTTPException(
+            status_code=503,
+            detail="Webhook endpoint is not configured on this server.",
         )
-    except (TypeError, ValueError):
-        key_valid = False
+
+    key_valid = False
+    for candidate in candidate_keys:
+        try:
+            if hmac.compare_digest(
+                provided_key.encode("utf-8"),
+                candidate.encode("utf-8"),
+            ):
+                key_valid = True
+        except (TypeError, ValueError):
+            continue
 
     if not key_valid:
         raise HTTPException(status_code=403, detail="Invalid webhook_key")
