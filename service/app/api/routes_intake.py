@@ -149,6 +149,20 @@ def _auto_create_draft_for_client(
                 "kt":             r.get("kt") or r.get("karat") or "",
                 "col":            r.get("col") or r.get("metal_color") or "",
                 "quality":        r.get("quality") or r.get("quality_string") or "",
+                # Variant-identity passthrough (wireframe Slice 1): canonical
+                # sales_packing column names so the DB layer's
+                # _sales_variant_fields carries them into editable_lines.
+                # Intake is the DOMINANT draft-birth path — without these the
+                # variant fields are born blank. Display only.
+                "client_po":      r.get("client_po") or "",
+                "karat":          r.get("karat") or "",
+                "metal":          r.get("metal") or "",
+                "metal_color":    r.get("metal_color") or "",
+                "quality_string": r.get("quality_string") or "",
+                "stone_type":     r.get("stone_type") or "",
+                "size":           r.get("size") or "",
+                "diamond_weight": r.get("diamond_weight") or 0,
+                "color_weight":   r.get("color_weight") or 0,
             })
         # Governance check — no-op when proforma_draft_governance_enabled=False
         check_creation_lines(editable_input)

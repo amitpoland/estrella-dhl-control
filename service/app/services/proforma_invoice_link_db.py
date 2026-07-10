@@ -1926,6 +1926,7 @@ def _sales_variant_fields(ln: Dict[str, Any]) -> Dict[str, Any]:
         "metal":          str(ln.get("metal") or ""),
         "metal_color":    str(ln.get("metal_color") or ""),
         "quality_string": str(ln.get("quality_string") or ""),
+        "stone_type":     str(ln.get("stone_type") or ""),
         "size":           str(ln.get("size") or ""),
         "diamond_weight": _wt("diamond_weight"),
         "color_weight":   _wt("color_weight"),

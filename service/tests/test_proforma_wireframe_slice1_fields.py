@@ -51,6 +51,7 @@ VARIANT_LINE: Dict[str, Any] = {
     "metal":          "GOLD/P",
     "metal_color":    "P",
     "quality_string": "FG-VS (LAB",
+    "stone_type":     "LAB DIAMOND",
     "size":           "17.0M",
     "diamond_weight": 0.51,
     "color_weight":   0.0,
@@ -58,7 +59,7 @@ VARIANT_LINE: Dict[str, Any] = {
 
 VARIANT_KEYS = (
     "client_po", "karat", "metal", "metal_color",
-    "quality_string", "size", "diamond_weight", "color_weight",
+    "quality_string", "stone_type", "size", "diamond_weight", "color_weight",
 )
 
 
@@ -216,6 +217,50 @@ def test_draft_get_surfaces_frozen_vat(client, tmp_path):
     body = r.json()["draft"]
     assert body["vat_code"] == "WDT"
     assert body["vat_context"] == "wdt"
+
+
+# ── B2. Intake birth path (Lesson A — the real builder) ─────────────────────
+# Intake (_auto_create_draft_for_client) is the DOMINANT automated draft-birth
+# path and reshapes sales_packing rows before the DB layer sees them. This
+# exercises that reshape boundary with a realistic sales_packing_lines row
+# (quantity key, raw column names) — the exact boundary where variant fields
+# were historically dropped.
+
+def test_intake_birth_path_carries_variant_fields(tmp_path):
+    from app.api.routes_intake import _auto_create_draft_for_client
+    with patch.object(settings, "storage_root", tmp_path):
+        _auto_create_draft_for_client(
+            batch_id="B-INTAKE", client="ACME", client_ref="PO-1",
+            currency="EUR",
+            line_records=[{
+                "product_code":   "EJL-RNG-0001",
+                "design_no":      "JR02075",
+                "quantity":       1,              # sales_packing column name
+                "unit_price":     300.0,
+                "currency":       "EUR",
+                "price_source":   "packing_xlsx_value",
+                "client_ref":     "PO-1",
+                "client_po":      "Adagia new order",
+                "karat":          "14KT",
+                "metal":          "GOLD/P",
+                "metal_color":    "P",
+                "quality_string": "FG-VS (LAB",
+                "stone_type":     "LAB DIAMOND",
+                "size":           "17.0M",
+                "diamond_weight": 0.51,
+                "color_weight":   0.0,
+            }],
+        )
+        d = pildb.get_draft(tmp_path / "proforma_links.db", "B-INTAKE", "ACME")
+        assert d is not None, "intake birth path must create the draft"
+        ln = json.loads(d.editable_lines_json)[0]
+        assert ln["client_po"] == "Adagia new order"
+        assert ln["karat"] == "14KT"
+        assert ln["metal_color"] == "P"
+        assert ln["quality_string"] == "FG-VS (LAB"
+        assert ln["stone_type"] == "LAB DIAMOND"
+        assert ln["size"] == "17.0M"
+        assert ln["diamond_weight"] == pytest.approx(0.51)
 
 
 # ── C. nbp_table_number lookup ───────────────────────────────────────────────

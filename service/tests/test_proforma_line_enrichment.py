@@ -288,7 +288,8 @@ def test_birth_source_lines_json_is_raw_only(db_path):
             "product_code", "design_no", "qty", "unit_price",
             "currency", "price_source", "client_ref",
             "client_po", "karat", "metal", "metal_color",
-            "quality_string", "size", "diamond_weight", "color_weight",
+            "quality_string", "stone_type", "size",
+            "diamond_weight", "color_weight",
         }
 
     # The editable copy IS the annotated working shape and carries name_pl

@@ -4309,6 +4309,14 @@ def _nbp_table_number_for(d: "pildb.ProformaDraft") -> Optional[str]:
     cur = (d.currency or "").strip().upper()
     if not rate_date or not cur or cur == "PLN":
         return None
+    # Positive-result memo: fx_rates observations are effectively immutable
+    # per (date, currency), and _draft_to_full serves several hot GET paths —
+    # skip the per-request sqlite open once a table number is known. Misses
+    # are NOT cached so a later operator-entered rate becomes visible.
+    key = (rate_date, cur)
+    hit = _NBP_TBL_MEMO.get(key)
+    if hit is not None:
+        return hit
     try:
         from ..services.master_data_db import list_fx_rates
         rows = list_fx_rates(
@@ -4317,10 +4325,17 @@ def _nbp_table_number_for(d: "pildb.ProformaDraft") -> Optional[str]:
             rate_date=rate_date, active=True, limit=1,
         )
         if rows and (rows[0].table_number or "").strip():
-            return rows[0].table_number.strip()
-    except Exception:  # pragma: no cover - reference lookup is best-effort
-        pass
+            tbl = rows[0].table_number.strip()
+            if len(_NBP_TBL_MEMO) > 512:      # unbounded-growth guard
+                _NBP_TBL_MEMO.clear()
+            _NBP_TBL_MEMO[key] = tbl
+            return tbl
+    except Exception as exc:  # reference lookup is best-effort, display-only
+        log.debug("nbp_table_number lookup failed (display-only): %s", exc)
     return None
+
+
+_NBP_TBL_MEMO: Dict[tuple, str] = {}
 
 
 def _enrich_invoice_line_names(lines: List[Dict[str, Any]]) -> None:
@@ -7086,6 +7101,7 @@ def reset_proforma_draft_from_sales_packing(
             "metal":          r.get("metal") or "",
             "metal_color":    r.get("metal_color") or "",
             "quality_string": r.get("quality_string") or "",
+            "stone_type":     r.get("stone_type") or "",
             "size":           r.get("size") or "",
             "diamond_weight": r.get("diamond_weight") or 0,
             "color_weight":   r.get("color_weight") or 0,
