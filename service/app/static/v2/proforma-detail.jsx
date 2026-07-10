@@ -64,6 +64,223 @@ function TbSep() {
   return <div style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 4px', flexShrink: 0 }} />;
 }
 
+// ── Wireframe primitives (Slice 2 — proforma wireframe rebuild) ──────────────
+// Pf-prefixed file-local helpers ported 1:1 from the operator-approved
+// wireframe (estrella-dashboard-wireframe). Pf prefix avoids symbol collision
+// with shipment-detail-page.jsx's file-local SectionLabel/PanelCard/StatTile.
+// Explicit destructuring only — NOT spread-rest (DECISIONS "V2-wide
+// spread-rest collision sweep"). CSS custom properties only.
+
+// Overline label with horizontal rule (wireframe SectionLabel).
+function PfSectionLabel({ children, style: xs }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, ...(xs || {}) }}>
+      <span style={{
+        fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+        letterSpacing: '0.12em', textTransform: 'uppercase',
+      }}>{children}</span>
+      <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+    </div>
+  );
+}
+
+// Card with optional header band + accent edge (wireframe PanelCard).
+function PfPanelCard({ title, subtitle, status, accent, children, 'data-testid': testid }) {
+  return (
+    <div data-testid={testid} style={{
+      background: 'var(--card)',
+      border: '1px solid var(--border)',
+      borderRadius: 10,
+      boxShadow: '0 1px 2px var(--shadow)',
+      overflow: 'hidden',
+      borderLeft: accent ? `3px solid ${accent}` : '1px solid var(--border)',
+    }}>
+      {(title || status) && (
+        <div style={{
+          padding: '14px 20px',
+          borderBottom: '1px solid var(--border-subtle)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 12, background: 'var(--bg-subtle)',
+        }}>
+          <div>
+            {title && <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', letterSpacing: '0.01em' }}>{title}</div>}
+            {subtitle && <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>{subtitle}</div>}
+          </div>
+          {status}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+// Stat tile (wireframe StatTile).
+function PfStatTile({ label, value, accent, 'data-testid': testid }) {
+  return (
+    <div data-testid={testid} style={{
+      background: 'var(--card)',
+      border: '1px solid var(--border)',
+      borderRadius: 10,
+      padding: '16px 18px',
+      boxShadow: '0 1px 2px var(--shadow)',
+    }}>
+      <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 600, color: accent || 'var(--text)', letterSpacing: '0.01em' }}>{value}</div>
+    </div>
+  );
+}
+
+// Draft lifecycle chip colors (wireframe PF_STATUS_CHIP), keyed by the LIVE
+// draft_state values. Lifecycle display only — readiness stays with the
+// ProformaStatusHeader readiness pill (Lesson N: no gating semantics here).
+const PF_STATUS_CHIP = {
+  draft:           { label: 'Draft',            bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+  editing:         { label: 'Editing',          bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+  approved:        { label: 'Approved',         bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+  posting:         { label: 'Posting…',         bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+  posted:          { label: 'Posted to wFirma', bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  issued:          { label: 'Issued',           bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  post_failed:     { label: 'Post Failed',      bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+  cancelled:       { label: 'Cancelled',        bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+  superseded:      { label: 'Superseded',       bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+};
+
+function PfProformaStatusChip({ draftState, 'data-testid': testid }) {
+  const s = PF_STATUS_CHIP[draftState];
+  if (!s) return null;
+  return (
+    <span data-testid={testid} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      padding: '3px 10px', borderRadius: 4,
+      background: s.bg, color: s.text, border: `1px solid ${s.border}`,
+      fontSize: 10.5, fontWeight: 600, letterSpacing: '0.02em',
+      whiteSpace: 'nowrap',
+    }}>{s.label}</span>
+  );
+}
+
+// Labelled edit row (wireframe FieldRow) — right-aligned control.
+function PfFieldRow({ label, children, hint }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border-subtle)', gap: 16 }}>
+      <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, minWidth: 110 }}>
+        {label}
+        {hint && <span style={{ display: 'block', fontWeight: 400, fontSize: 9.5, color: 'var(--text-3)', opacity: 0.8 }}>{hint}</span>}
+      </span>
+      <div style={{ flex: 1, maxWidth: 280, display: 'flex', justifyContent: 'flex-end' }}>{children}</div>
+    </div>
+  );
+}
+
+const PF_EDIT_INPUT = {
+  width: '100%', padding: '6px 9px', borderRadius: 6,
+  border: '1px solid var(--accent-border)', background: 'var(--card)',
+  color: 'var(--text)', fontSize: 12, fontWeight: 600,
+  boxSizing: 'border-box', outline: 'none',
+};
+
+function PfTextEdit({ value, onChange, type, mono, 'data-testid': testid }) {
+  return (
+    <input
+      type={type || 'text'} value={value} data-testid={testid}
+      onChange={e => onChange(e.target.value)}
+      style={{ ...PF_EDIT_INPUT, fontFamily: mono ? 'monospace' : 'inherit' }}
+    />
+  );
+}
+
+function PfSelectEdit({ value, onChange, options, 'data-testid': testid }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} data-testid={testid} style={PF_EDIT_INPUT}>
+      {(options || []).map(o => <option key={o}>{o}</option>)}
+    </select>
+  );
+}
+
+// Logistics-style numeric edit row with unit suffix (wireframe EditField).
+function PfEditField({ label, value, onChange, suffix, type, width }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+      <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600 }}>{label}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <input
+          type={type || 'text'} value={value} step="0.01"
+          onChange={e => onChange(e.target.value)}
+          style={{
+            width: width || 120, textAlign: 'right', padding: '5px 8px',
+            borderRadius: 6, border: '1px solid var(--accent-border)',
+            background: 'var(--card)', color: 'var(--text)',
+            fontSize: 12, fontWeight: 600, fontFamily: 'monospace',
+          }}
+        />
+        {suffix && <span style={{ fontSize: 11, color: 'var(--text-3)', minWidth: 18 }}>{suffix}</span>}
+      </div>
+    </div>
+  );
+}
+
+// Searchable autocomplete (wireframe Autocomplete): input + filtered dropdown
+// + bold-match highlight + "No match · keep typing" empty state. Pure display
+// widget — items and pick semantics come from the caller.
+function PfAutocomplete({ value, placeholder, items, getLabel, getSub, onPick, onClear, width, 'data-testid': testid }) {
+  const [open, setOpen] = React.useState(false);
+  const [q, setQ] = React.useState('');
+  const ref = React.useRef(null);
+
+  React.useEffect(() => {
+    const close = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, []);
+
+  const ql = q.trim().toLowerCase();
+  const results = ql
+    ? (items || []).filter(it => (getLabel(it) + ' ' + (getSub ? getSub(it) : '')).toLowerCase().includes(ql)).slice(0, 8)
+    : (items || []).slice(0, 8);
+
+  const bold = (text) => {
+    if (!ql) return text;
+    const i = text.toLowerCase().indexOf(ql);
+    if (i < 0) return text;
+    return <>{text.slice(0, i)}<b style={{ color: 'var(--accent)' }}>{text.slice(i, i + ql.length)}</b>{text.slice(i + ql.length)}</>;
+  };
+
+  return (
+    <div ref={ref} data-testid={testid} style={{ position: 'relative', width: width || '100%' }}>
+      {value ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', border: '1px solid var(--accent-border)', borderRadius: 6, background: 'var(--card)' }}>
+          <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</span>
+          <button onClick={() => { onClear && onClear(); setQ(''); setOpen(true); }} title="Change" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: 'var(--text-3)' }}>×</button>
+        </div>
+      ) : (
+        <input
+          value={q} placeholder={placeholder}
+          onChange={e => { setQ(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          style={{ width: '100%', padding: '7px 10px', border: '1px solid var(--accent-border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text)', fontSize: 12, outline: 'none', boxSizing: 'border-box' }}
+        />
+      )}
+      {open && !value && (
+        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 4, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: '0 8px 24px var(--shadow-heavy)', zIndex: 50, maxHeight: 280, overflowY: 'auto' }}>
+          {results.length === 0 && <div style={{ padding: '12px 14px', fontSize: 11.5, color: 'var(--text-3)' }}>No match · keep typing to enter manually</div>}
+          {results.map((it, i) => (
+            <button
+              key={i}
+              onClick={() => { onPick(it); setOpen(false); setQ(''); }}
+              style={{ width: '100%', textAlign: 'left', padding: '9px 12px', background: 'none', border: 'none', borderBottom: i < results.length - 1 ? '1px solid var(--border-subtle)' : 'none', cursor: 'pointer', display: 'block' }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--row-hover)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+            >
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{bold(getLabel(it))}</div>
+              {getSub && <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 1 }}>{getSub(it)}</div>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── KV grid item ──────────────────────────────────────────────────────────────
 function KvItem({ k, v, mono, muted }) {
   const empty = v === null || v === undefined || v === '' || v === '—';
