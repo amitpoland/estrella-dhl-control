@@ -87,3 +87,27 @@ def get_events_for_batch(db_path: Path, batch_id: str) -> list:
             (batch_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def list_events(db_path: Path, limit: int = 500) -> list:
+    """CW-1: newest-first event rows for the processor (read-only)."""
+    if not Path(db_path).exists():
+        return []
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM carrier_events ORDER BY received_at DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_events(db_path: Path) -> Dict[str, int]:
+    """CW-1: total vs correlated (non-empty batch_id) event counts."""
+    if not Path(db_path).exists():
+        return {"total": 0, "correlated": 0}
+    with _connect(db_path) as conn:
+        total = conn.execute("SELECT COUNT(*) FROM carrier_events").fetchone()[0]
+        corr = conn.execute(
+            "SELECT COUNT(*) FROM carrier_events WHERE batch_id != ''"
+        ).fetchone()[0]
+    return {"total": int(total), "correlated": int(corr)}

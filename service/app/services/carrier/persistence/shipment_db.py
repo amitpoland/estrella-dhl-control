@@ -277,3 +277,25 @@ def update_shipment_fields(
             f"UPDATE carrier_shipments SET {', '.join(sets)} WHERE idempotency_key = ?",
             tuple(args),
         )
+
+
+def get_batch_by_tracking_ref(db_path: Path, tracking_ref: str) -> Optional[str]:
+    """CW-1: resolve a DHL tracking number to its batch_id (read-only).
+
+    Used by the carrier webhook at ingest time to correlate an inbound event
+    with a shipment BEFORE log-safe stripping removes the tracking identifiers.
+    Returns the most recent matching batch_id, or None.
+    """
+    ref = (tracking_ref or "").strip()
+    if not ref or not Path(db_path).exists():
+        return None
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT batch_id FROM carrier_shipments "
+                "WHERE tracking_ref = ? ORDER BY rowid DESC LIMIT 1",
+                (ref,),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return str(row[0]) if row and row[0] else None
