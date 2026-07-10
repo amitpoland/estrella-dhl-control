@@ -5324,6 +5324,15 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
         </PfPanelCard>
       </div>
 
+      {/* ── VAT & Insurance / KUKE (wireframe PanelCard; display-only, Slice 4) ── */}
+      <VatInsurancePanel
+        contractorId={detail.client_contractor_id}
+        vatCode={detail.vat_code}
+        vatContext={detail.vat_context}
+        totalEur={totalEur}
+        currency={currency}
+      />
+
       {/* ── Dates & FX (wireframe PanelCard; edit controls preserved) ──────── */}
       <div>
         <PfSectionLabel>Dates &amp; FX</PfSectionLabel>
@@ -5421,6 +5430,76 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
 
       {/* Payment status — real figures on demand (reuse-only, live wFirma statement) */}
       <OverviewFinancials contractorId={detail.client_contractor_id} currency={currency} />
+    </div>
+  );
+}
+
+// ── Overview: VAT & Insurance / KUKE (wireframe PanelCard — Slice 4) ────────────
+// Display-only wiring of the Slice-1 vat_code/vat_context draft keys plus the
+// Customer Master KUKE fields. ONE fetch per draft via the existing
+// PzApi.getCustomerMaster (same call the AWB modal uses); a missing contractor
+// id, a missing master row, or a failed fetch renders '—' for every field —
+// this panel NEVER blocks and NEVER gates (Lesson N: purely informational).
+// Premium is a display-only estimate (goods total × customer insurance_rate):
+// never persisted, never posted, never part of any readiness computation.
+const PF_VAT_LABELS = {
+  WDT:  '0% WDT — intra-EU supply',
+  EXP:  '0% Export',
+  NP:   'NP — not subject to PL VAT',
+  '23': '23% domestic',
+  '8':  '8% domestic',
+  '5':  '5% domestic',
+  '0':  '0%',
+};
+
+function VatInsurancePanel({ contractorId, vatCode, vatContext, totalEur, currency }) {
+  const [master, setMaster] = React.useState(null);
+  // idle → loading → loaded | failed | missing-id  (fail-visible, never fail-open)
+  const [masterFetch, setMasterFetch] = React.useState('idle');
+
+  React.useEffect(() => {
+    if (!contractorId || !window.PzApi.getCustomerMaster) { setMasterFetch('missing-id'); return; }
+    setMasterFetch('loading');
+    window.PzApi.getCustomerMaster(contractorId)
+      .then(r => {
+        if (r && r.ok && r.data) { setMaster(r.data); setMasterFetch('loaded'); }
+        else setMasterFetch('failed');
+      })
+      .catch(() => setMasterFetch('failed'));
+  }, [contractorId]);
+
+  const m = masterFetch === 'loaded' ? (master || {}) : {};
+  const vatLabel = vatCode ? (PF_VAT_LABELS[String(vatCode)] || String(vatCode)) : '—';
+  const rate = (m.insurance_rate != null && m.insurance_rate !== '' && !Number.isNaN(Number(m.insurance_rate)))
+    ? Number(m.insurance_rate) : null;
+  const premium = (rate != null && totalEur > 0)
+    ? `${(totalEur * rate).toFixed(2)} ${currency} (est.)`
+    : '—';
+  const kukeApproved = m.kuke_approved === true ? 'Yes' : m.kuke_approved === false ? 'No' : '—';
+  const kukeLimit = (m.kuke_limit != null && m.kuke_limit !== '')
+    ? `${m.kuke_limit} ${m.kuke_currency || ''}`.trim() : '—';
+
+  return (
+    <div>
+      <PfSectionLabel>VAT &amp; Insurance (KUKE)</PfSectionLabel>
+      <PfPanelCard data-testid="pf-vat-insurance">
+        <div style={{ padding: '8px 20px 12px' }}>
+          <InfoRow label="VAT treatment" value={vatLabel} />
+          <InfoRow label="VAT context" value={vatContext || '—'} />
+          <InfoRow label="KUKE insured" value={kukeApproved} />
+          <InfoRow label="KUKE policy" value={m.kuke_policy_number || '—'} mono />
+          <InfoRow label="KUKE limit" value={kukeLimit} mono />
+          <InfoRow label="Insurance rate" value={rate != null ? `${(rate * 100).toFixed(2)}%` : '—'} mono />
+          <div data-testid="pf-kuke-premium">
+            <InfoRow label="Premium (display-only)" value={premium} mono />
+          </div>
+          {masterFetch === 'failed' && (
+            <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 6 }} data-testid="pf-kuke-fetch-failed">
+              Customer Master unavailable — insurance fields shown as '—'.
+            </div>
+          )}
+        </div>
+      </PfPanelCard>
     </div>
   );
 }
