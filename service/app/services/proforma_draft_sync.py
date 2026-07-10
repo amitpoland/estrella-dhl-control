@@ -77,6 +77,124 @@ def _resolve_product_codes_for_batch(
         return {}
 
 
+# ── Tier 2: batch-scoped exact variant matcher (Slice 2) ──────────────────────
+#
+# A deterministic pre-filter that runs BEFORE the heuristic reconciliation
+# scorer. For an ambiguous design (design_no → several candidate product_codes)
+# it compares the sales row's FULL variant signature to each candidate's
+# signature and resolves the design ONLY when every ambiguous sales row uniquely
+# matches exactly one candidate. It composes with the existing pipeline:
+#   * candidates come from packing_lines (the per-piece authority) — batch-scoped;
+#   * signatures reuse build_variant_signature (Slice 1) and read the candidate's
+#     product_master.normalized_design_attributes (advisory identity, never a gate);
+#   * it never mints a product_code, never uses design_no as a fallback, and never
+#     consults the global design_product_mapping registry;
+#   * designs it cannot fully resolve are left UNTOUCHED for the spec scorer, and
+#     when Master signatures are absent it is a transparent no-op (existing
+#     pipeline behaviour is preserved).
+
+# Minimum non-empty DIFFERENTIATING tokens (everything after design_no) a
+# signature must carry before an exact match is trusted — guards against a
+# near-empty signature producing a spurious 'exact' match.
+_EXACT_MATCH_MIN_TOKENS = 2
+
+
+def _signature_specific_enough(signature: str) -> bool:
+    """True iff the signature carries >= _EXACT_MATCH_MIN_TOKENS non-empty
+    differentiating tokens (all tokens after design_no)."""
+    parts = (signature or "").split("|")
+    diff = parts[1:] if len(parts) > 1 else []
+    return sum(1 for t in diff if t.strip()) >= _EXACT_MATCH_MIN_TOKENS
+
+
+def _match_clones_to_candidates(
+    sales_clones:         List[Dict[str, Any]],
+    candidate_signatures: Dict[str, str],
+) -> Optional[Dict[int, str]]:
+    """Pure. Map each ambiguous sales clone to a product_code by EXACT variant
+    signature. Returns ``{clone_index: product_code}`` iff EVERY clone resolves
+    to exactly one candidate (all-or-nothing per design); otherwise ``None`` (the
+    design is left for the existing scorer). Only returns codes that appear in
+    ``candidate_signatures`` — never invents one."""
+    from .cpa_product_service import build_variant_signature  # noqa: PLC0415
+
+    # signature -> [product_codes]. A candidate whose signature is empty or shared
+    # cannot uniquely identify a sales row.
+    by_sig: Dict[str, List[str]] = {}
+    for pc, sig in candidate_signatures.items():
+        s = (sig or "").strip()
+        if s:
+            by_sig.setdefault(s, []).append(pc)
+
+    out: Dict[int, str] = {}
+    for idx, clone in enumerate(sales_clones):
+        sales_sig = build_variant_signature(clone)
+        if not _signature_specific_enough(sales_sig):
+            return None  # too sparse to trust — whole design goes to the scorer
+        matches = by_sig.get(sales_sig, [])
+        if len(matches) != 1:
+            return None  # zero or ambiguous exact match → scorer handles it
+        out[idx] = matches[0]
+    return out or None
+
+
+def _apply_exact_variant_match(
+    batch_id:              str,
+    designs_ambiguous:     Dict[str, List[str]],
+    ambiguous_clones:      Dict[str, List[Dict[str, Any]]],
+    designs_exact_matched: Dict[str, Any],
+) -> None:
+    """Resolve ambiguous designs by exact variant signature, in place.
+
+    For each ambiguous design, read each candidate product_code's signature from
+    the Product Master (advisory identity), match the sales clones, and — only
+    when the whole design resolves — assign product_code + resolution_source on
+    the clones, drop the design from designs_ambiguous / ambiguous_clones, and
+    record it under designs_exact_matched. Never raises; a read failure or an
+    unresolved design simply leaves that design for the existing scorer."""
+    try:
+        from ..core.config import settings  # noqa: PLC0415
+        from . import reservation_db as _rdb  # noqa: PLC0415
+    except Exception:
+        return
+    rdb_path = settings.storage_root / "reservation_queue.db"
+    if not rdb_path.exists():
+        return
+
+    for dn in list(designs_ambiguous.keys()):
+        cands  = designs_ambiguous.get(dn) or []
+        clones = ambiguous_clones.get(dn) or []
+        if len(cands) < 2 or not clones:
+            continue
+        # Candidate signatures from the Product Master (advisory). Batch-scoped by
+        # construction: cands are THIS batch's packing-derived product_codes.
+        candidate_sigs: Dict[str, str] = {}
+        try:
+            for pc in cands:
+                row = _rdb.get_product_master(rdb_path, pc)
+                candidate_sigs[pc] = (row or {}).get("normalized_design_attributes", "") or ""
+        except Exception as exc:
+            log.warning("[%s] exact-variant: master read failed for %r: %s",
+                        batch_id, dn, exc)
+            continue
+
+        mapping = _match_clones_to_candidates(clones, candidate_sigs)
+        if not mapping:
+            continue  # leave design for the existing scorer / scored_pending
+
+        for idx, pc in mapping.items():
+            clones[idx]["product_code"]      = pc
+            clones[idx]["resolution_source"] = "exact_variant_match"
+        designs_exact_matched[dn] = {
+            "assigned": sorted({pc for pc in mapping.values()}),
+            "rows":     len(mapping),
+        }
+        designs_ambiguous.pop(dn, None)
+        ambiguous_clones.pop(dn, None)
+        log.info("[%s] exact-variant: design %r resolved deterministically -> %s",
+                 batch_id, dn, designs_exact_matched[dn]["assigned"])
+
+
 def resolve_sales_lines_for_batch(
     batch_id:    str,
     sales_lines: List[Dict[str, Any]],
@@ -162,7 +280,18 @@ def resolve_sales_lines_for_batch(
                 batch_id, dn,
             )
 
-    # ── Secondary resolution: spec-based reconciliation ───────────────────────
+    # ── Tier 2: deterministic batch-scoped EXACT VARIANT match (Slice 2) ──────
+    # Runs BEFORE the heuristic spec scorer. Resolves an ambiguous design when
+    # every ambiguous sales row uniquely matches one candidate by full variant
+    # signature. No-op when Master signatures are absent → the pipeline below is
+    # unchanged. Batch-scoped; Master advisory; never mints a product_code.
+    designs_exact_matched: Dict[str, Any] = {}
+    if designs_ambiguous:
+        _apply_exact_variant_match(
+            batch_id, designs_ambiguous, _ambiguous_clones, designs_exact_matched,
+        )
+
+    # ── Tier 3: spec-based reconciliation (UNCHANGED) ─────────────────────────
     designs_reconciled:     Dict[str, Any] = {}
     designs_scored_pending: Dict[str, Any] = {}
 
@@ -179,6 +308,7 @@ def resolve_sales_lines_for_batch(
         "designs_resolved":       designs_resolved,
         "designs_ambiguous":      designs_ambiguous,
         "designs_unresolved":     sorted(designs_unresolved),
+        "designs_exact_matched":  designs_exact_matched,
         "designs_reconciled":     designs_reconciled,
         "designs_scored_pending": designs_scored_pending,
     }
