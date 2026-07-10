@@ -487,7 +487,7 @@ def _resolve_invoice_line_count(
     try:
         con = _ro_conn(db_path)
         row = con.execute(
-            "SELECT COUNT(*) AS n FROM invoice_lines WHERE batch_id = ?",
+            "SELECT COUNT(*) AS n FROM invoice_lines WHERE batch_id = ? AND active = 1",
             (batch_id,),
         ).fetchone()
         con.close()
