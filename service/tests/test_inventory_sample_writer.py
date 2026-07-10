@@ -364,9 +364,13 @@ def test_sample_routes_registered_on_main_app():
 
 
 def test_main_app_inventory_writes_match_full_allowlist():
-    """Phase B.2 expands the inventory write allowlist to 6:
-      Move stock (1) + Sample-out/return (2) + Returns x3 (Phase B.2).
-    Any addition requires new SECURITY review."""
+    """The complete inventory write allowlist. Any addition requires new
+    SECURITY review and MUST be recorded here with its sealing PR.
+
+    Reconciled 2026-07-10 (DEFECT-1 gate, pre-existing pin drift): the pin
+    stopped at Phase B.2's six routes while five later operator-approved,
+    individually gate-reviewed campaigns each added a write route without
+    updating this allowlist. Every entry below names its authority."""
     from app.main import app as prod
     writes = []
     for r in prod.routes:
@@ -377,12 +381,24 @@ def test_main_app_inventory_writes_match_full_allowlist():
         if methods & {"POST", "PUT", "PATCH", "DELETE"}:
             writes.append((path, methods))
     expected = {
+        # Move stock (Phase B.1)
         "/api/v1/inventory/pieces/{piece_id}/location",
+        # Sample-out / sample-return (Phase B.1)
         "/api/v1/inventory/pieces/{piece_id}/sample-out",
         "/api/v1/inventory/pieces/{piece_id}/sample-return",
+        # Returns lifecycle x3 (Phase B.2)
         "/api/v1/inventory/pieces/{piece_id}/return-from-client",
         "/api/v1/inventory/pieces/{piece_id}/return-to-producer",
         "/api/v1/inventory/pieces/{piece_id}/return-from-producer",
+        # Returns QC disposition (PR #848/#849, sealed 2026-07-07)
+        "/api/v1/inventory/pieces/{piece_id}/qc-disposition",
+        # Identity correction authority (PR #851, sealed 2026-07-08)
+        "/api/v1/inventory/pieces/{piece_id}/correction/identity",
+        "/api/v1/inventory/pieces/{piece_id}/correction/archive-proposal",
+        # Transit reversal authority (PR #852, sealed 2026-07-08)
+        "/api/v1/inventory/pieces/{piece_id}/reversal/{reversal_target}",
+        # WF-2 fiscal reconciliation run-now (PR #854, sealed 2026-07-08)
+        "/api/v1/inventory/fiscal-reconciliation/run",
     }
     actual = {p for p, _ in writes}
     assert actual == expected, (
