@@ -95,8 +95,13 @@ tree; back-to-back stop/start left the service STOPPED). Binding on every sync:
    SHA **before** robocopy (when `main` is held by another worktree: `git fetch` +
    `git checkout --detach origin/main`), and **hash-verify the deployed files after**
    (`git hash-object` vs `git ls-tree origin/main` — byte-level proof).
-2. **No destructive mirror.** `/MIR` is forbidden; the app sync always excludes storage
-   (`/XD storage`) so production data can never be shadowed or deleted by a copy.
+2. **No destructive mirror.** `/MIR` is forbidden — the canonical app sync is non-mirror
+   (`robocopy … /E /XD storage`) so a copy can never delete or shadow anything in production.
+   Evidence: the EOS-UPGRADE-1 operator charter names "no destructive mirror deployment"
+   explicitly; the #875 and #879 release-manager sync plans are non-mirror; a Slice-4
+   coordinator draft that said `/MIR` was corrected at the gate (release manager
+   authoritative). The PFW runbook's deployment step was reconciled to `/E` in this same
+   package.
 3. **Restart sequence.** `sc.exe stop PZService` → poll until **STOPPED** → `sc.exe start` →
    verify **STATE: 4 RUNNING**. Never stop;start back-to-back. A deployment is **incomplete
    until PZService reports RUNNING**.

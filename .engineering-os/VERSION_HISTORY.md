@@ -33,6 +33,17 @@ packages, never by speculation.
   silently gain slices), and post-release stabilization monitoring.
   Canonical text: `00 §9`.
 
+## Evidence ordering note (anti-circularity)
+
+The Phase-9 artifacts cited as v1.3 evidence were produced **by campaign practice, before
+this ratification package was chartered**: the PFW closure record, ADR, and runbook were
+authored at the PFW campaign's close (2026-07-10, before EOS-UPGRADE-1 existed), and the
+MASTER-EXEC-1 closure record likewise at that program's close. Practice preceded canon; this
+package codifies observed practice — it did not author its own evidence. One reconciliation
+was made in this package: the PFW runbook's deployment step said `/MIR`, contradicting the
+non-mirror rule established at the #875/#879 deploy gates — the runbook was corrected to the
+canonical `/E` form here (see `08 §6.1`).
+
 ## Amendment rule (unchanged in substance from v1.0 §6)
 
 Future changes go into **v1.4+** only with recorded evidence — an observed

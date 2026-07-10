@@ -3,6 +3,10 @@
 **Role type:** single orchestration role · verdict + sequencing, **never implementation**
 **Backed by:** the `ej-dashboard-master` skill (skill-selection) + the `chief-orchestrator`
 agent (task routing). Subordinate to `00_ENGINEERING_CONSTITUTION.md` and `CLAUDE.md`.
+*Disclosure (GATE 5 / Lesson B):* `chief-orchestrator` is a **runtime** agent, not one of the
+repo-canonical agents in `AGENT_REGISTRY.md` — it is a helper, never final authority; when it
+is unavailable the Coordinator role is performed directly by the session under this file's
+rules, and that substitution is disclosed in the package report.
 
 ---
 

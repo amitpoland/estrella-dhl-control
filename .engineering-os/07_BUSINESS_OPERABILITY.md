@@ -58,7 +58,9 @@ the class decides whether it may block a fiscal action (Approve / Post / Convert
   confirmation, placeholder-design (PND) rows. Surface them; let the action proceed.
 - **True blockers — the ONLY conditions that may block:** customer unmatched/ambiguous;
   missing price; over-bill (allocated qty > authority qty); VAT/WDT fiscal failure; duplicate
-  document risk; live write-gate disabled; `product_code` missing for posting.
+  document risk; live write-gate disabled; `product_code` missing for posting. This is a
+  summary — **the authoritative, exhaustive list is CLAUDE.md Lesson N**; classify against it,
+  not against this paraphrase.
 
 Adding a new hard gate requires naming which fiscal/tax/duplication risk it protects against.
 A gate with no fiscal-risk justification is an advisory wearing a blocker's clothes — reject it.

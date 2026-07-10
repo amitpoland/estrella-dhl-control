@@ -49,10 +49,11 @@ silently and execute. The OS is a fast lane, not a committee.
 5. **Councils review, they do not implement.** Review bodies (Architecture, Backend,
    Frontend, Security, Test, Deploy, Governance) issue verdicts. They never mutate. See `02`.
 6. **The Business Operability gate is mandatory.** No capability is "complete" short of the
-   **Business Feature Completeness Standard** — the seven requirements (Automation, Shared
-   Service, Business API, Business UI, Observability, Browser Verification, Business
-   Verification) whose **single authoritative definition lives in `CLAUDE.md`**. See `07`
-   (gate procedure — it points to CLAUDE.md, it does not redefine the standard).
+   **Business Feature Completeness Standard** — the seven requirements whose **single
+   authoritative definition (names, definitions, lifecycle, Business Owner registry) lives in
+   `CLAUDE.md`**; this constitution deliberately does not enumerate them, so the list cannot
+   drift. See `07` (gate procedure — it points to CLAUDE.md, it does not redefine the
+   standard).
 7. **No implementation starts until the capability manifest is loaded.** The manifest
    (`capabilities/<name>/manifest.md`) names the authority, page, API, DB, and service to be
    extended. If any is unnamable, **STOP** (mirrors CLAUDE.md §20 "prove the chain").
@@ -184,12 +185,17 @@ slice.
 4. **Never seal from chat claims.** A completion claim (even the operator relaying one) is
    verified against fetch / PR-state / PID / hash evidence before any seal; a false claim is a
    **HALT**, not a seal (seven-plus contradicted completion relays on 2026-07-10 alone).
+   **HALT (defined):** refuse to record the seal, state the contradicting evidence, and give
+   the operator the exact commands to reach the claimed state — a HOLD-class stop scoped to
+   the seal itself (autonomous read-only verification continues; nothing else blocks).
 5. **Deploy-source discipline** (operator-ratified 2026-07-10, after a double incident):
    verify the sync source is at the target SHA **before** copying and hash-verify the target
    **after**; when `main` is held by another worktree, detach at `origin/main`; exclude
-   `storage` from the app sync (`/XD storage`); **no destructive mirror** (`/MIR` is
-   forbidden); stop the service and **wait for STOPPED** before starting; a deployment is
-   incomplete until `PZService` reports **RUNNING** (see `08 §6.1`).
+   `storage` from the app sync (`/XD storage`); **no destructive mirror deployment** (`/MIR`
+   is forbidden — evidence: the EOS-UPGRADE-1 operator charter names it explicitly, the
+   #875/#879 release-manager sync plans are non-mirror, and a Slice-4 coordinator draft
+   saying `/MIR` was corrected at the gate); stop the service and **wait for STOPPED** before
+   starting; a deployment is incomplete until `PZService` reports **RUNNING** (see `08 §6.1`).
 
 ---
 
