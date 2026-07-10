@@ -54,7 +54,7 @@ def find_unsynced_product_codes(
         conn = sqlite3.connect(str(docs_db))
         conn.row_factory = sqlite3.Row
         pc_rows = conn.execute(
-            "SELECT DISTINCT product_code FROM invoice_lines WHERE batch_id=?",
+            "SELECT DISTINCT product_code FROM invoice_lines WHERE batch_id=? AND active=1",
             (batch_id,)
         ).fetchall()
         conn.close()

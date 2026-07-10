@@ -97,7 +97,7 @@ def backfill_from_invoice_lines(
                    "       currency, unit_price, rate_usd, "
                    "       batch_id, invoice_no, document_id, created_at "
                    "FROM invoice_lines "
-                   "WHERE 1=1 ")
+                   "WHERE active=1 ")
             params: List[Any] = []
             if batch_id_filter:
                 sql += " AND batch_id=? "

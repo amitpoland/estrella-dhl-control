@@ -345,6 +345,7 @@ def _resolve_hs_code(
                     SELECT hs_code, hsn_code
                       FROM invoice_lines
                      WHERE UPPER(TRIM(product_code)) = UPPER(TRIM(?))
+                       AND active=1
                        AND (
                              (hs_code  IS NOT NULL AND hs_code  <> '')
                              OR

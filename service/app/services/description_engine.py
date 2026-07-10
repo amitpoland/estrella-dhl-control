@@ -663,6 +663,7 @@ def regenerate_descriptions_for_invoice_lines(
                 "SELECT product_code, description "
                 "FROM invoice_lines"
                 + where_sql
+                + (" AND active=1" if where_sql else " WHERE active=1")
                 + " ORDER BY batch_id, invoice_no, line_position"
             )
             for r in con.execute(sql, params).fetchall():

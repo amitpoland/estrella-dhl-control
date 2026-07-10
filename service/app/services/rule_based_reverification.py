@@ -564,7 +564,7 @@ def _extract_invoice_lines(
             conn = sqlite3.connect(str(docs_db))
             conn.row_factory = sqlite3.Row
             db_rows = conn.execute(
-                "SELECT * FROM invoice_lines WHERE batch_id=?", (batch_id,)
+                "SELECT * FROM invoice_lines WHERE batch_id=? AND active=1", (batch_id,)
             ).fetchall()
             conn.close()
             return [dict(r) for r in db_rows]

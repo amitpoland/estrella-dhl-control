@@ -350,7 +350,7 @@ def _load_invoice_lines(batch_id: str, storage_root: Path) -> List[Dict[str, Any
         rows = conn.execute(
             "SELECT product_code, description, quantity, hs_code, hsn_code, "
             "gross_weight, unit_price, total_value, currency "
-            "FROM invoice_lines WHERE batch_id=?",
+            "FROM invoice_lines WHERE batch_id=? AND active=1",
             (batch_id,),
         ).fetchall()
         conn.close()

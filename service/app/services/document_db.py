@@ -300,6 +300,10 @@ def init_document_db(db_path: Path) -> None:
             ("rate_usd",     "REAL NOT NULL DEFAULT 0.0"),
             ("amount_usd",   "REAL NOT NULL DEFAULT 0.0"),
             ("hsn_code",     "TEXT NOT NULL DEFAULT ''"),
+            # CR6 (G2): supersession — re-upload marks the prior document's
+            # rows inactive instead of leaving duplicates/orphans authoritative.
+            ("active",        "INTEGER NOT NULL DEFAULT 1"),
+            ("superseded_by", "TEXT NOT NULL DEFAULT ''"),
         ):
             try:
                 con.execute(f"ALTER TABLE invoice_lines ADD COLUMN {col} {ddl}")
@@ -1336,6 +1340,26 @@ def store_invoice_lines(
     now = _now()
     inserted = 0
     with _lock, _connect() as con:
+        # ── CR6 (G2) supersede-on-reupload ────────────────────────────────
+        # invoice_lines has a random-UUID PK, so INSERT OR IGNORE never
+        # dedupes: every upload appends a full new row set. Before inserting
+        # this document's lines, retire the previously ACTIVE rows of the
+        # SAME (batch_id, invoice_no) written by OTHER documents — the new
+        # upload is the complete truth for that invoice. Rows are never
+        # deleted (mint/history immutability preserved); product_code stays
+        # deterministic ({invoice_no}-{position}) so identity is stable.
+        try:
+            _inv_nos = {str(ln.get("invoice_no", "")) for ln in lines}
+            for _inv in _inv_nos:
+                con.execute(
+                    """UPDATE invoice_lines
+                          SET active=0, superseded_by=?
+                        WHERE batch_id=? AND invoice_no=? AND active=1
+                          AND document_id != ?""",
+                    (document_id, batch_id, _inv, document_id),
+                )
+        except Exception as _sup_exc:
+            log.warning("invoice_lines supersession failed (non-fatal): %s", _sup_exc)
         for i, ln in enumerate(lines, start=1):
             inv_no = str(ln.get("invoice_no", ""))
             pos    = int(ln.get("line_position", i) or i)
@@ -1426,12 +1450,12 @@ def get_invoice_lines(
     with _connect() as con:
         if invoice_no:
             rows = con.execute(
-                "SELECT * FROM invoice_lines WHERE batch_id=? AND invoice_no=? ORDER BY line_position",
+                "SELECT * FROM invoice_lines WHERE batch_id=? AND invoice_no=? AND active=1 ORDER BY line_position",
                 (batch_id, invoice_no),
             ).fetchall()
         else:
             rows = con.execute(
-                "SELECT * FROM invoice_lines WHERE batch_id=? ORDER BY invoice_no, line_position",
+                "SELECT * FROM invoice_lines WHERE batch_id=? AND active=1 ORDER BY invoice_no, line_position",
                 (batch_id,),
             ).fetchall()
     return [dict(r) for r in rows]
@@ -2737,7 +2761,7 @@ def get_document_coverage_summary(db_path: Optional[Path] = None) -> Dict[str, A
             "  COUNT(*) AS total, "
             "  SUM(CASE WHEN TRIM(COALESCE(hsn_code,'')) != '' OR "
             "           TRIM(COALESCE(hs_code,'')) != '' THEN 1 ELSE 0 END) AS with_hs "
-            "FROM invoice_lines"
+            "FROM invoice_lines WHERE active=1"
         ).fetchone()
         result["invoice_line_count"]          = int(row["total"]   or 0) if row else 0
         result["invoice_lines_with_hs_code"]  = int(row["with_hs"] or 0) if row else 0
@@ -2781,3 +2805,41 @@ def update_sales_packing_line_product_code(
             row_id, batch_id, exc,
         )
         return False
+
+
+def supersede_stale_invoice_lines(batch_id: Optional[str] = None) -> int:
+    """CR6 (G2) retro-heal: for each (batch_id, invoice_no) that carries rows
+    from more than one document, keep only the LATEST document's rows active
+    (latest = max created_at, tie-broken by document_id). Idempotent,
+    non-destructive (rows flagged, never deleted). Returns rows deactivated."""
+    if _db_path is None:
+        return 0
+    deactivated = 0
+    with _lock, _connect() as con:
+        where = " WHERE batch_id=?" if batch_id else ""
+        args = (batch_id,) if batch_id else ()
+        groups = con.execute(
+            "SELECT batch_id, invoice_no FROM invoice_lines" + where +
+            (" AND " if batch_id else " WHERE ") +
+            "active=1 GROUP BY batch_id, invoice_no "
+            "HAVING COUNT(DISTINCT document_id) > 1",
+            args,
+        ).fetchall()
+        for g in groups:
+            latest = con.execute(
+                """SELECT document_id FROM invoice_lines
+                    WHERE batch_id=? AND invoice_no=?
+                    ORDER BY created_at DESC, document_id DESC LIMIT 1""",
+                (g["batch_id"], g["invoice_no"]),
+            ).fetchone()
+            if not latest:
+                continue
+            cur = con.execute(
+                """UPDATE invoice_lines SET active=0, superseded_by=?
+                    WHERE batch_id=? AND invoice_no=? AND active=1
+                      AND document_id != ?""",
+                (latest["document_id"], g["batch_id"], g["invoice_no"],
+                 latest["document_id"]),
+            )
+            deactivated += cur.rowcount
+    return deactivated

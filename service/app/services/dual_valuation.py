@@ -111,7 +111,7 @@ def _fill_purchase_values(
                   quantity, unit_price, total_value, currency,
                   rate_usd, amount_usd
            FROM invoice_lines
-           WHERE batch_id=?""",
+           WHERE batch_id=? AND active=1""",
         (batch_id,),
     ).fetchall()
     conn.close()
