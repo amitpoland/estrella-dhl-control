@@ -1906,6 +1906,32 @@ def _birth_unresolved_lines(
     return out
 
 
+def _sales_variant_fields(ln: Dict[str, Any]) -> Dict[str, Any]:
+    """Variant-identity passthrough from a sales_packing_lines row.
+
+    These columns exist on sales_packing_lines (document_db) but were
+    historically dropped at the draft birth/reset boundary — same
+    silent-drop class as the client_po/invoice_no fix of 2026-07-02.
+    Display/identity only: never used for pricing, readiness, or totals.
+    NOT ``item_type`` — enrichment owns that key and overwrites it.
+    """
+    def _wt(key: str) -> float:
+        try:
+            return float(ln.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    return {
+        "client_po":      str(ln.get("client_po") or ""),
+        "karat":          str(ln.get("karat") or ""),
+        "metal":          str(ln.get("metal") or ""),
+        "metal_color":    str(ln.get("metal_color") or ""),
+        "quality_string": str(ln.get("quality_string") or ""),
+        "size":           str(ln.get("size") or ""),
+        "diamond_weight": _wt("diamond_weight"),
+        "color_weight":   _wt("color_weight"),
+    }
+
+
 def auto_create_draft_from_sales_packing(
     db_path:       Path,
     *,
@@ -1985,6 +2011,8 @@ def auto_create_draft_from_sales_packing(
             "currency":     str(ln.get("currency") or currency or "").upper(),
             "price_source": str(ln.get("price_source") or ""),
             "client_ref":   str(ln.get("client_ref") or ""),
+            # Variant identity (also sales_packing columns) — display only.
+            **_sales_variant_fields(ln),
         }
         source.append(dict(raw_row))
         # Editable copy starts from the same raw values, then gains the
@@ -3334,6 +3362,8 @@ def reset_draft_from_sales_packing(
             "currency":     str(r.get("currency") or d.currency or "").upper(),
             "price_source": str(r.get("price_source") or ""),
             "client_ref":   str(r.get("client_ref") or ""),
+            # Variant identity (sales_packing columns) — display only.
+            **_sales_variant_fields(r),
             # Carry incoming name_pl if present, else re-inherit the prior
             # operator-confirmed name_pl. Enrichment (below) fills any blank
             # that survives without overwriting a non-blank value.
