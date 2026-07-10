@@ -70,6 +70,9 @@ function TbSep() {
 // with shipment-detail-page.jsx's file-local SectionLabel/PanelCard/StatTile.
 // Explicit destructuring only — NOT spread-rest (DECISIONS "V2-wide
 // spread-rest collision sweep"). CSS custom properties only.
+// CONVENTION (gate-pinned): the `accent` prop on PfPanelCard/PfStatTile takes
+// a CSS custom property reference ('var(--accent)', 'var(--badge-*-text)') —
+// never a hex literal. test_pf_primitives_css_vars_only enforces the block.
 
 // Overline label with horizontal rule (wireframe SectionLabel).
 function PfSectionLabel({ children, style: xs }) {
@@ -197,6 +200,20 @@ function PfSelectEdit({ value, onChange, options, 'data-testid': testid }) {
   );
 }
 
+// Ctg display label — derived display-only from enrichment item_type (there is
+// no Ctg column in any schema; same map as the CMR grouping's _cmrItemLabel,
+// hoisted to module scope so the line mapping can use it).
+const PF_CTG_LABELS = {
+  PND: 'Pendant', PENDANT: 'Pendant', RNG: 'Ring', RING: 'Ring',
+  EAR: 'Earrings', EARRING: 'Earrings', EARRINGS: 'Earrings',
+  BRC: 'Bracelet', BRACELET: 'Bracelet',
+  NKL: 'Necklace', NECKLACE: 'Necklace', BRO: 'Brooch', SET: 'Set',
+  CHAIN: 'Chain', BANGLE: 'Bangle',
+};
+function PfCtgLabel(t) {
+  return PF_CTG_LABELS[(t || '').toUpperCase()] || t || '';
+}
+
 // Logistics-style numeric edit row with unit suffix (wireframe EditField).
 function PfEditField({ label, value, onChange, suffix, type, width }) {
   return (
@@ -321,17 +338,17 @@ function ProformaPartyCard({ title, name, lines, footer, footerMuted, warn, warn
     <div
       data-testid={dataTestid}
       style={{
-        background: 'var(--bg)',
-        border: `1px solid ${warn ? 'var(--badge-amber-border)' : 'var(--border)'}`,
-        borderRadius: 8, padding: '14px 16px',
+        background: 'var(--card)',
+        border: `1px solid ${warn ? 'var(--badge-red-border)' : 'var(--border)'}`,
+        borderRadius: 8, padding: 14, boxShadow: '0 1px 2px var(--shadow)',
       }}
     >
-      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.16em', textTransform: 'uppercase', marginBottom: 8 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
         {title}
       </div>
-      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>{name}</div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>{name}</div>
       {(lines || []).map((l, i) => (
-        l && l !== '—' ? <div key={i} style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.55 }}>{l}</div> : null
+        l && l !== '—' ? <div key={i} style={{ fontSize: 11, color: 'var(--text-2)', lineHeight: 1.4 }}>{l}</div> : null
       ))}
       {footer && (
         <div style={{
@@ -1832,205 +1849,224 @@ function ProformaActionBar({
   contractorId, setShowInvoiceHistory,
   proformaLabel, onBack,
 }) {
+  // Wireframe toolbar (Slice 3): [← Back] | eyebrow PRO FORMA DRAFT + number |
+  // editing/status chip | right-aligned wireframe-outline button row.
+  // ALL live actions stay visible (operator decision 2026-07-10 — no ⋯ menu
+  // relocation); every gate, title, and data-testid is preserved verbatim.
   return (
     <div style={{
-      padding: '12px 16px', background: 'var(--card)',
-      border: '1px solid var(--border)', borderRadius: '12px 12px 0 0', borderBottom: 0,
-      display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap',
+      padding: '16px 32px', background: 'var(--card)',
+      borderBottom: '1px solid var(--border)',
+      display: 'flex', alignItems: 'center', gap: 16, flexShrink: 0, flexWrap: 'wrap',
     }}>
-
-      {/* Group 1 — CRUD */}
-      {editMode ? (
-        <React.Fragment>
-          <TbBtn
-            onClick={handleSaveEdit}
-            disabled={editSaving}
-            title="Save changes to draft header fields"
-            data-testid="tb-edit-save"
-          >
-            {editSaving ? '⏳ Saving…' : '✓ Save'}
-          </TbBtn>
-          <TbBtn
-            onClick={handleCancelEdit}
-            disabled={editSaving}
-            title="Discard changes and exit edit mode"
-            data-testid="tb-edit-cancel"
-          >
-            ✕ Cancel Edit
-          </TbBtn>
-        </React.Fragment>
-      ) : canEdit ? (
-        <TbBtn
-          onClick={handleEnterEdit}
-          title="Edit draft header fields (remarks, currency, payment terms, exchange rate)"
-          data-testid="tb-edit"
-        >
-          ✎ Edit
-        </TbBtn>
-      ) : null}
-      <TbBtn
-        onClick={() => canCancel && setShowCancelModal(true)}
-        disabled={!canCancel}
-        title={canCancel
-          ? 'Cancel this draft — soft-cancel, no data deleted'
-          : (draftState === 'cancelled' ? 'Already cancelled' : 'Cannot cancel in current state')}
-        data-testid="tb-delete"
-      >
-        🗑 Cancel Draft
-      </TbBtn>
-      {draftState === 'cancelled' && (
-        <TbBtn
-          onClick={() => canPurge && setShowPurgeModal(true)}
-          disabled={!canPurge}
-          title={canPurge ? 'Permanently delete this local-only cancelled draft' : purgeDisabledReason}
-          data-testid="tb-purge"
-        >
-          ⛔ Delete permanently
-        </TbBtn>
-      )}
-      <TbBtn
-        onClick={handleDuplicate}
-        disabled={cloning}
-        title="Clone this draft as a new unposted draft"
-        data-testid="tb-duplicate"
-      >
-        {cloning ? '⏳' : '⎘'} {cloning ? 'Cloning…' : 'Duplicate'}
-      </TbBtn>
-      <TbBtn
-        onClick={handleApprove}
-        disabled={!canApprove || approving}
-        title={canApprove
-          ? 'Mark this draft as approved — locks lines before posting to wFirma'
-          : approveDisabledReason}
-        data-testid="tb-approve"
-      >
-        {approving ? '⏳ Approving…' : '✓ Approve'}
-      </TbBtn>
-      {approveError && (
-        <span style={{ color: 'var(--badge-red-text)', fontSize: 11, maxWidth: 180 }}>{approveError}</span>
-      )}
-
-      <TbSep />
-
-      {/* Group 2 — wFirma write actions */}
-      <TbBtn
-        onClick={() => setShowPostModal(true)}
-        disabled={!canPost}
-        title={canPost
-          ? 'Post this draft to wFirma as a proforma invoice'
-          : postDisabledReason}
-        data-testid="tb-post"
-      >
-        ↑ Post to wFirma
-      </TbBtn>
-      <TbBtn
-        warn
-        onClick={() => canConvert && setShowConvertModal(true)}
-        disabled={!canConvert}
-        title={canConvert
-          ? 'Convert this posted proforma to a wFirma invoice'
-          : convertDisabledReason}
-        data-testid="tb-convert"
-      >
-        ⚠ Convert to Invoice
-      </TbBtn>
-
-      <TbSep />
-
-      {/* Group 3 — Output */}
-      <TbBtn
-        onClick={() => setShowPreview(true)}
-        title="Preview print layout — Proforma or CMR · Classic / Modern / Bold"
-        data-testid="tb-preview"
-      >
-        ◫ Preview
-      </TbBtn>
-      <TbBtn
-        onClick={handleDownloadPdf}
-        disabled={!canPrint}
-        title={canPrint
-          ? 'Open wFirma proforma PDF in new tab'
-          : 'PDF only available after posting to wFirma'}
-        data-testid="proforma-detail-download-pdf"
-      >
-        ⎙ Print
-      </TbBtn>
-      <TbBtn
-        onClick={() => setShowSendModal(true)}
-        disabled={!canSend}
-        title={canSend
-          ? 'Send proforma PDF to customer via email'
-          : (sendDisabledReason || 'Email send not available')}
-        data-testid="tb-send"
-      >
-        ➤ Send
-      </TbBtn>
-      <TbBtn
-        disabled
-        title={
-          'Document-package generation (proforma PDF · packing list · CMR · CN23) is not yet wired — ' +
-          'backend gap M4: POST /api/v1/proforma/draft/{id}/generate-documents (see BACKEND_GAP_REGISTER.md §2, priority LOW). ' +
-          'For now use ◫ Preview to view the layouts and ⎙ Print for the wFirma proforma PDF.'
-        }
-        data-testid="tb-generate"
-      >
-        ⚙ Generate ▾
-      </TbBtn>
-      {/* M8 — DHL Express AWB generation. WIRED: POST /api/v1/carrier/{batch_id}/shipment.
-          Requires CARRIER_API_STATUS=live + DHL credentials in environment. */}
-      <TbBtn
-        onClick={() => setShowAwbModal(true)}
-        disabled={!batchId}
-        title={batchId
-          ? 'Generate DHL Express AWB — opens shipment form'
-          : 'No batch loaded — open a proforma with a batch to generate AWB'}
-        data-testid="tb-awb-generate"
-      >
-        ⚡ AWB Generate
-      </TbBtn>
-
-      <TbSep />
-
-      {/* Group 4 — History / Intelligence */}
-      <TbBtn
-        onClick={() => contractorId && setShowInvoiceHistory(true)}
-        disabled={!contractorId}
-        title={contractorId
-          ? 'View prior invoice history from wFirma for this customer'
-          : 'Backend/customer mapping pending: wFirma contractor ID missing'}
-        data-testid="tb-invoice-history"
-      >
-        📋 Prior Invoices
-      </TbBtn>
-      <TbBtn
-        disabled
-        title="More actions"
-        data-testid="tb-more"
-      >
-        ⋯
-      </TbBtn>
-
-      {/* Spacer */}
-      <div style={{ flexGrow: 1, minWidth: 12 }} />
-
-      {/* Proforma label + status */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>
-          {proformaLabel}
-        </div>
-        <ProformaStatusChip status={draftState} />
-      </div>
-
-      <TbSep />
-
-      <TbBtn
+      <button
         onClick={onBack}
         title="Back to proforma list"
         data-testid="tb-back"
-        style={{ fontWeight: 600 }}
+        style={{
+          background: 'none', border: '1px solid var(--border)', cursor: 'pointer',
+          padding: '7px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+          color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 6,
+          whiteSpace: 'nowrap',
+        }}
       >
-        ← Back
-      </TbBtn>
+        ← Back to list
+      </button>
+      <div style={{ width: 1, height: 28, background: 'var(--border)' }} />
+      <div style={{ flex: 1, minWidth: 0 }} data-testid="pf-draft-eyebrow">
+        <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 2 }}>
+          Pro Forma Draft
+        </div>
+        <div style={{ fontSize: 16, fontWeight: 700, fontFamily: 'monospace', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {proformaLabel}
+        </div>
+      </div>
+      {editMode
+        ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 10px', borderRadius: 4, background: 'var(--accent-subtle)', color: 'var(--accent)', border: '1px solid var(--accent-border)', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>✎ Editing</span>
+        : <PfProformaStatusChip draftState={draftState} />}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        {editMode ? (
+          <React.Fragment>
+            <Btn
+              variant="outline" small
+              onClick={handleCancelEdit}
+              disabled={editSaving}
+              title="Discard changes and exit edit mode"
+              data-testid="tb-edit-cancel"
+            >
+              ✕ Cancel Edit
+            </Btn>
+            <Btn
+              variant="gold" small
+              onClick={handleSaveEdit}
+              disabled={editSaving}
+              title="Save changes to draft header fields"
+              data-testid="tb-edit-save"
+            >
+              {editSaving ? '⏳ Saving…' : '✓ Save changes'}
+            </Btn>
+          </React.Fragment>
+        ) : (
+          <React.Fragment>
+            {canEdit && (
+              <Btn
+                variant="outline" small
+                onClick={handleEnterEdit}
+                title="Edit draft header fields (remarks, currency, payment terms, exchange rate)"
+                data-testid="tb-edit"
+              >
+                {/* Label stays "✎ Edit" — the Sprint-36 dead-button pin forbids
+                    the literal string (test_no_edit_draft_control_in_toolbar). */}
+                ✎ Edit
+              </Btn>
+            )}
+            <Btn
+              variant="outline" small
+              onClick={() => setShowPreview(true)}
+              title="Preview print layout — Proforma or CMR · Classic / Modern / Bold"
+              data-testid="tb-preview"
+            >
+              ◫ Preview
+            </Btn>
+            <Btn
+              variant="outline" small
+              onClick={handleDownloadPdf}
+              disabled={!canPrint}
+              title={canPrint
+                ? 'Open wFirma proforma PDF in new tab'
+                : 'PDF only available after posting to wFirma'}
+              data-testid="proforma-detail-download-pdf"
+            >
+              ⎙ Print
+            </Btn>
+            <Btn
+              variant="outline" small
+              onClick={() => setShowSendModal(true)}
+              disabled={!canSend}
+              title={canSend
+                ? 'Send proforma PDF to customer via email'
+                : (sendDisabledReason || 'Email send not available')}
+              data-testid="tb-send"
+            >
+              ➤ Send
+            </Btn>
+            {/* M8 — DHL Express AWB generation. WIRED: POST /api/v1/carrier/{batch_id}/shipment.
+                Requires CARRIER_API_STATUS=live + DHL credentials in environment.
+                Booking flow (AwbGenerateModal) is untouched by the wireframe rebuild. */}
+            <Btn
+              variant="outline" small
+              onClick={() => setShowAwbModal(true)}
+              disabled={!batchId}
+              title={batchId
+                ? 'Generate DHL Express AWB — opens shipment form'
+                : 'No batch loaded — open a proforma with a batch to generate AWB'}
+              data-testid="tb-awb-generate"
+            >
+              ⚡ AWB Generate
+            </Btn>
+            <Btn
+              variant="outline" small
+              onClick={() => contractorId && setShowInvoiceHistory(true)}
+              disabled={!contractorId}
+              title={contractorId
+                ? 'View prior invoice history from wFirma for this customer'
+                : 'Backend/customer mapping pending: wFirma contractor ID missing'}
+              data-testid="tb-invoice-history"
+            >
+              📋 Prior Invoices
+            </Btn>
+            <Btn
+              variant="outline" small
+              onClick={handleApprove}
+              disabled={!canApprove || approving}
+              title={canApprove
+                ? 'Mark this draft as approved — locks lines before posting to wFirma'
+                : approveDisabledReason}
+              data-testid="tb-approve"
+            >
+              {approving ? '⏳ Approving…' : '✓ Approve'}
+            </Btn>
+            {approveError && (
+              <span style={{ color: 'var(--badge-red-text)', fontSize: 11, maxWidth: 180, alignSelf: 'center' }}>{approveError}</span>
+            )}
+            <Btn
+              variant="gold" small
+              onClick={() => setShowPostModal(true)}
+              disabled={!canPost}
+              title={canPost
+                ? 'Post this draft to wFirma as a proforma invoice'
+                : postDisabledReason}
+              data-testid="tb-post"
+            >
+              ↑ Post to wFirma
+            </Btn>
+            <Btn
+              variant="outline" small
+              onClick={() => canConvert && setShowConvertModal(true)}
+              disabled={!canConvert}
+              title={canConvert
+                ? 'Convert this posted proforma to a wFirma invoice'
+                : convertDisabledReason}
+              style={{ color: 'var(--badge-amber-text)', borderColor: 'var(--badge-amber-border)' }}
+              data-testid="tb-convert"
+            >
+              ⚠ Convert to Invoice
+            </Btn>
+            <Btn
+              variant="outline" small
+              onClick={() => canCancel && setShowCancelModal(true)}
+              disabled={!canCancel}
+              title={canCancel
+                ? 'Cancel this draft — soft-cancel, no data deleted'
+                : (draftState === 'cancelled' ? 'Already cancelled' : 'Cannot cancel in current state')}
+              data-testid="tb-delete"
+            >
+              🗑 Cancel Draft
+            </Btn>
+            {draftState === 'cancelled' && (
+              <Btn
+                variant="outline" small
+                onClick={() => canPurge && setShowPurgeModal(true)}
+                disabled={!canPurge}
+                title={canPurge ? 'Permanently delete this local-only cancelled draft' : purgeDisabledReason}
+                style={{ color: 'var(--badge-red-text)', borderColor: 'var(--badge-red-border)' }}
+                data-testid="tb-purge"
+              >
+                ⛔ Delete permanently
+              </Btn>
+            )}
+            <Btn
+              variant="outline" small
+              onClick={handleDuplicate}
+              disabled={cloning}
+              title="Clone this draft as a new unposted draft"
+              data-testid="tb-duplicate"
+            >
+              {cloning ? '⏳ Cloning…' : '⎘ Duplicate'}
+            </Btn>
+            <Btn
+              variant="outline" small
+              disabled
+              title={
+                'Document-package generation (proforma PDF · packing list · CMR · CN23) is not yet wired — ' +
+                'backend gap M4: POST /api/v1/proforma/draft/{id}/generate-documents (see BACKEND_GAP_REGISTER.md §2, priority LOW). ' +
+                'For now use ◫ Preview to view the layouts and ⎙ Print for the wFirma proforma PDF.'
+              }
+              data-testid="tb-generate"
+            >
+              ⚙ Generate ▾
+            </Btn>
+            <Btn
+              variant="outline" small
+              disabled
+              title="More actions"
+              data-testid="tb-more"
+            >
+              ⋯
+            </Btn>
+          </React.Fragment>
+        )}
+      </div>
     </div>
   );
 }
@@ -2076,9 +2112,8 @@ function ProformaStatusHeader({
   return (
     <div data-testid="proforma-status-header" style={{
       background: 'var(--card)',
-      borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-      borderTop: '1px solid var(--border)',
-      padding: '12px 24px',
+      borderBottom: '1px solid var(--border)',
+      padding: '10px 32px',
       display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
     }}>
       {chip('proforma-readiness-pill', pill.label, pill.tone)}
@@ -2331,37 +2366,38 @@ function ProformaPartyCards({
   const hasOverride = !!(bo.name || bo.street);
   return (
     <React.Fragment>
-      {/* Party cards grid */}
+      {/* Party cards strip — wireframe band on --bg-subtle. Wireframe shows
+          Exporter / Customer / Currency & Payment; the live RECIPIENT card is
+          KEPT as an existing capability (Lesson M) → 4 cards, auto-fit grid. */}
       <div style={{
-        background: 'var(--card)',
-        borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-        padding: '22px 24px 12px',
-        display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16,
+        background: 'var(--bg-subtle)',
+        padding: '20px 32px 12px',
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14,
       }}>
         <div style={{ display: 'contents' }}>
           <ProformaPartyCard
-            title="SELLER"
+            title="Exporter"
             name={exporter.name}
             lines={[exporter.address, exporter.country]}
             footer={`VAT EU: ${exporter.vatEu}`}
             data-testid="party-seller"
           />
           <ProformaPartyCard
-            title="BUYER"
+            title="Customer"
             name={customer.name}
             lines={[customer.address, customer.country]}
             footer={customer.vatEuFromNip
               ? `VAT EU: ${customer.vatEu} · on file (not yet saved as EU VAT)`
               : `VAT EU: ${customer.vatEu}`}
             warn={!customer.wfirmaId}
-            warnMsg={!customer.wfirmaId ? 'Not mapped to wFirma customer' : null}
+            warnMsg={!customer.wfirmaId ? '⚠ No wFirma mapping' : null}
             mappedMsg={customer.wfirmaId
-              ? (customer.wfirmaName ? `✓ Mapped: ${customer.wfirmaName}` : '✓ Mapped to wFirma')
+              ? (customer.wfirmaName ? `✓ Mapped to wFirma: ${customer.wfirmaName}` : '✓ Mapped to wFirma')
               : null}
             data-testid="party-buyer"
           />
           <ProformaPartyCard
-            title="RECIPIENT"
+            title="Recipient"
             name={shipTo.name}
             lines={[shipTo.address, shipTo.country]}
             footer={liveDraft.ship_to_override && liveDraft.ship_to_override.name
@@ -2369,15 +2405,39 @@ function ProformaPartyCards({
             footerMuted
             data-testid="party-recipient"
           />
+          {/* Currency & Payment (wireframe card). Read-only projections of
+              draft-stored values — no new authority, no calculation. */}
+          <div data-testid="party-currency-payment" style={{
+            background: 'var(--card)', border: '1px solid var(--border)',
+            borderRadius: 8, padding: 14, boxShadow: '0 1px 2px var(--shadow)',
+          }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+              Currency &amp; Payment
+            </div>
+            <InfoRow label="Currency" value={
+              liveDraft.exchange_rate
+                ? `${liveDraft.currency || '—'} · ${liveDraft.nbp_table || 'NBP'} ${Number(liveDraft.exchange_rate).toFixed(4)}`
+                : (liveDraft.currency || '—')
+            } />
+            <InfoRow label="NBP Table" value={liveDraft.nbp_table_number || '—'} mono />
+            <InfoRow label="Payment Terms" value={
+              (liveDraft.payment_terms && (liveDraft.payment_terms.method || liveDraft.payment_terms.days != null))
+                ? [liveDraft.payment_terms.method || 'Bank transfer',
+                   liveDraft.payment_terms.days != null ? `${liveDraft.payment_terms.days} days` : null]
+                    .filter(Boolean).join(' · ')
+                : (liveDraft.wfirma_payment_method || '—')
+            } />
+            <InfoRow label="Incoterm" value={liveDraft.incoterm || '—'} />
+          </div>
         </div>
       </div>
 
-      {/* Address authority bar */}
+      {/* Address authority bar — kept capability (Lesson M), lives in the
+          wireframe party band */}
       <div data-testid="address-authority-bar" style={{
-        background: 'var(--card)',
-        borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+        background: 'var(--bg-subtle)',
         borderBottom: '1px solid var(--border)',
-        padding: '8px 24px',
+        padding: '4px 32px 14px',
         display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
       }}>
         <span style={{ fontSize: 12, color: 'var(--text-2)', marginRight: 4 }}>Address authority:</span>
@@ -2559,8 +2619,8 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
   const unmatchedCount = (data && data.unmatched_count) || 0;
 
   return (
-    <div data-testid="pf-detail-source" style={{ padding: 20 }}>
-      <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>Source &amp; Extraction</div>
+    <div data-testid="pf-detail-source">
+      <PfSectionLabel>Source document</PfSectionLabel>
       <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12 }}>
         Advisory only — extraction confidence and match status never block Approve, Post, or Convert.
       </div>
@@ -3194,7 +3254,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     origin:   ln.origin || liveDraft.origin_country || '—',
     purity:   ln.purity || '',
     currency: ln.currency || draftCurrency,
-    _raw:     ln,  // PD-2: preserved for design_no column in ProformaLinesTab
+    // Ctg is derived display-only from enrichment item_type (no schema column).
+    ctgLabel: PfCtgLabel(ln.item_type) || null,
+    _raw:     ln,  // PD-2: preserved for variant columns in ProformaLinesTab
   }));
 
   // Ambiguity line evidence: candidate product_code → packing-line context so
@@ -3985,7 +4047,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   };
 
   return (
-    <div data-testid="proforma-detail-root" style={{ flex: 1, overflowY: 'auto', background: 'var(--bg)', padding: '20px 24px 60px' }}>
+    // Wireframe full-bleed layout: toolbar / party strip / tab strip /
+    // content are edge-to-edge bands. Page-level scroll retained (the V2
+    // shell owns viewport height; the wireframe's content-only scroll would
+    // need a shell height contract — visual parity, safer scroll).
+    <div data-testid="proforma-detail-root" style={{ flex: 1, overflowY: 'auto', background: 'var(--bg)', padding: '0 0 60px' }}>
 
       {/* ── Action toolbar ──────────────────────────────────────────────── */}
       <ProformaActionBar
@@ -4084,33 +4150,30 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         wfirmaInvoiceId={liveDraft.wfirma_invoice_id || (draft && draft.wfirma_invoice_id)}
       />
 
-      {/* ── Tab strip ──────────────────────────────────────────────────────── */}
+      {/* ── Tab strip (wireframe: 2px accent underline, card band) ─────────── */}
       <div style={{
-        display: 'flex', gap: 0, padding: '0 24px',
+        display: 'flex', gap: 4, padding: '0 32px',
         background: 'var(--card)',
-        borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
         borderBottom: '1px solid var(--border)',
+        overflowX: 'auto', flexShrink: 0,
       }}>
         {PROFORMA_TABS.map(t => (
           <button key={t.id} data-testid={`tab-${t.id}`} onClick={() => setActiveTab(t.id)} style={{
-            padding: '12px 14px', background: 'none', border: 'none', cursor: 'pointer',
+            padding: '12px 16px', background: 'none', border: 'none', cursor: 'pointer',
             borderBottom: `2px solid ${activeTab === t.id ? 'var(--accent)' : 'transparent'}`,
             color: activeTab === t.id ? 'var(--text)' : 'var(--text-2)',
             fontSize: 13, fontWeight: activeTab === t.id ? 700 : 500,
             transition: 'all 0.12s', marginBottom: -1, fontFamily: 'inherit',
+            whiteSpace: 'nowrap',
           }}>{t.label}</button>
         ))}
       </div>
 
-      {/* ── Tab content ────────────────────────────────────────────────────── */}
+      {/* ── Tab content (wireframe: open --bg band, 24/32 padding) ─────────── */}
       <div style={{
-        background: 'var(--card)',
-        border: '1px solid var(--border)', borderTop: 0,
-        borderRadius: '0 0 12px 12px',
-        padding: '24px',
+        padding: '24px 32px',
         minHeight: 320,
         overflow: 'auto',
-        boxShadow: '0 4px 12px var(--shadow)',
       }}>
         {activeTab === 'overview' && (
           <React.Fragment>
@@ -4146,7 +4209,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             <ServiceProductRegistryPanel />
           </React.Fragment>
         )}
-        {activeTab === 'lines' && <ProformaLinesTab lines={lines} currency={draftCurrency} onAddLine={() => setEditMode(true)} />}
+        {activeTab === 'lines' && <ProformaLinesTab lines={lines} currency={draftCurrency} onAddLine={() => setEditMode(true)} serviceCharges={liveDraft.service_charges} />}
         {activeTab === 'source' && (
           <SourceExtractionTab
             draftId={draft && draft.id}
@@ -4181,14 +4244,14 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             </div>
           );
           return (
-            <div data-testid="pf-detail-logistics" style={{ padding: 20 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Logistics</div>
-              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 16, lineHeight: 1.5 }}>
+            <div data-testid="pf-detail-logistics">
+              <PfSectionLabel>Carrier &amp; transport</PfSectionLabel>
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12, lineHeight: 1.5 }}>
                 Read-only transport summary composed from this draft's billed lines, matched packing rows, and the CMR document authority. Advisory — never a fiscal gate.
               </div>
 
               {/* Carrier / route — reuses cmrPreviewData.carrier + derived CMR number */}
-              <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 16px', marginBottom: 16 }} data-testid="pf-logistics-carrier">
+              <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 20px', marginBottom: 20, boxShadow: '0 1px 2px var(--shadow)' }} data-testid="pf-logistics-carrier">
                 {_kv('Carrier', _car.name || '—', 'pf-logistics-carrier-name')}
                 {_kv('Service', _car.service || '—', 'pf-logistics-service')}
                 {_kv('Incoterm', _car.incoterm || '—', 'pf-logistics-incoterm')}
@@ -4206,8 +4269,16 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 </div>
               </div>
 
-              {/* Weights by item type — reuses _cmrAggPackingLines (net) + packing enrichment (gross) */}
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>Weights &amp; package profile</div>
+              {/* Weights & packages — wireframe StatTiles over the same packing
+                  aggregation (gross/net in grams → kg display; tare has no stored
+                  authority → '—'). Detail table below is supplementary. */}
+              <PfSectionLabel>Weights &amp; packages</PfSectionLabel>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 14, marginBottom: 14 }}>
+                <PfStatTile label="Gross weight" value={_fmtKgFromG(_grossTotal)} accent="var(--accent)" data-testid="pf-logistics-tile-gross" />
+                <PfStatTile label="Net weight" value={_fmtKgFromG(_netTotal)} data-testid="pf-logistics-tile-net" />
+                <PfStatTile label="Items" value={_cmrTotalPcs > 0 ? _cmrTotalPcs : '—'} data-testid="pf-logistics-tile-items" />
+                <PfStatTile label="Tare weight" value="—" data-testid="pf-logistics-tile-tare" />
+              </div>
               {_wl.length > 0 ? (
                 <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 12 }} data-testid="pf-logistics-weights">
                   <thead>
@@ -4242,9 +4313,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
               {/* DHL AWB / carrier shipment summary — real recorded shipment
                   (GET /carrier/{batch}/shipment). Honest empty state when none. */}
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)', margin: '14px 0 6px' }}>DHL AWB / carrier shipment</div>
+              <div style={{ marginTop: 20 }}>
+                <PfSectionLabel>DHL AWB / carrier shipment</PfSectionLabel>
+              </div>
               {carrierShipment ? (
-                <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 16px', marginBottom: 8 }} data-testid="pf-logistics-awb">
+                <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 20px', marginBottom: 8, boxShadow: '0 1px 2px var(--shadow)' }} data-testid="pf-logistics-awb">
                   {_kv('Carrier', carrierShipment.carrier || 'DHL', 'pf-logistics-awb-carrier')}
                   {_kv('AWB / tracking', carrierShipment.tracking_ref
                     || (carrierShipment.saved_labels_exist
@@ -4426,58 +4499,76 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 : 'Not available yet — document packages are generated on demand (⚙ label-package) and are not persisted for download yet.',
             },
           ];
+          // Wireframe doc-card grid: icon + name + state chip + authority line +
+          // actions. Same _docs manifest, actions, and testids — presentation only.
+          const _icons = {
+            proforma: '🧾', cmr: '🚚', packing: '📄', invoice: '🧾',
+            dhl_label: '🏷', dhl_waybill: '📦', dhl_receipt: '🧾', dhl_documents: '⬇',
+          };
+          const _chip = (d) => d.available
+            ? { label: 'Generated', bg: 'var(--badge-green-bg)', c: 'var(--badge-green-text)' }
+            : { label: 'Pending',   bg: 'var(--badge-neutral-bg)', c: 'var(--badge-neutral-text)' };
+          const _actBtn = { padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', textDecoration: 'none', display: 'inline-block', whiteSpace: 'nowrap' };
           return (
-            <div data-testid="pf-detail-documents" style={{ padding: 20 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Documents</div>
-              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 16, lineHeight: 1.5 }}>
-                Read-only manifest — each row shows the real document authority and the existing action to view or download it. No document is fabricated.
+            <div data-testid="pf-detail-documents">
+              <PfSectionLabel>Generated documents</PfSectionLabel>
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12, lineHeight: 1.5 }}>
+                Read-only manifest — each card shows the real document authority and the existing action to view or download it. No document is fabricated.
               </div>
-              {_docs.map((d) => (
-                <div key={d.key} data-testid={`pf-doc-row-${d.key}`}
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 14px', marginBottom: 8, background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8 }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{d.name}</div>
-                    <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>{d.authority}</div>
-                    {d.badge ? (
-                      <div style={{ display: 'inline-block', marginTop: 4, padding: '2px 8px', borderRadius: 4, fontSize: 10.5, fontWeight: 700, background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', border: '1px solid var(--badge-red-border)' }}
-                        data-testid={`pf-doc-dnu-${d.key}`}>
-                        {d.badge}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14 }}>
+                {_docs.map((d) => {
+                  const chip = _chip(d);
+                  return (
+                    <div key={d.key} data-testid={`pf-doc-row-${d.key}`}
+                      style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, display: 'flex', alignItems: 'flex-start', gap: 14, boxShadow: '0 1px 2px var(--shadow)' }}>
+                      <div style={{ fontSize: 28, lineHeight: 1 }}>{_icons[d.key] || '📄'}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text)' }}>{d.name}</span>
+                          <span style={{ padding: '2px 8px', borderRadius: 4, background: chip.bg, color: chip.c, fontSize: 10, fontWeight: 700 }}>{chip.label}</span>
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}>{d.authority}</div>
+                        {d.badge ? (
+                          <div style={{ display: 'inline-block', marginTop: 4, padding: '2px 8px', borderRadius: 4, fontSize: 10.5, fontWeight: 700, background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', border: '1px solid var(--badge-red-border)' }}
+                            data-testid={`pf-doc-dnu-${d.key}`}>
+                            {d.badge}
+                          </div>
+                        ) : null}
+                        {d.pending ? (
+                          <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }} data-testid={`pf-doc-pending-${d.key}`}>
+                            <strong>Backend Pending:</strong> {d.pending}
+                          </div>
+                        ) : null}
+                        <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+                          {d.secondaryAction ? (
+                            <button onClick={d.secondaryAction.onClick} data-testid={d.secondaryAction.testid} style={_actBtn}>
+                              {d.secondaryAction.label}
+                            </button>
+                          ) : null}
+                          {d.action ? (
+                            d.action.href ? (
+                              <a href={d.action.href} download data-testid={d.action.testid} style={_actBtn}>
+                                {d.action.label}
+                              </a>
+                            ) : (
+                              <button onClick={d.action.onClick} data-testid={d.action.testid} style={_actBtn}>
+                                {d.action.label}
+                              </button>
+                            )
+                          ) : (!d.secondaryAction ? (
+                            <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 999, opacity: 0.45 }} data-testid={`pf-doc-unavailable-${d.key}`}>{d.key.startsWith('dhl_') ? 'Not available yet' : 'Not available'}</span>
+                          ) : null)}
+                        </div>
                       </div>
-                    ) : null}
-                    {d.pending ? (
-                      <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }} data-testid={`pf-doc-pending-${d.key}`}>
-                        <strong>Backend Pending:</strong> {d.pending}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div style={{ flexShrink: 0, display: 'flex', gap: 6 }}>
-                    {d.secondaryAction ? (
-                      <button onClick={d.secondaryAction.onClick} data-testid={d.secondaryAction.testid}
-                        style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
-                        {d.secondaryAction.label}
-                      </button>
-                    ) : null}
-                    {d.action ? (
-                      d.action.href ? (
-                        <a href={d.action.href} download data-testid={d.action.testid}
-                          style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', textDecoration: 'none', display: 'inline-block' }}>
-                          {d.action.label}
-                        </a>
-                      ) : (
-                        <button onClick={d.action.onClick} data-testid={d.action.testid}
-                          style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
-                          {d.action.label}
-                        </button>
-                      )
-                    ) : (!d.secondaryAction ? (
-                      <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 999 }} data-testid={`pf-doc-unavailable-${d.key}`}>{d.key.startsWith('dhl_') ? 'Not available yet' : 'Not available'}</span>
-                    ) : null)}
-                  </div>
-                </div>
-              ))}
+                    </div>
+                  );
+                })}
+              </div>
 
               {/* Real shipment-document registry (reuse-only, batch-scoped) */}
-              <DocumentsRegistry batchId={liveDraft.batch_id || (draft && draft.batch_id)} />
+              <div style={{ marginTop: 20 }}>
+                <DocumentsRegistry batchId={liveDraft.batch_id || (draft && draft.batch_id)} />
+              </div>
             </div>
           );
         })()}
@@ -5166,98 +5257,142 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
         </div>
       )}
 
-      {/* KV grid — 4 columns, all values from backend authority */}
-      {/* In edit mode: editable fields for remarks, currency, exchange_rate, payment_terms */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px 28px' }}>
-        <KvItem k="Number" v={detail.wfirma_proforma_fullnumber} mono />
-        <KvItem k="Shipment" v={detail.batch_id} mono />
-        <KvItem k="KSeF" v={detail.ksef_number} muted={!detail.ksef_number} />
-        {editMode
-          ? (
-            <div data-testid="edit-pt-method-container">
-              <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, marginBottom: 4 }}>Payment method</div>
-              <select
-                value={editFields.pt_method || ''}
-                onChange={e => onEditField('pt_method', e.target.value)}
-                data-testid="edit-pt-method"
-                style={{ width: '100%', padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12 }}
-              >
-                <option value="">— not set —</option>
-                <option value="transfer">transfer</option>
-                <option value="cash">cash</option>
-                <option value="card">card</option>
-                <option value="compensation">compensation</option>
-              </select>
-              <div style={{ marginTop: 6 }}>
-                <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, marginBottom: 2 }}>Payment days</div>
-                <input
-                  type="number" min="0" max="365"
-                  value={editFields.pt_days || ''}
-                  onChange={e => onEditField('pt_days', e.target.value)}
-                  data-testid="edit-pt-days"
-                  placeholder="e.g. 30"
-                  style={{ width: '100%', padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12 }}
-                />
-              </div>
-            </div>
-          )
-          : <KvItem k="Payment method" v={detail.paymentTerms} />
-        }
+      {/* ── Summary (wireframe StatTiles) — display-only arithmetic ───────── */}
+      <div>
+        <PfSectionLabel>Summary</PfSectionLabel>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
+          <PfStatTile label="Line Items" value={lines.length} data-testid="pf-summary-line-items" />
+          <PfStatTile label="Total Items" value={lines.reduce((s, l) => s + (Number(l.qty) || 0), 0)} data-testid="pf-summary-total-items" />
+          <PfStatTile label={`Total ${currency}`} value={totalEur.toFixed(2)} accent="var(--accent)" data-testid="pf-summary-total-cur" />
+          {/* Sprint-36 authority pin (test_no_total_eur_times_fx_rate): NO
+              browser-side FX conversion — the PLN total is wFirma's at posting,
+              never fabricated here. The tile stays (wireframe slot), the value
+              is honest. */}
+          <PfStatTile label="Total PLN" value="—" data-testid="pf-summary-total-pln" />
+        </div>
+      </div>
 
-        {editMode
-          ? (
-            <div data-testid="edit-pt-invoice-date-container">
-              <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, marginBottom: 4 }}>Invoice issue date</div>
-              <input
-                type="date"
-                value={editFields.pt_invoice_date || ''}
-                onChange={e => onEditField('pt_invoice_date', e.target.value)}
-                data-testid="edit-pt-invoice-date"
-                style={{ width: '100%', padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12 }}
-              />
-            </div>
-          )
-          : <KvItem k="Issue date" v={detail.created_at ? detail.created_at.slice(0, 10) : null} mono />
-        }
-        {editMode
-          ? <KvItem k="Payment due" v={_editComputedDue || '—'} mono />
-          : <KvItem k="Payment due" v={detail.payment_due_date} mono />
-        }
-        {editMode
-          ? (
-            <div data-testid="edit-pt-sale-date-container">
-              <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, marginBottom: 4 }}>Sale date</div>
-              <input
-                type="date"
-                value={editFields.pt_sale_date || ''}
-                onChange={e => onEditField('pt_sale_date', e.target.value)}
-                data-testid="edit-pt-sale-date"
-                style={{ width: '100%', padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12 }}
-              />
-            </div>
-          )
-          : <KvItem k="Sale date" v={detail.sale_date} mono />
-        }
-        <KvItem k="Paid" v="— see Payment status" muted />
+      {/* ── Customer & terms (wireframe PanelCard; edit controls preserved) ── */}
+      <div>
+        <PfSectionLabel>Customer &amp; terms</PfSectionLabel>
+        <PfPanelCard>
+          <div style={{ padding: '8px 20px 12px' }}>
+            <InfoRow label="Customer" value={detail.client_name || '—'} />
+            {editMode ? (
+              <PfFieldRow label="Currency">
+                <div data-testid="edit-currency-container" style={{ width: '100%' }}>
+                  <EditableKvItem k="" value={editFields.currency || ''} onChange={v => onEditField('currency', v)} />
+                </div>
+              </PfFieldRow>
+            ) : (
+              <InfoRow label="Currency" value={currency} />
+            )}
+            {editMode ? (
+              <PfFieldRow label="Payment method">
+                <div data-testid="edit-pt-method-container" style={{ width: '100%' }}>
+                  <select
+                    value={editFields.pt_method || ''}
+                    onChange={e => onEditField('pt_method', e.target.value)}
+                    data-testid="edit-pt-method"
+                    style={{ width: '100%', padding: '6px 9px', borderRadius: 6, border: '1px solid var(--accent-border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12, fontWeight: 600 }}
+                  >
+                    <option value="">— not set —</option>
+                    <option value="transfer">transfer</option>
+                    <option value="cash">cash</option>
+                    <option value="card">card</option>
+                    <option value="compensation">compensation</option>
+                  </select>
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, marginBottom: 2 }}>Payment days</div>
+                    <input
+                      type="number" min="0" max="365"
+                      value={editFields.pt_days || ''}
+                      onChange={e => onEditField('pt_days', e.target.value)}
+                      data-testid="edit-pt-days"
+                      placeholder="e.g. 30"
+                      style={{ width: '100%', padding: '6px 9px', borderRadius: 6, border: '1px solid var(--accent-border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12, fontWeight: 600 }}
+                    />
+                  </div>
+                </div>
+              </PfFieldRow>
+            ) : (
+              <InfoRow label="Payment method" value={detail.paymentTerms || '—'} />
+            )}
+            <InfoRow label="Incoterm" value={detail.incoterm || '—'} />
+            <InfoRow label="Status" value={(PF_STATUS_CHIP[detail.draft_state] || {}).label || detail.draft_state || '—'} />
+          </div>
+        </PfPanelCard>
+      </div>
 
-        <KvItem k="Amount due" v={`${totalEur.toFixed(2)} ${currency}`} />
-        <KvItem k="Accounting scheme" v={detail.accounting_scheme || 'Standard'} />
-        <KvItem k="JPK codes" v={detail.jpk_codes || 'none'} muted={!detail.jpk_codes} />
-        {editMode
-          ? <EditableKvItem k="Exchange rate" value={editFields.exchange_rate || ''} onChange={v => onEditField('exchange_rate', v)} />
-          : <KvItem
-              k={`Total · FX ${fxRate ? fxRate.toFixed(4) : '—'} PLN`}
-              v={`${totalEur.toFixed(2)} ${currency}`}
-            />
-        }
+      {/* ── Dates & FX (wireframe PanelCard; edit controls preserved) ──────── */}
+      <div>
+        <PfSectionLabel>Dates &amp; FX</PfSectionLabel>
+        <PfPanelCard>
+          <div style={{ padding: '8px 20px 12px' }}>
+            {editMode ? (
+              <PfFieldRow label="Invoice issue date">
+                <div data-testid="edit-pt-invoice-date-container" style={{ width: '100%' }}>
+                  <input
+                    type="date"
+                    value={editFields.pt_invoice_date || ''}
+                    onChange={e => onEditField('pt_invoice_date', e.target.value)}
+                    data-testid="edit-pt-invoice-date"
+                    style={{ width: '100%', padding: '6px 9px', borderRadius: 6, border: '1px solid var(--accent-border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12, fontWeight: 600 }}
+                  />
+                </div>
+              </PfFieldRow>
+            ) : (
+              <InfoRow label="Issue date" value={detail.created_at ? detail.created_at.slice(0, 10) : '—'} mono />
+            )}
+            {editMode ? (
+              <PfFieldRow label="Sale date">
+                <div data-testid="edit-pt-sale-date-container" style={{ width: '100%' }}>
+                  <input
+                    type="date"
+                    value={editFields.pt_sale_date || ''}
+                    onChange={e => onEditField('pt_sale_date', e.target.value)}
+                    data-testid="edit-pt-sale-date"
+                    style={{ width: '100%', padding: '6px 9px', borderRadius: 6, border: '1px solid var(--accent-border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12, fontWeight: 600 }}
+                  />
+                </div>
+              </PfFieldRow>
+            ) : (
+              <InfoRow label="Sale date" value={detail.sale_date || '—'} mono />
+            )}
+            <InfoRow label="Payment due" value={(editMode ? (_editComputedDue || '—') : (detail.payment_due_date || '—'))} mono />
+            {editMode ? (
+              <PfFieldRow label={`${currency}/PLN rate`} hint="NBP">
+                <div style={{ width: '100%' }}>
+                  <EditableKvItem k="" value={editFields.exchange_rate || ''} onChange={v => onEditField('exchange_rate', v)} />
+                </div>
+              </PfFieldRow>
+            ) : (
+              <InfoRow label={`${currency}/PLN rate`} value={fxRate ? fxRate.toFixed(4) : '—'} mono />
+            )}
+            <InfoRow label="NBP table" value={detail.nbp_table_number || '—'} mono />
+            <InfoRow label="Rate date" value={detail.exchange_rate_date || '—'} mono />
+          </div>
+        </PfPanelCard>
+      </div>
 
-        <KvItem k="Warehouse" v={detail.warehouse || 'Main'} />
-        <KvItem k="wFirma proforma ID" v={detail.wfirma_proforma_id} mono />
-        <KvItem k="wFirma invoice ID" v={detail.wfirma_invoice_id} mono />
-        {editMode
-          ? <EditableKvItem k="Currency" value={editFields.currency || ''} onChange={v => onEditField('currency', v)} />
-          : <KvItem k="Source" v={detail.clone_source || detail.source_description || detail.source || '—'} />
-        }
+      {/* ── Shipment reference & wFirma identity (wireframe PanelCard) ─────── */}
+      <div>
+        <PfSectionLabel>Shipment reference</PfSectionLabel>
+        <PfPanelCard>
+          <div style={{ padding: '8px 20px 12px' }}>
+            <InfoRow label="Number" value={detail.wfirma_proforma_fullnumber || '—'} mono />
+            <InfoRow label="Shipment ID" value={detail.batch_id || '—'} mono />
+            <InfoRow label="KSeF" value={detail.ksef_number || '—'} mono />
+            <InfoRow label="Amount due" value={`${totalEur.toFixed(2)} ${currency}`} />
+            <InfoRow label="Paid" value="— see Payment status" />
+            <InfoRow label="Accounting scheme" value={detail.accounting_scheme || 'Standard'} />
+            <InfoRow label="JPK codes" value={detail.jpk_codes || 'none'} />
+            <InfoRow label="Warehouse" value={detail.warehouse || 'Main'} />
+            <InfoRow label="wFirma proforma ID" value={detail.wfirma_proforma_id || '—'} mono />
+            <InfoRow label="wFirma invoice ID" value={detail.wfirma_invoice_id || '—'} mono />
+            <InfoRow label="Source" value={detail.clone_source || detail.source_description || detail.source || '—'} />
+          </div>
+        </PfPanelCard>
       </div>
 
       {/* Editable remarks (only in edit mode) */}
@@ -5359,51 +5494,57 @@ function OverviewFinancials({ contractorId, currency }) {
 }
 
 // ── Lines tab ─────────────────────────────────────────────────────────────────
-// PD-2 gap closure: expanded from 8 to 12 columns per wireframe spec.
-// Added columns: Design No, Description EN, Purity (dedicated col), Currency.
-// Amount columns labelled with draft currency (historical field names unitEur/netEur
-// carry draft-currency amounts; NOT always EUR).
-function ProformaLinesTab({ lines, currency, onAddLine }) {
+// Wireframe rebuild Slice 3: packing-list column set from the operator-approved
+// wireframe — Sr / Product Code / Design Nr / Ctg / Client PO /
+// Description (EN over PL) / Kt / Col / Quality / Dia Wt / Col Wt / Qty /
+// Value / Total / Size — with the Goods subtotal · Freight · Insurance ·
+// Grand total footer read from the draft's service_charges (display-only
+// arithmetic; the engine stays the calculation authority). Variant identity
+// columns read the Slice-1 fields (older drafts show '—' until reset/intake).
+// HS code + origin remain on the printable documents (Preview/Print); the
+// wireframe table is the UI authority for on-screen columns.
+function ProformaLinesTab({ lines, currency, onAddLine, serviceCharges }) {
   const cur = currency || 'EUR';
-  // PD-2: 12 columns
-  const COL_HEADERS = [
-    { label: '#',          align: 'left',  width: 36 },
-    { label: 'PRODUCT',    align: 'left',  width: 90 },
-    { label: 'DESIGN NO',  align: 'left',  width: 90 },
-    { label: 'DESC (PL)',  align: 'left',  width: 160 },
-    { label: 'DESC (EN)',  align: 'left',  width: 140 },
-    { label: 'PURITY',     align: 'left',  width: 70 },
-    { label: 'HS CODE',    align: 'left',  width: 80 },
-    { label: 'ORIGIN',     align: 'left',  width: 55 },
-    { label: 'CUR',        align: 'left',  width: 45 },
-    { label: 'QTY',        align: 'right', width: 50 },
-    { label: `UNIT ${cur}`,align: 'right', width: 80 },
-    { label: `NET ${cur}`, align: 'right', width: 90 },
-  ];
+  const sym = cur === 'USD' ? '$' : cur === 'EUR' ? '€' : `${cur} `;
+  const raw = (line, key) => (line._raw && line._raw[key] != null ? line._raw[key] : null);
+  const rawTxt = (line, key) => { const v = raw(line, key); return (v || v === 0) && String(v).trim() ? String(v) : '—'; };
+  const rawWt = (line, key) => { const v = Number(raw(line, key) || 0); return v > 0 ? v.toFixed(2) : '—'; };
+  const goods = lines.reduce((s, l) => s + l.netEur, 0);
+  const charges = Array.isArray(serviceCharges) ? serviceCharges : [];
+  const chargeAmt = (type) => {
+    const c = charges.find(x => x && x.charge_type === type);
+    return c && c.amount != null ? Number(c.amount) : null;
+  };
+  const freight = chargeAmt('freight');
+  const insurance = chargeAmt('insurance');
+  const grand = goods + (freight || 0) + (insurance || 0);
+  const th = (txt, align) => (
+    <th key={txt} style={{ padding: '9px 10px', textAlign: align || 'left', fontSize: 9.5, fontWeight: 700,
+      color: 'var(--text-3)', letterSpacing: '0.05em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{txt}</th>
+  );
+  const COLS = 15;
   return (
     <div>
-      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>
-        Line items ({lines.length})
-      </div>
+      <PfSectionLabel style={{ marginBottom: 12 }}>
+        Line items ({lines.length}) · from packing list · mapped to Product Master
+      </PfSectionLabel>
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'auto', boxShadow: '0 1px 3px var(--shadow)' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1180 }}>
           <thead>
             <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-              {COL_HEADERS.map(h => (
-                <th key={h.label} style={{ padding: '9px 10px', textAlign: h.align, fontSize: 10, fontWeight: 700,
-                  color: 'var(--text-3)', letterSpacing: '0.08em', whiteSpace: 'nowrap',
-                  minWidth: h.width }}>{h.label}</th>
-              ))}
+              {th('Sr')}{th('Product Code')}{th('Design Nr')}{th('Ctg')}{th('Client PO')}
+              {th('Description (EN / PL)')}{th('Kt')}{th('Col')}{th('Quality')}
+              {th('Dia Wt', 'right')}{th('Col Wt', 'right')}{th('Qty', 'right')}
+              {th(`Value ${sym.trim()}`, 'right')}{th(`Total ${sym.trim()}`, 'right')}{th('Size')}
             </tr>
           </thead>
           <tbody>
             {lines.length === 0 && (
               <tr>
-                <td colSpan={COL_HEADERS.length} style={{ padding: '28px 14px', textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>
+                <td colSpan={COLS} style={{ padding: '28px 14px', textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>
                   <div>No line items — draft not yet built from packing upload.</div>
-                  {/* HTML-parity (atlas-proforma-preview.html · lines tab empty state): ＋ Add line.
-                     Reuses the existing draft Edit surface — no new authority, no parallel line store;
-                     Packing List remains the line source. */}
+                  {/* Reuses the existing draft Edit surface — no new authority, no parallel
+                     line store; Packing List remains the line source. */}
                   {onAddLine && (
                     <button data-testid="lines-add-line" onClick={onAddLine}
                       style={{ marginTop: 14, padding: '6px 14px', fontSize: 12, fontWeight: 700,
@@ -5418,33 +5559,68 @@ function ProformaLinesTab({ lines, currency, onAddLine }) {
             {lines.map((line, i) => (
               <tr key={line.lineId || line.seq} data-testid={`line-row-${i}`}
                 style={{ borderBottom: i < lines.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
-                <td style={{ padding: '10px 10px', fontSize: 11, color: 'var(--text-3)' }}>{line.seq}</td>
-                <td style={{ padding: '10px 10px', fontFamily: 'monospace', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{line.sku}</td>
-                <td style={{ padding: '10px 10px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>
-                  {line._raw && line._raw.design_no ? line._raw.design_no : '—'}
+                <td style={{ padding: '10px', fontSize: 11.5, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{line.seq}</td>
+                <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
+                  {line.sku && line.sku !== '—'
+                    ? <span style={{ fontFamily: 'monospace', fontSize: 11.5, fontWeight: 600, color: 'var(--accent)' }}>{line.sku}</span>
+                    : <span style={{ fontSize: 10, color: 'var(--badge-amber-text)' }}>unmapped</span>}
                 </td>
-                <td style={{ padding: '10px 10px' }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{line.desc_pl || line.desc || '—'}</div>
+                <td style={{ padding: '10px', fontFamily: 'monospace', fontSize: 11.5, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{rawTxt(line, 'design_no')}</td>
+                <td style={{ padding: '10px', fontSize: 11.5, color: 'var(--text)', whiteSpace: 'nowrap' }}>
+                  {/* Ctg is derived display-only from item_type (no Ctg column in schema) */}
+                  {line.ctgLabel || '—'}
                 </td>
-                <td style={{ padding: '10px 10px' }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-2)' }}>{line.desc_en || '—'}</div>
+                <td style={{ padding: '10px', fontSize: 11.5, color: 'var(--text)', whiteSpace: 'nowrap' }}>
+                  {(raw(line, 'client_po') || raw(line, 'client_ref')) ? String(raw(line, 'client_po') || raw(line, 'client_ref')) : '—'}
                 </td>
-                <td style={{ padding: '10px 10px', fontSize: 11, color: 'var(--text-3)' }}>{line.purity || '—'}</td>
-                <td style={{ padding: '10px 10px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)' }}>{line.hsCode}</td>
-                <td style={{ padding: '10px 10px', fontSize: 11, color: 'var(--text-2)' }}>{line.origin}</td>
-                <td style={{ padding: '10px 10px', fontSize: 11, color: 'var(--text-3)' }}>{line.currency || cur}</td>
-                <td style={{ padding: '10px 10px', textAlign: 'right', fontSize: 12, fontWeight: 600 }}>{line.qty}</td>
-                <td style={{ padding: '10px 10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12 }}>{line.unitEur.toFixed(2)}</td>
-                <td style={{ padding: '10px 10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 13, fontWeight: 700 }}>{line.netEur.toFixed(2)}</td>
+                <td style={{ padding: '10px', minWidth: 220 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{line.desc_en || '—'}</div>
+                  <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 1 }}>{line.desc_pl || line.desc || ''}</div>
+                </td>
+                <td style={{ padding: '10px', fontSize: 11.5, color: 'var(--text)', whiteSpace: 'nowrap' }}>{raw(line, 'karat') ? String(raw(line, 'karat')) : (line.purity || '—')}</td>
+                <td style={{ padding: '10px', fontSize: 11.5, color: 'var(--text)', whiteSpace: 'nowrap' }}>{rawTxt(line, 'metal_color')}</td>
+                <td style={{ padding: '10px', fontSize: 11.5, color: 'var(--text)', whiteSpace: 'nowrap' }}>{rawTxt(line, 'quality_string')}</td>
+                <td style={{ padding: '10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 11.5, whiteSpace: 'nowrap' }}>{rawWt(line, 'diamond_weight')}</td>
+                <td style={{ padding: '10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 11.5, whiteSpace: 'nowrap' }}>{rawWt(line, 'color_weight')}</td>
+                <td style={{ padding: '10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>{line.qty}</td>
+                <td style={{ padding: '10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12, whiteSpace: 'nowrap' }}>{sym}{line.unitEur.toFixed(2)}</td>
+                <td style={{ padding: '10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12.5, fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap' }}>{sym}{line.netEur.toFixed(2)}</td>
+                <td style={{ padding: '10px', fontSize: 11.5, color: 'var(--text)', whiteSpace: 'nowrap' }}>{rawTxt(line, 'size')}</td>
               </tr>
             ))}
           </tbody>
           <tfoot>
-            <tr style={{ borderTop: '2px solid var(--border)', background: 'var(--bg-subtle)' }}>
-              <td colSpan={COL_HEADERS.length - 1} style={{ padding: '11px 10px', textAlign: 'right', fontSize: 12, fontWeight: 700 }}>Total · {cur}</td>
-              <td style={{ padding: '11px 10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--accent)' }} data-testid="proforma-lines-total">
-                {lines.length > 0 ? lines.reduce((s, l) => s + l.netEur, 0).toFixed(2) : '—'}
+            <tr style={{ background: 'var(--bg-subtle)', borderTop: '1px solid var(--border)' }}>
+              <td colSpan={COLS - 2} style={{ padding: '8px 10px', textAlign: 'right', fontSize: 11, color: 'var(--text-2)' }}>Goods subtotal</td>
+              <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>
+                {lines.length > 0 ? `${sym}${goods.toFixed(2)}` : '—'}
               </td>
+              <td></td>
+            </tr>
+            <tr style={{ background: 'var(--bg-subtle)' }}>
+              <td colSpan={COLS - 2} style={{ padding: '8px 10px', textAlign: 'right', fontSize: 11, color: 'var(--text-2)' }}>
+                Freight <span style={{ color: 'var(--text-3)', fontSize: 9.5 }}>· service charge</span>
+              </td>
+              <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12, color: 'var(--text)' }} data-testid="pf-lines-freight">
+                {freight != null ? `${sym}${freight.toFixed(2)}` : '—'}
+              </td>
+              <td></td>
+            </tr>
+            <tr style={{ background: 'var(--bg-subtle)' }}>
+              <td colSpan={COLS - 2} style={{ padding: '8px 10px', textAlign: 'right', fontSize: 11, color: 'var(--text-2)' }}>
+                Insurance <span style={{ color: 'var(--text-3)', fontSize: 9.5 }}>· service charge</span>
+              </td>
+              <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12, color: 'var(--text)' }} data-testid="pf-lines-insurance">
+                {insurance != null ? `${sym}${insurance.toFixed(2)}` : '—'}
+              </td>
+              <td></td>
+            </tr>
+            <tr style={{ borderTop: '2px solid var(--border)', background: 'var(--bg-subtle)' }}>
+              <td colSpan={COLS - 2} style={{ padding: '11px 10px', textAlign: 'right', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>Grand total</td>
+              <td style={{ padding: '11px 10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: 'var(--accent)' }} data-testid="proforma-lines-total">
+                {lines.length > 0 ? `${sym}${grand.toFixed(2)}` : '—'}
+              </td>
+              <td></td>
             </tr>
           </tfoot>
         </table>
@@ -5458,7 +5634,7 @@ function ProformaCustomerMappingTab({ customer }) {
   const mapped = !!customer.wfirmaId;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>wFirma customer mapping</div>
+      <PfSectionLabel style={{ marginBottom: 0 }}>wFirma customer mapping</PfSectionLabel>
       {!mapped ? (
         <div style={{ padding: 24, background: 'var(--badge-red-bg)', border: '2px solid var(--badge-red-border)', borderRadius: 10, textAlign: 'center' }}>
           <div style={{ fontSize: 28, marginBottom: 10 }}>⚠</div>
@@ -5852,33 +6028,48 @@ function ProformaHistoryTab({ draft, draftId }) {
         ? [{ ts: '…', action: 'Loading history…' }]
         : [{ ts: (draft && draft.created_at) || '—', user: (draft && draft.created_by) || '—', action: 'Draft created' }]);
 
+  // Wireframe timeline: left rail line, ✓ green dot per event (amber ! for
+  // failure-ish event types). Same getDraftEvents data, presentation only.
+  const _warnEvent = (e) => /fail|error|block|cancel/i.test(String(e.event_type || e.status || e.action || ''));
   return (
     <div>
-      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 16 }}>
-        Activity history
-      </div>
-      {displayEvents.map((e, i) => (
-        <div key={i} style={{
-          padding: '14px 0',
-          borderBottom: i < displayEvents.length - 1 ? '1px solid var(--border)' : 'none',
-          display: 'grid', gridTemplateColumns: '160px 1fr', gap: 16,
-        }}>
-          <div style={{ fontSize: 12, color: 'var(--text-3)', fontFamily: 'monospace' }}>
-            {e.ts || e.created_at || e.occurred_at || '—'}
-          </div>
-          <div>
-            <div style={{ fontWeight: 600, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-              {(e.event_type || e.status) && (
-                <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 10, letterSpacing: '0.08em', fontWeight: 700, background: 'var(--bg-subtle)', color: 'var(--text-2)' }}>
-                  {e.event_type || e.status}
-                </span>
-              )}
-              {e.action || e.description || '—'}
-            </div>
-            {e.detail && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>{e.detail}</div>}
+      <PfSectionLabel>Activity history</PfSectionLabel>
+      <PfPanelCard>
+        <div style={{ padding: '20px 24px' }}>
+          <div style={{ position: 'relative', paddingLeft: 32 }}>
+            <div style={{ position: 'absolute', left: 10, top: 8, bottom: 8, width: 2, background: 'var(--border)' }} />
+            {displayEvents.map((e, i) => {
+              const warn = _warnEvent(e);
+              return (
+                <div key={i} style={{ position: 'relative', marginBottom: i < displayEvents.length - 1 ? 20 : 0, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+                  <div style={{
+                    position: 'absolute', left: -32, width: 22, height: 22, borderRadius: 11,
+                    background: warn ? 'var(--badge-amber-bg)' : 'var(--badge-green-bg)',
+                    border: `2px solid ${warn ? 'var(--badge-amber-border)' : 'var(--badge-green-border)'}`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1,
+                  }}>
+                    <span style={{ fontSize: 11, color: warn ? 'var(--badge-amber-text)' : 'var(--badge-green-text)', fontWeight: 700 }}>{warn ? '!' : '✓'}</span>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      {(e.event_type || e.status) && (
+                        <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 10, letterSpacing: '0.08em', fontWeight: 700, background: 'var(--bg-subtle)', color: 'var(--text-2)' }}>
+                          {e.event_type || e.status}
+                        </span>
+                      )}
+                      {e.action || e.description || '—'}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2, fontFamily: 'monospace' }}>
+                      {(e.ts || e.created_at || e.occurred_at || '—')}{e.user ? ` · ${e.user}` : (e.operator ? ` · ${e.operator}` : '')}
+                    </div>
+                    {e.detail && <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{e.detail}</div>}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
-      ))}
+      </PfPanelCard>
     </div>
   );
 }

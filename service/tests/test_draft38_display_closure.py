@@ -104,9 +104,16 @@ def test_draft_currency_authority(detail):
 
 
 def test_lines_tab_headers_use_draft_currency(detail):
-    # headers are dynamic; the hardcoded EUR header array is gone
-    assert "`UNIT ${cur}`" in detail and "`NET ${cur}`" in detail
+    # headers are dynamic; the hardcoded EUR header array is gone.
+    # Wireframe rebuild Slice 3: headers moved from `UNIT ${cur}`/`NET ${cur}`
+    # to the wireframe's `Value ${sym}`/`Total ${sym}` where sym is DERIVED
+    # from the draft currency (EUR→€, USD→$, else the code itself). The
+    # guarded invariant — amount headers follow the draft currency, never a
+    # hardcoded EUR — is unchanged.
+    assert "`Value ${sym.trim()}`" in detail and "`Total ${sym.trim()}`" in detail
+    assert "const sym = cur === 'USD'" in detail   # sym derives from draft cur
     assert "'UNIT EUR', 'NET EUR'" not in detail
+    assert "'Value EUR'" not in detail and "'Total EUR'" not in detail
     # the tab is actually passed the currency
     assert "ProformaLinesTab lines={lines} currency={draftCurrency}" in detail
 

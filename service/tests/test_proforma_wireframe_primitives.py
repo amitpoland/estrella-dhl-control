@@ -59,13 +59,24 @@ def _src() -> str:
 
 
 def _pf_block(src: str) -> str:
-    """The contiguous source region holding the Pf* primitives."""
+    """The contiguous source region holding the Pf* primitives.
+
+    Boundary = the next top-level function/const that is NOT part of the
+    block. Gate finding (Slice 2 → Slice 3 precondition): the original
+    lookahead `(?!Pf)` was case-sensitive, so `const PF_STATUS_CHIP` (PF,
+    not Pf) terminated the scan after only 3 of 10 components — the
+    spread-rest and hex pins silently covered a fraction of the block.
+    `PF_`-named consts (PF_STATUS_CHIP, PF_EDIT_INPUT) belong to the block
+    and must not end it.
+    """
     start = src.index("function PfSectionLabel(")
-    end = src.index("function PfAutocomplete(")
-    end = src.index("\n}", end) if "\n}" in src[end:] else len(src)
-    # Extend through the end of PfAutocomplete's body (next top-level fn).
-    m = re.search(r"\n(?:function|const) (?!Pf)", src[start:])
-    return src[start:start + (m.start() if m else len(src) - start)]
+    m = re.search(r"\n(?:function|const) (?!Pf[A-Z]|PF_)", src[start:])
+    block = src[start:start + (m.start() if m else len(src) - start)]
+    # Self-check: every named component must be inside the scanned block so
+    # the downstream pins can never silently under-cover again.
+    missing = [c for c in PF_COMPONENTS if c not in block]
+    assert not missing, f"_pf_block boundary regressed — missing: {missing}"
+    return block
 
 
 def test_pf_primitives_defined():

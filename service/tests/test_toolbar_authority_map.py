@@ -198,7 +198,12 @@ def test_send_button_is_conditionally_enabled():
     src = _src()
     tb_send_pos = src.find('data-testid="tb-send"')
     assert tb_send_pos > 0
-    block_start = src.rfind("<TbBtn", 0, tb_send_pos)
+    # Wireframe rebuild Slice 3: the toolbar renders shared <Btn> (components.jsx)
+    # instead of the file-local <TbBtn>. The guarded invariant (onClick wired +
+    # conditional disabled) is component-agnostic — anchor on whichever opening
+    # tag is nearest.
+    block_start = max(src.rfind("<TbBtn", 0, tb_send_pos),
+                      src.rfind("<Btn", 0, tb_send_pos))
     block = src[block_start:tb_send_pos + 50]
     # Must have onClick (wired) and disabled={!canSend} (conditional)
     assert "onClick" in block, \
@@ -228,7 +233,10 @@ def test_generate_button_is_disabled():
     src = _src()
     tb_gen_pos = src.find('data-testid="tb-generate"')
     assert tb_gen_pos > 0, "Generate button testid must exist"
-    block_start = src.rfind("<TbBtn", 0, tb_gen_pos)
+    # Component-agnostic anchor (Slice 3: <TbBtn> → shared <Btn>); the guarded
+    # invariant is the disabled state, not the component name.
+    block_start = max(src.rfind("<TbBtn", 0, tb_gen_pos),
+                      src.rfind("<Btn", 0, tb_gen_pos))
     block = src[block_start:tb_gen_pos + 50]
     assert "disabled" in block, \
         "Generate button must be disabled — carrier AWB is not wired from proforma view"
