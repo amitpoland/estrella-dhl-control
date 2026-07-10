@@ -479,6 +479,28 @@ def list_customers(match_status: Optional[str] = None) -> List[Dict[str, Any]]:
 
 # ── wfirma_products ───────────────────────────────────────────────────────────
 
+def _mirror_confirms_identity(product_code: str, wfirma_id: str) -> bool:
+    """True iff wfirma_product_mirror maps *product_code* to exactly *wfirma_id*.
+
+    The mirror (reservation_queue.db, UNIQUE(wfirma_id), collision-refused) is
+    the canonical code→wfirma_id store; this cache may only CHANGE an already
+    confirmed wfirma_product_id when the mirror agrees. Fail-closed: a missing
+    mirror row, a different mirror id, or any lookup failure all count as NOT
+    confirmed. Lazy imports keep the module graph acyclic (reservation_db
+    imports this module lazily inside register_product_identity).
+    """
+    try:
+        from ..core.config import settings
+        from . import reservation_db as _rdb
+        row = _rdb.get_mirror_product(
+            settings.storage_root / "reservation_queue.db", product_code)
+    except Exception:
+        return False
+    if not row:
+        return False
+    return (row.get("wfirma_id") or "").strip() == wfirma_id
+
+
 def upsert_product(
     product_code:      str,
     *,
@@ -490,21 +512,56 @@ def upsert_product(
     vat_rate:          str = "23",
     warehouse_id:      str = "",
     sync_status:       str = "pending",
+    refusals:          Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Insert or update a product mapping. Returns local id.
 
     product_name and description_block use never-erase semantics: a None or empty
     incoming value never overwrites an existing non-empty stored value.
+
+    wfirma_product_id identity guard (CR7 / governance gap G1 — cache is never
+    an authority):
+    - never-erase: a None/empty incoming id never clears a stored id;
+    - a stored non-empty id may only be CHANGED when the mirror confirms the
+      incoming id belongs to this product_code; otherwise the whole write is
+      refused — the row (id, sync_status, business fields) stays untouched,
+      because a divergent payload describes a different good;
+    - filling an EMPTY stored id needs no mirror confirmation (the
+      pending_adoption discovery flow is unmirrored by design).
+    A refusal is logged as WARNING and, when a ``refusals`` list is passed,
+    appended to it as {"refused", "reason", "product_code", "current_id",
+    "attempted_id"}. The return value stays the existing row id.
     """
     if _db_path is None or not product_code:
         return ""
     now = _now()
     with _lock, _connect() as con:
         existing = con.execute(
-            "SELECT id, product_name, description_block FROM wfirma_products WHERE product_code=?",
+            "SELECT id, product_name, description_block, wfirma_product_id, sync_status "
+            "FROM wfirma_products WHERE product_code=?",
             (product_code,),
         ).fetchone()
         if existing:
+            existing_id = (existing["wfirma_product_id"] or "").strip()
+            incoming_id = (wfirma_product_id or "").strip()
+            if existing_id and incoming_id and incoming_id != existing_id \
+                    and not _mirror_confirms_identity(product_code, incoming_id):
+                refusal = {
+                    "refused":       True,
+                    "reason":        "cache wfirma_product_id overwrite without mirror confirmation",
+                    "product_code":  product_code,
+                    "current_id":    existing_id,
+                    "attempted_id":  incoming_id,
+                }
+                log.warning(
+                    "wfirma_products id-guard REFUSED overwrite for %s: "
+                    "current_id=%s attempted_id=%s (sync_status=%s unchanged)",
+                    product_code, existing_id, incoming_id, existing["sync_status"],
+                )
+                if refusals is not None:
+                    refusals.append(refusal)
+                return existing["id"]
+            eff_id     = incoming_id or existing_id or None
             eff_pname  = (product_name or "").strip() or (existing["product_name"] or "")
             eff_dblock = (description_block or "").strip() or (existing["description_block"] or "")
             con.execute(
@@ -513,7 +570,7 @@ def upsert_product(
                        description_block=?, unit=?,
                        vat_rate=?, warehouse_id=?, sync_status=?, updated_at=?
                    WHERE id=?""",
-                (wfirma_product_id, product_name_pl, eff_pname, eff_dblock,
+                (eff_id, product_name_pl, eff_pname, eff_dblock,
                  unit, vat_rate, warehouse_id, sync_status, now, existing["id"]),
             )
             return existing["id"]
