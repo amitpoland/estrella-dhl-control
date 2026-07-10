@@ -114,8 +114,11 @@ def test_lines_tab_headers_use_draft_currency(detail):
     assert "const sym = cur === 'USD'" in detail   # sym derives from draft cur
     assert "'UNIT EUR', 'NET EUR'" not in detail
     assert "'Value EUR'" not in detail and "'Total EUR'" not in detail
-    # the tab is actually passed the currency
-    assert "ProformaLinesTab lines={lines} currency={draftCurrency}" in detail
+    # the tab is actually passed the currency (PFW-S5: the call site is now
+    # multi-line — anchor on the props, not the exact single-line string)
+    import re as _re
+    assert _re.search(r"ProformaLinesTab[\s\S]{0,400}?currency=\{draftCurrency\}", detail), \
+        "ProformaLinesTab must receive currency={draftCurrency}"
 
 
 def test_preview_doc_carries_currency(detail):
