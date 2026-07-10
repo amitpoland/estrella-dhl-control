@@ -332,6 +332,98 @@ def test_preserved_keys_includes_all_required_workflow_fields():
         "queued_replies", "sent_replies",
         "manual_status_flags", "tracking_overrides", "operator_notes",
         "wfirma_export",
+        "description_corrections",
     }
     missing = required - set(PRESERVED_KEYS)
     assert not missing, f"Required workflow fields missing from PRESERVED_KEYS: {missing}"
+
+
+# ── G3 (MASTER-EXEC-1 Campaign Run 8): description_corrections preservation ──
+# Shipment-scoped operator corrections (written ONLY by the action-proposals
+# approve route, scope="shipment") were dropped by every full re-process
+# because the engine never writes the key and it was absent from
+# PRESERVED_KEYS. The durable authorities (description_mappings via
+# scope="global_mapping"; product_descriptions source='manual') are separate
+# and unaffected — these tests pin the batch-local overlay only.
+
+_CORR = {
+    "EJL/G3/1": {
+        "material_pl":        "platyna próby 950",
+        "description_pl":     "",
+        "approved_by":        "op",
+        "approved_at":        "2026-07-10T08:00:00Z",
+        "source_proposal_id": "ap-1",
+    },
+}
+
+
+class TestG3DescriptionCorrections:
+    def test_corrections_survive_reprocess(self):
+        ex = _existing()
+        ex["description_corrections"] = dict(_CORR)
+        m = merge_regenerated_audit(ex, _regenerated())
+        assert m["description_corrections"] == _CORR
+        # engine outputs still come from the regen — no unrelated key regressed
+        assert m["row_schema_version"] == "v2"
+        assert m["rows"][0]["product_code"] == "EJL/25-26/1247-1"
+
+    def test_corrections_survive_recheck_regen(self):
+        # The recheck flow re-runs the engine through the SAME merge choke
+        # point; a regen that carries meaningful recheck state must preserve
+        # the corrections overlay alongside it.
+        ex = _existing()
+        ex["description_corrections"] = dict(_CORR)
+        rg = _regenerated()
+        rg["recheck"] = {"status": "completed", "at": "2026-07-10T09:00:00Z"}
+        m = merge_regenerated_audit(ex, rg)
+        assert m["description_corrections"] == _CORR
+        assert m["recheck"]["status"] == "completed"
+
+    def test_preserved_correction_still_patches_regenerated_rows(self):
+        # End-to-end intent: after a re-process, the generate-description flow
+        # (apply_description_corrections) must still override the regenerated
+        # row with the operator-approved value.
+        from app.services.customs_desc_checker import apply_description_corrections
+        ex = _existing()
+        ex["description_corrections"] = dict(_CORR)
+        rg = _regenerated()
+        rg["rows"] = [{"product_code": "EJL/G3/1",
+                       "description": "engine generated text"}]
+        m = merge_regenerated_audit(ex, rg)
+        apply_description_corrections(m)
+        row = m["rows"][0]
+        assert row["material"] == "platyna próby 950"
+        assert row["description_pl"] == "platyna próby 950"
+        assert row["_correction_applied"] is True
+
+    def test_correction_flows_to_resolver_after_merge(self):
+        # Resolver priority (a): the preserved shipment correction outranks
+        # any generated/classifier description.
+        from app.services.description_engine import (
+            resolve_product_description_for_customs,
+        )
+        ex = _existing()
+        ex["description_corrections"] = dict(_CORR)
+        m = merge_regenerated_audit(ex, _regenerated())
+        res = resolve_product_description_for_customs(
+            "EJL/G3/1",
+            {"description": "engine generated text"},
+            corrections=m["description_corrections"],
+        )
+        assert res["status"] == "ok"
+        assert res["source"] == "operator_correction_shipment"
+        assert res["description_pl"] == "platyna próby 950"
+
+    def test_meaningful_regen_corrections_win(self):
+        # Asymmetric merge rule pin: a flow that legitimately rewrites the
+        # corrections overlay in the regen must not be blocked by preservation.
+        ex = _existing()
+        ex["description_corrections"] = dict(_CORR)
+        rg = _regenerated()
+        rg["description_corrections"] = {"EJL/G3/2": {"material_pl": "srebro próby 925"}}
+        m = merge_regenerated_audit(ex, rg)
+        assert m["description_corrections"] == {"EJL/G3/2": {"material_pl": "srebro próby 925"}}
+
+    def test_absent_on_both_sides_stays_absent(self):
+        m = merge_regenerated_audit(_existing(), _regenerated())
+        assert "description_corrections" not in m
