@@ -825,14 +825,35 @@ def get_inventory_at_location(location_code: str) -> List[Dict[str, Any]]:
 
 _sample_out_schema_verified = False
 
+# Columns the sample writer AND the C-3b read register both depend on.
+# DEFECT-1 (POST-RELEASE STABILIZATION-1, 2026-07-10): production carried a
+# PRE-Phase-C generation of sample_out_events (action/event_time/note/
+# origin_sample_event_id) — the table and an identically-named idempotency
+# index EXISTED, so the existence-only guard passed and the read register
+# crashed with a raw 500 ("no such column: o.occurred_at") instead of the
+# designed 503 MIGRATION_PENDING. The guard must verify the COLUMN SET, not
+# just object names. Keep in sync with the canonical DDL in
+# service/app/db/migrations/draft_20260512_122327_sample_out_events.py.draft.
+_SAMPLE_OUT_REQUIRED_COLUMNS = frozenset({
+    "id", "scan_code", "direction", "operator",
+    "recipient_client_name", "recipient_client_id",
+    "sample_reason", "expected_return_date", "notes",
+    "idempotency_key", "linked_state_event_id", "linked_origin_event_id",
+    "occurred_at", "created_at",
+})
+
 
 def ensure_sample_out_schema() -> bool:
-    """Return True iff `sample_out_events` table AND
-    `idx_sample_out_idempotency` index both exist. Cached on success.
+    """Return True iff `sample_out_events` exists with the CURRENT-generation
+    column set AND the `idx_sample_out_idempotency` index exists. Cached on
+    success only — a False result is re-checked on every call so an applied
+    migration is picked up without a restart.
 
-    Used by the Sample-out writer as a pre-write guard, same pattern as
-    `ensure_idempotency_schema()` for Move stock. Callers that get False
-    should respond with HTTP 503 MIGRATION_PENDING.
+    Used by the Sample-out writer as a pre-write guard and by the C-3b read
+    register route, same pattern as `ensure_idempotency_schema()` for Move
+    stock. Callers that get False should respond with HTTP 503
+    MIGRATION_PENDING. A stale-generation table (present but missing
+    required columns) is MIGRATION_PENDING, not a crash.
 
     Never raises.
     """
@@ -847,6 +868,9 @@ def ensure_sample_out_schema() -> bool:
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='sample_out_events'"
             ).fetchone()
             if tbl is None:
+                return False
+            cols = {r["name"] for r in con.execute("PRAGMA table_info(sample_out_events)")}
+            if not _SAMPLE_OUT_REQUIRED_COLUMNS <= cols:
                 return False
             idx = con.execute(
                 "SELECT name FROM sqlite_master "
