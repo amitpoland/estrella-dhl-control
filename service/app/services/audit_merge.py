@@ -62,6 +62,17 @@ PRESERVED_KEYS: tuple = (
     # Operator overlays
     "operator_overrides",       # never clobber; engine does not know about them
     "broker_followup_drafts",   # broker email drafts for blocked-batch reconciliation
+    # ── Shipment-scoped customs description corrections (G3, 2026-07-10) ──
+    # Written ONLY by the action-proposals approve route (scope="shipment");
+    # read by customs_desc_checker.apply_description_corrections and
+    # description_engine.resolve_product_description_for_customs (priority (a),
+    # above product_descriptions source='manual'). The engine never writes this
+    # key, so before this entry EVERY full re-process silently dropped all
+    # approved shipment corrections (governance audit gap G3). Deliberately
+    # batch-local — durable cross-shipment corrections are a separate authority
+    # (scope="global_mapping" → description_mappings table) and must NOT be
+    # merged into this overlay.
+    "description_corrections",
     "action_proposals",
     "queued_replies",
     "sent_replies",
