@@ -151,6 +151,55 @@ def test_apply_noop_when_master_signatures_empty(env):
     assert "CSTR001" in designs_ambiguous and exact == {}
 
 
+# ── END-TO-END through resolve_sales_lines_for_batch (rebase addition) ───────
+# The matcher was HELD as safe-but-inert because sales rows carried no variant
+# fields. PFW Slice 1 (#870) now populates karat/metal_color/quality_string/
+# size/diamond_weight/color_weight on every sales_packing line — this test
+# drives the REAL resolver entry point with Slice-1-shaped rows over REAL
+# packing_lines candidates + REAL Product Master signatures and proves the
+# Tier-2 exact match resolves an ambiguous design deterministically.
+
+def test_resolver_end_to_end_with_slice1_shaped_rows(env, tmp_path):
+    from app.services import packing_db as pdb
+    from app.services.proforma_draft_sync import resolve_sales_lines_for_batch
+
+    # Real packing authority: one design, two candidate codes in this batch.
+    pk_db = tmp_path / "packing.db"
+    pdb.init_packing_db(pk_db)
+    doc_id = pdb.upsert_packing_document(batch_id="B-E2E", source_file_path="pl.xlsx")
+    pdb.upsert_packing_lines([
+        {"packing_document_id": doc_id, "batch_id": "B-E2E", "invoice_no": "I1",
+         "product_code": "EJL/1-1", "design_no": "CSTR001", "quantity": 1,
+         "pack_sr": 1},
+        {"packing_document_id": doc_id, "batch_id": "B-E2E", "invoice_no": "I1",
+         "product_code": "EJL/1-2", "design_no": "CSTR001", "quantity": 1,
+         "pack_sr": 2},
+    ])
+
+    # Real Master signatures (advisory identity) for both candidates.
+    c14, c18 = _clone(), _clone(karat="18KT")
+    _seed_master(env, "EJL/1-1", "CSTR001", build_variant_signature(c14))
+    _seed_master(env, "EJL/1-2", "CSTR001", build_variant_signature(c18))
+
+    # Slice-1-shaped sales row: variant fields populated, product_code empty.
+    sales_row = {
+        "client_name": "ACME", "design_no": "CSTR001", "product_code": "",
+        "qty": 1, "unit_price": 300.0, "currency": "EUR",
+        "karat": "14KT", "metal_color": "W", "quality_string": "G-VS",
+        "stone_type": "", "size": "7", "diamond_weight": 0.5, "color_weight": 0.0,
+    }
+    resolved, summary = resolve_sales_lines_for_batch("B-E2E", [sales_row])
+
+    assert len(resolved) == 1
+    out = resolved[0]
+    assert out["product_code"] == "EJL/1-1", \
+        "Tier-2 exact variant match must resolve the 14KT row to its candidate"
+    assert out["resolution_source"] == "exact_variant_match"
+    assert "CSTR001" in summary["designs_exact_matched"]
+    assert summary["designs_ambiguous"] == {}          # nothing left for the scorer
+    assert summary["designs_scored_pending"] == {}     # no operator queue entry
+
+
 def test_apply_only_assigns_candidate_codes(env):
     # even if a matching signature exists ONLY on a non-candidate code, the design
     # is not resolved (candidates are the batch authority; no cross-candidate leak)
