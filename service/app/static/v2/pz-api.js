@@ -233,8 +233,13 @@
       _postM(`${BASE}/proforma/draft/${draftId}/lines`, lineBody),
 
     // DELETE /api/v1/proforma/draft/{draft_id}/lines/{line_id}
-    deleteDraftLine: (draftId, lineId) =>
-      _del(`${BASE}/proforma/draft/${draftId}/lines/${lineId}`),
+    // expected_updated_at + force ride as query params (DELETE has no body
+    // in our convention; backend defaults force=false and rejects removing
+    // the last line without it). Additive signature — no existing callers.
+    deleteDraftLine: (draftId, lineId, updatedAt, force) =>
+      _del(`${BASE}/proforma/draft/${draftId}/lines/${lineId}`
+        + `?expected_updated_at=${encodeURIComponent(updatedAt || '')}`
+        + (force ? '&force=true' : '')),
 
     // POST /api/v1/proforma/draft/{draft_id}/service-charges
     // charge: { charge_type, amount, currency, label? }

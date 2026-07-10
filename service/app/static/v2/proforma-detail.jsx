@@ -4209,7 +4209,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             <ServiceProductRegistryPanel />
           </React.Fragment>
         )}
-        {activeTab === 'lines' && <ProformaLinesTab lines={lines} currency={draftCurrency} onAddLine={() => setEditMode(true)} serviceCharges={liveDraft.service_charges} />}
+        {activeTab === 'lines' && <ProformaLinesTab
+          lines={lines} currency={draftCurrency}
+          onAddLine={() => setEditMode(true)}
+          serviceCharges={liveDraft.service_charges}
+          draftId={draft && draft.id}
+          expectedUpdatedAt={liveDraft.updated_at || (draft && draft.updated_at) || ''}
+          editMode={editMode && canEdit}
+          onChanged={() => { draftHook && draftHook.reload && draftHook.reload(); }}
+        />}
         {activeTab === 'source' && (
           <SourceExtractionTab
             draftId={draft && draft.id}
@@ -5582,9 +5590,108 @@ function OverviewFinancials({ contractorId, currency }) {
 // columns read the Slice-1 fields (older drafts show '—' until reset/intake).
 // HS code + origin remain on the printable documents (Preview/Print); the
 // wireframe table is the UI authority for on-screen columns.
-function ProformaLinesTab({ lines, currency, onAddLine, serviceCharges }) {
+// PFW-S5: line operations (add / qty+price edit / delete) wired to the
+// EXISTING draft-line authority — POST/PATCH/DELETE /draft/{id}/lines via
+// PzApi.addDraftLine / patchDraftLine / deleteDraftLine. Editable fields are
+// EXACTLY the whitelisted subset shown here (qty, unit_price); variant
+// identity stays reset-refreshed (pinned EDITABLE_LINE_FIELDS contract + ADR
+// proforma-wireframe-rebuild). Product picker reads the existing read-only
+// product-options authority. Every op reloads the draft (onChanged) so the
+// OCC token (expected_updated_at) is always the server's latest.
+function ProformaLinesTab({ lines, currency, onAddLine, serviceCharges,
+                            draftId, expectedUpdatedAt, editMode, onChanged }) {
   const cur = currency || 'EUR';
   const sym = cur === 'USD' ? '$' : cur === 'EUR' ? '€' : `${cur} `;
+  const lineOpsEnabled = !!(editMode && draftId);
+  // Per-row edit buffers keyed by line_id: { qty, unit_price }
+  const [rowEdit, setRowEdit] = React.useState({});
+  const [rowBusy, setRowBusy] = React.useState({});
+  const [rowErr, setRowErr]   = React.useState({});
+  // Add-line row state
+  const [addLine, setAddLine] = React.useState({ product_code: '', design_no: '', qty: '1', unit_price: '' });
+  const [addBusy, setAddBusy] = React.useState(false);
+  const [addErr, setAddErr]   = React.useState(null);
+  // Product options (read-only picker authority) — lazy, once per mount
+  const [options, setOptions] = React.useState(null);
+  React.useEffect(() => {
+    if (!lineOpsEnabled || options !== null) return;
+    window.PzApi.getProductOptions()
+      // Transport envelope: PzApi wraps payloads as { ok, data } — the
+      // option list lives at r.data.options.
+      .then(r => setOptions((r && r.ok && r.data && Array.isArray(r.data.options)) ? r.data.options : []))
+      .catch(() => setOptions([]));
+  }, [lineOpsEnabled, options]);
+
+  const _rowVal = (line, key, fallback) => {
+    const buf = rowEdit[line.lineId];
+    return (buf && buf[key] !== undefined) ? buf[key] : String(fallback);
+  };
+  const _setRow = (line, key, v) =>
+    setRowEdit(p => ({ ...p, [line.lineId]: { ...(p[line.lineId] || {}), [key]: v } }));
+  const _rowDirty = (line) => {
+    const buf = rowEdit[line.lineId];
+    if (!buf) return false;
+    return (buf.qty !== undefined && Number(buf.qty) !== Number(line.qty))
+        || (buf.unit_price !== undefined && Number(buf.unit_price) !== Number(line.unitEur));
+  };
+  const saveRow = (line) => {
+    const buf = rowEdit[line.lineId] || {};
+    const patch = {};
+    if (buf.qty !== undefined && Number(buf.qty) !== Number(line.qty)) patch.qty = Number(buf.qty);
+    if (buf.unit_price !== undefined && Number(buf.unit_price) !== Number(line.unitEur)) patch.unit_price = Number(buf.unit_price);
+    if (!Object.keys(patch).length) return;
+    setRowBusy(p => ({ ...p, [line.lineId]: true }));
+    setRowErr(p => ({ ...p, [line.lineId]: null }));
+    window.PzApi.patchDraftLine(draftId, line.lineId, patch, expectedUpdatedAt)
+      .then(r => {
+        if (r && r.ok === false) throw new Error((r && r.error) || 'Save rejected');
+        setRowBusy(p => ({ ...p, [line.lineId]: false }));
+        setRowEdit(p => { const n = { ...p }; delete n[line.lineId]; return n; });
+        onChanged && onChanged();
+      })
+      .catch(e => {
+        setRowBusy(p => ({ ...p, [line.lineId]: false }));
+        setRowErr(p => ({ ...p, [line.lineId]: (e && e.message) || 'Save failed' }));
+      });
+  };
+  const deleteRow = (line) => {
+    setRowBusy(p => ({ ...p, [line.lineId]: true }));
+    setRowErr(p => ({ ...p, [line.lineId]: null }));
+    // force stays false: removing the LAST line errors honestly (backend
+    // guard) — the draft's line source of truth is the packing authority.
+    window.PzApi.deleteDraftLine(draftId, line.lineId, expectedUpdatedAt, false)
+      .then(r => {
+        if (r && r.ok === false) throw new Error((r && r.error) || 'Delete rejected');
+        setRowBusy(p => ({ ...p, [line.lineId]: false }));
+        onChanged && onChanged();
+      })
+      .catch(e => {
+        setRowBusy(p => ({ ...p, [line.lineId]: false }));
+        setRowErr(p => ({ ...p, [line.lineId]: (e && e.message) || 'Delete failed' }));
+      });
+  };
+  const submitAddLine = () => {
+    if (addBusy) return;
+    const pc = (addLine.product_code || '').trim();
+    const q  = Number(addLine.qty);
+    const up = Number(addLine.unit_price);
+    if (!pc) { setAddErr('Pick a product from Product Master first.'); return; }
+    if (!(q > 0)) { setAddErr('Qty must be > 0.'); return; }
+    if (!(up >= 0) || addLine.unit_price === '') { setAddErr('Unit price must be ≥ 0.'); return; }
+    setAddBusy(true); setAddErr(null);
+    window.PzApi.addDraftLine(draftId, {
+      expected_updated_at: expectedUpdatedAt || '',
+      line: { product_code: pc, design_no: addLine.design_no || '', qty: q, unit_price: up, currency: cur },
+    })
+      .then(r => {
+        if (r && r.ok === false) throw new Error((r && r.error) || 'Add rejected');
+        setAddBusy(false);
+        setAddLine({ product_code: '', design_no: '', qty: '1', unit_price: '' });
+        onChanged && onChanged();
+      })
+      .catch(e => { setAddBusy(false); setAddErr((e && e.message) || 'Add failed'); });
+  };
+  const editCell = { width: 68, textAlign: 'right', padding: '4px 6px', borderRadius: 5, border: '1px solid var(--accent-border)', background: 'var(--card)', color: 'var(--text)', fontSize: 11.5, fontFamily: 'monospace', fontWeight: 600, boxSizing: 'border-box' };
   const raw = (line, key) => (line._raw && line._raw[key] != null ? line._raw[key] : null);
   const rawTxt = (line, key) => { const v = raw(line, key); return (v || v === 0) && String(v).trim() ? String(v) : '—'; };
   const rawWt = (line, key) => { const v = Number(raw(line, key) || 0); return v > 0 ? v.toFixed(2) : '—'; };
@@ -5601,12 +5708,18 @@ function ProformaLinesTab({ lines, currency, onAddLine, serviceCharges }) {
     <th key={txt} style={{ padding: '9px 10px', textAlign: align || 'left', fontSize: 9.5, fontWeight: 700,
       color: 'var(--text-3)', letterSpacing: '0.05em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{txt}</th>
   );
-  const COLS = 15;
+  const COLS = lineOpsEnabled ? 16 : 15;
   return (
     <div>
       <PfSectionLabel style={{ marginBottom: 12 }}>
         Line items ({lines.length}) · from packing list · mapped to Product Master
       </PfSectionLabel>
+      {lineOpsEnabled && (
+        <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 700, marginBottom: 8 }} data-testid="pf-line-ops-hint">
+          ✎ Edit mode — qty and unit price are editable per line; other columns come from the packing
+          authority (refresh via Reset from sales packing).
+        </div>
+      )}
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'auto', boxShadow: '0 1px 3px var(--shadow)' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1180 }}>
           <thead>
@@ -5615,6 +5728,7 @@ function ProformaLinesTab({ lines, currency, onAddLine, serviceCharges }) {
               {th('Description (EN / PL)')}{th('Kt')}{th('Col')}{th('Quality')}
               {th('Dia Wt', 'right')}{th('Col Wt', 'right')}{th('Qty', 'right')}
               {th(`Value ${sym.trim()}`, 'right')}{th(`Total ${sym.trim()}`, 'right')}{th('Size')}
+              {lineOpsEnabled ? th('') : null}
             </tr>
           </thead>
           <tbody>
@@ -5661,12 +5775,102 @@ function ProformaLinesTab({ lines, currency, onAddLine, serviceCharges }) {
                 <td style={{ padding: '10px', fontSize: 11.5, color: 'var(--text)', whiteSpace: 'nowrap' }}>{rawTxt(line, 'quality_string')}</td>
                 <td style={{ padding: '10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 11.5, whiteSpace: 'nowrap' }}>{rawWt(line, 'diamond_weight')}</td>
                 <td style={{ padding: '10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 11.5, whiteSpace: 'nowrap' }}>{rawWt(line, 'color_weight')}</td>
-                <td style={{ padding: '10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>{line.qty}</td>
-                <td style={{ padding: '10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12, whiteSpace: 'nowrap' }}>{sym}{line.unitEur.toFixed(2)}</td>
+                <td style={{ padding: '10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                  {lineOpsEnabled
+                    ? <input type="number" min="0.01" step="1" value={_rowVal(line, 'qty', line.qty)}
+                        onChange={e => _setRow(line, 'qty', e.target.value)}
+                        data-testid={`pf-line-qty-${i}`} style={{ ...editCell, width: 56 }} />
+                    : line.qty}
+                </td>
+                <td style={{ padding: '10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12, whiteSpace: 'nowrap' }}>
+                  {lineOpsEnabled
+                    ? <input type="number" min="0" step="0.01" value={_rowVal(line, 'unit_price', line.unitEur)}
+                        onChange={e => _setRow(line, 'unit_price', e.target.value)}
+                        data-testid={`pf-line-price-${i}`} style={editCell} />
+                    : `${sym}${line.unitEur.toFixed(2)}`}
+                </td>
                 <td style={{ padding: '10px', textAlign: 'right', fontFamily: 'monospace', fontSize: 12.5, fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap' }}>{sym}{line.netEur.toFixed(2)}</td>
                 <td style={{ padding: '10px', fontSize: 11.5, color: 'var(--text)', whiteSpace: 'nowrap' }}>{rawTxt(line, 'size')}</td>
+                {lineOpsEnabled ? (
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
+                    <button
+                      title={_rowDirty(line) ? 'Save qty / unit price for this line (PATCH)' : 'No changes on this line'}
+                      disabled={!_rowDirty(line) || !!rowBusy[line.lineId]}
+                      onClick={() => saveRow(line)}
+                      data-testid={`pf-line-save-${i}`}
+                      style={{ padding: '3px 8px', fontSize: 11, fontWeight: 700, borderRadius: 5, cursor: _rowDirty(line) ? 'pointer' : 'not-allowed',
+                               background: _rowDirty(line) ? 'var(--accent)' : 'var(--bg-subtle)',
+                               color: _rowDirty(line) ? 'var(--accent-text)' : 'var(--text-3)',
+                               border: '1px solid var(--border)', opacity: rowBusy[line.lineId] ? 0.6 : 1 }}>
+                      {rowBusy[line.lineId] ? '⏳' : '✓'}
+                    </button>
+                    <button
+                      title="Delete this line from the draft (removing the last line is rejected)"
+                      disabled={!!rowBusy[line.lineId]}
+                      onClick={() => deleteRow(line)}
+                      data-testid={`pf-line-delete-${i}`}
+                      style={{ padding: '3px 8px', fontSize: 11, fontWeight: 700, borderRadius: 5, cursor: 'pointer', marginLeft: 4,
+                               background: 'var(--bg-subtle)', color: 'var(--badge-red-text)',
+                               border: '1px solid var(--badge-red-border)', opacity: rowBusy[line.lineId] ? 0.6 : 1 }}>
+                      ×
+                    </button>
+                    {rowErr[line.lineId] && (
+                      <div style={{ fontSize: 10, color: 'var(--badge-red-text)', maxWidth: 160, whiteSpace: 'normal', marginTop: 3 }} data-testid={`pf-line-err-${i}`}>
+                        {rowErr[line.lineId]}
+                      </div>
+                    )}
+                  </td>
+                ) : null}
               </tr>
             ))}
+            {lineOpsEnabled && (
+              <tr data-testid="pf-add-line-row" style={{ borderTop: '2px solid var(--border)', background: 'var(--bg-subtle)' }}>
+                <td style={{ padding: '10px', fontSize: 11.5, color: 'var(--text-3)' }}>＋</td>
+                <td colSpan={5} style={{ padding: '8px 10px', minWidth: 260 }}>
+                  <PfAutocomplete
+                    value={addLine.product_code
+                      ? `${addLine.product_code}${addLine.design_no ? ' · ' + addLine.design_no : ''}` : ''}
+                    placeholder={options === null ? 'Loading Product Master…' : 'Search Product Master (code · name)…'}
+                    items={options || []}
+                    getLabel={o => `${o.product_code}${o.design_no ? ' · ' + o.design_no : ''}`}
+                    getSub={o => [o.item_type, o.name_pl].filter(Boolean).join(' · ')}
+                    onPick={o => { setAddErr(null); setAddLine(p => ({ ...p, product_code: o.product_code, design_no: o.design_no || '' })); }}
+                    onClear={() => setAddLine(p => ({ ...p, product_code: '', design_no: '' }))}
+                    data-testid="pf-add-line-product"
+                  />
+                </td>
+                <td colSpan={5} style={{ padding: '8px 10px', fontSize: 10.5, color: 'var(--text-3)' }}>
+                  New line · descriptions and variant fields fill from the product authorities after add
+                </td>
+                <td style={{ padding: '8px 10px', textAlign: 'right' }}>
+                  <input type="number" min="0.01" step="1" value={addLine.qty}
+                    onChange={e => setAddLine(p => ({ ...p, qty: e.target.value }))}
+                    data-testid="pf-add-line-qty" style={{ ...editCell, width: 56 }} />
+                </td>
+                <td style={{ padding: '8px 10px', textAlign: 'right' }}>
+                  <input type="number" min="0" step="0.01" placeholder="0.00" value={addLine.unit_price}
+                    onChange={e => setAddLine(p => ({ ...p, unit_price: e.target.value }))}
+                    data-testid="pf-add-line-price" style={editCell} />
+                </td>
+                <td colSpan={lineOpsEnabled ? 3 : 2} style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
+                  <button
+                    onClick={submitAddLine}
+                    disabled={addBusy}
+                    title="Append this line to the draft (POST /draft/{id}/lines)"
+                    data-testid="pf-add-line-submit"
+                    style={{ padding: '5px 12px', fontSize: 11.5, fontWeight: 700, borderRadius: 6, cursor: 'pointer',
+                             background: 'var(--accent)', color: 'var(--accent-text)',
+                             border: '1px solid var(--accent-border, var(--accent))', opacity: addBusy ? 0.6 : 1 }}>
+                    {addBusy ? '⏳ Adding…' : '＋ Add line'}
+                  </button>
+                  {addErr && (
+                    <div style={{ fontSize: 10, color: 'var(--badge-red-text)', maxWidth: 200, whiteSpace: 'normal', marginTop: 3 }} data-testid="pf-add-line-err">
+                      {addErr}
+                    </div>
+                  )}
+                </td>
+              </tr>
+            )}
           </tbody>
           <tfoot>
             <tr style={{ background: 'var(--bg-subtle)', borderTop: '1px solid var(--border)' }}>
