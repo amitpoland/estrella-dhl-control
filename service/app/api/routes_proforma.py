@@ -4286,7 +4286,56 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         "exchange_rate_date":    getattr(d, "fx_rate_date", None),
         "nbp_table":             getattr(d, "fx_rate_source", None),
         "incoterm":              getattr(d, "incoterm", None),
+        # Wireframe rebuild Slice 1 — additive display fields. Stored on the
+        # draft since Phase 7 but never surfaced; read-only projection.
+        "vat_code":              getattr(d, "vat_code", None),
+        "vat_context":           getattr(d, "vat_context", None),
+        "wfirma_payment_method": getattr(d, "wfirma_payment_method", None),
+        # Best-effort NBP table number (e.g. "A 089/2026") from the operator-
+        # managed fx_rates reference store. Advisory display only — never an
+        # input to any calculation. None when no matching observation exists.
+        "nbp_table_number":      _nbp_table_number_for(d),
     }
+
+
+def _nbp_table_number_for(d: "pildb.ProformaDraft") -> Optional[str]:
+    """Look up fx_rates.table_number for the draft's (rate date, currency)→PLN.
+
+    The fx_rates table (master_data.sqlite) is a PURE REFERENCE store — this
+    projection is display-only and returns None on any miss or error. It never
+    influences exchange_rate itself, which stays the draft's stored value.
+    """
+    rate_date = (getattr(d, "fx_rate_date", None) or "").strip()
+    cur = (d.currency or "").strip().upper()
+    if not rate_date or not cur or cur == "PLN":
+        return None
+    # Positive-result memo: fx_rates observations are effectively immutable
+    # per (date, currency), and _draft_to_full serves several hot GET paths —
+    # skip the per-request sqlite open once a table number is known. Misses
+    # are NOT cached so a later operator-entered rate becomes visible.
+    key = (rate_date, cur)
+    hit = _NBP_TBL_MEMO.get(key)
+    if hit is not None:
+        return hit
+    try:
+        from ..services.master_data_db import list_fx_rates
+        rows = list_fx_rates(
+            settings.storage_root / "master_data.sqlite",
+            from_currency=cur, to_currency="PLN",
+            rate_date=rate_date, active=True, limit=1,
+        )
+        if rows and (rows[0].table_number or "").strip():
+            tbl = rows[0].table_number.strip()
+            if len(_NBP_TBL_MEMO) > 512:      # unbounded-growth guard
+                _NBP_TBL_MEMO.clear()
+            _NBP_TBL_MEMO[key] = tbl
+            return tbl
+    except Exception as exc:  # reference lookup is best-effort, display-only
+        log.debug("nbp_table_number lookup failed (display-only): %s", exc)
+    return None
+
+
+_NBP_TBL_MEMO: Dict[tuple, str] = {}
 
 
 def _enrich_invoice_line_names(lines: List[Dict[str, Any]]) -> None:
@@ -7044,6 +7093,18 @@ def reset_proforma_draft_from_sales_packing(
             "kt":           r.get("kt") or r.get("karat") or "",
             "col":          r.get("col") or r.get("metal_color") or "",
             "quality":      r.get("quality") or r.get("quality_string") or "",
+            # Variant-identity passthrough (sales_packing columns) so the
+            # DB layer's _sales_variant_fields carries them into
+            # editable_lines — display only, never pricing/readiness.
+            "client_po":      r.get("client_po") or "",
+            "karat":          r.get("karat") or "",
+            "metal":          r.get("metal") or "",
+            "metal_color":    r.get("metal_color") or "",
+            "quality_string": r.get("quality_string") or "",
+            "stone_type":     r.get("stone_type") or "",
+            "size":           r.get("size") or "",
+            "diamond_weight": r.get("diamond_weight") or 0,
+            "color_weight":   r.get("color_weight") or 0,
         }
         for r in matched
     ]

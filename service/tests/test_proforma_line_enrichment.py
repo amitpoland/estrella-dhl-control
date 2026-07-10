@@ -277,9 +277,19 @@ def test_birth_source_lines_json_is_raw_only(db_path):
         assert "item_type"  not in ln
         assert "_gen_attrs" not in ln
         # Source carries the raw sales_packing columns — and only those.
+        # 2026-07-10 (wireframe Slice 1): the raw set now includes the
+        # variant-identity sales_packing columns (client_po, karat, metal,
+        # metal_color, quality_string, size, diamond_weight, color_weight)
+        # that were previously silently dropped at the birth boundary.
+        # These are RAW caller-supplied columns, not annotations — the
+        # guarded invariant (no name_pl / item_type / _gen_attrs pollution)
+        # is unchanged and still asserted above.
         assert set(ln.keys()) == {
             "product_code", "design_no", "qty", "unit_price",
             "currency", "price_source", "client_ref",
+            "client_po", "karat", "metal", "metal_color",
+            "quality_string", "stone_type", "size",
+            "diamond_weight", "color_weight",
         }
 
     # The editable copy IS the annotated working shape and carries name_pl
