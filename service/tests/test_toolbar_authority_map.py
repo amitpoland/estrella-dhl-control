@@ -158,10 +158,26 @@ def test_print_uses_document_pdf_route():
         "Print must use GET /document.pdf route for PDF authority"
 
 
-def test_print_uses_window_open():
-    """Print must open PDF in new tab via window.open."""
+def test_print_downloads_via_handler():
+    """Print must route through handleDownloadPdf (blob download of the
+    wFirma proforma PDF).
+
+    Repointed (Slice 4 GATE-1, stale-pin repair): PR #745 replaced the
+    original window.open flow with handleDownloadPdf to fix the blank-PDF
+    download, but this pin kept asserting window.open and has failed on
+    every tree since June. The guarded invariant — Print resolves the PDF
+    through the document.pdf authority route, wired to a real handler —
+    is unchanged; the anchor now matches the implementation.
+    """
     src = _src()
-    assert "window.open" in src, "Print must use window.open"
+    assert "handleDownloadPdf" in src, \
+        "Print must be wired through handleDownloadPdf"
+    pdf_pos = src.find('data-testid="proforma-detail-download-pdf"')
+    assert pdf_pos > 0, "Print button testid must exist"
+    block_start = max(src.rfind("<TbBtn", 0, pdf_pos), src.rfind("<Btn", 0, pdf_pos))
+    block = src[block_start:pdf_pos + 60]
+    assert "handleDownloadPdf" in block, \
+        "Print button onClick must invoke handleDownloadPdf"
 
 
 def test_print_pdf_route_exists_in_backend():
