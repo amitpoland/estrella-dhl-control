@@ -291,6 +291,87 @@ def schedule_product_master_sync(
         return False
 
 
+def _persist_packing_rows(
+    batch_id:      str,
+    parse_result:  Dict[str, Any],
+    supplier_name: str,
+) -> int:
+    """Persist parsed purchase-packing rows to the packing authority.
+
+    ONE persistence path for packing ingest: upsert the packing document,
+    map ``packing_rows`` into ``packing_lines`` records (the SUPERSET mapping
+    from the primary intake path — incl. ``pack_sr``, the dedup uniqueness
+    key, plus ``unit_price``/``total_value``), upsert, seed PURCHASE_TRANSIT,
+    and fire the Global-Jewellery description regen when applicable.
+
+    Introduced to close the add-document no-persist gap: the
+    ``/add-document`` packing branch parsed rows but never stored them, so
+    packing_lines (CMR weights, variant identity, PM4 sync trigger) silently
+    missed every document added through that path. The backfill
+    ``/add-packing-list`` path also carried a diverged copy of the mapping
+    that had lost pack_sr/unit_price/total_value — same-design rows from one
+    source list could collapse in dedup. Both paths now use THIS helper.
+    The primary ``/intake`` path keeps its inline (identical-superset) block
+    untouched in this change — consolidation is a follow-up once this helper
+    has a verification window (hot-path discipline).
+
+    Returns the number of stored line records (0 when no rows). Callers keep
+    ownership of PM4 scheduling (needs the endpoint's BackgroundTasks).
+    """
+    doc_id_pdb = pdb.upsert_packing_document(**parse_result["document"])
+    rows = parse_result.get("packing_rows", []) or []
+    if not rows:
+        return 0
+    line_records = [
+        {
+            "packing_document_id":   doc_id_pdb,
+            "batch_id":              batch_id,
+            "invoice_no":            r.get("invoice_no", ""),
+            "invoice_line_position": r.get("invoice_line_position"),
+            "product_code":          r.get("product_code"),
+            "design_no":             str(r.get("design_no", "") or ""),
+            "batch_no":              str(r.get("batch_no", "") or ""),
+            "bag_id":                str(r.get("bag_id", "") or ""),
+            "tray_id":               str(r.get("tray_id", "") or ""),
+            "item_type":             str(r.get("item_type", "") or ""),
+            "uom":                   str(r.get("uom", "") or ""),
+            "quantity":              _safe_float(r.get("quantity", 0)),
+            "gross_weight":          _safe_float(r.get("gross_weight", 0)),
+            "net_weight":            _safe_float(r.get("net_weight", 0)),
+            "metal":                 str(r.get("metal", "") or ""),
+            "karat":                 str(r.get("karat", "") or ""),
+            "stone_type":            str(r.get("stone_type", "") or ""),
+            "metal_color":           str(r.get("metal_color", "") or ""),
+            "quality_string":        str(r.get("quality_string", "") or ""),
+            "size":                  str(r.get("size", "") or ""),
+            "diamond_weight":        _safe_float(r.get("diamond_weight", 0)),
+            "color_weight":          _safe_float(r.get("color_weight", 0)),
+            "remarks":               str(r.get("remarks", "") or ""),
+            "extracted_confidence":  _safe_float(r.get("extracted_confidence", 0)),
+            "requires_manual_review": bool(r.get("requires_manual_review", False)),
+            "invoice_no_raw":        str(r.get("invoice_no", "") or ""),
+            "supplier_name":         supplier_name,
+            # Source-list serial (Sr / PkSr) — primary uniqueness key so two
+            # same-design rows from one source list aren't collapsed by dedup.
+            "pack_sr":               r.get("line_position"),
+            "unit_price":            _safe_float(r.get("unit_price", 0)),
+            "total_value":           _safe_float(r.get("total_value", 0)),
+        }
+        for r in rows
+    ]
+    pdb.upsert_packing_lines(line_records)
+    seed_purchase_transit(batch_id, line_records)
+    if parse_result.get("supplier") == "global_jewellery":
+        try:
+            from ..services.description_engine import regenerate_descriptions_for_packing_lines
+            _desc = regenerate_descriptions_for_packing_lines(batch_id=batch_id, dry_run=False)
+            log.info("[%s] Global packing descriptions (persist helper): %s", batch_id, _desc)
+        except Exception as _desc_exc:
+            log.warning("[%s] Global description regen failed (non-fatal): %s",
+                        batch_id, _desc_exc)
+    return len(line_records)
+
+
 # ── Main intake endpoint ──────────────────────────────────────────────────────
 
 @router.post("/intake", dependencies=[_auth])
@@ -1561,61 +1642,14 @@ async def add_packing_list(
             force_reextract=False,
         )
         inv_lines_source = result.get("invoice_lines_source", "unknown")
-        doc_id_pdb = pdb.upsert_packing_document(**result["document"])
-        rows = result.get("packing_rows", [])
-        if rows:
-            line_records = [
-                {
-                    "packing_document_id":   doc_id_pdb,
-                    "batch_id":              batch_id,
-                    "invoice_no":            r.get("invoice_no", ""),
-                    "invoice_line_position": r.get("invoice_line_position"),
-                    "product_code":          r.get("product_code"),
-                    "design_no":             str(r.get("design_no", "") or ""),
-                    "batch_no":              str(r.get("batch_no", "") or ""),
-                    "bag_id":                str(r.get("bag_id", "") or ""),
-                    "tray_id":               str(r.get("tray_id", "") or ""),
-                    "item_type":             str(r.get("item_type", "") or ""),
-                    "uom":                   str(r.get("uom", "") or ""),
-                    "quantity":              _safe_float(r.get("quantity", 0)),
-                    "gross_weight":          _safe_float(r.get("gross_weight", 0)),
-                    "net_weight":            _safe_float(r.get("net_weight", 0)),
-                    "metal":                 str(r.get("metal", "") or ""),
-                    "karat":                 str(r.get("karat", "") or ""),
-                    "stone_type":            str(r.get("stone_type", "") or ""),
-                    # Variant identity — mirror the routes_packing upload mapping.
-                    # Previously dropped here, so packing_lines variant fields were
-                    # empty for every intake-uploaded batch (the primary path).
-                    "metal_color":           str(r.get("metal_color", "") or ""),
-                    "quality_string":        str(r.get("quality_string", "") or ""),
-                    "size":                  str(r.get("size", "") or ""),
-                    "diamond_weight":        _safe_float(r.get("diamond_weight", 0)),
-                    "color_weight":          _safe_float(r.get("color_weight", 0)),
-                    "remarks":               str(r.get("remarks", "") or ""),
-                    "extracted_confidence":  _safe_float(r.get("extracted_confidence", 0)),
-                    "requires_manual_review": bool(r.get("requires_manual_review", False)),
-                    "invoice_no_raw":        str(r.get("invoice_no", "") or ""),
-                    "supplier_name":         supplier_name,
-                }
-                for r in rows
-            ]
-            pdb.upsert_packing_lines(line_records)
-            seed_purchase_transit(batch_id, line_records)
-
-            # Global Jewellery: generate descriptions from packing lines (non-blocking)
-            if result.get("supplier") == "global_jewellery":
-                try:
-                    from ..services.description_engine import regenerate_descriptions_for_packing_lines
-                    _desc = regenerate_descriptions_for_packing_lines(
-                        batch_id=batch_id, dry_run=False
-                    )
-                    log.info("[%s] Global packing descriptions (backfill): %s", batch_id, _desc)
-                except Exception as _desc_exc:
-                    log.warning("[%s] Global description regen failed (non-fatal): %s",
-                                batch_id, _desc_exc)
+        # ONE persistence authority (_persist_packing_rows). This path's
+        # previous inline copy had diverged from the primary intake mapping
+        # (lost pack_sr — the dedup uniqueness key — plus unit_price and
+        # total_value); the shared helper restores the superset.
+        rows_stored = _persist_packing_rows(batch_id, result, supplier_name)
         result_summary = {
             "status":               "extracted",
-            "rows":                 len(rows),
+            "rows":                 rows_stored,
             "matched":              result.get("matched_count", 0),
             "unmatched":            result.get("unmatched_count", 0),
             "invoice_lines_source": inv_lines_source,
@@ -1744,6 +1778,7 @@ def _inherit_contractor_ids(
 
 @router.post("/{batch_id}/add-document", dependencies=[_auth])
 async def add_document_to_batch(
+    background:              BackgroundTasks,
     batch_id:                str,
     file:                    UploadFile,
     document_type:           str = Form(...),
@@ -1912,14 +1947,25 @@ async def add_document_to_batch(
                 batch_output_dir=output_dir,
                 packing_file_path=path,
             )
-            lines_count = int(result.get("packing_rows_count") or
-                              len(result.get("packing_rows") or []))
+            # Close the add-document no-persist gap: rows were parsed here but
+            # never stored, so packing_lines (CMR weights, variant identity,
+            # PM4 sync trigger, PURCHASE_TRANSIT seed) silently missed every
+            # packing document added through this path. Persist through the
+            # SAME helper the backfill path uses. Supplier label is the
+            # parser-detected one (this endpoint has no supplier form field).
+            n_stored = _persist_packing_rows(
+                batch_id, result, str(result.get("supplier") or ""),
+            )
+            lines_count = n_stored
             parser_status = "extracted" if lines_count > 0 else "placeholder"
             extraction_summary = {
                 "matched":   result.get("matched_count", 0),
                 "unmatched": result.get("unmatched_count", 0),
                 "rows":      lines_count,
             }
+            # PM4: auto-sync Product Master after STORED purchase-packing rows —
+            # same trigger discipline as /intake and /add-packing-list.
+            schedule_product_master_sync(background, batch_id, n_stored)
             # RC-1: project the parse outcome back onto the registry row so the
             # add-document path matches intake/reprocess (no stale 'pending').
             try:

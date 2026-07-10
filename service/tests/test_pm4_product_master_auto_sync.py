@@ -84,14 +84,21 @@ class TestWiring:
         assert "schedule_product_master_sync(" in src
         assert 'result_summary.get("status") == "extracted"' in src
 
-    def test_add_document_to_batch_not_wired_because_no_rows_persisted(self):
-        # add_document_to_batch's packing branch calls process_packing_upload (which
-        # does NOT persist) and never calls upsert_packing_lines — so no purchase-
-        # packing rows are stored on that path. Per the 'rows stored' safety gate,
-        # PM4 must NOT schedule there.
+    def test_add_document_to_batch_persists_then_schedules(self):
+        # GAP CLOSED (was: test_add_document_to_batch_not_wired_because_no_rows_
+        # persisted, which pinned the PARKED no-persist defect): the packing
+        # branch now persists rows through the shared _persist_packing_rows
+        # helper and — per the same 'rows stored' safety gate as /intake and
+        # /add-packing-list — schedules PM4 with the STORED count (n_stored),
+        # never the parsed count.
+        assert "background" in inspect.signature(ri.add_document_to_batch).parameters
         src = inspect.getsource(ri.add_document_to_batch)
-        assert "schedule_product_master_sync(" not in src
-        assert "upsert_packing_lines(" not in src
+        assert "_persist_packing_rows(" in src, \
+            "add-document packing branch must persist rows via the shared helper"
+        assert "schedule_product_master_sync(background, batch_id, n_stored)" in src, \
+            "PM4 must be scheduled with the stored row count"
+        # The rows-stored discipline: PM4 is a no-op when n_stored == 0
+        # (enforced inside schedule_product_master_sync's row_count gate).
 
 
 class TestAuthoritySafety:
