@@ -307,6 +307,7 @@ def _register_one(
         #     endpoint logs the decision when the operator makes it).
         #   * Does NOT call ``edit_product`` or ``create_product`` — both
         #     are exclusively operator-driven via the deployed endpoints.
+        _id_refusals: list = []
         try:
             wfdb.upsert_product(
                 product_code      = product_code,
@@ -315,12 +316,25 @@ def _register_one(
                 unit              = existing.unit or "szt.",
                 vat_rate          = "23",
                 sync_status       = "pending_adoption",
+                refusals          = _id_refusals,
             )
         except Exception as exc:
             # Local-mirror failure is reported as failed but never overrides
             # the wFirma side — operator can re-run.
             out["status"] = "failed"
             out["error"]  = f"local mirror failed: {type(exc).__name__}: {exc}"
+            return out
+        if _id_refusals:
+            # CR7 / G1 id guard: the local row already carries a DIFFERENT
+            # confirmed wfirma_product_id and the mirror does not confirm the
+            # discovered one — the cache row was left untouched. Same posture
+            # as a mirror collision: surface, operator must resolve.
+            _ref = _id_refusals[0]
+            out["status"] = "failed"
+            out["error"]  = (f"cache id guard refused: local wfirma_product_id "
+                             f"{_ref['current_id']} != discovered "
+                             f"{_ref['attempted_id']} — operator must resolve")
+            out["wfirma_product_id"] = _ref["current_id"]
             return out
         out["status"]            = "pending_adoption"
         out["wfirma_product_id"] = existing.wfirma_id
@@ -408,6 +422,7 @@ def _register_one(
         out["error"]  = f"canonical mirror failed after create: {type(exc).__name__}: {exc}"
         out["wfirma_product_id"] = result.wfirma_id
         return out
+    _id_refusals: list = []
     try:
         wfdb.upsert_product(
             product_code      = product_code,
@@ -416,11 +431,23 @@ def _register_one(
             unit              = "szt.",
             vat_rate          = "23",
             sync_status       = "matched",
+            refusals          = _id_refusals,
         )
     except Exception as exc:
         out["status"] = "failed"
         out["error"]  = f"local mirror failed after create: {type(exc).__name__}: {exc}"
         out["wfirma_product_id"] = result.wfirma_id   # at least surface what wFirma assigned
+        return out
+    if _id_refusals:
+        # Defensive only: the canonical mirror write above already confirmed
+        # result.wfirma_id for this code, so the id guard should always pass
+        # here. If it ever refuses, report rather than mask the divergence.
+        _ref = _id_refusals[0]
+        out["status"] = "failed"
+        out["error"]  = (f"cache id guard refused after create: local "
+                         f"wfirma_product_id {_ref['current_id']} != created "
+                         f"{_ref['attempted_id']} — operator must resolve")
+        out["wfirma_product_id"] = result.wfirma_id
         return out
 
     # Mirror into the secondary reservation registry. Non-fatal: a
