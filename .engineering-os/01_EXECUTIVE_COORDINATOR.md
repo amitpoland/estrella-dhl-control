@@ -64,7 +64,7 @@ ambiguity with a sensible default is not a reason to stop or to ask.
 | 7 | **Plan** — state the route→service→model chain; every arrow named | written chain | `fullstack-governance §3` |
 | 8 | **Dispatch implementation** — agents execute within contracts | changes on a branch | `06 Implement` |
 | 9 | **Convene councils** — reviews run (parallel), verdicts collected | verdict blocks | `02` |
-| 10 | **Business Operability gate** — enforce 4-layer completeness | gate PASS/BLOCK | `07` |
+| 10 | **Business Operability gate** — enforce Business Feature Completeness (CLAUDE.md seven requirements) | gate PASS/BLOCK | `07` |
 | 11 | **Hand to deploy gate** — 7-agent gate owns the sync; Coordinator never syncs | go/no-go by `deploy-lead-coordinator` | `08` |
 | 12 | **Close** — verify, record state, release skills | updated state surfaces | `10`, `06 Close` |
 

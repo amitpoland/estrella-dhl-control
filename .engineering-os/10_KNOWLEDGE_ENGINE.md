@@ -19,6 +19,7 @@ new store — it indexes the existing ones.
 | **ADRs** | `docs/decisions/` | `adr-historian` | append-only architectural decisions |
 | **Deployment record** | deployment_record.json + version.json + status endpoint | release/deploy | self-describing production runtime state |
 | **Registries** | `AGENT_REGISTRY.md`, `SKILL_REGISTRY.md` | docs refresh | agent + skill source of truth |
+| **Phase-9 closure set** (v1.3) | `docs/campaigns/*` + `docs/governance/campaign-closure-*` (closure records), `docs/decisions/` (ADRs), `service/docs/ops/` (runbooks) | Coordinator at Close | closure record, tech-debt register with GATE-4 dispositions, dependency audit, health observation, performance baseline (`00 §9`) |
 
 ---
 
@@ -67,12 +68,14 @@ re-derived (`09 §3 rule 5`). Before running any inspection, check whether it is
 in PROJECT_STATE, a capability manifest, or a prior sealed package; if so, cite it and move on.
 Re-running a closed inspection is a token-economy violation, not diligence.
 
-## 4.2 Evidence gate for OS v1.1
+## 4.2 Evidence gate for OS amendments (v1.4+)
 
-Engineering OS **v1.0 is frozen** (`00 §6`). This Knowledge Engine is also the **evidence store
-for v1.1**: a proposed OS change must be backed by an observed failure or friction captured in a
-real package's record (PROJECT_STATE, scorecard, or lesson) — not by speculation. No recorded
-evidence = no v1.1 change.
+The active canonical version is **v1.3** (`00 §6`; delta ledger `VERSION_HISTORY.md` — v1.1,
+v1.2, and v1.3 were each ratified 2026-07-10 on recorded evidence per this rule). This
+Knowledge Engine remains the **evidence store for future amendments**: a proposed OS change
+must be backed by an observed failure or friction captured in a real package's record
+(PROJECT_STATE, scorecard, lesson, or Phase-9 closure record) — not by speculation. No recorded
+evidence = no v1.4 change.
 
 ## 5. Recall caveat
 
