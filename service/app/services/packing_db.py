@@ -6,8 +6,10 @@ Tables:
   packing_lines     — one row per packing list item, linked to invoice row
 
 Dedup key for packing_lines:
-  Primary (pack_sr known):  (packing_document_id, batch_id, invoice_no, pack_sr)
+  Primary (pack_sr known):  (batch_id, invoice_no, pack_sr)
   Fallback:                 (batch_id, invoice_no, invoice_line_position, design_no, bag_id, unit_price)
+  packing_document_id is stored for traceability but is NOT part of either key —
+  a re-upload registers a new document but must update the same logical row.
 
 scan_code column:
   Computed at write time from (product_code, bag_id, pack_sr, design_no) using the
@@ -632,9 +634,11 @@ def upsert_packing_lines(
 ) -> int:
     """
     Insert packing lines. Skip existing rows unless force_reextract=True.
-    Dedup key: (batch_id, invoice_no, invoice_line_position, design_no, bag_id).
-    packing_document_id is stored for traceability but is NOT part of the dedup key —
-    a re-upload creates a new document but should update the same logical packing row.
+    Dedup key:
+      Primary (pack_sr known):  (batch_id, invoice_no, pack_sr)
+      Fallback (pack_sr None):  (batch_id, invoice_no, invoice_line_position, design_no, bag_id, unit_price)
+    packing_document_id is stored for traceability but is NOT part of either key —
+    a re-upload registers a new document but should update the same logical packing row.
     Returns count of rows inserted or updated.
     """
     if _db_path is None:
@@ -659,13 +663,16 @@ def upsert_packing_lines(
                 # Otherwise fall back to (design_no, bag_id, unit_price) so
                 # two same-design rows priced differently aren't collapsed.
                 if pack_sr is not None:
+                    # packing_document_id is deliberately NOT in this key (see
+                    # docstring): a re-upload registers a NEW document id, so
+                    # filtering on it made the lookup miss and every pack_sr
+                    # row duplicated on same-batch re-upload.
                     existing = con.execute(
                         """SELECT id FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
-                             AND packing_document_id=? AND pack_sr IS ?
+                             AND pack_sr IS ?
                            LIMIT 1""",
-                        (batch_id, inv_no,
-                         line.get("packing_document_id", ""), pack_sr),
+                        (batch_id, inv_no, pack_sr),
                     ).fetchone()
                 else:
                     existing = con.execute(
