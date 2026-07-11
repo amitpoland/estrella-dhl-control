@@ -178,6 +178,52 @@ class TestPackingLines:
         lines = pdb.get_packing_lines_for_batch("BATCH001")
         assert lines[0]["quantity"] == pytest.approx(7.0)
 
+    def test_dedup_pack_sr_across_documents_skipped(self, db):
+        """Re-upload contract: packing_document_id is traceability only, NOT
+        part of the pack_sr dedup key (batch_id, invoice_no, pack_sr). A
+        re-upload registers a NEW document id but must match the same logical
+        row instead of duplicating it (the 2 -> 4 defect). bag_id empty =
+        aggregated list, so only the pack_sr-primary lookup can match."""
+        from app.services import packing_db as pdb
+        pdb.upsert_packing_lines(
+            [_make_line(packing_document_id="DOC001", pack_sr=14, bag_id="")])
+        count = pdb.upsert_packing_lines(
+            [_make_line(packing_document_id="DOC002", pack_sr=14, bag_id="")])
+        assert count == 0
+        lines = pdb.get_packing_lines_for_batch("BATCH001")
+        assert len(lines) == 1
+        # Without force_reextract the original row — including its
+        # traceability pointer — is untouched.
+        assert lines[0]["packing_document_id"] == "DOC001"
+
+    def test_dedup_pack_sr_distinct_serials_inserted(self, db):
+        """Distinct source serials are distinct physical lines — the widened
+        key must not over-collapse them."""
+        from app.services import packing_db as pdb
+        pdb.upsert_packing_lines([_make_line(pack_sr=14, bag_id="")])
+        count = pdb.upsert_packing_lines([_make_line(pack_sr=22, bag_id="")])
+        assert count == 1
+        assert len(pdb.get_packing_lines_for_batch("BATCH001")) == 2
+
+    def test_force_reextract_pack_sr_updates_across_documents(self, db):
+        """force_reextract re-upload finds the row via the pack_sr key even
+        under a new document id, updates it in place, and re-points the
+        traceability column to the new document."""
+        from app.services import packing_db as pdb
+        pdb.upsert_packing_lines(
+            [_make_line(packing_document_id="DOC001", pack_sr=14, bag_id="",
+                        quantity=5.0)])
+        count = pdb.upsert_packing_lines(
+            [_make_line(packing_document_id="DOC002", pack_sr=14, bag_id="",
+                        quantity=7.0)],
+            force_reextract=True,
+        )
+        assert count == 1
+        lines = pdb.get_packing_lines_for_batch("BATCH001")
+        assert len(lines) == 1
+        assert lines[0]["quantity"] == pytest.approx(7.0)
+        assert lines[0]["packing_document_id"] == "DOC002"
+
     def test_get_lines_for_batch_isolated(self, db):
         from app.services import packing_db as pdb
         pdb.upsert_packing_lines([_make_line(batch_id="B1")])

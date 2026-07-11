@@ -121,3 +121,110 @@ def test_primary_intake_path_untouched_this_change():
     # the primary block's unique marker (its Sr/PkSr comment) is still inline
     assert src.count('"pack_sr":               r.get("line_position")') >= 2, \
         "primary inline mapping + helper mapping both present (expected until fold-in)"
+
+
+# ── 4. Re-upload dedup safety (/add-document) ────────────────────────────────
+
+def _run_intake_then_add_document(tmp_path):
+    """Drive the REAL app: multipart POST /api/v1/shipment/intake with a
+    packing file (mocked parser output), then re-upload the identical packing
+    list to the SAME batch via /add-document (the second helper call site).
+    Each stage registers its own packing document, so this exercises the
+    dedup contract across document ids. Returns line evidence for both
+    stages."""
+    import io
+    import json as _json
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.core.config import settings
+    from app.services import document_db as ddb
+    from app.services import packing_db as pdb_mod
+
+    ddb.init_document_db(tmp_path / "documents.db")
+    pdb_mod.init_packing_db(tmp_path / "packing.db")
+
+    base = {
+        "invoice_no": "INV-DDS", "invoice_line_position": 1,
+        "product_code": "INV-DDS-1", "design_no": "JR06076",
+        "item_type": "RNG", "metal": "14KT/W", "karat": "14KT",
+        "metal_color": "W", "quality_string": "G-VS", "size": "7",
+        "diamond_weight": 0.5, "color_weight": 0.2, "quantity": 1.0,
+    }
+    rows = [
+        dict(base, unit_price=392.0, total_value=392.0, line_position=14),
+        dict(base, unit_price=431.0, total_value=431.0, line_position=22),
+    ]
+
+    def fake_pack(batch_id=None, **kw):
+        return {
+            "document": {"batch_id": batch_id, "invoice_no": "INV-DDS",
+                         "source_file_path": "packing.xlsx",
+                         "extraction_status": "extracted"},
+            "packing_rows": [dict(r) for r in rows],
+            "supplier": "test_supplier",
+            "matched_count": 2, "unmatched_count": 0,
+            "invoice_lines_source": "invoice_pdf",
+        }
+
+    awb_stub = {
+        "awb_number": "9999000778", "carrier": "DHL",
+        "shipper_name": "T", "receiver_name": "T",
+        "customs_value": 1000.0, "currency": "USD",
+        "declared_weight": 1.0, "piece_count": 1,
+        "ship_date": "2026-07-01", "contents": "Gold Jewellery",
+        "origin": "BOM", "destination": "WAW",
+        "duty_account": "", "tax_account": "Receiver Will Pay",
+        "confidence": 0.85,
+    }
+    hdrs = {"X-API-KEY": settings.api_key or "test-key"}
+    xlsx = ("packing.xlsx", None,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch("app.api.routes_intake.process_packing_upload", side_effect=fake_pack), \
+         patch("app.api.routes_intake.parse_awb_pdf", return_value=awb_stub), \
+         patch("app.api.routes_intake.schedule_product_master_sync",
+               side_effect=lambda bg, b, n: True):
+        with TestClient(app, raise_server_exceptions=True) as client:
+            r = client.post(
+                "/api/v1/shipment/intake",
+                data={"tracking_no": "9999000778", "carrier": "DHL",
+                      "metadata": _json.dumps({"purchase_blocks": [], "sales_blocks": []})},
+                files={
+                    "invoices": ("INV-DDS.pdf", io.BytesIO(b"%PDF-1.4 dds"), "application/pdf"),
+                    "awb": ("9999000778.pdf", io.BytesIO(b"%PDF-1.4 awb"), "application/pdf"),
+                    "packing_lists": (xlsx[0], io.BytesIO(b"PK\x03\x04dds"), xlsx[2]),
+                },
+                headers=hdrs,
+            )
+            assert r.status_code == 200, r.text
+            batch_id = r.json().get("batch_id")
+            assert batch_id, "intake response must carry batch_id"
+            first = pdb_mod.get_packing_lines_for_batch(batch_id)
+
+            # Identical packing re-uploaded to the SAME batch via /add-document.
+            r2 = client.post(
+                f"/api/v1/shipment/{batch_id}/add-document",
+                data={"document_type": "purchase_packing_list"},
+                files={"file": (xlsx[0], io.BytesIO(b"PK\x03\x04dds"), xlsx[2])},
+                headers=hdrs,
+            )
+            assert r2.status_code == 200, r2.text
+            retry = pdb_mod.get_packing_lines_for_batch(batch_id)
+
+    return {"batch_id": batch_id, "first": first, "retry": retry}
+
+
+def test_add_document_reupload_is_dedup_safe(tmp_path):
+    """Re-uploading the identical packing list to the same batch via
+    /add-document must not duplicate packing_lines. packing_document_id is
+    traceability only — NOT part of the pack_sr dedup key — so the re-upload's
+    NEW document id must still match the existing logical rows (2 rows stay 2,
+    never 2 -> 4)."""
+    ev = _run_intake_then_add_document(tmp_path)
+    assert len(ev["first"]) == 2, f"expected 2 persisted rows, got {len(ev['first'])}"
+    assert len(ev["retry"]) == 2, "re-upload must be dedup-safe (no duplicate rows)"
+    assert sorted(x["pack_sr"] for x in ev["retry"]) == [14.0, 22.0]
+    assert sorted(x["unit_price"] for x in ev["retry"]) == [392.0, 431.0]
