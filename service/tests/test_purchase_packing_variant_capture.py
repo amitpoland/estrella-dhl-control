@@ -102,7 +102,12 @@ def test_routes_intake_forwards_variant_with_karat():
     must also forward all 5 variant fields (the fix + #837 sales fix)."""
     src = Path(_ri.__file__).read_text(encoding="utf-8", errors="replace")
     karat_n = _key_count(src, "karat")
-    assert karat_n >= 2
+    # Exactly ONE packing-persistence mapping remains in routes_intake since the
+    # /intake fold-in: the _persist_packing_rows superset authority (the former
+    # inline copies were consolidated — #880 + its registered follow-up). The
+    # protected invariant is the per-field parity below, which still fails if
+    # any mapping forwards karat while dropping a variant field.
+    assert karat_n >= 1
     for f in _VARIANT_FIELDS:
         assert _key_count(src, f) == karat_n, (
             f"{f} forwarded {_key_count(src, f)}x but karat {karat_n}x — a "
