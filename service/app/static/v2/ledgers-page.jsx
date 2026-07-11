@@ -213,7 +213,11 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo }) 
   React.useEffect(() => {
     let gone = false;
     setClients(null); setListErr(null);
-    window.EstrellaShared.apiFetch('/api/v1/ledgers/clients?limit=100')
+    // Shared roster read: routes through the PzApi transport authority so this
+    // page and Accounting Overview reuse ONE live /ledgers/clients?limit=100 read
+    // per navigation (short TTL, in-flight coalesced). Manual ↻ Refresh
+    // (refreshKey > 0) forces a real new backend read, bypassing the cache.
+    window.PzApi.listClientBalancesShared({ limit: 100 }, { force: refreshKey > 0 })
       .then(r => {
         if (gone) return;
         const rows = (r && r.rows) || [];

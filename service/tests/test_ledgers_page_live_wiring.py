@@ -31,9 +31,18 @@ def _src() -> str:
 
 def test_reads_client_balance_authority():
     src = _src()
-    assert "/api/v1/ledgers/clients?limit=" in src, (
-        "Client list must read GET /api/v1/ledgers/clients (routes_ledgers.py, "
-        "the canonical read-only ledger authority)"
+    # The roster read is now routed through the shared PzApi transport authority
+    # (pz-api.js: listClientBalancesShared → GET /api/v1/ledgers/clients?limit=100)
+    # so Accounting Overview and this page share ONE live read per navigation. The
+    # canonical URL now lives in pz-api.js (pinned by test_ledgers_shared_read.py);
+    # this page consumes it via the shared method.
+    assert "listClientBalancesShared" in src, (
+        "Client roster must read via the shared PzApi.listClientBalancesShared "
+        "authority (single live /ledgers/clients read shared with Accounting Overview)"
+    )
+    assert "{ limit: 100 }" in src, (
+        "Client roster read must request limit=100 (route maximum), matching the "
+        "Accounting Overview read so both share one cache entry"
     )
 
 
