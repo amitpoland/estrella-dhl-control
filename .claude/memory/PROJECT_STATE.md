@@ -7482,18 +7482,41 @@ CAPABILITY (Lesson M — cancellation record): the retired element is the standa
   `AccSupplierLedger` pending panel (a disabled "All suppliers" select + disabled Export
   button + a placeholder table noting `GET /api/v1/ledgers/suppliers`). It is CANCELLED as a
   distinct surface, NOT the Supplier Ledger capability itself. The "Supplier Ledger" nav item
-  stays VISIBLE in the hub LEDGERS group and now resolves to the richer canonical LedgersPage
-  surface. No operator-visible capability is removed — it is upgraded from a disabled
-  placeholder to the real ledger view.
+  stays VISIBLE in the hub LEDGERS group and now routes to the canonical LedgersPage Supplier
+  Ledger sub-tab. No operator-visible capability is removed.
+  CORRECTION (operator authority ruling 2026-07-11): this is NOT a claim that the surface is
+  operational. The routing works, but the LedgersPage Supplier sub-tab currently still renders
+  SYNTHETIC accounting data — demo supplier rows, fabricated balances/aging, fabricated
+  document references, and a static "Synced 4 min ago" state. Converting a visibly-disabled
+  pending panel into an apparently-operational accounting page backed by synthetic financial
+  data is a MERGE BLOCKER on an accounting surface (same defect class that #884 fixes for
+  Client Ledger), not routine residue. Until a real supplier-ledger backend exists, the
+  canonical Supplier Ledger view MUST show an explicit honest backend-pending state — it must
+  NOT show demo rows, balances, aging, document IDs, or sync timestamps.
 CONSEQUENCE: `AccSupplierLedger` function deleted from accounting-hub.jsx; new
   `SupplierLedgerTab` embed added; the `supplierLedger` section renders `<SupplierLedgerTab />`.
   `LedgersPage` gained a backward-compatible `initialTab` prop (default `'clients'`, so the
-  existing ClientLedgerTab embed is unchanged). Browser-verified 2026-07-11 (env=dev): hub
-  Supplier Ledger tab → embedded LedgersPage on Supplier Ledger sub-tab; Client Ledger tab
-  still defaults to Client Ledger sub-tab; no console errors. PZ regression 160/160.
-SCOPE: frontend-only (2 JSX files). Out of scope and deliberately left unchanged: the
-  AccountingOverview "Supplier Payable" KPI pendingNote and the Supplier Ledger data being
-  demo/hardcoded in LedgersPage (a separate live-wiring slice, parallel to LDG-1 #884).
+  existing ClientLedgerTab embed is unchanged). Browser-verified 2026-07-11 (env=dev): the
+  ROUTING is correct — hub Supplier Ledger tab → LedgersPage Supplier Ledger sub-tab; Client
+  Ledger still defaults to its sub-tab; no console errors; PZ regression 160/160. Browser
+  verification proves routing, NOT that the resulting business surface is safe.
+STATUS (operator authority ruling 2026-07-11): commit 905f37d5 is PUSHED for safekeeping but
+  HELD FOR AUTHORITY CORRECTION — do NOT open as a PR or merge in its current form, because
+  the Supplier sub-tab still renders synthetic accounting data. Do NOT force-push until #884
+  and #886 are resolved. Preserve conceptually: `initialTab` prop, single Supplier Ledger nav
+  authority, `AccSupplierLedger` deletion, payable-total wording, load-order note, this
+  Lesson-M record. Required before the PR opens: replace the synthetic Supplier sub-tab with
+  an honest backend-pending state (or wire a real inspected backend), eliminating every demo
+  value. Queue: (1) refresh+merge #884 (removes synthetic Client Ledger data) → (2) merge #886
+  after #884 → (3) repair+merge #887 (reconcile #885 strict-xfail pin) → (4) rebase this branch
+  onto stable main → (5) inspect whether a real supplier-ledger endpoint exists → (6) if none,
+  implement one honest backend-pending Supplier view, eliminate every demo value → (7) open one
+  focused Supplier Ledger authority PR only when GATE 2 has a slot.
+SCOPE: frontend-only (2 JSX files) in this commit. The Supplier Ledger demo/synthetic data in
+  LedgersPage is NO LONGER treated as out-of-scope residue — per the operator ruling it is a
+  blocker that must be replaced with an honest backend-pending state (or real backend) in this
+  same authority campaign before the PR opens. The AccountingOverview "Supplier Payable" KPI
+  pendingNote reword landed in this commit.
 
 ---
 
