@@ -113,11 +113,30 @@ def test_add_document_signature_has_background_tasks():
     assert m, "add_document_to_batch must accept BackgroundTasks for PM4 scheduling"
 
 
-def test_primary_intake_path_untouched_this_change():
-    """Hot-path discipline: /intake keeps its inline superset block until the
-    helper has a verification window. This pin documents the deliberate
-    remaining copy (fold-in is the registered follow-up)."""
+def test_primary_intake_path_folded_into_helper():
+    """Fold-in landed (the registered #880 follow-up): the /intake hot path now
+    persists through _persist_packing_rows. Exactly ONE copy of the superset
+    mapping may exist — the helper's. A second copy reappearing means the
+    divergence class that caused the #880 defect is back."""
     src = ROUTES.read_text(encoding="utf-8")
-    # the primary block's unique marker (its Sr/PkSr comment) is still inline
-    assert src.count('"pack_sr":               r.get("line_position")') >= 2, \
-        "primary inline mapping + helper mapping both present (expected until fold-in)"
+    assert src.count('"pack_sr":               r.get("line_position")') == 1, \
+        "exactly one persistence mapping copy (the helper's) may exist"
+    # def + three call sites: /intake primary, /add-packing-list backfill,
+    # /add-document packing branch
+    assert src.count("_persist_packing_rows(") >= 4, \
+        "helper must be called from all three ingest paths"
+
+
+def test_primary_intake_block_calls_helper_before_summary():
+    """The /intake packing branch persists via the helper between the P1
+    diagnostic capture and pack_summary — no inline document upsert, no inline
+    line mapping, no inline transit seed remain in the primary path."""
+    src = ROUTES.read_text(encoding="utf-8")
+    i = src.index("# Run packing extraction pipeline")
+    block = src[i:i + 3000]
+    assert "_persist_packing_rows(batch_id, result, supplier)" in block, \
+        "primary /intake packing branch must persist through the helper"
+    assert 'doc_id_pdb = pdb.upsert_packing_document(**result["document"])' not in block, \
+        "no inline document upsert may remain in the primary path"
+    assert block.count("seed_purchase_transit(") == 0, \
+        "transit seeding in the primary path happens only inside the helper"
