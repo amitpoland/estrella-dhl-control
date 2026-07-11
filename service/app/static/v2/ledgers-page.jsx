@@ -6,6 +6,22 @@
 const LDG_FMT = {
   pln: (n) => 'PLN ' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
   eur: (n) => 'EUR ' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+  // Generic money: backend amounts arrive as strings ("1234.00") with an
+  // explicit currency — never assume PLN.
+  money: (v, ccy) => {
+    const n = Number(v);
+    if (v === null || v === undefined || v === '' || Number.isNaN(n)) return '—';
+    return `${(ccy || '').trim() || ''} ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`.trim();
+  },
+};
+
+// Statement window: statement.json / statement.pdf REQUIRE explicit from/to
+// (routes_ledgers.py validates and 400s on ''). Use the same default the
+// /ledgers/clients roster applies server-side — Jan 1 of the current year
+// through today (UTC) — so the statement matches the roster figures.
+const LDG_WINDOW = () => {
+  const now = new Date();
+  return { from: `${now.getUTCFullYear()}-01-01`, to: now.toISOString().slice(0, 10) };
 };
 
 // ── Source / read-only badges ──────────────────────────────────────────
@@ -45,6 +61,9 @@ function LdgStatusPill({ status }) {
     'Partial':    { bg: 'var(--badge-amber-bg)',   tx: 'var(--badge-amber-text)',   bd: 'var(--badge-amber-border)' },
     'Reconciled': { bg: 'var(--badge-green-bg)',   tx: 'var(--badge-green-text)',   bd: 'var(--badge-green-border)' },
     'Pending':    { bg: 'var(--badge-neutral-bg)', tx: 'var(--badge-neutral-text)', bd: 'var(--badge-neutral-border)' },
+    // Live /ledgers/clients row states (routes_ledgers.py: outstanding | clear)
+    'Outstanding': { bg: 'var(--badge-amber-bg)', tx: 'var(--badge-amber-text)', bd: 'var(--badge-amber-border)' },
+    'Clear':       { bg: 'var(--badge-green-bg)', tx: 'var(--badge-green-text)', bd: 'var(--badge-green-border)' },
   };
   const t = map[status] || map['Pending'];
   return (
@@ -78,8 +97,14 @@ function LdgStatTile({ label, value, sub, tone, alert }) {
 // ── Header (sub-tabs + global wFirma sync state) ───────────────────────
 function LedgersPage() {
   const [tab, setTab] = React.useState('clients');
-  const [wfirmaState, setWfirmaState] = React.useState('connected'); // connected | disconnected | empty
   const [selectedRow, setSelectedRow] = React.useState(null);
+  // HONEST load model (replaces the old fabricated static sync-age chip):
+  // ledger figures are LIVE on-demand wFirma reads via GET /api/v1/ledgers/*.
+  // The chip reports the LAST ACTUAL fetch outcome, lifted from
+  // ClientLedgerView; Refresh re-runs the real fetch (refreshKey).
+  const [loadInfo, setLoadInfo] = React.useState({ status: 'loading', at: null, count: null, error: null });
+  const [refreshKey, setRefreshKey] = React.useState(0);
+  const _t = (d) => d ? d.toLocaleTimeString('en-GB') : '';
 
   return (
     <div>
@@ -97,27 +122,37 @@ function LedgersPage() {
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {wfirmaState === 'connected' && (
-            <span style={{ fontSize: 11, color: 'var(--badge-green-text)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          {loadInfo.status === 'loading' && (
+            <span data-testid="ldg-load-status" style={{ fontSize: 11, color: 'var(--text-3)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--text-3)' }} />
+              Loading from wFirma…
+            </span>
+          )}
+          {loadInfo.status === 'ok' && (
+            <span data-testid="ldg-load-status" title="Figures are live wFirma reads made at this time — not a background sync" style={{ fontSize: 11, color: 'var(--badge-green-text)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--badge-green-text)' }} />
-              Synced 4 min ago
+              Live wFirma read · loaded {_t(loadInfo.at)}
             </span>
           )}
-          {wfirmaState === 'disconnected' && (
-            <span style={{ fontSize: 11, color: 'var(--badge-red-text)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          {loadInfo.status === 'error' && (
+            <span data-testid="ldg-load-status" style={{ fontSize: 11, color: 'var(--badge-red-text)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--badge-red-text)' }} />
-              wFirma disconnected
+              wFirma read failed{loadInfo.at ? ` · ${_t(loadInfo.at)}` : ''}
             </span>
           )}
-          <window.Btn small variant="outline">↻ Refresh from wFirma</window.Btn>
+          <window.Btn small variant="outline" data-testid="ldg-refresh"
+            onClick={() => { setLoadInfo(p => ({ ...p, status: 'loading' })); setRefreshKey(k => k + 1); }}>
+            ↻ Refresh from wFirma
+          </window.Btn>
         </div>
       </div>
 
-      {/* Top-level tab strip */}
+      {/* Top-level tab strip — counts are REAL (clients: from the live list;
+          suppliers: no backend ledger route exists yet → no fake count) */}
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 0, marginBottom: 18, borderBottom: '1px solid var(--border)' }}>
         {[
-          { id: 'clients',   label: 'Client Ledger',   count: 12 },
-          { id: 'suppliers', label: 'Supplier Ledger', count: 47 },
+          { id: 'clients',   label: 'Client Ledger',   count: loadInfo.count },
+          { id: 'suppliers', label: 'Supplier Ledger', count: null },
         ].map(t => {
           const active = tab === t.id;
           return (
@@ -129,7 +164,9 @@ function LedgersPage() {
               display: 'inline-flex', alignItems: 'center', gap: 8,
             }}>
               {t.label}
-              <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-3)', padding: '1px 6px', background: 'var(--bg-subtle)', borderRadius: 3, border: '1px solid var(--border)' }}>{t.count}</span>
+              {t.count != null && (
+                <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-3)', padding: '1px 6px', background: 'var(--bg-subtle)', borderRadius: 3, border: '1px solid var(--border)' }}>{t.count}</span>
+              )}
             </button>
           );
         })}
@@ -145,18 +182,15 @@ function LedgersPage() {
         </div>
       </div>
 
-      {wfirmaState === 'disconnected' ? (
-        <LdgErrorState onRetry={() => setWfirmaState('connected')} />
-      ) : (
-        tab === 'clients'
-          ? <ClientLedgerView onSelectRow={setSelectedRow} selectedRow={selectedRow} />
-          : <SupplierLedgerView onSelectRow={setSelectedRow} selectedRow={selectedRow} />
-      )}
+      {tab === 'clients'
+        ? <ClientLedgerView onSelectRow={setSelectedRow} selectedRow={selectedRow}
+            refreshKey={refreshKey}
+            onLoadInfo={(info) => setLoadInfo(info)} />
+        : <SupplierLedgerView />}
 
       {selectedRow && (
         <StatementDetailDrawer
           row={selectedRow}
-          kind={tab}
           onClose={() => setSelectedRow(null)}
         />
       )}
@@ -164,35 +198,86 @@ function LedgersPage() {
   );
 }
 
-// ── CLIENT LEDGER ──────────────────────────────────────────────────────
-function ClientLedgerView({ onSelectRow, selectedRow }) {
-  const [active, setActive] = React.useState('JU01');
+// ── CLIENT LEDGER — LIVE (GET /api/v1/ledgers/clients + statement.json) ──
+// LDG-1: the previous view rendered four synthetic clients and a synthetic
+// statement. Every figure below now comes from the canonical ledger read
+// authority (routes_ledgers.py → live wFirma reads). No value is fabricated:
+// a failed read renders its own honest state, never a placeholder number.
+function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo }) {
+  const [clients, setClients] = React.useState(null);      // null = loading
+  const [listErr, setListErr] = React.useState(null);
+  const [active, setActive]   = React.useState('');
+  const [stmt, setStmt]       = React.useState({ status: 'idle', data: null, err: null });
 
-  const clients = [
-    { id: 'JU01', name: 'Juliany EOOD',          country: 'BG', vat: 'BG123456789',  wfirma: 'WF-CT-1042', credit: 50000, kuke: 30000, balance: 18450.20, overdue:  4200.00, openInv: 6, openProf: 2, consign: 12400, sample: 3200, lastInv: '04 Apr 2026', lastPay: '28 Mar 2026' },
-    { id: 'VH01', name: 'Verhoeven Antwerp',     country: 'BE', vat: 'BE0823.456.789',wfirma: 'WF-CT-1108', credit: 80000, kuke: 60000, balance:  6200.00, overdue:     0.00, openInv: 2, openProf: 1, consign:     0, sample: 1800, lastInv: '02 Apr 2026', lastPay: '31 Mar 2026' },
-    { id: 'GE02', name: 'Geneva GIA Office',     country: 'CH', vat: 'CHE-115.823.554',wfirma:'WF-CT-1156', credit: 30000, kuke: 20000, balance:    420.00, overdue:     0.00, openInv: 1, openProf: 0, consign:     0, sample:    0, lastInv: '20 Mar 2026', lastPay: '12 Mar 2026' },
-    { id: 'AB03', name: 'Atelier Bonacchi SRL',  country: 'IT', vat: 'IT04520119872', wfirma: 'WF-CT-1207', credit: 25000, kuke: 15000, balance: 27800.50, overdue:  9100.00, openInv: 4, openProf: 0, consign:     0, sample:    0, lastInv: '12 Mar 2026', lastPay: '02 Mar 2026', breach: true },
-  ];
+  // Live client-balance list. Re-runs on ↻ Refresh (refreshKey).
+  React.useEffect(() => {
+    let gone = false;
+    setClients(null); setListErr(null);
+    window.EstrellaShared.apiFetch('/api/v1/ledgers/clients?limit=100')
+      .then(r => {
+        if (gone) return;
+        const rows = (r && r.rows) || [];
+        setClients(rows);
+        onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: rows.length, error: null });
+        if (rows.length && !rows.some(x => x.contractor_id === active)) {
+          setActive(rows[0].contractor_id);
+        }
+      })
+      .catch(e => {
+        if (gone) return;
+        setClients([]);
+        setListErr((e && e.message) || 'wFirma read failed');
+        onLoadInfo && onLoadInfo({ status: 'error', at: new Date(), count: null, error: (e && e.message) || '' });
+      });
+    return () => { gone = true; };
+  }, [refreshKey]);
 
-  const c = clients.find(x => x.id === active) || clients[0];
+  const c = (clients || []).find(x => x.contractor_id === active) || null;
+
+  // Live per-client statement (entries + totals + aging). On-demand per
+  // selection — same authority the statement PDF uses.
+  React.useEffect(() => {
+    if (!active) { setStmt({ status: 'idle', data: null, err: null }); return; }
+    let gone = false;
+    setStmt({ status: 'loading', data: null, err: null });
+    const w = LDG_WINDOW();
+    window.EstrellaShared.apiFetch(`/api/v1/ledgers/clients/${encodeURIComponent(active)}/statement.json?from=${w.from}&to=${w.to}`)
+      .then(r => { if (!gone) setStmt({ status: 'ok', data: r, err: null }); })
+      .catch(e => { if (!gone) setStmt({ status: 'error', data: null, err: (e && e.message) || 'statement read failed' }); });
+    return () => { gone = true; };
+  }, [active, refreshKey]);
+
+  if (clients === null) {
+    return <div data-testid="ldg-clients-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>Loading client balances from wFirma…</div>;
+  }
+  if (listErr && clients.length === 0) {
+    return (
+      <div data-testid="ldg-clients-error" style={{ padding: 30, textAlign: 'center', border: '1px solid var(--badge-red-border)', background: 'var(--badge-red-bg)', borderRadius: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 4 }}>Could not load client balances</div>
+        <div style={{ fontSize: 11.5, color: 'var(--text-2)' }}>{listErr} · use ↻ Refresh to retry</div>
+      </div>
+    );
+  }
+  if (clients.length === 0) {
+    return <div data-testid="ldg-clients-empty" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>No customers in Customer Master yet.</div>;
+  }
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 16 }}>
-      {/* Left: client filter list */}
+      {/* Left: client filter list (live rows; '—' when the wFirma read for a
+          row failed — balance_available:false is an honest backend state) */}
       <div>
         <LdgFilterPanel
           title="Clients"
           searchPlaceholder="Search clients…"
-          extraFilters={[
-            { id: 'overdueOnly',     label: 'Overdue only' },
-            { id: 'breachOnly',      label: 'Credit-limit breach' },
-            { id: 'hasConsignment',  label: 'Has consignment value' },
-          ]}
+          extraFilters={[]}
           items={clients.map(x => ({
-            id: x.id, label: x.name, sub: x.country + ' · ' + x.wfirma,
-            value: LDG_FMT.pln(x.balance),
-            alert: x.overdue > 0 || x.breach,
+            id: x.contractor_id, label: x.name || x.contractor_id,
+            sub: [x.country, x.vat_id].filter(Boolean).join(' · '),
+            value: x.balance_available === false ? '—'
+                 : x.currency === 'multi' ? 'multi-ccy'
+                 : LDG_FMT.money(x.open, x.currency),
+            alert: (Number(x.overdue_invoice_age) || 0) > 0,
           }))}
           activeId={active}
           onSelect={setActive}
@@ -201,73 +286,78 @@ function ClientLedgerView({ onSelectRow, selectedRow }) {
 
       {/* Right: header card + statement table */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <ClientHeaderCard client={c} />
-        <ClientStatementTable client={c} onRowClick={onSelectRow} selectedId={selectedRow?.id} />
+        {c && <ClientHeaderCard client={c} stmt={stmt} />}
+        {c && <ClientStatementTable client={c} stmt={stmt} onRowClick={onSelectRow} selectedId={selectedRow && selectedRow.id} />}
       </div>
     </div>
   );
 }
 
-function ClientHeaderCard({ client: c }) {
-  const utilPct = Math.min(100, Math.round((c.balance / c.credit) * 100));
-  const breach = c.balance > c.credit;
+function ClientHeaderCard({ client: c, stmt }) {
+  // LDG-1: every KPI reads the /ledgers/clients row (live wFirma) or renders
+  // an honest missing state. Credit-limit / KUKE utilisation bars and
+  // inventory-exposure tiles from the old mock are NOT rendered as numbers —
+  // no ledger authority serves them yet (see backend-pending note below).
+  const unavailable = c.balance_available === false;
+  const stmtGen = stmt && stmt.status === 'ok' && stmt.data ? (stmt.data.generated_at || '') : '';
+  const w = LDG_WINDOW();
+  const pdfHref = `/api/v1/ledgers/clients/${encodeURIComponent(c.contractor_id)}/statement.pdf?from=${w.from}&to=${w.to}`;
   return (
     <window.Card>
       <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>{c.name}</div>
-            <span style={{ fontSize: 10, color: 'var(--text-3)', padding: '2px 6px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 3 }}>{c.country}</span>
+            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>{c.name || c.contractor_id}</div>
+            {c.country && <span style={{ fontSize: 10, color: 'var(--text-3)', padding: '2px 6px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 3 }}>{c.country}</span>}
+            {c.state && c.state !== 'unknown' && <LdgStatusPill status={c.state === 'outstanding' ? 'Outstanding' : c.state === 'clear' ? 'Clear' : c.state} />}
           </div>
           <div style={{ fontSize: 11.5, color: 'var(--text-3)', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-            <span>VAT / Tax ID: <span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{c.vat}</span></span>
-            <span>wFirma contractor: <span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{c.wfirma}</span></span>
+            <span>VAT / Tax ID: <span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{c.vat_id || '—'}</span></span>
+            <span>wFirma contractor: <span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{c.contractor_id}</span></span>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <window.Btn small variant="outline">View statement</window.Btn>
-          <window.Btn small variant="outline">↓ PDF</window.Btn>
-          <window.Btn small variant="outline">↓ XLSX</window.Btn>
-          <window.Btn small variant="outline">View invoices</window.Btn>
-          <window.Btn small variant="outline">View proformas</window.Btn>
-          <window.Btn small variant="outline">Inventory exposure</window.Btn>
+          {/* Real authority action: the statement PDF route (existing). */}
+          <a href={pdfHref} target="_blank" rel="noopener" data-testid="ldg-statement-pdf"
+             style={{ fontSize: 11, fontWeight: 600, padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', textDecoration: 'none', background: 'transparent' }}>
+            ↓ Statement PDF
+          </a>
         </div>
       </div>
 
-      {/* KPI grid */}
-      <div style={{ padding: 16, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-        <LdgStatTile label="Current balance" value={LDG_FMT.pln(c.balance)} sub={`Credit limit ${LDG_FMT.pln(c.credit)}`} tone={breach ? 'red' : null} alert={breach} />
-        <LdgStatTile label="Overdue balance" value={LDG_FMT.pln(c.overdue)} sub={c.overdue > 0 ? 'Action required' : 'No overdue'} tone={c.overdue > 0 ? 'red' : 'green'} alert={c.overdue > 0} />
-        <LdgStatTile label="Open invoices"   value={c.openInv}                sub={`${c.openProf} open proforma${c.openProf === 1 ? '' : 's'}`} />
-        <LdgStatTile label="Inventory exposure" value={LDG_FMT.pln(c.consign + c.sample)} sub={`Consign ${LDG_FMT.pln(c.consign)} · Sample ${LDG_FMT.pln(c.sample)}`} />
-      </div>
-
-      {/* Credit utilization + KUKE */}
-      <div style={{ padding: '12px 16px 16px', borderTop: '1px solid var(--border-subtle)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: 'var(--text-3)', marginBottom: 5, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-            <span>Credit utilization</span>
-            <span style={{ color: breach ? 'var(--badge-red-text)' : 'var(--text-2)' }}>{utilPct}% {breach && '· OVER LIMIT'}</span>
-          </div>
-          <div style={{ height: 7, background: 'var(--bg-subtle)', borderRadius: 4, border: '1px solid var(--border)', overflow: 'hidden' }}>
-            <div style={{ width: `${utilPct}%`, height: '100%', background: breach ? 'var(--badge-red-text)' : utilPct > 80 ? 'var(--badge-amber-text)' : 'var(--badge-green-text)' }} />
-          </div>
+      {/* KPI grid — live /ledgers/clients columns only */}
+      {unavailable ? (
+        <div data-testid="ldg-client-unavailable" style={{ padding: 16, fontSize: 12, color: 'var(--badge-amber-text)' }}>
+          Balance unavailable — {c.note || 'wFirma read failed for this contractor'}. Use ↻ Refresh to retry.
         </div>
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: 'var(--text-3)', marginBottom: 5, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-            <span>KUKE insured limit</span>
-            <span style={{ color: 'var(--text-2)' }}>{LDG_FMT.pln(c.kuke)}</span>
-          </div>
-          <div style={{ height: 7, background: 'var(--bg-subtle)', borderRadius: 4, border: '1px solid var(--border)', overflow: 'hidden' }}>
-            <div style={{ width: `${Math.min(100, (c.balance / c.kuke) * 100)}%`, height: '100%', background: 'var(--badge-blue-text)' }} />
-          </div>
+      ) : (
+        <div style={{ padding: 16, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          {c.currency === 'multi' ? (
+            /* Multi-currency contractor: top-line figures are per-currency
+               dicts, not one number — the statement below shows each currency
+               honestly instead of a fabricated cross-currency sum. */
+            <LdgStatTile label="Open (outstanding)" value="multi-currency"
+              sub={`per currency: ${Object.entries(c.open_by_currency || {}).map(([k, v]) => `${k} ${v}`).join(' · ') || 'see statement'}`} />
+          ) : (
+            <LdgStatTile label="Open (outstanding)" value={LDG_FMT.money(c.open, c.currency)}
+              sub="live wFirma statement" />
+          )}
+          <LdgStatTile label="Aged (invoice age)" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.overdue_invoice_age, c.currency)}
+            sub={(Number(c.overdue_invoice_age) || 0) > 0 ? 'older than 30 days — action required' : 'invoice-age basis'}
+            tone={(Number(c.overdue_invoice_age) || 0) > 0 ? 'red' : 'green'} alert={(Number(c.overdue_invoice_age) || 0) > 0} />
+          <LdgStatTile label="Invoiced (period)" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.ytd_invoiced, c.currency)} sub="statement window" />
+          {/* last_30d is served as null by routes_ledgers.py (Backend Pending) —
+              say so rather than rendering a dash that implies a live zero. */}
+          <LdgStatTile label="Last 30 days" value="—" sub="backend pending" />
         </div>
-      </div>
+      )}
 
-      {/* Footer dates */}
-      <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border-subtle)', display: 'flex', gap: 24, fontSize: 11, color: 'var(--text-3)' }}>
-        <span>Last invoice: <span style={{ color: 'var(--text-2)' }}>{c.lastInv}</span></span>
-        <span>Last payment: <span style={{ color: 'var(--text-2)' }}>{c.lastPay}</span></span>
+      {/* Honest capability note (Lesson M five-state: the old mock PROMISED
+          credit-limit / KUKE utilisation and inventory exposure here) */}
+      <div data-testid="ldg-credit-kuke-pending" style={{ padding: '8px 16px', borderTop: '1px solid var(--border-subtle)', fontSize: 10.5, color: 'var(--text-3)' }}>
+        Credit-limit / KUKE utilisation and inventory exposure: <strong>backend pending</strong> — no ledger
+        authority serves these yet (Customer Master holds KUKE terms; exposure needs the inventory valuation feed).
+        {stmtGen && <span style={{ marginLeft: 10 }}>Statement generated {stmtGen}.</span>}
       </div>
     </window.Card>
   );
@@ -288,31 +378,45 @@ function LdgAgingStrip({ buckets }) {
   );
 }
 
-// ── Compact ERP statement table ────────────────────────────────────────
-function ClientStatementTable({ client, onRowClick, selectedId }) {
-  // Synthetic statement rows
-  const rows = [
-    { id: 'INV-2026-148',   date: '04 Apr 2026', doc: 'INV 2026/0148', type: 'Invoice', due: '04 May 2026', debit: 4800.00, credit:    0,    balance: 18450.20, status: 'Open',     source: 'wFirma' },
-    { id: 'PAY-2604-08',    date: '01 Apr 2026', doc: 'PAY-2604-08',   type: 'Payment', due: '—',           debit:    0,    credit: 6200.00, balance: 13650.20, status: 'Reconciled', source: 'wFirma' },
-    { id: 'PROF-070',       date: '28 Mar 2026', doc: 'PROF 70/2026',  type: 'Proforma',due: '—',           debit:    0,    credit:    0,    balance: 19850.20, status: 'Pending',   source: 'wFirma' },
-    { id: 'INV-2026-138',   date: '20 Mar 2026', doc: 'INV 2026/0138', type: 'Invoice', due: '19 Apr 2026', debit: 4200.00, credit:    0,    balance: 19850.20, status: 'Overdue',   source: 'wFirma' },
-    { id: 'CN-2026-012',    date: '15 Mar 2026', doc: 'CN 2026/0012',  type: 'Credit note', due: '—',       debit:    0,    credit:  640.00, balance: 15650.20, status: 'Reconciled', source: 'wFirma' },
-    { id: 'INV-2026-128',   date: '08 Mar 2026', doc: 'INV 2026/0128', type: 'Invoice', due: '07 Apr 2026', debit: 3290.50, credit:    0,    balance: 16290.20, status: 'Partial',   source: 'wFirma' },
-    { id: 'OPENING',        date: '01 Mar 2026', doc: 'Opening',       type: 'Opening', due: '—',           debit: 13000.00,credit:    0,    balance: 13000.00, status: 'Reconciled', source: 'wFirma' },
-  ];
+// ── Compact ERP statement table — LIVE (statement.json entries) ────────
+// LDG-1: renders entries_per_currency / totals_per_currency /
+// aging_per_currency from GET /ledgers/clients/{id}/statement.json. The old
+// synthetic rows and the fabricated aging strip are gone; every state
+// (loading / error / empty) is honest.
+function ClientStatementTable({ client, stmt, onRowClick, selectedId }) {
+  if (stmt.status === 'loading' || stmt.status === 'idle') {
+    return <window.Card><div data-testid="ldg-stmt-loading" style={{ padding: 24, textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>Loading statement from wFirma…</div></window.Card>;
+  }
+  if (stmt.status === 'error') {
+    return (
+      <window.Card>
+        <div data-testid="ldg-stmt-error" style={{ padding: 20, fontSize: 12, color: 'var(--badge-red-text)' }}>
+          Statement unavailable — {stmt.err}. The row figures above may still be valid; use ↻ Refresh to retry.
+        </div>
+      </window.Card>
+    );
+  }
+  const d = stmt.data || {};
+  const currencies = d.currencies || [];
+  const entriesBy = d.entries_per_currency || {};
+  const totalsBy = d.totals_per_currency || {};
+  const agingBy = d.aging_per_currency || {};
+  const w = LDG_WINDOW();
+  const pdfHref = `/api/v1/ledgers/clients/${encodeURIComponent(client.contractor_id)}/statement.pdf?from=${w.from}&to=${w.to}`;
 
-  const cols = [
-    { id: 'date',  label: 'Date',     w: 100 },
-    { id: 'doc',   label: 'Doc no.',  w: 130, mono: true },
-    { id: 'type',  label: 'Type',     w: 100 },
-    { id: 'due',   label: 'Due',      w: 100 },
-    { id: 'debit', label: 'Debit',    w: 110, align: 'right', mono: true },
-    { id: 'credit',label: 'Credit',   w: 110, align: 'right', mono: true },
-    { id: 'balance',label:'Balance',  w: 120, align: 'right', mono: true, bold: true },
-    { id: 'status',label: 'Status',   w: 95 },
-    { id: 'source',label: 'Source',   w: 80 },
-    { id: 'actions',label: '',        w: 110, align: 'right' },
-  ];
+  const TYPE_LABEL = { invoice: 'Invoice', correction: 'Correction', payment: 'Payment', proforma: 'Proforma' };
+  const agingBuckets = (a) => {
+    if (!a) return [];
+    const order = ['current', 'd1_30', '1_30', 'd31_60', '31_60', 'd61_90', '61_90', 'd90_plus', '90_plus', 'over_90'];
+    const label = (k) => ({ current: 'Current', d1_30: '1–30', '1_30': '1–30', d31_60: '31–60', '31_60': '31–60',
+                            d61_90: '61–90', '61_90': '61–90', d90_plus: '90+', '90_plus': '90+', over_90: '90+' }[k] || k);
+    const tone = (k) => (/90|61/.test(k) ? 'red' : /30|60/.test(k) ? 'amber' : null);
+    const seen = Object.keys(a).filter(k => k !== 'method' && k !== 'total');
+    seen.sort((x, y) => order.indexOf(x) - order.indexOf(y));
+    const out = seen.map(k => ({ label: label(k), value: a[k], tone: tone(k) }));
+    if (a.total !== undefined) out.push({ label: 'Total', value: a.total });
+    return out;
+  };
 
   return (
     <window.Card>
@@ -321,268 +425,97 @@ function ClientStatementTable({ client, onRowClick, selectedId }) {
           <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Statement</span>
           <LdgSourceBadge />
           <LdgReadOnlyBadge />
+          {d.period && (d.period.from || d.period.to) && (
+            <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{d.period.from || '…'} → {d.period.to || '…'}</span>
+          )}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <select style={{ fontSize: 11, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card)', color: 'var(--text-2)' }}>
-            <option>This month</option><option>YTD</option><option>Last 12 months</option><option>Custom range…</option>
-          </select>
-          <window.Btn small variant="outline">↓ PDF</window.Btn>
-          <window.Btn small variant="outline">↓ XLSX</window.Btn>
+        <a href={pdfHref} target="_blank" rel="noopener" data-testid="ldg-stmt-pdf"
+           style={{ fontSize: 11, fontWeight: 600, padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', textDecoration: 'none' }}>
+          ↓ PDF
+        </a>
+      </div>
+
+      {currencies.length === 0 && (
+        <div data-testid="ldg-stmt-empty" style={{ padding: 24, textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>
+          No invoices or payments on record for this customer in the period.
         </div>
-      </div>
+      )}
 
-      <LdgAgingStrip buckets={[
-        { label: 'Current', value: LDG_FMT.pln(8950.20) },
-        { label: '1–30',    value: LDG_FMT.pln(5300.00), tone: 'amber' },
-        { label: '31–60',   value: LDG_FMT.pln(2100.00), tone: 'amber' },
-        { label: '61–90',   value: LDG_FMT.pln(1500.00), tone: 'red' },
-        { label: '90+',     value: LDG_FMT.pln(600.00),  tone: 'red' },
-        { label: 'Total',   value: LDG_FMT.pln(client.balance) },
-      ]} />
+      {currencies.map(ccy => {
+        const entries = entriesBy[ccy] || [];
+        const totals = totalsBy[ccy] || {};
+        return (
+          <div key={ccy} data-testid={`ldg-stmt-ccy-${ccy}`}>
+            <LdgAgingStrip buckets={[
+              { label: ccy, value: '' },
+              ...agingBuckets(agingBy[ccy]).map(b => ({ ...b, value: LDG_FMT.money(b.value, '') })),
+            ]} />
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                    {['Date', 'Doc no.', 'Type', 'Debit', 'Credit', 'Running balance', 'Source'].map((h, i) => (
+                      <th key={h} style={{ padding: '8px 12px', textAlign: i >= 3 && i <= 5 ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map((r, i) => {
+                    const rowId = `${ccy}-${r.wfirma_doc_id || i}`;
+                    const isSelected = selectedId === rowId;
+                    return (
+                      <tr key={rowId}
+                        onClick={() => onRowClick && onRowClick({ ...r, id: rowId })}
+                        style={{ borderBottom: '1px solid var(--border-subtle)', cursor: onRowClick ? 'pointer' : 'default', background: isSelected ? 'var(--bg-subtle)' : 'transparent' }}>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{r.date || '—'}</td>
+                        <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: 'var(--text)', fontWeight: 600 }}>{r.doc_number || (r.type === 'payment' ? (r.linked_invoice ? `→ ${r.linked_invoice}` : '(unmatched)') : '—')}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-2)' }}>{TYPE_LABEL[r.type] || r.type}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', color: Number(r.debit) > 0 ? 'var(--text)' : 'var(--text-3)' }}>{Number(r.debit) > 0 ? LDG_FMT.money(r.debit, '') : '—'}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', color: Number(r.credit) > 0 ? 'var(--badge-green-text)' : 'var(--text-3)' }}>{Number(r.credit) > 0 ? LDG_FMT.money(r.credit, '') : '—'}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700, color: 'var(--text)' }}>{LDG_FMT.money(r.running_balance, '')}</td>
+                        <td style={{ padding: '8px 12px', fontSize: 10, color: 'var(--text-3)' }}>wFirma</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: 11.5, background: 'var(--bg-subtle)' }}>
+              <span style={{ color: 'var(--text-3)' }}>{entries.length} entr{entries.length === 1 ? 'y' : 'ies'} · {ccy} · all sourced from wFirma</span>
+              <span style={{ color: 'var(--text)', fontWeight: 700, fontFamily: 'monospace' }} data-testid={`ldg-stmt-outstanding-${ccy}`}>
+                Outstanding: {LDG_FMT.money(totals.outstanding, ccy)}
+              </span>
+            </div>
+          </div>
+        );
+      })}
 
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
-          <thead>
-            <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-              {cols.map(c => (
-                <th key={c.id} style={{
-                  padding: '8px 12px', textAlign: c.align || 'left', fontSize: 10,
-                  fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em',
-                  textTransform: 'uppercase', whiteSpace: 'nowrap', width: c.w,
-                }}>{c.label}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(r => {
-              const isSelected = selectedId === r.id;
-              const overdue = r.status === 'Overdue';
-              return (
-                <tr key={r.id}
-                  onClick={() => onRowClick(r)}
-                  style={{
-                    borderBottom: '1px solid var(--border-subtle)',
-                    cursor: 'pointer',
-                    background: isSelected ? 'var(--bg-subtle)' : overdue ? 'rgba(229, 73, 73, 0.04)' : 'transparent',
-                  }}>
-                  <td style={{ padding: '8px 12px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{r.date}</td>
-                  <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: 'var(--text)', fontWeight: 600 }}>{r.doc}</td>
-                  <td style={{ padding: '8px 12px', color: 'var(--text-2)' }}>{r.type}</td>
-                  <td style={{ padding: '8px 12px', color: overdue ? 'var(--badge-red-text)' : 'var(--text-2)', whiteSpace: 'nowrap', fontWeight: overdue ? 600 : 400 }}>{r.due}</td>
-                  <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', color: r.debit > 0 ? 'var(--text)' : 'var(--text-3)' }}>{r.debit > 0 ? LDG_FMT.pln(r.debit) : '—'}</td>
-                  <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', color: r.credit > 0 ? 'var(--badge-green-text)' : 'var(--text-3)' }}>{r.credit > 0 ? LDG_FMT.pln(r.credit) : '—'}</td>
-                  <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700, color: 'var(--text)' }}>{LDG_FMT.pln(r.balance)}</td>
-                  <td style={{ padding: '8px 12px' }}><LdgStatusPill status={r.status} /></td>
-                  <td style={{ padding: '8px 12px', fontSize: 10, color: 'var(--text-3)' }}>{r.source}</td>
-                  <td style={{ padding: '8px 12px', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
-                    <span style={{ display: 'inline-flex', gap: 4 }}>
-                      <button style={ldgIconBtn} title="View">👁</button>
-                      <button style={ldgIconBtn} title="Download">↓</button>
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Footer summary */}
-      <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: 11.5, background: 'var(--bg-subtle)' }}>
-        <span style={{ color: 'var(--text-3)' }}>{rows.length} entries · all sourced from wFirma</span>
-        <span style={{ color: 'var(--text)', fontWeight: 700, fontFamily: 'monospace' }}>Closing balance: {LDG_FMT.pln(client.balance)}</span>
-      </div>
+      {(d.warnings || []).length > 0 && (
+        <div data-testid="ldg-stmt-warnings" style={{ padding: '8px 16px', fontSize: 10.5, color: 'var(--badge-amber-text)', borderTop: '1px solid var(--border-subtle)' }}>
+          {(d.warnings || []).map((w, i) => <div key={i}>⚠ {String(w)}</div>)}
+        </div>
+      )}
     </window.Card>
   );
 }
 
-// ── SUPPLIER LEDGER ────────────────────────────────────────────────────
-function SupplierLedgerView({ onSelectRow, selectedRow }) {
-  const [active, setActive] = React.useState('EJ01');
-
-  const suppliers = [
-    { id: 'EJ01', name: 'Estrella Jewels LLP',     country: 'IN', vat: 'AAACE1234F', wfirma: 'WF-VN-2014', balance: 32500.00, openPI: 4, paidPI: 28, pendingSvc: 1, pzLinked: 14, lastBuy: '04 Apr 2026', lastPay: '02 Apr 2026', cur: 'EUR' },
-    { id: 'IF02', name: 'India Fine Jewels Pvt',   country: 'IN', vat: 'AAACI4567K', wfirma: 'WF-VN-2031', balance:  8400.00, openPI: 1, paidPI: 12, pendingSvc: 0, pzLinked:  9, lastBuy: '20 Mar 2026', lastPay: '15 Mar 2026', cur: 'EUR' },
-    { id: 'BG03', name: 'Bangkok Gem Co Ltd',      country: 'TH', vat: '0105537000XYZ',wfirma:'WF-VN-2058',balance:     0.00, openPI: 0, paidPI:  6, pendingSvc: 0, pzLinked:  4, lastBuy: '12 Feb 2026', lastPay: '20 Feb 2026', cur: 'USD' },
-    { id: 'DH01', name: 'DHL Express (PL)',        country: 'PL', vat: 'PL5252041377',wfirma: 'WF-VN-2003', balance:  1240.00, openPI: 2, paidPI: 84, pendingSvc: 3, pzLinked:  0, lastBuy: '06 Apr 2026', lastPay: '01 Apr 2026', cur: 'PLN' },
-  ];
-
-  const s = suppliers.find(x => x.id === active) || suppliers[0];
-
+// ── SUPPLIER LEDGER ── honest backend-pending state (LDG-1) ───────────────
+// No supplier-side ledger route exists (routes_ledgers.py serves clients
+// only). The previous view rendered four synthetic suppliers with synthetic
+// statements — fake data on an accounting surface. Per the five-state UI
+// truth model (Lesson M) the tab STAYS visible and states its real status;
+// building the purchase-side ledger is a separate backend campaign.
+function SupplierLedgerView() {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 16 }}>
-      <LdgFilterPanel
-        title="Suppliers"
-        searchPlaceholder="Search suppliers…"
-        extraFilters={[
-          { id: 'openPiOnly',     label: 'Open purchase invoices' },
-          { id: 'pendingSvcOnly', label: 'Pending service invoices' },
-          { id: 'noPzMatch',      label: 'PI without matching PZ' },
-        ]}
-        items={suppliers.map(x => ({
-          id: x.id, label: x.name, sub: x.country + ' · ' + x.wfirma,
-          value: x.cur === 'PLN' ? LDG_FMT.pln(x.balance) : 'EUR ' + x.balance.toLocaleString('en-US', { minimumFractionDigits: 2 }),
-          alert: x.openPI > 0,
-        }))}
-        activeId={active}
-        onSelect={setActive}
-      />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <SupplierHeaderCard supplier={s} />
-        <SupplierStatementTable supplier={s} onRowClick={onSelectRow} selectedId={selectedRow?.id} />
+    <div data-testid="ldg-suppliers-pending" style={{ padding: 36, textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 8, background: 'var(--bg-subtle)' }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>Supplier Ledger — backend pending</div>
+      <div style={{ fontSize: 12, color: 'var(--text-2)', maxWidth: 560, margin: '0 auto', lineHeight: 1.6 }}>
+        There is no supplier-side ledger read authority yet — purchase invoices and payments
+        live in wFirma. This tab will activate when a supplier statement route exists
+        (mirror of <span style={{ fontFamily: 'monospace' }}>GET /api/v1/ledgers/clients</span>).
+        No figures are shown because none would be real.
       </div>
     </div>
-  );
-}
-
-function SupplierHeaderCard({ supplier: s }) {
-  const cur = s.cur === 'PLN' ? LDG_FMT.pln : (n) => s.cur + ' ' + n.toLocaleString('en-US', { minimumFractionDigits: 2 });
-  return (
-    <window.Card>
-      <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>{s.name}</div>
-            <span style={{ fontSize: 10, color: 'var(--text-3)', padding: '2px 6px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 3 }}>{s.country}</span>
-          </div>
-          <div style={{ fontSize: 11.5, color: 'var(--text-3)', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-            <span>VAT / Tax ID: <span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{s.vat}</span></span>
-            <span>wFirma contractor: <span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{s.wfirma}</span></span>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <window.Btn small variant="outline">View statement</window.Btn>
-          <window.Btn small variant="outline">↓ PDF</window.Btn>
-          <window.Btn small variant="outline">↓ XLSX</window.Btn>
-          <window.Btn small variant="outline">View linked PZ</window.Btn>
-          <window.Btn small variant="outline">View invoices</window.Btn>
-        </div>
-      </div>
-
-      <div style={{ padding: 16, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-        <LdgStatTile label="Current balance"      value={cur(s.balance)}             sub={`Currency: ${s.cur}`} />
-        <LdgStatTile label="Open purchase inv."   value={s.openPI}                    sub={`${s.paidPI} paid (lifetime)`} alert={s.openPI > 0} tone={s.openPI > 0 ? 'amber' : null} />
-        <LdgStatTile label="Pending service inv." value={s.pendingSvc}                sub="Cost lines awaiting invoice" />
-        <LdgStatTile label="PZ-linked purchases"  value={s.pzLinked}                  sub="Goods receipts matched" />
-      </div>
-
-      <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border-subtle)', display: 'flex', gap: 24, fontSize: 11, color: 'var(--text-3)' }}>
-        <span>Last purchase: <span style={{ color: 'var(--text-2)' }}>{s.lastBuy}</span></span>
-        <span>Last payment: <span style={{ color: 'var(--text-2)' }}>{s.lastPay}</span></span>
-      </div>
-    </window.Card>
-  );
-}
-
-function SupplierStatementTable({ supplier, onRowClick, selectedId }) {
-  const cur = supplier.cur === 'PLN' ? LDG_FMT.pln : (n) => supplier.cur + ' ' + n.toLocaleString('en-US', { minimumFractionDigits: 2 });
-
-  const rows = [
-    { id: 'PI-EJ-148', date: '04 Apr 2026', doc: 'PI-EJ-2026/148', type: 'Purchase invoice', due: '04 Jul 2026', debit:    0,    credit: 14200.00, balance: 32500.00, status: 'Open',       source: 'wFirma', linkPz: 'PZ-2604-013' },
-    { id: 'PAY-2604-04',date:'02 Apr 2026', doc: 'PAY-2604-04',    type: 'Payment',          due: '—',           debit: 8000.00, credit:    0,    balance: 18300.00, status: 'Reconciled', source: 'wFirma' },
-    { id: 'SVC-DHL-09',date:'01 Apr 2026',  doc: 'SVC-DHL-09',     type: 'Service invoice',  due: '15 Apr 2026', debit:    0,    credit:    420.00, balance: 26300.00, status: 'Open',       source: 'wFirma' },
-    { id: 'PI-EJ-141', date: '20 Mar 2026', doc: 'PI-EJ-2026/141', type: 'Purchase invoice', due: '20 Jun 2026', debit:    0,    credit:  6300.00, balance: 25880.00, status: 'Open',       source: 'wFirma', linkPz: 'PZ-2603-009' },
-    { id: 'PAY-2603-12',date:'15 Mar 2026', doc: 'PAY-2603-12',    type: 'Payment',          due: '—',           debit: 5000.00, credit:    0,    balance: 19580.00, status: 'Reconciled', source: 'wFirma' },
-    { id: 'OPENING-S', date: '01 Mar 2026', doc: 'Opening',        type: 'Opening',          due: '—',           debit: 14580.00,credit:    0,    balance: 14580.00, status: 'Reconciled', source: 'wFirma' },
-  ];
-
-  const cols = [
-    { id: 'date',   label: 'Date',    w: 100 },
-    { id: 'doc',    label: 'Doc no.', w: 150, mono: true },
-    { id: 'type',   label: 'Type',    w: 130 },
-    { id: 'due',    label: 'Due',     w: 100 },
-    { id: 'debit',  label: 'Debit',   w: 110, align: 'right' },
-    { id: 'credit', label: 'Credit',  w: 110, align: 'right' },
-    { id: 'balance',label: 'Balance', w: 120, align: 'right' },
-    { id: 'status', label: 'Status',  w: 95 },
-    { id: 'pz',     label: 'PZ link', w: 110 },
-    { id: 'source', label: 'Source',  w: 80 },
-    { id: 'actions',label: '',        w: 110, align: 'right' },
-  ];
-
-  return (
-    <window.Card>
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Supplier statement</span>
-          <LdgSourceBadge />
-          <LdgReadOnlyBadge />
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <select style={{ fontSize: 11, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card)', color: 'var(--text-2)' }}>
-            <option>This month</option><option>YTD</option><option>Last 12 months</option><option>Custom range…</option>
-          </select>
-          <window.Btn small variant="outline">↓ PDF</window.Btn>
-          <window.Btn small variant="outline">↓ XLSX</window.Btn>
-        </div>
-      </div>
-
-      <LdgAgingStrip buckets={[
-        { label: 'Current', value: cur(18000) },
-        { label: '1–30',    value: cur(8200), tone: 'amber' },
-        { label: '31–60',   value: cur(4300), tone: 'amber' },
-        { label: '61–90',   value: cur(2000), tone: 'red' },
-        { label: '90+',     value: cur(0) },
-        { label: 'Total',   value: cur(supplier.balance) },
-      ]} />
-
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
-          <thead>
-            <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-              {cols.map(c => (
-                <th key={c.id} style={{
-                  padding: '8px 12px', textAlign: c.align || 'left', fontSize: 10,
-                  fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em',
-                  textTransform: 'uppercase', whiteSpace: 'nowrap', width: c.w,
-                }}>{c.label}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(r => {
-              const isSelected = selectedId === r.id;
-              const overdue = r.status === 'Overdue';
-              return (
-                <tr key={r.id}
-                  onClick={() => onRowClick(r)}
-                  style={{
-                    borderBottom: '1px solid var(--border-subtle)',
-                    cursor: 'pointer',
-                    background: isSelected ? 'var(--bg-subtle)' : overdue ? 'rgba(229, 73, 73, 0.04)' : 'transparent',
-                  }}>
-                  <td style={{ padding: '8px 12px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{r.date}</td>
-                  <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: 'var(--text)', fontWeight: 600 }}>{r.doc}</td>
-                  <td style={{ padding: '8px 12px', color: 'var(--text-2)' }}>{r.type}</td>
-                  <td style={{ padding: '8px 12px', color: overdue ? 'var(--badge-red-text)' : 'var(--text-2)', whiteSpace: 'nowrap' }}>{r.due}</td>
-                  <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', color: r.debit > 0 ? 'var(--text)' : 'var(--text-3)' }}>{r.debit > 0 ? cur(r.debit) : '—'}</td>
-                  <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', color: r.credit > 0 ? 'var(--text)' : 'var(--text-3)' }}>{r.credit > 0 ? cur(r.credit) : '—'}</td>
-                  <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700, color: 'var(--text)' }}>{cur(r.balance)}</td>
-                  <td style={{ padding: '8px 12px' }}><LdgStatusPill status={r.status} /></td>
-                  <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 10.5 }}>
-                    {r.linkPz
-                      ? <a href="#" style={{ color: 'var(--accent)' }} onClick={e => e.preventDefault()}>{r.linkPz}</a>
-                      : <span style={{ color: 'var(--text-3)' }}>—</span>}
-                  </td>
-                  <td style={{ padding: '8px 12px', fontSize: 10, color: 'var(--text-3)' }}>{r.source}</td>
-                  <td style={{ padding: '8px 12px', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
-                    <span style={{ display: 'inline-flex', gap: 4 }}>
-                      <button style={ldgIconBtn} title="View">👁</button>
-                      <button style={ldgIconBtn} title="Download">↓</button>
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: 11.5, background: 'var(--bg-subtle)' }}>
-        <span style={{ color: 'var(--text-3)' }}>{rows.length} entries · all sourced from wFirma</span>
-        <span style={{ color: 'var(--text)', fontWeight: 700, fontFamily: 'monospace' }}>Closing balance: {cur(supplier.balance)}</span>
-      </div>
-    </window.Card>
   );
 }
 
@@ -634,15 +567,20 @@ function LdgFilterPanel({ title, searchPlaceholder, items, activeId, onSelect, e
   );
 }
 
-// ── Statement detail drawer (right-side) ───────────────────────────────
-function StatementDetailDrawer({ row, kind, onClose }) {
-  const isInvoice = row.type === 'Invoice' || row.type === 'Purchase invoice';
+// ── Statement detail drawer (right-side) — LIVE entry fields (LDG-1) ───
+// Shows exactly what the statement.json entry carries. The old drawer's
+// fabricated document preview (invented file size / page count), invented linked
+// movements (SHP-/PZ-/SMP- ids) and minted "WF-DOC-" ids are removed —
+// cross-links to shipments/PZ are a future backend capability, stated as such.
+function StatementDetailDrawer({ row, onClose }) {
+  const TYPE_LABEL = { invoice: 'Invoice', correction: 'Correction', payment: 'Payment', proforma: 'Proforma' };
+  const money = (v) => (v === null || v === undefined || v === '' ? '—' : LDG_FMT.money(v, row.currency || ''));
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 900, display: 'flex', justifyContent: 'flex-end',
       background: 'rgba(0,0,0,0.18)',
     }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{
+      <div data-testid="ldg-entry-drawer" style={{
         width: 520, height: '100%', background: 'var(--card)',
         borderLeft: '1px solid var(--border)', boxShadow: '-12px 0 32px rgba(0,0,0,0.06)',
         display: 'flex', flexDirection: 'column',
@@ -651,8 +589,9 @@ function StatementDetailDrawer({ row, kind, onClose }) {
         <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-              <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace' }}>{row.doc}</span>
-              <LdgStatusPill status={row.status} />
+              <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace' }}>
+                {row.doc_number || (row.type === 'payment' ? 'Payment' : TYPE_LABEL[row.type] || row.type)}
+              </span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <LdgSourceBadge />
@@ -662,69 +601,33 @@ function StatementDetailDrawer({ row, kind, onClose }) {
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: 'var(--text-3)' }}>×</button>
         </div>
 
-        {/* Meta grid */}
+        {/* Meta grid — real statement.json entry fields only */}
         <div style={{ padding: 18, borderBottom: '1px solid var(--border-subtle)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           {[
-            ['Type',          row.type],
-            ['Date',          row.date],
-            ['Due date',      row.due],
-            ['Debit',         row.debit > 0 ? LDG_FMT.pln(row.debit) : '—'],
-            ['Credit',        row.credit > 0 ? LDG_FMT.pln(row.credit) : '—'],
-            ['Balance after', LDG_FMT.pln(row.balance)],
-            ['Source',        row.source],
-            ['wFirma doc id', 'WF-DOC-' + row.id],
+            ['Type',            TYPE_LABEL[row.type] || row.type],
+            ['Date',            row.date || '—'],
+            ['Currency',        row.currency || '—'],
+            ['Debit',           Number(row.debit) > 0 ? money(row.debit) : '—'],
+            ['Credit',          Number(row.credit) > 0 ? money(row.credit) : '—'],
+            ['Running balance', money(row.running_balance)],
+            ['Linked invoice',  row.linked_invoice || '—'],
+            ['wFirma doc id',   row.wfirma_doc_id ? String(row.wfirma_doc_id) : '—'],
           ].map(([k, v]) => (
             <div key={k}>
               <div style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 3 }}>{k}</div>
-              <div style={{ fontSize: 12, color: 'var(--text)', fontFamily: k === 'wFirma doc id' || k === 'Balance after' || k === 'Debit' || k === 'Credit' ? 'monospace' : 'inherit' }}>{v}</div>
+              <div style={{ fontSize: 12, color: 'var(--text)', fontFamily: ['wFirma doc id', 'Running balance', 'Debit', 'Credit'].includes(k) ? 'monospace' : 'inherit' }}>{v}</div>
             </div>
           ))}
         </div>
 
-        {/* Document preview placeholder */}
-        <div style={{ padding: 18, borderBottom: '1px solid var(--border-subtle)' }}>
-          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 8 }}>Document preview</div>
-          <div style={{
-            border: '1px dashed var(--border)', borderRadius: 6,
-            padding: '40px 18px', textAlign: 'center',
-            background: 'var(--bg-subtle)',
-          }}>
-            <div style={{ fontSize: 32, color: 'var(--text-3)', marginBottom: 4 }}>📄</div>
-            <div style={{ fontSize: 12, color: 'var(--text-2)', fontWeight: 600 }}>{row.doc}.pdf</div>
-            <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 4 }}>Pulled from wFirma · 184 KB · 2 pages</div>
-            <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginTop: 12 }}>
-              <window.Btn small variant="outline">Open viewer</window.Btn>
-              <window.Btn small variant="outline">↓ PDF</window.Btn>
-            </div>
-          </div>
-        </div>
-
-        {/* Linked operational movements */}
+        {/* Cross-links: honest pending state, not fabricated ids */}
         <div style={{ padding: 18, flex: 1, overflowY: 'auto' }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 8 }}>Linked operational movements</div>
-          <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginBottom: 10, fontStyle: 'italic' }}>
-            Operational links — separate from the accounting balance above
+          <div data-testid="ldg-entry-links-pending" style={{ fontSize: 11, color: 'var(--text-3)', border: '1px dashed var(--border)', borderRadius: 6, padding: '14px 12px', background: 'var(--bg-subtle)' }}>
+            Backend pending — cross-linking ledger entries to shipments, PZ receipts and
+            samples requires a document-link index that does not exist yet. The entry
+            itself above is live wFirma data.
           </div>
-          {[
-            isInvoice && { kind: 'Shipment',         id: 'SHP-2026-0142',  detail: 'AWB DHL-1234567890 · cleared 04 Apr' },
-            isInvoice && { kind: 'PZ goods receipt', id: 'PZ-2604-013',    detail: '14 lines · PLN 18,420 cost basis' },
-            kind === 'clients' && isInvoice && { kind: 'Sample exposure', id: 'SMP-2604-002', detail: '1 pc held by client · EUR 1,800' },
-            kind === 'clients' && isInvoice && { kind: 'Consignment',     id: 'CSG-2603-007', detail: '3 pcs on consignment · EUR 12,400' },
-            { kind: 'Audit event', id: 'AUD-2604-2148', detail: 'Synced from wFirma · 04 Apr 14:42 · by anna.k' },
-          ].filter(Boolean).map(l => (
-            <div key={l.id} style={{
-              padding: '10px 12px', borderRadius: 6,
-              border: '1px solid var(--border)', marginBottom: 8,
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10,
-            }}>
-              <div>
-                <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{l.kind}</div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', fontFamily: 'monospace', marginTop: 2 }}>{l.id}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>{l.detail}</div>
-              </div>
-              <window.Btn small variant="outline">Open →</window.Btn>
-            </div>
-          ))}
         </div>
 
         {/* Footer */}
@@ -732,27 +635,6 @@ function StatementDetailDrawer({ row, kind, onClose }) {
           <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>To post payments or corrections, use wFirma directly.</span>
           <window.Btn small variant="outline" onClick={onClose}>Close</window.Btn>
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Error / empty states ───────────────────────────────────────────────
-function LdgErrorState({ onRetry }) {
-  return (
-    <div style={{
-      padding: '60px 24px', textAlign: 'center',
-      background: 'var(--card)', border: '1px solid var(--badge-red-border)',
-      borderRadius: 8,
-    }}>
-      <div style={{ fontSize: 36, color: 'var(--badge-red-text)', marginBottom: 8 }}>⚠</div>
-      <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>wFirma is disconnected</div>
-      <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 14, maxWidth: 480, margin: '0 auto 14px' }}>
-        Ledger data is read-only and depends on wFirma. Without a live connection no balances or statements can be displayed. Reconnect in <strong>Admin → Integrations</strong> or retry below.
-      </div>
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
-        <window.Btn variant="outline" small>Open Admin → Integrations</window.Btn>
-        <window.Btn variant="gold" small onClick={onRetry}>Retry connection</window.Btn>
       </div>
     </div>
   );
