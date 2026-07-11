@@ -141,7 +141,7 @@ function LedgersPage() {
             </span>
           )}
           <window.Btn small variant="outline" data-testid="ldg-refresh"
-            onClick={() => { setLoadInfo(p => ({ ...p, status: 'loading' })); setRefreshKey(k => k + 1); }}>
+            onClick={() => { setLoadInfo(p => ({ ...p, status: 'loading' })); setSelectedRow(null); setRefreshKey(k => k + 1); }}>
             ↻ Refresh from wFirma
           </window.Btn>
         </div>
@@ -282,6 +282,13 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo }) 
           activeId={active}
           onSelect={setActive}
         />
+        {/* limit=100 is the route maximum; equal counts mean the roster MAY be
+            truncated — say so instead of silently hiding clients. */}
+        {clients.length >= 100 && (
+          <div data-testid="ldg-clients-truncated" style={{ marginTop: 8, fontSize: 10.5, color: 'var(--badge-amber-text)' }}>
+            Showing the first 100 clients — the list may be truncated (backend pagination pending).
+          </div>
+        )}
       </div>
 
       {/* Right: header card + statement table */}
@@ -342,9 +349,13 @@ function ClientHeaderCard({ client: c, stmt }) {
             <LdgStatTile label="Open (outstanding)" value={LDG_FMT.money(c.open, c.currency)}
               sub="live wFirma statement" />
           )}
+          {/* aged = aging.total − aging.current (routes_ledgers.py), i.e. any
+              unpaid amount past its INVOICE date — includes 1–30-day invoices
+              that may be well within payment terms. Due-date aging is Backend
+              Pending, so the label must not claim "overdue" or "30+ days". */}
           <LdgStatTile label="Aged (invoice age)" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.overdue_invoice_age, c.currency)}
-            sub={(Number(c.overdue_invoice_age) || 0) > 0 ? 'older than 30 days — action required' : 'invoice-age basis'}
-            tone={(Number(c.overdue_invoice_age) || 0) > 0 ? 'red' : 'green'} alert={(Number(c.overdue_invoice_age) || 0) > 0} />
+            sub={(Number(c.overdue_invoice_age) || 0) > 0 ? 'unpaid past invoice date — see statement aging' : 'invoice-age basis'}
+            tone={(Number(c.overdue_invoice_age) || 0) > 0 ? 'amber' : 'green'} />
           <LdgStatTile label="Invoiced (period)" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.ytd_invoiced, c.currency)} sub="statement window" />
           {/* last_30d is served as null by routes_ledgers.py (Backend Pending) —
               say so rather than rendering a dash that implies a live zero. */}
@@ -470,9 +481,9 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId }) {
                         <td style={{ padding: '8px 12px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{r.date || '—'}</td>
                         <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: 'var(--text)', fontWeight: 600 }}>{r.doc_number || (r.type === 'payment' ? (r.linked_invoice ? `→ ${r.linked_invoice}` : '(unmatched)') : '—')}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--text-2)' }}>{TYPE_LABEL[r.type] || r.type}</td>
-                        <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', color: Number(r.debit) > 0 ? 'var(--text)' : 'var(--text-3)' }}>{Number(r.debit) > 0 ? LDG_FMT.money(r.debit, '') : '—'}</td>
-                        <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', color: Number(r.credit) > 0 ? 'var(--badge-green-text)' : 'var(--text-3)' }}>{Number(r.credit) > 0 ? LDG_FMT.money(r.credit, '') : '—'}</td>
-                        <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700, color: 'var(--text)' }}>{LDG_FMT.money(r.running_balance, '')}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', color: Number(r.debit) > 0 ? 'var(--text)' : 'var(--text-3)' }}>{Number(r.debit) > 0 ? LDG_FMT.money(r.debit, ccy) : '—'}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', color: Number(r.credit) > 0 ? 'var(--badge-green-text)' : 'var(--text-3)' }}>{Number(r.credit) > 0 ? LDG_FMT.money(r.credit, ccy) : '—'}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700, color: 'var(--text)' }}>{LDG_FMT.money(r.running_balance, ccy)}</td>
                         <td style={{ padding: '8px 12px', fontSize: 10, color: 'var(--text-3)' }}>wFirma</td>
                       </tr>
                     );
@@ -521,11 +532,20 @@ function SupplierLedgerView() {
 
 // ── Filter panel (left) ────────────────────────────────────────────────
 function LdgFilterPanel({ title, searchPlaceholder, items, activeId, onSelect, extraFilters }) {
+  // LDG-1 fix (independent-review finding): the search box was a dead input —
+  // it accepted keystrokes and filtered nothing. It now really filters the
+  // list (name + sub line, case-insensitive) and says so when nothing matches.
+  const [query, setQuery] = React.useState('');
+  const q = query.trim().toLowerCase();
+  const shown = q
+    ? items.filter(it => `${it.label} ${it.sub || ''}`.toLowerCase().includes(q))
+    : items;
   return (
     <window.Card style={{ padding: 0, position: 'sticky', top: 0 }}>
       <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>{title}</div>
-        <input placeholder={searchPlaceholder} style={{
+        <input placeholder={searchPlaceholder} data-testid="ldg-filter-search"
+          value={query} onChange={(e) => setQuery(e.target.value)} style={{
           width: '100%', padding: '6px 10px', fontSize: 12,
           border: '1px solid var(--border)', borderRadius: 5,
           background: 'var(--card)', color: 'var(--text)',
@@ -540,7 +560,12 @@ function LdgFilterPanel({ title, searchPlaceholder, items, activeId, onSelect, e
         ))}
       </div>
       <div style={{ maxHeight: 'calc(100vh - 360px)', overflowY: 'auto' }}>
-        {items.map(it => {
+        {q && shown.length === 0 && (
+          <div data-testid="ldg-filter-no-match" style={{ padding: '14px', fontSize: 11.5, color: 'var(--text-3)', textAlign: 'center' }}>
+            No clients match “{query.trim()}”.
+          </div>
+        )}
+        {shown.map(it => {
           const active = activeId === it.id;
           return (
             <button key={it.id} onClick={() => onSelect(it.id)} style={{

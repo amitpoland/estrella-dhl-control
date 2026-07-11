@@ -78,6 +78,10 @@ _FORBIDDEN_MOCK_MARKERS = [
     "SHP-2026-0142",        # fabricated drawer shipment link
     "'WF-DOC-' +",          # minted doc ids in the drawer
     "184 KB",               # fake document preview metadata
+    # Independent-review HIGH: overdue_invoice_age = aging total − current,
+    # which INCLUDES 1–30-day invoices. A "30 days" claim on that figure is
+    # factually wrong and triggers premature collection calls.
+    "older than 30 days",
 ]
 
 
@@ -109,6 +113,9 @@ _REQUIRED_TESTIDS = [
     "ldg-suppliers-pending",    # supplier tab: honest backend-pending panel
     "ldg-entry-drawer",
     "ldg-entry-links-pending",  # drawer cross-links: backend pending
+    "ldg-filter-search",        # search input is WIRED (was a dead input)
+    "ldg-filter-no-match",      # honest zero-match state for the search
+    "ldg-clients-truncated",    # honest note when the roster hits limit=100
 ]
 
 
