@@ -76,8 +76,8 @@ function LdgStatTile({ label, value, sub, tone, alert }) {
 }
 
 // ── Header (sub-tabs + global wFirma sync state) ───────────────────────
-function LedgersPage() {
-  const [tab, setTab] = React.useState('clients');
+function LedgersPage({ initialTab } = {}) {
+  const [tab, setTab] = React.useState(initialTab === 'suppliers' ? 'suppliers' : 'clients');
   const [wfirmaState, setWfirmaState] = React.useState('connected'); // connected | disconnected | empty
   const [selectedRow, setSelectedRow] = React.useState(null);
 

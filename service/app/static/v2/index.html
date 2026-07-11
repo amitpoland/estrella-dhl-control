@@ -303,6 +303,8 @@ window.EstrellaShared = {
 <script type="text/babel" src="client-detail.jsx"></script>
 <script type="text/babel" src="master-page.jsx"></script>
 <script type="text/babel" src="inventory-page.jsx"></script>
+<!-- ledgers-page.jsx must precede accounting-hub.jsx: the hub's ClientLedgerTab
+     and SupplierLedgerTab both embed window.LedgersPage (registered by this file). -->
 <script type="text/babel" src="ledgers-page.jsx"></script>
 <script type="text/babel" src="client-kyc-and-consignment.jsx"></script>
 <script type="text/babel" src="wireframe-update.jsx"></script>

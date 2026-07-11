@@ -517,6 +517,31 @@ function ClientLedgerTab() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TAB — Supplier Ledger
+// Authority: LedgersPage (ledgers-page.jsx) — embedded on its Supplier Ledger
+// sub-tab. De-dup (Lesson M, operator ruling 2026-07-11): the former standalone
+// AccSupplierLedger pending panel is RETIRED. LedgersPage's internal Supplier
+// Ledger sub-tab is the single authority; the hub embeds it, mirroring
+// ClientLedgerTab. The capability stays VISIBLE — now backed by the real ledger
+// surface instead of a disabled placeholder.
+// ═══════════════════════════════════════════════════════════════════════════════
+function SupplierLedgerTab() {
+  const LedgersPage = window.LedgersPage;
+  if (typeof LedgersPage !== 'function') {
+    return (
+      <div style={{ padding: '32px 28px' }} data-testid="tab-supplier-ledger-fallback">
+        <AccError msg="LedgersPage component not loaded. Check script load order in index.html." />
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: '0 0 40px' }} data-testid="tab-supplier-ledger">
+      <LedgersPage initialTab="suppliers" />
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TAB D — wFirma Sync (NAVIGATE)
 // No duplicate: WfirmaMappingPage is the authority at /v2/wfirma_setup.
 // Shows live contractor scan status + navigate button.
@@ -987,7 +1012,7 @@ function AccountingOverviewKpis() {
     <div style={{ display: 'flex', gap: 12, margin: '14px 0', flexWrap: 'wrap' }}>
       <_AccReceivableKpi state={recv} />
       <_AccKpi label="Sales Overdue" pendingNote="due-date authority pending" />
-      <_AccKpi label="Supplier Payable" pendingNote="supplier ledger authority pending" />
+      <_AccKpi label="Supplier Payable" pendingNote="payable-total endpoint pending" />
       <_AccLastSyncKpi state={sync} />
     </div>
   );
@@ -1234,20 +1259,6 @@ function AccClientBalance() {
     </div>
   );
 }
-function AccSupplierLedger() {
-  return (
-    <div data-testid="acc-supplier-ledger" style={{ padding: '20px 28px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--text)', fontFamily: '"DM Serif Display", serif' }}>Supplier Ledger</h2>
-        <select data-testid="acc-supplier-select" disabled style={{ fontSize: 11, padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)' }}><option>All suppliers</option></select>
-        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Source: wFirma</span>
-        <div style={{ flex: 1 }} />
-        <button disabled title="Backend Pending" style={{ padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11, fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 }}>↓ Export</button>
-      </div>
-      <_AccPendingTable cols={['Date', 'Supplier', 'Reference', 'Description', 'Debit', 'Credit', 'Balance']} note="GET /api/v1/ledger/suppliers" />
-    </div>
-  );
-}
 // Wave 4 Item 7 — PULL-ONLY wFirma sync. Approved pull actions are wired to
 // read-only endpoints; every PUSH action is visible but DISABLED as CP4-gated
 // (writes to live wFirma need separate operator approval). Per-source status is
@@ -1401,7 +1412,7 @@ function AccountingHub({ onNav }) {
         {section === 'clientLedger'   && <ClientLedgerTab />}
         {['inv', 'cn', 'wz', 'pw', 'rw', 'mm'].includes(section) && <AccDocGrid sectionId={section} />}
         {section === 'balance'        && <AccClientBalance />}
-        {section === 'supplierLedger' && <AccSupplierLedger />}
+        {section === 'supplierLedger' && <SupplierLedgerTab />}
         {section === 'wfirma'         && <AccWfirmaSyncInline onNav={onNav} />}
         {section === 'audit'          && <AuditTrailTab />}
       </div>

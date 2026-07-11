@@ -7460,6 +7460,41 @@ explicit selection of the exact option text "I acknowledge LOCAL-COMMIT-ONLY"
 runbook (a6e15149 → hardened 1e43f8bc); agent scope on deploy report =
 read-only tail only; pz-deploy-guard boundary permanent.
 
+### 2026-07-11 — Supplier Ledger surface de-duplicated; hub standalone AccSupplierLedger panel retired (Lesson M)
+DECISION: the canonical operator-visible **Supplier Ledger** surface is the
+  LedgersPage internal "Supplier Ledger" sub-tab (`service/app/static/v2/ledgers-page.jsx`,
+  `SupplierLedgerView`). The AccountingHub "Supplier Ledger" sidebar tab now EMBEDS
+  LedgersPage on that sub-tab (`<LedgersPage initialTab="suppliers" />`), mirroring the
+  existing ClientLedgerTab embed pattern. The former standalone `AccSupplierLedger`
+  disabled/pending panel in `service/app/static/v2/accounting-hub.jsx` is RETIRED (deleted).
+BASIS: operator ruling 2026-07-11 (session claude/reverent-taussig-582ea7), verbatim:
+  "LedgersPage is CANONICAL — it is the declared Ledgers/Statements authority and the hub
+  already embeds it for Client Ledger via ClientLedgerTab. Make LedgersPage's internal
+  Supplier Ledger sub-tab the single authority; have the hub's Supplier Ledger tab
+  EMBED/reuse LedgersPage (mirror the ClientLedgerTab pattern that renders
+  window.LedgersPage) rather than the standalone AccSupplierLedger panel; retire
+  AccSupplierLedger." Two operator-visible Supplier Ledger panels for the same future
+  capability = duplicate authority (FRONTEND AUTHORITY CONSTITUTION: one canonical file per
+  module). This retirement crosses no irreversible boundary (frontend-only, git-reversible,
+  no prod write), so the CONSENT ARTIFACT RULE's pre-execution verbatim-ack gate does not
+  bind; the operator wording is quoted here for record completeness.
+CAPABILITY (Lesson M — cancellation record): the retired element is the standalone
+  `AccSupplierLedger` pending panel (a disabled "All suppliers" select + disabled Export
+  button + a placeholder table noting `GET /api/v1/ledgers/suppliers`). It is CANCELLED as a
+  distinct surface, NOT the Supplier Ledger capability itself. The "Supplier Ledger" nav item
+  stays VISIBLE in the hub LEDGERS group and now resolves to the richer canonical LedgersPage
+  surface. No operator-visible capability is removed — it is upgraded from a disabled
+  placeholder to the real ledger view.
+CONSEQUENCE: `AccSupplierLedger` function deleted from accounting-hub.jsx; new
+  `SupplierLedgerTab` embed added; the `supplierLedger` section renders `<SupplierLedgerTab />`.
+  `LedgersPage` gained a backward-compatible `initialTab` prop (default `'clients'`, so the
+  existing ClientLedgerTab embed is unchanged). Browser-verified 2026-07-11 (env=dev): hub
+  Supplier Ledger tab → embedded LedgersPage on Supplier Ledger sub-tab; Client Ledger tab
+  still defaults to Client Ledger sub-tab; no console errors. PZ regression 160/160.
+SCOPE: frontend-only (2 JSX files). Out of scope and deliberately left unchanged: the
+  AccountingOverview "Supplier Payable" KPI pendingNote and the Supplier Ledger data being
+  demo/hardcoded in LedgersPage (a separate live-wiring slice, parallel to LDG-1 #884).
+
 ---
 
 # ASSUMPTIONS
