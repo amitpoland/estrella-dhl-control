@@ -908,6 +908,158 @@ def backfill_unit_price_eur(batch_id: str, line_records: List[Dict[str, Any]]) -
     return updated
 
 
+# ── Document-scoped price-reprocess resolver (canary-hardened) ──────────────
+#
+# The reprocess-prices route re-parses source packing files to recover
+# unit_price_eur. Global-Jewellery parsed rows carry NO pack_sr — the parser
+# emits a deterministic document-local ``line_position`` and pack_sr is stamped
+# at INTAKE from that line_position (routes_intake.py / routes_packing.py
+# upload: ``"pack_sr": r.get("line_position")``). Matching on
+# (batch_id, invoice_no, pack_sr) therefore (a) missed every such row (pack_sr
+# None → fallback) and (b) conflated the Client .xlsx and Poland .xls variants
+# of one invoice, which are DIFFERENT registered packing_documents. A stopped
+# 2026-07-11 canary proved the fallback (batch, invoice, invoice_line_position,
+# design_no) is ambiguous (invoice 235: pack_sr 4 and 5 share ilp+design, prices
+# 372 vs 458). The canonical, already-stored, unique reprocess identity is
+# (packing_document_id, pack_sr := pack_sr or line_position). This resolver maps
+# every positive-price source row to EXACTLY one stored row under that key,
+# rejects 0/multi matches, and never uses LIMIT 1 to hide ambiguity. It writes
+# nothing. ``backfill_unit_price_eur`` (the direct (batch,invoice,pack_sr)
+# caller contract, PR #890) is intentionally left unchanged.
+
+def _bridged_pack_sr(row: Dict[str, Any]):
+    """Canonical serial for a parsed source row: pack_sr if the caller supplied
+    one, else the parser's deterministic document-local ``line_position`` — the
+    exact field INTAKE stamps into pack_sr. Returns a float or None."""
+    ps = row.get("pack_sr")
+    if ps is None:
+        ps = row.get("line_position")
+    try:
+        return None if ps is None else float(ps)
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_price_reprocess_targets(
+    batch_id:     str,
+    source_files: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Read-only preflight for the reprocess-prices route. Performs NO writes.
+
+    ``source_files`` — one entry per re-parsed packing file (positive-price rows
+    only)::
+
+        { "file_name": str, "source_file_hash": str,
+          "rows": [ {"pack_sr": ..., "line_position": ..., "unit_price": float}, ... ] }
+
+    Each file is resolved to its packing_document via the existing
+    content-addressed bridge (``_resolve_packing_document_ids`` →
+    source_file_hash). A file whose hash resolves to 0 or >1 documents is
+    rejected (invalid) — never guessed, never chosen by sort order. Each
+    positive-price row is then resolved to the ONE stored packing row under the
+    canonical identity (batch_id, packing_document_id, pack_sr:=pack_sr or
+    line_position). Within a *serial* document (one that has stored pack_sr rows)
+    every row must resolve to exactly one row; a *non-serial* document
+    (invoice-total rows, no stored pack_sr) yields ``non_target`` rows that do
+    not block. Returns a classification; ``blocking`` is True iff any invalid,
+    ambiguous, or unmatched-within-a-serial-document row exists.
+    """
+    out: Dict[str, Any] = {
+        "targets": [], "already_priced": [], "non_target": [],
+        "unmatched": [], "ambiguous": [], "invalid": [],
+        "files_scanned": len(source_files),
+        "parsed_positive_price_records": 0,
+    }
+    if _db_path is None or not batch_id:
+        out["invalid"].append({"reason": "packing_db_unavailable"})
+        out["blocking"] = True
+        return out
+    with _connect() as con:
+        for sf in source_files:
+            fname = sf.get("file_name", "")
+            fhash = sf.get("source_file_hash", "")
+            rows  = sf.get("rows", []) or []
+            out["parsed_positive_price_records"] += len(rows)
+            doc_ids = _resolve_packing_document_ids(batch_id, fhash, fname)
+            if len(doc_ids) != 1:
+                reason = "unknown_document_hash" if not doc_ids else "multiply_registered_document"
+                for _r in rows:
+                    out["invalid"].append({"file": fname, "reason": reason,
+                                           "doc_matches": len(doc_ids)})
+                continue
+            doc_id = doc_ids[0]
+            doc_is_serial = con.execute(
+                "SELECT 1 FROM packing_lines WHERE batch_id=? AND packing_document_id=? "
+                "AND pack_sr IS NOT NULL LIMIT 1",
+                (batch_id, doc_id),
+            ).fetchone() is not None
+            for r in rows:
+                ps    = _bridged_pack_sr(r)
+                price = float(r.get("unit_price", 0) or 0)
+                base  = {"file": fname, "packing_document_id": doc_id,
+                         "pack_sr": ps, "unit_price": price}
+                if ps is None:
+                    out["invalid"].append({**base, "reason": "no_pack_sr_or_line_position"})
+                    continue
+                matches = con.execute(
+                    "SELECT id, unit_price_eur FROM packing_lines "
+                    "WHERE batch_id=? AND packing_document_id=? AND pack_sr IS ?",
+                    (batch_id, doc_id, ps),
+                ).fetchall()
+                if len(matches) > 1:
+                    out["ambiguous"].append({**base, "match_count": len(matches)})
+                elif not matches:
+                    if doc_is_serial:
+                        out["unmatched"].append({**base, "reason": "no_serial_row_in_serial_document"})
+                    else:
+                        out["non_target"].append({**base, "reason": "non_serial_document"})
+                else:
+                    m   = matches[0]
+                    cur = float(m["unit_price_eur"] or 0)
+                    tgt = {**base, "row_id": m["id"], "current_unit_price_eur": cur}
+                    (out["already_priced"] if cur > 0 else out["targets"]).append(tgt)
+    out["blocking"] = bool(out["invalid"] or out["ambiguous"] or out["unmatched"])
+    return out
+
+
+def apply_price_reprocess_targets(
+    batch_id: str,
+    targets:  List[Dict[str, Any]],
+) -> int:
+    """Transactionally set unit_price_eur (+updated_at) for the resolved targets.
+
+    ALL-OR-NOTHING under one transaction: each target is updated by its stored
+    row id, guarded so only rows whose current unit_price_eur is still <= 0 are
+    written (idempotent, race-safe). ONLY unit_price_eur and updated_at change.
+    Raises ValueError (rolling the whole transaction back) if the number of rows
+    actually updated differs from the number of eligible targets, so a
+    partial/racey result never commits. Callers MUST have confirmed
+    ``resolve_price_reprocess_targets`` is not blocking first.
+    """
+    if _db_path is None or not targets:
+        return 0
+    now = _now_iso()
+    eligible = [t for t in targets
+                if float(t.get("unit_price", 0) or 0) > 0 and t.get("row_id")]
+    with _lock:
+        with _connect() as con:
+            updated = 0
+            for t in eligible:
+                updated += con.execute(
+                    "UPDATE packing_lines SET unit_price_eur=?, updated_at=? "
+                    "WHERE id=? AND batch_id=? "
+                    "AND (unit_price_eur IS NULL OR unit_price_eur<=0)",
+                    (float(t["unit_price"]), now, t["row_id"], batch_id),
+                ).rowcount
+            if updated != len(eligible):
+                # roll back the whole operation — never commit a partial recovery
+                raise ValueError(
+                    f"reprocess update-count mismatch: updated={updated} "
+                    f"eligible={len(eligible)} (rolled back)"
+                )
+    return updated
+
+
 def get_packing_lines_for_batch(batch_id: str) -> List[Dict[str, Any]]:
     if _db_path is None:
         return []
