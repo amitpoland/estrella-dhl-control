@@ -95,9 +95,12 @@ def test_pf_status_chip_uses_live_states():
 
 def test_pf_primitives_no_rest_destructure():
     # Same pattern as test_v2_no_spread_rest — scoped to the new block so a
-    # regression in Slice 2 code fails HERE with a precise message.
+    # regression in Slice 2 code fails HERE with a precise message. The suffix
+    # `\)\s*(?:=>|\{)` restricts the match to a real destructuring PARAM LIST so
+    # safe object-literal spreads in arrow returns (`=> ({ ...a, ...b })`) are
+    # not flagged (see test_v2_no_spread_rest for the full rationale).
     block = _pf_block(_src())
-    hits = re.findall(r"\.\.\.[A-Za-z_$][\w$]*\s*\}\s*(?:\)|=>)", block)
+    hits = re.findall(r"\.\.\.[A-Za-z_$][\w$]*\s*\}\s*\)\s*(?:=>|\{)", block)
     assert not hits, f"Pf* primitives contain spread-rest destructuring: {hits}"
 
 
