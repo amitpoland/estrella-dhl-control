@@ -757,7 +757,6 @@ async def shipment_intake(
                 supplier_id=_supplier_id,
             )
             inv_lines_source = result.get("invoice_lines_source", "unknown")
-            doc_id_pdb = pdb.upsert_packing_document(**result["document"])
             rows = result.get("packing_rows", [])
             # P1: capture raw-header fingerprint artifact on failure (zero rows).
             try:
@@ -776,62 +775,14 @@ async def shipment_intake(
             except Exception as _exc:
                 log.warning("[%s] purchase packing diagnostic artifact failed (non-fatal): %s",
                             batch_id, _exc)
-            line_records = [
-                {
-                    "packing_document_id":   doc_id_pdb,
-                    "batch_id":              batch_id,
-                    "invoice_no":            r.get("invoice_no", ""),
-                    "invoice_line_position": r.get("invoice_line_position"),
-                    "product_code":          r.get("product_code"),
-                    "design_no":             str(r.get("design_no", "") or ""),
-                    "batch_no":              str(r.get("batch_no", "") or ""),
-                    "bag_id":                str(r.get("bag_id", "") or ""),
-                    "tray_id":               str(r.get("tray_id", "") or ""),
-                    "item_type":             str(r.get("item_type", "") or ""),
-                    "uom":                   str(r.get("uom", "") or ""),
-                    "quantity":              _safe_float(r.get("quantity", 0)),
-                    "gross_weight":          _safe_float(r.get("gross_weight", 0)),
-                    "net_weight":            _safe_float(r.get("net_weight", 0)),
-                    "metal":                 str(r.get("metal", "") or ""),
-                    "karat":                 str(r.get("karat", "") or ""),
-                    "stone_type":            str(r.get("stone_type", "") or ""),
-                    # Variant identity — mirror the routes_packing upload mapping.
-                    # Previously dropped here, so packing_lines variant fields were
-                    # empty for every intake-uploaded batch (the primary path).
-                    "metal_color":           str(r.get("metal_color", "") or ""),
-                    "quality_string":        str(r.get("quality_string", "") or ""),
-                    "size":                  str(r.get("size", "") or ""),
-                    "diamond_weight":        _safe_float(r.get("diamond_weight", 0)),
-                    "color_weight":          _safe_float(r.get("color_weight", 0)),
-                    "remarks":               str(r.get("remarks", "") or ""),
-                    "extracted_confidence":  _safe_float(r.get("extracted_confidence", 0)),
-                    "requires_manual_review": bool(r.get("requires_manual_review", False)),
-                    "invoice_no_raw":        str(r.get("invoice_no", "") or ""),
-                    "supplier_name":         supplier,
-                    # Source-list serial (Sr / PkSr) — primary uniqueness key
-                    # so two same-design rows from one source list aren't
-                    # collapsed by the dedup logic.
-                    "pack_sr":               r.get("line_position"),
-                    "unit_price":            _safe_float(r.get("unit_price", 0)),
-                    "total_value":           _safe_float(r.get("total_value", 0)),
-                }
-                for r in rows
-            ]
-            if line_records:
-                pdb.upsert_packing_lines(line_records)
-                seed_purchase_transit(batch_id, line_records)
-
-            # Global Jewellery: generate Polish descriptions from packing lines
-            if result.get("supplier") == "global_jewellery":
-                try:
-                    from ..services.description_engine import regenerate_descriptions_for_packing_lines
-                    _desc = regenerate_descriptions_for_packing_lines(
-                        batch_id=batch_id, dry_run=False
-                    )
-                    log.info("[%s] Global packing descriptions (intake): %s", batch_id, _desc)
-                except Exception as _desc_exc:
-                    log.warning("[%s] Global description regen failed (non-fatal): %s",
-                                batch_id, _desc_exc)
+            # ONE persistence authority: document upsert, superset line mapping
+            # (incl. pack_sr dedup key + unit_price/total_value + variant
+            # identity), dedup-safe upsert, PURCHASE_TRANSIT seed, and the
+            # Global-Jewellery description regen all live in
+            # _persist_packing_rows. Fold-in of the former inline copy —
+            # the registered #880 follow-up. PM4 scheduling stays below,
+            # derived from pack_summary rows across all packing files.
+            _persist_packing_rows(batch_id, result, supplier)
 
             pack_summary = {
                 "file":   name,
