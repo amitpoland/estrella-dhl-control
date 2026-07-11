@@ -952,17 +952,19 @@ def resolve_price_reprocess_targets(
         { "file_name": str, "source_file_hash": str,
           "rows": [ {"pack_sr": ..., "line_position": ..., "unit_price": float}, ... ] }
 
-    Each file is resolved to its packing_document via the existing
-    content-addressed bridge (``_resolve_packing_document_ids`` →
-    source_file_hash). A file whose hash resolves to 0 or >1 documents is
-    rejected (invalid) — never guessed, never chosen by sort order. Each
-    positive-price row is then resolved to the ONE stored packing row under the
-    canonical identity (batch_id, packing_document_id, pack_sr:=pack_sr or
-    line_position). Within a *serial* document (one that has stored pack_sr rows)
-    every row must resolve to exactly one row; a *non-serial* document
-    (invoice-total rows, no stored pack_sr) yields ``non_target`` rows that do
-    not block. Returns a classification; ``blocking`` is True iff any invalid,
-    ambiguous, or unmatched-within-a-serial-document row exists.
+    Each file is resolved to its packing_document by an EXACT content-hash
+    match only (``packing_documents.source_file_hash``) — NO basename fallback,
+    because for a financial write a replaced/modified same-name file must not
+    resolve to the old document. A hash matching 0 or >1 documents is rejected
+    (invalid). Each positive-price row is then resolved to the ONE stored
+    packing row under the canonical identity (batch_id, packing_document_id,
+    pack_sr:=pack_sr or line_position). A row that finds no unique match is
+    ``non_target`` ONLY when its exact document is already fully priced (has no
+    unit_price_eur<=0 row that could legitimately receive a value); otherwise it
+    is ``unmatched`` and blocks — an unresolved positive source row in a
+    still-recoverable document is never silently discarded. Returns a
+    classification; ``blocking`` is True iff any invalid, ambiguous, or unmatched
+    row exists.
     """
     out: Dict[str, Any] = {
         "targets": [], "already_priced": [], "non_target": [],
@@ -980,17 +982,37 @@ def resolve_price_reprocess_targets(
             fhash = sf.get("source_file_hash", "")
             rows  = sf.get("rows", []) or []
             out["parsed_positive_price_records"] += len(rows)
-            doc_ids = _resolve_packing_document_ids(batch_id, fhash, fname)
+            # EXACT content-hash only — never basename. A financial write is
+            # authorized solely by the content-addressed document identity: a
+            # replaced/modified file (same name, different hash) must NOT resolve
+            # to the old document, and the basename fallback in
+            # ``_resolve_packing_document_ids`` is therefore deliberately NOT
+            # used here. Filename appears in diagnostics only, never as authority.
+            doc_ids = (
+                [r["id"] for r in con.execute(
+                    "SELECT id FROM packing_documents "
+                    "WHERE batch_id=? AND source_file_hash=?",
+                    (batch_id, fhash),
+                ).fetchall()]
+                if fhash else []
+            )
             if len(doc_ids) != 1:
-                reason = "unknown_document_hash" if not doc_ids else "multiply_registered_document"
+                reason = ("no_exact_document_hash_match" if not doc_ids
+                          else "multiply_registered_document")
                 for _r in rows:
                     out["invalid"].append({"file": fname, "reason": reason,
                                            "doc_matches": len(doc_ids)})
                 continue
             doc_id = doc_ids[0]
-            doc_is_serial = con.execute(
+            # A positive source row may be non_target ONLY when its exact
+            # document has NO unpriced stored row that could legitimately receive
+            # a value (i.e. the document is already fully priced). If any unpriced
+            # (unit_price_eur<=0) row remains, an unresolved positive source row
+            # is a lost-recovery risk and MUST block (unmatched) — never silently
+            # skipped. "No serial rows" is NOT used as the proxy any more.
+            doc_has_recoverable = con.execute(
                 "SELECT 1 FROM packing_lines WHERE batch_id=? AND packing_document_id=? "
-                "AND pack_sr IS NOT NULL LIMIT 1",
+                "AND (unit_price_eur IS NULL OR unit_price_eur<=0) LIMIT 1",
                 (batch_id, doc_id),
             ).fetchone() is not None
             for r in rows:
@@ -1009,10 +1031,12 @@ def resolve_price_reprocess_targets(
                 if len(matches) > 1:
                     out["ambiguous"].append({**base, "match_count": len(matches)})
                 elif not matches:
-                    if doc_is_serial:
-                        out["unmatched"].append({**base, "reason": "no_serial_row_in_serial_document"})
+                    if doc_has_recoverable:
+                        out["unmatched"].append({**base,
+                            "reason": "unresolved_positive_row_in_recoverable_document"})
                     else:
-                        out["non_target"].append({**base, "reason": "non_serial_document"})
+                        out["non_target"].append({**base,
+                            "reason": "document_fully_priced_no_recoverable_row"})
                 else:
                     m   = matches[0]
                     cur = float(m["unit_price_eur"] or 0)

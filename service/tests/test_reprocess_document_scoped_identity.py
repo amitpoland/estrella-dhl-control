@@ -160,7 +160,71 @@ def test_duplicate_stored_serial_blocks(db):
 def test_unknown_document_hash_diagnostic(db):
     _seed_row(db, doc_id=_doc("B", "known", "/x/k.xls"), batch="B", invoice="INV/1", pack_sr=1.0, unit_price=10.0, upe=0.0)
     res = pdb.resolve_price_reprocess_targets("B", [_pos_file("ghost.xls", "no-such-hash", [(1, 50.0)])])
-    assert res["blocking"] and res["invalid"][0]["reason"] == "unknown_document_hash"
+    assert res["blocking"] and res["invalid"][0]["reason"] == "no_exact_document_hash_match"
+
+
+# ── BLOCKER-1 regression: content drift (same basename, changed hash) blocks ─
+def test_content_drift_same_basename_blocks(db):
+    # doc registered under the ORIGINAL content hash
+    d = _doc("B", "HASH_ORIGINAL", "/x/f.xls")
+    r = _seed_row(db, doc_id=d, batch="B", invoice="INV/1", pack_sr=1.0, unit_price=100.0, upe=0.0)
+    before = _upe(db, r)["unit_price_eur"]
+    # a replaced/modified same-name file: DIFFERENT hash, matching basename.
+    # It must NOT resolve via basename and must NOT write.
+    res = pdb.resolve_price_reprocess_targets(
+        "B", [_pos_file("f.xls", "HASH_CHANGED_content", [(1, 999.0)])])
+    assert res["blocking"] and len(res["targets"]) == 0
+    assert res["invalid"][0]["reason"] == "no_exact_document_hash_match"
+    # even if a caller wrongly applied res["targets"], there are none → 0 writes
+    assert pdb.apply_price_reprocess_targets("B", res["targets"]) == 0
+    assert _upe(db, r)["unit_price_eur"] == before == 0.0        # untouched (no content-drift write)
+
+
+# ── BLOCKER-2 regression: recoverable non-serial row blocks (not non_target) ─
+def test_recoverable_nonserial_row_blocks(db):
+    d = _doc("B", "hZ", "/x/z.xls")
+    # exact document contains an UNPRICED (upe<=0) row → still recoverable
+    r = _seed_row(db, doc_id=d, batch="B", invoice="INV/1", pack_sr=None, unit_price=0.0, upe=0.0, design="TOTAL")
+    res = pdb.resolve_price_reprocess_targets("B", [_pos_file("z.xls", "hZ", [(1, 500.0)])])
+    assert res["blocking"] and len(res["unmatched"]) == 1 and len(res["non_target"]) == 0
+    assert res["unmatched"][0]["reason"] == "unresolved_positive_row_in_recoverable_document"
+    assert _upe(db, r)["unit_price_eur"] == 0.0                  # nothing written
+
+
+# ── Legitimate non_target: exact document is already fully priced ────────────
+def test_fully_priced_document_is_non_target(db):
+    d = _doc("B", "hC", "/x/client.xlsx")
+    _seed_row(db, doc_id=d, batch="B", invoice="INV/1", pack_sr=None, unit_price=0.0, upe=420.0, design="TOTAL")
+    res = pdb.resolve_price_reprocess_targets("B", [_pos_file("client.xlsx", "hC", [(1, 420.0)])])
+    assert not res["blocking"] and len(res["non_target"]) == 1 and len(res["targets"]) == 0
+    assert res["non_target"][0]["reason"] == "document_fully_priced_no_recoverable_row"
+
+
+# ── One valid matched row + one unsafe unmatched row → zero total writes ─────
+def test_one_valid_plus_one_unsafe_blocks_all(db):
+    dP = _doc("B", "hP", "/x/poland.xls")
+    good = _seed_row(db, doc_id=dP, batch="B", invoice="INV/1", pack_sr=1.0, unit_price=100.0, upe=0.0)
+    dZ = _doc("B", "hZ", "/x/z.xls")
+    _seed_row(db, doc_id=dZ, batch="B", invoice="INV/2", pack_sr=None, unit_price=0.0, upe=0.0)   # recoverable, non-serial
+    files = [_pos_file("poland.xls", "hP", [(1, 100.0)]),
+             _pos_file("z.xls", "hZ", [(1, 500.0)])]   # this one is unmatched → blocks the whole op
+    res = pdb.resolve_price_reprocess_targets("B", files)
+    assert res["blocking"] and len(res["targets"]) == 1 and len(res["unmatched"]) == 1
+    # route contract: apply is NOT called when blocking → good row is NOT written
+    assert _upe(db, good)["unit_price_eur"] == 0.0
+
+
+# ── Resolver is read-only: a blocking scan writes nothing ───────────────────
+def test_resolver_read_only_snapshot_unchanged_on_block(db):
+    d = _doc("B", "hZ", "/x/z.xls")
+    r = _seed_row(db, doc_id=d, batch="B", invoice="INV/1", pack_sr=None, unit_price=0.0, upe=0.0)
+    con = sqlite3.connect(str(db))
+    snap_before = con.execute("SELECT id, unit_price_eur, updated_at FROM packing_lines ORDER BY id").fetchall()
+    res = pdb.resolve_price_reprocess_targets("B", [_pos_file("z.xls", "hZ", [(1, 500.0)])])
+    assert res["blocking"]
+    snap_after = con.execute("SELECT id, unit_price_eur, updated_at FROM packing_lines ORDER BY id").fetchall()
+    con.close()
+    assert snap_before == snap_after                            # resolver mutated nothing
 
 
 # ── 10. Direct pack_sr callers still use #890's (batch,invoice,pack_sr) ──────
