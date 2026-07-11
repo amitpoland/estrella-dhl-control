@@ -440,6 +440,36 @@ def test_route_returns_application_pdf(client, monkeypatch):
     assert r.content.startswith(b"%PDF-")
 
 
+# 12b — Lesson G: the statement PDF is a regenerable download carrying
+# live per-customer financial data (linked from the V2 Client Ledger
+# page). A browser-cached copy would show a stale balance, so the route
+# MUST send the full no-store header triplet.
+def test_route_sets_no_store_cache_headers(client, monkeypatch):
+    _stub_contractor_ok(monkeypatch, name="ACME")
+    inv = _envelope_invoices(
+        "<invoice>"
+          "<id>1</id><fullnumber>FV 1/2026</fullnumber>"
+          "<type>normal</type><date>2026-04-15</date>"
+          "<currency>EUR</currency><netto>100</netto><brutto>123.00</brutto>"
+          "<contractor><id>C-1</id></contractor>"
+        "</invoice>"
+    )
+    monkeypatch.setattr(
+        wfirma_client, "_http_request",
+        _two_endpoint_stub([inv], [_envelope_payments("")]),
+    )
+    r = client.get(
+        "/api/v1/ledgers/clients/C-1/statement.pdf"
+        "?from=2026-04-01&to=2026-05-01",
+        headers=_auth_headers(),
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers.get("cache-control") == \
+        "no-store, no-cache, must-revalidate, max-age=0"
+    assert r.headers.get("pragma")  == "no-cache"
+    assert r.headers.get("expires") == "0"
+
+
 # 13
 def test_route_filename_is_sanitised(client, monkeypatch):
     _stub_contractor_ok(monkeypatch)
@@ -611,3 +641,16 @@ def test_routes_ledgers_uses_shared_builder():
     future regression where the PDF path duplicates fetch logic."""
     src = ROUTES_LEDGERS_PATH.read_text(encoding="utf-8")
     assert src.count("_build_statement_dict(") >= 2
+
+
+def test_routes_ledgers_pdf_declares_no_store_headers():
+    """Lesson G source pin: the statement.pdf download must carry the
+    full no-store header triplet. Guards against the constant being
+    dropped or the merge into the Response headers being removed."""
+    src = ROUTES_LEDGERS_PATH.read_text(encoding="utf-8")
+    assert "no-store, no-cache, must-revalidate, max-age=0" in src
+    assert '"Pragma":' in src
+    assert '"Expires":' in src
+    # The triplet must actually be merged into the PDF Response, not
+    # merely defined and left unused.
+    assert "**_NO_STORE_HEADERS" in src

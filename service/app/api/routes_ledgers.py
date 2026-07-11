@@ -422,6 +422,17 @@ def _safe_filename(value: str) -> str:
     )
 
 
+_NO_STORE_HEADERS = {
+    # Lesson G — the statement PDF is a regenerable file carrying live,
+    # per-customer financial data (invoices + payments + outstanding).
+    # It is linked from the V2 Client Ledger page, so a browser-cached
+    # copy would show a stale balance. Never cache this download.
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma":        "no-cache",
+    "Expires":       "0",
+}
+
+
 @router.get(
     "/clients/{contractor_id}/statement.pdf",
     dependencies=[_auth],
@@ -443,7 +454,9 @@ def get_client_statement_pdf(
     the resulting dict — no second wFirma round-trip.
 
     Outcomes:
-      200  — application/pdf, ``Content-Disposition: inline``
+      200  — application/pdf, ``Content-Disposition: inline``,
+              ``Cache-Control: no-store`` (Lesson G — regenerable,
+              live per-customer financial data must never be cached)
       400  — same shapes as the JSON route
       404  — same
       502  — STATEMENT_PDF_PREFLIGHT_FAILED |
@@ -476,6 +489,7 @@ def get_client_statement_pdf(
         media_type="application/pdf",
         headers={
             "Content-Disposition": f'inline; filename="{filename}"',
+            **_NO_STORE_HEADERS,   # Lesson G — never cache this download
         },
     )
 
