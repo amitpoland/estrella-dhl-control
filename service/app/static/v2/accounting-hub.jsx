@@ -9,7 +9,7 @@
 //   Tab B  Sales/Proforma   — LIVE: GET /api/v1/proforma/search
 //                             (routes_proforma.py searchProformaDrafts)
 //   Tab C  Client Ledger    — LIVE: LedgersPage (ledgers-page.jsx) embedded;
-//                             GET /api/v1/ledgers/clients/{id}/invoice-ledger.json
+//                             GET /api/v1/ledgers/clients/{id}/statement.json (Phase 10B)
 //   Tab D  wFirma Sync      — NAVIGATE to /v2/wfirma_setup (AC-6: no duplicate;
 //                             wfirma_setup LIVE Sprint 37)
 //   Tab E  Master Data      — NAVIGATE to /v2/master (AC-7: no duplicate;
@@ -1244,7 +1244,7 @@ function AccSupplierLedger() {
         <div style={{ flex: 1 }} />
         <button disabled title="Backend Pending" style={{ padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11, fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 }}>↓ Export</button>
       </div>
-      <_AccPendingTable cols={['Date', 'Supplier', 'Reference', 'Description', 'Debit', 'Credit', 'Balance']} note="GET /api/v1/ledger/suppliers" />
+      <_AccPendingTable cols={['Date', 'Supplier', 'Reference', 'Description', 'Debit', 'Credit', 'Balance']} note="GET /api/v1/ledgers/suppliers" />
     </div>
   );
 }
