@@ -313,7 +313,7 @@ def test_pnd_tiebreak_persists(client, storage, tmp_path):
     supplier-side EJL/26-27/123-2 ($36) and EJL/26-27/123-3 ($4)."""
     # Seed supplier-side packing for invoice EJL/26-27/123: two pendants.
     # NB: distinct pack_sr is required — packing_db's primary dedup key is
-    # (batch_id, invoice_no, packing_document_id, pack_sr).
+    # (batch_id, invoice_no, pack_sr).
     pdb.upsert_packing_lines([
         {"batch_id": BATCH, "invoice_no": "EJL/26-27/123",
          "invoice_line_position": 2, "product_code": "EJL/26-27/123-2",

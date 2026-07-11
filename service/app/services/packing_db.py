@@ -634,9 +634,11 @@ def upsert_packing_lines(
 ) -> int:
     """
     Insert packing lines. Skip existing rows unless force_reextract=True.
-    Dedup key: (batch_id, invoice_no, invoice_line_position, design_no, bag_id).
-    packing_document_id is stored for traceability but is NOT part of the dedup key —
-    a re-upload creates a new document but should update the same logical packing row.
+    Dedup key:
+      Primary (pack_sr known):  (batch_id, invoice_no, pack_sr)
+      Fallback (pack_sr None):  (batch_id, invoice_no, invoice_line_position, design_no, bag_id, unit_price)
+    packing_document_id is stored for traceability but is NOT part of either key —
+    a re-upload registers a new document but should update the same logical packing row.
     Returns count of rows inserted or updated.
     """
     if _db_path is None:
