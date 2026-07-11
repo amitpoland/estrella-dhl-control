@@ -866,6 +866,29 @@ def get_customer(db_path: Path, bill_to_contractor_id: str) -> Optional[Customer
     return _row_to_customer(row) if row else None
 
 
+def find_customers_by_nip(db_path: Path, nip: str) -> List[CustomerMaster]:
+    """Read-only: every customer_master row sharing this NIP / VAT number.
+
+    Used to SURFACE (never auto-merge) duplicate contractor identities — the
+    same legal entity registered in wFirma under more than one contractor id.
+    Matches on ``nip`` OR ``vat_eu_number`` so a duplicate is caught whichever
+    column carries the number. Returns [] on a blank NIP or absent DB. Never
+    writes; the caller decides how to present a conflict.
+    """
+    key = (nip or "").strip()
+    if not key or not Path(db_path).is_file():
+        return []
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM customer_master "
+            "WHERE (nip = ? OR vat_eu_number = ?) "
+            "ORDER BY id ASC",
+            (key, key),
+        ).fetchall()
+    return [_row_to_customer(r) for r in rows]
+
+
 def update_vat_eu_result(
     db_path: Path,
     bill_to_contractor_id: str,

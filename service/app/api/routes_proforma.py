@@ -39,6 +39,8 @@ from ..services import wfirma_client
 from ..services.customer_master_db import (
     get_customer as get_customer_master,
     list_customers as _list_customer_master,
+    get_effective_defaults as _cm_effective_defaults,
+    find_customers_by_nip as _cm_find_by_nip,
     search_wfirma_customer as _cmd_search_customer,       # C-2b V4 reroute
     lookup_wfirma_contractor as _cmd_lookup_contractor,   # C-2b V4 reroute
 )
@@ -4234,6 +4236,179 @@ def _draft_to_summary(d: "pildb.ProformaDraft") -> Dict[str, Any]:
     }
 
 
+def _cm_norm(v):
+    """Normalise a comparison value: strip strings ('' → None) and coerce
+    Decimal → float so the advisory projection is always JSON-serialisable."""
+    if v is None:
+        return None
+    from decimal import Decimal as _Dec
+    if isinstance(v, _Dec):
+        return float(v)
+    if isinstance(v, str):
+        s = v.strip()
+        return s or None
+    return v
+
+
+def _cm_values_equal(a, b) -> bool:
+    """Draft-vs-suggestion equality. Numeric-aware (30 == '30' == 30.0),
+    else case-insensitive string compare."""
+    if a is None or b is None:
+        return a is b
+    try:
+        return abs(float(a) - float(b)) < 1e-9
+    except (TypeError, ValueError):
+        return str(a).strip().lower() == str(b).strip().lower()
+
+
+def _cm_field(key: str, label: str, draft_val, cm_val) -> Dict[str, Any]:
+    """Build one suggestion row with an honest SOURCE label.
+
+    saved     — the draft carries a value (authoritative snapshot).
+    suggested — draft empty, Customer Master offers a default.
+    conflict  — both present and they DIFFER (draft wins; CM shown alongside).
+    missing   — neither side has a value.
+
+    Never chooses between draft and CM; only labels what each holds.
+    """
+    dv, sv = _cm_norm(draft_val), _cm_norm(cm_val)
+    if dv is not None and sv is not None:
+        source = "saved" if _cm_values_equal(dv, sv) else "conflict"
+    elif dv is not None:
+        source = "saved"
+    elif sv is not None:
+        source = "suggested"
+    else:
+        source = "missing"
+    return {"key": key, "label": label,
+            "draft": dv, "suggestion": sv, "source": source}
+
+
+def _customer_master_suggestions(d: "pildb.ProformaDraft",
+                                 full: Dict[str, Any]) -> Dict[str, Any]:
+    """Read-only advisory projection: the mapped Customer Master commercial
+    defaults, each field labelled by SOURCE (saved / suggested / conflict /
+    missing), plus any duplicate-contractor identity conflict.
+
+    Authority rules (Lesson N — advisory, never a gate):
+      • The draft remains the transaction snapshot; CM values are suggestions.
+      • ID-first: resolves the customer ONLY by the draft's stored
+        client_contractor_id; never by name.
+      • Never mutates the draft, the posting payload, or customer identity;
+        never persists a default. Pure read; best-effort (any error → stub).
+      • Duplicate identities are SURFACED, never auto-merged.
+    """
+    stub = {"status": "unmapped", "reason": None,
+            "mapped_contractor_id": None, "mapped_name": None,
+            "fields": [], "identity_conflict": None}
+    try:
+        cid = (getattr(d, "client_contractor_id", "") or "").strip()
+        if not cid:
+            stub["reason"] = "draft_has_no_contractor_id"
+            return stub
+        cm = get_customer_master(_customer_master_db_path(), cid)
+        if cm is None:
+            stub["reason"] = "contractor_not_in_customer_master"
+            stub["mapped_contractor_id"] = cid
+            return stub
+
+        eff = _cm_effective_defaults(cm)
+        cur = (d.currency or "").strip().upper()
+
+        # Draft-side saved values (already parsed into `full`).
+        pt = full.get("payment_terms") or {}
+        if not isinstance(pt, dict):
+            pt = {}
+        charges = full.get("service_charges") or []
+        if not isinstance(charges, list):
+            charges = []
+
+        def _charge(kind):
+            for c in charges:
+                if isinstance(c, dict) and (c.get("charge_type") or "").strip().lower() == kind:
+                    return c
+            return {}
+        fr, ins = _charge("freight"), _charge("insurance")
+
+        # CM freight/insurance amount follows the draft's currency; no
+        # cross-currency fallback (matches customer_master pick_freight).
+        cm_freight_amt = (eff.get("freight_fixed_amount_usd") if cur == "USD"
+                          else eff.get("freight_fixed_amount_eur"))
+        cm_ins_amt = (cm.insurance_fixed_amount_usd if cur == "USD"
+                      else cm.insurance_fixed_amount_eur)
+
+        # VAT/WDT hint — best-effort context from the master; falls back to the
+        # raw vat_mode. Advisory only; never blocks, never writes.
+        cm_vat_hint = None
+        try:
+            _r = wfirma_client.resolve_vat_context_from_master(cm)
+            if isinstance(_r, dict) and not _r.get("blocked"):
+                cm_vat_hint = _r.get("vat_code") or _r.get("vat_context")
+        except Exception:
+            cm_vat_hint = None
+        if cm_vat_hint is None and cm.vat_mode is not None:
+            cm_vat_hint = str(cm.vat_mode)
+
+        fields = [
+            _cm_field("customer_name", "Customer name",
+                      getattr(d, "client_name", None), cm.bill_to_name),
+            _cm_field("contractor_id", "wFirma contractor ID",
+                      cid, eff.get("bill_to_contractor_id")),
+            _cm_field("currency", "Currency",
+                      cur, eff.get("default_currency")),
+            _cm_field("payment_method", "Payment method",
+                      pt.get("method") or full.get("wfirma_payment_method"),
+                      cm.preferred_payment_method),
+            _cm_field("payment_days", "Payment days",
+                      pt.get("days"), eff.get("payment_terms_days")),
+            _cm_field("invoice_language", "Invoice language",
+                      None, eff.get("default_language_id")),
+            _cm_field("vat_wdt", "VAT / WDT",
+                      full.get("vat_code") or full.get("vat_context"),
+                      cm_vat_hint),
+            _cm_field("freight_amount", "Freight amount",
+                      fr.get("amount"), cm_freight_amt),
+            _cm_field("freight_service_id", "Freight service ID",
+                      fr.get("wfirma_service_id"), eff.get("freight_service_id")),
+            _cm_field("insurance_amount", "Insurance amount",
+                      ins.get("amount"), cm_ins_amt),
+            _cm_field("insurance_rate", "Insurance rate",
+                      None, eff.get("insurance_rate")),
+            _cm_field("insurance_service_id", "Insurance service ID",
+                      ins.get("wfirma_service_id"), eff.get("insurance_service_id")),
+        ]
+
+        # Duplicate-contractor identity — SURFACE, never auto-merge. Any other
+        # customer_master row sharing this NIP/VAT number under a DIFFERENT
+        # contractor id is a conflict for the operator to resolve.
+        identity_conflict = None
+        nip_key = cm.nip or cm.vat_eu_number
+        dupes = _cm_find_by_nip(_customer_master_db_path(), nip_key) if nip_key else []
+        distinct = []
+        seen = set()
+        for row in dupes:
+            rid = (row.bill_to_contractor_id or "").strip()
+            if rid and rid not in seen:
+                seen.add(rid)
+                distinct.append({"contractor_id": rid, "name": row.bill_to_name})
+        if len(distinct) > 1:
+            identity_conflict = {
+                "vat_number": nip_key,
+                "mapped_contractor_id": cid,
+                "contractors": distinct,
+                "message": ("Same VAT number is registered under multiple wFirma "
+                            "contractor IDs. Not auto-merged — resolve in Customer Master."),
+            }
+
+        return {"status": "mapped", "reason": None,
+                "mapped_contractor_id": cid, "mapped_name": cm.bill_to_name,
+                "fields": fields, "identity_conflict": identity_conflict}
+    except Exception as exc:  # advisory projection — never breaks the draft GET
+        log.debug("customer_master_suggestions failed (advisory, display-only): %s", exc)
+        stub["reason"] = "suggestion_error"
+        return stub
+
+
 def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
     """Full editable payload — parses the JSON blobs into native lists/dicts
     so the dashboard can render without a second decode step."""
@@ -4261,7 +4436,7 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         for ln in editable_lines
     )
 
-    return {
+    full = {
         **_draft_to_summary(d),
         "remarks":               d.remarks,
         "buyer_override":        _safe_loads(d.buyer_override_json,    {}),
@@ -4296,6 +4471,11 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         # input to any calculation. None when no matching observation exists.
         "nbp_table_number":      _nbp_table_number_for(d),
     }
+    # Slice 1 (feat/proforma-cm-suggestions) — additive, read-only advisory
+    # projection of the mapped Customer Master commercial defaults. Never
+    # mutates the draft, the posting payload, or customer identity.
+    full["customer_master_suggestions"] = _customer_master_suggestions(d, full)
+    return full
 
 
 def _nbp_table_number_for(d: "pildb.ProformaDraft") -> Optional[str]:
