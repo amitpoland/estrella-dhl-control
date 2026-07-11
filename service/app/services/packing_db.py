@@ -843,9 +843,16 @@ def backfill_unit_price_eur(batch_id: str, line_records: List[Dict[str, Any]]) -
     Update unit_price_eur for packing_lines rows where the current value is 0
     and the supplied line_record has unit_price_eur > 0.
 
-    Matching strategy (same priority as upsert_packing_lines):
-      1. pack_sr  → (batch_id, invoice_no, packing_document_id, pack_sr)
+    Matching strategy:
+      1. pack_sr  → (batch_id, invoice_no, pack_sr)
       2. fallback → (batch_id, invoice_no, invoice_line_position, design_no)
+
+    packing_document_id is stored for traceability but is NOT part of either
+    match key. The reprocess-prices caller does not upsert a document, so it
+    passes an empty packing_document_id, while real stored rows carry a UUID.
+    Scoping the pack_sr lookup by packing_document_id therefore never matched
+    a stored row and silently backfilled nothing. The canonical key is
+    (batch_id, invoice_no, pack_sr) — same contract as upsert_packing_lines.
 
     Returns the number of rows actually updated.
     Used to recover prices after PR 2A migration when packing was uploaded
@@ -866,15 +873,18 @@ def backfill_unit_price_eur(batch_id: str, line_records: List[Dict[str, Any]]) -
                 inv_pos   = line.get("invoice_line_position")
                 design_no = line.get("design_no", "")
                 pack_sr   = line.get("pack_sr")
-                doc_id    = line.get("packing_document_id", "")
 
                 if pack_sr is not None:
+                    # packing_document_id is deliberately NOT in this key: the
+                    # reprocess-prices caller passes an empty doc id while stored
+                    # rows carry a UUID, so filtering on it never matched and the
+                    # backfill silently updated nothing.
                     row = con.execute(
                         """SELECT id, unit_price_eur FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
-                             AND packing_document_id=? AND pack_sr IS ?
+                             AND pack_sr IS ?
                            LIMIT 1""",
-                        (batch, inv_no, doc_id, pack_sr),
+                        (batch, inv_no, pack_sr),
                     ).fetchone()
                 else:
                     row = con.execute(
