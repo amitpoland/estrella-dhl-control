@@ -224,6 +224,72 @@ def test_backfill_skips_records_with_zero_unit_price_eur(tmp_path: Path):
     assert count == 0
 
 
+def _make_pack_sr_line(*, batch_id: str, invoice_no: str, pack_sr: float,
+                       doc_id: str, pos: int = 1, design_no: str = "D-GJ",
+                       unit_price_eur: float = 0.0) -> str:
+    """Insert a pack_sr-bearing packing_line under a specific document id."""
+    import uuid, datetime
+    line_id = str(uuid.uuid4())
+    now = datetime.datetime.utcnow().isoformat() + "+00:00"
+    with sqlite3.connect(str(pdb._db_path)) as con:
+        con.execute(
+            """INSERT INTO packing_lines
+               (id, packing_document_id, batch_id, invoice_no, invoice_line_position,
+                product_code, design_no, batch_no, bag_id, tray_id,
+                item_type, uom, quantity, gross_weight, net_weight,
+                metal, karat, stone_type, remarks,
+                extracted_confidence, requires_manual_review,
+                pack_sr, unit_price, total_value, scan_code,
+                unit_price_eur, metal_color, quality_string,
+                created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (line_id, doc_id, batch_id, invoice_no, pos,
+             f"{batch_id}-{pos}", design_no, "", "", "",
+             "RNG", "pcs", 1.0, 0.0, 0.0,
+             "18KT", "9KT", "", "",
+             1.0, 0,
+             pack_sr, 0.0, 0.0, None,
+             unit_price_eur, "", "",
+             now, now),
+        )
+    return line_id
+
+
+def test_backfill_pack_sr_branch_ignores_document_id(tmp_path: Path):
+    """Test 7b: pack_sr backfill must NOT be scoped by packing_document_id.
+
+    Regression for the Global Jewellery reprocess-prices gap: a stored row
+    carries a UUID packing_document_id, but POST /{batch_id}/reprocess-prices
+    backfills with an empty document id (it does not upsert a document). The
+    canonical key is (batch_id, invoice_no, pack_sr), so the row must be
+    updated despite the document-id mismatch. Before the fix this branch
+    filtered on packing_document_id and silently returned rows_updated:0.
+    """
+    _init_pdb(tmp_path)
+    batch_id = "BATCH-BF-PACKSR"
+    stored_doc_id = "11111111-2222-3333-4444-555555555555"  # real UUID doc id
+    _make_pack_sr_line(
+        batch_id=batch_id, invoice_no="INV/GJ", pack_sr=7.0,
+        doc_id=stored_doc_id, design_no="D-GJ", unit_price_eur=0.0,
+    )
+
+    # Backfill carries pack_sr and a DIFFERENT (empty) document id — exactly
+    # what the reprocess-prices caller passes.
+    updates = [{
+        "batch_id": batch_id, "invoice_no": "INV/GJ",
+        "packing_document_id": "",          # caller does not upsert a document
+        "pack_sr": 7.0, "design_no": "D-GJ",
+        "unit_price_eur": 321.0,
+    }]
+    count = pdb.backfill_unit_price_eur(batch_id, updates)
+    assert count == 1, "pack_sr backfill must match across document ids"
+
+    rows = pdb.get_packing_lines_for_batch(batch_id)
+    assert len(rows) == 1
+    assert rows[0]["pack_sr"] == 7.0
+    assert rows[0]["unit_price_eur"] == 321.0
+
+
 # ── reset_from_sales_packing pipeline tests (8-9) ────────────────────────────
 
 def _make_proforma_db(tmp_path: Path):
