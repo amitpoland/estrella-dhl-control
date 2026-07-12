@@ -1269,10 +1269,10 @@ def _seed_ready_pl(design="JE_VAT_PL", product_code="EJL/VAT-PL"):
 
 def _seed_ready_eu(design="JE_VAT_EU", product_code="EJL/VAT-EU"):
     _seed_purchase(design_no=design, product_code=product_code)
-    _seed_sales("Juliany EOOD", [{"sku": design, "qty": 1.0}])
+    _seed_sales("Test Trading EOOD", [{"sku": design, "qty": 1.0}])
     _seed_invoice_pricing(product_code, 100.0, "USD")
     _match_product(product_code)
-    _match_customer("Juliany EOOD", country="BG", vat_id="BG121281167")
+    _match_customer("Test Trading EOOD", country="BG", vat_id="BG000000000")
     _advance_state(_scan_code_for(design, product_code),
                    target=ise.WAREHOUSE_STOCK,
                    product_code=product_code, design_no=design)
@@ -1312,13 +1312,13 @@ def test_create_eu_customer_with_vat_uses_wdt(client, storage):
     fake_ok = wc.ProformaResult(ok=True, wfirma_invoice_id="WF-EU")
     with _gate_on(), _p.object(wc, "create_proforma_draft",
                                 return_value=fake_ok) as mock_call:
-        body = client.post(f"/api/v1/proforma/create/{BATCH}/Juliany%20EOOD",
+        body = client.post(f"/api/v1/proforma/create/{BATCH}/Test%20Trading%20EOOD",
                            headers=_auth()).json()
     assert body["status"] == "issued"
     req = mock_call.call_args.args[0]
     assert req.vat_code_id == "228"   # WDT
     # AND the customer's country/vat actually drove the decision.
-    assert req.client_name == "Juliany EOOD"
+    assert req.client_name == "Test Trading EOOD"
 
 
 def test_create_eu_customer_without_vat_blocked(client, storage):
@@ -1580,7 +1580,7 @@ _ADOPT_PROFORMA_XML = """<?xml version="1.0" encoding="UTF-8"?>
     <invoice>
       <id>465611619</id>
       <type>proforma</type>
-      <contractor><id>189309475</id></contractor>
+      <contractor><id>99990003</id></contractor>
       <invoicecontents>
         <invoicecontent>
           <id>1495642083</id>

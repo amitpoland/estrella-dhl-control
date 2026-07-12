@@ -98,6 +98,49 @@
 
   const BASE = '/api/v1';
 
+  // ── Shared, in-flight-aware cache for the LIVE Client-Balance roster ────────
+  // GET /ledgers/clients computes balances LIVE per client (routes_ledgers.py
+  // warns to keep `limit` small). Accounting Overview and the embedded Client
+  // Ledger page both read limit=100; without sharing, that is two large live
+  // wFirma sweeps per hub navigation. This memoizes the in-flight/settled RAW
+  // response promise per fully-resolved query string for a short TTL so both
+  // consumers reuse ONE read. Transport-layer only — no business logic, no
+  // rendering, no balance math; an in-process Map only (never localStorage).
+  //   • key = resolved query string  → limit=25 and limit=100 never collide
+  //   • the in-flight promise is stored immediately → concurrent callers coalesce
+  //   • a failure is NEVER cached: the entry is evicted on reject and the
+  //     original error is rethrown unchanged (a retry performs a real request)
+  //   • force=true (manual Refresh) evicts the entry, then performs a new request
+  const _clientBalancesCache = new Map();   // key(qs) -> { promise, at }
+  const _CLIENT_BALANCES_TTL_MS = 8000;     // short-lived: bridges one hub navigation
+
+  const _clientBalancesQs = (params) =>
+    (params ? '?' + new URLSearchParams(params).toString() : '');
+
+  // Raw shared roster fetch. Resolves to the raw response body ({ period, rows[],
+  // ... }) or rejects with the ORIGINAL error. `force` bypasses + refreshes the
+  // matching entry. Backs both listClientBalances (wrapped) and
+  // listClientBalancesShared (raw) so identical params share ONE live read.
+  function _fetchClientBalancesShared(params, force) {
+    const key = _clientBalancesQs(params);
+    const now = Date.now();
+    if (force) {
+      _clientBalancesCache.delete(key);
+    } else {
+      const hit = _clientBalancesCache.get(key);
+      if (hit && (now - hit.at) < _CLIENT_BALANCES_TTL_MS) return hit.promise;
+    }
+    const entry = { promise: null, at: now };
+    entry.promise = _apiFetch(`${BASE}/ledgers/clients${key}`).catch((err) => {
+      // Never cache a failure — evict THIS entry (identity-checked so a newer
+      // force-refresh entry is never dropped) and rethrow the original error.
+      if (_clientBalancesCache.get(key) === entry) _clientBalancesCache.delete(key);
+      throw err;
+    });
+    _clientBalancesCache.set(key, entry);
+    return entry.promise;
+  }
+
   window.PzApi = Object.freeze({
 
     // ── Proforma — read ──────────────────────────────────────────────
@@ -125,10 +168,28 @@
     // Returns { ok, data: { period, count, rows[], column_status } }
     // rows[]: { contractor_id, name, open, overdue_invoice_age, ytd_invoiced,
     //           last_30d (null · Backend Pending), currency, state, balance_available }
-    listClientBalances: (params) => {
-      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
-      return _get(`${BASE}/ledgers/clients${qs}`);
-    },
+    // Shares ONE short-TTL, in-flight-aware cache entry (keyed by resolved query
+    // string) with listClientBalancesShared, so Accounting Overview and the
+    // embedded Client Ledger no longer issue two independent live reads for the
+    // same params. Response contract is UNCHANGED: { ok, data } / { ok:false, ... }.
+    listClientBalances: (params) =>
+      _fetchClientBalancesShared(params, false)
+        .then((data) => ({ ok: true, data }))
+        .catch((err) => ({
+          ok:     false,
+          status: err.status || 0,
+          error:  err.message || String(err),
+          type:   err.type,
+        })),
+
+    // GET /api/v1/ledgers/clients — RAW shared variant for consumers that want
+    // the raw response body + their own error handling (the embedded Client
+    // Ledger page). Shares the SAME cache entry as listClientBalances for
+    // identical params (one live read per navigation). opts.force === true
+    // bypasses the cache (used by manual Refresh) and performs a real new
+    // request. Resolves to the raw body; rejects with the original error.
+    listClientBalancesShared: (params, opts) =>
+      _fetchClientBalancesShared(params, !!(opts && opts.force)),
 
     // GET /api/v1/analytics/phase-a  (Wave 4 Item 1A — reuse for Last wFirma Sync)
     // Read-only. Returns { ok, data: { wfirma_sync: { last_exported_at, exported,
@@ -141,27 +202,6 @@
     // Returns { ok, data: { new, existing, contractor_id, direction:'PULL' } }
     pullPayments: (contractorId) =>
       _post(`${BASE}/wfirma/sync/payments-pull`, { contractor_id: contractorId }),
-
-    // POST /api/v1/packing/{batch_id}/upload (multipart — EXISTING authority).
-    // Wave 4 Item 8: reuse-only. Parses the packing file, upserts packing lines,
-    // and idempotently creates/syncs proforma drafts by (batch_id, client_name).
-    // NO new endpoint, no wFirma write. batchId MUST be an explicit real batch —
-    // never auto-picked. No JSON headers (browser sets the multipart boundary).
-    // Returns { ok, data: { batch_id, file, total_rows, matched_count,
-    //           unmatched_count, inserted_count, suggested_client_name, ... } }
-    uploadPackingList: async (batchId, file, forceReextract) => {
-      const fd = new FormData();
-      fd.append('file', file);
-      const qs = forceReextract ? '?force_reextract=true' : '';
-      try {
-        const data = await _apiFetch(
-          `${BASE}/packing/${encodeURIComponent(batchId)}/upload${qs}`,
-          { method: 'POST', body: fd });
-        return { ok: true, data };
-      } catch (err) {
-        return { ok: false, status: err.status || 0, error: err.message || String(err), type: err.type };
-      }
-    },
 
     // POST /api/v1/packing/{batch_id}/upload (multipart — EXISTING authority).
     // Wave 4 Item 8: reuse-only. Parses the packing file, upserts packing lines,
@@ -844,6 +884,7 @@
       _postM(`${BASE}/proforma/draft/${draftId}/apply-customer-address`, {
         expected_updated_at: updatedAt || '',
       }),
+
 
     // GET /api/v1/proforma/draft/{draft_id}/suggest-service-charges
     // Returns combined freight+insurance suggestions from Customer Master.

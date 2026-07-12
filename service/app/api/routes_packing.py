@@ -39,7 +39,7 @@ from ..services.batch_service import get_output_dir
 from ..services import packing_db as pdb
 from ..services import document_db as ddb
 from ..services import inventory_state_engine as ise
-from ..services.invoice_packing_extractor import process_packing_upload, _safe_float
+from ..services.invoice_packing_extractor import process_packing_upload, _safe_float, file_sha256
 
 
 def _pdf_text_preview(path: Path) -> str:
@@ -628,13 +628,13 @@ async def reprocess_packing_prices(batch_id: str) -> Dict[str, Any]:
             detail=f"No packing source directory for batch {batch_id!r}",
         )
 
-    xlsx_files = sorted(
+    src_files = sorted(
         list(packing_dir.glob("*.xlsx")) + list(packing_dir.glob("*.xls")),
     )
-    if not xlsx_files:
+    if not src_files:
         raise HTTPException(
             status_code=404,
-            detail=f"No packing XLSX files found in source directory for batch {batch_id!r}",
+            detail=f"No packing files found in source directory for batch {batch_id!r}",
         )
 
     # Snapshot before
@@ -643,12 +643,17 @@ async def reprocess_packing_prices(batch_id: str) -> Dict[str, Any]:
         1 for r in all_lines_before if float(r.get("unit_price_eur", 0) or 0) > 0
     )
 
+    # ── PREFLIGHT: parse each source file, resolve it to its registered
+    #    packing_document (by content hash), and collect its positive-price rows.
+    #    NO price write happens in this phase. Each file is scoped to its own
+    #    document, so the Client .xlsx and Poland .xls variants of one invoice
+    #    cannot cross-update. pack_sr is bridged from the parser's line_position
+    #    (the exact field intake stamps into pack_sr).
+    preflight: List[Dict[str, Any]] = []
     file_results: List[Dict[str, Any]] = []
-    total_updated = 0
-
-    for pf in xlsx_files:
-        file_entry: Dict[str, Any] = {"file": pf.name, "rows_extracted": 0,
-                                      "rows_updated": 0, "error": None}
+    for pf in src_files:
+        entry: Dict[str, Any] = {"file": pf.name, "rows_extracted": 0,
+                                 "positive_price_rows": 0, "error": None}
         try:
             result = process_packing_upload(
                 batch_id         = batch_id,
@@ -656,56 +661,77 @@ async def reprocess_packing_prices(batch_id: str) -> Dict[str, Any]:
                 packing_file_path= pf,
                 force_reextract  = False,   # read-only extraction; no DB upsert here
             )
-            packing_rows = result["packing_rows"]
-            file_entry["rows_extracted"] = len(packing_rows)
-
-            # Build line_records carrying unit_price_eur from the Value column
-            line_records: List[Dict[str, Any]] = []
-            for row in packing_rows:
-                upe = float(row.get("unit_price", 0) or 0)
-                if upe <= 0:
-                    continue  # no Value column data for this row
-                doc_id = ""  # we don't upsert documents here; matching is positional
-                line_records.append({
-                    "packing_document_id":  doc_id,
-                    "batch_id":             batch_id,
-                    "invoice_no":           row.get("invoice_no", ""),
-                    "invoice_line_position":row.get("invoice_line_position"),
-                    "product_code":         row.get("product_code"),
-                    "design_no":            str(row.get("design_no", "") or ""),
-                    "bag_id":               str(row.get("bag_id", "") or ""),
-                    "pack_sr":              row.get("pack_sr"),
-                    "unit_price_eur":       upe,
-                })
-
-            updated = pdb.backfill_unit_price_eur(batch_id, line_records)
-            file_entry["rows_updated"] = updated
-            total_updated += updated
+            rows = result["packing_rows"]
+            entry["rows_extracted"] = len(rows)
+            pos = [r for r in rows if float(r.get("unit_price", 0) or 0) > 0]
+            entry["positive_price_rows"] = len(pos)
+            preflight.append({
+                "file_name":        pf.name,
+                "source_file_hash": file_sha256(pf),
+                "rows": [{
+                    "pack_sr":       r.get("pack_sr"),
+                    "line_position": r.get("line_position"),
+                    "unit_price":    float(r.get("unit_price", 0) or 0),
+                } for r in pos],
+            })
         except Exception as exc:
-            log.warning("[%s] reprocess-prices failed for %s: %s", batch_id, pf.name, exc)
-            file_entry["error"] = str(exc)
-        file_results.append(file_entry)
+            log.warning("[%s] reprocess-prices parse failed for %s: %s",
+                        batch_id, pf.name, exc)
+            entry["error"] = str(exc)
+        file_results.append(entry)
 
-    # Snapshot after
+    # ── RESOLVE: map every positive-price row to exactly one stored row via the
+    #    canonical (batch_id, packing_document_id, pack_sr) identity. No LIMIT 1;
+    #    0/multi matches are surfaced explicitly.
+    res = pdb.resolve_price_reprocess_targets(batch_id, preflight)
+    diagnostic = {
+        "files_scanned":                 res["files_scanned"],
+        "parsed_positive_price_records": res["parsed_positive_price_records"],
+        "matched_records":               len(res["targets"]) + len(res["already_priced"]),
+        "eligible_records":              len(res["targets"]),
+        "already_priced_records":        len(res["already_priced"]),
+        "non_target_records":            len(res["non_target"]),
+        "unmatched_records":             len(res["unmatched"]),
+        "ambiguous_records":             len(res["ambiguous"]),
+        "invalid_records":               len(res["invalid"]),
+        "rows_with_price_before":        rows_with_price_before,
+    }
+
+    # ── ZERO-WRITE on any ambiguity / unmatched-in-serial-document / invalid.
+    if res["blocking"]:
+        log.warning("[%s] reprocess-prices BLOCKED — ambiguous=%d unmatched=%d "
+                    "invalid=%d; 0 rows updated", batch_id,
+                    len(res["ambiguous"]), len(res["unmatched"]), len(res["invalid"]))
+        return {
+            "ok": False, "blocked": True, "batch_id": batch_id,
+            "diagnostic": {**diagnostic, "rows_updated": 0,
+                           "rows_with_price_after": rows_with_price_before},
+            "ambiguous": res["ambiguous"],
+            "unmatched": res["unmatched"],
+            "invalid":   res["invalid"],
+            "files":     file_results,
+        }
+
+    # ── UPDATE: one transaction over the resolved targets; all-or-nothing.
+    rows_updated = pdb.apply_price_reprocess_targets(batch_id, res["targets"])
+
     all_lines_after = pdb.get_packing_lines_for_batch(batch_id)
     rows_with_price_after = sum(
         1 for r in all_lines_after if float(r.get("unit_price_eur", 0) or 0) > 0
     )
-
     log.info(
-        "[%s] reprocess-prices: %d rows updated, price coverage %d→%d/%d",
-        batch_id, total_updated,
+        "[%s] reprocess-prices: %d rows updated (document-scoped), "
+        "price coverage %d->%d/%d",
+        batch_id, rows_updated,
         rows_with_price_before, rows_with_price_after, len(all_lines_after),
     )
     return {
         "ok":      True,
         "batch_id": batch_id,
-        "diagnostic": {
-            "rows_with_price_before": rows_with_price_before,
-            "rows_updated":           total_updated,
-            "rows_with_price_after":  rows_with_price_after,
-            "total_packing_rows":     len(all_lines_after),
-        },
+        "diagnostic": {**diagnostic,
+                       "rows_updated":          rows_updated,
+                       "rows_with_price_after": rows_with_price_after,
+                       "total_packing_rows":    len(all_lines_after)},
         "files": file_results,
     }
 

@@ -401,7 +401,7 @@ def test_verify_fails_when_receiver_lost(client, storage):
     """Source proforma has receiver, but created invoice lost it."""
     _seed_issued_proforma(storage)
     fetch_calls = [
-        _proforma_xml(receiver_id="190263843"),
+        _proforma_xml(receiver_id="99990004"),
         _created_invoice_xml(receiver_id=""),  # receiver lost
     ]
 
@@ -413,7 +413,7 @@ def test_verify_fails_when_receiver_lost(client, storage):
                       side_effect=fetch_calls), \
          patch.object(wc, "fetch_contractor_by_id",
                       return_value=wc.ContractorFetchResult(
-                          ok=True, contractor_id="190263843",
+                          ok=True, contractor_id="99990004",
                           name="Receiver Co.")), \
          patch.object(wc, "_http_request", side_effect=_fake_http):
         body = _execute(client)

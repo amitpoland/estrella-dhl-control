@@ -28,11 +28,19 @@ import pytest
 
 _V2 = Path(__file__).resolve().parent.parent / "app" / "static" / "v2"
 
-# Rest element that terminates a destructuring pattern: `...name }` where the
-# `}` closes the params (followed by `)` or `=>`). This is exactly what emits
-# a hoisted `_excluded`; object-literal spreads never match (they end in `}`
-# used as a value, not a param list).
-_REST_DESTRUCTURE = re.compile(r"\.\.\.[A-Za-z_$][\w$]*\s*\}\s*(?:\)|=>)")
+# Rest element that terminates a destructuring PARAM LIST: `...name })` where the
+# `)` closes the params and is itself followed by an arrow `=>` or a function
+# body `{`. That param-list rest is exactly what emits a hoisted `_excluded`.
+#
+# Why the trailing `\)\s*(?:=>|\{)` matters: the earlier `\}\s*(?:\)|=>)` form
+# also matched object-LITERAL spreads whose `}` closes an object that is the last
+# thing inside a call/return paren — e.g. `prev => ({ ...prev, ...payload })` or
+# `dispatch({ ...payload })`. Those are safe idempotent `_extends` spreads (no
+# `_excluded`), yet `...payload })` tripped the guard (false positive on
+# proforma-detail.jsx). A real destructuring-rest param is ALWAYS followed by
+# `) =>` (arrow) or `) {` (function body); an object literal used as a value is
+# not. Anchoring on that suffix flags only the dangerous form.
+_REST_DESTRUCTURE = re.compile(r"\.\.\.[A-Za-z_$][\w$]*\s*\}\s*\)\s*(?:=>|\{)")
 
 
 def _jsx_files():

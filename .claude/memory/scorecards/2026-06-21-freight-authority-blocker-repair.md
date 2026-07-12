@@ -7,7 +7,7 @@
 **Commit:** d546f49 (based on origin/main 53a3cc7)
 **PR:** #708 (https://github.com/amitpoland/estrella-dhl-control/pull/708)
 **Scope:** Backend + V1/V2 frontend. Root cause: "freight_fixed_amount_usd is not set" blocked
-  Clear-Diamonds with no identity context in the API response. Fix: `pick_freight` reports the
+  Customer-A with no identity context in the API response. Fix: `pick_freight` reports the
   missing `field`; `routes_proforma` adds a `freight_authority` block to `/suggest-freight` and
   `/suggest-combined` only when resolved; V1 `shipment-detail.html` + V2 `proforma-detail.jsx`
   deep-link to the exact resolved CM record with a read-only retry. General authority model —

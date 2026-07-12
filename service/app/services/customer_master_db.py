@@ -150,8 +150,8 @@ class CustomerMaster:
     last_wfirma_sync_at:     Optional[str] = None    # ISO timestamp of last apply
     wfirma_sync_source:      Optional[str] = None    # "review_assign" | "manual" | "auto"
 
-    # B0 deep-enrichment 2026-05-17 — wFirma billing address (verified in
-    # live <contractor> response for id 75483443). Filled-when-empty.
+    # B0 deep-enrichment 2026-05-17 — wFirma billing address (verified
+    # against a real live <contractor> response). Filled-when-empty.
     bill_to_street:          Optional[str] = None
     bill_to_city:            Optional[str] = None
     bill_to_postal_code:     Optional[str] = None
@@ -866,6 +866,29 @@ def get_customer(db_path: Path, bill_to_contractor_id: str) -> Optional[Customer
     return _row_to_customer(row) if row else None
 
 
+def find_customers_by_nip(db_path: Path, nip: str) -> List[CustomerMaster]:
+    """Read-only: every customer_master row sharing this NIP / VAT number.
+
+    Used to SURFACE (never auto-merge) duplicate contractor identities — the
+    same legal entity registered in wFirma under more than one contractor id.
+    Matches on ``nip`` OR ``vat_eu_number`` so a duplicate is caught whichever
+    column carries the number. Returns [] on a blank NIP or absent DB. Never
+    writes; the caller decides how to present a conflict.
+    """
+    key = (nip or "").strip()
+    if not key or not Path(db_path).is_file():
+        return []
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM customer_master "
+            "WHERE (nip = ? OR vat_eu_number = ?) "
+            "ORDER BY id ASC",
+            (key, key),
+        ).fetchall()
+    return [_row_to_customer(r) for r in rows]
+
+
 def update_vat_eu_result(
     db_path: Path,
     bill_to_contractor_id: str,
@@ -909,7 +932,15 @@ def list_customers(db_path: Path,
     sql = "SELECT * FROM customer_master WHERE 1=1"
     params: list = []
     if q:
-        sql += " AND LOWER(bill_to_name) LIKE ?"; params.append(f"%{q.strip().lower()}%")
+        # Proforma customer-picker (PR 1a): match name OR NIP OR VAT-EU number OR
+        # wFirma contractor id, so the operator can find a customer by any stable
+        # identifier. Backward-compatible superset of the old name-only match.
+        like = f"%{q.strip().lower()}%"
+        sql += (" AND (LOWER(bill_to_name) LIKE ?"
+                " OR LOWER(COALESCE(nip, '')) LIKE ?"
+                " OR LOWER(COALESCE(vat_eu_number, '')) LIKE ?"
+                " OR LOWER(COALESCE(bill_to_contractor_id, '')) LIKE ?)")
+        params.extend([like, like, like, like])
     if country:
         sql += " AND country = ?"; params.append(country.upper())
     if risk_status:

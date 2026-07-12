@@ -146,7 +146,7 @@ def test_sample_filters_and_validation(app_client):
     client, db = app_client
     _migrate_both(db)
     open_evt = _seed_sample_out(scan="S010", recipient="ACME Corp")
-    closed = _seed_sample_out(scan="S011", recipient="Juliany EOOD")
+    closed = _seed_sample_out(scan="S011", recipient="Test Trading EOOD")
     wdb.record_sample_out_event(
         scan_code="S011", direction="return", operator="bob",
         idempotency_key=str(uuid.uuid4()),
@@ -156,7 +156,7 @@ def test_sample_filters_and_validation(app_client):
     assert [s["scan_code"] for s in opens["samples"]] == ["S010"]
     rets = client.get("/api/v1/inventory/samples?status=returned").json()
     assert [s["scan_code"] for s in rets["samples"]] == ["S011"]
-    by_client = client.get("/api/v1/inventory/samples?recipient=juliany").json()
+    by_client = client.get("/api/v1/inventory/samples?recipient=trading").json()
     assert [s["scan_code"] for s in by_client["samples"]] == ["S011"]
     assert client.get("/api/v1/inventory/samples?status=bogus").status_code == 400
     assert open_evt["id"]  # silence unused warning

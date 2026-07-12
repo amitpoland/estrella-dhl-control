@@ -79,7 +79,7 @@ class TestInvoiceConvertDisclosure:
     def _make_snap(self) -> dict:
         return {
             "proforma_number": "PROF 92/2026",
-            "contractor_id":   "75483443",
+            "contractor_id":   "99990001",
             "currency":        "EUR",
             "series_id":       "555",
             "lines": [
@@ -207,7 +207,7 @@ class TestBuildFinalInvoicePlanPaymentMethod:
             proforma_id="99001",
             proforma_number="PROF 1/2026",
             type="proforma",
-            contractor_id="75483443",
+            contractor_id="99990001",
             currency="EUR",
             price_currency_exchange=None,
             paymentmethod="przelew",

@@ -6,8 +6,10 @@ Tables:
   packing_lines     — one row per packing list item, linked to invoice row
 
 Dedup key for packing_lines:
-  Primary (pack_sr known):  (packing_document_id, batch_id, invoice_no, pack_sr)
+  Primary (pack_sr known):  (batch_id, invoice_no, pack_sr)
   Fallback:                 (batch_id, invoice_no, invoice_line_position, design_no, bag_id, unit_price)
+  packing_document_id is stored for traceability but is NOT part of either key —
+  a re-upload registers a new document but must update the same logical row.
 
 scan_code column:
   Computed at write time from (product_code, bag_id, pack_sr, design_no) using the
@@ -632,9 +634,11 @@ def upsert_packing_lines(
 ) -> int:
     """
     Insert packing lines. Skip existing rows unless force_reextract=True.
-    Dedup key: (batch_id, invoice_no, invoice_line_position, design_no, bag_id).
-    packing_document_id is stored for traceability but is NOT part of the dedup key —
-    a re-upload creates a new document but should update the same logical packing row.
+    Dedup key:
+      Primary (pack_sr known):  (batch_id, invoice_no, pack_sr)
+      Fallback (pack_sr None):  (batch_id, invoice_no, invoice_line_position, design_no, bag_id, unit_price)
+    packing_document_id is stored for traceability but is NOT part of either key —
+    a re-upload registers a new document but should update the same logical packing row.
     Returns count of rows inserted or updated.
     """
     if _db_path is None:
@@ -659,13 +663,16 @@ def upsert_packing_lines(
                 # Otherwise fall back to (design_no, bag_id, unit_price) so
                 # two same-design rows priced differently aren't collapsed.
                 if pack_sr is not None:
+                    # packing_document_id is deliberately NOT in this key (see
+                    # docstring): a re-upload registers a NEW document id, so
+                    # filtering on it made the lookup miss and every pack_sr
+                    # row duplicated on same-batch re-upload.
                     existing = con.execute(
                         """SELECT id FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
-                             AND packing_document_id=? AND pack_sr IS ?
+                             AND pack_sr IS ?
                            LIMIT 1""",
-                        (batch_id, inv_no,
-                         line.get("packing_document_id", ""), pack_sr),
+                        (batch_id, inv_no, pack_sr),
                     ).fetchone()
                 else:
                     existing = con.execute(
@@ -836,9 +843,16 @@ def backfill_unit_price_eur(batch_id: str, line_records: List[Dict[str, Any]]) -
     Update unit_price_eur for packing_lines rows where the current value is 0
     and the supplied line_record has unit_price_eur > 0.
 
-    Matching strategy (same priority as upsert_packing_lines):
-      1. pack_sr  → (batch_id, invoice_no, packing_document_id, pack_sr)
+    Matching strategy:
+      1. pack_sr  → (batch_id, invoice_no, pack_sr)
       2. fallback → (batch_id, invoice_no, invoice_line_position, design_no)
+
+    packing_document_id is stored for traceability but is NOT part of either
+    match key. The reprocess-prices caller does not upsert a document, so it
+    passes an empty packing_document_id, while real stored rows carry a UUID.
+    Scoping the pack_sr lookup by packing_document_id therefore never matched
+    a stored row and silently backfilled nothing. The canonical key is
+    (batch_id, invoice_no, pack_sr) — same contract as upsert_packing_lines.
 
     Returns the number of rows actually updated.
     Used to recover prices after PR 2A migration when packing was uploaded
@@ -859,15 +873,18 @@ def backfill_unit_price_eur(batch_id: str, line_records: List[Dict[str, Any]]) -
                 inv_pos   = line.get("invoice_line_position")
                 design_no = line.get("design_no", "")
                 pack_sr   = line.get("pack_sr")
-                doc_id    = line.get("packing_document_id", "")
 
                 if pack_sr is not None:
+                    # packing_document_id is deliberately NOT in this key: the
+                    # reprocess-prices caller passes an empty doc id while stored
+                    # rows carry a UUID, so filtering on it never matched and the
+                    # backfill silently updated nothing.
                     row = con.execute(
                         """SELECT id, unit_price_eur FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
-                             AND packing_document_id=? AND pack_sr IS ?
+                             AND pack_sr IS ?
                            LIMIT 1""",
-                        (batch, inv_no, doc_id, pack_sr),
+                        (batch, inv_no, pack_sr),
                     ).fetchone()
                 else:
                     row = con.execute(
@@ -888,6 +905,182 @@ def backfill_unit_price_eur(batch_id: str, line_records: List[Dict[str, Any]]) -
                     (upe, now, row["id"]),
                 )
                 updated += 1
+    return updated
+
+
+# ── Document-scoped price-reprocess resolver (canary-hardened) ──────────────
+#
+# The reprocess-prices route re-parses source packing files to recover
+# unit_price_eur. Global-Jewellery parsed rows carry NO pack_sr — the parser
+# emits a deterministic document-local ``line_position`` and pack_sr is stamped
+# at INTAKE from that line_position (routes_intake.py / routes_packing.py
+# upload: ``"pack_sr": r.get("line_position")``). Matching on
+# (batch_id, invoice_no, pack_sr) therefore (a) missed every such row (pack_sr
+# None → fallback) and (b) conflated the Client .xlsx and Poland .xls variants
+# of one invoice, which are DIFFERENT registered packing_documents. A stopped
+# 2026-07-11 canary proved the fallback (batch, invoice, invoice_line_position,
+# design_no) is ambiguous (invoice 235: pack_sr 4 and 5 share ilp+design, prices
+# 372 vs 458). The canonical, already-stored, unique reprocess identity is
+# (packing_document_id, pack_sr := pack_sr or line_position). This resolver maps
+# every positive-price source row to EXACTLY one stored row under that key,
+# rejects 0/multi matches, and never uses LIMIT 1 to hide ambiguity. It writes
+# nothing. ``backfill_unit_price_eur`` (the direct (batch,invoice,pack_sr)
+# caller contract, PR #890) is intentionally left unchanged.
+
+def _bridged_pack_sr(row: Dict[str, Any]):
+    """Canonical serial for a parsed source row: pack_sr if the caller supplied
+    one, else the parser's deterministic document-local ``line_position`` — the
+    exact field INTAKE stamps into pack_sr. Returns a float or None."""
+    ps = row.get("pack_sr")
+    if ps is None:
+        ps = row.get("line_position")
+    try:
+        return None if ps is None else float(ps)
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_price_reprocess_targets(
+    batch_id:     str,
+    source_files: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Read-only preflight for the reprocess-prices route. Performs NO writes.
+
+    ``source_files`` — one entry per re-parsed packing file (positive-price rows
+    only)::
+
+        { "file_name": str, "source_file_hash": str,
+          "rows": [ {"pack_sr": ..., "line_position": ..., "unit_price": float}, ... ] }
+
+    Each file is resolved to its packing_document by an EXACT content-hash
+    match only (``packing_documents.source_file_hash``) — NO basename fallback,
+    because for a financial write a replaced/modified same-name file must not
+    resolve to the old document. A hash matching 0 or >1 documents is rejected
+    (invalid). Each positive-price row is then resolved to the ONE stored
+    packing row under the canonical identity (batch_id, packing_document_id,
+    pack_sr:=pack_sr or line_position). A row that finds no unique match is
+    ``non_target`` ONLY when its exact document is already fully priced (has no
+    unit_price_eur<=0 row that could legitimately receive a value); otherwise it
+    is ``unmatched`` and blocks — an unresolved positive source row in a
+    still-recoverable document is never silently discarded. Returns a
+    classification; ``blocking`` is True iff any invalid, ambiguous, or unmatched
+    row exists.
+    """
+    out: Dict[str, Any] = {
+        "targets": [], "already_priced": [], "non_target": [],
+        "unmatched": [], "ambiguous": [], "invalid": [],
+        "files_scanned": len(source_files),
+        "parsed_positive_price_records": 0,
+    }
+    if _db_path is None or not batch_id:
+        out["invalid"].append({"reason": "packing_db_unavailable"})
+        out["blocking"] = True
+        return out
+    with _connect() as con:
+        for sf in source_files:
+            fname = sf.get("file_name", "")
+            fhash = sf.get("source_file_hash", "")
+            rows  = sf.get("rows", []) or []
+            out["parsed_positive_price_records"] += len(rows)
+            # EXACT content-hash only — never basename. A financial write is
+            # authorized solely by the content-addressed document identity: a
+            # replaced/modified file (same name, different hash) must NOT resolve
+            # to the old document, and the basename fallback in
+            # ``_resolve_packing_document_ids`` is therefore deliberately NOT
+            # used here. Filename appears in diagnostics only, never as authority.
+            doc_ids = (
+                [r["id"] for r in con.execute(
+                    "SELECT id FROM packing_documents "
+                    "WHERE batch_id=? AND source_file_hash=?",
+                    (batch_id, fhash),
+                ).fetchall()]
+                if fhash else []
+            )
+            if len(doc_ids) != 1:
+                reason = ("no_exact_document_hash_match" if not doc_ids
+                          else "multiply_registered_document")
+                for _r in rows:
+                    out["invalid"].append({"file": fname, "reason": reason,
+                                           "doc_matches": len(doc_ids)})
+                continue
+            doc_id = doc_ids[0]
+            # A positive source row may be non_target ONLY when its exact
+            # document has NO unpriced stored row that could legitimately receive
+            # a value (i.e. the document is already fully priced). If any unpriced
+            # (unit_price_eur<=0) row remains, an unresolved positive source row
+            # is a lost-recovery risk and MUST block (unmatched) — never silently
+            # skipped. "No serial rows" is NOT used as the proxy any more.
+            doc_has_recoverable = con.execute(
+                "SELECT 1 FROM packing_lines WHERE batch_id=? AND packing_document_id=? "
+                "AND (unit_price_eur IS NULL OR unit_price_eur<=0) LIMIT 1",
+                (batch_id, doc_id),
+            ).fetchone() is not None
+            for r in rows:
+                ps    = _bridged_pack_sr(r)
+                price = float(r.get("unit_price", 0) or 0)
+                base  = {"file": fname, "packing_document_id": doc_id,
+                         "pack_sr": ps, "unit_price": price}
+                if ps is None:
+                    out["invalid"].append({**base, "reason": "no_pack_sr_or_line_position"})
+                    continue
+                matches = con.execute(
+                    "SELECT id, unit_price_eur FROM packing_lines "
+                    "WHERE batch_id=? AND packing_document_id=? AND pack_sr IS ?",
+                    (batch_id, doc_id, ps),
+                ).fetchall()
+                if len(matches) > 1:
+                    out["ambiguous"].append({**base, "match_count": len(matches)})
+                elif not matches:
+                    if doc_has_recoverable:
+                        out["unmatched"].append({**base,
+                            "reason": "unresolved_positive_row_in_recoverable_document"})
+                    else:
+                        out["non_target"].append({**base,
+                            "reason": "document_fully_priced_no_recoverable_row"})
+                else:
+                    m   = matches[0]
+                    cur = float(m["unit_price_eur"] or 0)
+                    tgt = {**base, "row_id": m["id"], "current_unit_price_eur": cur}
+                    (out["already_priced"] if cur > 0 else out["targets"]).append(tgt)
+    out["blocking"] = bool(out["invalid"] or out["ambiguous"] or out["unmatched"])
+    return out
+
+
+def apply_price_reprocess_targets(
+    batch_id: str,
+    targets:  List[Dict[str, Any]],
+) -> int:
+    """Transactionally set unit_price_eur (+updated_at) for the resolved targets.
+
+    ALL-OR-NOTHING under one transaction: each target is updated by its stored
+    row id, guarded so only rows whose current unit_price_eur is still <= 0 are
+    written (idempotent, race-safe). ONLY unit_price_eur and updated_at change.
+    Raises ValueError (rolling the whole transaction back) if the number of rows
+    actually updated differs from the number of eligible targets, so a
+    partial/racey result never commits. Callers MUST have confirmed
+    ``resolve_price_reprocess_targets`` is not blocking first.
+    """
+    if _db_path is None or not targets:
+        return 0
+    now = _now_iso()
+    eligible = [t for t in targets
+                if float(t.get("unit_price", 0) or 0) > 0 and t.get("row_id")]
+    with _lock:
+        with _connect() as con:
+            updated = 0
+            for t in eligible:
+                updated += con.execute(
+                    "UPDATE packing_lines SET unit_price_eur=?, updated_at=? "
+                    "WHERE id=? AND batch_id=? "
+                    "AND (unit_price_eur IS NULL OR unit_price_eur<=0)",
+                    (float(t["unit_price"]), now, t["row_id"], batch_id),
+                ).rowcount
+            if updated != len(eligible):
+                # roll back the whole operation — never commit a partial recovery
+                raise ValueError(
+                    f"reprocess update-count mismatch: updated={updated} "
+                    f"eligible={len(eligible)} (rolled back)"
+                )
     return updated
 
 

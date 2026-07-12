@@ -11,6 +11,90 @@ if str(_cli_root) not in sys.path:
     sys.path.insert(0, str(_cli_root))
 
 
+# ── Session-wide storage sandbox (test-only, IMPORT-TIME) ─────────────────────
+#
+# The storage-leak guard below (_guard_storage_root) watches the REAL live
+# storage roots (service/app/storage, service/storage).  Four classes of write
+# escape any per-test sandbox and land in whichever root settings.storage_root
+# points at, at a time the *running* test never controls:
+#
+#   1. app.main lifespan startup — init_*_db(_root / "*.db") creates ~20
+#      root-level DB/JSON files (wfirma.db, users.db, master_data.sqlite, …)
+#      the moment the first TestClient(app) enters.
+#   2. Background threads — batch_manager.start_sweep() / start_watcher() /
+#      dhl_orchestrator keep writing under the root AFTER the test that started
+#      them has torn down.
+#   3. Import-time module constants — e.g. agency_email_builder._POLISH_DIR and
+#      action_email_builder._OUTPUTS bind `settings.storage_root / "…"` at import,
+#      so a later per-test monkeypatch of settings.storage_root cannot redirect
+#      them.
+#   4. importlib.reload(app.core.config) — test_compliance_resolver_injection
+#      reloads the config module (and never restores it), replacing the shared
+#      `settings` object with a fresh one whose storage_root reverts to the real
+#      default.  Every later test that resolves `from app.core.config import
+#      settings` at call time (e.g. proforma_draft_sync._cm_name_for_cid) then
+#      reads/writes the real root — an object-attribute redirect on the ORIGINAL
+#      singleton cannot reach this reload-created replacement.
+#
+# When settings.storage_root still points at the real live root, all four write
+# into a root the current test did not touch, and the guard implicates the test
+# that happens to be in teardown when the file first appears (its own docstring:
+# "implicates the next test, not the culprit").  Because the deploy gate treats
+# ANY test ERROR as an unconditional block, this non-deterministically blocks the
+# gate on fresh-storage hosts.
+#
+# Fix (deterministic, host-independent) — two complementary redirects applied at
+# conftest IMPORT time (not in a fixture), BEFORE any test module — and therefore
+# app.main and every storage-writing service — is imported:
+#   (a) point the existing settings singleton's storage_root at a throwaway
+#       per-session temp dir (covers classes 1–3, incl. the import-time
+#       constants which must capture the sandbox path), and
+#   (b) export STORAGE_ROOT into the environment so any *newly constructed*
+#       Settings() — reload-created or otherwise — also resolves to the sandbox
+#       (covers class 4).
+# With both in place the real live roots stay quiescent for the whole session and
+# the guard is 0-error regardless of whether the host's storage was pre-seeded.
+# The guard keeps watching the real roots, so a test that writes to them via a
+# HARDCODED path (bypassing settings.storage_root) is still caught.
+import atexit
+import shutil
+import tempfile
+
+# Ensure service/ is importable so `app.core.config` resolves even when pytest
+# was launched as bare `pytest` (not `python -m pytest` from service/).
+_service_root = Path(__file__).parent.parent  # service/
+if str(_service_root) not in sys.path:
+    sys.path.insert(0, str(_service_root))
+
+from app.core.config import settings as _pz_settings  # noqa: E402
+
+# The ORIGINAL host STORAGE_ROOT (if any) is what the leak-guard must keep
+# watching — capture it BEFORE we overwrite the env var with the sandbox below.
+_ORIG_STORAGE_ROOT_ENV = os.environ.get("STORAGE_ROOT")
+
+_SESSION_STORAGE_SANDBOX = Path(tempfile.mkdtemp(prefix="pz_test_storage_"))
+
+# (a) Point the already-constructed settings singleton at the sandbox.
+_pz_settings.storage_root = _SESSION_STORAGE_SANDBOX
+
+# (b) Also export STORAGE_ROOT so that any *newly constructed* Settings() —
+#     including one created by ``importlib.reload(app.core.config)`` inside a
+#     test — resolves storage_root to the sandbox as well.  This is essential:
+#     test_compliance_resolver_injection reloads app.core.config and does NOT
+#     restore it, replacing the module-global ``settings`` with a fresh object
+#     whose storage_root reverts to the real default.  Every later test that
+#     resolves ``from app.core.config import settings`` at call time (e.g.
+#     proforma_draft_sync._cm_name_for_cid) would then read/write the REAL live
+#     root.  Exporting STORAGE_ROOT makes the sandbox the config default for
+#     every Settings() instance, reload-created or not.  STORAGE_ROOT is already
+#     the idiomatic per-test isolation knob here — dozens of tests override it
+#     with monkeypatch.setenv("STORAGE_ROOT", tmp_path), which auto-restores to
+#     this sandbox value on teardown, so global export is fully compatible.
+os.environ["STORAGE_ROOT"] = str(_SESSION_STORAGE_SANDBOX)
+
+atexit.register(shutil.rmtree, _SESSION_STORAGE_SANDBOX, ignore_errors=True)
+
+
 # ── ai_gateway isolation fixture ──────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
@@ -104,10 +188,13 @@ _LIVE_ROOTS = {
     Path(__file__).parent.parent / "storage",                  # legacy fallback
 }
 
-# Expand the user-specific production path from .env (if set)
-_env_storage = os.environ.get("STORAGE_ROOT")
-if _env_storage:
-    _LIVE_ROOTS.add(Path(_env_storage).resolve())
+# Expand the user-specific production path from the ORIGINAL host STORAGE_ROOT
+# (if the host set one).  We deliberately use the value captured BEFORE the
+# session sandbox overwrote os.environ["STORAGE_ROOT"] — the sandbox itself must
+# never be added here, or the guard would watch the very directory app startup
+# and background threads legitimately write into.
+if _ORIG_STORAGE_ROOT_ENV:
+    _LIVE_ROOTS.add(Path(_ORIG_STORAGE_ROOT_ENV).resolve())
 
 
 # SQLite WAL-mode sidecar extensions.  These are created by the SQLite engine
@@ -232,6 +319,15 @@ def _guard_storage_root():
     Monkeypatch compatibility: checking settings.storage_root in teardown
     is unreliable because monkeypatch restores the default before this
     fixture's teardown runs.  We diff the filesystem directly instead.
+
+    Relationship to the session storage sandbox: the import-time redirect at
+    the top of this file (_SESSION_STORAGE_SANDBOX) points settings.storage_root
+    at a throwaway temp dir, so app startup, background threads, and import-time
+    module constants all write there instead of the real live roots this guard
+    watches.  The real roots therefore stay quiescent and this guard is
+    deterministically 0-error regardless of storage pre-seeding.  The guard is
+    retained as a backstop: it still catches a test that writes to a live root
+    via a HARDCODED path (one that bypasses settings.storage_root).
     """
     if os.environ.get("PZ_SKIP_STORAGE_GUARD") == "1":
         yield

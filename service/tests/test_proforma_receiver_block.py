@@ -68,8 +68,8 @@ def _base_request(*, receiver_id: str = "") -> wc.ProformaRequest:
 # ── 1. separate_contractor → emits <contractor_receiver> ───────────────────
 
 def test_xml_includes_contractor_receiver_when_set():
-    xml = wc._build_proforma_xml(_base_request(receiver_id="190263843"))
-    assert "<contractor_receiver><id>190263843</id></contractor_receiver>" in xml
+    xml = wc._build_proforma_xml(_base_request(receiver_id="99990004"))
+    assert "<contractor_receiver><id>99990004</id></contractor_receiver>" in xml
     # Sanity: still has bill-to.
     assert "<contractor><id>9001</id></contractor>" in xml
 
@@ -109,7 +109,7 @@ def test_xml_omits_contractor_receiver_on_self_reference():
 
 def test_pricing_currency_xml_unchanged_when_receiver_added():
     bare    = wc._build_proforma_xml(_base_request(receiver_id=""))
-    with_rx = wc._build_proforma_xml(_base_request(receiver_id="190263843"))
+    with_rx = wc._build_proforma_xml(_base_request(receiver_id="99990004"))
 
     # Strip the receiver block from the expanded XML and confirm the
     # remainder matches byte-for-byte (modulo whitespace inserted at the
@@ -141,7 +141,7 @@ _PROFORMA_WITH_RCV = """<?xml version="1.0"?>
       <type>proforma</type>
       <fullnumber>PROF 99/2026</fullnumber>
       <contractor><id>9001</id></contractor>
-      <contractor_receiver><id>190263843</id></contractor_receiver>
+      <contractor_receiver><id>99990004</id></contractor_receiver>
       <currency>EUR</currency>
     </invoice>
   </invoices>
@@ -150,18 +150,18 @@ _PROFORMA_WITH_RCV = """<?xml version="1.0"?>
 
 
 _PROFORMA_NO_RCV = _PROFORMA_WITH_RCV.replace(
-    "<contractor_receiver><id>190263843</id></contractor_receiver>", "")
+    "<contractor_receiver><id>99990004</id></contractor_receiver>", "")
 
 
 _PROFORMA_RCV_ZERO = _PROFORMA_WITH_RCV.replace(
-    "<contractor_receiver><id>190263843</id></contractor_receiver>",
+    "<contractor_receiver><id>99990004</id></contractor_receiver>",
     "<contractor_receiver><id>0</id></contractor_receiver>")
 
 
 def test_parser_projects_contractor_receiver_id():
     from app.api.routes_proforma import _parse_proforma_from_xml
     parsed = _parse_proforma_from_xml(_PROFORMA_WITH_RCV)
-    assert parsed["contractor_receiver_id"] == "190263843"
+    assert parsed["contractor_receiver_id"] == "99990004"
     assert parsed["contractor_id"]          == "9001"
 
 
@@ -330,12 +330,12 @@ def test_preview_separate_contractor_with_receiver_ready(client, storage):
     _seed_full_line()
     wfdb.set_customer_ship_to(client_name="ACME",
                                 mode="separate_contractor",
-                                ship_to_wfirma_customer_id="190263843")
+                                ship_to_wfirma_customer_id="99990004")
     body = client.post(f"/api/v1/proforma/preview/{BATCH}/ACME",
                        headers=_auth()).json()
     assert body["ready"] is True, body["blocking_reasons"]
     assert body["ship_to"]["mode"]                       == "separate_contractor"
-    assert body["ship_to"]["ship_to_wfirma_customer_id"] == "190263843"
+    assert body["ship_to"]["ship_to_wfirma_customer_id"] == "99990004"
 
 
 # ── End-to-end: build threads receiver into ProformaRequest ─────────────────
@@ -345,14 +345,14 @@ def test_build_proforma_request_threads_receiver(client, storage):
     _seed_full_line()
     wfdb.set_customer_ship_to(client_name="ACME",
                                 mode="separate_contractor",
-                                ship_to_wfirma_customer_id="190263843")
+                                ship_to_wfirma_customer_id="99990004")
     preview = _build_preview(BATCH, "ACME")
     assert preview["ready"] is True
     req, _warnings = _build_proforma_request(preview)  # ADR-027: returns (req, warnings)
-    assert req.wfirma_contractor_receiver_id == "190263843"
+    assert req.wfirma_contractor_receiver_id == "99990004"
     # Builder emits the receiver block.
     xml = wc._build_proforma_xml(req)
-    assert "<contractor_receiver><id>190263843</id></contractor_receiver>" in xml
+    assert "<contractor_receiver><id>99990004</id></contractor_receiver>" in xml
 
 
 def test_build_proforma_request_omits_receiver_when_same_as_bill_to(
