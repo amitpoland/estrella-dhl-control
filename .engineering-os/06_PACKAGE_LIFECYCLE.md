@@ -58,7 +58,7 @@ implementation, verification (`01 §1.2`).
 5 Plan          → route→service→model chain, every arrow named; state files to touch
 6 Implement     → agents execute within skill contracts, on a branch, on named files only
 7 Verify        → repo-real tests with counts; browser GATE 6 if UI (webapp-testing)
-8 Operability   → mandatory 4-layer gate (07) — BLOCK if any layer missing
+8 Operability   → mandatory completeness gate (07 → CLAUDE.md seven requirements) — BLOCK if any requirement 1–5 missing
 9 Review        → councils return verdict blocks (02); resolve/escalate HIGH+CRITICAL (GATE 1)
 10 Deploy       → hand to 7-agent gate (08); operator + gate own the sync
 11 Close        → verify prod; record state (10); release skills (04 §4)

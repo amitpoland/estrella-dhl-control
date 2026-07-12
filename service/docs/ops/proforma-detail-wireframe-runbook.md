@@ -8,8 +8,13 @@ by PRs #870/#872/#874/#875 (production `b1caafd4`, 2026-07-10).
 1. On the deploy tree: `git fetch && git checkout <target SHA>` — **verify the
    tree is actually on the target SHA before syncing** (Slice-4 incident: the
    first robocopy copied feature-branch bytes; caught by hash-match).
-2. `robocopy service\app C:\PZ\app /MIR <standard flags> /XD storage` —
-   the `/XD storage` exclusion is mandatory (deploy hygiene).
+2. `robocopy service\app C:\PZ\app /E <standard flags> /XD storage` —
+   the `/XD storage` exclusion is mandatory (deploy hygiene). **Non-mirror
+   `/E`, never `/MIR`** — destructive mirror deployment is forbidden
+   (`.engineering-os/08 §6.1`; the release-manager sync plans for #875/#879
+   used non-mirror robocopy, and a Slice-4 coordinator draft that said `/MIR`
+   was corrected at the gate: the release manager's non-`/MIR` command is
+   authoritative).
 3. Clear pycache recursively:
    `Get-ChildItem -Path C:\PZ -Recurse -Filter __pycache__ | Remove-Item -Recurse -Force`
 4. Restart `PZService` — **then confirm it is RUNNING** (Slice-3 incident: the

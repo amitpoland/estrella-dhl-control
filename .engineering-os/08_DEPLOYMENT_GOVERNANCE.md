@@ -84,5 +84,32 @@ After the operator syncs + restarts, verify against production before declaring 
 
 Record the verified SHA + result in the deployment record + PROJECT_STATE (`10`).
 
+---
+
+## 6.1 Deploy-source discipline + release certification (v1.2 — operator-ratified 2026-07-10)
+
+Codified after the 2026-07-10 double deploy incident (stale bytes shipped from a feature-branch
+tree; back-to-back stop/start left the service STOPPED). Binding on every sync:
+
+1. **Source at target SHA first.** Verify the sync source tree is checked out at the target
+   SHA **before** robocopy (when `main` is held by another worktree: `git fetch` +
+   `git checkout --detach origin/main`), and **hash-verify the deployed files after**
+   (`git hash-object` vs `git ls-tree origin/main` — byte-level proof).
+2. **No destructive mirror.** `/MIR` is forbidden — the canonical app sync is non-mirror
+   (`robocopy … /E /XD storage`) so a copy can never delete or shadow anything in production.
+   Evidence: the EOS-UPGRADE-1 operator charter names "no destructive mirror deployment"
+   explicitly; the #875 and #879 release-manager sync plans are non-mirror; a Slice-4
+   coordinator draft that said `/MIR` was corrected at the gate (release manager
+   authoritative). The PFW runbook's deployment step was reconciled to `/E` in this same
+   package.
+3. **Restart sequence.** `sc.exe stop PZService` → poll until **STOPPED** → `sc.exe start` →
+   verify **STATE: 4 RUNNING**. Never stop;start back-to-back. A deployment is **incomplete
+   until PZService reports RUNNING**.
+4. **Never seal from chat claims.** Merge/deploy completion is proven by fetch + PR-state +
+   PID + hash evidence, never by a claim (even a relayed one); a false completion claim is a
+   **HALT**. The full Phase-8 release-certification chain (Git → disk → process → logs →
+   endpoint → business behavior, with main/production/rollback SHAs recorded) is defined in
+   `00 §8`.
+
 > The OS stops at "ready + reviewed + operable." The gate and the operator take it to
 > production. Verification is autonomous and mandatory; the sync is not the OS's to perform.

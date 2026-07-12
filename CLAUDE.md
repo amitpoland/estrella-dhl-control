@@ -333,6 +333,15 @@ Summary: GATES 1–6 supersede operating guidance. The 7-agent deploy gate speci
 production syncs. Engineering Lessons bind at the specific gate named in each lesson header.
 Operating rules and workflow sequences are subordinate to all gates.
 
+### Engineering OS (canonical version pointer)
+
+The repository-canonical execution framework is **EJ Engineering OS v1.3** at
+`.engineering-os/` (docs-only; version delta + evidence in
+`.engineering-os/VERSION_HISTORY.md`). It is **subordinate** to this file's GATES 1–6, the
+Engineering Lessons, the 7-agent deploy gate, and operator approval. The single authoritative
+definition of feature completeness remains this file's **Business Feature Completeness
+Standard** (seven requirements) — the OS points to it and never redefines it.
+
 ---
 
 ## MANDATORY OBSERVATION LAYER
