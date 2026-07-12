@@ -15,6 +15,9 @@ service/.venv/
 # Claude Code / Ruflo MCP sandbox artifacts
 .claude/worktrees/
 .claude/agents/prompt-engineer.md
+# PROJECT_STATE.md is the operational ledger; it accumulates third-party PII and
+# is kept local-only (Option A forward-exposure fix). Readers use the on-disk copy.
+.claude/memory/PROJECT_STATE.md
 .claude/memory/PROJECT_STATE.LOCAL_BACKUP.md
 .claude/.regression-state
 .claude/.allow-red-stop

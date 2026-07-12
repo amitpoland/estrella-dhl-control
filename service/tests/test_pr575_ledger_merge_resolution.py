@@ -34,8 +34,11 @@ are corrected here, see "SPEC DEVIATIONS" below):
       positive). Raw byte length is reported as diagnostic.
 
 SUBJECT UNDER TEST
-  By default the subject IS the origin/main blob, so the suite PASSES out of the
-  box (it proves the helpers + invariants against the known-good resolution).
+  By default the subject IS the origin/main blob, so the suite runs against the
+  known-good resolution.  NOTE: PROJECT_STATE.md was later removed from Git
+  tracking (Option A forward-exposure fix); on a clone whose main carries that
+  removal the default baseline ref no longer resolves and the baseline-dependent
+  tests SKIP with guidance (the pure renumber-logic unit tests still run).
   To validate a *candidate* resolution instead, point the env var at it:
 
       set  LEDGER_SUT_PATH=C:\\path\\to\\candidate_PROJECT_STATE.md   (cmd)
@@ -261,10 +264,38 @@ def build_diff_report(expected: bytes, actual: bytes, *, max_lines: int = 12
 
 # ───────────────────────── fixtures ─────────────────────────────────────────
 
+def _resolve_baseline_bytes() -> bytes:
+    """Load the ledger baseline blob, or skip cleanly when it is intentionally
+    absent.
+
+    PROJECT_STATE.md was removed from Git tracking (Option A forward-exposure
+    fix: stop tracking, keep the operational copy local — the file is now
+    ``.gitignore``'d and lives only on disk). The default baseline ref
+    ``origin/main:.claude/memory/PROJECT_STATE.md`` therefore no longer resolves
+    on a clone whose ``main`` carries the removal. When the DEFAULT ref is in use
+    and unavailable, skip this suite with guidance rather than erroring the run.
+    An explicit ``LEDGER_BASELINE_REF`` that fails is a real misconfiguration and
+    is re-raised.
+    """
+    override = os.environ.get("LEDGER_BASELINE_REF")
+    ref = override or DEFAULT_BASELINE_REF
+    try:
+        return _git_show_bytes(ref)
+    except RuntimeError:
+        if override:
+            raise
+        pytest.skip(
+            "PROJECT_STATE.md is no longer Git-tracked (Option A forward-exposure "
+            "stop-tracking); the default origin/main ledger baseline is "
+            "intentionally absent. Set "
+            "LEDGER_BASELINE_REF=<pre-removal-sha>:.claude/memory/PROJECT_STATE.md "
+            "or LEDGER_SUT_PATH=<local candidate> to run this suite."
+        )
+
+
 @pytest.fixture(scope="session")
 def baseline_bytes() -> bytes:
-    ref = os.environ.get("LEDGER_BASELINE_REF", DEFAULT_BASELINE_REF)
-    return _git_show_bytes(ref)
+    return _resolve_baseline_bytes()
 
 
 @pytest.fixture(scope="session")
