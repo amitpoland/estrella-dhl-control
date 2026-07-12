@@ -3043,6 +3043,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [recipientPickOpen, setRecipientPickOpen] = React.useState(false);
   const [customerPickBusy,  setCustomerPickBusy]  = React.useState(false);
   const [customerPickError, setCustomerPickError] = React.useState(null);
+  // PR 1a follow-up — safe, dismissible migration warnings shown AFTER a
+  // successful customer replacement (service charges / reservation could not
+  // follow the new customer). Backend returns a browser-safe stable shape
+  // (type/authority/severity/message/requires_operator_review) — never raw
+  // exception text. Array; empty = banner hidden.
+  const [customerMigrationWarnings, setCustomerMigrationWarnings] = React.useState([]);
   const [chargeSuggestion, setChargeSuggestion]  = React.useState(null);  // null | response obj
   const [chargesLoading,   setChargesLoading]    = React.useState(false);
   const [chargesApplying,  setChargesApplying]   = React.useState(null);  // 'freight'|'insurance'|null
@@ -4049,6 +4055,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     window.PzApi.patchDraft(id, { client_contractor_id: String(sel.bill_to_contractor_id || '') }, updatedAt)
       .then(r => {
         if (r && r.ok) {
+          // Customer replaced. Surface any post-change migration warnings
+          // (service charges / reservation could not follow) as a persistent,
+          // dismissible banner. Backend guarantees a browser-safe shape.
+          const warns = (r.data && Array.isArray(r.data.migration_warnings))
+            ? r.data.migration_warnings : [];
+          setCustomerMigrationWarnings(warns);
           setCustomerPickOpen(false);
           draftHook && draftHook.reload && draftHook.reload();
         } else {
@@ -4214,6 +4226,35 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           fontWeight: 600,
         }}>
           ⚠ {printError}
+        </div>
+      )}
+
+      {/* Customer-change migration warning banner — page-level, persistent +
+          dismissible. Shown after a successful customer replacement whose
+          service-charge / reservation migration failed. Messages come from the
+          backend's browser-safe stable contract (no raw exception text).
+          Lives here (ProformaDetailPage) alongside the state + handleChangeCustomer
+          + picker so the warning stays visible after the picker modal closes. */}
+      {customerMigrationWarnings.length > 0 && (
+        <div role="alert" data-testid="customer-migration-warning-banner"
+             style={{ margin: '8px 24px 0', padding: '10px 14px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+            <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--badge-amber-text)' }}>
+              ⚠ Customer changed — follow-up needed
+            </div>
+            <button type="button" data-testid="customer-migration-warning-dismiss"
+                    onClick={() => setCustomerMigrationWarnings([])}
+                    style={{ background: 'transparent', border: '1px solid var(--badge-amber-border)', color: 'var(--badge-amber-text)', borderRadius: 4, fontSize: 11, fontWeight: 600, padding: '2px 8px', cursor: 'pointer' }}>
+              Dismiss
+            </button>
+          </div>
+          {customerMigrationWarnings.map((w, i) => (
+            <div key={(w && w.type) || i}
+                 data-testid={`customer-migration-warning-${(w && w.type) || i}`}
+                 style={{ fontSize: 12, color: 'var(--badge-amber-text)', marginTop: 4 }}>
+              • {(w && w.message) || 'A follow-up action could not be completed.'}
+            </div>
+          ))}
         </div>
       )}
 
