@@ -35,8 +35,10 @@ from ..services import document_db as ddb
 from ..services import packing_db as pdb
 from ..services import document_readiness as docrev
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+import mimetypes
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, Header, HTTPException, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 
 from ..core.config import settings
 from ..core.logging import get_logger
@@ -1205,6 +1207,77 @@ def _patch_audit(output_dir: Path, patches: dict) -> None:
 
 # ── Document Registry (read-only) ─────────────────────────────────────────────
 
+# ── Document-identity contract (Wave 3) ─────────────────────────────────────
+# Generated fiscal / customs-evidence documents are NEVER deletable from the
+# registry (the operator regenerates or replaces them; deleting a booked PZ or a
+# customs SAD would destroy the audit/compliance chain). Everything else — the
+# operator-uploaded source docs — is deletable through the canonical
+# delete-by-id route with confirmation + audit.
+_GENERATED_TYPES = {
+    "pz_pdf", "pz_xlsx", "pz_document", "audit_memo", "audit_en", "audit_pl",
+    "calculation_xlsx", "corrections",
+}
+_CUSTOMS_EVIDENCE_TYPES = {"sad_pdf", "sad_xml"}
+_NONDELETABLE_TYPES = _GENERATED_TYPES | _CUSTOMS_EVIDENCE_TYPES
+# Types with a Replace path today: SAD (dedicated route) + any uploaded source
+# doc (canonical replace route). Generated outputs are regenerated, not replaced.
+_REPLACEABLE_TYPES_EXTRA = _CUSTOMS_EVIDENCE_TYPES
+
+
+def _guess_mime(file_name: str) -> str:
+    ext = (Path(file_name).suffix or "").lower()
+    if ext == ".pdf":
+        return "application/pdf"
+    if ext in (".xlsx", ".xls"):
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if ext == ".xml":
+        return "application/xml"
+    if ext in (".jpg", ".jpeg"):
+        return "image/jpeg"
+    if ext == ".png":
+        return "image/png"
+    if ext == ".json":
+        return "application/json"
+    return mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+
+
+def _document_identity_contract(d: dict, batch_id: str) -> dict:
+    """Derive the stable per-document identity contract the V2 Documents tab
+    consumes. Serving is unified through ONE registry-keyed content route so
+    view/download URLs never depend on per-type serving quirks."""
+    doc_id  = d.get("id", "")
+    dtype   = (d.get("document_type") or "")
+    source  = (d.get("source") or "upload")
+    fname   = d.get("file_name") or d.get("canonical_file_name") or ""
+    is_generated = source == "generated" or dtype in _GENERATED_TYPES
+    on_disk = bool((d.get("file_path") or "").strip())
+    base = (f"/api/v1/upload/shipment/{batch_id}/documents/"
+            f"{doc_id}/content")
+    can_delete = (dtype not in _NONDELETABLE_TYPES) and not is_generated
+    can_replace = (not is_generated) and (
+        dtype not in _GENERATED_TYPES) and (
+        dtype in _REPLACEABLE_TYPES_EXTRA or not is_generated)
+    return {
+        "document_id":       doc_id,
+        "authority":         source,
+        "is_generated":      is_generated,
+        "is_current":        bool(d.get("is_current", 1)),
+        "superseded_by":     d.get("superseded_by") or "",
+        "original_filename": fname,
+        "mime_type":         _guess_mime(fname),
+        "can_view":          on_disk,
+        "can_download":      on_disk,
+        "can_replace":       can_replace and on_disk,
+        "can_delete":        can_delete and on_disk,
+        "view_url":          f"{base}?disposition=inline"     if on_disk else None,
+        "download_url":      f"{base}?disposition=attachment" if on_disk else None,
+    }
+
+
+# Internal columns that must never leave the API boundary (absolute disk paths).
+_MANIFEST_INTERNAL_FIELDS = ("file_path",)
+
+
 @router.get("/shipment/{batch_id}/documents", dependencies=[_auth])
 def list_batch_documents(batch_id: str) -> JSONResponse:
     """
@@ -1341,11 +1414,200 @@ def list_batch_documents(batch_id: str) -> JSONResponse:
             row.setdefault("review_code", "review_derivation_error")
             row.setdefault("extraction_status_effective", d.get("extraction_status") or "")
 
+        # ── Document-identity contract + internal-field scrub ──────────
+        # Add the stable identity/capability/URL contract, then drop internal
+        # columns (absolute file_path) that must never cross the API boundary.
+        row.update(_document_identity_contract(d, batch_id))
+        for _internal in _MANIFEST_INTERNAL_FIELDS:
+            row.pop(_internal, None)
+
         enriched.append(row)
     return JSONResponse({
         "batch_id": batch_id,
         "count":    len(enriched),
         "documents": enriched,
+    })
+
+
+def _resolve_batch_document(batch_id: str, document_id: str) -> dict:
+    """Fetch a registry row by id, enforce it belongs to batch_id, and confirm
+    its file_path resolves under storage_root (path-traversal defence). Raises
+    HTTPException on any failure. Returns the row dict."""
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+    if not document_id or "/" in document_id or ".." in document_id:
+        raise HTTPException(status_code=400, detail="Invalid document_id.")
+    d = ddb.get_document(document_id)
+    if not d or (d.get("batch_id") or "") != batch_id:
+        raise HTTPException(status_code=404, detail="Document not found in this batch.")
+    return d
+
+
+def _safe_document_path(d: dict) -> Path:
+    """Resolve + validate the on-disk file for a registry row: it must exist and
+    live under storage_root (never let a poisoned file_path escape the root)."""
+    raw = (d.get("file_path") or "").strip()
+    if not raw:
+        raise HTTPException(status_code=404, detail="Document has no stored file.")
+    root = settings.storage_root.resolve()
+    try:
+        p = Path(raw).resolve()
+        p.relative_to(root)
+    except (ValueError, OSError):
+        raise HTTPException(status_code=400, detail="Document path is outside storage root.")
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Stored file is missing on disk.")
+    return p
+
+
+@router.get("/shipment/{batch_id}/documents/{document_id}/content", dependencies=[_auth])
+def serve_document_content(
+    batch_id: str, document_id: str, disposition: str = "attachment",
+) -> FileResponse:
+    """Canonical registry-keyed content route. `disposition=inline` opens the
+    document browser-safe (View); `disposition=attachment` (default) downloads
+    it. One route for every document_type — the manifest's view_url/download_url
+    both point here. no-store so a regenerated artifact is never served stale."""
+    d = _resolve_batch_document(batch_id, document_id)
+    path = _safe_document_path(d)
+    disp = "inline" if disposition == "inline" else "attachment"
+    fname = d.get("file_name") or path.name
+    return FileResponse(
+        path=str(path),
+        media_type=_guess_mime(fname),
+        filename=fname,
+        content_disposition_type=disp,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                 "Pragma": "no-cache", "Expires": "0"},
+    )
+
+
+@router.delete("/shipment/{batch_id}/documents/{document_id}", dependencies=[_auth])
+def delete_batch_document(
+    batch_id: str, document_id: str,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Canonical delete-by-id for an operator-UPLOADED document. Removes the
+    registry row + its documents.db-side sales lines + the packing.db-side
+    purchase-packing rows + the on-disk file, and writes a timeline audit event.
+    Generated fiscal artifacts (pz/audit/calc) and customs evidence (sad) are
+    NON-deletable → 409 (regenerate or Replace instead)."""
+    d = _resolve_batch_document(batch_id, document_id)
+    dtype = (d.get("document_type") or "")
+    if dtype in _NONDELETABLE_TYPES or (d.get("source") or "") == "generated":
+        raise HTTPException(
+            status_code=409,
+            detail=(f"'{dtype}' is a generated/customs document and cannot be "
+                    f"deleted. Regenerate or replace it instead."),
+        )
+    operator = (x_operator or "").strip() or "v2"
+    # 1) on-disk file (best-effort; row delete proceeds regardless)
+    file_removed = False
+    try:
+        raw = (d.get("file_path") or "").strip()
+        if raw:
+            p = Path(raw).resolve()
+            p.relative_to(settings.storage_root.resolve())
+            if p.exists():
+                p.unlink()
+                file_removed = True
+    except Exception as exc:
+        log.warning("[%s] delete: file unlink failed (non-fatal) doc=%s: %s",
+                    batch_id, document_id, exc)
+    # 2) packing.db purchase-packing rows (separate DB, bridged by file identity)
+    if dtype == "purchase_packing_list":
+        try:
+            pack_ids = pdb._resolve_packing_document_ids(
+                d.get("batch_id") or batch_id,
+                d.get("file_hash") or "",
+                d.get("file_name") or "",
+            )
+            for _pid in pack_ids:
+                pdb.delete_packing_document_and_lines(_pid)
+        except Exception as exc:
+            log.warning("[%s] delete: packing.db cleanup failed (non-fatal) doc=%s: %s",
+                        batch_id, document_id, exc)
+    # 3) registry row (+ documents.db sales lines cascade)
+    deleted = ddb.delete_document(document_id)
+    # 4) audit event
+    try:
+        audit_path = get_output_dir(batch_id) / "audit.json"
+        if audit_path.exists():
+            tl.log_event(audit_path, "document_deleted", operator, "user", detail={
+                "document_id": document_id, "document_type": dtype,
+                "file_name": d.get("file_name") or "", "file_removed": file_removed,
+            })
+    except Exception as exc:
+        log.warning("[%s] delete: audit event failed (non-fatal) doc=%s: %s",
+                    batch_id, document_id, exc)
+    return JSONResponse({
+        "ok": bool(deleted), "batch_id": batch_id, "document_id": document_id,
+        "document_type": dtype, "file_removed": file_removed,
+    })
+
+
+@router.post("/shipment/{batch_id}/documents/{document_id}/replace", dependencies=[_auth])
+async def replace_batch_document(
+    batch_id: str, document_id: str,
+    file: UploadFile,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Replace the FILE of an uploaded document, preserving provenance: the old
+    registry row is SUPERSEDED (is_current=0, superseded_by=new id) rather than
+    silently overwritten, and a timeline audit event is written. Same
+    document_type + directory; extension must match the original. Does NOT
+    re-parse — run recheck afterwards. Generated fiscal / customs-evidence docs
+    are not replaceable here (SAD has its own /sad route) → 409."""
+    d = _resolve_batch_document(batch_id, document_id)
+    dtype = (d.get("document_type") or "")
+    if dtype in _GENERATED_TYPES or (d.get("source") or "") == "generated":
+        raise HTTPException(status_code=409, detail=f"'{dtype}' is a generated document and cannot be replaced (regenerate instead).")
+    if dtype in _CUSTOMS_EVIDENCE_TYPES:
+        raise HTTPException(status_code=409, detail="Replace SAD via POST /upload/shipment/{batch_id}/sad (customs authority).")
+    if not file or not file.filename:
+        raise HTTPException(status_code=400, detail="No replacement file provided.")
+    old_ext = (Path(d.get("file_name") or "").suffix or "").lower()
+    new_ext = (Path(file.filename).suffix or "").lower()
+    if old_ext and new_ext != old_ext:
+        raise HTTPException(status_code=400, detail=f"Replacement must be a {old_ext} file (matches the original).")
+
+    # Save the new file next to the old one (same source directory).
+    old_path = Path((d.get("file_path") or "").strip()) if (d.get("file_path") or "").strip() else None
+    dest_dir = old_path.parent if old_path else (get_output_dir(batch_id) / "source" / "misc")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in Path(file.filename).name)
+    dest = dest_dir / safe_name
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Replacement file is empty (0 bytes).")
+    if len(content) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="File too large.")
+    dest.write_bytes(content)
+
+    operator = (x_operator or "").strip() or "v2"
+    new_id = ddb.register_document(
+        batch_id=batch_id, document_type=dtype,
+        file_name=file.filename, file_path=str(dest),
+        file_hash=ddb.sha256_file(dest),
+        awb=d.get("awb") or "", source="upload",
+        client_contractor_id=d.get("client_contractor_id") or "",
+        supplier_contractor_id=d.get("supplier_contractor_id") or "",
+    ) or ""
+    superseded = ddb.supersede_document(document_id, new_id) if new_id and new_id != document_id else False
+    try:
+        audit_path = get_output_dir(batch_id) / "audit.json"
+        if audit_path.exists():
+            tl.log_event(audit_path, "document_replaced", operator, "user", detail={
+                "old_document_id": document_id, "new_document_id": new_id,
+                "document_type": dtype, "file_name": file.filename,
+            })
+    except Exception as exc:
+        log.warning("[%s] replace: audit event failed (non-fatal) doc=%s: %s",
+                    batch_id, document_id, exc)
+    return JSONResponse({
+        "ok": True, "batch_id": batch_id, "document_type": dtype,
+        "old_document_id": document_id, "new_document_id": new_id,
+        "superseded": superseded, "next_step": "Run recheck to parse the replaced document.",
     })
 
 

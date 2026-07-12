@@ -76,6 +76,8 @@ def init_document_db(db_path: Path) -> None:
                 source               TEXT NOT NULL DEFAULT 'upload',
                 client_contractor_id TEXT NOT NULL DEFAULT '',
                 supplier_contractor_id TEXT NOT NULL DEFAULT '',
+                is_current           INTEGER NOT NULL DEFAULT 1,
+                superseded_by        TEXT NOT NULL DEFAULT '',
                 created_at           TEXT NOT NULL,
                 updated_at           TEXT NOT NULL
             );
@@ -331,6 +333,11 @@ def init_document_db(db_path: Path) -> None:
         for col, ddl in (
             ("client_contractor_id",   "TEXT NOT NULL DEFAULT ''"),
             ("supplier_contractor_id", "TEXT NOT NULL DEFAULT ''"),
+            # Document-identity contract (Wave 3): version tracking so a Replace
+            # supersedes the old row (is_current=0, superseded_by=new id) instead
+            # of silently overwriting provenance. Default is_current=1 = current.
+            ("is_current",             "INTEGER NOT NULL DEFAULT 1"),
+            ("superseded_by",          "TEXT NOT NULL DEFAULT ''"),
         ):
             try:
                 con.execute(
@@ -1273,6 +1280,49 @@ def get_document(document_id: str) -> Optional[Dict[str, Any]]:
             (document_id,),
         ).fetchone()
     return dict(row) if row else None
+
+
+def delete_document(document_id: str) -> Optional[Dict[str, Any]]:
+    """Delete a single shipment_documents row (and its documents.db-side
+    sales_packing_lines, keyed by sales_document_id == this id). Returns the
+    deleted row dict (so the caller can remove the on-disk file + write an
+    audit event), or None if not found. The CALLER is responsible for the
+    non-deletable-type guard, permission, on-disk file removal, and audit —
+    this is the pure persistence delete. packing.db purchase-packing rows are
+    NOT touched here (separate DB; caller handles via packing_db if needed)."""
+    if _db_path is None or not document_id:
+        return None
+    with _connect() as con:
+        row = con.execute(
+            "SELECT * FROM shipment_documents WHERE id=? LIMIT 1",
+            (document_id,),
+        ).fetchone()
+        if not row:
+            return None
+        # Cascade documents.db-side sales packing lines for this document.
+        con.execute(
+            "DELETE FROM sales_packing_lines WHERE sales_document_id=?",
+            (document_id,),
+        )
+        con.execute("DELETE FROM shipment_documents WHERE id=?", (document_id,))
+        con.commit()
+    return dict(row)
+
+
+def supersede_document(old_id: str, new_id: str) -> bool:
+    """Mark ``old_id`` superseded by ``new_id`` (is_current=0, superseded_by).
+    Provenance-preserving Replace: the old row stays in the registry (audit
+    trail) but is no longer the current version. Returns True on update."""
+    if _db_path is None or not old_id or not new_id:
+        return False
+    with _connect() as con:
+        cur = con.execute(
+            "UPDATE shipment_documents SET is_current=0, superseded_by=?, updated_at=? "
+            "WHERE id=?",
+            (new_id, _now(), old_id),
+        )
+        con.commit()
+    return cur.rowcount > 0
 
 
 def get_documents_by_awb(
