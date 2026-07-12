@@ -126,13 +126,17 @@ function BackendPendingBanner({ testid, children }) {
 // authority does not carry renders as '—'. Nothing on this page is invented.
 function _dash(v) { return (v === null || v === undefined || v === '') ? '—' : v; }
 function _fmtUsd(n) {
+  // Route through the single V2 money authority (components.jsx fmtMoney2).
+  if (window.fmtMoney2) return window.fmtMoney2(n, { currency: 'USD' });
   if (n == null || n === '') return '—';
   const x = Number(n); if (isNaN(x)) return '—';
   return 'USD ' + x.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 function _fmtPln(n) {
-  const f = window.EstrellaShared && window.EstrellaShared.fmtPLN;
-  if (f) return f(n);
+  // Route through the single V2 money authority (components.jsx fmtMoney2).
+  // Note: the old window.EstrellaShared.fmtPLN dependency was dead in V2
+  // (dashboard-shared.js is intentionally not loaded) — this is the fix.
+  if (window.fmtMoney2) return window.fmtMoney2(n, { currency: 'PLN', locale: 'pl-PL' });
   if (n == null || n === '') return '—';
   const x = Number(n); return isNaN(x) ? '—' : 'PLN ' + x.toLocaleString('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }

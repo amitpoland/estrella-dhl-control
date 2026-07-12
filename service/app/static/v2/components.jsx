@@ -516,8 +516,44 @@ function InfoRow({ label, value, mono }) {
   );
 }
 
+// fmtMoney2 — the single V2 authority for rendering monetary values.
+// Renders exactly two decimals, locale-grouped; null/undefined/'' → dash.
+// Accepts a number, an integer/decimal string, or a pre-formatted string
+// (currency symbols and en-US thousands separators are stripped before
+// parsing). Unparseable non-empty input is returned verbatim rather than
+// shown as "NaN". Backend precision is unchanged — this is display only.
+// Options: { currency: 'PLN', locale: 'pl-PL', dash: '—' }.
+// NOTE: string parsing assumes en-US grouping ("1,234.56"); European
+// grouping ("1.234,56") is out of scope — engine values are numeric.
+function fmtMoney2(v, opts) {
+  const o = opts || {};
+  const dash = (o.dash !== undefined && o.dash !== null) ? o.dash : '—';
+  const currency = o.currency || '';
+  const locale = o.locale || 'en-US';
+  if (v === null || v === undefined || v === '') return dash;
+  let num;
+  if (typeof v === 'number') {
+    num = v;
+  } else {
+    const s = String(v).trim();
+    // Plain numeric / decimal / scientific-notation strings parse DIRECTLY and
+    // must not be regex-stripped — stripping 'e' would corrupt "1.5e6" → 1.56.
+    num = Number(s);
+    if (!isFinite(num)) {
+      // Grouped or currency-prefixed string (e.g. "1,234.56", "PLN 6,330"):
+      // strip en-US grouping + symbols, then parse. Unparseable → verbatim.
+      const cleaned = s.replace(/[^0-9.\-]/g, '');
+      if (cleaned === '' || cleaned === '-' || cleaned === '.') return s;
+      num = Number(cleaned);
+    }
+  }
+  if (!isFinite(num)) return (typeof v === 'string') ? String(v) : dash;
+  const grouped = num.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return currency ? (currency + ' ' + grouped) : grouped;
+}
+
 Object.assign(window, {
   Badge, Sidebar, TopBar, PageHeader, Card, Btn, Modal,
-  FormField, Input, Select, SectionHeader, InfoRow,
+  FormField, Input, Select, SectionHeader, InfoRow, fmtMoney2,
   STATUS_MAP, GOLD, DARK_BG, NAV_TREE, NAV_INDEX, SubTabStrip,
 });
