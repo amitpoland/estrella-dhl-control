@@ -885,6 +885,17 @@
         expected_updated_at: updatedAt || '',
       }),
 
+    // POST /api/v1/proforma/draft/{draft_id}/change-customer
+    // ID-FIRST: replace the draft's customer identity (client_name +
+    // client_contractor_id) + bill-to projection with the operator-selected
+    // Customer Master contractor. Never resolves by name. Editable drafts only;
+    // duplicate-target draft → 409 (operator must resolve).
+    changeCustomer: (draftId, newContractorId, updatedAt) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/change-customer`, {
+        expected_updated_at: updatedAt || '',
+        new_contractor_id: String(newContractorId || ''),
+      }),
+
     // GET /api/v1/proforma/draft/{draft_id}/suggest-service-charges
     // Returns combined freight+insurance suggestions from Customer Master.
     suggestServiceCharges: (draftId) =>
