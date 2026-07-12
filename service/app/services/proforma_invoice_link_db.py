@@ -3091,6 +3091,51 @@ def apply_customer_address_to_draft(
     return refreshed
 
 
+# ── Customer-replacement migration warnings — ONE safe, stable contract ────────
+#
+# When the post-identity charge / reservation migration fails (see
+# change_draft_customer), the operator must be told — but the warning surfaced
+# to the browser MUST NOT carry raw exception text. A raw ``str(exc)`` can leak
+# internal filesystem paths, SQLite details, wFirma payloads or other
+# operational information. So there is exactly ONE warning authority: a stable
+# per-type contract, browser-safe by construction. Full exception detail stays
+# in the server log (``log.warning(..., exc_info=True)``); the audit event and
+# the HTTP response both carry only this shape.
+#
+# Shape (stable): {type, authority, severity, message, requires_operator_review}
+_MIGRATION_WARNING_CONTRACT: Dict[str, Dict[str, Any]] = {
+    "charge_move_failed": {
+        "type":                     "charge_move_failed",
+        "authority":                "PROFORMA",
+        "severity":                 "warning",
+        "message": (
+            "Customer changed, but service charges could not be migrated. "
+            "Review service charges for this draft."
+        ),
+        "requires_operator_review": True,
+    },
+    "reservation_migrate_failed": {
+        "type":                     "reservation_migrate_failed",
+        "authority":                "SALES",
+        "severity":                 "warning",
+        "message": (
+            "Customer changed, but the wFirma reservation draft could not be "
+            "renamed. Review the reservation for this draft."
+        ),
+        "requires_operator_review": True,
+    },
+}
+
+
+def migration_warning(warning_type: str) -> Dict[str, Any]:
+    """Return a fresh copy of the stable, browser-safe migration-warning contract
+    for *warning_type* (``charge_move_failed`` | ``reservation_migrate_failed``).
+
+    NEVER carries raw exception text — full exception detail is server-log-only.
+    Raises KeyError for an unknown type (programmer error, not operator input)."""
+    return dict(_MIGRATION_WARNING_CONTRACT[warning_type])
+
+
 def change_draft_customer(
     db_path:              Path,
     draft_id:             int,
@@ -3127,11 +3172,16 @@ def change_draft_customer(
     The charge / reservation migration runs OUTSIDE the identity transaction
     (best-effort, PR-3 money-safe pattern). If either step raises AFTER the
     identity UPDATE has committed, the identity change still stands and the
-    failure is NOT silently swallowed: a structured warning is appended to the
-    optional ``migration_warnings`` sink (a caller-supplied list) so the route
-    can surface the orphaned-charge / stray-reservation disclosure in its HTTP
+    failure is NOT silently swallowed: a STABLE, BROWSER-SAFE warning (see
+    :func:`migration_warning` — ``{type, authority, severity, message,
+    requires_operator_review}``) is appended to the optional
+    ``migration_warnings`` sink (a caller-supplied list) so the route can
+    surface the orphaned-charge / stray-reservation disclosure in its HTTP
     response — the operator sees it without reading the audit log. The same
-    warnings are also written into the ``draft_customer_changed`` audit event.
+    safe warnings are written into the ``draft_customer_changed`` audit event.
+    The raw exception is logged server-side ONLY (``exc_info=True``); it is
+    never placed in the warning, which would leak internal path / DB / wFirma
+    payload detail to the browser.
 
     Idempotent no-op when the contractor id + name already match the draft.
     """
@@ -3188,48 +3238,28 @@ def change_draft_customer(
     # Charge + reservation migration — OUTSIDE the identity txn, best-effort and
     # DISCLOSED, mirroring migrate_draft_to_canonical_name's money-safe pattern.
     # The identity write has ALREADY committed above; a failure here therefore
-    # cannot roll it back. Instead of losing the disclosure to the audit log we
-    # append a structured warning to ``migration_warnings`` so the route can
-    # surface orphaned-charge / stray-reservation risk directly in its response.
+    # cannot roll it back. On failure we append a STABLE, BROWSER-SAFE warning
+    # (``migration_warning``) so the route can surface orphaned-charge /
+    # stray-reservation risk in its response. The raw exception is logged
+    # server-side ONLY (exc_info=True) — never placed in the warning, which
+    # would leak internal paths / DB / wFirma payload detail to the browser.
     charges_dropped: List[Dict[str, Any]] = []
     warnings = migration_warnings if migration_warnings is not None else []
     if old_name != new_name:
         try:
             if charge_move is not None:
                 charges_dropped = charge_move(d.batch_id, old_name, new_name) or []
-        except Exception as _chg_exc:
+        except Exception:
             log.warning("change_draft_customer charge migration failed (non-fatal) "
-                        "%s→%s: %s", old_name, new_name, _chg_exc)
-            warnings.append({
-                "type":            "charge_move_failed",
-                "authority":       "PROFORMA",
-                "old_client_name": old_name,
-                "new_client_name": new_name,
-                "error":           str(_chg_exc),
-                "message": (
-                    f"Service charges could not be migrated from {old_name!r} to "
-                    f"{new_name!r}; they may be orphaned under the previous customer "
-                    "name. Review this batch's service charges."
-                ),
-            })
+                        "%s→%s", old_name, new_name, exc_info=True)
+            warnings.append(migration_warning("charge_move_failed"))
         try:
             if reservation_migrate is not None:
                 reservation_migrate(d.batch_id, old_name, new_name)
-        except Exception as _res_exc:
+        except Exception:
             log.warning("change_draft_customer reservation migration failed (non-fatal) "
-                        "%s→%s: %s", old_name, new_name, _res_exc)
-            warnings.append({
-                "type":            "reservation_migrate_failed",
-                "authority":       "SALES",
-                "old_client_name": old_name,
-                "new_client_name": new_name,
-                "error":           str(_res_exc),
-                "message": (
-                    f"The wFirma reservation draft could not be renamed from "
-                    f"{old_name!r} to {new_name!r}; it may remain under the previous "
-                    "customer name."
-                ),
-            })
+                        "%s→%s", old_name, new_name, exc_info=True)
+            warnings.append(migration_warning("reservation_migrate_failed"))
 
     _record_draft_event(
         db_path, draft_id=int(draft_id),

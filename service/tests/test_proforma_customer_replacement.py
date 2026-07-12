@@ -96,32 +96,93 @@ def test_change_customer_by_id(dbs):
     assert json.loads(out.buyer_override_json)["_source"] == "customer_master"
 
 
-def test_migration_failure_still_commits_identity_and_is_disclosed(dbs):
-    # The charge + reservation migration runs OUTSIDE the identity transaction.
-    # If either raises AFTER the identity UPDATE commits, the customer change
-    # must STILL stand and the failure must be surfaced (never silently dropped).
+# The stable, browser-safe warning contract every disclosure must satisfy.
+_SAFE_WARNING_KEYS = {"type", "authority", "severity", "message", "requires_operator_review"}
+_RAW_EXC = "boom-internal-/srv/db/secret.sqlite-payload"   # canary: must never reach the browser
+
+
+def _assert_safe_warning(w: dict) -> None:
+    # Exactly the stable contract — no raw exception / internal-detail leakage.
+    assert set(w.keys()) == _SAFE_WARNING_KEYS, w
+    assert w["severity"] == "warning"
+    assert w["requires_operator_review"] is True
+    assert isinstance(w["message"], str) and w["message"]
+    assert _RAW_EXC not in json.dumps(w)          # no raw exception text
+    assert "error" not in w                        # no raw-error field at all
+
+
+def test_service_charge_migration_failure_commits_identity_and_discloses_safe(dbs):
+    # charge_move runs OUTSIDE the identity txn. If it raises AFTER the identity
+    # UPDATE commits, the customer change STILL stands and a SAFE warning surfaces.
     did, upd = _seed_draft(dbs["pf"])
 
     def _raise_charge(batch_id, old, new):
-        raise RuntimeError("charge move boom")
-
-    def _raise_reservation(batch_id, old, new):
-        raise RuntimeError("reservation rename boom")
+        raise RuntimeError(_RAW_EXC)
 
     warnings: list = []
     out = pildb.change_draft_customer(
         dbs["pf"], did, new_contractor_id="222", new_client_name="Beta Ltd",
         buyer_override={"name": "Beta Ltd"}, operator="tester",
-        expected_updated_at=upd,
-        charge_move=_raise_charge, reservation_migrate=_raise_reservation,
-        migration_warnings=warnings)
-    # Identity change committed despite both migration failures.
-    assert out.client_name == "Beta Ltd"
+        expected_updated_at=upd, charge_move=_raise_charge, migration_warnings=warnings)
+    assert out.client_name == "Beta Ltd"           # identity committed
     assert out.client_contractor_id == "222"
-    # Both failures disclosed for operator visibility (no reliance on the audit log).
+    assert [w["type"] for w in warnings] == ["charge_move_failed"]
+    assert warnings[0]["authority"] == "PROFORMA"
+    _assert_safe_warning(warnings[0])
+
+
+def test_reservation_migration_failure_commits_identity_and_discloses_safe(dbs):
+    # reservation_migrate runs OUTSIDE the identity txn — same guarantee.
+    did, upd = _seed_draft(dbs["pf"])
+
+    def _raise_reservation(batch_id, old, new):
+        raise RuntimeError(_RAW_EXC)
+
+    warnings: list = []
+    out = pildb.change_draft_customer(
+        dbs["pf"], did, new_contractor_id="222", new_client_name="Beta Ltd",
+        buyer_override={"name": "Beta Ltd"}, operator="tester",
+        expected_updated_at=upd, reservation_migrate=_raise_reservation,
+        migration_warnings=warnings)
+    assert out.client_name == "Beta Ltd"           # identity committed
+    assert [w["type"] for w in warnings] == ["reservation_migrate_failed"]
+    assert warnings[0]["authority"] == "SALES"
+    _assert_safe_warning(warnings[0])
+
+
+def test_both_migrations_fail_disclose_both_no_raw_detail_in_audit(dbs):
+    did, upd = _seed_draft(dbs["pf"])
+
+    def _boom(batch_id, old, new):
+        raise RuntimeError(_RAW_EXC)
+
+    warnings: list = []
+    pildb.change_draft_customer(
+        dbs["pf"], did, new_contractor_id="222", new_client_name="Beta Ltd",
+        buyer_override={"name": "Beta Ltd"}, operator="tester",
+        expected_updated_at=upd, charge_move=_boom, reservation_migrate=_boom,
+        migration_warnings=warnings)
     assert {w["type"] for w in warnings} == {"charge_move_failed", "reservation_migrate_failed"}
-    assert all(w["old_client_name"] == "Alpha Corp" for w in warnings)
-    assert all(w["new_client_name"] == "Beta Ltd" for w in warnings)
+    for w in warnings:
+        _assert_safe_warning(w)
+    # The audit event stores the SAFE warnings only — no raw exception text.
+    ev = pildb.list_draft_events(dbs["pf"], did)
+    changed = [e for e in ev if e.get("event") == "draft_customer_changed"]
+    assert changed, ev
+    assert _RAW_EXC not in json.dumps(changed[-1])
+
+
+def test_successful_migration_yields_no_warnings(dbs):
+    # A clean customer change (no injected failures) must produce zero warnings.
+    did, upd = _seed_draft(dbs["pf"])
+    warnings: list = []
+    pildb.change_draft_customer(
+        dbs["pf"], did, new_contractor_id="222", new_client_name="Beta Ltd",
+        buyer_override={"name": "Beta Ltd"}, operator="tester",
+        expected_updated_at=upd,
+        charge_move=lambda *a: [], reservation_migrate=lambda *a: {"action": "noop"},
+        migration_warnings=warnings)
+    assert warnings == []
 
 
 def test_no_line_item_or_price_mutation(dbs):
@@ -298,14 +359,14 @@ def test_patch_duplicate_target_409_no_merge(dbs, client):
     assert "not auto-merged" in r.text
 
 
-def test_patch_surfaces_migration_warning_on_charge_failure(dbs, client, monkeypatch):
+def test_patch_surfaces_safe_migration_warning_on_charge_failure(dbs, client, monkeypatch):
     # A charge_move that raises after the identity write commits must NOT fail the
     # PATCH: the customer replacement stands (200) and the orphaned-charge risk is
-    # disclosed in the response body so the operator sees it without the audit log.
+    # disclosed as a SAFE, stable warning in the response body — no raw exception.
     from app.services import proforma_service_charges_db as scdb
 
     def _boom(batch_id, old, new):
-        raise RuntimeError("charge move failed")
+        raise RuntimeError(_RAW_EXC)
 
     monkeypatch.setattr(scdb, "move_charges_client_name", _boom)
     did, upd = _seed_draft(dbs["pf"])
@@ -315,9 +376,50 @@ def test_patch_surfaces_migration_warning_on_charge_failure(dbs, client, monkeyp
     # Identity replacement still succeeded.
     assert body["draft"]["client_name"] == "Beta Ltd"
     assert body["draft"]["client_contractor_id"] == "222"
-    # The failure is disclosed in the response body, not buried in the audit log.
+    # Disclosed in the response body via the stable safe contract.
     warns = body.get("migration_warnings") or []
-    assert any(w["type"] == "charge_move_failed" for w in warns), body
+    charge = [w for w in warns if w["type"] == "charge_move_failed"]
+    assert charge, body
+    _assert_safe_warning(charge[0])
+    assert charge[0]["message"]                       # operator-facing code/message present
+    # SECURITY: the raw exception text must NOT appear anywhere in the response.
+    assert _RAW_EXC not in r.text
+
+
+def test_patch_successful_customer_change_has_no_warnings_field(dbs, client):
+    # A clean replacement (no injected failure) must NOT carry migration_warnings.
+    did, upd = _seed_draft(dbs["pf"])
+    r = _patch(client, did, {"client_contractor_id": "222"}, upd)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["client_name"] == "Beta Ltd"
+    assert "migration_warnings" not in body, body
+
+
+# ── frontend: customer-change handler renders the safe warnings (source pins) ──
+
+def _detail_jsx() -> str:
+    p = Path(pildb.__file__).parent.parent / "static" / "v2" / "proforma-detail.jsx"
+    return p.read_text(encoding="utf-8")
+
+
+def test_frontend_handler_reads_migration_warnings_and_renders_one_per_message():
+    src = _detail_jsx()
+    # Handler consumes the response's migration_warnings into state.
+    assert "migration_warnings" in src, "handler must read r.data.migration_warnings"
+    assert "setCustomerMigrationWarnings" in src
+    # Banner renders one line per warning (map) using the safe message field —
+    # two failures therefore render both, no duplication (keyed by w.type).
+    assert "customerMigrationWarnings.map" in src
+    assert "customer-migration-warning-banner" in src
+    assert "w.message" in src or "(w && w.message)" in src
+
+
+def test_frontend_warning_banner_is_dismissible():
+    src = _detail_jsx()
+    assert "customer-migration-warning-dismiss" in src
+    # Dismiss clears the warnings (empties the array → banner hidden).
+    assert "setCustomerMigrationWarnings([])" in src
 
 
 def test_patch_recipient_still_independent(dbs, client):
