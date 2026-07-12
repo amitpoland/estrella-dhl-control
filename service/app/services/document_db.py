@@ -1292,20 +1292,21 @@ def delete_document(document_id: str) -> Optional[Dict[str, Any]]:
     NOT touched here (separate DB; caller handles via packing_db if needed)."""
     if _db_path is None or not document_id:
         return None
-    with _connect() as con:
-        row = con.execute(
-            "SELECT * FROM shipment_documents WHERE id=? LIMIT 1",
-            (document_id,),
-        ).fetchone()
-        if not row:
-            return None
-        # Cascade documents.db-side sales packing lines for this document.
-        con.execute(
-            "DELETE FROM sales_packing_lines WHERE sales_document_id=?",
-            (document_id,),
-        )
-        con.execute("DELETE FROM shipment_documents WHERE id=?", (document_id,))
-        con.commit()
+    with _lock:
+        with _connect() as con:
+            row = con.execute(
+                "SELECT * FROM shipment_documents WHERE id=? LIMIT 1",
+                (document_id,),
+            ).fetchone()
+            if not row:
+                return None
+            # Cascade documents.db-side sales packing lines for this document.
+            con.execute(
+                "DELETE FROM sales_packing_lines WHERE sales_document_id=?",
+                (document_id,),
+            )
+            con.execute("DELETE FROM shipment_documents WHERE id=?", (document_id,))
+            con.commit()
     return dict(row)
 
 
@@ -1315,13 +1316,14 @@ def supersede_document(old_id: str, new_id: str) -> bool:
     trail) but is no longer the current version. Returns True on update."""
     if _db_path is None or not old_id or not new_id:
         return False
-    with _connect() as con:
-        cur = con.execute(
-            "UPDATE shipment_documents SET is_current=0, superseded_by=?, updated_at=? "
-            "WHERE id=?",
-            (new_id, _now(), old_id),
-        )
-        con.commit()
+    with _lock:
+        with _connect() as con:
+            cur = con.execute(
+                "UPDATE shipment_documents SET is_current=0, superseded_by=?, updated_at=? "
+                "WHERE id=?",
+                (new_id, _now(), old_id),
+            )
+            con.commit()
     return cur.rowcount > 0
 
 

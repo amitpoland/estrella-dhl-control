@@ -234,6 +234,11 @@ function deriveDetail(audit, shipment) {
 
   return {
     loaded:   !!audit.batch_id,
+    // SAD verification authority (read-only backend truth). Never infer success
+    // from a SAD file merely existing — surface the decision engine's verdict.
+    sadDecision:          audit.agency_sad_decision || null,
+    sadInvoiceAuthority:  audit.sad_invoice_authority || null,
+    sadPresent:           !!(cd.mrn || (audit.inputs || {}).zc429 || audit.zc429),
     importer: cd.importer_name || shipment.client || null,
     exporter: cd.exporter_name || null,
     lineCount:    tot.line_count != null ? tot.line_count : null,
@@ -297,6 +302,8 @@ function ShipmentDetailPage({ shipment, onBack }) {
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [detailError,   setDetailError]   = React.useState(null);
   const batchId = shipment && shipment.batch_id;
+  const [reloadNonce, setReloadNonce] = React.useState(0);
+  const reloadDetail = React.useCallback(() => setReloadNonce(n => n + 1), []);
 
   React.useEffect(() => {
     if (!batchId) return;
@@ -306,7 +313,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
       .then(a => { if (!cancelled) { setDetail(a); setDetailLoading(false); } })
       .catch(e => { if (!cancelled) { setDetailError((e && e.message) || 'Failed to load shipment detail'); setDetailLoading(false); } });
     return () => { cancelled = true; };
-  }, [batchId]);
+  }, [batchId, reloadNonce]);
 
   const d = React.useMemo(() => deriveDetail(detail, shipment), [detail, shipment]);
 
@@ -568,6 +575,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
             d={d} shipment={shipment} sadUploaded={sadUploaded}
             dhlEmailReceived={dhlEmailReceived} replySent={replySent}
             batchId={shipment && shipment.batch_id}
+            onReload={reloadDetail}
           />
         )}
         {activeTab === 'pz' && (
@@ -1042,7 +1050,7 @@ function DhlReadinessCard({ batchId }) {
   );
 }
 
-function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId }) {
+function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId, onReload }) {
   const bid = batchId || '{batch_id}';
   // R-Q1: DHL is a standalone page authority. This sub-tab provides a status summary
   // and an entry point only. All DHL write actions live on the standalone /dhl page.
@@ -1103,9 +1111,11 @@ function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId
             <InfoRow label="Reply Sent"          value={replySent ? 'Sent ✓ — see Timeline for exact time' : 'Not sent'} />
           </div>
         </div>
-        <BackendPendingBanner testid="dhl-actions-pending-note">
-          DHL clearance actions are not yet wired into this V2 page. The backend routes exist —
-          run these on the V1 Shipment Detail page today. Wiring is tracked in BACKEND_GAP_REGISTER.md.
+        <BackendPendingBanner testid="dhl-actions-console-note">
+          DHL correspondence (inbox scan, description/DSK generation, reply send/approve) is
+          performed on the standalone <strong>DHL Console</strong>, which is the single authority
+          for DHL email correspondence. This page shows clearance status read-only — it does not
+          send DHL correspondence.
         </BackendPendingBanner>
         <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <PendingAction label="Scan DHL Inbox"      icon="⌕" testid="scan-dhl-inbox"      route={'GET /api/v1/dhl/scan-inbox'} />
@@ -1162,15 +1172,73 @@ function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId
           </div>
         )}
 
-        <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <PendingAction label="Upload SAD / ZC429" icon="⊞" testid="upload-sad" route={'POST /api/v1/upload/shipment/' + bid + '/sad'} />
-          {sadUploaded
-            ? <span data-action-state="completed" style={{ fontSize: 12, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ SAD uploaded — customs values parsed</span>
-            : <span style={{ fontSize: 12, color: 'var(--text-2)' }}>Upload on the V1 page; this view reflects the result.</span>
-          }
-        </div>
+        {/* Verification decision — surfaced honestly from the SAD decision
+            engine; never inferred from a SAD file merely existing. */}
+        {d.sadDecision && d.sadDecision.safe_to_run_pz === false && (
+          <div data-testid="sad-pz-blocked" style={{ margin: '0 20px 16px', padding: '12px 16px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 12, color: 'var(--badge-red-text)' }}>
+            <strong>PZ blocked by SAD validation.</strong> Reason: {d.sadDecision.reason || 'unknown'}
+            {d.sadDecision.mrn_parsed || d.sadDecision.mrn_declared
+              ? <span> · parsed MRN {d.sadDecision.mrn_parsed || '—'} vs declared {d.sadDecision.mrn_declared || '—'}</span> : null}
+          </div>
+        )}
+        {d.sadDecision && d.sadDecision.safe_to_run_pz === true && (
+          <div data-testid="sad-verified" style={{ margin: '0 20px 16px', padding: '10px 16px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 8, fontSize: 12, color: 'var(--badge-green-text)', fontWeight: 600 }}>
+            ✓ SAD validated — safe to run PZ{d.sadDecision.reason ? ` (${d.sadDecision.reason})` : ''}
+          </div>
+        )}
+
+        <SadActionBar batchId={bid} onReload={onReload} sadPresent={!!d.sadPresent} />
       </PanelCard>
     </>
+  );
+}
+
+// SAD/ZC429 upload + parse/recheck — canonical backend authority.
+// Upload: POST /api/v1/upload/shipment/{id}/sad (require_api_key).
+// Recheck: POST /dashboard/batches/{id}/recheck {mode:'sad'} (role-gated).
+// Never fakes verification; reloads batch detail so parsed values + the
+// decision-engine verdict refresh from backend truth.
+function SadActionBar({ batchId, onReload, sadPresent }) {
+  const [busy, setBusy] = React.useState('');
+  const [msg, setMsg]   = React.useState(null);   // { ok, text }
+  const fileRef = React.useRef(null);
+
+  const doUpload = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (fileRef.current) fileRef.current.value = '';
+    if (!f) return;
+    if (!/\.pdf$/i.test(f.name)) { setMsg({ ok: false, text: 'SAD upload must be a PDF.' }); return; }
+    setBusy('upload'); setMsg(null);
+    const res = await window.PzApi.uploadSad(batchId, f);
+    setBusy('');
+    if (!res.ok) { setMsg({ ok: false, text: res.error || 'SAD upload failed.' }); return; }
+    setMsg({ ok: true, text: 'SAD uploaded. Run "Parse / Recheck" to verify customs values.' });
+    if (onReload) onReload();
+  };
+  const doRecheck = async () => {
+    setBusy('recheck'); setMsg(null);
+    const res = await window.PzApi.recheckSad(batchId);
+    setBusy('');
+    if (!res.ok) {
+      const auth = res.type === 'auth' || res.status === 401 || res.status === 403;
+      setMsg({ ok: false, text: auth ? 'Parse/recheck needs the admin / logistics / accounts role.' : (res.error || 'Recheck failed.') });
+      return;
+    }
+    setMsg({ ok: true, text: 'Recheck complete — customs values + verification refreshed.' });
+    if (onReload) onReload();
+  };
+
+  return (
+    <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+      <input ref={fileRef} type="file" accept=".pdf" onChange={doUpload} style={{ display: 'none' }} data-testid="sad-upload-input" />
+      <Btn variant="outline" small disabled={!!busy} onClick={() => fileRef.current && fileRef.current.click()} data-testid="sad-upload">{busy === 'upload' ? 'Uploading…' : '⊞ Upload SAD / ZC429 (PDF)'}</Btn>
+      <Btn variant="outline" small disabled={!!busy || !sadPresent} onClick={doRecheck} data-testid="sad-recheck" title={sadPresent ? 'Parse / re-verify the uploaded SAD' : 'Upload a SAD first'}>{busy === 'recheck' ? 'Rechecking…' : '↻ Parse / Recheck SAD'}</Btn>
+      {msg && (
+        <span data-testid="sad-action-msg" style={{ fontSize: 12, fontWeight: 600, color: msg.ok ? 'var(--badge-green-text)' : 'var(--badge-red-text)' }}>
+          {msg.ok ? '✓ ' : '⚠ '}{msg.text}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -1179,6 +1247,9 @@ function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId
 function PzTab({ d, shipment, sadUploaded, pzGenerated, pzExported, pzNumber, batchId, setActiveTab }) {
   const bid = batchId || '{batch_id}';
   const wfirmaStatus = d.pzDocId ? 'Booked ✓' : (d.wfirmaMode === 'clipboard' ? 'Clipboard generated' : (pzExported ? 'Exported ✓' : 'Not exported'));
+  // Honest readiness: a SAD file existing does NOT mean PZ is ready. If the SAD
+  // decision engine blocked PZ (safe_to_run_pz===false), never show "Ready".
+  const pzBlocked = !!(d.sadDecision && d.sadDecision.safe_to_run_pz === false);
   if (!sadUploaded) {
     return (
       <PanelCard title="PZ Document & wFirma Booking" subtitle="Goods receipt, audit files, and accounting export" status="Locked">
@@ -1204,13 +1275,18 @@ function PzTab({ d, shipment, sadUploaded, pzGenerated, pzExported, pzNumber, ba
       <PanelCard
         title="PZ Document"
         subtitle="Generate goods receipt, download audit files, export to wFirma"
-        status={pzExported ? 'Exported' : (pzGenerated ? 'Generated' : 'Ready for PZ')}
+        status={pzExported ? 'Exported' : (pzGenerated ? 'Generated' : (pzBlocked ? 'PZ Blocked' : 'Ready for PZ'))}
         accent={pzExported ? '#22A06B' : (pzGenerated ? '#22A06B' : 'var(--accent)')}
       >
+        {pzBlocked && !pzGenerated && (
+          <div data-testid="pz-sad-blocked" style={{ margin: '12px 20px 0', padding: '12px 16px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 12, color: 'var(--badge-red-text)' }}>
+            <strong>PZ blocked by SAD validation.</strong> Reason: {d.sadDecision.reason || 'unknown'}. Resolve on the DHL / Customs tab before generating PZ.
+          </div>
+        )}
         <div style={{ padding: '18px 20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 28 }}>
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>PZ details</div>
-            <InfoRow label="PZ Status"   value={pzGenerated ? 'Generated ✓' : 'Ready for PZ'} />
+            <InfoRow label="PZ Status"   value={pzGenerated ? 'Generated ✓' : (pzBlocked ? 'Blocked (SAD validation)' : 'Ready for PZ')} />
             <InfoRow label="PZ Number"   value={_dash(d.pzNumber)} mono />
             <InfoRow label="Net Value"   value={_fmtPln(d.netPln)} />
             <InfoRow label="Gross Value" value={_fmtPln(d.grossPln)} />
@@ -1263,241 +1339,159 @@ function PzTab({ d, shipment, sadUploaded, pzGenerated, pzExported, pzNumber, ba
   );
 }
 
-// ── DOCUMENTS — wired to GET /api/v1/dashboard/batches/{batch_id}/files
-// Authority: routes_dashboard._build_files_detail()
-// No mock arrays. All file entries come from backend authority only.
-//
-// SD-6 wireframe §3.2 Tab 5: 4 canonical document cards (PL · PF · CMR · WF)
-// with state chips + View + Download, derived from real backend file data.
+// ── DOCUMENTS — canonical shipment-document manifest (Wave 3)
+// Authority: GET /api/v1/upload/shipment/{batch_id}/documents (routes_upload.py).
+// Consumes ONLY the manifest identity contract (document_id, document_type,
+// authority, is_generated, is_current, mime_type, can_view/download/replace/
+// delete, view_url, download_url). The old _WIREFRAME_DOC_CARDS + the
+// /dashboard/batches/{id}/files filesystem-scan endpoint are RETIRED — they
+// mismapped Packing List→AWB, CMR→calc_xlsx, wFirma→audit_en. No file_path is
+// ever exposed. All View/Download/Replace/Delete come from capability flags.
 
-// 4 wireframe document cards: code → { label, stateKey, states }
-// stateKey: the field in backend files response that indicates this doc's state
-const _WIREFRAME_DOC_CARDS = [
-  { code: 'PL',  label: 'Packing List',       sourceKey: 'awb',         generatedKey: null },
-  { code: 'PF',  label: 'Pro Forma Invoice',   sourceKey: null,          generatedKey: 'pz_pdf' },
-  { code: 'CMR', label: 'CMR',                 sourceKey: null,          generatedKey: 'calc_xlsx' },
-  { code: 'WF',  label: 'wFirma Printout',     sourceKey: null,          generatedKey: 'audit_en' },
-];
-
-const _GENERATED_LABELS = {
-  pz_pdf:     'PZ PDF',
-  calc_xlsx:  'Calculation XLSX',
-  audit_en:   'Audit EN PDF',
-  audit_pl:   'Audit PL PDF',
-  audit_memo: 'Audit Memo PDF',
-  corrections:'Corrections JSON',
+const _DOC_TYPE_LABELS = {
+  purchase_invoice:      'Purchase Invoice',
+  sales_proforma:        'Sales Proforma',
+  sales_invoice:         'Sales Invoice',
+  purchase_packing_list: 'Purchase Packing List',
+  sales_packing_list:    'Sales Packing List',
+  awb:                   'AWB / Tracking',
+  service_invoice:       'Service Invoice',
+  carnet:                'ATA Carnet',
+  sad_pdf:               'SAD / ZC429 (PDF)',
+  sad_xml:               'SAD / ZC429 (XML)',
+  pz_pdf:                'PZ PDF',
+  pz_xlsx:               'PZ XLSX',
+  calculation_xlsx:      'Calculation XLSX',
+  audit_memo:            'Audit Memo',
+  audit_en:              'Audit EN',
+  audit_pl:              'Audit PL',
+  invoice:               'Invoice (legacy)',
+  packing:               'Packing (legacy)',
+  other:                 'Other Document',
 };
+function _docTypeLabel(t) { return _DOC_TYPE_LABELS[t] || (t || 'Document'); }
 
-const _SOURCE_LABELS = { invoices: 'Invoice', sad: 'SAD / ZC429', awb: 'AWB' };
+function _authorityLabel(row) {
+  if (row.is_generated) return 'Generated';
+  const a = row.authority || 'upload';
+  if (a === 'intake' || a === 'upload' || a === 'add_document' || a === 'backfill') return 'Uploaded';
+  return a;
+}
 
-function DocCard({ file }) {
-  const ext = file.name ? file.name.split('.').pop().toLowerCase() : '';
-  const iconBg    = file.exists ? (ext === 'pdf' ? 'var(--badge-red-bg)' : ext === 'xlsx' ? 'var(--badge-green-bg)' : ext === 'json' ? 'var(--badge-blue-bg)' : 'var(--badge-amber-bg)') : 'var(--bg)';
-  const iconColor = file.exists ? (ext === 'pdf' ? 'var(--badge-red-text)' : ext === 'xlsx' ? 'var(--badge-green-text)' : ext === 'json' ? 'var(--badge-blue-text)' : 'var(--badge-amber-text)') : 'var(--text-3)';
-  const canDownload = file.exists && !!file.url;
+function DocumentRow({ batchId, row, onChanged }) {
+  const [busy, setBusy] = React.useState('');
+  const [err, setErr]   = React.useState('');
+  const fileRef = React.useRef(null);
+  const ext = (row.original_filename || '').split('.').pop().toLowerCase();
+  const superseded = row.is_current === false;
+
+  const doReplace = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (fileRef.current) fileRef.current.value = '';
+    if (!f) return;
+    if (!window.confirm(`Replace "${row.original_filename}" with "${f.name}"? The current file is superseded (kept in the audit trail).`)) return;
+    setBusy('replace'); setErr('');
+    const res = await window.PzApi.replaceDocument(batchId, row.document_id, f);
+    setBusy('');
+    if (!res.ok) { setErr(res.error || 'Replace failed'); return; }
+    onChanged();
+  };
+  const doDelete = async () => {
+    if (!window.confirm(`Delete "${row.original_filename}" (${_docTypeLabel(row.document_type)})? This removes the file and its registry row.`)) return;
+    setBusy('delete'); setErr('');
+    const res = await window.PzApi.deleteDocument(batchId, row.document_id);
+    setBusy('');
+    if (!res.ok) { setErr(res.error || 'Delete failed'); return; }
+    onChanged();
+  };
+
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 14,
-      padding: '14px 16px', borderRadius: 8,
-      border: '1px solid var(--border)', background: 'var(--card)',
-      boxShadow: '0 1px 2px var(--shadow)',
-    }}>
-      <div style={{
-        width: 40, height: 40, borderRadius: 8,
-        background: iconBg, color: iconColor,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontSize: 11, fontWeight: 800, letterSpacing: '0.05em',
-      }}>{ext ? ext.toUpperCase() : '?'}</div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: file.exists ? 'var(--text)' : 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {file.name || '—'}
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>{file.type}</div>
+    <div data-testid={`doc-row-${row.document_id}`} data-doctype={row.document_type}
+      style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 8,
+        border: '1px solid var(--border)', background: superseded ? 'var(--bg-subtle)' : 'var(--card)',
+        boxShadow: '0 1px 2px var(--shadow)', opacity: superseded ? 0.7 : 1 }}>
+      <div style={{ width: 38, height: 38, borderRadius: 8, background: 'var(--bg-subtle)', color: 'var(--text-2)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, letterSpacing: '0.05em' }}>
+        {ext ? ext.toUpperCase() : '?'}
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        {file.stale && <span style={{ fontSize: 10, color: 'var(--badge-amber-text)', fontWeight: 600 }}>legacy</span>}
-        {file.exists
-          ? <span style={{ fontSize: 11, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ Present</span>
-          : <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Not found</span>
-        }
-        <a
-          href={canDownload ? file.url : undefined}
-          target="_blank" rel="noopener noreferrer"
-          onClick={!canDownload ? e => e.preventDefault() : undefined}
-          data-testid="doc-download"
-          style={{
-            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            padding: '4px 10px', borderRadius: 5, fontSize: 11, fontWeight: 600,
-            border: '1px solid var(--border)', background: 'transparent',
-            color: canDownload ? 'var(--text)' : 'var(--text-3)',
-            textDecoration: 'none', cursor: canDownload ? 'pointer' : 'not-allowed',
-            opacity: canDownload ? 1 : 0.45,
-          }}
-        >↓</a>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {row.original_filename || '—'}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontWeight: 600 }}>{_docTypeLabel(row.document_type)}</span>
+          <span style={{ color: 'var(--text-3)' }}>· {_authorityLabel(row)}</span>
+          {row.created_at && <span style={{ color: 'var(--text-3)' }}>· {_fmtDate(row.created_at)}</span>}
+          {superseded && <span data-testid="doc-superseded" style={{ padding: '1px 6px', borderRadius: 4, fontSize: 10, fontWeight: 700, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', border: '1px solid var(--badge-amber-border)' }}>Superseded</span>}
+          {!row.can_delete && !superseded && <span data-testid="doc-locked" style={{ padding: '1px 6px', borderRadius: 4, fontSize: 10, fontWeight: 700, background: 'var(--badge-neutral-bg)', color: 'var(--text-3)', border: '1px solid var(--border-subtle)' }} title="Generated fiscal / customs document — non-deletable">🔒 Protected</span>}
+        </div>
+        {err && <div style={{ fontSize: 11, color: 'var(--badge-red-text)', marginTop: 4 }}>{err}</div>}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        {row.can_view && (
+          <Btn variant="outline" small data-testid="doc-view" onClick={() => window.open(row.view_url || window.PzApi.viewDocument(batchId, row.document_id), '_blank', 'noopener')} title="View (opens inline in a new tab)">👁 View</Btn>
+        )}
+        {row.can_download && (
+          <a data-testid="doc-download" href={row.download_url || window.PzApi.downloadDocument(batchId, row.document_id)}
+            target="_blank" rel="noopener noreferrer" style={{ ..._docBtn(), textDecoration: 'none' }} title="Download document" aria-label="Download document">↓ Download</a>
+        )}
+        {row.can_replace && (
+          <>
+            <input ref={fileRef} type="file" accept={ext ? '.' + ext : undefined} onChange={doReplace} style={{ display: 'none' }} data-testid="doc-replace-input" />
+            <Btn variant="outline" small data-testid="doc-replace" disabled={!!busy} onClick={() => fileRef.current && fileRef.current.click()} title="Replace document (supersedes the current file; the original is kept in the audit trail)">{busy === 'replace' ? '…' : '⇄ Replace'}</Btn>
+          </>
+        )}
+        {row.can_delete && (
+          <Btn variant="outline" small data-testid="doc-delete" disabled={!!busy} onClick={doDelete} title="Delete document (confirmation + audit)"><span style={{ color: 'var(--badge-red-text)' }}>{busy === 'delete' ? '…' : '🗑 Delete'}</span></Btn>
+        )}
       </div>
     </div>
   );
 }
+function _docBtn() {
+  return { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '5px 9px',
+    borderRadius: 5, fontSize: 11, fontWeight: 600, border: '1px solid var(--border)',
+    background: 'transparent', color: 'var(--text)', cursor: 'pointer' };
+}
 
 function DocumentsTab({ batchId }) {
-  const [data,    setData]    = React.useState(null);
+  const [docs,    setDocs]    = React.useState(null);
   const [loading, setLoading] = React.useState(false);
   const [error,   setError]   = React.useState(null);
 
-  React.useEffect(() => {
+  const load = React.useCallback(() => {
     if (!batchId) return;
     setLoading(true); setError(null);
-    window.EstrellaShared.apiFetch('/api/v1/dashboard/batches/' + encodeURIComponent(batchId) + '/files')
-      .then(d => { setData(d); setLoading(false); })
-      .catch(e => { setError((e && e.message) || 'Failed to load documents'); setLoading(false); });
+    window.PzApi.getShipmentDocuments(batchId).then(res => {
+      if (res.ok) setDocs((res.data && res.data.documents) || []);
+      else setError(res.error || 'Failed to load documents');
+      setLoading(false);
+    });
   }, [batchId]);
+  React.useEffect(() => { load(); }, [load]);
 
   if (!batchId) {
-    return (
-      <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-2)' }}>
-        <div style={{ fontSize: 13 }}>No batch context — documents unavailable.</div>
-      </div>
-    );
+    return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-2)', fontSize: 13 }}>No batch context — documents unavailable.</div>;
   }
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>Loading documents…</div>;
-  if (error)   return <div style={{ padding: 40, textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 13 }}>Failed to load documents: {error}</div>;
+  if (error)   return <div style={{ padding: 40, textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 13 }} data-testid="documents-error">Failed to load documents: {error}</div>;
 
-  const sf = (data && data.source_files) || {};
-  const uploadedRows = Object.entries(_SOURCE_LABELS).flatMap(([cat, label]) =>
-    (sf[cat] || []).map(f => ({ ...f, type: label }))
-  );
-
-  const gf = (data && data.files) || {};
-  const generatedRows = Object.entries(_GENERATED_LABELS).map(([key, label]) => ({
-    ...(gf[key] || { name: label.toLowerCase().replace(/ /g, '_'), url: '', exists: false, stale: false }),
-    type: label,
-  }));
-
-  // SD-6: 4 wireframe document cards — derive state from real backend data
-  const wireframeCards = _WIREFRAME_DOC_CARDS.map(card => {
-    let exists = false;
-    let url = '';
-    let stateLabel = 'Pending';
-    let name = card.label;
-    if (card.sourceKey) {
-      const srcFiles = sf[card.sourceKey] || [];
-      exists = srcFiles.length > 0;
-      url = exists ? (srcFiles[0].url || '') : '';
-      name = exists ? (srcFiles[0].name || card.label) : card.label;
-      stateLabel = exists ? 'Source' : 'Pending';
-    } else if (card.generatedKey) {
-      const genFile = gf[card.generatedKey] || {};
-      exists = !!genFile.exists;
-      url = genFile.url || '';
-      name = genFile.name || card.label;
-      stateLabel = exists ? 'Generated' : 'Pending';
-    }
-    return { code: card.code, label: card.label, name, exists, url, stateLabel, type: card.label };
-  });
+  const rows = docs || [];
+  // Current (non-superseded) first, then by created_at; superseded rows kept visible.
+  const sorted = [...rows].sort((a, b) => (a.is_current === b.is_current ? 0 : a.is_current ? -1 : 1));
 
   return (
-    <div data-testid="documents-tab" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      {/* SD-6: 4-card wireframe layout */}
-      <div>
-        <SectionLabel>Shipment documents</SectionLabel>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-          {wireframeCards.map(card => (
-            <div
-              key={card.code}
-              data-testid={`doc-card-${card.code.toLowerCase()}`}
-              style={{
-                border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden',
-                background: 'var(--card)', boxShadow: '0 1px 2px var(--shadow)',
-                display: 'flex', flexDirection: 'column',
-              }}
-            >
-              {/* Card header */}
-              <div style={{
-                padding: '12px 14px 8px',
-                borderBottom: '1px solid var(--border-subtle)',
-                background: 'var(--bg-subtle)',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                  <span style={{
-                    fontSize: 11, fontWeight: 800, letterSpacing: '0.06em',
-                    padding: '2px 7px', borderRadius: 4,
-                    background: card.exists ? 'var(--badge-green-bg)' : 'var(--badge-neutral-bg)',
-                    color: card.exists ? 'var(--badge-green-text)' : 'var(--text-3)',
-                    border: `1px solid ${card.exists ? 'var(--badge-green-border)' : 'var(--border-subtle)'}`,
-                  }}>{card.code}</span>
-                  <span style={{
-                    fontSize: 10, fontWeight: 600, letterSpacing: '0.06em',
-                    padding: '2px 7px', borderRadius: 4,
-                    background: card.stateLabel === 'Pending'   ? 'var(--badge-neutral-bg)' :
-                                card.stateLabel === 'Source'    ? 'var(--badge-blue-bg)'    :
-                                                                   'var(--badge-green-bg)',
-                    color:      card.stateLabel === 'Pending'   ? 'var(--text-3)'            :
-                                card.stateLabel === 'Source'    ? 'var(--badge-blue-text)'   :
-                                                                   'var(--badge-green-text)',
-                    border: `1px solid ${
-                                card.stateLabel === 'Pending'   ? 'var(--border-subtle)'     :
-                                card.stateLabel === 'Source'    ? 'var(--badge-blue-border)' :
-                                                                   'var(--badge-green-border)'
-                    }`,
-                  }} data-testid={`doc-state-${card.code.toLowerCase()}`}>{card.stateLabel}</span>
-                </div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', lineHeight: 1.3 }}>{card.label}</div>
-              </div>
-              {/* Card actions */}
-              <div style={{ padding: '10px 14px', display: 'flex', gap: 8 }}>
-                {/* 👁 View — disabled if pending */}
-                <button
-                  data-testid={`doc-view-${card.code.toLowerCase()}`}
-                  disabled={!card.exists}
-                  onClick={card.exists && card.url ? () => window.open(card.url, '_blank', 'noopener') : undefined}
-                  style={{
-                    flex: 1, padding: '5px 0', borderRadius: 5, fontSize: 11, fontWeight: 600,
-                    border: '1px solid var(--border)', background: 'transparent',
-                    color: card.exists ? 'var(--text)' : 'var(--text-3)',
-                    cursor: card.exists ? 'pointer' : 'not-allowed', opacity: card.exists ? 1 : 0.45,
-                  }}
-                  aria-label={`View ${card.label}`}
-                  title={card.exists ? `View ${card.label}` : `${card.label} not yet available`}
-                >👁 View</button>
-                {/* ↓ Download — disabled if pending */}
-                <a
-                  data-testid={`doc-download-${card.code.toLowerCase()}`}
-                  href={card.exists && card.url ? card.url : undefined}
-                  target="_blank" rel="noopener noreferrer"
-                  onClick={!card.exists ? e => e.preventDefault() : undefined}
-                  style={{
-                    flex: 1, padding: '5px 0', borderRadius: 5, fontSize: 11, fontWeight: 600,
-                    border: '1px solid var(--border)', background: 'transparent',
-                    color: card.exists ? 'var(--text)' : 'var(--text-3)',
-                    textDecoration: 'none', textAlign: 'center', display: 'inline-flex',
-                    alignItems: 'center', justifyContent: 'center', gap: 3,
-                    cursor: card.exists ? 'pointer' : 'not-allowed', opacity: card.exists ? 1 : 0.45,
-                  }}
-                  aria-label={`Download ${card.label}`}
-                  title={card.exists ? `Download ${card.label}` : `${card.label} not yet available`}
-                >↓ Download</a>
-              </div>
-            </div>
-          ))}
-        </div>
+    <div data-testid="documents-tab" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <SectionLabel>Shipment documents ({rows.length})</SectionLabel>
+        <Btn variant="outline" small data-testid="documents-reload" onClick={load} title="Reload manifest">↻ Reload</Btn>
       </div>
-
-      {/* All files from backend (uploaded + generated) */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-        <div>
-          <SectionLabel>Uploaded shipment documents</SectionLabel>
-          {uploadedRows.length === 0
-            ? <div style={{ padding: '20px 0', fontSize: 13, color: 'var(--text-3)' }}>No uploaded documents found.</div>
-            : <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>{uploadedRows.map((f, i) => <DocCard key={i} file={f} />)}</div>
-          }
-        </div>
-        <div>
-          <SectionLabel>Generated output documents</SectionLabel>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {generatedRows.map((f, i) => <DocCard key={i} file={f} />)}
+      {sorted.length === 0
+        ? <div style={{ padding: '24px 0', fontSize: 13, color: 'var(--text-3)', textAlign: 'center' }}>No documents registered for this shipment.</div>
+        : <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {sorted.map(row => <DocumentRow key={row.document_id} batchId={batchId} row={row} onChanged={load} />)}
           </div>
-        </div>
-      </div>
+      }
     </div>
   );
 }
