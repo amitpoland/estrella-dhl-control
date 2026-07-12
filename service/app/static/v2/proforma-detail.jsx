@@ -5186,6 +5186,109 @@ function EditableKvItem({ k, value, onChange, type }) {
   );
 }
 
+// ── Customer Master suggestions (Slice 1) ─────────────────────────────────────
+// Read-only advisory projection of the mapped Customer Master commercial
+// defaults. Every value is labelled by SOURCE — nothing here is applied to the
+// draft automatically. The draft stays the transaction snapshot.
+const CM_SRC_BADGE = {
+  saved:     { label: 'Saved on draft',                 bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  suggested: { label: 'Suggested from Customer Master',  bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+  conflict:  { label: 'Conflict',                        bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+  missing:   { label: 'Missing',                         bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+};
+
+function CmSourceBadge({ source }) {
+  const s = CM_SRC_BADGE[source] || CM_SRC_BADGE.missing;
+  return (
+    <span data-testid={`cm-src-${source}`} style={{
+      display: 'inline-block', padding: '2px 8px', borderRadius: 999,
+      fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap',
+      background: s.bg, color: s.text, border: `1px solid ${s.border}`,
+    }}>{s.label}</span>
+  );
+}
+
+function CmValue({ v }) {
+  const empty = v === null || v === undefined || v === '';
+  return (
+    <span style={{ fontSize: 12, fontWeight: 600, color: empty ? 'var(--text-3)' : 'var(--text)' }}>
+      {empty ? '—' : String(v)}
+    </span>
+  );
+}
+
+function CustomerMasterSuggestions({ suggestions }) {
+  const sug = suggestions || null;
+  const mapped = sug && sug.status === 'mapped';
+  const conflict = mapped ? sug.identity_conflict : null;
+  return (
+    <div data-testid="cm-suggestions-section">
+      <PfSectionLabel>Customer Master suggestions</PfSectionLabel>
+      <PfPanelCard>
+        <div style={{ padding: '8px 20px 14px' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+            Advisory only — read from Customer Master. The draft stays the saved record; nothing here is applied automatically.
+          </div>
+
+          {conflict && (
+            <div data-testid="cm-identity-conflict" style={{
+              padding: '10px 12px', marginBottom: 12, borderRadius: 6,
+              background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)',
+            }}>
+              <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--badge-amber-text)', marginBottom: 4 }}>
+                ⚠ Duplicate customer identity — not auto-merged
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginBottom: 6 }}>
+                Same VAT number <strong style={{ fontFamily: 'monospace' }}>{conflict.vat_number}</strong> is registered under multiple wFirma contractor IDs. Resolve in Customer Master.
+              </div>
+              {(conflict.contractors || []).map(c => (
+                <div key={c.contractor_id}
+                     data-testid={`cm-conflict-contractor-${c.contractor_id}`}
+                     style={{ fontSize: 11, color: 'var(--badge-amber-text)' }}>
+                  • contractor <strong style={{ fontFamily: 'monospace' }}>{c.contractor_id}</strong>
+                  {c.contractor_id === conflict.mapped_contractor_id ? ' (mapped on this draft)' : ''} — {c.name}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!mapped ? (
+            <div data-testid="cm-suggestions-unmapped" style={{ fontSize: 12, color: 'var(--text-2)' }}>
+              No mapped Customer Master record for this draft{sug && sug.reason ? ` (${sug.reason})` : ''}.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {/* header */}
+              <div style={{
+                display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr auto',
+                gap: 10, padding: '4px 0', borderBottom: '1px solid var(--border-subtle)',
+                fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                textTransform: 'uppercase', letterSpacing: '0.08em',
+              }}>
+                <div>Field</div><div>Saved on draft</div><div>Customer Master</div><div>Source</div>
+              </div>
+              {(sug.fields || []).map(f => (
+                <div key={f.key}
+                     data-testid={`cm-field-${f.key}`}
+                     style={{
+                       display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr auto',
+                       gap: 10, alignItems: 'center', padding: '6px 0',
+                       borderBottom: '1px solid var(--border-subtle)',
+                     }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 600 }}>{f.label}</div>
+                  <div data-testid={`cm-field-${f.key}-draft`}><CmValue v={f.draft} /></div>
+                  <div data-testid={`cm-field-${f.key}-suggestion`}><CmValue v={f.suggestion} /></div>
+                  <div><CmSourceBadge source={f.source} /></div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </PfPanelCard>
+    </div>
+  );
+}
+
 // ── Overview tab ──────────────────────────────────────────────────────────────
 function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingReasons, exportBlockers, editMode, editFields, onEditField, editError }) {
   const totalEur = lines.reduce((s, l) => s + l.netEur, 0);
@@ -5331,6 +5434,9 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
           </div>
         </PfPanelCard>
       </div>
+
+      {/* ── Customer Master suggestions (Slice 1; advisory, read-only) ────────── */}
+      <CustomerMasterSuggestions suggestions={detail.customer_master_suggestions} />
 
       {/* ── VAT & Insurance / KUKE (wireframe PanelCard; display-only, Slice 4) ── */}
       <VatInsurancePanel
