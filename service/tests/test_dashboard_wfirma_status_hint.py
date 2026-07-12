@@ -54,7 +54,7 @@ class TestWfirmaHint:
         import importlib, sys
         fake_mod = types.ModuleType("app.services.wfirma_db")
         fake_mod.list_reservation_drafts = lambda bid: []
-        sys.modules["app.services.wfirma_db"] = fake_mod
+        monkeypatch.setitem(sys.modules, "app.services.wfirma_db", fake_mod)
 
         result = _wfirma_hint("BATCH_ID", self._audit_no_doc())
         # Should fall through to draft check → no drafts → "none"
@@ -65,7 +65,7 @@ class TestWfirmaHint:
         import types, sys
         fake_mod = types.ModuleType("app.services.wfirma_db")
         fake_mod.list_reservation_drafts = lambda bid: []
-        sys.modules["app.services.wfirma_db"] = fake_mod
+        monkeypatch.setitem(sys.modules, "app.services.wfirma_db", fake_mod)
         # Should not raise; falls through to draft check
         result = _wfirma_hint("BATCH_ID")
         assert result in ("none", "preview_built", "n/a")
@@ -76,7 +76,7 @@ class TestWfirmaHint:
         fake_mod = types.ModuleType("app.services.wfirma_db")
         # Even with drafts present, doc_id should win
         fake_mod.list_reservation_drafts = lambda bid: [{"id": 1}]
-        sys.modules["app.services.wfirma_db"] = fake_mod
+        monkeypatch.setitem(sys.modules, "app.services.wfirma_db", fake_mod)
 
         result = _wfirma_hint("BATCH_ID", self._audit_with_doc())
         assert result == "posted", "doc ID must beat drafts"
@@ -86,7 +86,7 @@ class TestWfirmaHint:
         import types, sys
         fake_mod = types.ModuleType("app.services.wfirma_db")
         fake_mod.list_reservation_drafts = lambda bid: []
-        sys.modules["app.services.wfirma_db"] = fake_mod
+        monkeypatch.setitem(sys.modules, "app.services.wfirma_db", fake_mod)
         result = _wfirma_hint("BATCH_ID", {"wfirma_export": {"wfirma_pz_doc_id": ""}})
         assert result != "posted"
 
