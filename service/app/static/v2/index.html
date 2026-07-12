@@ -852,12 +852,14 @@ function App() {
           onClose={() => setShowNewShipment(false)}
           onCreated={(data) => {
             setShowNewShipment(false);
+            // Navigate to the REAL created batch. Passing a raw-shape object
+            // with batch_id lets ShipmentDetailPage fetch live detail via
+            // getBatchDetail(batch_id); _normalizeShipment maps the rest.
             handleViewShipment({
-              id: 'SHP-NEW', awb: data.awb, carrier: data.carrier,
-              dhlStatus: data.runPrecheck ? 'Pre-check Pending' : 'Draft',
-              dhlRec: '—', sadStatus: 'SAD Pending', mrn: '—',
-              pzStatus: 'Locked', net: '—', gross: '—', duty: '—',
-              overall: 'In Preparation',
+              batch_id: data.batchId,
+              tracking_no: data.awb,
+              carrier: data.carrier,
+              status: 'draft',
             });
           }}
         />

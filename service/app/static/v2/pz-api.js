@@ -812,6 +812,25 @@
     getBatchDetail: (batchId) =>
       _get(`${BASE}/dashboard/batches/${encodeURIComponent(batchId)}`),
 
+    // POST /api/v1/shipment/intake (multipart — EXISTING B1 intake authority).
+    // The single canonical shipment-creation path. Caller builds the FormData
+    // (tracking_no, carrier, metadata JSON, idempotency_key, and the file
+    // fields: invoices[], packing_lists[], awb, sales_documents[],
+    // sales_packing_lists[], service_invoices[], carnet_docs[], other_docs[]).
+    // No JSON headers — the browser sets the multipart boundary. Auth is the
+    // session cookie (require_api_key); no X-Operator needed. Passing the same
+    // idempotency_key on a retry returns the ORIGINAL batch (no duplicate).
+    // Returns { ok, data: { batch_id, status:'draft', warnings?, awb?, sad?,
+    //           purchase, sales, documents_registered, idempotent_replay? } }.
+    intakeShipment: async (formData) => {
+      try {
+        const data = await _apiFetch(`${BASE}/shipment/intake`, { method: 'POST', body: formData });
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, status: err.status || 0, error: err.message || String(err), type: err.type };
+      }
+    },
+
     // GET /api/v1/dhl/readiness/{batch_id}
     // DHL customs pipeline state: dhl_status (7-state pipeline), next_required_action,
     // sla_breach (bool), sla_breach_reason, missing_documents[], awb, timestamps.

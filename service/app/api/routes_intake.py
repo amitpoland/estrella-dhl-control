@@ -26,6 +26,7 @@ POST /api/v1/shipment/{batch_id}/packing_list
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -102,6 +103,92 @@ def _make_batch_id(tracking_no: str) -> str:
     month = datetime.now(timezone.utc).strftime("%Y-%m")
     uid   = uuid.uuid4().hex[:8]
     return f"SHIPMENT_{slug}_{month}_{uid}"
+
+
+# ── Intake idempotency ──────────────────────────────────────────────────────
+# A client-supplied ``idempotency_key`` maps 1:1 to the batch it created. On a
+# retry (same key) the endpoint returns the ORIGINAL batch instead of creating
+# a duplicate. State lives in a single JSON file under storage_root — schema-
+# free (no DB table / migration), consistent with the "local files = truth"
+# architecture. New Shipment is a manual, low-frequency action, so a process-
+# level lock is sufficient; cross-process races are out of scope.
+_INTAKE_IDEM_LOCK = threading.Lock()
+_INTAKE_IDEM_MAX_KEY = 200  # a random token is ~40 chars; cap defends the index file.
+
+# Concurrency note: New Shipment is a manual, low-frequency operator action and
+# the V2 modal disables its submit buttons while a request is in flight, so two
+# same-key requests overlapping inside the check→create→record window is not a
+# realistic path. The lock serialises index read/modify/write; the window is
+# tolerated (first-writer-wins, with a warning log — see _intake_idem_record).
+# Multi-worker deployments are out of scope for this single-process service.
+
+
+def _clean_idem_key(key: str) -> str:
+    """Normalise a client-supplied idempotency key. Over-long keys are rejected
+    (treated as absent) so a caller cannot bloat the index / audit files."""
+    key = (key or "").strip()
+    if not key or len(key) > _INTAKE_IDEM_MAX_KEY:
+        return ""
+    return key
+
+
+def _intake_idem_path() -> Path:
+    return settings.storage_root / "intake_idempotency.json"
+
+
+def _intake_idem_lookup(key: str) -> str:
+    """Return the batch_id previously created for ``key`` (and still on disk),
+    or '' if none. A recorded key whose batch/audit.json no longer exists is
+    treated as absent so intake can legitimately re-create."""
+    key = _clean_idem_key(key)
+    if not key:
+        return ""
+    with _INTAKE_IDEM_LOCK:
+        path = _intake_idem_path()
+        if not path.exists():
+            return ""
+        try:
+            index: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return ""
+    entry = index.get(key) or {}
+    existing = str(entry.get("batch_id") or "").strip()
+    if not existing:
+        return ""
+    if not (get_output_dir(existing) / "audit.json").exists():
+        return ""
+    return existing
+
+
+def _intake_idem_record(key: str, batch_id: str) -> None:
+    """Persist key -> batch_id. Best-effort; never raises into the request."""
+    key = _clean_idem_key(key)
+    if not key or not batch_id:
+        return
+    try:
+        with _INTAKE_IDEM_LOCK:
+            path = _intake_idem_path()
+            index: Dict[str, Any] = {}
+            if path.exists():
+                try:
+                    index = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    index = {}
+            # First writer wins: never overwrite an existing key -> batch map.
+            if key not in index:
+                index[key] = {"batch_id": batch_id, "created_at": _now_iso()}
+                write_json_atomic(path, index)
+            elif index[key].get("batch_id") != batch_id:
+                # A concurrent same-key request already recorded a different
+                # batch. This batch is a real orphan (fully created, but not the
+                # idempotency winner). Surface it so operators can reconcile.
+                log.warning(
+                    "intake_idem: key already recorded to %s; suppressing "
+                    "orphan batch_id=%s (concurrent same-key submit)",
+                    index[key].get("batch_id"), batch_id,
+                )
+    except Exception as exc:
+        log.warning("intake idempotency record failed (non-fatal) key=%s: %s", key, exc)
 
 
 def _proforma_db_path() -> Path:
@@ -229,6 +316,48 @@ async def _save(file: UploadFile, dest: Path) -> bytes:
         )
     dest.write_bytes(content)
     return content
+
+
+def _block_for_packing_file(
+    blocks: List[Dict[str, Any]], file_idx: int,
+) -> Dict[str, Any]:
+    """Return the metadata block that owns packing file ``file_idx``.
+
+    A single packing slot can carry MULTIPLE files. The frontend records the
+    slot's FIRST packing-file position as ``packing_index`` and the slot's file
+    count as ``packing_file_count``; every file in
+    ``[packing_index, packing_index + count)`` inherits that block's contractor
+    identity and its invoice/document association. The prior
+    ``b.get("packing_index") == idx`` matched only the first file of a
+    multi-file slot; the rest fell through to ``{}`` and lost their
+    supplier_contractor_id / client_contractor_id and invoice link.
+
+    Count semantics (defensive against non-V2 clients):
+      * key ABSENT  → count = 1 (legacy / V1 dashboard.html — exact-equality)
+      * key present and >= 1 → that value (range match)
+      * key present and <= 0 → this block owns NO files (skip); a 0-file slot
+        is emitted with packing_index = -1 by the V2 client, but an explicit
+        non-positive count from any client must never clamp up to 1 and steal
+        file 0.
+    Module-level so BOTH shipment_intake and sales_packing_reingest reuse it.
+    Returns {} when no block owns the file.
+    """
+    for b in blocks:
+        start = b.get("packing_index")
+        if not isinstance(start, int) or isinstance(start, bool) or start < 0:
+            continue
+        if "packing_file_count" in b:
+            try:
+                count = int(b["packing_file_count"])
+            except (TypeError, ValueError):
+                count = 1
+            if count < 1:
+                continue  # explicit 0/negative → block owns no files
+        else:
+            count = 1      # legacy absent → original exact-equality match
+        if start <= file_idx < start + count:
+            return b
+    return {}
 
 
 def _write_draft_audit(
@@ -380,6 +509,7 @@ async def shipment_intake(
     tracking_no:        str                    = Form(default=""),
     carrier:            str                    = Form(default="DHL"),
     metadata:           str                    = Form(default="{}"),
+    idempotency_key:    str                    = Form(default=""),
     invoices:           List[UploadFile]       = [],
     packing_lists:      List[UploadFile]       = [],
     awb:                Optional[UploadFile]   = None,
@@ -493,6 +623,41 @@ async def shipment_intake(
         _validate_file(sad, _ALLOWED_SAD_EXT)
     else:
         sad = None
+
+    # ── Idempotent replay: a retry with the same key returns the ORIGINAL
+    # batch instead of creating a duplicate. Checked AFTER validation so a
+    # malformed retry still surfaces its 400, but BEFORE any batch/folder
+    # is created.
+    _idem_existing = _intake_idem_lookup(idempotency_key)
+    if _idem_existing:
+        # Return the ORIGINAL batch's own identity — never the caller's
+        # (possibly changed) tracking_no/carrier — so the client navigates to
+        # the real created shipment. Record the replay on that batch's timeline.
+        _orig_audit_path = get_output_dir(_idem_existing) / "audit.json"
+        _orig_track, _orig_carrier = tracking_no, carrier
+        try:
+            _oa = json.loads(_orig_audit_path.read_text(encoding="utf-8"))
+            _orig_track = (_oa.get("tracking_no")
+                           or (_oa.get("inputs") or {}).get("tracking_no")
+                           or tracking_no)
+            _orig_carrier = _oa.get("carrier") or carrier
+        except Exception:
+            pass
+        try:
+            tl.log_event(_orig_audit_path, "intake_idempotent_replay", "intake", "user",
+                         detail={"idempotency_key": _clean_idem_key(idempotency_key)})
+        except Exception:
+            pass
+        log.info("intake idempotent replay: key -> existing batch %s", _idem_existing)
+        return JSONResponse({
+            "ok":               True,
+            "batch_id":         _idem_existing,
+            "tracking_no":      _orig_track,
+            "carrier":          _orig_carrier,
+            "status":           "draft",
+            "idempotent_replay": True,
+            "next_step":        "This shipment was already created — returning the existing draft.",
+        })
 
     # ── Build batch folder ───────────────────────────────────────────────────
     batch_id   = _make_batch_id(tracking_no)
@@ -711,19 +876,25 @@ async def shipment_intake(
     packing_results: List[Dict[str, Any]] = []
 
     for idx, f in enumerate(packing_lists):
-        # Find supplier name from metadata block
-        block       = next((b for b in purchase_blocks if b.get("packing_index") == idx), {})
+        # Find supplier name from metadata block. Range-match so EVERY file in a
+        # multi-file packing slot inherits the block's contractor identity and
+        # invoice link — not just the first (see _block_for_packing_file).
+        block       = _block_for_packing_file(purchase_blocks, idx)
         supplier    = block.get("supplier_name", "")
         supplier_cid = str(block.get("supplier_contractor_id") or "").strip()
         inv_idx     = block.get("invoice_index", idx)
-        inv_doc_id  = inv_doc_ids[inv_idx] if inv_idx < len(inv_doc_ids) else ""
+        # inv_idx < 0 (e.g. a synthetic block for an extra packing slot with no
+        # paired invoice) means "no invoice association" — never let a negative
+        # index wrap to inv_doc_ids[-1] (the last invoice).
+        inv_doc_id  = inv_doc_ids[inv_idx] if 0 <= inv_idx < len(inv_doc_ids) else ""
 
         name = _safe_name(f.filename or f"packing_{idx}.xlsx")
         path = pack_dir / name
-        content = await f.read()
-        if len(content) > _MAX_BYTES:
-            raise HTTPException(status_code=413, detail=f"Packing list too large.")
-        path.write_bytes(content)
+        # Route through _save so purchase packing gets the SAME size (413) and
+        # 0-byte (400) door-guard as sales packing and every other upload type
+        # (uniform upload validation — a 0-byte packing list would otherwise
+        # save then silently extract to zero rows).
+        content = await _save(f, path)
 
         # related_invoice_no must be the parsed EJL invoice number, not the
         # PDF filename. Falls back to filename only if parser failed.
@@ -888,7 +1059,10 @@ async def shipment_intake(
     # ── E. Save sales packing lists + parse + link to client ─────────────────
     sales_pack_summaries: List[Dict[str, Any]] = []
     for idx, f in enumerate(sales_packing_lists):
-        block      = next((b for b in sales_blocks if b.get("packing_index") == idx), {})
+        # Range-match so EVERY file in a multi-file sales packing slot inherits
+        # the block's client identity and sales-doc link (see
+        # _block_for_packing_file).
+        block      = _block_for_packing_file(sales_blocks, idx)
         client     = block.get("client_name", "")
         client_ref = block.get("client_ref", "")
         client_cid = str(block.get("client_contractor_id") or "").strip()
@@ -901,8 +1075,11 @@ async def shipment_intake(
 
         name = _safe_name(f.filename or f"sales_packing_{idx}.xlsx")
         path = sales_dir / name
-        content = await f.read()
-        path.write_bytes(content)
+        # Route through _save so sales packing lists get the same size (413)
+        # and 0-byte (400) guards every other upload type enforces. A bare
+        # await f.read() here would let a client stream an arbitrarily large
+        # sales packing list into memory unchecked (memory-exhaustion risk).
+        await _save(f, path)
 
         sp_doc_id = ddb.register_document(
             batch_id=batch_id, document_type="sales_packing_list",
@@ -1437,10 +1614,12 @@ async def shipment_intake(
     if awb_name:
         tl.log_event(audit_path, tl.EV_AWB_UPLOADED, "intake", "user", detail={"file": awb_name})
 
-    # Persist operator note + local-only doc counts into audit.json so the
-    # information survives without requiring a new column on any DB table.
+    # Persist operator note + local-only doc counts + the idempotency key into
+    # audit.json in a SINGLE read-modify-write pass (folding the idempotency
+    # stamp here avoids an extra unsynchronised R-M-W on the same file).
+    _idem_key_clean = _clean_idem_key(idempotency_key)
     try:
-        if operator_note or service_doc_ids or carnet_doc_ids or other_doc_ids:
+        if operator_note or service_doc_ids or carnet_doc_ids or other_doc_ids or _idem_key_clean:
             audit_obj: Dict[str, Any] = {}
             if audit_path.exists():
                 try:
@@ -1449,6 +1628,8 @@ async def shipment_intake(
                     audit_obj = {}
             if operator_note:
                 audit_obj["operator_note"] = operator_note
+            if _idem_key_clean:
+                audit_obj["intake_idempotency_key"] = _idem_key_clean
             local_summary = audit_obj.get("local_documents") or {}
             if service_doc_ids:
                 local_summary["service_invoice"] = service_doc_ids
@@ -1462,6 +1643,11 @@ async def shipment_intake(
     except Exception as exc:
         log.warning("[%s] audit metadata update failed (non-fatal): %s",
                     batch_id, exc)
+
+    # Record key -> batch in the idempotency index (separate from audit.json) so
+    # a retry with the same key returns THIS batch instead of duplicating.
+    if _idem_key_clean:
+        _intake_idem_record(_idem_key_clean, batch_id)
 
     # ── G. Return intake summary ──────────────────────────────────────────────
     # ── F2. Rule-based reverification (WF1.3) — post-parse advisory check
@@ -1570,10 +1756,9 @@ async def add_packing_list(
 
     name = _safe_name(file.filename or "packing_list.xlsx")
     path = pack_dir / name
-    content = await file.read()
-    if len(content) > _MAX_BYTES:
-        raise HTTPException(status_code=413, detail="File too large.")
-    path.write_bytes(content)
+    # Uniform upload validation: same size (413) + 0-byte (400) guard as the
+    # primary intake path (was a bare read/write with no empty-file guard).
+    content = await _save(file, path)
 
     # Register in document_db
     doc_id = ddb.register_document(
@@ -2097,8 +2282,9 @@ async def sales_packing_reingest(
 
     results: List[Dict[str, Any]] = []
     for idx, f in enumerate(files):
-        block      = next((b for b in sales_blocks
-                            if b.get("packing_index") == idx), {})
+        # Range-match so a multi-file reingest slot pairs every file to its
+        # block (not just the first) — same helper as the primary intake path.
+        block      = _block_for_packing_file(sales_blocks, idx)
         client     = (block.get("client_name", "") or "").strip()
         client_ref = (block.get("client_ref",  "") or "").strip()
         operator_ccy = (block.get("currency", "") or "").strip().upper()
@@ -2182,7 +2368,9 @@ async def sales_packing_reingest(
         # source-of-truth is preserved. Overwrite is intentional.
         name = _safe_name(f.filename or f"sales_packing_reingest_{idx}.xlsx")
         path = sales_dir / name
-        path.write_bytes(await f.read())
+        # Same size (413) / 0-byte (400) door-guard as the primary intake
+        # path — never stream an unbounded upload into memory unchecked.
+        await _save(f, path)
 
         # Parse via the same extractor — this picks up the cell-format
         # currency symbol fix that landed earlier.
@@ -2317,6 +2505,25 @@ async def sales_packing_reingest(
                 or sales_matcher_summary.get("designs_unresolved")):
             log.info("[%s] reingest sales matcher: %s",
                      batch_id, sales_matcher_summary)
+
+        # Guard: NEVER run the destructive idempotent-replace when the file
+        # parsed to zero rows. persist_sales_from_packing deletes all existing
+        # sales_packing_lines for this sales_document_id then inserts; with
+        # sp_rows == [] that is a silent data-loss (delete N, insert 0) while
+        # still returning ok:True. A content-bearing file that yields no rows
+        # (wrong template / empty sheet) must preserve the existing lines. This
+        # mirrors the primary intake gate (`if sp_rows and sales_doc_id`).
+        if not sp_rows:
+            per_file["currency"]          = currency_for_doc
+            per_file["currency_source"]   = currency_source
+            per_file["currency_conflict"] = mixed
+            per_file["pnd_summary"]       = pnd_summary
+            per_file["sales_matcher_summary"] = sales_matcher_summary
+            per_file["warnings"].append(
+                "zero rows parsed — existing sales packing lines preserved, no write performed")
+            per_file["warnings"].extend(pnd_summary.get("warnings") or [])
+            results.append(per_file)
+            continue
 
         # Canonical sales authority: faithful reshape (separate
         # client_po / remarks / invoice_no + full variant identity) +
