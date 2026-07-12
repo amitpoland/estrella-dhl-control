@@ -318,6 +318,48 @@ async def _save(file: UploadFile, dest: Path) -> bytes:
     return content
 
 
+def _block_for_packing_file(
+    blocks: List[Dict[str, Any]], file_idx: int,
+) -> Dict[str, Any]:
+    """Return the metadata block that owns packing file ``file_idx``.
+
+    A single packing slot can carry MULTIPLE files. The frontend records the
+    slot's FIRST packing-file position as ``packing_index`` and the slot's file
+    count as ``packing_file_count``; every file in
+    ``[packing_index, packing_index + count)`` inherits that block's contractor
+    identity and its invoice/document association. The prior
+    ``b.get("packing_index") == idx`` matched only the first file of a
+    multi-file slot; the rest fell through to ``{}`` and lost their
+    supplier_contractor_id / client_contractor_id and invoice link.
+
+    Count semantics (defensive against non-V2 clients):
+      * key ABSENT  → count = 1 (legacy / V1 dashboard.html — exact-equality)
+      * key present and >= 1 → that value (range match)
+      * key present and <= 0 → this block owns NO files (skip); a 0-file slot
+        is emitted with packing_index = -1 by the V2 client, but an explicit
+        non-positive count from any client must never clamp up to 1 and steal
+        file 0.
+    Module-level so BOTH shipment_intake and sales_packing_reingest reuse it.
+    Returns {} when no block owns the file.
+    """
+    for b in blocks:
+        start = b.get("packing_index")
+        if not isinstance(start, int) or isinstance(start, bool) or start < 0:
+            continue
+        if "packing_file_count" in b:
+            try:
+                count = int(b["packing_file_count"])
+            except (TypeError, ValueError):
+                count = 1
+            if count < 1:
+                continue  # explicit 0/negative → block owns no files
+        else:
+            count = 1      # legacy absent → original exact-equality match
+        if start <= file_idx < start + count:
+            return b
+    return {}
+
+
 def _write_draft_audit(
     output_dir:  Path,
     batch_id:    str,
@@ -834,19 +876,25 @@ async def shipment_intake(
     packing_results: List[Dict[str, Any]] = []
 
     for idx, f in enumerate(packing_lists):
-        # Find supplier name from metadata block
-        block       = next((b for b in purchase_blocks if b.get("packing_index") == idx), {})
+        # Find supplier name from metadata block. Range-match so EVERY file in a
+        # multi-file packing slot inherits the block's contractor identity and
+        # invoice link — not just the first (see _block_for_packing_file).
+        block       = _block_for_packing_file(purchase_blocks, idx)
         supplier    = block.get("supplier_name", "")
         supplier_cid = str(block.get("supplier_contractor_id") or "").strip()
         inv_idx     = block.get("invoice_index", idx)
-        inv_doc_id  = inv_doc_ids[inv_idx] if inv_idx < len(inv_doc_ids) else ""
+        # inv_idx < 0 (e.g. a synthetic block for an extra packing slot with no
+        # paired invoice) means "no invoice association" — never let a negative
+        # index wrap to inv_doc_ids[-1] (the last invoice).
+        inv_doc_id  = inv_doc_ids[inv_idx] if 0 <= inv_idx < len(inv_doc_ids) else ""
 
         name = _safe_name(f.filename or f"packing_{idx}.xlsx")
         path = pack_dir / name
-        content = await f.read()
-        if len(content) > _MAX_BYTES:
-            raise HTTPException(status_code=413, detail=f"Packing list too large.")
-        path.write_bytes(content)
+        # Route through _save so purchase packing gets the SAME size (413) and
+        # 0-byte (400) door-guard as sales packing and every other upload type
+        # (uniform upload validation — a 0-byte packing list would otherwise
+        # save then silently extract to zero rows).
+        content = await _save(f, path)
 
         # related_invoice_no must be the parsed EJL invoice number, not the
         # PDF filename. Falls back to filename only if parser failed.
@@ -1011,7 +1059,10 @@ async def shipment_intake(
     # ── E. Save sales packing lists + parse + link to client ─────────────────
     sales_pack_summaries: List[Dict[str, Any]] = []
     for idx, f in enumerate(sales_packing_lists):
-        block      = next((b for b in sales_blocks if b.get("packing_index") == idx), {})
+        # Range-match so EVERY file in a multi-file sales packing slot inherits
+        # the block's client identity and sales-doc link (see
+        # _block_for_packing_file).
+        block      = _block_for_packing_file(sales_blocks, idx)
         client     = block.get("client_name", "")
         client_ref = block.get("client_ref", "")
         client_cid = str(block.get("client_contractor_id") or "").strip()
@@ -1024,8 +1075,11 @@ async def shipment_intake(
 
         name = _safe_name(f.filename or f"sales_packing_{idx}.xlsx")
         path = sales_dir / name
-        content = await f.read()
-        path.write_bytes(content)
+        # Route through _save so sales packing lists get the same size (413)
+        # and 0-byte (400) guards every other upload type enforces. A bare
+        # await f.read() here would let a client stream an arbitrarily large
+        # sales packing list into memory unchecked (memory-exhaustion risk).
+        await _save(f, path)
 
         sp_doc_id = ddb.register_document(
             batch_id=batch_id, document_type="sales_packing_list",
@@ -1702,10 +1756,9 @@ async def add_packing_list(
 
     name = _safe_name(file.filename or "packing_list.xlsx")
     path = pack_dir / name
-    content = await file.read()
-    if len(content) > _MAX_BYTES:
-        raise HTTPException(status_code=413, detail="File too large.")
-    path.write_bytes(content)
+    # Uniform upload validation: same size (413) + 0-byte (400) guard as the
+    # primary intake path (was a bare read/write with no empty-file guard).
+    content = await _save(file, path)
 
     # Register in document_db
     doc_id = ddb.register_document(
@@ -2229,8 +2282,9 @@ async def sales_packing_reingest(
 
     results: List[Dict[str, Any]] = []
     for idx, f in enumerate(files):
-        block      = next((b for b in sales_blocks
-                            if b.get("packing_index") == idx), {})
+        # Range-match so a multi-file reingest slot pairs every file to its
+        # block (not just the first) — same helper as the primary intake path.
+        block      = _block_for_packing_file(sales_blocks, idx)
         client     = (block.get("client_name", "") or "").strip()
         client_ref = (block.get("client_ref",  "") or "").strip()
         operator_ccy = (block.get("currency", "") or "").strip().upper()
@@ -2314,7 +2368,9 @@ async def sales_packing_reingest(
         # source-of-truth is preserved. Overwrite is intentional.
         name = _safe_name(f.filename or f"sales_packing_reingest_{idx}.xlsx")
         path = sales_dir / name
-        path.write_bytes(await f.read())
+        # Same size (413) / 0-byte (400) door-guard as the primary intake
+        # path — never stream an unbounded upload into memory unchecked.
+        await _save(f, path)
 
         # Parse via the same extractor — this picks up the cell-format
         # currency symbol fix that landed earlier.
@@ -2449,6 +2505,25 @@ async def sales_packing_reingest(
                 or sales_matcher_summary.get("designs_unresolved")):
             log.info("[%s] reingest sales matcher: %s",
                      batch_id, sales_matcher_summary)
+
+        # Guard: NEVER run the destructive idempotent-replace when the file
+        # parsed to zero rows. persist_sales_from_packing deletes all existing
+        # sales_packing_lines for this sales_document_id then inserts; with
+        # sp_rows == [] that is a silent data-loss (delete N, insert 0) while
+        # still returning ok:True. A content-bearing file that yields no rows
+        # (wrong template / empty sheet) must preserve the existing lines. This
+        # mirrors the primary intake gate (`if sp_rows and sales_doc_id`).
+        if not sp_rows:
+            per_file["currency"]          = currency_for_doc
+            per_file["currency_source"]   = currency_source
+            per_file["currency_conflict"] = mixed
+            per_file["pnd_summary"]       = pnd_summary
+            per_file["sales_matcher_summary"] = sales_matcher_summary
+            per_file["warnings"].append(
+                "zero rows parsed — existing sales packing lines preserved, no write performed")
+            per_file["warnings"].extend(pnd_summary.get("warnings") or [])
+            results.append(per_file)
+            continue
 
         # Canonical sales authority: faithful reshape (separate
         # client_po / remarks / invoice_no + full variant identity) +

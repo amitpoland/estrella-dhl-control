@@ -196,6 +196,9 @@ function NewShipmentModal({ onClose, onCreated }) {
         purchaseMeta.push({
           invoice_index:          invIdx,
           packing_index:          (pairedPack && pairedPack.files.length > 0) ? packIdx : -1,
+          // Count of files in this packing slot so the backend range-matches
+          // EVERY file (not just the first) to this block's supplier identity.
+          packing_file_count:     (pairedPack && pairedPack.files.length > 0) ? pairedPack.files.length : 0,
           supplier_name:          '',
           supplier_contractor_id: (slot.supplierOverride || shipmentSupplierCid || '').trim(),
         });
@@ -205,9 +208,23 @@ function NewShipmentModal({ onClose, onCreated }) {
         }
         invIdx += slot.files.length;
       });
-      // Extra purchase packing slots beyond the invoice slots — keep the files.
+      // Extra purchase packing slots beyond the invoice slots — emit a
+      // synthetic block (mirrors the sales side) so these files ALSO inherit
+      // the slot's supplier identity via the backend range-match, instead of
+      // silently registering with no supplier_contractor_id.
       for (let i = purchaseSlots.length; i < purchasePackSlots.length; i++) {
-        purchasePackSlots[i].files.forEach(f => fd.append('packing_lists', f));
+        const extraPack = purchasePackSlots[i];
+        if (extraPack.files.length > 0) {
+          purchaseMeta.push({
+            invoice_index:          -1,
+            packing_index:          packIdx,
+            packing_file_count:     extraPack.files.length,
+            supplier_name:          '',
+            supplier_contractor_id: (extraPack.supplierOverride || shipmentSupplierCid || '').trim(),
+          });
+          extraPack.files.forEach(f => fd.append('packing_lists', f));
+          packIdx += extraPack.files.length;
+        }
       }
 
       // sales_blocks: pair sales packing slot i with sales doc slot i.
@@ -219,6 +236,9 @@ function NewShipmentModal({ onClose, onCreated }) {
         salesMeta.push({
           document_index:       sDocIdx,
           packing_index:        (pairedPack && pairedPack.files.length > 0) ? sPackIdx : -1,
+          // Count of files in this packing slot so the backend range-matches
+          // EVERY file (not just the first) to this block's client identity.
+          packing_file_count:   (pairedPack && pairedPack.files.length > 0) ? pairedPack.files.length : 0,
           client_name:          '',
           client_ref:           '',
           client_contractor_id: (slot.clientOverride || shipmentClientCid || '').trim(),
@@ -237,6 +257,9 @@ function NewShipmentModal({ onClose, onCreated }) {
           salesMeta.push({
             document_index:       -1,
             packing_index:        sPackIdx,
+            // Count of files so the backend range-matches EVERY file in this
+            // unpaired packing slot to this block's client identity.
+            packing_file_count:   extraPack.files.length,
             client_name:          '',
             client_ref:           '',
             client_contractor_id: (extraPack.clientOverride || shipmentClientCid || '').trim(),
