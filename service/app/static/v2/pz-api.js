@@ -886,19 +886,10 @@
       }),
 
 
-    // GET /api/v1/proforma/draft/{draft_id}/suggest-service-charges
-    // Returns combined freight+insurance suggestions from Customer Master.
-    suggestServiceCharges: (draftId) =>
-      _get(`${BASE}/proforma/draft/${draftId}/suggest-service-charges`),
-
-    // POST /api/v1/proforma/draft/{draft_id}/apply-service-charges
-    // Idempotent: already-applied charge type → skipped with reason.
-    // apply: ['freight'] | ['insurance'] | ['freight','insurance']
-    applyServiceCharges: (draftId, applyList, updatedAt) =>
-      _postM(`${BASE}/proforma/draft/${draftId}/apply-service-charges`, {
-        expected_updated_at: updatedAt || '',
-        apply: applyList || [],
-      }),
+    // NOTE: suggestServiceCharges + applyServiceCharges are defined once, in the
+    // Wave-3 block below (search "apply-service-charges"). The earlier duplicate
+    // definitions that lived here were removed — duplicate object keys meant the
+    // later ones silently won, which masked a contract regression.
 
     // ── Supplier Invoice OCR — extraction drafts + operator review ──────────
 
@@ -1346,10 +1337,18 @@
 
     // POST /api/v1/proforma/draft/{draft_id}/apply-service-charges
     // Apply Customer Master freight/insurance as service charges.
-    // Authority: routes_proforma.py (apply_service_charges)
-    // Used by: proforma-detail.jsx ServiceChargesPanel (PL-5 gap closure)
-    applyServiceCharges: (draftId, body) =>
-      _post(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/apply-service-charges`, body),
+    // Authority: routes_proforma.py (apply_service_charges) — requires an
+    // object body {expected_updated_at, apply:[...]} AND the X-Operator header
+    // (_require_operator). Caller (proforma-detail.jsx:4152) invokes this as
+    // applyServiceCharges(id, [type], updatedAt). An earlier Wave-3 override
+    // used (draftId, body)+_post, which posted a bare array with no operator
+    // header and no expected_updated_at → 400. This restores the correct
+    // 3-arg mutation contract (_postM injects X-Operator).
+    applyServiceCharges: (draftId, applyList, updatedAt) =>
+      _postM(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/apply-service-charges`, {
+        expected_updated_at: updatedAt || '',
+        apply: applyList || [],
+      }),
 
     // PUT /api/v1/proforma/service-products/{charge_type}
     // Register a wFirma product for a service charge type.

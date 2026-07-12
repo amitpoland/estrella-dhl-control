@@ -30,6 +30,16 @@ function _fmt(v) {
   return v;
 }
 
+function _money(v) {
+  // Monetary columns (net/gross/duty) arrive as raw engine numbers. Render to
+  // exactly two decimals via the shared V2 formatter (window.fmtMoney2 from
+  // components.jsx). Locale pl-PL is the established V2 money convention —
+  // matches dashboard-kanban.jsx and shipment-detail-page.jsx so the same PLN
+  // value reads identically across list, kanban, and detail. Fallback to _fmt
+  // only if the shared layer is unavailable.
+  return window.fmtMoney2 ? window.fmtMoney2(v, { locale: 'pl-PL' }) : _fmt(v);
+}
+
 function _safeHttpUrl(u) {
   // Only allow http(s) tracking links — never render a javascript:/data:/vbscript:
   // href even if the backend field were ever poisoned (defence in depth).
@@ -222,9 +232,9 @@ function DashboardPage({ onViewShipment }) {
                       <td style={{ padding: '10px 12px' }}>{row.sad_status ? <Badge status={row.sad_status} small /> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
                       <td style={{ padding: '10px 12px', color: '#18160F', fontSize: 11, fontFamily: 'monospace' }}>{_fmt(row.mrn)}</td>
                       <td style={{ padding: '10px 12px' }}>{row.pz_status ? <Badge status={row.pz_status} small /> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
-                      <td style={{ padding: '10px 12px', color: '#18160F', fontWeight: 500, textAlign: 'right' }}>{_fmt(row.net)}</td>
-                      <td style={{ padding: '10px 12px', color: '#18160F', fontWeight: 500, textAlign: 'right' }}>{_fmt(row.gross)}</td>
-                      <td style={{ padding: '10px 12px', color: GOLD, fontWeight: 700, textAlign: 'right' }}>{_fmt(row.duty)}</td>
+                      <td style={{ padding: '10px 12px', color: '#18160F', fontWeight: 500, textAlign: 'right' }}>{_money(row.net)}</td>
+                      <td style={{ padding: '10px 12px', color: '#18160F', fontWeight: 500, textAlign: 'right' }}>{_money(row.gross)}</td>
+                      <td style={{ padding: '10px 12px', color: GOLD, fontWeight: 700, textAlign: 'right' }}>{_money(row.duty)}</td>
                       <td style={{ padding: '10px 12px' }}>{row.status ? <Badge status={row.status} small /> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
                     </tr>
                   );
