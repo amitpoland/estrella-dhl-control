@@ -288,6 +288,9 @@ function deriveDetail(audit, shipment) {
     packingList: (inp.packing_list_filename || inp.packing_list || null),
     // Real activity log
     timeline: Array.isArray(audit.timeline) ? audit.timeline : [],
+    // Canonical milestone read-model from the backend (Wave 4). null when the
+    // backend did not supply it → TimelineTab falls back to raw-event matching.
+    timelineMilestones: Array.isArray(audit.timeline_milestones) ? audit.timeline_milestones : null,
   };
 }
 
@@ -1560,10 +1563,51 @@ const _TIMELINE_MILESTONES = [
 function TimelineTab({ d, detailLoading }) {
   const doneEvents = (d.timeline || []).slice().sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
   const doneKeys = new Set(doneEvents.map(e => e.event));
+  const milestones = d.timelineMilestones;  // canonical backend read-model, or null
 
-  if (detailLoading && doneEvents.length === 0) {
+  if (detailLoading && doneEvents.length === 0 && !milestones) {
     return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>Loading timeline…</div>;
   }
+
+  // ── Canonical path: render the backend milestone read-model ─────────────
+  // Each milestone's done/ts/source is computed backend-side from the REAL
+  // emitted events + audit fields — never inferred here. source==='audit_field'
+  // means completion is proven by a customs/accounting field (e.g. verification,
+  // PZ confirmed) that has no dedicated timeline event.
+  if (milestones && milestones.length) {
+    const doneCount = milestones.filter(m => m.done).length;
+    return (
+      <PanelCard title="Activity timeline" subtitle={`${doneCount} of ${milestones.length} milestones completed`}>
+        <div data-testid="timeline-milestones" style={{ padding: '24px 28px' }}>
+          <div style={{ position: 'relative', paddingLeft: 28 }}>
+            <div style={{ position: 'absolute', left: 9, top: 6, bottom: 6, width: 2, background: 'var(--border)' }} />
+            {milestones.map(m => (
+              <div key={m.key} data-testid={`timeline-milestone-${m.key}`} data-done={m.done ? 'true' : 'false'}
+                style={{ position: 'relative', marginBottom: 14, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+                <div style={{
+                  position: 'absolute', left: -28, width: 20, height: 20, borderRadius: 10,
+                  background: m.done ? 'var(--badge-green-bg)' : 'var(--bg)',
+                  border: '2px solid ' + (m.done ? 'var(--badge-green-text)' : 'var(--border)'),
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1, top: 0, flexShrink: 0,
+                }}>
+                  <span style={{ fontSize: m.done ? 10 : 8, color: m.done ? 'var(--badge-green-text)' : 'var(--text-3)', fontWeight: 800 }}>{m.done ? '✓' : '○'}</span>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: m.done ? 600 : 500, color: m.done ? 'var(--text)' : 'var(--text-2)' }}>{m.label}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2, fontFamily: m.ts ? 'monospace' : 'inherit' }}>
+                    {m.done
+                      ? (m.ts ? _fmtDate(m.ts, true) : (m.source === 'audit_field' ? 'Completed — recorded in the customs / accounting authority' : 'Completed'))
+                      : 'Pending'}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </PanelCard>
+    );
+  }
+  // ── Fallback: legacy raw-event + alias matching (backend read-model absent) ─
 
   // Build display list: done events (with timestamp) + pending milestones (no timestamp)
   // Done events appear in their audit-log order; pending milestones follow in wireframe order.

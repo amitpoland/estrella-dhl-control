@@ -779,6 +779,20 @@ def batch_detail(batch_id: str) -> Dict[str, Any]:
                         batch_id, _cr_err)
             audit.pop("compliance_resolution", None)
 
+    # ── Canonical workflow-milestone read-model (Wave 4) ──────────────────
+    # A read-time projection over audit.timeline + audit fields — the single
+    # authoritative milestone→done mapping the V2 Timeline consumes. Reconciles
+    # the real emitted event strings (e.g. description_ready, pz_generated) and
+    # the field-only signals (verification, pz_unlocked, pz_confirmed). No new
+    # store; never fabricates completion.
+    try:
+        from ..services.timeline_milestones import build_milestones
+        audit["timeline_milestones"] = build_milestones(audit)
+    except Exception as _tm_err:
+        log.warning("[%s] timeline_milestones projection failed (non-fatal): %s",
+                    batch_id, _tm_err)
+        audit.pop("timeline_milestones", None)
+
     return audit
 
 
