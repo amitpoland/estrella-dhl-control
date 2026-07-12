@@ -138,11 +138,11 @@ def test_separate_contractor_with_receiver_succeeds(client, storage):
     r = client.put(URL.format(name="ACME"),
                     headers={**_auth(), "X-Operator": "amit"},
                     json={"mode": "separate_contractor",
-                           "ship_to_wfirma_customer_id": "190263843"})
+                           "ship_to_wfirma_customer_id": "99990004"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["after"]["mode"]                       == "separate_contractor"
-    assert body["after"]["ship_to_wfirma_customer_id"] == "190263843"
+    assert body["after"]["ship_to_wfirma_customer_id"] == "99990004"
 
 
 def test_separate_contractor_rejects_self_reference(client, storage):
@@ -198,7 +198,7 @@ def test_identity_fields_unchanged_after_ship_to_update(client, storage):
     before = wfdb.get_customer("ACME")
     client.put(URL.format(name="ACME"), headers=_auth(),
                 json={"mode": "separate_contractor",
-                       "ship_to_wfirma_customer_id": "190263843"})
+                       "ship_to_wfirma_customer_id": "99990004"})
     after = wfdb.get_customer("ACME")
     for f in ("wfirma_customer_id", "vat_id", "country",
               "match_status", "default_currency"):
@@ -207,7 +207,7 @@ def test_identity_fields_unchanged_after_ship_to_update(client, storage):
             f"{before[f]!r} → {after[f]!r}"
         )
     assert after["ship_to_mode"]               == "separate_contractor"
-    assert after["ship_to_wfirma_customer_id"] == "190263843"
+    assert after["ship_to_wfirma_customer_id"] == "99990004"
 
 
 # ── 7. get_customer surfaces new fields ────────────────────────────────────
@@ -254,17 +254,17 @@ def test_helper_idempotent_on_identical_recall(storage):
     _register_customer("ACME")
     first = wfdb.set_customer_ship_to(
         client_name="ACME", mode="separate_contractor",
-        ship_to_wfirma_customer_id="190263843")
+        ship_to_wfirma_customer_id="99990004")
     second = wfdb.set_customer_ship_to(
         client_name="ACME", mode="separate_contractor",
-        ship_to_wfirma_customer_id="190263843")
+        ship_to_wfirma_customer_id="99990004")
     assert first["after_mode"]                          == "separate_contractor"
-    assert first["after_ship_to_wfirma_customer_id"]    == "190263843"
+    assert first["after_ship_to_wfirma_customer_id"]    == "99990004"
     # Second call: before reflects first call's outcome; after is same.
     assert second["before_mode"]                        == "separate_contractor"
-    assert second["before_ship_to_wfirma_customer_id"]  == "190263843"
+    assert second["before_ship_to_wfirma_customer_id"]  == "99990004"
     assert second["after_mode"]                         == "separate_contractor"
-    assert second["after_ship_to_wfirma_customer_id"]   == "190263843"
+    assert second["after_ship_to_wfirma_customer_id"]   == "99990004"
 
 
 def test_helper_no_inserts_for_unknown(storage):

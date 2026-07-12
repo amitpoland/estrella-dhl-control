@@ -40,7 +40,7 @@ _PROFORMA_XML = """<api>
   <id>465954147</id>
   <fullnumber>PROF 94/2026</fullnumber>
   <type>proforma</type>
-  <contractor><id>176578339</id></contractor>
+  <contractor><id>99990002</id></contractor>
   <currency>USD</currency>
   <price_currency_exchange>4.000000</price_currency_exchange>
   <paymentmethod>transfer</paymentmethod>

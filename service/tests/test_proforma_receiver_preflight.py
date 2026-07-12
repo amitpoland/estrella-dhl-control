@@ -50,7 +50,7 @@ _OK_XML = """<?xml version="1.0"?>
 <api>
   <contractors>
     <contractor>
-      <id>190263843</id>
+      <id>99990004</id>
       <name>Impact Gallery sp. z o.o.</name>
       <nip>5130281425</nip>
       <country>PL</country>
@@ -86,11 +86,11 @@ def _stub(http_status: int, xml: str):
 def test_fetch_contractor_uses_path_based_get():
     p, captured = _stub(200, _OK_XML)
     with p:
-        r = wc.fetch_contractor_by_id("190263843")
+        r = wc.fetch_contractor_by_id("99990004")
     assert r.ok is True
     assert captured["method"] == "GET"
     assert captured["module"] == "contractors"
-    assert captured["op"]     == "get/190263843"
+    assert captured["op"]     == "get/99990004"
     assert captured["body"]   == ""
 
 
@@ -123,7 +123,7 @@ def test_fetch_contractor_404_returns_ok_false():
 def test_fetch_contractor_500_returns_ok_false():
     p, _ = _stub(500, "internal error")
     with p:
-        r = wc.fetch_contractor_by_id("190263843")
+        r = wc.fetch_contractor_by_id("99990004")
     assert r.ok is False
     assert "HTTP 500" in (r.error or "")
 
@@ -132,7 +132,7 @@ def test_fetch_contractor_wfirma_error_returns_ok_false():
     p, _ = _stub(200,
         "<api><status><code>ERROR</code><description>nope</description></status></api>")
     with p:
-        r = wc.fetch_contractor_by_id("190263843")
+        r = wc.fetch_contractor_by_id("99990004")
     assert r.ok is False
     assert "ERROR" in (r.error or "") or "nope" in (r.error or "")
 
@@ -140,7 +140,7 @@ def test_fetch_contractor_wfirma_error_returns_ok_false():
 def test_fetch_contractor_xml_parse_error_returns_ok_false():
     p, _ = _stub(200, "this is not xml")
     with p:
-        r = wc.fetch_contractor_by_id("190263843")
+        r = wc.fetch_contractor_by_id("99990004")
     assert r.ok is False
 
 
@@ -148,7 +148,7 @@ def test_fetch_contractor_no_node_returns_ok_false():
     p, _ = _stub(200,
         '<api><contractors></contractors><status><code>OK</code></status></api>')
     with p:
-        r = wc.fetch_contractor_by_id("190263843")
+        r = wc.fetch_contractor_by_id("99990004")
     assert r.ok is False
     assert "no <contractor>" in (r.error or "")
 
@@ -158,9 +158,9 @@ def test_fetch_contractor_no_node_returns_ok_false():
 def test_fetch_contractor_projects_full_record():
     p, _ = _stub(200, _OK_XML)
     with p:
-        r = wc.fetch_contractor_by_id("190263843")
+        r = wc.fetch_contractor_by_id("99990004")
     assert r.ok                        is True
-    assert r.contractor_id             == "190263843"
+    assert r.contractor_id             == "99990004"
     assert r.name                      == "Impact Gallery sp. z o.o."
     assert r.nip                       == "5130281425"
     assert r.country                   == "PL"
@@ -190,7 +190,7 @@ def test_fetch_contractor_normalises_different_contact_address_zero():
         "<different_contact_address>0</different_contact_address>")
     p, _ = _stub(200, xml)
     with p:
-        r = wc.fetch_contractor_by_id("190263843")
+        r = wc.fetch_contractor_by_id("99990004")
     assert r.ok                        is True
     assert r.different_contact_address is False
 
@@ -279,11 +279,11 @@ def test_create_blocks_when_receiver_missing_in_wfirma(client, storage):
     _seed_ready_proforma()
     wfdb.set_customer_ship_to(client_name="ACME",
                                 mode="separate_contractor",
-                                ship_to_wfirma_customer_id="190263843")
+                                ship_to_wfirma_customer_id="99990004")
 
     fail = wc.ContractorFetchResult(
-        ok=False, contractor_id="190263843",
-        error="contractor '190263843' not found")
+        ok=False, contractor_id="99990004",
+        error="contractor '99990004' not found")
 
     with _gate_create_on(), \
          patch.object(wc, "fetch_contractor_by_id", return_value=fail), \
@@ -295,7 +295,7 @@ def test_create_blocks_when_receiver_missing_in_wfirma(client, storage):
             headers=_auth()).json()
     assert body["ok"]     is False
     assert body["status"] == "blocked"
-    assert any("190263843" in r and "not found in wFirma" in r
+    assert any("99990004" in r and "not found in wFirma" in r
                for r in body["blocking_reasons"]), body["blocking_reasons"]
 
 
@@ -305,10 +305,10 @@ def test_create_proceeds_when_receiver_exists(client, storage):
     _seed_ready_proforma()
     wfdb.set_customer_ship_to(client_name="ACME",
                                 mode="separate_contractor",
-                                ship_to_wfirma_customer_id="190263843")
+                                ship_to_wfirma_customer_id="99990004")
 
     ok = wc.ContractorFetchResult(
-        ok=True, contractor_id="190263843",
+        ok=True, contractor_id="99990004",
         name="Impact Gallery sp. z o.o.")
     fake_create = wc.ProformaResult(ok=True, wfirma_invoice_id="WF-OK")
 
@@ -321,7 +321,7 @@ def test_create_proceeds_when_receiver_exists(client, storage):
     assert body["ok"]     is True
     assert body["status"] == "issued"
     assert body["wfirma_proforma_id"] == "WF-OK"
-    mock_fetch.assert_called_once_with("190263843")
+    mock_fetch.assert_called_once_with("99990004")
     mock_create.assert_called_once()
 
 
@@ -367,7 +367,7 @@ def test_create_blocks_when_preflight_raises(client, storage):
     _seed_ready_proforma()
     wfdb.set_customer_ship_to(client_name="ACME",
                                 mode="separate_contractor",
-                                ship_to_wfirma_customer_id="190263843")
+                                ship_to_wfirma_customer_id="99990004")
     with _gate_create_on(), \
          patch.object(wc, "fetch_contractor_by_id",
                       side_effect=ConnectionError("net down")), \
@@ -387,7 +387,7 @@ def test_readiness_aggregator_surfaces_ship_to_fields(client, storage):
     _seed_ready_proforma(client_name="ACME")
     wfdb.set_customer_ship_to(client_name="ACME",
                                 mode="separate_contractor",
-                                ship_to_wfirma_customer_id="190263843")
+                                ship_to_wfirma_customer_id="99990004")
     body = client.get(
         f"/dashboard/batches/{BATCH}/proforma-readiness",
         headers=_auth()).json()
@@ -396,7 +396,7 @@ def test_readiness_aggregator_surfaces_ship_to_fields(client, storage):
     acme = by_name.get("ACME")
     assert acme is not None
     assert acme["ship_to_mode"]                == "separate_contractor"
-    assert acme["ship_to_wfirma_customer_id"]  == "190263843"
+    assert acme["ship_to_wfirma_customer_id"]  == "99990004"
     assert acme["ship_to_warning"]             is False
 
 

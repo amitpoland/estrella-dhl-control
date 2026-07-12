@@ -790,7 +790,7 @@ def test_wfirma_contractor_fetch_result_has_deep_enrichment_fields():
     from service.app.services.wfirma_client import ContractorFetchResult
     r = ContractorFetchResult(ok=False)
     # B0 deep-enrichment 2026-05-17 — field names verified against live
-    # wFirma XML (contractor 75483443). The old guess-based fields
+    # wFirma XML (contractor 99990001). The old guess-based fields
     # (account_payments, payment_term, default_currency, invoiceseries_id,
     # proformaseries_id) were removed because wFirma does not expose them
     # at the contractor-detail endpoint.
@@ -830,7 +830,7 @@ def test_apply_deep_fetches_and_preserves_local(tmp_path, monkeypatch):
 
     # Fake fetch_contractor_by_id → returns rich data using the VERIFIED
     # wFirma XML field names (PR #154 after live probe of contractor
-    # 75483443). The operator's local default_currency override is preserved
+    # 99990001). The operator's local default_currency override is preserved
     # because wFirma does NOT expose default_currency at the contractor
     # level — it stays operator-only.
     def _fetch(cid):
@@ -869,7 +869,7 @@ def test_apply_deep_fetches_and_preserves_local(tmp_path, monkeypatch):
 
 
 def test_parser_extracts_address_fields_from_fixture():
-    """Real wFirma XML (contractor 75483443 / Railing) carries flat
+    """Real wFirma XML (contractor 99990001 / Test Supplier) carries flat
     <street>, <zip>, <city>, <country>. The parser must extract them."""
     import xml.etree.ElementTree as ET
     from service.app.services import wfirma_client as wfc
@@ -877,16 +877,16 @@ def test_parser_extracts_address_fields_from_fixture():
 <api>
   <contractors>
     <contractor>
-      <id>75483443</id>
-      <name>Railing sp z o.o.</name>
-      <nip>5342428293</nip>
+      <id>99990001</id>
+      <name>Test Supplier Sp z o.o.</name>
+      <nip>0000000000</nip>
       <regon></regon>
-      <street>302, KUSHWAH CHAMBERS,MAKWANA ROAD,MAROL NAKA,</street>
+      <street>ul. Testowa 1</street>
       <zip>40005</zip>
       <city>Katowice</city>
       <country>IN</country>
       <different_contact_address>0</different_contact_address>
-      <email>Jyoti.b@estrellajewels.com</email>
+      <email>test.contact@example.com</email>
       <payment_days>14</payment_days>
       <account_number>PL12 3456 7890</account_number>
       <translation_language><id>2</id></translation_language>
@@ -900,13 +900,13 @@ def test_parser_extracts_address_fields_from_fixture():
     # Monkey-patch the underlying HTTP call via the public function path.
     import unittest.mock as _mock
     with _mock.patch.object(wfc, "_http_request", return_value=(200, fixture)):
-        r = wfc.fetch_contractor_by_id("75483443")
+        r = wfc.fetch_contractor_by_id("99990001")
     assert r.ok is True
-    assert r.street    == "302, KUSHWAH CHAMBERS,MAKWANA ROAD,MAROL NAKA,"
+    assert r.street    == "ul. Testowa 1"
     assert r.zip       == "40005"
     assert r.city      == "Katowice"
     assert r.country   == "IN"
-    assert r.email     == "Jyoti.b@estrellajewels.com"
+    assert r.email     == "test.contact@example.com"
     assert r.payment_days       == "14"
     assert r.account_number     == "PL12 3456 7890"
     # Nested <translation_language><id>2</id></translation_language>
@@ -1033,7 +1033,7 @@ def test_customer_to_dict_serializes_new_fields(tmp_path):
 # Rule: every Company / Basic field that has backend storage must be wired
 # in the dashboard form, must have a real (non-disabled) input, and must NOT
 # carry a BACKEND PENDING badge. The wiring is generic for every country —
-# no Polish-only logic, no Railing/SUOKKO-specific code paths.
+# no Polish-only logic, no contractor-specific code paths.
 
 
 _BACKEND_WIRED_BASIC_FIELDS = (
@@ -1268,7 +1268,7 @@ def test_invoice_defaults_per_client_no_pln_force(tmp_path):
 
 def test_no_pl_specific_business_logic_in_dashboard_modal():
     """The dashboard must not gate any field by country='PL' or hardcode
-    Railing/SUOKKO as business rules inside the modal block."""
+    SUOKKO or sample contractor ids as business rules inside the modal block."""
     src = _DASH.read_text(encoding="utf-8", errors="replace")
     start = src.index("function ClientKycModal(")
     # Take a sufficiently large block (modal definition is large).
@@ -1279,7 +1279,7 @@ def test_no_pl_specific_business_logic_in_dashboard_modal():
         "country === 'PL'", 'country === "PL"',
         "country == 'PL'",  'country == "PL"',
         "SUOKKO",          # business logic, not a placeholder
-        "75483443",        # Railing wfirma id hardcoded
+        "99990001",        # sample contractor wfirma id hardcoded
     ]
     for pat in forbidden_patterns:
         # Allow these patterns inside comments only (which start with //).
