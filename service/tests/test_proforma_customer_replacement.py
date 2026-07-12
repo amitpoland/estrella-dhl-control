@@ -96,6 +96,34 @@ def test_change_customer_by_id(dbs):
     assert json.loads(out.buyer_override_json)["_source"] == "customer_master"
 
 
+def test_migration_failure_still_commits_identity_and_is_disclosed(dbs):
+    # The charge + reservation migration runs OUTSIDE the identity transaction.
+    # If either raises AFTER the identity UPDATE commits, the customer change
+    # must STILL stand and the failure must be surfaced (never silently dropped).
+    did, upd = _seed_draft(dbs["pf"])
+
+    def _raise_charge(batch_id, old, new):
+        raise RuntimeError("charge move boom")
+
+    def _raise_reservation(batch_id, old, new):
+        raise RuntimeError("reservation rename boom")
+
+    warnings: list = []
+    out = pildb.change_draft_customer(
+        dbs["pf"], did, new_contractor_id="222", new_client_name="Beta Ltd",
+        buyer_override={"name": "Beta Ltd"}, operator="tester",
+        expected_updated_at=upd,
+        charge_move=_raise_charge, reservation_migrate=_raise_reservation,
+        migration_warnings=warnings)
+    # Identity change committed despite both migration failures.
+    assert out.client_name == "Beta Ltd"
+    assert out.client_contractor_id == "222"
+    # Both failures disclosed for operator visibility (no reliance on the audit log).
+    assert {w["type"] for w in warnings} == {"charge_move_failed", "reservation_migrate_failed"}
+    assert all(w["old_client_name"] == "Alpha Corp" for w in warnings)
+    assert all(w["new_client_name"] == "Beta Ltd" for w in warnings)
+
+
 def test_no_line_item_or_price_mutation(dbs):
     did, upd = _seed_draft(dbs["pf"])
     before = pildb.get_draft_by_id(dbs["pf"], did)
@@ -268,6 +296,28 @@ def test_patch_duplicate_target_409_no_merge(dbs, client):
     r = _patch(client, did_a, {"client_contractor_id": "222"}, upd_a)
     assert r.status_code == 409
     assert "not auto-merged" in r.text
+
+
+def test_patch_surfaces_migration_warning_on_charge_failure(dbs, client, monkeypatch):
+    # A charge_move that raises after the identity write commits must NOT fail the
+    # PATCH: the customer replacement stands (200) and the orphaned-charge risk is
+    # disclosed in the response body so the operator sees it without the audit log.
+    from app.services import proforma_service_charges_db as scdb
+
+    def _boom(batch_id, old, new):
+        raise RuntimeError("charge move failed")
+
+    monkeypatch.setattr(scdb, "move_charges_client_name", _boom)
+    did, upd = _seed_draft(dbs["pf"])
+    r = _patch(client, did, {"client_contractor_id": "222"}, upd)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Identity replacement still succeeded.
+    assert body["draft"]["client_name"] == "Beta Ltd"
+    assert body["draft"]["client_contractor_id"] == "222"
+    # The failure is disclosed in the response body, not buried in the audit log.
+    warns = body.get("migration_warnings") or []
+    assert any(w["type"] == "charge_move_failed" for w in warns), body
 
 
 def test_patch_recipient_still_independent(dbs, client):
