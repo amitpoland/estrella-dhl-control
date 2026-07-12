@@ -150,8 +150,8 @@ class CustomerMaster:
     last_wfirma_sync_at:     Optional[str] = None    # ISO timestamp of last apply
     wfirma_sync_source:      Optional[str] = None    # "review_assign" | "manual" | "auto"
 
-    # B0 deep-enrichment 2026-05-17 — wFirma billing address (verified in
-    # live <contractor> response for id 75483443). Filled-when-empty.
+    # B0 deep-enrichment 2026-05-17 — wFirma billing address (verified
+    # against a real live <contractor> response). Filled-when-empty.
     bill_to_street:          Optional[str] = None
     bill_to_city:            Optional[str] = None
     bill_to_postal_code:     Optional[str] = None
