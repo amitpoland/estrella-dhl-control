@@ -99,8 +99,8 @@ class ContractorFetchResult:
     contact_zip:     str = ""
     contact_country: str = ""
     # B0 deep-enrichment — actual wFirma contractor-detail fields. Names
-    # below match the XML keys observed live for contractor 75483443
-    # (Railing sp z o.o., 2026-05-17). Fields wFirma does NOT expose at the
+    # below match the XML keys observed live in a real contractor response
+    # (2026-05-17). Fields wFirma does NOT expose at the
     # contractor level (default_currency, invoiceseries_id, proformaseries_id)
     # have been removed — they are operator-managed dictionaries.
     email:           str = ""
@@ -781,8 +781,8 @@ def fetch_contractor_by_id(contractor_id: str) -> "ContractorFetchResult":
         contact_city              = _find_text(node, "contact_city"),
         contact_zip               = _find_text(node, "contact_zip"),
         contact_country           = _find_text(node, "contact_country"),
-        # B0 deep-enrichment — XML keys verified against live contractor
-        # 75483443 (2026-05-17). Bank account and language id are nested
+        # B0 deep-enrichment — XML keys verified against a live contractor
+        # response (2026-05-17). Bank account and language id are nested
         # under their own elements; flat parsers would miss them.
         email                     = _find_text(node, "email") or "",
         phone                     = _find_text(node, "phone") or _find_text(node, "tel") or "",
