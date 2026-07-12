@@ -2,15 +2,16 @@
 test_12line_proforma_internal.py — Guarded 12-line TEST proforma create.
 
 Scope: ESTRELLA INTERNAL TEST contractor only. No delete. No invoice
-conversion. No Juliany proforma touched. One-shot diagnostic to verify the
+conversion. No third-party proforma touched. One-shot diagnostic to verify the
 corrected invoices/add payload persists all 12 invoicecontent rows and
 preserves VAT code parity (vat_code_id=222, domestic PL).
 
-Source: Juliany 12-line distribution (EJL/25-26/1274), mapped to the 7
+Source: an internal 12-line test distribution (EJL/25-26/1274), mapped to the 7
 wfirma_product ids from wfirma_products table. All values taken from live
 packing_lines rows (unit_price, product_name). Currency: USD.
 
-Contractor: ESTRELLA INTERNAL TEST (wfirma_contractor_id=189309475)
+Contractor: ESTRELLA INTERNAL TEST (wfirma_contractor_id supplied out-of-band
+by the operator — never commit a real wFirma id to this public repo)
 VAT context: domestic (PL) → vat_code_id=222
 
 Hard guard: only runs with --live-confirm-I-understand flag.
@@ -53,7 +54,7 @@ _LINES = [
     ("EJL/25-26/1274-7", "48612259", "Kolczyki",     140.0),   # sr12
 ]
 
-_CONTRACTOR_ID  = "189309475"   # ESTRELLA INTERNAL TEST
+_CONTRACTOR_ID  = ""            # ESTRELLA INTERNAL TEST — set the real wFirma id out-of-band (operator-local; never commit a real id)
 _VAT_CODE_ID    = "222"         # domestic PL 23%
 _CURRENCY       = "USD"
 

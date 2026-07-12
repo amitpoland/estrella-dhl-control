@@ -392,12 +392,12 @@ def test_execute_blocked_when_link_already_exists(client, storage):
 
 def test_execute_preserves_contractor_receiver(client, storage):
     _seed_issued_proforma(storage)
-    # Source proforma carries Odbiorca id 190263843.
-    src_xml = _proforma_xml(receiver_id="190263843")
+    # Source proforma carries Odbiorca id 99990004.
+    src_xml = _proforma_xml(receiver_id="99990004")
     # fetch_invoice_xml called twice: 1st=source proforma, 2nd=verify-after-create
     fetch_calls = [
         src_xml,
-        _created_invoice_xml(inv_id="500001", receiver_id="190263843"),
+        _created_invoice_xml(inv_id="500001", receiver_id="99990004"),
     ]
     captured = {}
     def _fake_http(method, module, op, body):
@@ -420,7 +420,7 @@ def test_execute_preserves_contractor_receiver(client, storage):
          patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls), \
          patch.object(wc, "fetch_contractor_by_id",
                       return_value=wc.ContractorFetchResult(
-                          ok=True, contractor_id="190263843",
+                          ok=True, contractor_id="99990004",
                           name="Receiver Co.")), \
          patch.object(wc, "_http_request", side_effect=_fake_http):
         body = client.post(
@@ -432,12 +432,12 @@ def test_execute_preserves_contractor_receiver(client, storage):
     assert body["status"] == "issued"
     assert body["wfirma_invoice_id"]     == "500001"
     assert body["wfirma_invoice_number"] == "FA 1/5/2026"
-    assert body["contractor_receiver_id"] == "190263843"
+    assert body["contractor_receiver_id"] == "99990004"
     # The actual XML posted to wFirma carries the receiver block.
     assert captured["method"] == "POST"
     assert captured["module"] == "invoices"
     assert captured["op"]     == "add"
-    assert "<contractor_receiver><id>190263843</id></contractor_receiver>" \
+    assert "<contractor_receiver><id>99990004</id></contractor_receiver>" \
         in captured["body"]
     # And type is normal, not proforma.
     assert "<type>normal</type>" in captured["body"]
@@ -475,11 +475,11 @@ def test_execute_omits_receiver_when_proforma_has_none(client, storage):
 
 def test_execute_blocks_when_receiver_preflight_fails(client, storage):
     _seed_issued_proforma(storage)
-    fail = wc.ContractorFetchResult(ok=False, contractor_id="190263843",
-                                      error="contractor '190263843' not found")
+    fail = wc.ContractorFetchResult(ok=False, contractor_id="99990004",
+                                      error="contractor '99990004' not found")
     with _gate_invoice_on(), \
          patch.object(wc, "fetch_invoice_xml",
-                      return_value=_proforma_xml(receiver_id="190263843")), \
+                      return_value=_proforma_xml(receiver_id="99990004")), \
          patch.object(wc, "fetch_contractor_by_id", return_value=fail), \
          patch.object(wc, "_http_request",
                       side_effect=AssertionError(
@@ -489,7 +489,7 @@ def test_execute_blocks_when_receiver_preflight_fails(client, storage):
             headers={**_auth(), "X-Operator": "amit"},
             json={"confirm": CONFIRM_TOKEN}).json()
     assert body["status"] == "blocked"
-    assert any("190263843" in r and "not found in wFirma" in r
+    assert any("99990004" in r and "not found in wFirma" in r
                for r in body["blocking_reasons"])
 
 

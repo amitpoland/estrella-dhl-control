@@ -698,7 +698,7 @@ async def cm_wfirma_sync_apply(request: Request) -> JSONResponse:
             from ..services import wfirma_client as wfc
             cd = wfc.fetch_contractor_by_id(p["wfirma_id"])
             if cd.ok:
-                # XML keys verified live (contractor 75483443 / 2026-05-17).
+                # XML keys verified live against a real contractor response (2026-05-17).
                 deep_email  = deep_email  or (cd.email  or None)
                 deep_phone  = deep_phone  or (cd.phone  or None)
                 deep_mobile = deep_mobile or (cd.mobile or None)

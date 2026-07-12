@@ -400,7 +400,7 @@ def _draft_count(db_path):
 
 def test_contractor_search_hit(client, db):
     fake = _wc.WFirmaContractor(
-        wfirma_id="C-99", name="Juliany EOOD", nip="BG123456789",
+        wfirma_id="C-99", name="Test Trading EOOD", nip="BG123456789",
         country="BG", zip="1000", city="Sofia",
     )
     blockers = _no_create_patches()
@@ -408,7 +408,7 @@ def test_contractor_search_hit(client, db):
     try:
         with patch.object(_wc, "search_customer", return_value=fake) as mock:
             r = client.get(
-                "/api/v1/wfirma/contractors/search?name=Juliany%20EOOD",
+                "/api/v1/wfirma/contractors/search?name=Test%20Trading%20EOOD",
                 headers=_auth(),
             )
     finally:
@@ -420,13 +420,13 @@ def test_contractor_search_hit(client, db):
     # (email, account_payments, …) — pin the identity core as a SUBSET so
     # additive enrichment does not break this test again.
     core = {
-        "wfirma_id": "C-99", "name": "Juliany EOOD", "nip": "BG123456789",
+        "wfirma_id": "C-99", "name": "Test Trading EOOD", "nip": "BG123456789",
         "country": "BG", "zip": "1000", "city": "Sofia",
     }
     assert core.items() <= body["result"].items(), (
         f"core identity fields drifted: {body['result']}"
     )
-    mock.assert_called_once_with("Juliany EOOD", None)
+    mock.assert_called_once_with("Test Trading EOOD", None)
 
 
 def test_contractor_search_miss(client, db):

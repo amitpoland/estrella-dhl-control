@@ -952,13 +952,13 @@ def _proforma_request(currency: str = "USD"):
         currency       = currency,
     )
     return _wc.ProformaRequest(
-        client_name          = "Juliany EOOD",
+        client_name          = "Test Trading EOOD",
         client_zip           = "1000",
         client_city          = "Sofia",
         lines                = [line],
         currency             = currency,
-        wfirma_contractor_id = "176578339",  # required by validated wFirma shape
-        vat_code_id          = "228",        # WDT (Juliany is BG → EU non-PL)
+        wfirma_contractor_id = "99990002",  # required by validated wFirma shape
+        vat_code_id          = "228",        # WDT (Test Trading is BG → EU non-PL)
     )
 
 
@@ -1033,7 +1033,7 @@ def test_create_proforma_draft_raises_on_partial_persistence(monkeypatch):
         qty=1, unit_price=10, currency="USD",
     )
     req = _wc.ProformaRequest(
-        client_name="Juliany EOOD", client_zip="", client_city="",
+        client_name="Test Trading EOOD", client_zip="", client_city="",
         lines=[line("G1"), line("G2"), line("G3")],
         currency="USD", wfirma_contractor_id="C1", vat_code_id="222")
     fake = _http_seq(
@@ -1096,7 +1096,7 @@ def test_create_proforma_draft_raises_when_id_missing(monkeypatch):
 def test_build_proforma_xml_does_not_collapse_duplicate_good_ids():
     """
     Local builder must emit one <invoicecontent> per request line, even
-    when several lines share the same wfirma_good_id (live data: Juliany
+    when several lines share the same wfirma_good_id (live data: Test Trading
     1274-7 appears 4×). Collapsing pre-submission would mask the wFirma
     bug entirely.
     """
@@ -1118,7 +1118,7 @@ def test_build_proforma_xml_does_not_collapse_duplicate_good_ids():
 
 def test_create_proforma_draft_raises_on_empty_lines():
     req = _wc.ProformaRequest(
-        client_name="Juliany EOOD", client_zip="", client_city="",
+        client_name="Test Trading EOOD", client_zip="", client_city="",
         lines=[], currency="USD", vat_code_id="222")
     with pytest.raises(ValueError, match="at least one line"):
         _wc.create_proforma_draft(req)
@@ -1274,7 +1274,7 @@ def test_build_proforma_xml_omits_currency_when_blank():
 def test_build_proforma_xml_uses_contractor_id_reference():
     """Validated wFirma shape: <contractor><id>...</id></contractor>."""
     xml = _wc._build_proforma_xml(_proforma_request())
-    assert "<contractor><id>176578339</id></contractor>" in xml
+    assert "<contractor><id>99990002</id></contractor>" in xml
     # No inline contractor name/address fields
     assert "<contractor><name>" not in xml
     assert "<zip>"  not in xml
@@ -1504,7 +1504,7 @@ def _line(gid, qty=1.0, price=10.0):
 
 def _proforma_req(*good_ids):
     return _wc.ProformaRequest(
-        client_name="Juliany EOOD", client_zip="", client_city="",
+        client_name="Test Trading EOOD", client_zip="", client_city="",
         lines=[_line(g) for g in good_ids],
         currency="USD", wfirma_contractor_id="C-1", vat_code_id="222")
 
@@ -1580,8 +1580,8 @@ def test_vat_context_pl_domestic():
 
 
 def test_vat_context_eu_with_vat_id_is_wdt():
-    # Juliany EOOD case: BG + BG121281167.
-    d = _wc.decide_proforma_vat_context("BG", "BG121281167")
+    # Test Trading EOOD case: BG + BG000000000.
+    d = _wc.decide_proforma_vat_context("BG", "BG000000000")
     assert d["context"] == "wdt"
     assert d["vat_code"] == "WDT"
 
@@ -1683,7 +1683,7 @@ def test_create_proforma_draft_raises_on_vat_code_mismatch_partial_lines(monkeyp
         qty=1, unit_price=10, currency="USD",
     )
     req = _wc.ProformaRequest(
-        client_name="Juliany EOOD", client_zip="", client_city="",
+        client_name="Test Trading EOOD", client_zip="", client_city="",
         lines=[line("G1"), line("G2"), line("G3")],
         currency="USD", wfirma_contractor_id="C1", vat_code_id="228")
     # Build a verify response where G1 has correct VAT but G2 and G3 have 222.
@@ -1724,7 +1724,7 @@ def test_create_proforma_draft_vat_check_passes_on_correct_vat_code(monkeypatch)
         qty=1, unit_price=10, currency="USD",
     )
     req = _wc.ProformaRequest(
-        client_name="Juliany EOOD", client_zip="", client_city="",
+        client_name="Test Trading EOOD", client_zip="", client_city="",
         lines=[line("G1"), line("G2"), line("G3")],
         currency="USD", wfirma_contractor_id="C1", vat_code_id="228")
     fake = _http_seq(
@@ -1815,7 +1815,7 @@ _XML_PZ_ERROR = """<api>
 
 def _sample_pz_request() -> PZRequest:
     return PZRequest(
-        contractor_id="176578339",
+        contractor_id="99990002",
         warehouse_id="347088",
         date="2026-05-06",
         description="PZ pre-fill for PROF 94/2026",
@@ -1836,7 +1836,7 @@ def test_build_pz_xml_shape():
     assert wd is not None
 
     assert wd.findtext("type") == "PZ"
-    assert wd.find("contractor/id").text == "176578339"
+    assert wd.find("contractor/id").text == "99990002"
     assert wd.find("warehouse/id").text == "347088"
     assert wd.findtext("price_type") == "netto"
 

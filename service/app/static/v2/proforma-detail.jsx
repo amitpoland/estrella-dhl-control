@@ -2353,6 +2353,7 @@ function ProformaPartyCards({
   bo, canEdit, liveDraft, draft, draftHook,
   addrApplying, addrApplyError, handleApplyCustomerAddress,
   setBuyerEditFields, setBuyerEditError, setBuyerEditOpen,
+  onOpenCustomerPicker, onOpenRecipientPicker, onCopyToRecipient,
   draftState,
 }) {
   const lockedForEdit = !canEdit;
@@ -2490,6 +2491,51 @@ function ProformaPartyCards({
             opacity: lockedForEdit ? 0.5 : 1,
           }}
         >✎ Edit Bill-to</button>
+
+        <button
+          data-testid="btn-change-customer"
+          disabled={lockedForEdit}
+          title={lockedForEdit
+            ? `Cannot change customer: draft is in '${draftState}' state`
+            : 'Replace the bill-to customer with a Customer Master contractor (search by name / VAT / ID)'}
+          onClick={() => { if (!lockedForEdit) onOpenCustomerPicker && onOpenCustomerPicker(); }}
+          style={{
+            fontSize: 12, padding: '3px 10px',
+            background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
+            border: '1px solid var(--border)', borderRadius: 4,
+            cursor: lockedForEdit ? 'not-allowed' : 'pointer', opacity: lockedForEdit ? 0.5 : 1,
+          }}
+        >⇄ Change Customer</button>
+
+        <button
+          data-testid="btn-change-recipient"
+          disabled={lockedForEdit}
+          title={lockedForEdit
+            ? `Cannot change recipient: draft is in '${draftState}' state`
+            : 'Replace the ship-to recipient with a Customer Master contractor (independent of the bill-to customer)'}
+          onClick={() => { if (!lockedForEdit) onOpenRecipientPicker && onOpenRecipientPicker(); }}
+          style={{
+            fontSize: 12, padding: '3px 10px',
+            background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
+            border: '1px solid var(--border)', borderRadius: 4,
+            cursor: lockedForEdit ? 'not-allowed' : 'pointer', opacity: lockedForEdit ? 0.5 : 1,
+          }}
+        >⇄ Change Recipient</button>
+
+        <button
+          data-testid="btn-copy-to-recipient"
+          disabled={lockedForEdit}
+          title={lockedForEdit
+            ? `Cannot copy: draft is in '${draftState}' state`
+            : 'Copy the bill-to address onto the recipient (ship-to)'}
+          onClick={() => { if (!lockedForEdit) onCopyToRecipient && onCopyToRecipient(); }}
+          style={{
+            fontSize: 12, padding: '3px 10px',
+            background: 'var(--bg)', color: lockedForEdit ? 'var(--text-2)' : 'var(--text)',
+            border: '1px solid var(--border)', borderRadius: 4,
+            cursor: lockedForEdit ? 'not-allowed' : 'pointer', opacity: lockedForEdit ? 0.5 : 1,
+          }}
+        >⧉ Copy → Recipient</button>
 
         {hasOverride && (
           <button
@@ -2992,6 +3038,17 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [buyerEditError,   setBuyerEditError]    = React.useState(null);
   const [addrApplying,     setAddrApplying]      = React.useState(false);
   const [addrApplyError,   setAddrApplyError]    = React.useState(null);
+  // PR 1a — customer/recipient replacement
+  const [customerPickOpen,  setCustomerPickOpen]  = React.useState(false);
+  const [recipientPickOpen, setRecipientPickOpen] = React.useState(false);
+  const [customerPickBusy,  setCustomerPickBusy]  = React.useState(false);
+  const [customerPickError, setCustomerPickError] = React.useState(null);
+  // PR 1a follow-up — safe, dismissible migration warnings shown AFTER a
+  // successful customer replacement (service charges / reservation could not
+  // follow the new customer). Backend returns a browser-safe stable shape
+  // (type/authority/severity/message/requires_operator_review) — never raw
+  // exception text. Array; empty = banner hidden.
+  const [customerMigrationWarnings, setCustomerMigrationWarnings] = React.useState([]);
   const [chargeSuggestion, setChargeSuggestion]  = React.useState(null);  // null | response obj
   const [chargesLoading,   setChargesLoading]    = React.useState(false);
   const [chargesApplying,  setChargesApplying]   = React.useState(null);  // 'freight'|'insurance'|null
@@ -3985,6 +4042,90 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       .finally(() => setAddrApplying(false));
   };
 
+  // PR 1a — replace the draft's bill-to customer with an operator-selected
+  // Customer Master contractor (ID-first). Line items/prices are untouched.
+  const handleChangeCustomer = (sel) => {
+    if (customerPickBusy || !sel) return;
+    setCustomerPickBusy(true);
+    setCustomerPickError(null);
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    // Single external draft writer: the canonical PATCH routes a lone
+    // client_contractor_id to the internal customer-replacement operation.
+    window.PzApi.patchDraft(id, { client_contractor_id: String(sel.bill_to_contractor_id || '') }, updatedAt)
+      .then(r => {
+        if (r && r.ok) {
+          // Customer replaced. Surface any post-change migration warnings
+          // (service charges / reservation could not follow) as a persistent,
+          // dismissible banner. Backend guarantees a browser-safe shape.
+          const warns = (r.data && Array.isArray(r.data.migration_warnings))
+            ? r.data.migration_warnings : [];
+          setCustomerMigrationWarnings(warns);
+          setCustomerPickOpen(false);
+          draftHook && draftHook.reload && draftHook.reload();
+        } else {
+          setCustomerPickError((r && (r.detail || r.error)) || 'Could not change customer.');
+        }
+      })
+      .catch(e => setCustomerPickError((e && e.message) || 'Network error'))
+      .finally(() => setCustomerPickBusy(false));
+  };
+
+  // PR 1a — replace the recipient (ship_to_override) with a selected Customer
+  // Master contractor, independent of the bill-to customer.
+  const handleChangeRecipient = (sel) => {
+    if (customerPickBusy || !sel) return;
+    setCustomerPickBusy(true);
+    setCustomerPickError(null);
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    const shipTo = {
+      name: sel.ship_to_name || sel.bill_to_name || '',
+      street: sel.ship_to_street || sel.bill_to_street || '',
+      city: sel.ship_to_city || sel.bill_to_city || '',
+      zip: sel.ship_to_zip || sel.bill_to_postal_code || '',
+      country: sel.ship_to_country || sel.country || '',
+      phone: sel.ship_to_phone || sel.bill_to_phone || '',
+      email: sel.ship_to_email || sel.bill_to_email || '',
+      _source: 'customer_master',
+    };
+    window.PzApi.patchDraft(id, { ship_to_override: shipTo }, updatedAt)
+      .then(r => {
+        if (r && r.ok) {
+          setRecipientPickOpen(false);
+          draftHook && draftHook.reload && draftHook.reload();
+        } else {
+          setCustomerPickError((r && (r.detail || r.error)) || 'Could not change recipient.');
+        }
+      })
+      .catch(e => setCustomerPickError((e && e.message) || 'Network error'))
+      .finally(() => setCustomerPickBusy(false));
+  };
+
+  // PR 1a — copy the current bill-to onto the recipient (ship_to_override).
+  const handleCopyCustomerToRecipient = () => {
+    if (addrApplying) return;
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    const src = (liveDraft.buyer_override && Object.keys(liveDraft.buyer_override).length)
+      ? liveDraft.buyer_override
+      : { name: (customer && customer.name) || liveDraft.client_name || '' };
+    const shipTo = {
+      name: src.name || '', street: src.street || '', city: src.city || '',
+      zip: src.zip || '', country: src.country || '',
+      phone: src.phone || '', email: src.email || '', _source: 'copied_from_bill_to',
+    };
+    setAddrApplying(true);
+    setAddrApplyError(null);
+    window.PzApi.patchDraft(id, { ship_to_override: shipTo }, updatedAt)
+      .then(r => {
+        if (r && r.ok) { draftHook && draftHook.reload && draftHook.reload(); }
+        else { setAddrApplyError((r && (r.detail || r.error)) || 'Could not copy to recipient.'); }
+      })
+      .catch(e => setAddrApplyError((e && e.message) || 'Network error'))
+      .finally(() => setAddrApplying(false));
+  };
+
   // PR B — Fetch service-charge suggestions
   const handleFetchChargeSuggestions = () => {
     if (chargesLoading) return;
@@ -4088,6 +4229,35 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         </div>
       )}
 
+      {/* Customer-change migration warning banner — page-level, persistent +
+          dismissible. Shown after a successful customer replacement whose
+          service-charge / reservation migration failed. Messages come from the
+          backend's browser-safe stable contract (no raw exception text).
+          Lives here (ProformaDetailPage) alongside the state + handleChangeCustomer
+          + picker so the warning stays visible after the picker modal closes. */}
+      {customerMigrationWarnings.length > 0 && (
+        <div role="alert" data-testid="customer-migration-warning-banner"
+             style={{ margin: '8px 24px 0', padding: '10px 14px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+            <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--badge-amber-text)' }}>
+              ⚠ Customer changed — follow-up needed
+            </div>
+            <button type="button" data-testid="customer-migration-warning-dismiss"
+                    onClick={() => setCustomerMigrationWarnings([])}
+                    style={{ background: 'transparent', border: '1px solid var(--badge-amber-border)', color: 'var(--badge-amber-text)', borderRadius: 4, fontSize: 11, fontWeight: 600, padding: '2px 8px', cursor: 'pointer' }}>
+              Dismiss
+            </button>
+          </div>
+          {customerMigrationWarnings.map((w, i) => (
+            <div key={(w && w.type) || i}
+                 data-testid={`customer-migration-warning-${(w && w.type) || i}`}
+                 style={{ fontSize: 12, color: 'var(--badge-amber-text)', marginTop: 4 }}>
+              • {(w && w.message) || 'A follow-up action could not be completed.'}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* ── PROFORMA STATUS HEADER — persistent, always visible ───────────────── */}
       <ProformaStatusHeader
         alreadyPosted={alreadyPosted}
@@ -4140,6 +4310,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         setBuyerEditFields={setBuyerEditFields}
         setBuyerEditError={setBuyerEditError}
         setBuyerEditOpen={setBuyerEditOpen}
+        onOpenCustomerPicker={() => { setCustomerPickError(null); setCustomerPickOpen(true); }}
+        onOpenRecipientPicker={() => { setCustomerPickError(null); setRecipientPickOpen(true); }}
+        onCopyToRecipient={handleCopyCustomerToRecipient}
         draftState={draftState}
       />
 
@@ -4781,6 +4954,42 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           onClose={() => { setBuyerEditOpen(false); setBuyerEditError(null); }}
         />
       )}
+
+      {customerPickOpen && (
+        <ProformaCustomerPickerModal
+          title="Change Customer (bill-to)"
+          current={{
+            name: (customer && customer.name) || liveDraft.client_name || '—',
+            contractor_id: liveDraft.client_contractor_id || '—',
+            vat: (liveDraft.buyer_override && liveDraft.buyer_override.vat_id) || (customer && customer.vat) || '—',
+            currency: liveDraft.currency || '—',
+            payment_days: (liveDraft.payment_terms && liveDraft.payment_terms.days != null) ? String(liveDraft.payment_terms.days) : '—',
+            language: '—',
+          }}
+          busy={customerPickBusy}
+          error={customerPickError}
+          onConfirm={handleChangeCustomer}
+          onClose={() => { setCustomerPickOpen(false); setCustomerPickError(null); }}
+        />
+      )}
+
+      {recipientPickOpen && (
+        <ProformaCustomerPickerModal
+          title="Change Recipient (ship-to)"
+          current={{
+            name: (shipTo && shipTo.name) || '—',
+            contractor_id: '—',
+            vat: '—',
+            currency: liveDraft.currency || '—',
+            payment_days: '—',
+            language: '—',
+          }}
+          busy={customerPickBusy}
+          error={customerPickError}
+          onConfirm={handleChangeRecipient}
+          onClose={() => { setRecipientPickOpen(false); setCustomerPickError(null); }}
+        />
+      )}
     </div>
   );
 }
@@ -5145,6 +5354,146 @@ function ProformaBuyerEditModal({ fields, saving, error, onChange, onSave, onClo
               fontFamily: 'inherit',
             }}
           >{saving ? '⏳ Saving…' : '✓ Save'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Customer picker + confirmation diff (PR 1a) ───────────────────────────────
+// ID-FIRST: the operator searches Customer Master by name / VAT / contractor id
+// and picks an explicit contractor. Duplicate VAT surfaces BOTH contractors —
+// nothing is auto-selected or merged. A confirmation diff (old → new) is shown
+// before the replace is applied. The draft's line items / prices are untouched.
+function ProformaCustomerPickerModal({ title, current, onConfirm, onClose, busy, error }) {
+  const [q, setQ]           = React.useState('');
+  const [results, setResults] = React.useState([]);
+  const [selected, setSelected] = React.useState(null);
+  const [searching, setSearching] = React.useState(false);
+
+  React.useEffect(() => {
+    const term = q.trim();
+    if (term.length < 1) { setResults([]); return; }
+    let alive = true;
+    setSearching(true);
+    const t = setTimeout(() => {
+      window.PzApi.listCustomerMaster({ q: term, limit: 25 })
+        .then(r => {
+          if (!alive) return;
+          const list = (r && r.customers) || (r && r.data && r.data.customers) || [];
+          setResults(list);
+        })
+        .catch(() => { if (alive) setResults([]); })
+        .finally(() => { if (alive) setSearching(false); });
+    }, 220);
+    return () => { alive = false; clearTimeout(t); };
+  }, [q]);
+
+  // Same-VAT duplicate detection across the current result set (advisory only).
+  const vatCounts = {};
+  results.forEach(c => { const v = (c.vat_eu_number || c.nip || '').trim(); if (v) vatCounts[v] = (vatCounts[v] || 0) + 1; });
+
+  const diffRows = selected ? [
+    ['Customer name', current.name, selected.bill_to_name],
+    ['Contractor ID', current.contractor_id, selected.bill_to_contractor_id],
+    ['VAT', current.vat, selected.vat_eu_number || selected.nip || '—'],
+    ['Currency', current.currency, selected.default_currency || '—'],
+    ['Payment days', current.payment_days, (selected.payment_terms_days != null ? String(selected.payment_terms_days) : '—')],
+    ['Invoice language', current.language, selected.default_language_id || '—'],
+  ] : [];
+
+  return (
+    <div data-testid="customer-picker-modal" style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200,
+    }}>
+      <div style={{
+        background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10,
+        padding: 22, width: 560, maxWidth: '94vw', maxHeight: '88vh', overflowY: 'auto',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>{title}</div>
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>
+          Search by name, VAT or contractor ID. Duplicate VAT shows every contractor — pick one; nothing is auto-selected.
+        </div>
+        <input
+          data-testid="customer-picker-search"
+          autoFocus
+          value={q}
+          onChange={e => { setQ(e.target.value); setSelected(null); }}
+          placeholder="Search by name, VAT number, or contractor ID"
+          style={{
+            width: '100%', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box',
+            background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6,
+            color: 'var(--text)', fontFamily: 'inherit', marginBottom: 10,
+          }}
+        />
+
+        {!selected && (
+          <div data-testid="customer-picker-results" style={{ maxHeight: 240, overflowY: 'auto', border: '1px solid var(--border-subtle)', borderRadius: 6 }}>
+            {searching && <div style={{ padding: 10, fontSize: 12, color: 'var(--text-3)' }}>Searching…</div>}
+            {!searching && q.trim() && results.length === 0 && (
+              <div style={{ padding: 10, fontSize: 12, color: 'var(--text-3)' }}>No customer matches “{q.trim()}”.</div>
+            )}
+            {results.map(c => {
+              const v = (c.vat_eu_number || c.nip || '').trim();
+              const dup = v && vatCounts[v] > 1;
+              return (
+                <button key={c.bill_to_contractor_id}
+                  data-testid={`customer-picker-result-${c.bill_to_contractor_id}`}
+                  onClick={() => setSelected(c)}
+                  style={{
+                    display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
+                    padding: '8px 10px', border: 'none', borderBottom: '1px solid var(--border-subtle)',
+                    background: 'var(--card)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 12.5,
+                  }}>
+                  <div style={{ fontWeight: 600 }}>{c.bill_to_name}
+                    {dup && <span data-testid={`customer-dup-flag-${c.bill_to_contractor_id}`} style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: 'var(--badge-amber-text)', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 999, padding: '1px 6px' }}>⚠ duplicate VAT</span>}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'monospace' }}>
+                    id {c.bill_to_contractor_id} · {v || 'no VAT'} · {c.country || ''}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {selected && (
+          <div data-testid="customer-picker-diff">
+            <div style={{ fontSize: 12, fontWeight: 700, margin: '4px 0 8px' }}>Confirm change — review before applying</div>
+            <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 6 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, padding: '6px 10px', borderBottom: '1px solid var(--border-subtle)', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                <div>Field</div><div>Current</div><div>New</div>
+              </div>
+              {diffRows.map(([label, oldV, newV]) => {
+                const changed = String(oldV ?? '—') !== String(newV ?? '—');
+                return (
+                  <div key={label} data-testid={`customer-diff-row-${label.toLowerCase().replace(/[^a-z]+/g, '-')}`}
+                    style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, padding: '6px 10px', borderBottom: '1px solid var(--border-subtle)', fontSize: 12, alignItems: 'center' }}>
+                    <div style={{ color: 'var(--text-2)' }}>{label}</div>
+                    <div style={{ color: 'var(--text-3)' }}>{oldV ?? '—'}</div>
+                    <div style={{ fontWeight: changed ? 700 : 400, color: changed ? 'var(--accent)' : 'var(--text)' }}>{newV ?? '—'}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8 }}>
+              Line items, prices and packing links are not changed. Service charges follow the customer.
+            </div>
+            <button data-testid="customer-picker-back" onClick={() => setSelected(null)} disabled={busy}
+              style={{ marginTop: 8, fontSize: 12, padding: '3px 10px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--text)', fontFamily: 'inherit' }}>← Pick a different customer</button>
+          </div>
+        )}
+
+        {error && (
+          <div data-testid="customer-picker-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginTop: 10 }}>{error}</div>
+        )}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
+          <button data-testid="customer-picker-cancel" onClick={onClose} disabled={busy}
+            style={{ padding: '6px 14px', fontSize: 13, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--text)', fontFamily: 'inherit' }}>Cancel</button>
+          <button data-testid="customer-picker-confirm" onClick={() => selected && onConfirm(selected)} disabled={busy || !selected}
+            style={{ padding: '6px 14px', fontSize: 13, background: selected ? 'var(--accent)' : 'var(--bg)', color: selected ? '#fff' : 'var(--text-3)', border: selected ? 'none' : '1px solid var(--border)', borderRadius: 4, cursor: (busy || !selected) ? 'not-allowed' : 'pointer', opacity: busy ? 0.7 : 1, fontFamily: 'inherit' }}>{busy ? '⏳ Applying…' : '✓ Apply change'}</button>
         </div>
       </div>
     </div>
