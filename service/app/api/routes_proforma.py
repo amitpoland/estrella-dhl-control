@@ -5825,6 +5825,61 @@ def patch_proforma_draft(
     operator = _require_operator(x_operator)
     expected = str(body.get("expected_updated_at") or "")
     patch    = body.get("patch") or {}
+    if not isinstance(patch, dict):
+        raise HTTPException(status_code=400, detail="patch must be a JSON object")
+
+    # ── Customer replacement via the canonical PATCH (single external writer) ──
+    # `client_contractor_id` is NOT a generic allow-list field — it is an
+    # operator customer-REPLACEMENT command that this one external draft writer
+    # routes to the internal change_draft_customer operation. ID-FIRST: the
+    # customer is resolved strictly by contractor id; client_name is derived
+    # from Customer Master and can NEVER be supplied directly (client_name is
+    # not in EDITABLE_DRAFT_FIELDS, so update_draft_fields already rejects it).
+    if "client_contractor_id" in patch:
+        if len(patch) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="client_contractor_id must be the only patch key when "
+                       "replacing the customer — do not combine other field edits.",
+            )
+        new_cid = str(patch.get("client_contractor_id") or "").strip()
+        if not new_cid:
+            raise HTTPException(
+                status_code=400,
+                detail="client_contractor_id is required (ID-first; the customer is never resolved by name)",
+            )
+        cm = get_customer_master(_customer_master_db_path(), new_cid)
+        if cm is None:
+            raise HTTPException(status_code=404,
+                                detail=f"contractor {new_cid!r} not found in Customer Master")
+        # Same bill-to projection block as apply-customer-address (one authority).
+        buyer_override: Dict[str, Any] = {
+            "name":               cm.bill_to_name or "",
+            "street":             cm.bill_to_street or "",
+            "city":               cm.bill_to_city or "",
+            "zip":                cm.bill_to_postal_code or "",
+            "country":            cm.country or "",
+            "nip":                cm.nip or "",
+            "vat_id":             cm.vat_eu_number or "",
+            "email":              cm.bill_to_email or "",
+            "phone":              cm.bill_to_phone or "",
+            "wfirma_customer_id": cm.bill_to_contractor_id,
+            "_source":            "customer_master",
+        }
+        from ..services import proforma_service_charges_db as _scdb
+        from ..services import wfirma_db as _wfdb
+        return _draft_edit_dispatch(draft_id, lambda: pildb.change_draft_customer(
+            _proforma_db_path(),
+            int(draft_id),
+            new_contractor_id   = cm.bill_to_contractor_id,
+            new_client_name     = cm.bill_to_name,
+            buyer_override      = buyer_override,
+            operator            = operator,
+            expected_updated_at = expected,
+            charge_move         = _scdb.move_charges_client_name,
+            reservation_migrate = _wfdb.rename_reservation_draft_client,
+        ))
+
     # Governance check on top-level fields (currency, buyer/ship_to overrides).
     # No-op when proforma_draft_governance_enabled=False.
     try:
@@ -7709,84 +7764,6 @@ def apply_customer_address(
         ship_to_override   = ship_to_override,
         operator           = operator,
         expected_updated_at= expected,
-    ))
-
-
-@router.post("/draft/{draft_id}/change-customer", dependencies=[_auth],
-             summary="Replace the draft's customer (bill-to) identity with an operator-selected Customer Master contractor")
-def change_draft_customer_route(
-    draft_id:   int,
-    body:       Dict[str, Any],
-    x_operator: Optional[str] = Header(None, alias="X-Operator"),
-) -> JSONResponse:
-    """Replace the draft's customer identity (client_name + client_contractor_id)
-    with the Customer Master contractor the operator explicitly selected, and
-    project that contractor's bill-to address as buyer_override.
-
-    ID-FIRST: the caller MUST pass ``new_contractor_id`` (the wFirma contractor id
-    / Customer Master bill_to_contractor_id). The customer is NEVER resolved by
-    name — duplicate names / shared VAT map to distinct contractor ids, and the
-    operator must pick one.
-
-    Body::
-
-        {
-          "expected_updated_at": "<iso-utc>",
-          "new_contractor_id":   "<wfirma-contractor-id>"
-        }
-
-    Response: ``{"ok": true, "draft": {...}}``.
-
-    Blocked when: contractor not in Customer Master (404); draft non-editable, a
-    lock conflict, or a duplicate-target draft already exists (409); missing id
-    (400). Line items, prices, quantities and packing linkage are NEVER modified —
-    only the customer identity + bill-to address projection.
-    """
-    if not isinstance(draft_id, int) or draft_id <= 0:
-        raise HTTPException(status_code=400, detail="invalid draft_id")
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="body must be a JSON object")
-    operator = _require_operator(x_operator)
-    expected = str(body.get("expected_updated_at") or "")
-    new_cid  = str(body.get("new_contractor_id") or "").strip()
-    if not new_cid:
-        raise HTTPException(
-            status_code=400,
-            detail="new_contractor_id is required (ID-first; the customer is never resolved by name)",
-        )
-
-    cm = get_customer_master(_customer_master_db_path(), new_cid)
-    if cm is None:
-        raise HTTPException(status_code=404,
-                            detail=f"contractor {new_cid!r} not found in Customer Master")
-
-    # Same bill-to projection block as apply-customer-address (one authority).
-    buyer_override: Dict[str, Any] = {
-        "name":               cm.bill_to_name or "",
-        "street":             cm.bill_to_street or "",
-        "city":               cm.bill_to_city or "",
-        "zip":                cm.bill_to_postal_code or "",
-        "country":            cm.country or "",
-        "nip":                cm.nip or "",
-        "vat_id":             cm.vat_eu_number or "",
-        "email":              cm.bill_to_email or "",
-        "phone":              cm.bill_to_phone or "",
-        "wfirma_customer_id": cm.bill_to_contractor_id,
-        "_source":            "customer_master",
-    }
-
-    from ..services import proforma_service_charges_db as _scdb
-    from ..services import wfirma_db as _wfdb
-    return _draft_edit_dispatch(draft_id, lambda: pildb.change_draft_customer(
-        _proforma_db_path(),
-        int(draft_id),
-        new_contractor_id   = cm.bill_to_contractor_id,
-        new_client_name     = cm.bill_to_name,
-        buyer_override      = buyer_override,
-        operator            = operator,
-        expected_updated_at = expected,
-        charge_move         = _scdb.move_charges_client_name,
-        reservation_migrate = _wfdb.rename_reservation_draft_client,
     ))
 
 

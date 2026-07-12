@@ -4044,7 +4044,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     setCustomerPickError(null);
     const id = liveDraft.id || (draft && draft.id);
     const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
-    window.PzApi.changeCustomer(id, sel.bill_to_contractor_id, updatedAt)
+    // Single external draft writer: the canonical PATCH routes a lone
+    // client_contractor_id to the internal customer-replacement operation.
+    window.PzApi.patchDraft(id, { client_contractor_id: String(sel.bill_to_contractor_id || '') }, updatedAt)
       .then(r => {
         if (r && r.ok) {
           setCustomerPickOpen(false);

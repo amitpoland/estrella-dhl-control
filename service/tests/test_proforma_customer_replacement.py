@@ -17,10 +17,14 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from app.main import app
 from app.services import customer_master_db as cmdb
 from app.services import proforma_invoice_link_db as pildb
+
+_OP = {"X-Operator": "tester"}
 
 BATCH = "SHIPMENT_TEST_PCE1"
 now = "2026-07-01T00:00:00Z"
@@ -170,3 +174,107 @@ def test_shared_vat_returns_both_contractors_for_operator_choice(dbs):
     # so the operator picks; the write path never auto-resolves by name/VAT.
     rows = cmdb.list_customers(dbs["cm"], q="BG999")
     assert {c.bill_to_contractor_id for c in rows} == {"333", "444"}
+
+
+# ── single external draft writer: PATCH hosts the replacement ─────────────────
+
+def test_no_standalone_change_customer_post_route():
+    # The ONLY external draft mutation route is PATCH /draft/{id}. A standalone
+    # POST /draft/{id}/change-customer must NOT exist.
+    src = Path(__import__("app.api.routes_proforma", fromlist=["x"]).__file__).read_text(encoding="utf-8-sig")
+    assert 'change-customer' not in src, "standalone change-customer route must be removed"
+    assert 'def change_draft_customer_route' not in src
+    # Exactly one external customer-mutation entry point: the PATCH route routes
+    # client_contractor_id to the internal change_draft_customer.
+    assert 'if "client_contractor_id" in patch:' in src
+
+
+def test_no_pzapi_change_customer_wrapper():
+    jsx_dir = Path(pildb.__file__).parent.parent / "static" / "v2"
+    api = (jsx_dir / "pz-api.js").read_text(encoding="utf-8")
+    assert "changeCustomer" not in api, "standalone changeCustomer POST wrapper must be removed"
+    detail = (jsx_dir / "proforma-detail.jsx").read_text(encoding="utf-8")
+    assert "client_contractor_id" in detail, "picker must PATCH client_contractor_id"
+
+
+@pytest.fixture()
+def client():
+    return TestClient(app)
+
+
+def _patch(client, did, patch, upd):
+    return client.patch(f"/api/v1/proforma/draft/{did}",
+                        json={"expected_updated_at": upd, "patch": patch}, headers=_OP)
+
+
+def test_patch_replaces_customer_by_contractor_id(dbs, client):
+    did, upd = _seed_draft(dbs["pf"])
+    before = pildb.get_draft_by_id(dbs["pf"], did)
+    r = _patch(client, did, {"client_contractor_id": "222"}, upd)
+    assert r.status_code == 200, r.text
+    d = r.json()["draft"]
+    assert d["client_contractor_id"] == "222"
+    assert d["client_name"] == "Beta Ltd"
+    assert d["buyer_override"]["name"] == "Beta Ltd"
+    # lines + source untouched
+    after = pildb.get_draft_by_id(dbs["pf"], did)
+    assert after.editable_lines_json == before.editable_lines_json
+    assert after.source_lines_json == before.source_lines_json
+
+
+def test_patch_client_contractor_id_must_be_sole_key(dbs, client):
+    did, upd = _seed_draft(dbs["pf"])
+    r = _patch(client, did, {"client_contractor_id": "222", "currency": "USD"}, upd)
+    assert r.status_code == 400
+    assert "only patch key" in r.text
+
+
+def test_patch_rejects_independent_client_name(dbs, client):
+    # client_name is not in EDITABLE_DRAFT_FIELDS — the generic path rejects it.
+    did, upd = _seed_draft(dbs["pf"])
+    r = _patch(client, did, {"client_name": "Hacked Name"}, upd)
+    assert r.status_code == 400
+    after = pildb.get_draft_by_id(dbs["pf"], did)
+    assert after.client_name == "Alpha Corp"  # unchanged
+
+
+def test_patch_unknown_contractor_404(dbs, client):
+    did, upd = _seed_draft(dbs["pf"])
+    r = _patch(client, did, {"client_contractor_id": "999999"}, upd)
+    assert r.status_code == 404
+
+
+def test_patch_empty_contractor_id_400(dbs, client):
+    did, upd = _seed_draft(dbs["pf"])
+    r = _patch(client, did, {"client_contractor_id": ""}, upd)
+    assert r.status_code == 400
+
+
+def test_patch_stale_lock_409(dbs, client):
+    did, _ = _seed_draft(dbs["pf"])
+    r = _patch(client, did, {"client_contractor_id": "222"}, "1999-01-01T00:00:00Z")
+    assert r.status_code == 409
+
+
+def test_patch_non_editable_409(dbs, client):
+    did, upd = _seed_draft(dbs["pf"], draft_state="approved")
+    r = _patch(client, did, {"client_contractor_id": "222"}, upd)
+    assert r.status_code == 409
+
+
+def test_patch_duplicate_target_409_no_merge(dbs, client):
+    _seed_draft(dbs["pf"], client_name="Beta Ltd", contractor_id="222")
+    did_a, upd_a = _seed_draft(dbs["pf"], client_name="Alpha Corp", contractor_id="111")
+    r = _patch(client, did_a, {"client_contractor_id": "222"}, upd_a)
+    assert r.status_code == 409
+    assert "not auto-merged" in r.text
+
+
+def test_patch_recipient_still_independent(dbs, client):
+    # ship_to_override remains a normal generic PATCH field — unaffected.
+    did, upd = _seed_draft(dbs["pf"])
+    r = _patch(client, did, {"ship_to_override": {"name": "Warehouse Z"}}, upd)
+    assert r.status_code == 200, r.text
+    d = r.json()["draft"]
+    assert d["ship_to_override"]["name"] == "Warehouse Z"
+    assert d["client_name"] == "Alpha Corp"  # customer unchanged
