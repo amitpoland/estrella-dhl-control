@@ -474,9 +474,9 @@ function Input({ value, onChange, placeholder, type = 'text', style: s, 'data-te
   );
 }
 
-function Select({ value, onChange, children, style: s }) {
+function Select({ value, onChange, children, style: s, 'data-testid': testid }) {
   return (
-    <select value={value} onChange={onChange} style={{
+    <select value={value} onChange={onChange} data-testid={testid} style={{
       width: '100%', padding: '8px 10px', borderRadius: 6,
       border: '1px solid var(--border)', fontSize: 12, color: 'var(--text)',
       background: 'var(--bg-subtle)', outline: 'none', boxSizing: 'border-box', ...s,

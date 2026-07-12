@@ -26,6 +26,7 @@ POST /api/v1/shipment/{batch_id}/packing_list
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -102,6 +103,92 @@ def _make_batch_id(tracking_no: str) -> str:
     month = datetime.now(timezone.utc).strftime("%Y-%m")
     uid   = uuid.uuid4().hex[:8]
     return f"SHIPMENT_{slug}_{month}_{uid}"
+
+
+# ── Intake idempotency ──────────────────────────────────────────────────────
+# A client-supplied ``idempotency_key`` maps 1:1 to the batch it created. On a
+# retry (same key) the endpoint returns the ORIGINAL batch instead of creating
+# a duplicate. State lives in a single JSON file under storage_root — schema-
+# free (no DB table / migration), consistent with the "local files = truth"
+# architecture. New Shipment is a manual, low-frequency action, so a process-
+# level lock is sufficient; cross-process races are out of scope.
+_INTAKE_IDEM_LOCK = threading.Lock()
+_INTAKE_IDEM_MAX_KEY = 200  # a random token is ~40 chars; cap defends the index file.
+
+# Concurrency note: New Shipment is a manual, low-frequency operator action and
+# the V2 modal disables its submit buttons while a request is in flight, so two
+# same-key requests overlapping inside the check→create→record window is not a
+# realistic path. The lock serialises index read/modify/write; the window is
+# tolerated (first-writer-wins, with a warning log — see _intake_idem_record).
+# Multi-worker deployments are out of scope for this single-process service.
+
+
+def _clean_idem_key(key: str) -> str:
+    """Normalise a client-supplied idempotency key. Over-long keys are rejected
+    (treated as absent) so a caller cannot bloat the index / audit files."""
+    key = (key or "").strip()
+    if not key or len(key) > _INTAKE_IDEM_MAX_KEY:
+        return ""
+    return key
+
+
+def _intake_idem_path() -> Path:
+    return settings.storage_root / "intake_idempotency.json"
+
+
+def _intake_idem_lookup(key: str) -> str:
+    """Return the batch_id previously created for ``key`` (and still on disk),
+    or '' if none. A recorded key whose batch/audit.json no longer exists is
+    treated as absent so intake can legitimately re-create."""
+    key = _clean_idem_key(key)
+    if not key:
+        return ""
+    with _INTAKE_IDEM_LOCK:
+        path = _intake_idem_path()
+        if not path.exists():
+            return ""
+        try:
+            index: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return ""
+    entry = index.get(key) or {}
+    existing = str(entry.get("batch_id") or "").strip()
+    if not existing:
+        return ""
+    if not (get_output_dir(existing) / "audit.json").exists():
+        return ""
+    return existing
+
+
+def _intake_idem_record(key: str, batch_id: str) -> None:
+    """Persist key -> batch_id. Best-effort; never raises into the request."""
+    key = _clean_idem_key(key)
+    if not key or not batch_id:
+        return
+    try:
+        with _INTAKE_IDEM_LOCK:
+            path = _intake_idem_path()
+            index: Dict[str, Any] = {}
+            if path.exists():
+                try:
+                    index = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    index = {}
+            # First writer wins: never overwrite an existing key -> batch map.
+            if key not in index:
+                index[key] = {"batch_id": batch_id, "created_at": _now_iso()}
+                write_json_atomic(path, index)
+            elif index[key].get("batch_id") != batch_id:
+                # A concurrent same-key request already recorded a different
+                # batch. This batch is a real orphan (fully created, but not the
+                # idempotency winner). Surface it so operators can reconcile.
+                log.warning(
+                    "intake_idem: key already recorded to %s; suppressing "
+                    "orphan batch_id=%s (concurrent same-key submit)",
+                    index[key].get("batch_id"), batch_id,
+                )
+    except Exception as exc:
+        log.warning("intake idempotency record failed (non-fatal) key=%s: %s", key, exc)
 
 
 def _proforma_db_path() -> Path:
@@ -380,6 +467,7 @@ async def shipment_intake(
     tracking_no:        str                    = Form(default=""),
     carrier:            str                    = Form(default="DHL"),
     metadata:           str                    = Form(default="{}"),
+    idempotency_key:    str                    = Form(default=""),
     invoices:           List[UploadFile]       = [],
     packing_lists:      List[UploadFile]       = [],
     awb:                Optional[UploadFile]   = None,
@@ -493,6 +581,41 @@ async def shipment_intake(
         _validate_file(sad, _ALLOWED_SAD_EXT)
     else:
         sad = None
+
+    # ── Idempotent replay: a retry with the same key returns the ORIGINAL
+    # batch instead of creating a duplicate. Checked AFTER validation so a
+    # malformed retry still surfaces its 400, but BEFORE any batch/folder
+    # is created.
+    _idem_existing = _intake_idem_lookup(idempotency_key)
+    if _idem_existing:
+        # Return the ORIGINAL batch's own identity — never the caller's
+        # (possibly changed) tracking_no/carrier — so the client navigates to
+        # the real created shipment. Record the replay on that batch's timeline.
+        _orig_audit_path = get_output_dir(_idem_existing) / "audit.json"
+        _orig_track, _orig_carrier = tracking_no, carrier
+        try:
+            _oa = json.loads(_orig_audit_path.read_text(encoding="utf-8"))
+            _orig_track = (_oa.get("tracking_no")
+                           or (_oa.get("inputs") or {}).get("tracking_no")
+                           or tracking_no)
+            _orig_carrier = _oa.get("carrier") or carrier
+        except Exception:
+            pass
+        try:
+            tl.log_event(_orig_audit_path, "intake_idempotent_replay", "intake", "user",
+                         detail={"idempotency_key": _clean_idem_key(idempotency_key)})
+        except Exception:
+            pass
+        log.info("intake idempotent replay: key -> existing batch %s", _idem_existing)
+        return JSONResponse({
+            "ok":               True,
+            "batch_id":         _idem_existing,
+            "tracking_no":      _orig_track,
+            "carrier":          _orig_carrier,
+            "status":           "draft",
+            "idempotent_replay": True,
+            "next_step":        "This shipment was already created — returning the existing draft.",
+        })
 
     # ── Build batch folder ───────────────────────────────────────────────────
     batch_id   = _make_batch_id(tracking_no)
@@ -1437,10 +1560,12 @@ async def shipment_intake(
     if awb_name:
         tl.log_event(audit_path, tl.EV_AWB_UPLOADED, "intake", "user", detail={"file": awb_name})
 
-    # Persist operator note + local-only doc counts into audit.json so the
-    # information survives without requiring a new column on any DB table.
+    # Persist operator note + local-only doc counts + the idempotency key into
+    # audit.json in a SINGLE read-modify-write pass (folding the idempotency
+    # stamp here avoids an extra unsynchronised R-M-W on the same file).
+    _idem_key_clean = _clean_idem_key(idempotency_key)
     try:
-        if operator_note or service_doc_ids or carnet_doc_ids or other_doc_ids:
+        if operator_note or service_doc_ids or carnet_doc_ids or other_doc_ids or _idem_key_clean:
             audit_obj: Dict[str, Any] = {}
             if audit_path.exists():
                 try:
@@ -1449,6 +1574,8 @@ async def shipment_intake(
                     audit_obj = {}
             if operator_note:
                 audit_obj["operator_note"] = operator_note
+            if _idem_key_clean:
+                audit_obj["intake_idempotency_key"] = _idem_key_clean
             local_summary = audit_obj.get("local_documents") or {}
             if service_doc_ids:
                 local_summary["service_invoice"] = service_doc_ids
@@ -1462,6 +1589,11 @@ async def shipment_intake(
     except Exception as exc:
         log.warning("[%s] audit metadata update failed (non-fatal): %s",
                     batch_id, exc)
+
+    # Record key -> batch in the idempotency index (separate from audit.json) so
+    # a retry with the same key returns THIS batch instead of duplicating.
+    if _idem_key_clean:
+        _intake_idem_record(_idem_key_clean, batch_id)
 
     # ── G. Return intake summary ──────────────────────────────────────────────
     # ── F2. Rule-based reverification (WF1.3) — post-parse advisory check
