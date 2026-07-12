@@ -60,9 +60,9 @@ def test_normalise_collapses_internal_whitespace():
 
 
 def test_normalise_drops_trailing_punct():
-    assert normalise_client_name("Juliany EOOD.") == "juliany eood"
-    assert normalise_client_name("Juliany EOOD!") == "juliany eood"
-    assert normalise_client_name("Juliany EOOD")  == "juliany eood"
+    assert normalise_client_name("Test Trading EOOD.") == "test trading eood"
+    assert normalise_client_name("Test Trading EOOD!") == "test trading eood"
+    assert normalise_client_name("Test Trading EOOD")  == "test trading eood"
 
 
 def test_normalise_handles_unicode():

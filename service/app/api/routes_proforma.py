@@ -5782,8 +5782,18 @@ def _require_operator(x_operator: Optional[str]) -> str:
 def _draft_edit_dispatch(
     draft_id: int,
     operation,                     # callable: () -> ProformaDraft
+    *,
+    warnings_sink: Optional[List[Dict[str, Any]]] = None,
 ) -> JSONResponse:
-    """Run a draft mutation and translate domain errors → HTTP."""
+    """Run a draft mutation and translate domain errors → HTTP.
+
+    ``warnings_sink`` — an optional list the operation may append non-fatal
+    migration warnings to (e.g. service charges that could not follow a customer
+    replacement because ``charge_move`` failed after the identity write already
+    committed). Any collected warnings are surfaced in the response body under
+    ``migration_warnings`` so the operator sees the orphaned-charge disclosure
+    without reading the audit log.
+    """
     try:
         refreshed = operation()
     except pildb.DraftNotFound as exc:
@@ -5794,10 +5804,13 @@ def _draft_edit_dispatch(
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return JSONResponse({
+    payload: Dict[str, Any] = {
         "ok":    True,
         "draft": _draft_to_full(refreshed),
-    })
+    }
+    if warnings_sink:
+        payload["migration_warnings"] = list(warnings_sink)
+    return JSONResponse(payload)
 
 
 @router.patch("/draft/{draft_id}", dependencies=[_auth])
@@ -5825,6 +5838,67 @@ def patch_proforma_draft(
     operator = _require_operator(x_operator)
     expected = str(body.get("expected_updated_at") or "")
     patch    = body.get("patch") or {}
+    if not isinstance(patch, dict):
+        raise HTTPException(status_code=400, detail="patch must be a JSON object")
+
+    # ── Customer replacement via the canonical PATCH (single external writer) ──
+    # `client_contractor_id` is NOT a generic allow-list field — it is an
+    # operator customer-REPLACEMENT command that this one external draft writer
+    # routes to the internal change_draft_customer operation. ID-FIRST: the
+    # customer is resolved strictly by contractor id; client_name is derived
+    # from Customer Master and can NEVER be supplied directly (client_name is
+    # not in EDITABLE_DRAFT_FIELDS, so update_draft_fields already rejects it).
+    if "client_contractor_id" in patch:
+        if len(patch) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="client_contractor_id must be the only patch key when "
+                       "replacing the customer — do not combine other field edits.",
+            )
+        new_cid = str(patch.get("client_contractor_id") or "").strip()
+        if not new_cid:
+            raise HTTPException(
+                status_code=400,
+                detail="client_contractor_id is required (ID-first; the customer is never resolved by name)",
+            )
+        cm = get_customer_master(_customer_master_db_path(), new_cid)
+        if cm is None:
+            raise HTTPException(status_code=404,
+                                detail=f"contractor {new_cid!r} not found in Customer Master")
+        # Same bill-to projection block as apply-customer-address (one authority).
+        buyer_override: Dict[str, Any] = {
+            "name":               cm.bill_to_name or "",
+            "street":             cm.bill_to_street or "",
+            "city":               cm.bill_to_city or "",
+            "zip":                cm.bill_to_postal_code or "",
+            "country":            cm.country or "",
+            "nip":                cm.nip or "",
+            "vat_id":             cm.vat_eu_number or "",
+            "email":              cm.bill_to_email or "",
+            "phone":              cm.bill_to_phone or "",
+            "wfirma_customer_id": cm.bill_to_contractor_id,
+            "_source":            "customer_master",
+        }
+        from ..services import proforma_service_charges_db as _scdb
+        from ..services import wfirma_db as _wfdb
+        # Sink for non-fatal charge/reservation migration failures. These run
+        # outside the identity transaction, so a failure cannot roll back the
+        # customer replacement — it is surfaced here (response ``migration_warnings``)
+        # instead of being buried in the audit log.
+        migration_warnings: List[Dict[str, Any]] = []
+        return _draft_edit_dispatch(draft_id, lambda: pildb.change_draft_customer(
+            _proforma_db_path(),
+            int(draft_id),
+            new_contractor_id   = cm.bill_to_contractor_id,
+            new_client_name     = cm.bill_to_name,
+            buyer_override      = buyer_override,
+            operator            = operator,
+            expected_updated_at = expected,
+            charge_move         = _scdb.move_charges_client_name,
+            reservation_migrate = _wfdb.rename_reservation_draft_client,
+            migration_warnings  = migration_warnings,
+        ), warnings_sink=migration_warnings)
+
     # Governance check on top-level fields (currency, buyer/ship_to overrides).
     # No-op when proforma_draft_governance_enabled=False.
     try:

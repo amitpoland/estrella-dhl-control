@@ -3,11 +3,10 @@ Read-only diagnostic: probe several wFirma contractors/find pagination
 shapes to find one that advances past the first 20 rows. Operator-
 authorised 2026-05-06; no writes; no condition-side mutations.
 
-Targets:
-  - Juliany EOOD                  id 176578339
-  - ESTRELLA INTERNAL TEST        id 189309475
-Both are confirmed real via search_customer; neither shows up in the
-default page-1 list_contractors_page() return.
+Targets: two contractors confirmed real via search_customer that do NOT
+show up in the default page-1 list_contractors_page() return. The concrete
+contractor ids/names are supplied by the operator out-of-band (kept out of
+this public source); fill TARGET_IDS below before re-running.
 """
 from __future__ import annotations
 import os, sys, xml.etree.ElementTree as ET
@@ -26,7 +25,9 @@ if env_path.exists():
 
 from app.services import wfirma_client as wf
 
-TARGET_IDS = {"176578339", "189309475"}
+# Fill with the real contractor ids to probe (operator-supplied, out-of-band).
+# Left empty in source so no real contractor ids live in this public repo.
+TARGET_IDS: set[str] = set()
 
 
 def parse_ids(xml_text):
