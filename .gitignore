@@ -60,3 +60,6 @@ validate_deploy_*.sh
 
 # Local runtime databases
 service/proforma_links.db
+
+# Operational audit reports may contain real customer PII — keep local, not published (PII phase-2, cat 3)
+tasks/reports/
