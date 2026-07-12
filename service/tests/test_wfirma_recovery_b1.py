@@ -63,7 +63,7 @@ _PROFORMA_XML_SNAP = MagicMock()
 _PROFORMA_XML_SNAP.series_id = ""       # empty → forces B1
 _PROFORMA_XML_SNAP.proforma_number = "PROF 99/2026"
 _PROFORMA_XML_SNAP.proforma_id = "467236963"
-_PROFORMA_XML_SNAP.contractor_id = "75483443"
+_PROFORMA_XML_SNAP.contractor_id = "99990001"
 _PROFORMA_XML_SNAP.total = 405.00
 _PROFORMA_XML_SNAP.netto = 405.00
 _PROFORMA_XML_SNAP.currency = "EUR"
@@ -147,7 +147,7 @@ def test_type_enabled_creates_proposal(tmp_storage, batch_audit_dir):
                 "draft_id":               None,
                 "proforma_id":            "467236963",
                 "proforma_number":        "PROF 99/2026",
-                "customer_contractor_id": "75483443",
+                "customer_contractor_id": "99990001",
                 "customer_name":          "Test Client",
                 "current_preferred_series": None,
                 "available_series":       _AVAILABLE_SERIES,
@@ -195,7 +195,7 @@ def _seed_proposal(audit_dir: Path, batch_id: str, status: str = "pending_review
             "client_name":            "Test Client",
             "proforma_id":            "467236963",
             "proforma_number":        "PROF 99/2026",
-            "customer_contractor_id": "75483443",
+            "customer_contractor_id": "99990001",
             "customer_name":          "Test Client",
             "current_preferred_series": None,
             "available_series":       _AVAILABLE_SERIES,
@@ -407,7 +407,7 @@ def test_save_to_customer_master_patches_record(client, tmp_storage, batch_audit
 
     # Frozen CustomerMaster returned by mock get_customer
     mock_existing = CustomerMaster(
-        bill_to_contractor_id="75483443",
+        bill_to_contractor_id="99990001",
         bill_to_name="Test Client",
         country="PL",
         preferred_invoice_series_id=None,  # no series yet — will be replaced
@@ -453,7 +453,7 @@ def test_save_to_customer_master_patches_record(client, tmp_storage, batch_audit
         f"got {saved_customer.preferred_invoice_series_id!r}"
     )
     # Fields not in the replace call must be preserved (frozen dataclass semantics)
-    assert saved_customer.bill_to_contractor_id == "75483443"
+    assert saved_customer.bill_to_contractor_id == "99990001"
     assert saved_customer.bill_to_name == "Test Client"
 
 
