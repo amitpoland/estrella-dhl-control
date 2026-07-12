@@ -239,9 +239,18 @@ def dev_client(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def prod_client(tmp_path, monkeypatch):
-    """Client in prod mode -- session gate active."""
+    """Client in prod mode -- session gate active.
+
+    The prod lifespan guard (app/main.py) refuses to start unless API_KEY and a
+    non-placeholder AUTH_SECRET_KEY are set (both default to "" in config). This
+    fixture supplies them so the app can actually boot in prod mode and exercise
+    the session gate; without them TestClient(app).__enter__ raises RuntimeError
+    at startup. monkeypatch restores the singleton after the test.
+    """
     monkeypatch.setattr(settings, "environment", "prod")
     monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "api_key", "test-prod-api-key")
+    monkeypatch.setattr(settings, "auth_secret_key", "test-prod-auth-secret-32byte-hex")
     from app.main import app
     with TestClient(app, raise_server_exceptions=False, follow_redirects=False) as c:
         yield c

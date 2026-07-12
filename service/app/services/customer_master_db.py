@@ -932,7 +932,15 @@ def list_customers(db_path: Path,
     sql = "SELECT * FROM customer_master WHERE 1=1"
     params: list = []
     if q:
-        sql += " AND LOWER(bill_to_name) LIKE ?"; params.append(f"%{q.strip().lower()}%")
+        # Proforma customer-picker (PR 1a): match name OR NIP OR VAT-EU number OR
+        # wFirma contractor id, so the operator can find a customer by any stable
+        # identifier. Backward-compatible superset of the old name-only match.
+        like = f"%{q.strip().lower()}%"
+        sql += (" AND (LOWER(bill_to_name) LIKE ?"
+                " OR LOWER(COALESCE(nip, '')) LIKE ?"
+                " OR LOWER(COALESCE(vat_eu_number, '')) LIKE ?"
+                " OR LOWER(COALESCE(bill_to_contractor_id, '')) LIKE ?)")
+        params.extend([like, like, like, like])
     if country:
         sql += " AND country = ?"; params.append(country.upper())
     if risk_status:
