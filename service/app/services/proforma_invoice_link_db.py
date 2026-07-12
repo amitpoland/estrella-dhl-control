@@ -3091,6 +3091,126 @@ def apply_customer_address_to_draft(
     return refreshed
 
 
+def change_draft_customer(
+    db_path:              Path,
+    draft_id:             int,
+    *,
+    new_contractor_id:    str,
+    new_client_name:      str,
+    buyer_override:       Dict[str, Any],
+    operator:             str,
+    expected_updated_at:  str,
+    charge_move:          Optional[Callable[[str, str, str], List[Dict[str, Any]]]] = None,
+    reservation_migrate:  Optional[Callable[[str, str, str], Dict[str, Any]]] = None,
+) -> ProformaDraft:
+    """PR 1a: replace the draft's CUSTOMER identity (client_name +
+    client_contractor_id) with an operator-selected Customer Master contractor,
+    and project the new bill-to address as buyer_override.
+
+    Authority / safety rules:
+      * EDITABLE drafts only (draft / editing / post_failed) — posted / approved /
+        posting / cancelled / superseded identity is FROZEN. Enforced by
+        ``_load_for_edit`` (raises DraftNotEditable → 409).
+      * Optimistic-locked via ``expected_updated_at`` (DraftConflict → 409).
+      * ID-FIRST: the caller supplies the explicit contractor id; this function
+        NEVER resolves a customer by name.
+      * NEVER touches editable_lines / source_lines / prices / qty / batch_id /
+        packing linkage — only client_name, client_contractor_id, buyer_override.
+      * Service charges (keyed by batch_id + client_name) travel with the draft
+        via the injected ``charge_move`` callable (money-safe, disclosed); the
+        wFirma reservation draft follows via ``reservation_migrate``.
+      * Duplicate/target collision: if another draft in the batch already carries
+        the new customer's name at the same clone_generation, raises DraftConflict
+        (→ 409) — NEVER auto-merges; the operator must resolve.
+
+    Idempotent no-op when the contractor id + name already match the draft.
+    """
+    if not (operator or "").strip():
+        raise ValueError("operator is required")
+    new_cid  = str(new_contractor_id or "").strip()
+    new_name = (new_client_name or "").strip()
+    if not new_cid:
+        raise ValueError("new_contractor_id is required (ID-first; never resolved by name)")
+    if not new_name:
+        raise ValueError("new_client_name is required")
+    if not isinstance(buyer_override, dict):
+        raise ValueError("buyer_override must be a dict")
+
+    d = _load_for_edit(db_path, draft_id, expected_updated_at)
+    old_name = d.client_name or ""
+    old_cid  = d.client_contractor_id or ""
+
+    # Idempotent no-op — same contractor identity already on the draft.
+    if str(old_cid) == new_cid and old_name == new_name:
+        return d
+
+    gen = getattr(d, "clone_generation", 0) or 0
+    now = _now_utc_iso()
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_drafts_table(conn)
+        # Collision guard — NEVER auto-merge onto another draft already assigned to
+        # the target customer in this batch (duplicate identity → operator choice).
+        clash = conn.execute(
+            "SELECT id FROM proforma_drafts WHERE batch_id=? AND client_name=? "
+            "AND clone_generation=? AND id!=? LIMIT 1",
+            (d.batch_id, new_name, gen, int(draft_id)),
+        ).fetchone()
+        if clash is not None:
+            raise DraftConflict(
+                f"batch {d.batch_id!r} already has a draft for customer {new_name!r} "
+                f"(id={clash['id']}) at clone_generation={gen} — not auto-merged; "
+                "resolve the duplicate manually before reassigning the customer."
+            )
+        # Identity + bill-to projection ONLY. Line items, source_lines, prices,
+        # qty, batch_id and packing linkage are deliberately untouched.
+        conn.execute(
+            "UPDATE proforma_drafts SET client_name=?, client_contractor_id=?, "
+            "buyer_override_json=?, draft_state=?, updated_at=? WHERE id=?",
+            (
+                new_name, new_cid,
+                json.dumps(buyer_override, ensure_ascii=False, sort_keys=True),
+                _next_state_after_edit(d.draft_state), now, int(draft_id),
+            ),
+        )
+        conn.commit()
+
+    # Charge + reservation migration — OUTSIDE the identity txn, best-effort and
+    # DISCLOSED, mirroring migrate_draft_to_canonical_name's money-safe pattern.
+    charges_dropped: List[Dict[str, Any]] = []
+    if old_name != new_name:
+        try:
+            if charge_move is not None:
+                charges_dropped = charge_move(d.batch_id, old_name, new_name) or []
+        except Exception as _chg_exc:  # pragma: no cover - defensive
+            log.warning("change_draft_customer charge migration failed (non-fatal) "
+                        "%s→%s: %s", old_name, new_name, _chg_exc)
+        try:
+            if reservation_migrate is not None:
+                reservation_migrate(d.batch_id, old_name, new_name)
+        except Exception as _res_exc:  # pragma: no cover - defensive
+            log.warning("change_draft_customer reservation migration failed (non-fatal) "
+                        "%s→%s: %s", old_name, new_name, _res_exc)
+
+    _record_draft_event(
+        db_path, draft_id=int(draft_id),
+        event="draft_customer_changed",
+        detail_json=json.dumps({
+            "old_client_name":   old_name,
+            "new_client_name":   new_name,
+            "old_contractor_id": str(old_cid),
+            "new_contractor_id": new_cid,
+            "charges_dropped":   charges_dropped,   # non-empty only on defensive collision
+            "buyer_override":    buyer_override,
+        }, ensure_ascii=False, sort_keys=True),
+        operator=operator,
+    )
+    refreshed = get_draft_by_id(db_path, int(draft_id))
+    if refreshed is None:  # pragma: no cover - defensive
+        raise DraftNotFound(f"draft id={draft_id} not found after change_customer")
+    return refreshed
+
+
 # ── Phase 4 — lifecycle controls + line add/remove ─────────────────────────
 
 # Confirm tokens — the operator must include these literally in the
