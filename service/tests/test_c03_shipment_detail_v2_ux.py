@@ -83,11 +83,17 @@ def test_pending_action_component_present():
 
 
 def test_backend_pending_banner_present():
-    """An explicit operator-facing reason banner heads the backend-pending panels."""
+    """An explicit operator-facing reason banner heads the still-unwired panels.
+
+    Wave 3 wired SAD upload/recheck and moved the DHL correspondence banner to a
+    truthful 'DHL Console is the correspondence authority' note (testid
+    dhl-actions-console-note) — DHL WRITE actions stay on the standalone Console.
+    The PZ panel remains backend-pending (PZ wiring is a later wave)."""
     src = _src()
     assert "function BackendPendingBanner(" in src, "BackendPendingBanner missing"
     assert "BACKEND_GAP_REGISTER.md" in src, "must reference the backend gap register"
-    assert 'testid="dhl-actions-pending-note"' in src
+    # DHL correspondence is now a Console-boundary note, not 'backend-pending'.
+    assert 'testid="dhl-actions-console-note"' in src
     assert 'testid="pz-actions-pending-note"' in src
 
 

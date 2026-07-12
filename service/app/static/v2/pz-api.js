@@ -1376,5 +1376,87 @@
     putServiceProduct: (chargeType, body) =>
       _put(`${BASE}/proforma/service-products/${encodeURIComponent(chargeType)}`, body),
 
+    // ── Wave 3: Shipment Detail — SAD/ZC429 + canonical document manifest ────
+    // All routes are the EXISTING backend document authority (routes_upload.py,
+    // routes_dashboard.py, routes_dhl_clearance.py) — no new endpoints.
+
+    // GET /api/v1/upload/shipment/{batch_id}/documents
+    // Canonical document manifest. Each row carries the identity contract:
+    // document_id, document_type, authority, is_generated, is_current,
+    // original_filename, mime_type, can_view/can_download/can_replace/can_delete,
+    // view_url, download_url. Never leaks file_path.
+    getShipmentDocuments: (batchId) =>
+      _get(`${BASE}/upload/shipment/${encodeURIComponent(batchId)}/documents`),
+
+    // Direct browser URLs (NOT JSON-wrapped — used for window.open / <a href>).
+    // The manifest already returns view_url/download_url; these construct the
+    // same canonical registry-keyed content URL for callers that only hold ids.
+    viewDocument: (batchId, documentId) =>
+      `${BASE}/upload/shipment/${encodeURIComponent(batchId)}/documents/${encodeURIComponent(documentId)}/content?disposition=inline`,
+    downloadDocument: (batchId, documentId) =>
+      `${BASE}/upload/shipment/${encodeURIComponent(batchId)}/documents/${encodeURIComponent(documentId)}/content?disposition=attachment`,
+
+    // POST /api/v1/upload/shipment/{batch_id}/sad (multipart). Add/replace SAD.
+    // No JSON headers — the browser sets the multipart boundary. No X-Operator:
+    // the SAD upload route is api-key/session authed and derives its actor from
+    // the session (unlike replaceDocument, which needs explicit X-Operator for
+    // the supersede audit event). Returns { ok, data } or { ok:false, status }.
+    uploadSad: async (batchId, file) => {
+      const fd = new FormData();
+      fd.append('sad', file);
+      try {
+        const data = await _apiFetch(`${BASE}/upload/shipment/${encodeURIComponent(batchId)}/sad`, { method: 'POST', body: fd });
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, status: err.status || 0, error: err.message || String(err), type: err.type };
+      }
+    },
+
+    // POST /dashboard/batches/{batch_id}/recheck  body { mode: 'sad' }
+    // Parse/verify the SAD (role-gated: admin/logistics/accounts). _postM injects
+    // X-Operator for audit attribution.
+    recheckSad: (batchId) =>
+      _postM(`/dashboard/batches/${encodeURIComponent(batchId)}/recheck`, { mode: 'sad' }),
+
+    // DELETE /api/v1/upload/shipment/{batch_id}/documents/{document_id}
+    // Canonical delete-by-id. Sends X-Operator (audit) + X-Confirm-Delete:true
+    // (backend confirmation gate, in addition to the UI confirm dialog). Backend
+    // 409s for generated fiscal / customs (non-deletable), 428 without confirm.
+    deleteDocument: async (batchId, documentId) => {
+      const op = _resolveOperator();
+      const headers = { 'X-Confirm-Delete': 'true' };
+      if (op) headers['X-Operator'] = op;
+      try {
+        const data = await _apiFetch(
+          `${BASE}/upload/shipment/${encodeURIComponent(batchId)}/documents/${encodeURIComponent(documentId)}`,
+          { method: 'DELETE', headers });
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, status: err.status || 0, error: err.message || String(err), type: err.type };
+      }
+    },
+
+    // POST /api/v1/upload/shipment/{batch_id}/documents/{document_id}/replace
+    // (multipart). Audited supersede — old row is_current=0. X-Operator header
+    // for attribution. Extension must match the original.
+    replaceDocument: async (batchId, documentId, file) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      const op = _resolveOperator();
+      try {
+        const data = await _apiFetch(
+          `${BASE}/upload/shipment/${encodeURIComponent(batchId)}/documents/${encodeURIComponent(documentId)}/replace`,
+          { method: 'POST', body: fd, headers: op ? { 'X-Operator': op } : {} });
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, status: err.status || 0, error: err.message || String(err), type: err.type };
+      }
+    },
+
+    // GET /api/v1/dhl/clearance-status/{batch_id} — read-only DHL clearance
+    // status (correspondence WRITE actions stay on the standalone DHL Console).
+    getDhlClearanceStatus: (batchId) =>
+      _get(`${BASE}/dhl/clearance-status/${encodeURIComponent(batchId)}`),
+
   });
 })();
