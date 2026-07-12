@@ -150,8 +150,8 @@ class CustomerMaster:
     last_wfirma_sync_at:     Optional[str] = None    # ISO timestamp of last apply
     wfirma_sync_source:      Optional[str] = None    # "review_assign" | "manual" | "auto"
 
-    # B0 deep-enrichment 2026-05-17 — wFirma billing address (verified in
-    # live <contractor> response for id 75483443). Filled-when-empty.
+    # B0 deep-enrichment 2026-05-17 — wFirma billing address (verified
+    # against a real live <contractor> response). Filled-when-empty.
     bill_to_street:          Optional[str] = None
     bill_to_city:            Optional[str] = None
     bill_to_postal_code:     Optional[str] = None
@@ -932,7 +932,15 @@ def list_customers(db_path: Path,
     sql = "SELECT * FROM customer_master WHERE 1=1"
     params: list = []
     if q:
-        sql += " AND LOWER(bill_to_name) LIKE ?"; params.append(f"%{q.strip().lower()}%")
+        # Proforma customer-picker (PR 1a): match name OR NIP OR VAT-EU number OR
+        # wFirma contractor id, so the operator can find a customer by any stable
+        # identifier. Backward-compatible superset of the old name-only match.
+        like = f"%{q.strip().lower()}%"
+        sql += (" AND (LOWER(bill_to_name) LIKE ?"
+                " OR LOWER(COALESCE(nip, '')) LIKE ?"
+                " OR LOWER(COALESCE(vat_eu_number, '')) LIKE ?"
+                " OR LOWER(COALESCE(bill_to_contractor_id, '')) LIKE ?)")
+        params.extend([like, like, like, like])
     if country:
         sql += " AND country = ?"; params.append(country.upper())
     if risk_status:
