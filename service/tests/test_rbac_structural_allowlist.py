@@ -238,7 +238,8 @@ _AREA5_ROUTES: frozenset[str] = frozenset({
     "routes_wfirma_capabilities.py:POST:/customers/auto-resolve-preview/{batch_id:path}",
     "routes_wfirma_capabilities.py:POST:/customers/create-internal-test",
     "routes_wfirma_capabilities.py:POST:/customers/sync",
-    "routes_wfirma_capabilities.py:POST:/customers/sync-from-wfirma/apply",
+    # /customers/sync-from-wfirma/apply upgraded to require_admin (Wave 8
+    # hardening MEDIUM-1) — parity with routes_customer_master; now privileged.
     "routes_wfirma_capabilities.py:POST:/goods/adopt/{product_code:path}",
     "routes_wfirma_capabilities.py:POST:/goods/auto-register-preview/{batch_id:path}",
     "routes_wfirma_capabilities.py:POST:/goods/auto-register/{batch_id:path}",

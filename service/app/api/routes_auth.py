@@ -427,6 +427,21 @@ async def admin_set_role(user_id: str, body: SetRoleRequest, request: Request, u
     target = get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    # Last-admin lockout guard: an admin may not strip their OWN admin role when
+    # they are the last active admin — doing so would leave no one able to manage
+    # users (analogous to the self-target guards on reject/deactivate).
+    if (target["id"] == user["id"]
+            and target.get("role") == "admin"
+            and body.role != "admin"):
+        active_admins = [
+            u for u in list_users()
+            if (u.get("role") == "admin" and u.get("is_active"))
+        ]
+        if len(active_admins) <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot remove your own admin role — you are the last active admin.",
+            )
     set_user_role(user_id, body.role)
     _audit_user_action("role", user_id, request, target,
                        f"admin {user.get('email', user['id'])} changed role "
