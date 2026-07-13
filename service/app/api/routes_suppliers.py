@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from ..core.config import settings
@@ -40,6 +40,7 @@ from ..services.suppliers_db import (
     validate_supplier,
     create_supplier,
     get_supplier,
+    get_supplier_by_code,
     list_suppliers,
     update_supplier,
     delete_supplier,
@@ -289,6 +290,109 @@ def restore_supplier_endpoint(supplier_id: int, request: Request) -> JSONRespons
     audit_safe("suppliers", "restore", supplier_id,
                request=request, before=before, after=after)
     return JSONResponse(_supplier_dict(after))
+
+
+# ── CSV import / export (Wave 5) ──────────────────────────────────────────────
+_CSV_MAX_BYTES = 5 * 1024 * 1024  # 5 MB upload ceiling
+
+
+@router.get("/export/csv", dependencies=[_auth],
+            summary="Export suppliers as CSV (injection-safe, UTF-8 BOM)")
+def suppliers_export_csv(
+    active: Optional[bool] = Query(None, description="Filter; omit = active only"),
+    country: Optional[str] = Query(None),
+    limit: int = Query(10000, ge=1, le=100000),
+) -> Response:
+    from ..services import master_csv
+    init_db(_DB_PATH)
+    rows = [_supplier_dict(s) for s in
+            list_suppliers(_DB_PATH, active=active, country=country, limit=limit)]
+    body = master_csv.rows_to_csv(rows, master_csv.supplier_columns())
+    from datetime import datetime, timezone
+    fname = f"suppliers_export_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    return Response(
+        content=body, media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache", "Expires": "0",
+        },
+    )
+
+
+@router.post("/import/csv", dependencies=[_write_auth],
+             summary="Import suppliers from CSV (dry-run by default; ?commit=true to apply)")
+async def suppliers_import_csv(
+    request: Request,
+    file: UploadFile = File(...),
+    commit: bool = Query(False, description="false = preview only; true = apply upserts"),
+) -> JSONResponse:
+    """Upsert suppliers by ``supplier_code``. Preview (default) reports what
+    WOULD happen; commit applies via the existing create/update writers. Rows
+    are validated with ``validate_supplier``; unknown/system columns are ignored;
+    empty cells never blank stored values."""
+    fname = (file.filename or "").lower()
+    ctype = (file.content_type or "").lower()
+    if not (fname.endswith(".csv") or "csv" in ctype or ctype in
+            ("application/vnd.ms-excel", "application/octet-stream", "text/plain")):
+        raise HTTPException(status_code=422, detail="Upload must be a .csv file")
+    raw = await file.read()
+    if len(raw) > _CSV_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="CSV exceeds 5 MB limit")
+
+    from ..services import master_csv
+    init_db(_DB_PATH)
+    writable = master_csv.supplier_import_writable()
+    try:
+        parsed = master_csv.parse_csv(raw)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not parse CSV: {exc}")
+
+    created = updated = 0
+    rejected: list = []
+    for line, row in parsed:
+        data = master_csv.project_writable(row, writable)
+        code = data.get("supplier_code")
+        if not code:
+            rejected.append({"row": line, "reason": "missing supplier_code"})
+            continue
+        existing = get_supplier_by_code(_DB_PATH, code)
+        merged = {**({} if existing is None else _supplier_dict(existing)), **data}
+        errs = validate_supplier(merged)
+        if errs:
+            rejected.append({"row": line, "reason": "; ".join(errs)})
+            continue
+        if not commit:
+            if existing:
+                updated += 1
+            else:
+                created += 1
+            continue
+        try:
+            if existing is not None:
+                update_supplier(_DB_PATH, int(existing.id), data)
+                updated += 1
+            else:
+                create_supplier(_DB_PATH, data)
+                created += 1
+        except ValueError as exc:
+            rejected.append({"row": line, "reason": str(exc)})
+        except Exception as exc:
+            log.error("supplier csv import row=%d failed: %s", line, exc, exc_info=True)
+            rejected.append({"row": line, "reason": f"db error: {exc}"})
+
+    result = {
+        "mode": "commit" if commit else "preview",
+        "committed": bool(commit),
+        "total_rows": len(parsed),
+        "created": created, "updated": updated, "skipped": len(rejected),
+        "rejected": rejected,
+    }
+    if commit:
+        audit_safe("suppliers", "csv_import", "-", request=request,
+                   before=None, after={k: result[k] for k in
+                                       ("total_rows", "created", "updated", "skipped")})
+    return JSONResponse(result)
 
 
 # ── B0 (MDOC-cache) — sync from wFirma ────────────────────────────────────────
