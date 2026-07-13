@@ -312,8 +312,8 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
           {/* Error */}
           {error && (
             <div data-testid="cd-error" style={{
-              padding: 16, background: 'rgba(220,38,38,0.08)',
-              border: '1px solid rgba(220,38,38,0.2)', borderRadius: 6,
+              padding: 16, background: 'var(--badge-red-bg)',
+              border: '1px solid var(--badge-red-border)', borderRadius: 6,
               color: 'var(--badge-red-text, #991b1b)', fontSize: 12,
             }}>
               {error}
@@ -324,8 +324,8 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
           {validationErrors.length > 0 && (
             <div data-testid="cd-validation-errors" style={{
               padding: 12, marginBottom: 12,
-              background: 'rgba(220,38,38,0.08)',
-              border: '1px solid rgba(220,38,38,0.2)', borderRadius: 6,
+              background: 'var(--badge-red-bg)',
+              border: '1px solid var(--badge-red-border)', borderRadius: 6,
             }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 4 }}>
                 Validation failed
@@ -342,8 +342,8 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
           {saveError && (
             <div data-testid="cd-save-error" style={{
               padding: 12, marginBottom: 12,
-              background: 'rgba(220,38,38,0.08)',
-              border: '1px solid rgba(220,38,38,0.2)', borderRadius: 6,
+              background: 'var(--badge-red-bg)',
+              border: '1px solid var(--badge-red-border)', borderRadius: 6,
               fontSize: 12, color: 'var(--badge-red-text)',
             }}>
               Save failed: {saveError}
