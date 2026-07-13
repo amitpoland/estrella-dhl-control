@@ -365,9 +365,9 @@ function ShipmentDetailPage({ shipment, onBack }) {
   })();
 
   const stageColors = {
-    done:    { num: '#FFFFFF', numBg: '#22A06B', numBorder: '#22A06B', label: '#186838', bg: 'rgba(34, 160, 107, 0.06)' },
-    active:  { num: '#131C2E', numBg: '#D4B884', numBorder: '#B89968', label: '#7A5A20', bg: 'rgba(184, 153, 104, 0.10)' },
-    pending: { num: '#9CA8B8', numBg: '#FFFFFF', numBorder: '#D8DAE2', label: '#8A9AB0', bg: 'transparent' },
+    done:    { num: 'var(--badge-green-bg)', numBg: 'var(--badge-green-text)', numBorder: 'var(--badge-green-text)', label: 'var(--badge-green-text)', bg: 'var(--badge-green-bg)' },
+    active:  { num: 'var(--accent-text)', numBg: 'var(--accent-light)', numBorder: 'var(--accent)', label: 'var(--accent)', bg: 'var(--accent-subtle)' },
+    pending: { num: 'var(--text-3)', numBg: 'var(--card)', numBorder: 'var(--border)', label: 'var(--text-3)', bg: 'transparent' },
   };
 
   return (
@@ -476,7 +476,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
                 {!isLast && (
                   <div aria-hidden="true" style={{
                     flex: 1, height: 2, marginTop: -16,
-                    background: connectorDone ? '#22A06B' : 'var(--border)',
+                    background: connectorDone ? 'var(--badge-green-text)' : 'var(--border)',
                     transition: 'background 0.15s',
                   }} />
                 )}
@@ -540,7 +540,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
         {/* Next-action callout */}
         {nextAction && activeTab === 'overview' && (
           <div style={{
-            background: 'linear-gradient(135deg, #FBF5E4, #F8EDD0)',
+            background: 'var(--accent-subtle)',
             border: '1px solid var(--accent-border)',
             borderRadius: 10,
             padding: '16px 20px',
@@ -1064,12 +1064,12 @@ function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId
       <div data-testid="dhl-console-entry" style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
         padding: '14px 20px', borderRadius: 10, marginBottom: 4,
-        background: 'linear-gradient(135deg, #EDF4FF, #E0EEFF)',
-        border: '1px solid #B8D0FF',
+        background: 'var(--badge-blue-bg)',
+        border: '1px solid var(--badge-blue-border)',
       }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#1A40A0', marginBottom: 2 }}>DHL Console (standalone authority)</div>
-          <div style={{ fontSize: 12, color: '#4060B8', lineHeight: 1.4 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--badge-blue-text)', marginBottom: 2 }}>DHL Console (standalone authority)</div>
+          <div style={{ fontSize: 12, color: 'var(--badge-blue-text)', lineHeight: 1.4 }}>
             All DHL clearance actions (inbox scan, reply send, approvals) run on the DHL Console page.
             This sub-tab shows the current clearance status only.
           </div>
@@ -1081,7 +1081,7 @@ function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
             padding: '8px 18px', borderRadius: 7, fontSize: 12, fontWeight: 700,
-            background: '#1A40A0', color: '#fff', textDecoration: 'none',
+            background: 'var(--badge-blue-text)', color: 'var(--card)', textDecoration: 'none',
             border: 'none', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap',
           }}
         >Open DHL Console ↗</a>
@@ -1647,11 +1647,11 @@ function TimelineTab({ d, detailLoading }) {
                 <div style={{
                   position: 'absolute', left: -28,
                   width: 20, height: 20, borderRadius: 10,
-                  background: '#22A06B', border: '2px solid #22A06B',
+                  background: 'var(--badge-green-text)', border: '2px solid var(--badge-green-text)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   zIndex: 1, top: 0, flexShrink: 0,
                 }}>
-                  <span style={{ fontSize: 10, color: '#fff', fontWeight: 800 }}>✓</span>
+                  <span style={{ fontSize: 10, color: 'var(--badge-green-bg)', fontWeight: 800 }}>✓</span>
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{_humanizeEvent(e.event)}</div>

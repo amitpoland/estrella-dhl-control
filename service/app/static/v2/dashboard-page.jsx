@@ -155,13 +155,13 @@ function DashboardPage({ onViewShipment }) {
 
       {/* Filter bar (client-side over live data) */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: 11, color: '#8A8278', marginRight: 4 }}>Filter:</span>
+        <span style={{ fontSize: 11, color: 'var(--text-3)', marginRight: 4 }}>Filter:</span>
         {OVERALL_FILTERS.map(f => (
-          <button key={f} onClick={() => setFilter(f)} style={{
+          <button key={f} data-testid={`shipments-hub-filter-${f}`} onClick={() => setFilter(f)} style={{
             padding: '4px 10px', borderRadius: 20,
             border: filter === f ? `1px solid ${GOLD}` : '1px solid #E4DDD2',
-            background: filter === f ? GOLD + '22' : 'transparent',
-            color: filter === f ? '#18160F' : '#6A6258',
+            background: filter === f ? 'var(--accent-subtle)' : 'transparent',
+            color: filter === f ? 'var(--text)' : 'var(--text-2)',
             fontSize: 11, fontWeight: filter === f ? 600 : 400, cursor: 'pointer',
             textTransform: f === 'all' ? 'none' : 'capitalize',
           }}>{f === 'all' ? 'All' : f}</button>
@@ -211,7 +211,7 @@ function DashboardPage({ onViewShipment }) {
                           <a href={trackUrl} target="_blank" rel="noopener noreferrer"
                             title={row.tracking_label || 'Open carrier tracking'}
                             style={{
-                              color: '#1A5FA8', fontSize: 12, fontWeight: 600,
+                              color: 'var(--accent)', fontSize: 12, fontWeight: 600,
                               fontFamily: 'monospace', textDecoration: 'underline',
                               textDecorationStyle: 'dotted',
                             }}>{label} ↗</a>
@@ -219,21 +219,21 @@ function DashboardPage({ onViewShipment }) {
                           <span style={{ fontSize: 12, fontWeight: 600, fontFamily: 'monospace', color: 'var(--text)' }}>{label}</span>
                         )}
                       </td>
-                      <td style={{ padding: '10px 12px', color: '#18160F' }}>
+                      <td style={{ padding: '10px 12px', color: 'var(--text)' }}>
                         <span style={{
                           display: 'inline-block', padding: '1px 6px',
-                          background: row.carrier === 'DHL' ? '#EBF3FB' : row.carrier === 'FedEx' ? '#F0EBFB' : '#F0EFEB',
+                          background: row.carrier === 'DHL' ? 'var(--badge-blue-bg)' : row.carrier === 'FedEx' ? 'var(--badge-purple-bg)' : 'var(--badge-neutral-bg)',
                           borderRadius: 4, fontSize: 10, fontWeight: 700,
-                          color: row.carrier === 'DHL' ? '#1A5FA8' : row.carrier === 'FedEx' ? '#5A1AA8' : '#5A5550',
+                          color: row.carrier === 'DHL' ? 'var(--badge-blue-text)' : row.carrier === 'FedEx' ? 'var(--badge-purple-text)' : 'var(--badge-neutral-text)',
                         }}>{_fmt(row.carrier)}</span>
                       </td>
                       <td style={{ padding: '10px 12px' }}>{row.dhl_status ? <Badge status={row.dhl_status} small /> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
-                      <td style={{ padding: '10px 12px', color: '#6A6258', fontSize: 11 }}>{_fmt(row.action_reason)}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--text-2)', fontSize: 11 }}>{_fmt(row.action_reason)}</td>
                       <td style={{ padding: '10px 12px' }}>{row.sad_status ? <Badge status={row.sad_status} small /> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
-                      <td style={{ padding: '10px 12px', color: '#18160F', fontSize: 11, fontFamily: 'monospace' }}>{_fmt(row.mrn)}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--text)', fontSize: 11, fontFamily: 'monospace' }}>{_fmt(row.mrn)}</td>
                       <td style={{ padding: '10px 12px' }}>{row.pz_status ? <Badge status={row.pz_status} small /> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
-                      <td style={{ padding: '10px 12px', color: '#18160F', fontWeight: 500, textAlign: 'right' }}>{_money(row.net)}</td>
-                      <td style={{ padding: '10px 12px', color: '#18160F', fontWeight: 500, textAlign: 'right' }}>{_money(row.gross)}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right' }}>{_money(row.net)}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right' }}>{_money(row.gross)}</td>
                       <td style={{ padding: '10px 12px', color: GOLD, fontWeight: 700, textAlign: 'right' }}>{_money(row.duty)}</td>
                       <td style={{ padding: '10px 12px' }}>{row.status ? <Badge status={row.status} small /> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
                     </tr>

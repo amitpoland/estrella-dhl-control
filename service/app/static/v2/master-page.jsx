@@ -238,7 +238,7 @@ const STATIC_ROLES_NAMES = [
 ];
 
 // ── Disabled-reason messages for write buttons
-const WRITE_DISABLED_REASON = 'Write operations not yet wired — Sprint 38 is read-only authority conversion';
+const WRITE_DISABLED_REASON = 'This operation is not available for this entity type';
 const ROLES_DISABLED_REASON = 'No backend endpoint for role management — roles are system-defined';
 const USERS_WRITE_DISABLED_REASON = 'User write operations require admin endpoints not yet wired to this page';
 const WFIRMA_VAT_SYNC_DISABLED = 'Backend pending: wFirma VAT sync endpoint missing';
