@@ -93,6 +93,7 @@ from .api.routes_master_data import (
     carriers_config_router as md_carriers_config_router,
     designs_router as md_designs_router,
     audit_router as md_audit_router,
+    capabilities_router as md_capabilities_router,
 )
 from .api.routes_box_types import box_types_router  # Phase D: box_types CRUD (WF4.5)
 from .api.routes_master_jewelry import (
@@ -552,6 +553,7 @@ app.include_router(md_fx_router)                    # MasterData-B8: FX rates (R
 app.include_router(md_carriers_config_router)       # MasterData-B9: Carrier config (LOCAL, NON-SECRET; runtime untouched)
 app.include_router(md_designs_router)                # B-MD2 (MDOC): Designs master (LOCAL, additive; product_identity_engine read-only consumer)
 app.include_router(md_audit_router)                  # Phase 1: unified master-data audit (read-only query surface)
+app.include_router(md_capabilities_router)           # Wave 7: per-domain master capability contract (read-only descriptor)
 app.include_router(mj_metals_router)                 # Phase 3: metals master (LOCAL valuation reference)
 app.include_router(mj_stones_router)                 # Phase 3: stones master (LOCAL catalog, cert reference only)
 app.include_router(mj_warehouses_router)             # Phase 3: warehouses master (LOCAL stock-location authority)

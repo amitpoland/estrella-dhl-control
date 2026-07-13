@@ -78,6 +78,10 @@ VALID_OPS = frozenset({
     #   "hard_delete" — permanent removal; requires explicit flag + role.
     "delete", "soft_delete", "restore", "hard_delete",
     "transition",
+    # User-management admin actions (auth authority) — recorded on the unified
+    # trail so admin approvals / rejections / role promotions / (de)activations
+    # are queryable by op. Additive; existing callers are unaffected.
+    "approve", "reject", "role", "activate", "deactivate",
 })
 
 

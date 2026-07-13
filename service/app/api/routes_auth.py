@@ -53,6 +53,7 @@ from ..services.email_service import (
     make_password_reset_email,
 )
 from ..core.config import settings
+from ..core.audit import audit_safe
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -360,12 +361,31 @@ async def admin_get_active_reset_code(
     }
 
 
+# ── Admin user-management audit ───────────────────────────────────────────────
+# Every admin action below records exactly ONE row in the unified master_audit
+# trail (entity="users") AFTER the primary write succeeds. audit_safe is
+# non-fatal by contract (it never raises; a failed audit returns -2 and the
+# user-management write + response are unaffected). before/after payloads are
+# passed through _safe_user, so password_hash / tokens are NEVER audited.
+def _audit_user_action(op, user_id, request, before, reason):
+    after_raw = get_user_by_id(user_id)
+    audit_safe(
+        "users", op, user_id,
+        request=request,
+        before=_safe_user(before) if before else None,
+        after=_safe_user(after_raw) if after_raw else None,
+        reason=reason,
+    )
+
+
 @router.post("/users/{user_id}/approve")
-async def admin_approve_user(user_id: str, user: dict = Depends(require_admin)):
+async def admin_approve_user(user_id: str, request: Request, user: dict = Depends(require_admin)):
     target = get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     approve_user(user_id)
+    _audit_user_action("approve", user_id, request, target,
+                       f"admin {user.get('email', user['id'])} approved user account")
 
     # Queue approval email (non-blocking)
     try:
@@ -381,13 +401,15 @@ async def admin_approve_user(user_id: str, user: dict = Depends(require_admin)):
 
 
 @router.post("/users/{user_id}/reject")
-async def admin_reject_user(user_id: str, user: dict = Depends(require_admin)):
+async def admin_reject_user(user_id: str, request: Request, user: dict = Depends(require_admin)):
     target = get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     if target["id"] == user["id"]:
         raise HTTPException(status_code=400, detail="Cannot reject your own account")
     reject_user(user_id)
+    _audit_user_action("reject", user_id, request, target,
+                       f"admin {user.get('email', user['id'])} rejected user account")
 
     # Queue rejection email (non-blocking)
     try:
@@ -401,29 +423,36 @@ async def admin_reject_user(user_id: str, user: dict = Depends(require_admin)):
 
 
 @router.post("/users/{user_id}/role")
-async def admin_set_role(user_id: str, body: SetRoleRequest, user: dict = Depends(require_admin)):
+async def admin_set_role(user_id: str, body: SetRoleRequest, request: Request, user: dict = Depends(require_admin)):
     target = get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     set_user_role(user_id, body.role)
+    _audit_user_action("role", user_id, request, target,
+                       f"admin {user.get('email', user['id'])} changed role "
+                       f"'{target.get('role')}' -> '{body.role}'")
     return {"ok": True, "message": f"Role updated to '{body.role}'"}
 
 
 @router.post("/users/{user_id}/deactivate")
-async def admin_deactivate_user(user_id: str, user: dict = Depends(require_admin)):
+async def admin_deactivate_user(user_id: str, request: Request, user: dict = Depends(require_admin)):
     target = get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     if target["id"] == user["id"]:
         raise HTTPException(status_code=400, detail="Cannot deactivate your own account")
     set_user_active(user_id, False)
+    _audit_user_action("deactivate", user_id, request, target,
+                       f"admin {user.get('email', user['id'])} deactivated user")
     return {"ok": True}
 
 
 @router.post("/users/{user_id}/activate")
-async def admin_activate_user(user_id: str, user: dict = Depends(require_admin)):
+async def admin_activate_user(user_id: str, request: Request, user: dict = Depends(require_admin)):
     target = get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     set_user_active(user_id, True)
+    _audit_user_action("activate", user_id, request, target,
+                       f"admin {user.get('email', user['id'])} activated user")
     return {"ok": True}
