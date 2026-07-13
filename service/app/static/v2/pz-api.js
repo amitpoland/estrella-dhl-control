@@ -96,6 +96,43 @@
   const _put   = (url, body)  => _callM('PUT',   url, body);
   const _del   = (url)        => _callM('DELETE', url);
 
+  // Blob download reusing the same cookie auth as _apiFetch (credentials:'include').
+  // Fetches the file, triggers a client-side download, revokes the object URL.
+  async function _download(url, fallbackName) {
+    let res;
+    try {
+      res = await fetch(url, { credentials: 'include' });
+    } catch (_) {
+      return { ok: false, error: 'Service unreachable — check that the backend is running.' };
+    }
+    if (res.status === 401 || res.status === 403) return { ok: false, error: 'Session expired or access denied.' };
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    const blob = await res.blob();
+    let name = fallbackName;
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = /filename="?([^"]+)"?/.exec(cd);
+    if (m) name = m[1];
+    const objUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl; a.download = name || 'export.csv';
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(objUrl);
+    return { ok: true, filename: name };
+  }
+
+  // Multipart upload reusing _apiFetch auth; returns parsed JSON (preview/commit result).
+  async function _uploadCsv(url, file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const data = await _apiFetch(url, { method: 'POST', body: fd });
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || 'Upload failed', type: err && err.type };
+    }
+  }
+
   const BASE = '/api/v1';
 
   // ── Shared, in-flight-aware cache for the LIVE Client-Balance roster ────────
@@ -427,6 +464,24 @@
     refreshCustomerDictionaries: () =>
       _postM(`${BASE}/customer-master/dictionaries/refresh`, {}),
 
+    // DELETE /api/v1/customer-master/{client_key} — soft-delete (default) or ?hard=true
+    deleteCustomerMaster: (clientKey, hard) =>
+      _del(`${BASE}/customer-master/${encodeURIComponent(clientKey)}${hard ? '?hard=true' : ''}`),
+
+    // POST /api/v1/customer-master/{client_key}/restore
+    restoreCustomerMaster: (clientKey) =>
+      _postM(`${BASE}/customer-master/${encodeURIComponent(clientKey)}/restore`, {}),
+
+    // GET /api/v1/customer-master/export/csv — triggers a client-side download
+    exportCustomersCsv: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _download(`${BASE}/customer-master/export/csv${qs}`, 'customer_master_export.csv');
+    },
+
+    // POST /api/v1/customer-master/import/csv — dry-run unless commit=true
+    importCustomersCsv: (file, commit) =>
+      _uploadCsv(`${BASE}/customer-master/import/csv${commit ? '?commit=true' : ''}`, file),
+
     // ── Packing — link-as-sales backfill ─────────────────────────────────
     // GET /api/v1/packing/{batch_id}/packing-documents
     // Returns { ok, data: { batch_id, count, documents: [{ id,
@@ -677,6 +732,39 @@
       const qs = params ? '?' + new URLSearchParams(params).toString() : '';
       return _get(`${BASE}/suppliers${qs}`);
     },
+
+    // GET /api/v1/suppliers/{id}
+    getSupplier: (id) => _get(`${BASE}/suppliers/${encodeURIComponent(id)}`),
+
+    // POST /api/v1/suppliers/ — create; body incl. supplier_code, name, country
+    createSupplier: (body) => _postM(`${BASE}/suppliers/`, body),
+
+    // PUT /api/v1/suppliers/{id} — partial update merges over existing
+    saveSupplier: (id, body) => _put(`${BASE}/suppliers/${encodeURIComponent(id)}`, body),
+
+    // DELETE /api/v1/suppliers/{id} — soft-delete (default) or ?hard=true
+    deleteSupplier: (id, hard) =>
+      _del(`${BASE}/suppliers/${encodeURIComponent(id)}${hard ? '?hard=true' : ''}`),
+
+    // POST /api/v1/suppliers/{id}/restore
+    restoreSupplier: (id) => _postM(`${BASE}/suppliers/${encodeURIComponent(id)}/restore`, {}),
+
+    // GET /api/v1/suppliers/sync-from-wfirma/preview — read-only proposals
+    previewWfirmaSyncSupplier: () => _get(`${BASE}/suppliers/sync-from-wfirma/preview`),
+
+    // POST /api/v1/suppliers/sync-from-wfirma/apply — writes ONLY to local suppliers
+    applyWfirmaSyncSupplier: (wfirmaIds) =>
+      _postM(`${BASE}/suppliers/sync-from-wfirma/apply`, { wfirma_ids: wfirmaIds }),
+
+    // GET /api/v1/suppliers/export/csv — triggers a client-side download
+    exportSuppliersCsv: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _download(`${BASE}/suppliers/export/csv${qs}`, 'suppliers_export.csv');
+    },
+
+    // POST /api/v1/suppliers/import/csv — dry-run unless commit=true
+    importSuppliersCsv: (file, commit) =>
+      _uploadCsv(`${BASE}/suppliers/import/csv${commit ? '?commit=true' : ''}`, file),
 
     // GET /api/v1/product-local/[?active=&limit=]
     // Returns { count, items: [{product_code, hs_code_override, unit_override, ...}] }
