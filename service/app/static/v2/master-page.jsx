@@ -764,6 +764,188 @@ function _Stat({ label, value, tone, testid }) {
   );
 }
 
+// ── Wave 5: New Client mini-modal ────────────────────────────────────────────
+// Creates a Customer Master record keyed to the wFirma contractor ID.
+// Minimum required: contractor_id (the URL key), bill_to_name, country.
+function NewClientModal({ onClose, onSaved }) {
+  const [form, setFormNc]  = React.useState({ contractor_id: '', bill_to_name: '', country: '' });
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError]   = React.useState(null);
+  const [errs, setErrs]     = React.useState({});
+
+  function ncSet(k, v) {
+    setFormNc(prev => Object.assign({}, prev, { [k]: v }));
+    setError(null);
+    setErrs(prev => Object.assign({}, prev, { [k]: null }));
+  }
+
+  async function ncSave() {
+    const ve = {};
+    if (!form.contractor_id.trim())  ve.contractor_id  = 'Required — numeric wFirma contractor ID';
+    if (!form.bill_to_name.trim())   ve.bill_to_name   = 'Required';
+    const c = form.country.trim();
+    if (!c)              ve.country = 'Required';
+    else if (c.length !== 2) ve.country = '2-letter ISO country code (e.g. PL)';
+    if (Object.keys(ve).length) { setErrs(ve); return; }
+    setSaving(true);
+    const res = await PzApi.saveCustomerMaster(form.contractor_id.trim(), {
+      bill_to_name: form.bill_to_name.trim(),
+      country: form.country.trim().toUpperCase(),
+    });
+    setSaving(false);
+    if (res.ok) { if (onSaved) onSaved(); onClose(); }
+    else setError(res.error || (res.data && res.data.detail) || 'Create failed');
+  }
+
+  const ncInpStyle = {
+    width: '100%', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box',
+    border: '1px solid var(--border)', borderRadius: 6,
+    background: 'var(--card)', color: 'var(--text)',
+  };
+
+  function ncField(label, key, placeholder, hint) {
+    const hasErr = !!errs[key];
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', display: 'block', marginBottom: 4 }}>{label}</label>
+        <input data-testid={'nc-' + key}
+          style={Object.assign({}, ncInpStyle, { borderColor: hasErr ? 'var(--badge-red-border, rgba(220,38,38,0.7))' : 'var(--border)' })}
+          value={form[key]} placeholder={placeholder || ''}
+          onChange={e => ncSet(key, e.target.value)} />
+        {hasErr && <div style={{ fontSize: 10, color: 'var(--badge-red-text, rgba(220,38,38,0.9))', marginTop: 2 }}>{errs[key]}</div>}
+        {hint && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{hint}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="new-client-modal" onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1050,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--bg)', borderRadius: 10, maxWidth: 460, width: '100%',
+        border: '1px solid var(--border)', boxShadow: '0 12px 40px rgba(0,0,0,0.25)',
+        padding: 24, color: 'var(--text)',
+      }}>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>New Client</div>
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 16 }}>
+          Creates a Customer Master record. Use Edit for full field access after creation.
+        </div>
+        {ncField('wFirma contractor ID *', 'contractor_id', 'e.g. 12345678',
+          'Numeric ID from wFirma (Settings → Contractors → ID column)')}
+        {ncField('Company name *', 'bill_to_name', 'Legal company name')}
+        {ncField('Country * (ISO-2)', 'country', 'PL')}
+        {error && (
+          <div style={{ marginBottom: 12, fontSize: 12, color: 'var(--badge-red-text, rgba(220,38,38,0.9))', padding: '8px 10px', background: 'var(--badge-red-bg, rgba(220,38,38,0.08))', border: '1px solid var(--badge-red-border, rgba(220,38,38,0.2))', borderRadius: 6 }}>
+            {error}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <Btn variant="outline" small onClick={onClose} data-testid="nc-cancel">Cancel</Btn>
+          <Btn variant="gold" small onClick={ncSave} disabled={saving} data-testid="nc-save">
+            {saving ? 'Creating...' : 'Save to Customer Master'}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Wave 5: Import CSV preview / apply modal ──────────────────────────────────
+function _ImportPreviewModal({ entityId, preview, applying, onApply, onClose }) {
+  const d = preview || {};
+  const rejected = d.rejected || [];
+  const dupAdvisories = d.duplicate_vat_advisories || [];
+  return (
+    <div data-testid="import-preview-modal" onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1050,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--bg)', borderRadius: 10, maxWidth: 560, width: '100%', maxHeight: '80vh',
+        overflowY: 'auto', border: '1px solid var(--border)', boxShadow: '0 12px 40px rgba(0,0,0,0.25)',
+        padding: 24, color: 'var(--text)',
+      }}>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Import CSV — preview</div>
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 14 }}>
+          Dry-run complete. Review, then click <b>Apply import</b> to write changes.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 14 }}>
+          {[['Total rows', d.total_rows, 'import-preview-total'], ['Will create', d.created, 'import-preview-created'], ['Will update', d.updated, 'import-preview-updated'], ['Skipped', d.skipped, 'import-preview-skipped']].map(pair => (
+            <div key={pair[0]} style={{ padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }}>
+              <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 }}>{pair[0]}</div>
+              <div data-testid={pair[2]} style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>{pair[1] != null ? pair[1] : '—'}</div>
+            </div>
+          ))}
+        </div>
+        {rejected.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-red-text, rgba(220,38,38,0.9))', marginBottom: 6 }}>
+              {rejected.length} rejected row(s)
+            </div>
+            <div style={{ maxHeight: 120, overflowY: 'auto', fontSize: 11 }}>
+              {rejected.map((r, i) => (
+                <div key={i} style={{ padding: '3px 0', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>
+                  Row {r.row}: {r.reason || r.error || String(r)}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {dupAdvisories.length > 0 && (
+          <div style={{ marginBottom: 12, padding: 10, background: 'var(--badge-amber-bg, rgba(212,168,83,0.08))', border: '1px solid var(--badge-amber-border, rgba(212,168,83,0.3))', borderRadius: 6 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 4 }}>
+              {dupAdvisories.length} duplicate NIP advisory/ies (advisory only — will still import)
+            </div>
+            {dupAdvisories.slice(0, 5).map((a, i) => (
+              <div key={i} style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 1 }}>
+                Row {a.row}: NIP {a.nip} exists in contractor IDs {(a.existing_contractor_ids || []).join(', ')}
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <Btn variant="outline" small onClick={onClose} data-testid="import-cancel">Cancel</Btn>
+          <Btn variant="gold" small onClick={onApply} disabled={applying} data-testid="import-apply">
+            {applying ? 'Applying...' : 'Apply import (' + ((d.created || 0) + (d.updated || 0)) + ' rows)'}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Wave 5: Soft-delete confirm dialog ────────────────────────────────────────
+function _DeleteConfirmMini({ record, entityId, onConfirm, onCancel }) {
+  const label = entityId === 'clients'
+    ? (record.bill_to_name || record.bill_to_contractor_id || record.id)
+    : (record.name || record.id);
+  return (
+    <div data-testid="delete-confirm-dialog" onClick={onCancel} style={{
+      position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(0,0,0,0.45)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
+        maxWidth: 400, width: '100%', padding: 20,
+        boxShadow: '0 8px 30px rgba(0,0,0,0.25)', color: 'var(--text)',
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>Soft-delete record?</div>
+        <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 16 }}>
+          <b>{label}</b> will be soft-deleted and hidden from default lists. It can be restored later.
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <Btn variant="outline" small onClick={onCancel} data-testid="delete-confirm-cancel">Cancel</Btn>
+          <Btn variant="danger" small onClick={onConfirm} data-testid="delete-confirm-ok">
+            Soft-delete
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MasterPage() {
   const [entity, setEntity] = React.useState('clients');
   const [role, setRole] = React.useState('admin');
@@ -778,6 +960,26 @@ function MasterPage() {
   // Box Profile master: edit/create modal record (null = closed, {} = new).
   const [boxEdit, setBoxEdit] = React.useState(null);
   const [seedingBoxes, setSeedingBoxes] = React.useState(false);
+
+  // ── Wave 5 state ──────────────────────────────────────────────────────────
+  // supplierModal: null (closed) | { supplierId: null (create) | id (edit) }
+  const [supplierModal, setSupplierModal]         = React.useState(null);
+  const [showNewClient, setShowNewClient]         = React.useState(false);
+  // importState: null | { entityId, file, preview }
+  const [importState, setImportState]             = React.useState(null);
+  const [importApplying, setImportApplying]       = React.useState(false);
+  // deleteConfirm: null | { entityId, record }
+  const [deleteConfirm, setDeleteConfirm]         = React.useState(null);
+  const [wfirmaSyncClients, setWfirmaSyncClients]     = React.useState({
+    previewing: false, applying: false, proposals: null, selectedIds: [], error: null,
+  });
+  const [wfirmaSyncSuppliers, setWfirmaSyncSuppliers] = React.useState({
+    previewing: false, applying: false, proposals: null, selectedIds: [], error: null,
+  });
+  // mpToast: null | { msg, type: 'ok' | 'error' }
+  const [mpToast, setMpToast]                     = React.useState(null);
+  // reloadTick: bumped by handleReload to re-trigger the load effect after write operations
+  const [reloadTick, setReloadTick]               = React.useState(0);
 
   // Per-entity data cache: { entityId: { records: [], loading: bool, error: string|null } }
   const [cache, setCache] = React.useState({});
@@ -816,7 +1018,7 @@ function MasterPage() {
     }).catch(err => {
       setCache(prev => ({ ...prev, [entity]: { records: [], loading: false, error: String(err) } }));
     });
-  }, [entity]);
+  }, [entity, reloadTick]);
 
   // ── Filtered records
   const records = (entityState.records || []).filter(r => {
@@ -841,16 +1043,11 @@ function MasterPage() {
   };
 
   // ── Reload current entity
+  // Deletes cache[entity] so the load effect's "skip if already loaded" guard passes,
+  // then bumps reloadTick to actually re-run the effect.
   const handleReload = () => {
-    setCache(prev => ({ ...prev, [entity]: { records: [], loading: false, error: null } }));
-    // Re-trigger useEffect by clearing cache (useEffect checks cache[entity])
-    setTimeout(() => {
-      setCache(prev => {
-        const next = { ...prev };
-        delete next[entity];
-        return next;
-      });
-    }, 0);
+    setCache(prev => { const n = { ...prev }; delete n[entity]; return n; });
+    setReloadTick(t => t + 1);
   };
 
   // ── Phase 3B: contractor scan callbacks (clients tab only)
@@ -878,6 +1075,104 @@ function MasterPage() {
     }
   }, []);
 
+  // ── Wave 5: toast auto-clear ──────────────────────────────────────────────
+  React.useEffect(() => {
+    if (!mpToast) return;
+    const t = setTimeout(() => setMpToast(null), 4500);
+    return () => clearTimeout(t);
+  }, [mpToast]);
+
+  // ── Wave 5: Export CSV (triggers browser download via PzApi._download) ────
+  const handleExportCsv = async (eid) => {
+    let res;
+    if (eid === 'clients')        res = await PzApi.exportCustomersCsv();
+    else if (eid === 'suppliers') res = await PzApi.exportSuppliersCsv();
+    else return;
+    if (res && !res.ok) setMpToast({ msg: 'Export failed: ' + (res.error || 'Unknown error'), type: 'error' });
+  };
+
+  // ── Wave 5: Import CSV — dry-run preview, then apply ─────────────────────
+  const handleImportSelect = async (eid, file) => {
+    if (!file) return;
+    setImportApplying(false);
+    let res;
+    if (eid === 'clients')        res = await PzApi.importCustomersCsv(file, false);
+    else if (eid === 'suppliers') res = await PzApi.importSuppliersCsv(file, false);
+    if (!res) return;
+    if (res.ok) setImportState({ entityId: eid, file, preview: res.data });
+    else setMpToast({ msg: 'Import preview failed: ' + (res.error || 'Unknown error'), type: 'error' });
+  };
+
+  const handleImportApply = async () => {
+    if (!importState) return;
+    setImportApplying(true);
+    let res;
+    if (importState.entityId === 'clients')        res = await PzApi.importCustomersCsv(importState.file, true);
+    else if (importState.entityId === 'suppliers') res = await PzApi.importSuppliersCsv(importState.file, true);
+    setImportApplying(false);
+    if (res && res.ok) {
+      const d = res.data || {};
+      setMpToast({
+        msg: 'Import applied: ' + (d.created || 0) + ' created, ' + (d.updated || 0) + ' updated, ' + (d.skipped || 0) + ' skipped, ' + ((d.rejected || []).length) + ' rejected',
+        type: 'ok',
+      });
+      setImportState(null);
+      handleReload();
+    } else {
+      setMpToast({ msg: 'Import apply failed: ' + (res ? (res.error || 'Unknown error') : 'No response'), type: 'error' });
+    }
+  };
+
+  // ── Wave 5: Soft delete ───────────────────────────────────────────────────
+  const handleDeleteRecord = async (eid, record) => {
+    let res;
+    if (eid === 'clients') {
+      const key = record.bill_to_contractor_id || record.id;
+      res = await PzApi.deleteCustomerMaster(key, false);
+    } else if (eid === 'suppliers') {
+      res = await PzApi.deleteSupplier(record.id, false);
+    }
+    setDeleteConfirm(null);
+    if (res && res.ok) {
+      setMpToast({ msg: 'Record soft-deleted', type: 'ok' });
+      handleReload();
+    } else {
+      setMpToast({ msg: 'Delete failed: ' + (res ? (res.error || 'Unknown') : 'No response'), type: 'error' });
+    }
+  };
+
+  // ── Wave 5: wFirma sync preview → apply ──────────────────────────────────
+  const handleWfirmaSyncPreview = async (eid) => {
+    const setter = eid === 'clients' ? setWfirmaSyncClients : setWfirmaSyncSuppliers;
+    setter(s => Object.assign({}, s, { previewing: true, proposals: null, error: null, selectedIds: [] }));
+    let res;
+    if (eid === 'clients')        res = await PzApi.previewWfirmaSyncCustomer();
+    else if (eid === 'suppliers') res = await PzApi.previewWfirmaSyncSupplier();
+    if (res && res.ok) {
+      setter(s => Object.assign({}, s, { previewing: false, proposals: res.data.proposals || [] }));
+    } else {
+      setter(s => Object.assign({}, s, { previewing: false, error: (res && res.error) || 'Preview failed' }));
+    }
+  };
+
+  const handleWfirmaSyncApply = async (eid) => {
+    const syncData = eid === 'clients' ? wfirmaSyncClients : wfirmaSyncSuppliers;
+    const setter   = eid === 'clients' ? setWfirmaSyncClients : setWfirmaSyncSuppliers;
+    if (!syncData.selectedIds.length) return;
+    setter(s => Object.assign({}, s, { applying: true, error: null }));
+    let res;
+    if (eid === 'clients')        res = await PzApi.applyWfirmaSyncCustomer(syncData.selectedIds);
+    else if (eid === 'suppliers') res = await PzApi.applyWfirmaSyncSupplier(syncData.selectedIds);
+    setter(s => Object.assign({}, s, { applying: false }));
+    if (res && res.ok) {
+      setMpToast({ msg: 'wFirma sync applied successfully — reloading...', type: 'ok' });
+      setter(s => Object.assign({}, s, { proposals: null, selectedIds: [] }));
+      handleReload();
+    } else {
+      setter(s => Object.assign({}, s, { error: (res && res.error) || 'Apply failed' }));
+    }
+  };
+
   return (
     <div data-testid="master-data-page" style={{ padding: '20px 32px', overflowY: 'auto', flex: 1 }}>
       {/* Role banner */}
@@ -889,7 +1184,7 @@ function MasterPage() {
               padding: '4px 12px', background: role === r ? 'var(--accent)' : 'transparent',
               border: '1px solid ' + (role === r ? 'var(--accent)' : 'var(--border)'),
               borderRadius: 4, fontSize: 11, fontWeight: 600,
-              color: role === r ? '#fff' : 'var(--text-2)', cursor: 'pointer', textTransform: 'capitalize',
+              color: role === r ? 'var(--accent-text)' : 'var(--text-2)', cursor: 'pointer', textTransform: 'capitalize',
             }}>{r}</button>
           ))}
         </div>
@@ -933,13 +1228,48 @@ function MasterPage() {
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <Input data-testid="master-search" value={search} onChange={e => setSearch(e.target.value)} placeholder={'Search ' + currentEntity.label.toLowerCase() + '…'} />
-              <Btn variant="outline" small disabled title={writeDisabledReason(entity)} data-testid="btn-export-csv">{'↓'} Export CSV</Btn>
-              <Btn variant="outline" small disabled title={writeDisabledReason(entity)} data-testid="btn-import-csv">{'↑'} Import CSV</Btn>
+              {(entity === 'clients' || entity === 'suppliers') ? (
+                <Btn variant="outline" small data-testid="btn-export-csv"
+                  onClick={() => handleExportCsv(entity)}>
+                  {'↓'} Export CSV
+                </Btn>
+              ) : (
+                <Btn variant="outline" small disabled title={writeDisabledReason(entity)} data-testid="btn-export-csv">{'↓'} Export CSV</Btn>
+              )}
+              {(entity === 'clients' || entity === 'suppliers') ? (
+                <Btn variant="outline" small data-testid="btn-import-csv"
+                  disabled={!perms.create}
+                  title={!perms.create ? 'Role has no create permission' : undefined}
+                  onClick={() => {
+                    const fi = document.createElement('input');
+                    fi.type = 'file'; fi.accept = '.csv';
+                    fi.onchange = ev => handleImportSelect(entity, ev.target.files && ev.target.files[0]);
+                    fi.click();
+                  }}>
+                  {'↑'} Import CSV
+                </Btn>
+              ) : (
+                <Btn variant="outline" small disabled title={writeDisabledReason(entity)} data-testid="btn-import-csv">{'↑'} Import CSV</Btn>
+              )}
               {entity === 'box_profiles' ? (
                 <Btn variant="gold" small disabled={!perms.create}
                   title={perms.create ? 'Create a new Box Profile (writes to Box Master)' : 'Role has no create permission'}
                   onClick={() => setBoxEdit({})} data-testid="btn-new-record">
                   + New Box Profile
+                </Btn>
+              ) : entity === 'clients' ? (
+                <Btn variant="gold" small onClick={() => setShowNewClient(true)}
+                  disabled={!perms.create}
+                  title={perms.create ? 'Create a new Client (writes to Customer Master)' : 'Role has no create permission'}
+                  data-testid="btn-new-record">
+                  + New Client
+                </Btn>
+              ) : entity === 'suppliers' ? (
+                <Btn variant="gold" small onClick={() => setSupplierModal({ supplierId: null })}
+                  disabled={!perms.create}
+                  title={perms.create ? 'Create a new Supplier (writes to Supplier Master)' : 'Role has no create permission'}
+                  data-testid="btn-new-record">
+                  + New Supplier
                 </Btn>
               ) : (
                 <Btn variant="gold" small disabled title={writeDisabledReason(entity)} data-testid="btn-new-record">
@@ -1029,7 +1359,8 @@ function MasterPage() {
                               {entity === 'clients' && (
                                 <Btn small variant="gold"
                                   onClick={() => setEditRecord(r)}
-                                  title="Edit client record"
+                                  disabled={!perms.edit}
+                                  title={perms.edit ? 'Edit client record (writes to Customer Master)' : 'Role has no edit permission'}
                                   data-testid="btn-edit-record">Edit</Btn>
                               )}
                               {entity === 'box_profiles' && (
@@ -1037,6 +1368,23 @@ function MasterPage() {
                                   onClick={() => setBoxEdit(r)}
                                   title={perms.edit ? 'Edit Box Profile (writes to Box Master)' : 'Role has no edit permission'}
                                   data-testid="btn-edit-box-profile">Edit</Btn>
+                              )}
+                              {entity === 'suppliers' && (
+                                <Btn small variant="gold"
+                                  onClick={() => setSupplierModal({ supplierId: r.id })}
+                                  disabled={!perms.edit}
+                                  title={perms.edit ? 'Edit supplier record (writes to Supplier Master)' : 'Role has no edit permission'}
+                                  data-testid="btn-edit-supplier">Edit</Btn>
+                              )}
+                              {(entity === 'clients' || entity === 'suppliers') && (
+                                <Btn small variant="outline"
+                                  onClick={() => setDeleteConfirm({ entityId: entity, record: r })}
+                                  disabled={!perms.delete}
+                                  title={perms.delete ? 'Soft-delete this record (can be restored)' : 'Role has no delete permission'}
+                                  data-testid="btn-delete-record"
+                                  style={{ color: 'var(--badge-red-text, rgba(220,38,38,0.85))', borderColor: 'var(--badge-red-border, rgba(220,38,38,0.3))' }}>
+                                  Delete
+                                </Btn>
                               )}
                             </div>
                           </td>
@@ -1074,30 +1422,155 @@ function MasterPage() {
             </div>
           )}
 
-          {/* Sprint 38b: wFirma sync section — suppliers keep disabled stub; clients get Full Scan (Phase 3B) */}
+          {/* Wave 5: Suppliers wFirma sync — preview → select → apply */}
           {entity === 'suppliers' && (
-            <div data-testid="wfirma-sync-section-suppliers" style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Btn variant="outline" small disabled title={WRITE_DISABLED_REASON} data-testid="btn-wfirma-sync-suppliers">
-                {'⟳'} Sync from wFirma
-              </Btn>
-              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                Preview + apply endpoint available — write operations disabled in Sprint 38b (read-only mapping extension)
-              </span>
+            <div data-testid="wfirma-sync-section-suppliers" style={{ marginTop: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Btn variant="outline" small
+                  onClick={() => handleWfirmaSyncPreview('suppliers')}
+                  disabled={wfirmaSyncSuppliers.previewing || wfirmaSyncSuppliers.applying}
+                  data-testid="btn-wfirma-sync-suppliers">
+                  {wfirmaSyncSuppliers.previewing ? '⏳ Loading...' : '⟳ Sync from wFirma'}
+                </Btn>
+                {wfirmaSyncSuppliers.proposals !== null && wfirmaSyncSuppliers.selectedIds.length > 0 && (
+                  <Btn variant="gold" small
+                    onClick={() => handleWfirmaSyncApply('suppliers')}
+                    disabled={!perms.edit || wfirmaSyncSuppliers.applying}
+                    title={!perms.edit ? 'Role has no edit permission' : undefined}
+                    data-testid="btn-wfirma-apply-suppliers">
+                    {wfirmaSyncSuppliers.applying ? '⏳ Applying...' : 'Apply ' + wfirmaSyncSuppliers.selectedIds.length + ' selected'}
+                  </Btn>
+                )}
+              </div>
+              {wfirmaSyncSuppliers.error && (
+                <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--badge-red-bg, rgba(220,38,38,0.08))', border: '1px solid var(--badge-red-border, rgba(220,38,38,0.2))', borderRadius: 6, fontSize: 11, color: 'var(--badge-red-text, rgba(220,38,38,0.9))' }}>
+                  {wfirmaSyncSuppliers.error}
+                </div>
+              )}
+              {wfirmaSyncSuppliers.proposals !== null && (
+                <div data-testid="wfirma-sync-proposals-suppliers" style={{ marginTop: 8, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', fontSize: 11 }}>
+                  <div style={{ padding: '6px 12px', background: 'var(--bg-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-3)' }}>{wfirmaSyncSuppliers.proposals.length} proposal{wfirmaSyncSuppliers.proposals.length === 1 ? '' : 's'} from wFirma</span>
+                    <Btn variant="ghost" small onClick={() => {
+                      const all = wfirmaSyncSuppliers.proposals.filter(p => p.status !== 'skipped_invalid').map(p => p.wfirma_id);
+                      setWfirmaSyncSuppliers(s => Object.assign({}, s, { selectedIds: all }));
+                    }} data-testid="btn-wfirma-select-all-suppliers">
+                      Select all actionable
+                    </Btn>
+                  </div>
+                  <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead><tr style={{ background: 'var(--bg-subtle)' }}>
+                        <th style={{ padding: '5px 8px', width: 28 }}></th>
+                        {['wFirma ID', 'Name', 'Country', 'Status'].map(h => (
+                          <th key={h} style={{ padding: '5px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid var(--border)' }}>{h}</th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {wfirmaSyncSuppliers.proposals.map((p, i) => {
+                          const actionable = p.status !== 'skipped_invalid';
+                          const sel = wfirmaSyncSuppliers.selectedIds.indexOf(p.wfirma_id) !== -1;
+                          const statusColor = p.status === 'new_candidate' ? 'var(--badge-green-text)' : p.status === 'matched_existing' ? 'var(--badge-blue-text)' : 'var(--text-3)';
+                          return (
+                            <tr key={p.wfirma_id || i} style={{ borderBottom: '1px solid var(--border-subtle)', opacity: actionable ? 1 : 0.45 }}>
+                              <td style={{ padding: '5px 8px', textAlign: 'center' }}>
+                                {actionable && (
+                                  <input type="checkbox" checked={sel} data-testid={'wfirma-chk-su-' + (p.wfirma_id || i)}
+                                    onChange={() => setWfirmaSyncSuppliers(s => {
+                                      const ids = sel ? s.selectedIds.filter(x => x !== p.wfirma_id) : s.selectedIds.concat([p.wfirma_id]);
+                                      return Object.assign({}, s, { selectedIds: ids });
+                                    })} />
+                                )}
+                              </td>
+                              <td style={{ padding: '5px 8px', fontFamily: 'monospace' }}>{p.wfirma_id || '—'}</td>
+                              <td style={{ padding: '5px 8px' }}>{p.name || '—'}</td>
+                              <td style={{ padding: '5px 8px' }}>{p.country || '—'}</td>
+                              <td style={{ padding: '5px 8px', color: statusColor }}>{(p.status || '—').replace(/_/g, ' ')}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           )}
+          {/* Wave 5: Clients wFirma sync — preview → select → apply */}
           {entity === 'clients' && (
             <div data-testid="wfirma-sync-section-clients" style={{ marginTop: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <Btn variant="outline" small disabled title={WRITE_DISABLED_REASON} data-testid="btn-wfirma-sync-clients">
-                  {'⟳'} Sync from wFirma
+                <Btn variant="outline" small
+                  onClick={() => handleWfirmaSyncPreview('clients')}
+                  disabled={wfirmaSyncClients.previewing || wfirmaSyncClients.applying}
+                  data-testid="btn-wfirma-sync-clients">
+                  {wfirmaSyncClients.previewing ? '⏳ Loading...' : '⟳ Sync from wFirma'}
                 </Btn>
-                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                  Preview + apply — write operations disabled in Sprint 38b
-                </span>
+                {wfirmaSyncClients.proposals !== null && wfirmaSyncClients.selectedIds.length > 0 && (
+                  <Btn variant="gold" small
+                    onClick={() => handleWfirmaSyncApply('clients')}
+                    disabled={!perms.edit || wfirmaSyncClients.applying}
+                    title={!perms.edit ? 'Role has no edit permission' : undefined}
+                    data-testid="btn-wfirma-apply-clients">
+                    {wfirmaSyncClients.applying ? '⏳ Applying...' : 'Apply ' + wfirmaSyncClients.selectedIds.length + ' selected'}
+                  </Btn>
+                )}
                 <Btn variant="primary" small onClick={runFullScan} disabled={scanRunning} data-testid="btn-full-contractor-scan">
                   {scanRunning ? '⏳ Scanning…' : '⇅ Full Scan'}
                 </Btn>
               </div>
+              {wfirmaSyncClients.error && (
+                <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--badge-red-bg, rgba(220,38,38,0.08))', border: '1px solid var(--badge-red-border, rgba(220,38,38,0.2))', borderRadius: 6, fontSize: 11, color: 'var(--badge-red-text, rgba(220,38,38,0.9))' }}>
+                  {wfirmaSyncClients.error}
+                </div>
+              )}
+              {wfirmaSyncClients.proposals !== null && (
+                <div data-testid="wfirma-sync-proposals-clients" style={{ marginTop: 8, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', fontSize: 11 }}>
+                  <div style={{ padding: '6px 12px', background: 'var(--bg-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-3)' }}>{wfirmaSyncClients.proposals.length} proposal{wfirmaSyncClients.proposals.length === 1 ? '' : 's'} from wFirma</span>
+                    <Btn variant="ghost" small onClick={() => {
+                      const all = wfirmaSyncClients.proposals.filter(p => p.status !== 'skipped_invalid').map(p => p.wfirma_id);
+                      setWfirmaSyncClients(s => Object.assign({}, s, { selectedIds: all }));
+                    }} data-testid="btn-wfirma-select-all-clients">
+                      Select all actionable
+                    </Btn>
+                  </div>
+                  <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead><tr style={{ background: 'var(--bg-subtle)' }}>
+                        <th style={{ padding: '5px 8px', width: 28 }}></th>
+                        {['wFirma ID', 'Name', 'Country', 'Status'].map(h => (
+                          <th key={h} style={{ padding: '5px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid var(--border)' }}>{h}</th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {wfirmaSyncClients.proposals.map((p, i) => {
+                          const actionable = p.status !== 'skipped_invalid';
+                          const sel = wfirmaSyncClients.selectedIds.indexOf(p.wfirma_id) !== -1;
+                          const statusColor = p.status === 'new_candidate' ? 'var(--badge-green-text)' : p.status === 'matched_existing' ? 'var(--badge-blue-text)' : 'var(--text-3)';
+                          return (
+                            <tr key={p.wfirma_id || i} style={{ borderBottom: '1px solid var(--border-subtle)', opacity: actionable ? 1 : 0.45 }}>
+                              <td style={{ padding: '5px 8px', textAlign: 'center' }}>
+                                {actionable && (
+                                  <input type="checkbox" checked={sel} data-testid={'wfirma-chk-cl-' + (p.wfirma_id || i)}
+                                    onChange={() => setWfirmaSyncClients(s => {
+                                      const ids = sel ? s.selectedIds.filter(x => x !== p.wfirma_id) : s.selectedIds.concat([p.wfirma_id]);
+                                      return Object.assign({}, s, { selectedIds: ids });
+                                    })} />
+                                )}
+                              </td>
+                              <td style={{ padding: '5px 8px', fontFamily: 'monospace' }}>{p.wfirma_id || '—'}</td>
+                              <td style={{ padding: '5px 8px' }}>{p.name || '—'}</td>
+                              <td style={{ padding: '5px 8px' }}>{p.country || '—'}</td>
+                              <td style={{ padding: '5px 8px', color: statusColor }}>{(p.status || '—').replace(/_/g, ' ')}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
               <ScanStatusPanel status={scanStatus} onRefresh={loadScanStatus} />
             </div>
           )}
@@ -1143,12 +1616,60 @@ function MasterPage() {
         <ClientDetailModal
           clientKey={editRecord.bill_to_contractor_id || editRecord.id}
           onClose={() => setEditRecord(null)}
-          onSaved={() => {
-            setEditRecord(null);
-            // Force reload of clients cache
-            setCache(prev => ({ ...prev, clients: { records: [], loading: false, error: null } }));
-          }}
+          onSaved={() => { setEditRecord(null); handleReload(); }}
         />
+      )}
+
+      {/* Wave 5: Supplier edit / create modal */}
+      {supplierModal !== null && (
+        <SupplierDetailModal
+          supplierId={supplierModal.supplierId}
+          onClose={() => setSupplierModal(null)}
+          onSaved={() => { setSupplierModal(null); handleReload(); }}
+        />
+      )}
+
+      {/* Wave 5: New Client modal */}
+      {showNewClient && (
+        <NewClientModal
+          onClose={() => setShowNewClient(false)}
+          onSaved={() => { setShowNewClient(false); handleReload(); }}
+        />
+      )}
+
+      {/* Wave 5: Import CSV preview / apply modal */}
+      {importState && (
+        <_ImportPreviewModal
+          entityId={importState.entityId}
+          preview={importState.preview}
+          applying={importApplying}
+          onApply={handleImportApply}
+          onClose={() => setImportState(null)}
+        />
+      )}
+
+      {/* Wave 5: Soft-delete confirm dialog */}
+      {deleteConfirm && (
+        <_DeleteConfirmMini
+          record={deleteConfirm.record}
+          entityId={deleteConfirm.entityId}
+          onConfirm={() => handleDeleteRecord(deleteConfirm.entityId, deleteConfirm.record)}
+          onCancel={() => setDeleteConfirm(null)}
+        />
+      )}
+
+      {/* Wave 5: inline toast notification (auto-clears after 4.5 s) */}
+      {mpToast && (
+        <div data-testid="mp-toast" style={{
+          position: 'fixed', bottom: 24, right: 24, zIndex: 2000,
+          padding: '10px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+          background: mpToast.type === 'ok' ? 'var(--badge-green-bg)' : 'var(--badge-red-bg, rgba(220,38,38,0.1))',
+          color: mpToast.type === 'ok' ? 'var(--badge-green-text)' : 'var(--badge-red-text, rgba(220,38,38,0.9))',
+          border: '1px solid ' + (mpToast.type === 'ok' ? 'var(--badge-green-border)' : 'var(--badge-red-border, rgba(220,38,38,0.3))'),
+          boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+        }}>
+          {mpToast.msg}
+        </div>
       )}
     </div>
   );

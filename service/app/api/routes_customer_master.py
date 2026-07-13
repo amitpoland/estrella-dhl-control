@@ -20,7 +20,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from ..core.config import settings
@@ -40,6 +40,7 @@ from ..services.customer_master_db import (
     soft_delete_customer,
     restore_customer,
     hard_delete_customer,
+    find_customers_by_nip,
 )
 from ..services.customer_intelligence import (
     validate_customer_vat,
@@ -933,6 +934,132 @@ def restore_customer_endpoint(contractor_id: str, request: Request) -> JSONRespo
     audit_safe("customers", "restore", contractor_id,
                request=request, before=before, after=after)
     return JSONResponse(_customer_to_dict(after))
+
+
+# ── CSV import / export (Wave 5) ──────────────────────────────────────────────
+@router.get("/export/csv", dependencies=[_auth],
+            summary="Export customers as CSV (injection-safe, UTF-8 BOM)")
+def customers_export_csv(
+    active: Optional[bool] = Query(None, description="Filter; omit = active only"),
+    country: Optional[str] = Query(None),
+    limit: int = Query(10000, ge=1, le=100000),
+) -> Response:
+    from ..services import master_csv
+    init_db(_DB_PATH)
+    eff_active = True if active is None else active
+    rows = [_customer_to_dict(c) for c in
+            list_customers(_DB_PATH, country=country, limit=limit, active=eff_active)]
+    body = master_csv.rows_to_csv(rows, master_csv.customer_columns())
+    from datetime import datetime, timezone
+    fname = f"customer_master_export_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    return Response(
+        content=body, media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache", "Expires": "0",
+        },
+    )
+
+
+@router.post("/import/csv", dependencies=[_write_auth],
+             summary="Import customers from CSV (dry-run by default; ?commit=true to apply)")
+async def customers_import_csv(
+    request: Request,
+    file: UploadFile = File(...),
+    commit: bool = Query(False, description="false = preview only; true = apply upserts"),
+) -> JSONResponse:
+    """Upsert customers by ``bill_to_contractor_id`` via the existing
+    upsert_customer writer. Preview (default) reports what WOULD happen; commit
+    applies. Each row is validated with the same ``validate`` used by PUT;
+    system columns are ignored; empty cells never blank stored values.
+
+    Duplicate-VAT is surfaced as an ADVISORY (per Lesson N) — it never blocks a
+    row; the operator sees which existing customers share the NIP.
+    """
+    fname = (file.filename or "").lower()
+    ctype = (file.content_type or "").lower()
+    if not (fname.endswith(".csv") or "csv" in ctype or ctype in
+            ("application/vnd.ms-excel", "application/octet-stream", "text/plain")):
+        raise HTTPException(status_code=422, detail="Upload must be a .csv file")
+
+    from ..services import master_csv
+    raw = await master_csv.read_capped(file, master_csv.MAX_IMPORT_BYTES)
+    if raw is None:
+        raise HTTPException(status_code=413, detail="CSV exceeds 5 MB limit")
+
+    init_db(_DB_PATH)
+    writable = master_csv.customer_import_writable()
+    try:
+        parsed = master_csv.parse_csv(raw)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not parse CSV: {exc}")
+    if len(parsed) > master_csv.MAX_IMPORT_ROWS:
+        raise HTTPException(status_code=413,
+                            detail=f"CSV exceeds {master_csv.MAX_IMPORT_ROWS} rows")
+
+    created = updated = 0
+    rejected: list = []
+    dup_vat: list = []
+    touched: list = []
+    for line, row in parsed:
+        data = master_csv.project_writable(row, writable)
+        cid = data.pop("bill_to_contractor_id", None)
+        if not cid:
+            rejected.append({"row": line, "reason": "missing bill_to_contractor_id"})
+            continue
+        existing = get_customer(_DB_PATH, cid)
+        try:
+            customer = _parse_body(cid, data, existing=existing)
+        except Exception as exc:
+            rejected.append({"row": line, "reason": f"row error: {exc}"})
+            continue
+        errs = validate(customer)
+        if errs:
+            rejected.append({"row": line, "reason": "; ".join(errs)})
+            continue
+        # Advisory only — never blocks (Lesson N).
+        nip = (data.get("nip") or "").strip()
+        if nip and existing is None:
+            others = [c.bill_to_contractor_id for c in find_customers_by_nip(_DB_PATH, nip)
+                      if c.bill_to_contractor_id != cid]
+            if others:
+                dup_vat.append({"row": line, "nip": nip, "existing_contractor_ids": others})
+        if not commit:
+            if existing:
+                updated += 1
+            else:
+                created += 1
+            continue
+        try:
+            upsert_customer(_DB_PATH, customer)
+            if existing:
+                updated += 1
+            else:
+                created += 1
+            touched.append(cid)
+        except ValueError as exc:
+            # Our own validation-class message — safe to reflect.
+            rejected.append({"row": line, "reason": str(exc)})
+        except Exception as exc:
+            # Never reflect raw DB text (may leak schema); full detail to the log.
+            log.error("customer csv import row=%d failed: %s", line, exc, exc_info=True)
+            rejected.append({"row": line, "reason": "database error"})
+
+    result = {
+        "mode": "commit" if commit else "preview",
+        "committed": bool(commit),
+        "total_rows": len(parsed),
+        "created": created, "updated": updated, "skipped": len(rejected),
+        "rejected": rejected,
+        "duplicate_vat_advisories": dup_vat,
+    }
+    if commit:
+        audit_safe("customers", "csv_import", "-", request=request, before=None,
+                   after={"total_rows": len(parsed), "created": created,
+                          "updated": updated, "skipped": len(rejected),
+                          "contractor_ids": touched[:500]})
+    return JSONResponse(result)
 
 
 @router.post(
