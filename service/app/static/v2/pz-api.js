@@ -891,6 +891,50 @@
     getCarrierStatus: () =>
       _get(`${BASE}/carrier/status`),
 
+    // ── Wave 7: master capability contract + remaining-master CRUD writers ────
+    // GET /api/v1/master/capabilities — the single source of truth the master
+    // page renders (per-domain available/routes/permission/reason/flags).
+    getMasterCapabilities: () => _get(`${BASE}/master/capabilities`),
+
+    // HS Codes — PUT natural-key upsert, soft-delete (?hard), restore
+    saveHsCode: (code, body) => _put(`${BASE}/hs-codes/${encodeURIComponent(code)}`, body),
+    deleteHsCode: (code, hard) => _del(`${BASE}/hs-codes/${encodeURIComponent(code)}${hard ? '?hard=true' : ''}`),
+    restoreHsCode: (code) => _postM(`${BASE}/hs-codes/${encodeURIComponent(code)}/restore`, {}),
+
+    // Units
+    saveUnit: (code, body) => _put(`${BASE}/units/${encodeURIComponent(code)}`, body),
+    deleteUnit: (code, hard) => _del(`${BASE}/units/${encodeURIComponent(code)}${hard ? '?hard=true' : ''}`),
+    restoreUnit: (code) => _postM(`${BASE}/units/${encodeURIComponent(code)}/restore`, {}),
+
+    // Incoterms
+    saveIncoterm: (code, body) => _put(`${BASE}/incoterms/${encodeURIComponent(code)}`, body),
+    deleteIncoterm: (code, hard) => _del(`${BASE}/incoterms/${encodeURIComponent(code)}${hard ? '?hard=true' : ''}`),
+    restoreIncoterm: (code) => _postM(`${BASE}/incoterms/${encodeURIComponent(code)}/restore`, {}),
+
+    // Carriers config (non-secret; credential fields rejected by the backend)
+    saveCarrierConfig: (code, body) => _put(`${BASE}/carriers-config/${encodeURIComponent(code)}`, body),
+    deleteCarrierConfig: (code, hard) => _del(`${BASE}/carriers-config/${encodeURIComponent(code)}${hard ? '?hard=true' : ''}`),
+    restoreCarrierConfig: (code) => _postM(`${BASE}/carriers-config/${encodeURIComponent(code)}/restore`, {}),
+
+    // VAT config — POST create (autoincrement id), PUT update, soft-delete, restore
+    createVatConfig: (body) => _postM(`${BASE}/vat-config/`, body),
+    saveVatConfig: (id, body) => _put(`${BASE}/vat-config/${encodeURIComponent(id)}`, body),
+    deleteVatConfig: (id, hard) => _del(`${BASE}/vat-config/${encodeURIComponent(id)}${hard ? '?hard=true' : ''}`),
+    restoreVatConfig: (id) => _postM(`${BASE}/vat-config/${encodeURIComponent(id)}/restore`, {}),
+
+    // FX rates — reference-only store (POST create, PUT update, soft-delete, restore)
+    createFxRate: (body) => _postM(`${BASE}/fx-rates/`, body),
+    saveFxRate: (id, body) => _put(`${BASE}/fx-rates/${encodeURIComponent(id)}`, body),
+    deleteFxRate: (id, hard) => _del(`${BASE}/fx-rates/${encodeURIComponent(id)}${hard ? '?hard=true' : ''}`),
+    restoreFxRate: (id) => _postM(`${BASE}/fx-rates/${encodeURIComponent(id)}/restore`, {}),
+
+    // Users — admin actions only (no edit/delete endpoint exists). /auth prefix.
+    approveUser: (id) => _postM(`/auth/users/${encodeURIComponent(id)}/approve`, {}),
+    rejectUser: (id) => _postM(`/auth/users/${encodeURIComponent(id)}/reject`, {}),
+    setUserRole: (id, role) => _postM(`/auth/users/${encodeURIComponent(id)}/role`, { role }),
+    activateUser: (id) => _postM(`/auth/users/${encodeURIComponent(id)}/activate`, {}),
+    deactivateUser: (id) => _postM(`/auth/users/${encodeURIComponent(id)}/deactivate`, {}),
+
     // ── System health / API Status — read ──────────────────────────
 
     // GET /api/v1/debug/health-full
