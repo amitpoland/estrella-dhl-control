@@ -2130,6 +2130,279 @@ function ProformaStatusHeader({
   );
 }
 
+// ── Product mapping resolver — wires up wFirma search/adopt/create-and-adopt ──
+// Renders per-code controls attached to the "N product(s) not matched in
+// wfirma_products" readiness blocker. Operator-initiated only; no auto-calls.
+//
+// Safety invariants (campaign gate — non-negotiable):
+//   1. No API call fires on mount. All calls are triggered by explicit operator click.
+//   2. wfirmaGoodsSearch and wfirmaGoodsAdopt are read/mirror-only — safe on click.
+//   3. wfirmaGoodsCreateAndAdopt is a LIVE wFirma write. It MUST only fire after
+//      the operator clicks data-testid="btn-confirm-create-adopt-{code}" inside the
+//      explicit confirmation panel (phase === 'confirm_create'). There is no other
+//      code path that calls it.
+//   4. If the server returns 403 (WFIRMA_CREATE_PRODUCT_ALLOWED is false), the
+//      create button transitions to DISABLED with the exact server reason text.
+
+// Parse product codes embedded in a "not matched in wfirma_products" blocker
+// reason string. Format: "N product(s) not matched in wfirma_products
+// (missing wfirma_product_id): CODE1, CODE2, CODE3…"
+function _parseUnmappedProductCodes(blockers) {
+  const codes = [];
+  const seen = new Set();
+  for (const b of (blockers || [])) {
+    const r = b.reason || '';
+    if (r.includes('wfirma_product')) {
+      // Extract codes after the closing "): " of the parenthetical
+      const idx = r.lastIndexOf('): ');
+      if (idx !== -1) {
+        const part = r.slice(idx + 3).replace(/…$/, '').trim();
+        for (const c of part.split(',')) {
+          const code = c.trim();
+          if (code && code !== '...' && !seen.has(code)) {
+            seen.add(code);
+            codes.push(code);
+          }
+        }
+      }
+    }
+  }
+  return codes;
+}
+
+function ProductMappingResolver({ unmappedCodes, draftLines, reloadReadiness }) {
+  // Per-code state map.
+  // Phases: idle | searching | found | not_found | adopting | adopted |
+  //         confirm_create | creating
+  const [perCode, setPerCode] = React.useState({});
+
+  const gs = (code) => perCode[code] || { phase: 'idle', result: null, error: null, createBlocked: null };
+  const ss = (code, patch) =>
+    setPerCode(prev => ({ ...prev, [code]: { ...gs(code), ...patch } }));
+
+  // doSearch — safe read-only wFirma lookup. Only fires on explicit operator click.
+  const doSearch = async (code) => {
+    ss(code, { phase: 'searching', error: null, createBlocked: null });
+    const r = await window.PzApi.wfirmaGoodsSearch(code);
+    if (!r.ok) {
+      ss(code, { phase: 'idle', error: `Search failed: ${r.error || 'unknown error'}` });
+      return;
+    }
+    const d = r.data || {};
+    if (d.found) {
+      ss(code, { phase: 'found', result: d.result || {} });
+    } else {
+      ss(code, { phase: 'not_found' });
+    }
+  };
+
+  // doAdopt — mirror-only (no wFirma write). Safe on operator click.
+  const doAdopt = async (code) => {
+    ss(code, { phase: 'adopting', error: null });
+    const r = await window.PzApi.wfirmaGoodsAdopt(code);
+    if (!r.ok) {
+      const d = (r.data) || {};
+      const detail = (d.status === 'not_in_wfirma')
+        ? 'Not found in wFirma — use Create & adopt instead'
+        : (r.error || 'Adopt failed');
+      ss(code, { phase: 'found', error: detail });
+      return;
+    }
+    ss(code, { phase: 'adopted' });
+    reloadReadiness && reloadReadiness();
+  };
+
+  // doConfirmCreate — LIVE wFirma write. Only callable after the operator
+  // explicitly clicks data-testid="btn-confirm-create-adopt-{code}".
+  // This function MUST NOT be called from any other code path.
+  const doConfirmCreate = async (code) => {
+    // item_type from draft editable_lines (best-effort; empty falls back to deng)
+    const line = (draftLines || []).find(ln => (ln.product_code || '').trim() === code);
+    const itemType = (line && line.item_type) || '';
+    ss(code, { phase: 'creating', error: null, createBlocked: null });
+    const r = await window.PzApi.wfirmaGoodsCreateAndAdopt(code, { item_type: itemType, description_en: '' });
+    if (!r.ok) {
+      if (r.status === 403) {
+        // Flag disabled — disable the button and surface the exact server reason
+        const d = (r.data) || {};
+        const reasons = d.blocking_reasons || [r.error || 'wfirma_create_product_allowed is false'];
+        ss(code, { phase: 'not_found', createBlocked: reasons[0] });
+      } else if (r.status === 409) {
+        // Already in wFirma — switch to Adopt flow
+        const d = (r.data) || {};
+        ss(code, {
+          phase: 'found',
+          result: { wfirma_id: d.wfirma_product_id },
+          error: 'Already in wFirma — click Adopt to link it locally.',
+        });
+      } else {
+        ss(code, { phase: 'not_found', error: r.error || 'Create failed — see server logs' });
+      }
+      return;
+    }
+    ss(code, { phase: 'adopted' });
+    reloadReadiness && reloadReadiness();
+  };
+
+  if (!unmappedCodes || unmappedCodes.length === 0) return null;
+
+  const codeId = (c) => c.replace(/[^a-zA-Z0-9_-]/g, '-');
+
+  return (
+    <div data-testid="product-mapping-resolver" style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text)' }}>
+        Resolve product mapping — register each code in wFirma to clear this blocker:
+      </div>
+      {unmappedCodes.map(code => {
+        const st = gs(code);
+        const tid = codeId(code);
+        return (
+          <div key={code} data-testid={`product-resolver-row-${tid}`}
+               style={{ marginBottom: 10, paddingBottom: 8, borderBottom: '1px dashed var(--border)' }}>
+            <div style={{ fontSize: 11, marginBottom: 4 }}>
+              <span style={{ fontFamily: 'monospace', color: 'var(--text)', fontWeight: 600 }}>{code}</span>
+            </div>
+
+            {st.error && (
+              <div style={{ fontSize: 11, color: 'var(--badge-red-text)', marginBottom: 4 }}>
+                {st.error}
+              </div>
+            )}
+
+            {st.phase === 'idle' && (
+              <button
+                data-testid={`btn-resolve-mapping-${tid}`}
+                onClick={() => doSearch(code)}
+                style={{ background: 'var(--card)', color: 'var(--text)',
+                         border: '1px solid var(--border)', borderRadius: 4,
+                         fontSize: 12, padding: '4px 10px', cursor: 'pointer' }}>
+                Resolve mapping
+              </button>
+            )}
+
+            {st.phase === 'searching' && (
+              <span style={{ fontSize: 11, color: 'var(--text-2, var(--text))' }}>
+                ⏳ Searching in wFirma…
+              </span>
+            )}
+
+            {st.phase === 'found' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11, color: 'var(--badge-green-text, green)' }}>
+                  {'✓ Found in wFirma'}
+                  {st.result && st.result.wfirma_id ? ` (ID: ${st.result.wfirma_id})` : ''}
+                </span>
+                <button
+                  data-testid={`btn-adopt-${tid}`}
+                  onClick={() => doAdopt(code)}
+                  style={{ background: 'var(--accent, #c9a456)', color: '#1a1a1a',
+                           border: 'none', borderRadius: 4,
+                           fontSize: 12, fontWeight: 600,
+                           padding: '4px 10px', cursor: 'pointer' }}>
+                  Adopt (link locally)
+                </button>
+              </div>
+            )}
+
+            {st.phase === 'adopting' && (
+              <span style={{ fontSize: 11, color: 'var(--text-2, var(--text))' }}>
+                ⏳ Adopting mapping…
+              </span>
+            )}
+
+            {st.phase === 'adopted' && (
+              <span data-testid={`product-resolver-adopted-${tid}`}
+                    style={{ fontSize: 11, color: 'var(--badge-green-text, green)', fontWeight: 600 }}>
+                ✓ Adopted — readiness reloading…
+              </span>
+            )}
+
+            {/* not_found: show create-and-adopt. DISABLED with reason if server blocked
+                it (403); otherwise enabled but gated behind explicit confirmation. */}
+            {st.phase === 'not_found' && (
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-2, var(--text))', marginBottom: 4 }}>
+                  Not found in wFirma.
+                </div>
+                {st.createBlocked ? (
+                  <button
+                    data-testid={`btn-create-adopt-${tid}`}
+                    disabled
+                    title={st.createBlocked}
+                    style={{ background: 'var(--bg-subtle)', color: 'var(--text-3, #aaa)',
+                             border: '1px solid var(--border)', borderRadius: 4,
+                             fontSize: 12, padding: '4px 10px',
+                             cursor: 'not-allowed', opacity: 0.6 }}>
+                    {'Create in wFirma & adopt — blocked: '}
+                    {st.createBlocked}
+                  </button>
+                ) : (
+                  <button
+                    data-testid={`btn-create-adopt-${tid}`}
+                    onClick={() => ss(code, { phase: 'confirm_create' })}
+                    style={{ background: 'var(--card)', color: 'var(--badge-red-text)',
+                             border: '1px solid var(--badge-red-border)', borderRadius: 4,
+                             fontSize: 12, fontWeight: 600,
+                             padding: '4px 10px', cursor: 'pointer' }}>
+                    Create in wFirma &amp; adopt ⚠
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* confirm_create: explicit confirmation gate — the ONLY path to doConfirmCreate */}
+            {st.phase === 'confirm_create' && (
+              <div data-testid={`product-resolver-confirm-${tid}`}
+                   style={{ padding: '8px 10px',
+                            border: '1px solid var(--badge-red-border)',
+                            borderRadius: 6, background: 'var(--bg)', marginTop: 4 }}>
+                <div style={{ fontSize: 12, fontWeight: 700,
+                              color: 'var(--badge-red-text)', marginBottom: 4 }}>
+                  ⚠ This creates a NEW product in wFirma — a live accounting change. Confirm?
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-2, var(--text))', marginBottom: 8 }}>
+                  {'Product code: '}
+                  <strong style={{ fontFamily: 'monospace' }}>{code}</strong>
+                  <br />
+                  {'Will be blocked if '}
+                  <code>WFIRMA_CREATE_PRODUCT_ALLOWED</code>
+                  {' is not enabled on the server.'}
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    data-testid={`btn-confirm-create-adopt-${tid}`}
+                    onClick={() => doConfirmCreate(code)}
+                    style={{ background: 'var(--badge-red-bg)',
+                             color: 'var(--badge-red-text)',
+                             border: '1px solid var(--badge-red-border)',
+                             borderRadius: 4, fontSize: 12, fontWeight: 700,
+                             padding: '4px 12px', cursor: 'pointer' }}>
+                    Yes, create in wFirma
+                  </button>
+                  <button
+                    data-testid={`btn-cancel-create-adopt-${tid}`}
+                    onClick={() => ss(code, { phase: 'not_found' })}
+                    style={{ background: 'var(--card)', color: 'var(--text)',
+                             border: '1px solid var(--border)', borderRadius: 4,
+                             fontSize: 12, padding: '4px 10px', cursor: 'pointer' }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {st.phase === 'creating' && (
+              <span style={{ fontSize: 11, color: 'var(--text-2, var(--text))' }}>
+                ⏳ Creating in wFirma…
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Blocker panel — consolidated "what's blocking" list ───────────────────────
 function ProformaBlockerPanel({ postBlockers, approveBlockers }) {
   const seen = new Set();
@@ -2181,6 +2454,7 @@ function ProformaReadinessPanel({
   readinessPost, linesByCode,
   resolvingDesign, resolveError, doResolveAmbiguity,
   savingVat, vatSaveError, doSaveEuVat,
+  draftLines, reloadReadiness,
 }) {
   return (
     <React.Fragment>
@@ -2202,6 +2476,16 @@ function ProformaReadinessPanel({
               </div>
             </div>
           ))}
+          {/* ProductMappingResolver — wires wFirma search/adopt/create-and-adopt
+              for each unmapped product_code. Only shown when the readiness gate
+              surfaces a "not matched in wfirma_products" blocker. */}
+          {_parseUnmappedProductCodes(readinessPost.blockers || []).length > 0 && (
+            <ProductMappingResolver
+              unmappedCodes={_parseUnmappedProductCodes(readinessPost.blockers || [])}
+              draftLines={draftLines || []}
+              reloadReadiness={reloadReadiness || (() => {})}
+            />
+          )}
           {readinessPost.vat_resolution && readinessPost.vat_resolution.needs_save_to_master && (
             <div data-testid="readiness-vat-resolver"
                  style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--border)',
@@ -4292,6 +4576,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         savingVat={savingVat}
         vatSaveError={vatSaveError}
         doSaveEuVat={doSaveEuVat}
+        draftLines={liveDraft.editable_lines || []}
+        reloadReadiness={reloadReadiness}
       />
 
       {/* ── Party cards + address authority bar ─────────────────────────── */}

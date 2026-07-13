@@ -724,11 +724,19 @@
     searchWfirmaGoods: (q) =>
       _get(`${BASE}/wfirma/goods/search?q=${encodeURIComponent(q || '')}`),
 
+    // GET /api/v1/wfirma/goods/search?product_code=X — per-code lookup for the
+    // ProductMappingResolver in proforma-detail (resolves the product blocker).
+    // Uses the canonical product_code param (line 316 of routes_wfirma_capabilities.py).
+    // Returns { ok, found, result }. Read-only; never writes to wFirma or mirror.
+    wfirmaGoodsSearch: (productCode) =>
+      _get(`${BASE}/wfirma/goods/search?product_code=${encodeURIComponent(productCode || '')}`),
+
     // POST /api/v1/wfirma/goods/create-and-adopt/{code} — CANONICAL product create
     // path. Gated on WFIRMA_CREATE_PRODUCT_ALLOWED (403 "blocked" when off; 409 if
     // the product already exists in wFirma → caller should adopt). NEVER mints a
     // code — the operator supplies the existing product_master code in the URL.
     // body: {item_type, description_en?}. Returns { ok, ... } or the block payload.
+    // LIVE wFirma write — never call without explicit operator confirmation.
     wfirmaGoodsCreateAndAdopt: (code, body) =>
       _postM(`${BASE}/wfirma/goods/create-and-adopt/${encodeURIComponent(code)}`, body || {}),
 
@@ -739,6 +747,7 @@
 
     // POST /api/v1/wfirma/goods/update-and-adopt/{code} — edit wFirma metadata +
     // adopt. Gated on WFIRMA_EDIT_PRODUCT_ALLOWED. body: {item_type?, description_en?}
+    // wFirma write — never call without explicit operator confirmation.
     wfirmaGoodsUpdateAndAdopt: (code, body) =>
       _postM(`${BASE}/wfirma/goods/update-and-adopt/${encodeURIComponent(code)}`, body || {}),
 
