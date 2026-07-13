@@ -937,9 +937,6 @@ def restore_customer_endpoint(contractor_id: str, request: Request) -> JSONRespo
 
 
 # ── CSV import / export (Wave 5) ──────────────────────────────────────────────
-_CSV_MAX_BYTES = 5 * 1024 * 1024  # 5 MB upload ceiling
-
-
 @router.get("/export/csv", dependencies=[_auth],
             summary="Export customers as CSV (injection-safe, UTF-8 BOM)")
 def customers_export_csv(
@@ -985,21 +982,26 @@ async def customers_import_csv(
     if not (fname.endswith(".csv") or "csv" in ctype or ctype in
             ("application/vnd.ms-excel", "application/octet-stream", "text/plain")):
         raise HTTPException(status_code=422, detail="Upload must be a .csv file")
-    raw = await file.read()
-    if len(raw) > _CSV_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="CSV exceeds 5 MB limit")
 
     from ..services import master_csv
+    raw = await master_csv.read_capped(file, master_csv.MAX_IMPORT_BYTES)
+    if raw is None:
+        raise HTTPException(status_code=413, detail="CSV exceeds 5 MB limit")
+
     init_db(_DB_PATH)
     writable = master_csv.customer_import_writable()
     try:
         parsed = master_csv.parse_csv(raw)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Could not parse CSV: {exc}")
+    if len(parsed) > master_csv.MAX_IMPORT_ROWS:
+        raise HTTPException(status_code=413,
+                            detail=f"CSV exceeds {master_csv.MAX_IMPORT_ROWS} rows")
 
     created = updated = 0
     rejected: list = []
     dup_vat: list = []
+    touched: list = []
     for line, row in parsed:
         data = master_csv.project_writable(row, writable)
         cid = data.pop("bill_to_contractor_id", None)
@@ -1035,11 +1037,14 @@ async def customers_import_csv(
                 updated += 1
             else:
                 created += 1
+            touched.append(cid)
         except ValueError as exc:
+            # Our own validation-class message — safe to reflect.
             rejected.append({"row": line, "reason": str(exc)})
         except Exception as exc:
+            # Never reflect raw DB text (may leak schema); full detail to the log.
             log.error("customer csv import row=%d failed: %s", line, exc, exc_info=True)
-            rejected.append({"row": line, "reason": f"db error: {exc}"})
+            rejected.append({"row": line, "reason": "database error"})
 
     result = {
         "mode": "commit" if commit else "preview",
@@ -1050,9 +1055,10 @@ async def customers_import_csv(
         "duplicate_vat_advisories": dup_vat,
     }
     if commit:
-        audit_safe("customers", "csv_import", "-", request=request,
-                   before=None, after={k: result[k] for k in
-                                       ("total_rows", "created", "updated", "skipped")})
+        audit_safe("customers", "csv_import", "-", request=request, before=None,
+                   after={"total_rows": len(parsed), "created": created,
+                          "updated": updated, "skipped": len(rejected),
+                          "contractor_ids": touched[:500]})
     return JSONResponse(result)
 
 

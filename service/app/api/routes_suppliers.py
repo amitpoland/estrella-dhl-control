@@ -293,9 +293,6 @@ def restore_supplier_endpoint(supplier_id: int, request: Request) -> JSONRespons
 
 
 # ── CSV import / export (Wave 5) ──────────────────────────────────────────────
-_CSV_MAX_BYTES = 5 * 1024 * 1024  # 5 MB upload ceiling
-
-
 @router.get("/export/csv", dependencies=[_auth],
             summary="Export suppliers as CSV (injection-safe, UTF-8 BOM)")
 def suppliers_export_csv(
@@ -305,8 +302,9 @@ def suppliers_export_csv(
 ) -> Response:
     from ..services import master_csv
     init_db(_DB_PATH)
+    eff_active = True if active is None else active   # omit = active only (never leak soft-deleted)
     rows = [_supplier_dict(s) for s in
-            list_suppliers(_DB_PATH, active=active, country=country, limit=limit)]
+            list_suppliers(_DB_PATH, active=eff_active, country=country, limit=limit)]
     body = master_csv.rows_to_csv(rows, master_csv.supplier_columns())
     from datetime import datetime, timezone
     fname = f"suppliers_export_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
@@ -336,20 +334,25 @@ async def suppliers_import_csv(
     if not (fname.endswith(".csv") or "csv" in ctype or ctype in
             ("application/vnd.ms-excel", "application/octet-stream", "text/plain")):
         raise HTTPException(status_code=422, detail="Upload must be a .csv file")
-    raw = await file.read()
-    if len(raw) > _CSV_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="CSV exceeds 5 MB limit")
 
     from ..services import master_csv
+    raw = await master_csv.read_capped(file, master_csv.MAX_IMPORT_BYTES)
+    if raw is None:
+        raise HTTPException(status_code=413, detail="CSV exceeds 5 MB limit")
+
     init_db(_DB_PATH)
     writable = master_csv.supplier_import_writable()
     try:
         parsed = master_csv.parse_csv(raw)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Could not parse CSV: {exc}")
+    if len(parsed) > master_csv.MAX_IMPORT_ROWS:
+        raise HTTPException(status_code=413,
+                            detail=f"CSV exceeds {master_csv.MAX_IMPORT_ROWS} rows")
 
     created = updated = 0
     rejected: list = []
+    touched: list = []
     for line, row in parsed:
         data = master_csv.project_writable(row, writable)
         code = data.get("supplier_code")
@@ -375,11 +378,14 @@ async def suppliers_import_csv(
             else:
                 create_supplier(_DB_PATH, data)
                 created += 1
+            touched.append(code)
         except ValueError as exc:
+            # DUPLICATE_CODE etc. — the ValueError message is our own, safe text.
             rejected.append({"row": line, "reason": str(exc)})
         except Exception as exc:
+            # Never reflect raw DB text (may leak schema); full detail to the log.
             log.error("supplier csv import row=%d failed: %s", line, exc, exc_info=True)
-            rejected.append({"row": line, "reason": f"db error: {exc}"})
+            rejected.append({"row": line, "reason": "database error"})
 
     result = {
         "mode": "commit" if commit else "preview",
@@ -389,9 +395,10 @@ async def suppliers_import_csv(
         "rejected": rejected,
     }
     if commit:
-        audit_safe("suppliers", "csv_import", "-", request=request,
-                   before=None, after={k: result[k] for k in
-                                       ("total_rows", "created", "updated", "skipped")})
+        audit_safe("suppliers", "csv_import", "-", request=request, before=None,
+                   after={"total_rows": len(parsed), "created": created,
+                          "updated": updated, "skipped": len(rejected),
+                          "supplier_codes": touched[:500]})
     return JSONResponse(result)
 
 

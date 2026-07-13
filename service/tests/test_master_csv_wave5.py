@@ -135,6 +135,27 @@ def test_bad_upload_rejected(client):
     assert r.status_code == 422
 
 
+def test_supplier_export_omits_soft_deleted(client):
+    # create then soft-delete one supplier; default export must NOT leak it (PII/GDPR)
+    client.post("/api/v1/suppliers/import/csv?commit=true",
+                files={"file": ("s.csv", _supplier_csv([["WF-DEL", "Ghost", "PL", "PL0"]]), "text/csv")})
+    sid = client.get("/api/v1/suppliers/").json()["suppliers"][0]["id"]
+    client.delete(f"/api/v1/suppliers/{sid}")  # soft-delete
+    r = client.get("/api/v1/suppliers/export/csv")
+    assert "WF-DEL" not in r.text and "Ghost" not in r.text
+    # explicit active=false still reaches it
+    assert "WF-DEL" in client.get("/api/v1/suppliers/export/csv?active=false").text
+
+
+def test_import_row_cap_rejected(client, monkeypatch):
+    from app.services import master_csv
+    monkeypatch.setattr(master_csv, "MAX_IMPORT_ROWS", 3)
+    rows = [[f"WF-{i}", f"N{i}", "PL", "PL1"] for i in range(5)]
+    r = client.post("/api/v1/suppliers/import/csv",
+                    files={"file": ("s.csv", _supplier_csv(rows), "text/csv")})
+    assert r.status_code == 413
+
+
 # ── Endpoint wiring (customers) — upsert by contractor id + dup-VAT advisory ──
 
 def test_customer_import_upsert_and_dup_vat_advisory(client):

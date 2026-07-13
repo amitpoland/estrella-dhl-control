@@ -44,6 +44,11 @@ _CUSTOMER_IMPORT_READONLY = _CUSTOMER_SYSTEM_COLS | {"active"}
 _SUPPLIER_IMPORT_READONLY = _SUPPLIER_SYSTEM_COLS | {"active"}
 
 _FORMULA_LEAD = ("=", "+", "-", "@")
+_WHITESPACE_LEAD = ("\t", "\r", "\n")
+
+# Import ceilings (defence-in-depth against memory / SQLite-write-lock DoS).
+MAX_IMPORT_BYTES = 5 * 1024 * 1024   # 5 MB upload
+MAX_IMPORT_ROWS = 5000               # per-request row cap
 
 
 def _ordered_columns(dataclass_type: Any, key: str) -> List[str]:
@@ -79,7 +84,7 @@ def _safe_cell(v: Any) -> str:
     if isinstance(v, bool):
         return "1" if v else "0"
     s = str(v)
-    if s and (s[0] in _FORMULA_LEAD or s[0] in ("\t", "\r")):
+    if s and (s[0] in _FORMULA_LEAD or s[0] in _WHITESPACE_LEAD):
         return "'" + s
     return s
 
@@ -115,6 +120,21 @@ def parse_csv(raw: bytes) -> List[Tuple[int, Dict[str, str]]]:
             clean[kk] = v.strip() if isinstance(v, str) else ("" if v is None else str(v))
         out.append((i, clean))
     return out
+
+
+async def read_capped(file: Any, max_bytes: int = MAX_IMPORT_BYTES) -> Any:
+    """Read an UploadFile in bounded chunks, returning bytes or ``None`` if the
+    stream exceeds ``max_bytes``. Caps memory at ~max_bytes+64 KB instead of
+    buffering an arbitrarily large body before the size gate (DoS defence)."""
+    buf = bytearray()
+    while True:
+        chunk = await file.read(65536)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            return None
+    return bytes(buf)
 
 
 def project_writable(row: Dict[str, str], writable: List[str]) -> Dict[str, str]:
