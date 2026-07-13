@@ -724,6 +724,24 @@
     searchWfirmaGoods: (q) =>
       _get(`${BASE}/wfirma/goods/search?q=${encodeURIComponent(q || '')}`),
 
+    // POST /api/v1/wfirma/goods/create-and-adopt/{code} — CANONICAL product create
+    // path. Gated on WFIRMA_CREATE_PRODUCT_ALLOWED (403 "blocked" when off; 409 if
+    // the product already exists in wFirma → caller should adopt). NEVER mints a
+    // code — the operator supplies the existing product_master code in the URL.
+    // body: {item_type, description_en?}. Returns { ok, ... } or the block payload.
+    wfirmaGoodsCreateAndAdopt: (code, body) =>
+      _postM(`${BASE}/wfirma/goods/create-and-adopt/${encodeURIComponent(code)}`, body || {}),
+
+    // POST /api/v1/wfirma/goods/adopt/{code} — adopt an EXISTING wFirma product
+    // (no wFirma create). Use when create-and-adopt returns 409 already_in_wfirma.
+    wfirmaGoodsAdopt: (code) =>
+      _postM(`${BASE}/wfirma/goods/adopt/${encodeURIComponent(code)}`, {}),
+
+    // POST /api/v1/wfirma/goods/update-and-adopt/{code} — edit wFirma metadata +
+    // adopt. Gated on WFIRMA_EDIT_PRODUCT_ALLOWED. body: {item_type?, description_en?}
+    wfirmaGoodsUpdateAndAdopt: (code, body) =>
+      _postM(`${BASE}/wfirma/goods/update-and-adopt/${encodeURIComponent(code)}`, body || {}),
+
     // ── Master Data — read (Sprint 38) ─────────────────────────────
 
     // GET /api/v1/suppliers/[?country=&active=&limit=]
@@ -773,6 +791,12 @@
       return _get(`${BASE}/product-local${qs}`);
     },
 
+    // PUT /api/v1/product-local/{code} — upsert the LOCAL OVERLAY only (HS/unit
+    // override, design_code_link, notes). Does NOT touch product_master (which is
+    // consume-only). body: {hs_code_override, unit_override, design_code_link, notes, origin_country, active}
+    saveProductLocal: (code, body) =>
+      _put(`${BASE}/product-local/${encodeURIComponent(code)}`, body),
+
     // ── Product Master sync (Slice 1) — read authority + observable Run Now ──
     // GET /api/v1/product-master[?batch_id=]
     // Returns { count, rows: [{product_code, design_no, normalized_design_attributes, status, ...}] }
@@ -803,6 +827,22 @@
       const qs = params ? '?' + new URLSearchParams(params).toString() : '';
       return _get(`${BASE}/designs${qs}`);
     },
+
+    // GET /api/v1/designs/{code}
+    getDesign: (code) => _get(`${BASE}/designs/${encodeURIComponent(code)}`),
+
+    // PUT /api/v1/designs/{code} — upsert the DESIGN master (design_code is the
+    // operator-supplied key; never a product code). body: {display_name, product_ref,
+    // design_family, collection, metal, stone_summary, hs_code, unit, notes, active}
+    saveDesign: (code, body) =>
+      _put(`${BASE}/designs/${encodeURIComponent(code)}`, body),
+
+    // DELETE /api/v1/designs/{code} — soft-delete (default) or ?hard=true
+    deleteDesign: (code, hard) =>
+      _del(`${BASE}/designs/${encodeURIComponent(code)}${hard ? '?hard=true' : ''}`),
+
+    // POST /api/v1/designs/{code}/restore
+    restoreDesign: (code) => _postM(`${BASE}/designs/${encodeURIComponent(code)}/restore`, {}),
 
     // GET /api/v1/hs-codes/[?active=&limit=]
     // Returns { count, hs_codes: [{hs_code, description_pl, duty_rate_pct, ...}] }

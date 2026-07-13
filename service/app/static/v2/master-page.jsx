@@ -60,17 +60,18 @@ const ENTITY_COLUMNS = {
     { key: 'active',                label: 'Active', toggle: true },
   ],
   products: [
-    { key: 'product_code',       label: 'Product code', mono: true },
-    { key: 'hs_code_override',   label: 'HS code', mono: true },
-    { key: 'unit_override',      label: 'Unit' },
-    { key: 'design_code_link',   label: 'Design link' },
-    { key: 'active',             label: 'Active', toggle: true },
+    { key: 'product_code', label: 'Product code', mono: true },
+    { key: 'design_no',    label: 'Design no.' },
+    { key: 'item_type',    label: 'Item type' },
+    { key: 'status',       label: 'Status', statusBadge: true },
+    { key: 'is_active',    label: 'Active', toggle: true },
   ],
   designs: [
     { key: 'design_code',   label: 'Design code', mono: true },
     { key: 'display_name',  label: 'Name' },
     { key: 'collection',    label: 'Collection' },
     { key: 'metal',         label: 'Metal' },
+    { key: 'design_family', label: 'Family' },
     { key: 'active',        label: 'Active', toggle: true },
   ],
   hs: [
@@ -176,13 +177,24 @@ const MAPPING_INFO = {
   },
   products: {
     available: [
-      'HS code cross-reference (hs_code_override links to HS Codes tab)',
-      'Unit cross-reference (unit_override links to Units tab)',
-      'Design cross-reference (design_code_link links to Designs tab)',
+      'Product Master registry (149 rows) — synced from purchase batches via Product Master Sync',
+      'Status badge: mapping_required → needs Create & adopt in wFirma; mapped → wFirma goods linked',
+      'Design number (design_no) links to Designs tab',
+      'Per-row "Edit overlays" writes to local overlay (HS code / unit / design link) — does NOT modify the read-only Product Master',
+      'Per-row "Create & adopt" — fiscal-gated (requires WFIRMA_CREATE_PRODUCT_ALLOWED)',
     ],
     pending: [
-      'wFirma goods mapping — wFirma goods IDs live in /wfirma/products (separate authority); no per-product wFirma ID stored in Product Local',
+      'wFirma goods ID not stored in product_master — mapping lives in wFirma goods adoption record',
       'Packing list item usage — no endpoint exposes which packing lists contain this product code',
+    ],
+  },
+  designs: {
+    available: [
+      'Design metadata CRUD via /api/v1/designs (Design Master authority)',
+      'Full create / edit / soft-delete wired — Create Design button + per-row Edit + Delete',
+    ],
+    pending: [
+      'design→product_code mapping is populated from purchase packing (no manual REST writer); mapping_required is resolved via Product Master sync + wFirma adopt',
     ],
   },
   vat: {
@@ -263,6 +275,20 @@ function _renderCell(col, value) {
     }
     return String(value);
   }
+  if (col.statusBadge) {
+    const v = value == null ? '' : String(value);
+    const colorKey = v === 'mapping_required' ? 'amber' : v === 'mapped' ? 'green' : 'neutral';
+    const label    = v === 'mapping_required' ? 'mapping required' : v || '—';
+    return React.createElement('span', {
+      'data-testid': 'status-badge-' + (v || 'unknown'),
+      style: {
+        display: 'inline-block', padding: '2px 8px', borderRadius: 20, fontSize: 10, fontWeight: 600,
+        background: 'var(--badge-' + colorKey + '-bg, rgba(212,168,83,0.12))',
+        color: 'var(--badge-' + colorKey + '-text, #92400e)',
+        border: '1px solid var(--badge-' + colorKey + '-border, rgba(212,168,83,0.3))',
+      },
+    }, label);
+  }
   if (value == null || value === '') return '—';
   return String(value);
 }
@@ -311,7 +337,7 @@ function _entityApi(entityId) {
   switch (entityId) {
     case 'clients':   return { fetch: () => PzApi.listCustomerMaster(),  extract: d => d.customers || [],  rowKey: r => r.id || r.bill_to_contractor_id };
     case 'suppliers':  return { fetch: () => PzApi.listSuppliers(),       extract: d => d.suppliers || [],  rowKey: r => r.id };
-    case 'products':   return { fetch: () => PzApi.listProductLocal(),    extract: d => d.items || [],      rowKey: r => r.product_code };
+    case 'products':   return { fetch: () => PzApi.listProductMaster(),   extract: d => d.rows  || [],       rowKey: r => r.product_code };
     case 'designs':    return { fetch: () => PzApi.listDesigns(),         extract: d => d.designs || [],    rowKey: r => r.design_code };
     case 'hs':         return { fetch: () => PzApi.listHsCodes(),         extract: d => d.hs_codes || [],   rowKey: r => r.hs_code };
     case 'fx':         return { fetch: () => PzApi.listFxRates(),         extract: d => d.fx_rates || [],   rowKey: r => r.id };
@@ -920,6 +946,8 @@ function _ImportPreviewModal({ entityId, preview, applying, onApply, onClose }) 
 function _DeleteConfirmMini({ record, entityId, onConfirm, onCancel }) {
   const label = entityId === 'clients'
     ? (record.bill_to_name || record.bill_to_contractor_id || record.id)
+    : entityId === 'designs'
+    ? (record.display_name || record.design_code)
     : (record.name || record.id);
   return (
     <div data-testid="delete-confirm-dialog" onClick={onCancel} style={{
@@ -940,6 +968,198 @@ function _DeleteConfirmMini({ record, entityId, onConfirm, onCancel }) {
           <Btn variant="danger" small onClick={onConfirm} data-testid="delete-confirm-ok">
             Soft-delete
           </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Wave 6: Edit local overlay for a product_master row ──────────────────────
+// Writes to product_local (augmentation only). NEVER modifies product_master.
+function ProductOverlayEditModal({ productCode, existing, onClose, onSaved }) {
+  var init = existing || {};
+  var [form, setFormOv] = React.useState({
+    hs_code_override: init.hs_code_override || '',
+    unit_override:    init.unit_override    || '',
+    design_code_link: init.design_code_link || '',
+    notes:            init.notes            || '',
+    active:           init.active !== false,
+  });
+  var [saving, setSaving] = React.useState(false);
+  var [error, setError]   = React.useState(null);
+
+  async function save() {
+    setSaving(true); setError(null);
+    const res = await PzApi.saveProductLocal(productCode, {
+      hs_code_override:  form.hs_code_override.trim() || null,
+      unit_override:     form.unit_override.trim()    || null,
+      design_code_link:  form.design_code_link.trim() || null,
+      notes:             form.notes.trim()            || null,
+      active:            form.active,
+    });
+    setSaving(false);
+    if (res.ok) { if (onSaved) onSaved(); onClose(); }
+    else setError(res.error || (res.data && res.data.detail) || 'Save failed');
+  }
+
+  function ovField(label, key, hint) {
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', display: 'block', marginBottom: 4 }}>{label}</label>
+        <input data-testid={'ov-' + key} value={form[key]}
+          style={{ width: '100%', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text)' }}
+          onChange={e => setFormOv(prev => Object.assign({}, prev, { [key]: e.target.value }))} />
+        {hint && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{hint}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="product-overlay-edit-modal" onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'var(--overlay, rgba(0,0,0,0.45))', zIndex: 1050,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--bg)', borderRadius: 10, maxWidth: 480, width: '100%',
+        border: '1px solid var(--border)', boxShadow: '0 12px 40px rgba(0,0,0,0.25)',
+        padding: 24, color: 'var(--text)',
+      }}>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Edit Local Overlay — {productCode}</div>
+        <div style={{ fontSize: 11, color: 'var(--badge-amber-text, #92400e)', marginBottom: 14, padding: '6px 10px', background: 'var(--badge-amber-bg, rgba(212,168,83,0.1))', border: '1px solid var(--badge-amber-border, rgba(212,168,83,0.3))', borderRadius: 6 }}>
+          Edits the <b>local overlay</b> (augmentation: HS code, unit, design link, notes). The Product Master is <b>read-only</b>.
+        </div>
+        {ovField('HS code override', 'hs_code_override', 'Leave blank to use the default from HS Codes tab')}
+        {ovField('Unit override', 'unit_override', 'Leave blank to use the product default')}
+        {ovField('Design code link', 'design_code_link', 'Link to a Design in the Designs tab')}
+        {ovField('Notes', 'notes')}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-2)', marginBottom: 14 }}>
+          <input type="checkbox" data-testid="ov-active" checked={form.active}
+            onChange={e => setFormOv(prev => Object.assign({}, prev, { active: e.target.checked }))} />
+          Active overlay
+        </label>
+        {error && <div style={{ marginBottom: 12, fontSize: 12, color: 'var(--badge-red-text)', padding: '6px 10px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6 }}>{error}</div>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <Btn variant="outline" small onClick={onClose} data-testid="ov-cancel">Cancel</Btn>
+          <Btn variant="gold" small onClick={save} disabled={saving} data-testid="ov-save">
+            {saving ? 'Saving...' : 'Save Local Overlay'}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Wave 6: Create product in wFirma + adopt into Product Master ──────────────
+// Fiscal-gated: 403 = WFIRMA_CREATE_PRODUCT_ALLOWED is false.
+// 409 = product already exists in wFirma → offer Adopt only path.
+function ProductAdoptModal({ productCode, showToast, onClose, onSaved }) {
+  var [form, setFormAd]     = React.useState({ item_type: '', description_en: '' });
+  var [saving, setSaving]   = React.useState(false);
+  var [error, setError]     = React.useState(null);
+  var [adoptOnly, setAdoptOnly] = React.useState(false);
+  var [confirming, setConfirming] = React.useState(false);
+
+  async function doCreate() {
+    if (!form.item_type.trim()) { setError('Item type is required'); return; }
+    setSaving(true); setError(null);
+    const res = await PzApi.wfirmaGoodsCreateAndAdopt(productCode, {
+      item_type:      form.item_type.trim(),
+      description_en: form.description_en.trim() || undefined,
+    });
+    setSaving(false);
+    if (res.ok) {
+      if (showToast) showToast('Product created and adopted in wFirma', 'ok');
+      if (onSaved) onSaved(); onClose();
+    } else {
+      var msg = (res.data && res.data.detail) ? String(res.data.detail) : (res.error || '');
+      if (res.status === 403 || msg.toLowerCase().includes('block') || msg.toLowerCase().includes('not allowed')) {
+        setError('wFirma product creation is disabled — enable WFIRMA_CREATE_PRODUCT_ALLOWED in the backend configuration');
+      } else if (res.status === 409 || msg.toLowerCase().includes('already_in_wfirma') || msg.toLowerCase().includes('already exists')) {
+        setError('Product already exists in wFirma — use the Adopt button below instead');
+        setAdoptOnly(true);
+      } else {
+        setError(msg || 'Create & adopt failed');
+      }
+    }
+  }
+
+  async function doAdopt() {
+    setSaving(true); setError(null);
+    const res = await PzApi.wfirmaGoodsAdopt(productCode);
+    setSaving(false);
+    if (res.ok) {
+      if (showToast) showToast('Product adopted from wFirma', 'ok');
+      if (onSaved) onSaved(); onClose();
+    } else {
+      var msg = (res.data && res.data.detail) ? String(res.data.detail) : (res.error || '');
+      if (res.status === 403 || msg.toLowerCase().includes('block') || msg.toLowerCase().includes('not allowed')) {
+        setError('wFirma adopt is disabled by the backend configuration');
+      } else {
+        setError(msg || 'Adopt failed');
+      }
+    }
+  }
+
+  return (
+    <div data-testid="product-adopt-modal" onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'var(--overlay, rgba(0,0,0,0.45))', zIndex: 1050,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--bg)', borderRadius: 10, maxWidth: 460, width: '100%',
+        border: '1px solid var(--border)', boxShadow: '0 12px 40px rgba(0,0,0,0.25)',
+        padding: 24, color: 'var(--text)',
+      }}>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Create & adopt in wFirma — {productCode}</div>
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 16 }}>
+          Creates the product in wFirma and adopts it into the Product Master. Fiscal-gated — requires WFIRMA_CREATE_PRODUCT_ALLOWED.
+        </div>
+        {!adoptOnly && (
+          <>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', display: 'block', marginBottom: 4 }}>Item type *</label>
+              <input data-testid="adopt-item-type"
+                style={{ width: '100%', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text)' }}
+                value={form.item_type} placeholder="e.g. jewellery, ring, bracelet"
+                onChange={e => setFormAd(prev => Object.assign({}, prev, { item_type: e.target.value }))} />
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', display: 'block', marginBottom: 4 }}>Description (EN) — optional</label>
+              <input data-testid="adopt-description-en"
+                style={{ width: '100%', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text)' }}
+                value={form.description_en} placeholder="English product description"
+                onChange={e => setFormAd(prev => Object.assign({}, prev, { description_en: e.target.value }))} />
+            </div>
+          </>
+        )}
+        {confirming && !adoptOnly && (
+          <div data-testid="adopt-confirm-block" style={{ marginBottom: 12, padding: '10px 12px', background: 'var(--badge-amber-bg, rgba(212,168,83,0.1))', border: '1px solid var(--badge-amber-border, rgba(212,168,83,0.3))', borderRadius: 6, fontSize: 12, color: 'var(--badge-amber-text, #92400e)' }}>
+            Create product <b>{productCode}</b> in wFirma with item type <b>'{form.item_type.trim()}'</b>? This writes to the live wFirma ERP.
+          </div>
+        )}
+        {error && <div data-testid="adopt-error" style={{ marginBottom: 12, fontSize: 12, color: 'var(--badge-red-text)', padding: '8px 10px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6 }}>{error}</div>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <Btn variant="outline" small onClick={onClose} data-testid="adopt-cancel">Cancel</Btn>
+          {adoptOnly ? (
+            <Btn variant="gold" small onClick={doAdopt} disabled={saving} data-testid="adopt-only-btn">
+              {saving ? 'Adopting...' : 'Adopt from wFirma'}
+            </Btn>
+          ) : confirming ? (
+            <>
+              <Btn variant="outline" small onClick={() => setConfirming(false)} data-testid="adopt-back">Back</Btn>
+              <Btn variant="gold" small onClick={doCreate} disabled={saving} data-testid="btn-create-adopt-confirm">
+                {saving ? 'Creating...' : 'Confirm — create in wFirma'}
+              </Btn>
+            </>
+          ) : (
+            <Btn variant="gold" small onClick={() => {
+              if (!form.item_type.trim()) { setError('Item type is required'); return; }
+              setError(null);
+              setConfirming(true);
+            }} disabled={saving} data-testid="adopt-create-btn">
+              Create &amp; adopt in wFirma
+            </Btn>
+          )}
         </div>
       </div>
     </div>
@@ -981,6 +1201,20 @@ function MasterPage() {
   // reloadTick: bumped by handleReload to re-trigger the load effect after write operations
   const [reloadTick, setReloadTick]               = React.useState(0);
 
+  // ── Wave 6 state ──────────────────────────────────────────────────────────
+  // productOverlayCodes: Set of product_codes that have a product_local row (overlay indicator)
+  const [productOverlayCodes, setProductOverlayCodes] = React.useState(new Set());
+  // productOverlayData: map of product_code → product_local row (for prefilling overlay edit)
+  const [productOverlayData, setProductOverlayData]   = React.useState({});
+  // productOverlayEdit: null (closed) | { product_code, overlay: row|null }
+  const [productOverlayEdit, setProductOverlayEdit]   = React.useState(null);
+  // productAdoptModal: null (closed) | { product_code }
+  const [productAdoptModal, setProductAdoptModal]     = React.useState(null);
+  // designModal: null (closed) | { designCode: null (create) | string (edit) }
+  const [designModal, setDesignModal]                 = React.useState(null);
+  // designDeleteConfirm: null (closed) | design record
+  const [designDeleteConfirm, setDesignDeleteConfirm] = React.useState(null);
+
   // Per-entity data cache: { entityId: { records: [], loading: bool, error: string|null } }
   const [cache, setCache] = React.useState({});
 
@@ -1020,6 +1254,21 @@ function MasterPage() {
     });
   }, [entity, reloadTick]);
 
+  // ── Wave 6: load product_local overlay Set when on the products tab
+  React.useEffect(() => {
+    if (entity !== 'products') return;
+    PzApi.listProductLocal().then(res => {
+      if (res.ok) {
+        const items = (res.data && res.data.items) || [];
+        const codeSet = new Set(items.map(i => i.product_code));
+        const dataMap = {};
+        items.forEach(i => { dataMap[i.product_code] = i; });
+        setProductOverlayCodes(codeSet);
+        setProductOverlayData(dataMap);
+      }
+    }).catch(() => {});
+  }, [entity, reloadTick]);
+
   // ── Filtered records
   const records = (entityState.records || []).filter(r => {
     if (!search) return true;
@@ -1037,8 +1286,10 @@ function MasterPage() {
 
   // ── Determine disabled reason for write buttons
   const writeDisabledReason = (eid) => {
-    if (eid === 'roles') return ROLES_DISABLED_REASON;
-    if (eid === 'users') return USERS_WRITE_DISABLED_REASON;
+    if (eid === 'roles')    return ROLES_DISABLED_REASON;
+    if (eid === 'users')    return USERS_WRITE_DISABLED_REASON;
+    if (eid === 'products') return 'Product CSV export/import is not available — products enter via Product Master sync from a purchase batch';
+    if (eid === 'designs')  return 'Design CSV export/import is not available in this wave — manage designs individually via Create/Edit/Delete buttons';
     return WRITE_DISABLED_REASON;
   };
 
@@ -1152,6 +1403,18 @@ function MasterPage() {
       setter(s => Object.assign({}, s, { previewing: false, proposals: res.data.proposals || [] }));
     } else {
       setter(s => Object.assign({}, s, { previewing: false, error: (res && res.error) || 'Preview failed' }));
+    }
+  };
+
+  // ── Wave 6: soft-delete a design ─────────────────────────────────────────
+  const handleDeleteDesign = async (record) => {
+    const res = await PzApi.deleteDesign(record.design_code, false); // soft delete
+    setDesignDeleteConfirm(null);
+    if (res && res.ok) {
+      setMpToast({ msg: 'Design soft-deleted', type: 'ok' });
+      handleReload();
+    } else {
+      setMpToast({ msg: 'Delete failed: ' + (res ? (res.error || 'Unknown') : 'No response'), type: 'error' });
     }
   };
 
@@ -1271,6 +1534,19 @@ function MasterPage() {
                   data-testid="btn-new-record">
                   + New Supplier
                 </Btn>
+              ) : entity === 'products' ? (
+                <Btn variant="gold" small disabled
+                  title="Products enter via Product Master sync from a purchase batch, then per-row Create &amp; adopt — they are not minted manually here"
+                  data-testid="btn-new-record">
+                  + New Product
+                </Btn>
+              ) : entity === 'designs' ? (
+                <Btn variant="gold" small onClick={() => setDesignModal({ designCode: null })}
+                  disabled={!perms.create}
+                  title={perms.create ? 'Create a new Design record (Design Master authority)' : 'Role has no create permission'}
+                  data-testid="btn-new-record">
+                  + New Design
+                </Btn>
               ) : (
                 <Btn variant="gold" small disabled title={writeDisabledReason(entity)} data-testid="btn-new-record">
                   + New {currentEntity.singular}
@@ -1382,6 +1658,52 @@ function MasterPage() {
                                   disabled={!perms.delete}
                                   title={perms.delete ? 'Soft-delete this record (can be restored)' : 'Role has no delete permission'}
                                   data-testid="btn-delete-record"
+                                  style={{ color: 'var(--badge-red-text, rgba(220,38,38,0.85))', borderColor: 'var(--badge-red-border, rgba(220,38,38,0.3))' }}>
+                                  Delete
+                                </Btn>
+                              )}
+                              {entity === 'products' && productOverlayCodes.has(r.product_code) && (
+                                <span data-testid="overlay-badge" style={{
+                                  display: 'inline-block', padding: '1px 6px', borderRadius: 10, fontSize: 9, fontWeight: 600,
+                                  background: 'var(--badge-blue-bg, rgba(59,130,246,0.12))',
+                                  color: 'var(--badge-blue-text, #1d4ed8)',
+                                  border: '1px solid var(--badge-blue-border, rgba(59,130,246,0.3))',
+                                  verticalAlign: 'middle', marginRight: 2,
+                                }}>HS/unit</span>
+                              )}
+                              {entity === 'products' && (
+                                <Btn small variant="outline"
+                                  onClick={() => setProductOverlayEdit({ product_code: r.product_code, overlay: productOverlayData[r.product_code] || null })}
+                                  disabled={!perms.edit}
+                                  title={perms.edit ? 'Edit local overlay (HS code / unit / design link) — does NOT modify the read-only Product Master' : 'Role has no edit permission'}
+                                  data-testid={`btn-edit-product-overlay-${r.product_code}`}>
+                                  Edit overlays
+                                </Btn>
+                              )}
+                              {entity === 'products' && r.status === 'mapping_required' && (
+                                <Btn small variant="gold"
+                                  onClick={() => setProductAdoptModal({ product_code: r.product_code })}
+                                  disabled={!perms.create}
+                                  title={perms.create ? 'Create this product in wFirma and adopt (fiscal-gated)' : 'Role has no create permission'}
+                                  data-testid={`btn-create-adopt-${r.product_code}`}>
+                                  Create &amp; adopt
+                                </Btn>
+                              )}
+                              {entity === 'designs' && (
+                                <Btn small variant="gold"
+                                  onClick={() => setDesignModal({ designCode: r.design_code })}
+                                  disabled={!perms.edit}
+                                  title={perms.edit ? 'Edit design record' : 'Role has no edit permission'}
+                                  data-testid={`btn-edit-design-${r.design_code}`}>
+                                  Edit
+                                </Btn>
+                              )}
+                              {entity === 'designs' && (
+                                <Btn small variant="outline"
+                                  onClick={() => setDesignDeleteConfirm(r)}
+                                  disabled={!perms.delete}
+                                  title={perms.delete ? 'Soft-delete this design' : 'Role has no delete permission'}
+                                  data-testid={`btn-delete-design-${r.design_code}`}
                                   style={{ color: 'var(--badge-red-text, rgba(220,38,38,0.85))', borderColor: 'var(--badge-red-border, rgba(220,38,38,0.3))' }}>
                                   Delete
                                 </Btn>
@@ -1658,6 +1980,45 @@ function MasterPage() {
         />
       )}
 
+      {/* Wave 6: Product overlay edit modal */}
+      {productOverlayEdit !== null && (
+        <ProductOverlayEditModal
+          productCode={productOverlayEdit.product_code}
+          existing={productOverlayEdit.overlay}
+          onClose={() => setProductOverlayEdit(null)}
+          onSaved={() => { setProductOverlayEdit(null); handleReload(); }}
+        />
+      )}
+
+      {/* Wave 6: Product create-and-adopt modal */}
+      {productAdoptModal !== null && (
+        <ProductAdoptModal
+          productCode={productAdoptModal.product_code}
+          showToast={(msg, type) => setMpToast({ msg, type })}
+          onClose={() => setProductAdoptModal(null)}
+          onSaved={() => { setProductAdoptModal(null); handleReload(); }}
+        />
+      )}
+
+      {/* Wave 6: Design detail create / edit modal */}
+      {designModal !== null && (
+        <DesignDetailModal
+          designCode={designModal.designCode}
+          onClose={() => setDesignModal(null)}
+          onSaved={() => { setDesignModal(null); handleReload(); }}
+        />
+      )}
+
+      {/* Wave 6: Design soft-delete confirm */}
+      {designDeleteConfirm !== null && (
+        <_DeleteConfirmMini
+          record={designDeleteConfirm}
+          entityId="designs"
+          onConfirm={() => handleDeleteDesign(designDeleteConfirm)}
+          onCancel={() => setDesignDeleteConfirm(null)}
+        />
+      )}
+
       {/* Wave 5: inline toast notification (auto-clears after 4.5 s) */}
       {mpToast && (
         <div data-testid="mp-toast" style={{
@@ -1675,4 +2036,4 @@ function MasterPage() {
   );
 }
 
-Object.assign(window, { MasterPage, RecordDetailModal, ScanStatusPanel, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner, ProductMasterSyncPanel });
+Object.assign(window, { MasterPage, RecordDetailModal, ScanStatusPanel, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner, ProductMasterSyncPanel, ProductOverlayEditModal, ProductAdoptModal });
