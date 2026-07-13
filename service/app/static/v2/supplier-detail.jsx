@@ -47,7 +47,7 @@ function _SdConfirmDialog({ changes, onConfirm, onCancel }) {
   return (
     <div data-testid="sd-confirm-dialog" style={{
       position: 'fixed', inset: 0, zIndex: 1100,
-      background: 'rgba(0,0,0,0.5)',
+      background: 'var(--overlay, rgba(0,0,0,0.5))',
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
     }} onClick={onCancel}>
       <div onClick={function(e){ e.stopPropagation(); }} style={{
@@ -265,7 +265,7 @@ function SupplierDetailModal({ supplierId, onClose, onSaved }) {
 
   return (
     <div data-testid="supplier-detail-modal" style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000,
+      position: 'fixed', inset: 0, background: 'var(--overlay, rgba(0,0,0,0.45))', zIndex: 1000,
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
     }} onClick={onClose}>
       <div style={{

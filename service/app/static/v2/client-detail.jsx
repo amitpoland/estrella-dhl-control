@@ -65,7 +65,7 @@ function _CdConfirmDialog({ changes, onConfirm, onCancel }) {
   return (
     <div data-testid="cd-confirm-dialog" style={{
       position: 'fixed', inset: 0, zIndex: 1100,
-      background: 'rgba(0,0,0,0.5)',
+      background: 'var(--overlay, rgba(0,0,0,0.5))',
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
     }} onClick={onCancel}>
       <div onClick={e => e.stopPropagation()} style={{
@@ -97,7 +97,7 @@ function _CdConfirmDialog({ changes, onConfirm, onCancel }) {
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <Btn variant="outline" small onClick={onCancel} data-testid="cd-confirm-cancel">Cancel</Btn>
-          <Btn variant="gold" small onClick={onConfirm} data-testid="cd-confirm-save">Save Changes</Btn>
+          <Btn variant="gold" small onClick={onConfirm} data-testid="cd-confirm-save">Save to Customer Master</Btn>
         </div>
       </div>
     </div>
@@ -250,7 +250,7 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
 
   return (
     <div data-testid="client-detail-modal" style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000,
+      position: 'fixed', inset: 0, background: 'var(--overlay, rgba(0,0,0,0.45))', zIndex: 1000,
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
     }} onClick={onClose}>
       <div style={{
@@ -667,7 +667,7 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
             <Btn variant="gold" onClick={handleSaveClick}
               disabled={!hasChanges || saving || loading}
               data-testid="cd-save">
-              {saving ? 'Saving...' : 'Save Changes'}
+              {saving ? 'Saving...' : 'Save to Customer Master'}
             </Btn>
           </div>
         </div>
