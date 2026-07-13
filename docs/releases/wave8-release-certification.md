@@ -1,9 +1,10 @@
 # EJ Dashboard V2 Stabilization — Wave 8 Release Certification
 
 **Base:** `origin/main` `37198c7d` (Waves 1–7 + user-admin audit-logging)
-**Final combined candidate (local detached integration — NOT pushed, NOT deployed):** `88ade86d`
+**Merged release SHA (origin/main after #909→#910→#911→#912 squash):** `13bf8d4c`
+**Provisional detached candidate (pre-merge):** `88ade86d`
 **Certification date:** 2026-07-13
-**Status:** ⛔ **STOP — local integration candidate; awaiting operator merge of the PR set + explicit approval before any production write. No production write occurred.**
+**Status:** ⛔ **MERGED to `origin/main` @ `13bf8d4c` (#909→#910→#911→#912); re-certified post-merge (zero Wave-8 regressions). Awaiting operator-approved `/deploy`. No production write occurred.**
 
 This certification describes the **exact combined candidate** `88ade86d`, assembled from `origin/main` + the four reconciled Wave-8 PRs, verified as one tree — not any earlier state.
 
@@ -50,7 +51,23 @@ Order verified by building the detached candidate in this sequence with **zero c
 | Babel compile (client-detail, supplier-detail, master-page, dashboard-page, shipment-detail) | ✅ all 5 |
 | Overlap proof (grep) | client-detail = #909+#912 ✅ · master-page = #911+#912 ✅ · `GOLD+'22'` = 0 ✅ |
 
-**Full-suite handling:** a raw un-sandboxed full `service/tests` run on the merged-main-equivalent returned **18316 passed / 1431 failed / 72 skipped** (2:52:19, exit 0). This is **not a release verdict** — it is dominated by cross-test storage-leak pollution and **network/live-service-dependent** suites (`test_zc429_recovery_flow`, `test_zc429_lineage_panel`, `test_wfirma_pz_supplier_resolution`) that fail without the `#898` conftest sandbox + live wFirma/email. The **authoritative** full-suite classification with the sandbox, against `.claude/contracts/test-baseline.md`, is executed by the `/deploy` QA gate at deploy time. **No unexpected ERROR appeared in the targeted battery on `88ade86d`.**
+**Full-suite handling:** a raw un-sandboxed full `service/tests` run on the merged-main-equivalent returned **18316 passed / 1431 failed / 72 skipped** (2:52:19, exit 0). This is **not a release verdict** — it is dominated by cross-test storage-leak pollution and **network/live-service-dependent** suites (`test_zc429_recovery_flow`, `test_zc429_lineage_panel`, `test_wfirma_pz_supplier_resolution`) that fail without the `#898` conftest sandbox + live wFirma/email. The **authoritative** full-suite classification with the sandbox, against `.claude/contracts/test-baseline.md`, is executed by the `/deploy` QA gate at deploy time.
+
+### 3.1 Post-merge re-certification on the actual merged SHA `13bf8d4c`
+
+Overlaps confirmed survived the four squashes (grep on `origin/main`): client-detail = #909 label(×2)+overlay(×2)+#912 banners(×3), no stale rgba; master-page = #911 deep-link `contractor_id`(×17)+honest fallback, roles fallback = the real `STATIC_ROLES_NAMES` (fake matrix = 0); dashboard `GOLD+'22'` = **0**, `var(--accent-subtle)` + filter testid present; shipment-detail `timelineMilestones`(×2)+SAD wiring intact; RBAC allowlist test = #910's Wave 5-8 version.
+
+| Gate | Release `13bf8d4c` | Base `37198c7d` (A/B) | Verdict |
+|---|---|---|---|
+| Golden | **160/160** ✅ | — | pass |
+| Smoke | **63 passed** ✅ | — | pass |
+| PZ floor (`test_*pz*.py`) | **1006 passed** (≥257) · 36 failed | **36 failed / 1006 passed — identical** | floor met; 36 A/B-pre-existing |
+| Carrier floor (`-k carrier`) | **911 passed** (≥584) · 17 failed | **17 failed / 910 passed — identical** | floor met; 17 A/B-pre-existing |
+| Targeted Wave 1-8 + sec + RBAC + freight + audit battery | **202 passed** · 8 failed | **8 failed — identical** (`test_cm_apply_*`, 401 admin-gated) | 8 A/B-pre-existing |
+| Babel (5 JSX) | ✅ | — | pass |
+| PII scan (changed files) | clean | — | pass |
+
+**Zero Wave-8 regressions.** Every failure on `13bf8d4c` (cm_wfirma-apply 8, carrier 17, PZ 36) fails **identically** on the pre-Wave-8 base `37198c7d` — A/B-proven pre-existing (not introduced by #909/#910/#911/#912). The `#898` storage-sandbox conftest is present. No **unexpected ERROR**. The full sandboxed count vs `test-baseline.md` remains the `/deploy` QA gate's authoritative check.
 
 ---
 
