@@ -1,141 +1,91 @@
 # EJ Dashboard V2 Stabilization — Wave 8 Release Certification
 
-**Certified merged state:** `origin/main` @ `37198c7d` (Waves 1–7 + user-admin audit-logging)
-**Wave-8 additions:** `feat/v2-wave8-release-cert` @ `b813d53f` (2 cert-fix commits — NOT yet in main)
+**Base:** `origin/main` `37198c7d` (Waves 1–7 + user-admin audit-logging)
+**Final combined candidate (local detached integration — NOT pushed, NOT deployed):** `88ade86d`
 **Certification date:** 2026-07-13
-**Status:** ⛔ **STOP — awaiting explicit operator approval before any production write.**
+**Status:** ⛔ **STOP — local integration candidate; awaiting operator merge of the PR set + explicit approval before any production write. No production write occurred.**
 
-The V2 migration + stabilization program (7 feature waves) is code-complete and merged.
-This is a certification pass, not a feature wave. No module was reopened except for the
-two certification-proven concrete frontend defects fixed inline (RF-1, RF-2).
+This certification describes the **exact combined candidate** `88ade86d`, assembled from `origin/main` + the four reconciled Wave-8 PRs, verified as one tree — not any earlier state.
 
 ---
 
-## 1. Merged authority state (reinspected)
+## 1. Reconciliation outcome — the PR set (all MERGEABLE, pairwise coherent)
 
-| PR | Wave | Squash SHA |
-|---|---|---|
-| #902 | 1 — money formatter | c15b6d93 |
-| #903 | 2 — New Shipment → B1 intake | 95636921 |
-| #904 | 3 — SAD + Documents identity | 3efaf889 |
-| #905 | 4 — Timeline read-model | a60c854f |
-| #906 | 5 — Clients + Suppliers CRUD/CSV/sync | 5d0b43ea |
-| #907 | 6 — Products consolidation + Designs CRUD | f0b1a306 |
-| #908 | 7 — Remaining masters + capability contract (+ auth audit-logging) | 37198c7d |
+| PR | Head | Owns | Files |
+|---|---|---|---|
+| **#909** | `8cbf89e6` | Wave-8 cert + RF-1/RF-2 (client/supplier modal: "Save to Customer Master" label + `var(--overlay)`) | client-detail, supplier-detail, this cert doc |
+| **#910** | `0b0a6714` | Security hardening (doc delete/replace + wFirma sync-apply role gates, Windows reserved-name, traversal parity, last-admin guard) **+ self-contained Wave 5-8 RBAC allowlist reconciliation** incl. Customer-Master VAT `_write_auth` | routes_auth/customer_master/intake/upload/wfirma_capabilities + test_wave8_security_hardening + test_rbac_structural_allowlist |
+| **#911** | `de6f9e0b` | Customer Master **V2 deep-link authority cutover** (`/v2/master?entity=clients&contractor_id=<id>` → Clients tab + ClientDetailModal); legacy `customer-master-v2.html` refs repointed (reference-only) | routes_proforma, proforma-detail-v2.html, shipment-detail.html, master-page.jsx, test_freight_authority_blocker_repair |
+| **#912** | `50f3d15b` | Frontend hygiene: **`GOLD+'22'` invalid-CSS fix** (→ `var(--accent-subtle)`), filter testids, design tokens, honest `WRITE_DISABLED_REASON` fallback | client-detail, dashboard-page, master-page, shipment-detail + test_wave8_frontend_polish_contract |
 
-All 7 PRs **MERGED**; **0 open PRs**; working tree clean. The #908 squash captured the
-user-admin audit-logging (routes_auth `_audit_user_action`, core/audit VALID_OPS user ops,
-test_auth_admin_audit.py — all present on main).
+**Superseded / not shipped:** `claude/bold-wing-038fac` `1982d6db` (RBAC 5-7) — **DUPLICATE**, subsumed by #910's `0b0a6714` (RBAC 5-8; CM-VAT byte-identical). Not integrated.
+
+**Overlaps resolved (clean 3-way, both authorities preserved):**
+- `client-detail.jsx` = #909 (save label ×2 + overlay ×2) **+** #912 (error-banner `var(--badge-red-bg)` ×3).
+- `master-page.jsx` = #911 (deep-link `contractor_id` ×17) **+** #912 (honest fallback text).
+- `test_rbac_structural_allowlist.py` = **#910 only**.
+- `GOLD+'22'` corrected **exactly once** (#912).
 
 ---
 
-## 2. Regression (documented gate)
+## 2. Final merge order (from real heads)
 
-| Suite | Result |
+1. **#909** `8cbf89e6`
+2. **#910** `0b0a6714`
+3. **#911** `de6f9e0b`
+4. **#912** `50f3d15b`
+5. Certification refresh — **included in #909** (this document); no separate PR.
+
+Order verified by building the detached candidate in this sequence with **zero conflicts**.
+
+---
+
+## 3. Verification on the exact combined candidate `88ade86d`
+
+| Gate | Result |
 |---|---|
 | Golden (`test_pz_regression.py`) | **160/160** ✅ |
 | Smoke (`pytest -m smoke`) | **63 passed, 1 skipped** ✅ |
-| Wave suites (money, intake, documents, timeline, csv, products/designs, capabilities, remaining-masters, auth-audit) | **all green** ✅ |
-| Babel compile (all changed JSX) | ✅ |
-| Full 19k service suite | inconclusive in-window (un-isolated network tests stall) — authoritative pass/fail count runs in the `/deploy` QA gate against `.claude/contracts/test-baseline.md` |
+| Combined targeted battery (RBAC, security-hardening, freight/deep-link, frontend-polish contract, money, capabilities, CSV, documents, timeline, products/designs, remaining-masters, auth-audit) | **126 passed** ✅ |
+| Babel compile (client-detail, supplier-detail, master-page, dashboard-page, shipment-detail) | ✅ all 5 |
+| Overlap proof (grep) | client-detail = #909+#912 ✅ · master-page = #911+#912 ✅ · `GOLD+'22'` = 0 ✅ |
 
-**Known pre-existing baseline red (A/B-confirmed identical on base):**
-`test_master_data_hard_rules.py::test_carrier_runtime_does_not_read_local_carriers_config`
-— a carrier-runtime file references `carriers_config`; **not introduced by any wave**, no
-carrier-runtime file was touched. → documented baseline (not a release regression).
+**Full-suite handling:** a raw un-sandboxed full `service/tests` run on the merged-main-equivalent returned **18316 passed / 1431 failed / 72 skipped** (2:52:19, exit 0). This is **not a release verdict** — it is dominated by cross-test storage-leak pollution and **network/live-service-dependent** suites (`test_zc429_recovery_flow`, `test_zc429_lineage_panel`, `test_wfirma_pz_supplier_resolution`) that fail without the `#898` conftest sandbox + live wFirma/email. The **authoritative** full-suite classification with the sandbox, against `.claude/contracts/test-baseline.md`, is executed by the `/deploy` QA gate at deploy time. **No unexpected ERROR appeared in the targeted battery on `88ade86d`.**
 
 ---
 
-## 3. Browser certification (authenticated, isolated non-prod storage)
+## 4. Browser certification (candidate `88ade86d`, isolated non-prod storage)
 
-Re-certified on merged main; **zero console errors** across every interaction.
-
-| Workflow | Result |
-|---|---|
-| App boot / SPA shell | ✅ clean |
-| Dashboard landing | ✅ honest MOCK banner (design-time placeholder, correctly labeled) |
-| Master Data — all 13 tabs render | ✅ (Clients 2, Suppliers 2, Products 9, Designs, HS, FX 0, VAT 0, Carriers, Box Profiles, Incoterms, Units, Users, Roles) |
-| Capability contract loads + drives tab availability | ✅ |
-| Roles tab shows the real 8 system roles (no fake manager/operator matrix, immutable) | ✅ |
-| Honest "Backend pending" / unavailable states | ✅ accurate |
-| Shipment Detail — Documents identity + Timeline read-model | ✅ verified per-wave on content-identical merged code |
-| New Shipment intake, CSV import preview→apply, product create-and-adopt confirm gate | ✅ verified per-wave; fiscal gates honored |
-
-_Users admin actions are code-verified; `/auth/*` returns 401 under the API-key session in the
-verify env, so they were not exercised in-browser (an env auth boundary, not a defect)._
+- **Exact final candidate served + booted clean — zero console errors** (verified on `88ade86d`).
+- **Per-PR visual verification (same code, now clean-merged):** #909 client/supplier modal fixes + Wave-8 combined-state (13 master tabs, capability contract, real-8 roles, honest states, 0 console errors); #911 deep-link `?entity=clients&contractor_id=<id>` opens Clients + ClientDetailModal and supplier-entity selection (browser-verified on its branch, GET-only); #912 token/testid changes (Babel + contract-test verified).
+- **Constraint:** the deep-link **live** re-run on the combined SHA was limited by the detached-worktree preview (empty storage + query-param navigation guard); its behaviour is covered by #911's branch verification + the clean-merge proof (deep-link code present ×17, coexisting with the polish fallback). This is the one item to spot-confirm during the operator's `/deploy` browser step against real data.
 
 ---
 
-## 4. Findings classification
+## 5. Findings classification
 
-### (a) Real defects fixed before release (inline, this wave)
-- **RF-1** — `client-detail.jsx` save/confirm buttons said "Save Changes" → **"Save to Customer Master"** (§7 write-target naming). ✅ fixed `b813d53f`.
-- **RF-2** — `client-detail.jsx` + `supplier-detail.jsx` modal overlays used bare `rgba()` → `var(--overlay, …)` (dark-mode theme break). ✅ fixed `b813d53f`.
-
-### (b) Honest-unavailable capabilities (correct as-is, no action)
-- VAT wFirma sync (no endpoint), carrier live-ping (config-only), Roles CRUD (immutable), user edit/delete (no endpoint), CSV where not built, FX reference-only.
-- Reports / Admin / Shipping-Ops V2 pages serve MOCK data behind an honest banner — **out of Waves 1–7 scope** (not migrated), not a duplicate-authority violation.
-
-### (c) Pre-existing / deferred to chips (non-blocking)
-| Finding | Source | Chip |
-|---|---|---|
-| Security: 2 MED (doc delete/replace + wFirma customer sync-apply role gates) + 4 LOW (Windows reserved names, batch_id traversal parity, role-enum exposure, admin self-demotion) | security cert | `task_2fd1c281` |
-| Architecture RISK-1: backend `routes_proforma.py:8045` deep-links to legacy `customer-master-v2.html` (V2 has no `?contractor_id=` deep-link yet) | architecture cert | `task_f28d0647` |
-| Frontend §3/§8: hardcoded hex in dashboard/shipment-detail/client-detail, missing filter-button testids, stale `WRITE_DISABLED_REASON` text | frontend cert | `task_6c57a894` |
-| `GOLD + '22'` → invalid CSS `var(--accent)22` (transparent bg) in dashboard-page.jsx | frontend cert (RF-4) | `task_d9bc6ba2` (operator-started earlier) |
-| `_callM` sends writes without X-Operator if the name prompt is dismissed (Waves 5–7) | Wave-6 security | `task_46fe6fbe` |
-
-### Architecture posture (documented, not a defect)
-- **RISK-3** — the V1 SPA (`dashboard.html`) remains live at `/dashboard/`. This is the **documented V1-frozen migration posture** (V2 = consolidation authority per the FRONTEND AUTHORITY CONSTITUTION; full V1 retirement is a separate future decision). RISK-1 is the same class (incomplete V1→V2 cutover).
+- **(a) Fixed in this candidate:** RF-1/RF-2 (#909), the 2 MEDIUM + 4 LOW security items minus LOW-3 (#910), RISK-1 CM deep-link (#911), RF-3/5/6/7/8 + `GOLD+'22'` (#912).
+- **(b) Honest-unavailable (correct as-is):** VAT wFirma sync, carrier live-ping, Roles CRUD, user edit/delete, CSV where not built, FX reference-only; Reports/Admin/Shipping-Ops MOCK pages (out of Waves 1–7 scope).
+- **(c) Documented posture / deferred:** V1 SPA still live at `/dashboard/` (documented V1-frozen migration posture); security LOW-3 role-enum exposure (REJECTED — the Users/Roles tabs consume the enum); `_callM` X-Operator gap (chip `task_46fe6fbe`).
+- **Pre-existing baseline red (A/B-confirmed on base, no carrier file touched):** `test_carrier_runtime_does_not_read_local_carriers_config`.
+- **Pre-existing PII note (NOT introduced here):** `client-detail.jsx` NIP/VAT/EORI placeholders (`PL5252312345`, from Wave 5, already in main) — flagged for a separate sanitisation decision.
 
 ---
 
-## 5. Reviews (architecture / security / frontend)
+## 6. Production delta, backup, rollback
 
-| Review | Verdict |
-|---|---|
-| **Security** (security-permissions, aggregate Waves 1–7) | **CLEAN — no CRITICAL/HIGH.** Confirmed: no secrets, `password_hash` absent from responses/logs/audit, wFirma fiscal write-gates intact, XSS allowlist + nosniff/CSP on inline serve, CSV formula-injection neutralised + system-column block + no soft-delete leak, parameterised SQL, `audit_safe` on all writes. 2 MED + 4 LOW → `task_2fd1c281`. |
-| **Frontend-flow** (aggregate V2) | **ISSUES** — 2 concrete defects fixed inline (RF-1/RF-2); rest §3/§8 polish → chips. No fake readiness, honest-unavailable accurate, capability contract drives writes, Lesson-M compliant, confirm-before-destructive present. |
-| **Architecture / authority** (frontend-authority-inspector) | **RISKS FOUND** — capability contract CLEAN (single consumer, no hardcoded availability); every wave-touched module verified ONE-AUTHORITY. RISK-1 (legacy deep-link) + RISK-3 (V1 live) = incomplete-cutover posture → `task_f28d0647`. |
-
----
-
-## 6. Production delta, backup, hashes, rollback
-
-### Delta
-- **Target (release):** `origin/main` `37198c7d` **+ Wave-8 fixes** (`feat/v2-wave8-release-cert` `b813d53f`, RF-1/RF-2 + this cert) — **merge the Wave-8 PR into main first**, then deploy `main`.
-- **Baseline (rollback point):** the **currently-deployed SHA on `C:\PZ` (operator must confirm)**. Per PROJECT_STATE the last recorded prod-verified SHA was `b1caafd4`; **many PRs (the 7 V2 waves + ~20 intervening merges) have landed since**, so the real deploy delta is large — the `/deploy` gate diffs against the live tree for the exact set.
-- **Footprint (this program):** 7 wave commits, **35 files under `service/`** (+6845/−526). Backend routes (auth, customer_master, intake, master_data, suppliers, upload, wfirma_capabilities, proforma), services (master_csv, timeline_milestones, document_db, customer_master_db, packing_db, +schema), core/audit, main.py; V2 frontend (master-page, shipment-detail, modals, pz-api, dashboard-page, + new supplier-detail/design-detail/master-record-edit, components, index.html); tests.
-
-### Deploy plan (Lesson J verified)
-- **NO root-level engine files changed** (`pz_import_processor.py`, `polish_description_generator.py`, `pz_calculator.py`, `customs_description_engine.py`) → the standard **single** `service/app → C:\PZ\app` robocopy covers the entire release. **No separate engine sync required.**
-- **DB schema:** changes are **additive** (`document_db` is_current/superseded_by; new tables/columns in customer_master/packing/proforma-link/warehouse dbs) applied by each `*_db.py` init on service start — **no manual migration**. Confirm on the persistence gate.
-
-### File-hash anchors (target `37198c7d`; regenerate against final merged SHA at sync time)
-```
-routes_auth.py        01d61d940ff0bff300d2a4fa616718ce458c6eb6
-routes_master_data.py 3a9f8049b9d4d78c600f034f49eb10c9b0887181
-routes_upload.py      7d4c86bbe35163952a8ac60517114195d55de891
-core/audit.py         e5d882b000f22cce6799cd93d1a76bcb98c4aaec
-main.py               10453a23a2d8103a61266d388f5da138676b9b71
-static/v2/master-page.jsx        19054dc3a06a42fa7b6ccb27f32713350f312200
-static/v2/master-record-edit.jsx e0ee7023e9c1762a4254d0635991331e7465a5d9
-```
-Per deploy-source discipline: hash-verify the sync source at the final SHA **before and after**
-robocopy; the `/deploy` release-manager emits the authoritative full manifest.
-
-### Backup + rollback card
-1. **Before sync:** back up `C:\PZ\app` (robocopy mirror to `C:\PZ\app.bak.<yyyymmdd-hhmm>`), and record the current deployed SHA.
-2. **Deploy:** stop `PZService` (NSSM) → verify STOPPED → robocopy `service/app → C:\PZ\app` (`/XD storage` deploy-hygiene) → start → verify RUNNING (health endpoint 200).
-3. **Rollback (if verification fails):** stop `PZService` → robocopy `C:\PZ\app.bak.<ts> → C:\PZ\app` (mirror) OR `git checkout <baseline-SHA>` in the deploy source + re-robocopy → start → verify RUNNING. Storage (`C:\PZ\storage`) is untouched by deploy (`/XD storage`), so no data rollback needed.
-4. **Post-deploy verify:** capability endpoint 200; a master-tab read; one create+auto-refresh; scheduler/webhook health; no new stderr.
+- **Target (release):** `origin/main` **after merging #909 → #910 → #911 → #912** (= content of `88ade86d`).
+- **Rollback anchor:** the **currently-deployed `C:\PZ` SHA — operator must confirm** (deploy-guard blocks reading it here). Last recorded prod-verified SHA per PROJECT_STATE was `b1caafd4`; the 7 V2 waves + Wave-8 PRs + ~20 intervening merges have landed since, so the real deploy delta is large — the `/deploy` gate diffs against the live tree for the exact set.
+- **Deploy plan (Lesson J verified):** **no root-level engine files changed** → the standard **single** `service/app → C:\PZ\app` robocopy covers the release; no separate engine sync.
+- **DB schema:** additive columns/tables applied by each `*_db.py` init on service start — no manual migration; confirm on the persistence gate.
+- **Hash verification:** per deploy-source discipline, hash-verify the sync source at the final merged SHA **before and after** robocopy; the `/deploy` release-manager emits the authoritative manifest.
+- **Rollback card:** (1) back up `C:\PZ\app` → `C:\PZ\app.bak.<ts>` + record deployed SHA; (2) deploy = stop `PZService` → verify STOPPED → robocopy (`/XD storage`) → start → verify RUNNING (health 200); (3) rollback = stop → restore `app.bak.<ts>` (or `git checkout <baseline>` + re-robocopy) → start → verify; storage (`C:\PZ\storage`) untouched, no data rollback.
 
 ---
 
 ## 7. Go / No-Go
 
-**Recommendation: GO — conditional on (a) merging the Wave-8 PR into main and (b) the full 7-agent `/deploy` gate + explicit operator approval.**
+**GO — conditional on** merging the four PRs in order + the full 7-agent `/deploy` gate + explicit operator approval + operator-confirmed deployed baseline SHA.
 
-- ✅ All 7 waves merged; capability/authority ONE-AUTHORITY for every wave module; security CLEAN (no HIGH); browser cert clean (0 console errors); golden + smoke + wave suites green; 2 concrete frontend defects fixed.
-- 🔶 Non-blocking follow-ups tracked in chips (`task_2fd1c281`, `task_f28d0647`, `task_6c57a894`, `task_d9bc6ba2`, `task_46fe6fbe`).
-- ⛔ **Production write is operator-only.** This certification performs **no** production write. Deploy proceeds only via `/deploy` (7-agent gate) after explicit operator approval and operator confirmation of the currently-deployed baseline SHA.
+- ✅ All 7 waves + Wave-8 reconciliation form one coherent candidate `88ade86d`; every accepted fix exists exactly once; no duplicate authority/route/writer; overlaps preserve both authorities; golden 160/160 + 126 targeted + smoke 63 green; zero console errors on the exact candidate.
+- ⛔ **This is a local integration candidate — not pushed, not deployed. No production write occurred; no service restart; `C:\PZ` untouched.** The operator performs all merges and the deploy.
