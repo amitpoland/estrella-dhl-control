@@ -15049,7 +15049,7 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
                 <div><strong>Action:</strong> {action}</div>
                 {cid && (
                   <a data-testid={`proforma-blocked-cm-link-${b.sales_document_id || i}`}
-                     href={`/dashboard/customer-master-v2.html?contractor_id=${encodeURIComponent(cid)}`}
+                     href={`/v2/master?entity=clients&contractor_id=${encodeURIComponent(cid)}`}
                      style={{ color: 'var(--accent)', fontWeight: 600, marginRight: 10 }}>
                     Open in Customer Master →
                   </a>
@@ -15951,7 +15951,7 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
                             {' '}
                             <a data-testid="freight-block-cm-link"
                                href={freightBlock.cm_edit_url
-                                  || ('/dashboard/customer-master-v2.html?contractor_id=' + encodeURIComponent(freightBlock.cm_contractor_id))}
+                                  || ('/v2/master?entity=clients&contractor_id=' + encodeURIComponent(freightBlock.cm_contractor_id))}
                                target="_blank" rel="noopener"
                                style={{ color: 'var(--accent)', fontWeight: 600 }}>
                               Edit this Customer Master record →
@@ -15965,7 +15965,7 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
                             {' '}then click <strong>Suggest freight from master</strong> again.
                             {' '}
                             <a data-testid="freight-block-cm-link"
-                               href="/dashboard/customer-master-v2.html"
+                               href="/v2/master?entity=clients"
                                target="_blank" rel="noopener"
                                style={{ color: 'var(--accent)', fontWeight: 600 }}>
                               Open Customer Master →

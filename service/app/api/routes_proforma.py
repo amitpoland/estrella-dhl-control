@@ -8035,14 +8035,22 @@ def apply_service_charges(
 def _cm_freight_edit_url(contractor_id: str) -> Optional[str]:
     """Deep-link to the exact Customer Master record's edit view.
 
-    customer-master-v2.html reads ``?contractor_id=`` and opens that record, so
-    the freight blocker can route the operator straight to the record whose
-    freight authority is missing — no manual hunt through the customer list.
+    Targets the V2 Customer Master AUTHORITY — the Master Data page in the V2 SPA
+    (service/app/static/v2/master-page.jsx). Its deep-link entry point reads
+    ``?entity=clients&contractor_id=`` on load, selects the Clients tab, and opens
+    that record in the ClientDetailModal (which exposes the freight amount fields).
+    The operator lands straight on the record whose freight authority is missing —
+    no manual hunt through the customer list.
+
+    Repointed from the DEPRECATED /dashboard/customer-master-v2.html (retired
+    2026-06-30) as part of the Wave 8 ONE-AUTHORITY escape repair
+    (frontend-authority-inspector RISK-1). The V2 SPA is the single Customer
+    Master frontend authority.
     """
     cid = (contractor_id or "").strip()
     # safe="" mirrors the frontend's encodeURIComponent (encodes '/' too) so the
-    # backend-built deep-link matches customer-master-v2.html's own link format.
-    return (f"/dashboard/customer-master-v2.html?contractor_id={quote(cid, safe='')}"
+    # backend-built deep-link matches the V2 SPA's own link format.
+    return (f"/v2/master?entity=clients&contractor_id={quote(cid, safe='')}"
             if cid else None)
 
 

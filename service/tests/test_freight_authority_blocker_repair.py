@@ -21,11 +21,16 @@ Pins:
   FA-07  /suggest-freight valid → ok=True, no block (no regression)
   FA-08  /suggest-freight resolution failure (cm None) → NO resolved identity (not silently used)
   FA-09  /suggest-combined blocked freight → freight entry carries the deep-link block
-  FA-10  edit_url deep-links the EXACT contractor_id (customer-master-v2 contract)
-  FA-11  V1 shipment-detail.html blocker deep-links ?contractor_id= + names only missing field
+  FA-10  edit_url deep-links the EXACT contractor_id (V2 Customer Master authority)
+  FA-11  V1 shipment-detail.html blocker deep-links contractor_id + names only missing field
   FA-12  V2 proforma-detail.jsx blocker has edit deep-link + retry; read-only otherwise
-  FA-13  customer-master-v2.html honours ?contractor_id= (deep-link target exists)
+  FA-13  V2 SPA (master-page.jsx) deep-link entry point honours ?entity/?contractor_id=
   FA-14  no hardcoded customer name in the freight authority repair path
+
+Wave 8 (frontend-authority-inspector RISK-1): the freight-edit deep-link was
+repointed from the DEPRECATED /dashboard/customer-master-v2.html (retired
+2026-06-30) to the V2 Customer Master AUTHORITY — /v2/master?entity=clients&
+contractor_id=<id>, which opens the record in ClientDetailModal.
 """
 from __future__ import annotations
 
@@ -42,10 +47,15 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-_ROUTES_PY = _ROOT / "app" / "api" / "routes_proforma.py"
-_V1_HTML   = _ROOT / "app" / "static" / "shipment-detail.html"
-_V2_JSX    = _ROOT / "app" / "static" / "v2" / "proforma-detail.jsx"
-_CM_V2     = _ROOT / "app" / "static" / "customer-master-v2.html"
+_ROUTES_PY  = _ROOT / "app" / "api" / "routes_proforma.py"
+_V1_HTML    = _ROOT / "app" / "static" / "shipment-detail.html"
+_V2_JSX     = _ROOT / "app" / "static" / "v2" / "proforma-detail.jsx"
+_MASTER_JSX = _ROOT / "app" / "static" / "v2" / "master-page.jsx"
+
+# The V2 Customer Master authority deep-link (replaces the deprecated
+# /dashboard/customer-master-v2.html target — Wave 8 RISK-1 repoint).
+def _expect_edit_url(cid: str) -> str:
+    return f"/v2/master?entity=clients&contractor_id={cid}"
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -125,8 +135,7 @@ class TestFreightAuthorityBlock:
         assert block["contractor_id"] == "91254191"
         assert block["bill_to_name"] == "Acme Diamonds"
         assert block["missing_field"] == "freight_fixed_amount_usd"
-        assert block["edit_url"] == (
-            "/dashboard/customer-master-v2.html?contractor_id=91254191")
+        assert block["edit_url"] == _expect_edit_url("91254191")
 
     def test_unresolved_record_has_no_identity(self):
         from app.api.routes_proforma import _freight_authority_block
@@ -158,7 +167,7 @@ class TestSuggestFreightEndpoint:
         assert fa["resolved"] is True
         assert fa["contractor_id"] == "91254191"
         assert fa["missing_field"] == "freight_fixed_amount_usd"
-        assert fa["edit_url"].endswith("?contractor_id=91254191")
+        assert fa["edit_url"] == _expect_edit_url("91254191")
 
     def test_missing_service_id_blocks_with_field(self):
         from app.api.routes_proforma import suggest_freight_endpoint
@@ -180,7 +189,7 @@ class TestSuggestFreightEndpoint:
         fa = body["freight_authority"]
         assert fa["resolved"] is True
         assert fa["missing_field"] == "freight_fixed_amount_eur"
-        assert fa["edit_url"].endswith("?contractor_id=55")
+        assert fa["edit_url"] == _expect_edit_url("55")
 
     def test_valid_freight_suggests_no_block(self):
         from app.api.routes_proforma import suggest_freight_endpoint
@@ -218,7 +227,7 @@ class TestSuggestCombinedEndpoint:
         assert "freight_fixed_amount_usd is not set" in freight["blocked_reason"]
         fa = freight["freight_authority"]
         assert fa["resolved"] is True and fa["contractor_id"] == "91254191"
-        assert fa["edit_url"].endswith("?contractor_id=91254191")
+        assert fa["edit_url"] == _expect_edit_url("91254191")
 
     def test_blocked_freight_missing_service_id_carries_field(self):
         from app.api.routes_proforma import suggest_service_charges
@@ -229,7 +238,7 @@ class TestSuggestCombinedEndpoint:
         assert freight["available"] is False
         fa = freight["freight_authority"]
         assert fa["missing_field"] == "freight_service_id"
-        assert fa["edit_url"].endswith("?contractor_id=55")
+        assert fa["edit_url"] == _expect_edit_url("55")
 
     def test_resolution_failure_blocks_without_identity(self):
         from app.api.routes_proforma import suggest_service_charges
@@ -262,9 +271,14 @@ class TestV1FreightBlockerDeepLink:
         idx = html.find("freight-block-cm-link")
         assert idx >= 0
         region = html[idx:idx + 500]
-        assert "?contractor_id=" in region, (
-            "V1 freight blocker link must deep-link the exact CM record")
+        # Deep-links the exact CM record on the V2 Customer Master authority
+        # (repointed from the deprecated /dashboard/customer-master-v2.html).
+        assert "/v2/master?entity=clients&contractor_id=" in region, (
+            "V1 freight blocker link must deep-link the exact CM record on the "
+            "V2 authority")
         assert "encodeURIComponent(freightBlock.cm_contractor_id)" in region
+        assert "customer-master-v2.html" not in region, (
+            "V1 freight blocker must not reference the deprecated CM page")
 
     def test_blocker_names_only_missing_field(self):
         html = self._html()
@@ -303,18 +317,40 @@ class TestV2FreightBlockerRepair:
             "so an unresolved record never shows a (wrong) edit link")
 
 
-# ── FA-13: customer-master-v2 deep-link target exists ────────────────────────
+# ── FA-13: V2 SPA deep-link entry point (the repointed authority target) ─────
 
-class TestCustomerMasterDeepLinkTarget:
-    def test_cm_v2_reads_contractor_id_param(self):
-        html = _CM_V2.read_text(encoding="utf-8")
-        assert "getParam('contractor_id')" in html or 'getParam("contractor_id")' in html, (
-            "customer-master-v2.html must open the record named by ?contractor_id=")
+class TestV2MasterDeepLinkEntryPoint:
+    """The backend + V1/legacy links now deep-link to the V2 Customer Master
+    authority (/v2/master?entity=clients&contractor_id=). Pin that master-page.jsx
+    actually honours those params — otherwise the repointed link opens a page that
+    ignores the record and the operator is back to hunting the customer list."""
 
-    def test_cm_v2_exposes_freight_amount_fields(self):
-        html = _CM_V2.read_text(encoding="utf-8")
-        assert 'name="freight_fixed_amount_usd"' in html
-        assert 'name="freight_fixed_amount_eur"' in html
+    def _jsx(self):
+        return _MASTER_JSX.read_text(encoding="utf-8")
+
+    def test_master_reads_deep_link_params(self):
+        jsx = self._jsx()
+        assert "URLSearchParams(window.location.search" in jsx, (
+            "master-page.jsx must read the deep-link query params on load")
+        assert "sp.get('contractor_id')" in jsx, (
+            "master-page.jsx must honour ?contractor_id= (open that CM record)")
+        assert "sp.get('entity')" in jsx, (
+            "master-page.jsx must honour ?entity= (select the tab)")
+
+    def test_contractor_id_opens_client_editor(self):
+        jsx = self._jsx()
+        # contractor_id forces the Clients tab and opens the ClientDetailModal
+        # (which exposes freight_fixed_amount_usd/eur — the freight repair target).
+        assert "setEntity('clients')" in jsx
+        assert "setEditRecord({ bill_to_contractor_id: cid })" in jsx
+        assert "ClientDetailModal" in jsx
+
+    def test_client_editor_exposes_freight_amount_fields(self):
+        # The deep-link is only useful if its target can edit the missing freight
+        # field. ClientDetailModal renders both freight amount inputs.
+        cd = (_ROOT / "app" / "static" / "v2" / "client-detail.jsx").read_text(encoding="utf-8")
+        assert "freight_fixed_amount_usd" in cd
+        assert "freight_fixed_amount_eur" in cd
 
 
 # ── FA-14: no hardcoded customer name in the repair path ─────────────────────
