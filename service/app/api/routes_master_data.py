@@ -1119,3 +1119,129 @@ def list_master_audit_endpoint(
         log.error("list_master_audit failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Audit query error: {exc}")
     return JSONResponse({"count": len(rows), "rows": rows})
+
+
+# ── Master capability contract (Wave 7) ───────────────────────────────────────
+# ONE server-provided source of truth for what each master domain can do, so the
+# V2 UI renders real backend capability instead of hardcoded "Backend pending"
+# prose. This is a pure DESCRIPTOR: it reflects the actual route topology + the
+# two runtime flags below + the immutable roles enum. It does NOT query any DB
+# and never invents a capability that has no endpoint.
+capabilities_router = APIRouter(prefix="/api/v1/master", tags=["master-data"])
+
+
+def _write_perm() -> str:
+    # When role enforcement is off, master writes accept a plain API key; when on,
+    # they require MASTER_ADMIN/MASTER_EDITOR. Report the effective requirement.
+    return "master_editor" if settings.master_role_enforcement else "api_key"
+
+
+def _crud_domain(domain: str, label: str, base: str, key_field: str, *,
+                 create_kind: str, flags: Optional[list] = None,
+                 note: Optional[str] = None) -> dict:
+    """A standard soft-delete CRUD master domain descriptor.
+
+    create_kind: 'put' (natural-key upsert at {base}/{key}) or 'post'
+    (autoincrement create at {base}/ + PUT {base}/{id} for update).
+    """
+    d = {
+        "domain":           domain,
+        "label":            label,
+        "available":        True,
+        "read_route":       f"{base}/",
+        "key_field":        key_field,
+        "create_kind":      create_kind,
+        "write_route":      (f"{base}/{{{key_field}}}" if create_kind == "put" else f"{base}/"),
+        "update_route":     f"{base}/{{{key_field}}}",
+        "delete_route":     f"{base}/{{{key_field}}}",
+        "delete_kind":      "soft",
+        "hard_delete_available": bool(settings.master_hard_delete_enabled),
+        "restore_route":    f"{base}/{{{key_field}}}/restore",
+        "permission":       _write_perm(),
+        "source_authority": f"master_data.sqlite/{domain}",
+        "flags":            flags or [],
+        "reason_unavailable": None,
+    }
+    if note:
+        d["note"] = note
+    return d
+
+
+@capabilities_router.get("/capabilities", dependencies=[_auth],
+                         summary="Per-domain master-data capability contract")
+def master_capabilities() -> JSONResponse:
+    from ..auth.service import ROLES
+    caps = {
+        "hs": _crud_domain(
+            "hs", "HS Codes", "/api/v1/hs-codes", "hs_code",
+            create_kind="put", flags=["referential_integrity"],
+            note="hs_code is referenced by products/designs; deletion is blocked while in use."),
+        "units": _crud_domain(
+            "units", "Units of Measure", "/api/v1/units", "code",
+            create_kind="put", flags=["empty_at_install"]),
+        "incoterms": _crud_domain(
+            "incoterms", "Incoterms", "/api/v1/incoterms", "code",
+            create_kind="put", flags=["empty_at_install"]),
+        "vat": _crud_domain(
+            "vat", "VAT Rates", "/api/v1/vat-config", "vat_id",
+            create_kind="post",
+            note="Local VAT reference only — wFirma invoice VAT codes are NOT overridden by this table."),
+        "fx": _crud_domain(
+            "fx", "FX Rates", "/api/v1/fx-rates", "fx_id",
+            create_kind="post", flags=["reference_only"],
+            note="Reference / observation only. The PZ engine reads NBP rates live; "
+                 "this table is NEVER read by the calculation engine."),
+        "carriers": _crud_domain(
+            "carriers", "Carriers", "/api/v1/carriers-config", "carrier_code",
+            create_kind="put", flags=["config_only"],
+            note="Carrier configuration only. Live carrier status/ping is not driven by this table; "
+                 "credential fields are rejected."),
+        "box_profiles": {
+            "domain": "box_profiles", "label": "Box Profiles", "available": True,
+            "read_route": "/api/v1/box-types/", "key_field": "code",
+            "create_kind": "post", "write_route": "/api/v1/box-types/",
+            "update_route": "/api/v1/box-types/{code}",
+            "delete_route": None, "delete_kind": "none",
+            "hard_delete_available": False, "restore_route": None,
+            "seed_route": "/api/v1/box-types/seed-defaults",
+            "permission": _write_perm(),
+            "source_authority": "master_data.sqlite/box_types",
+            "flags": ["no_delete", "seed_available"],
+            "reason_unavailable": None,
+            "note": "No delete by design — set active=false to retire a profile.",
+        },
+        "users": {
+            "domain": "users", "label": "Users", "available": True,
+            "read_route": "/auth/users", "key_field": "id",
+            "actions": {
+                "approve":    "/auth/users/{id}/approve",
+                "reject":     "/auth/users/{id}/reject",
+                "role":       "/auth/users/{id}/role",
+                "activate":   "/auth/users/{id}/activate",
+                "deactivate": "/auth/users/{id}/deactivate",
+            },
+            "edit_available": False, "delete_available": False,
+            "permission": "admin",
+            "source_authority": "auth users store",
+            "flags": ["actions_only", "no_edit", "no_delete"],
+            "reason_unavailable": None,
+            "note": "Users are managed via admin actions; there is no free-form edit or delete endpoint.",
+        },
+        "roles": {
+            "domain": "roles", "label": "Roles & Permissions", "available": False,
+            "read_route": None, "write_route": None, "delete_route": None,
+            "values": list(ROLES),
+            "permission": "admin",
+            "source_authority": "auth/service.py ROLES",
+            "flags": ["system_defined", "immutable"],
+            "reason_unavailable": "Roles are system-defined constants — there is no role CRUD. "
+                                  "Assign roles per user on the Users tab.",
+        },
+    }
+    return JSONResponse({
+        "capabilities": caps,
+        "flags": {
+            "master_role_enforcement":    bool(settings.master_role_enforcement),
+            "master_hard_delete_enabled": bool(settings.master_hard_delete_enabled),
+        },
+    })
