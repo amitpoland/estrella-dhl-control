@@ -1064,7 +1064,7 @@ async def customers_import_csv(
 
 @router.post(
     "/{contractor_id}/validate-vat",
-    dependencies=[_auth],
+    dependencies=[_write_auth],  # writes vat_eu_valid to Customer Master → master-write guard (RBAC)
     summary="Run VIES validation and update Customer Master vat_eu_valid field",
 )
 def validate_vat_endpoint(contractor_id: str, request: Request) -> JSONResponse:
