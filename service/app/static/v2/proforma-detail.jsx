@@ -5005,16 +5005,21 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, chargesLoading, chargesApplying, onFetchSuggestions, onApplyCharge, onDismissSuggestion, onDeleteCharge }) {
   const fmtAmt = (amt, cur) => `${Number(amt).toFixed(2)} ${cur || ''}`;
   const existingTypes = (charges || []).map(c => (c.charge_type || '').toLowerCase());
+  // Slice-2: both freight and insurance are already on the draft — CM preview
+  // is still available (Lesson M: no capability removal) but labelled advisory.
+  const allTypesApplied = existingTypes.includes('freight') && existingTypes.includes('insurance');
 
   return (
     <div data-testid="service-charges-panel" style={{ marginTop: 24, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Service Charges</span>
         {canEdit && (
+          /* Slice-2: relabelled to make CM read-only advisory status unmistakable.
+             The draft's service_charges_json is the authority; this is a preview. */
           <button
             data-testid="btn-suggest-charges"
             disabled={chargesLoading}
-            title="Load freight and insurance suggestions from Customer Master"
+            title="Advisory read-only preview from Customer Master — the saved draft lines are authoritative"
             onClick={onFetchSuggestions}
             style={{
               fontSize: 12, padding: '2px 10px',
@@ -5022,7 +5027,13 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
               borderRadius: 4, cursor: chargesLoading ? 'wait' : 'pointer',
               color: 'var(--text-2)',
             }}
-          >{chargesLoading ? '⏳ Loading…' : '↓ Suggest from Customer Master'}</button>
+          >{chargesLoading ? '⏳ Loading…' : '↓ Preview freight/insurance from Customer Master'}</button>
+        )}
+        {canEdit && allTypesApplied && (
+          <span data-testid="charges-all-applied-note"
+                style={{ fontSize: 11, color: 'var(--text-3)', fontStyle: 'italic' }}>
+            (both already applied from draft)
+          </span>
         )}
         {!canEdit && (
           <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
@@ -5031,7 +5042,7 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
         )}
       </div>
 
-      {/* Existing charges */}
+      {/* Existing charges — DRAFT AUTHORITY (service_charges_json on the saved draft) */}
       {charges.length === 0 && (
         <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>No service charges added.</div>
       )}
@@ -5050,6 +5061,24 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
           {c.label && (
             <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{c.label}</span>
           )}
+          {/* Slice-2: expose mapping-layer fields so the operator can see which
+              CM service ID and (insurance) rate are stored on the draft line.
+              (a) CM service ID → wfirma_service_id on the charge line
+              (b) Insurance rate → formula_basis.rate_pct stored by slice-1 apply */}
+          {c.wfirma_service_id && (
+            <span data-testid={`charge-svc-id-${c.charge_type}`}
+                  title="CM service ID stored on this draft charge line"
+                  style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'monospace' }}>
+              svc:{c.wfirma_service_id}
+            </span>
+          )}
+          {c.formula_basis && c.formula_basis.rate_pct != null && (
+            <span data-testid={`charge-rate-pct-${c.charge_type}`}
+                  title="Insurance rate (%) from Customer Master, stored on draft"
+                  style={{ fontSize: 10, color: 'var(--text-3)' }}>
+              rate:{c.formula_basis.rate_pct}%
+            </span>
+          )}
           {canEdit && (
             <button
               data-testid={`btn-delete-charge-${c.charge_type}`}
@@ -5065,7 +5094,10 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
         </div>
       ))}
 
-      {/* Suggestion panel */}
+      {/* Suggestion panel — ADVISORY ONLY (live CM re-read, not the draft authority).
+          Slice-2: header explicitly labels this as advisory. The Apply button is
+          suppressed when the charge type already exists on the draft (alreadyApplied
+          check below) — prevents a 400 dup-guard hit on POST /service-charges. */}
       {suggestion && !suggestion.error && (
         <div data-testid="charge-suggestion-panel" style={{
           marginTop: 8, padding: '10px 12px',
@@ -5073,7 +5105,7 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
           borderRadius: 6,
         }}>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text-2)' }}>
-            Suggestions (Customer Master, {suggestion.draft_currency || '—'}):
+            Advisory preview (Customer Master, {suggestion.draft_currency || '—'}) — read-only:
           </div>
           {suggestion.applyError && (
             <div data-testid="charge-apply-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginBottom: 6 }}>
@@ -5191,8 +5223,12 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
 // canEdit === true (editing state only).
 function ServiceProductRegistryPanel() {
   const { useState, useEffect } = React;
-  const [products, setProducts] = useState(null);
-  const [loading, setLoading]   = useState(true);
+  const [products, setProducts]     = useState(null);
+  const [loading, setLoading]       = useState(true);
+  // Slice-2: distinguish genuine-empty from load-failure so "No mappings
+  // registered" only appears when the GET returned ok:true with an empty set,
+  // not when the call failed (network error, 500, auth, etc.).
+  const [loadFailed, setLoadFailed] = useState(false);
   const [editing, setEditing]   = useState(null);  // charge_type being edited
   const [editVal, setEditVal]   = useState('');
   const [saving, setSaving]     = useState(false);
@@ -5200,9 +5236,20 @@ function ServiceProductRegistryPanel() {
 
   const load = () => {
     setLoading(true);
+    setLoadFailed(false);
     window.PzApi.getServiceProducts()
-      .then(r => { setProducts(r && r.ok !== false ? (r.data || r) : null); setLoading(false); })
-      .catch(() => { setProducts(null); setLoading(false); });
+      .then(r => {
+        if (r && r.ok !== false) {
+          setProducts(r.data || r);
+          setLoadFailed(false);
+        } else {
+          // Server returned ok:false (auth error, 5xx, etc.) — not "genuinely empty"
+          setProducts(null);
+          setLoadFailed(true);
+        }
+        setLoading(false);
+      })
+      .catch(() => { setProducts(null); setLoadFailed(true); setLoading(false); });
   };
   useEffect(() => { load(); }, []);
 
@@ -5229,8 +5276,17 @@ function ServiceProductRegistryPanel() {
         <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>Service Charge → wFirma Product Registry</span>
         {loading && <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Loading…</span>}
       </div>
-      {!loading && rows.length === 0 && (
-        <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 8 }}>
+      {/* Slice-2: only show "no mappings" when the GET succeeded with genuinely
+          zero rows. When loadFailed, show a distinct unavailable state instead. */}
+      {!loading && loadFailed && (
+        <div data-testid="service-product-registry-unavailable"
+             style={{ fontSize: 11.5, color: 'var(--badge-red-text)', marginBottom: 8 }}>
+          Mapping status unavailable — could not load the service-product registry.
+        </div>
+      )}
+      {!loading && !loadFailed && rows.length === 0 && (
+        <div data-testid="service-product-registry-empty"
+             style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 8 }}>
           No mappings registered. Map a charge type to its wFirma product ID to enable automatic line creation on Post.
         </div>
       )}
