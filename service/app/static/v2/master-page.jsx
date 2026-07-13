@@ -1239,6 +1239,34 @@ function MasterPage() {
   // Per-entity data cache: { entityId: { records: [], loading: bool, error: string|null } }
   const [cache, setCache] = React.useState({});
 
+  // ── V2 deep-link entry point (Wave 8 RISK-1 repair) ─────────────────────────
+  // The backend freight blocker (routes_proforma._cm_freight_edit_url) and the
+  // V1 / legacy proforma pages now deep-link to the V2 Customer Master AUTHORITY
+  // here — /v2/master?entity=clients&contractor_id=<id> — instead of the
+  // DEPRECATED /dashboard/customer-master-v2.html (retired 2026-06-30).
+  //   • ?entity=<id>        selects that master tab (validated against ENTITY_TYPES).
+  //   • ?contractor_id=<id> forces the Clients tab and opens that exact Customer
+  //                         Master record in the ClientDetailModal (freight fields).
+  // Runs once on mount: the links are full-page <a href> navigations, so the SPA
+  // re-boots and MasterPage mounts fresh with the params in window.location.search.
+  React.useEffect(() => {
+    let sp;
+    try { sp = new URLSearchParams(window.location.search || ''); }
+    catch (_) { return; }
+    const wantEntity = sp.get('entity');
+    const cid = (sp.get('contractor_id') || '').trim();
+    if (cid) {
+      // contractor_id is a Customer Master (clients) key — force the Clients tab
+      // and open that record's editor. Missing records degrade to an in-modal
+      // error (ClientDetailModal load path), never a crash.
+      setEntity('clients');
+      setEditRecord({ bill_to_contractor_id: cid });
+    } else if (wantEntity && ENTITY_TYPES.some(e => e.id === wantEntity)) {
+      setEntity(wantEntity);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const perms = ROLE_MATRIX[role];
   // Wave 7: per-entity capability descriptor from contract (null if not loaded)
   const capForEntity = (capabilities && capabilities.capabilities && capabilities.capabilities[entity]) || null;

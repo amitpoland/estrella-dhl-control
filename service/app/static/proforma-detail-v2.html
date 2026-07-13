@@ -838,7 +838,7 @@
               {saving ? '…' : cr.found ? 'Update Mapping' : 'Create & Map'}
             </Btn>
             <Btn variant="ghost" small onClick={() => onRefresh && onRefresh()} data-testid="btn-refresh-customer-mapping">↻ Refresh</Btn>
-            <a href="/dashboard/customer-master-v2.html" target="_blank" style={{ fontSize:11, color:'var(--accent)', textDecoration:'none' }}>Open Customer Master →</a>
+            <a href="/v2/master?entity=clients" target="_blank" style={{ fontSize:11, color:'var(--accent)', textDecoration:'none' }}>Open Customer Master →</a>
           </div>
           {saveMsg && <div style={{ marginTop:8, fontSize:11, color:'var(--badge-green-text)', fontWeight:600 }}>{saveMsg}</div>}
           {saveErr && <div style={{ marginTop:8, fontSize:11, color:'var(--badge-red-text)', fontWeight:600 }}>{saveErr}</div>}
