@@ -3091,6 +3091,292 @@ def apply_customer_address_to_draft(
     return refreshed
 
 
+# ── Customer Master commercial-defaults apply (Slice 1) ────────────────────────
+
+#: Field keys accepted by :func:`apply_customer_commercial_to_draft`.
+#: Exposed so the route layer can validate incoming ``fields`` lists
+#: without importing internal implementation details.
+_CM_COMMERCIAL_FIELDS: frozenset = frozenset([
+    "payment_method",
+    "payment_terms_days",
+    "invoice_language_id",
+    "vat_mode",
+    "freight_amount",
+    "freight_service_id",
+    "insurance_rate",
+    "insurance_service_id",
+])
+
+
+def apply_customer_commercial_to_draft(
+    db_path:              Path,
+    draft_id:             int,
+    cm_name:              str,
+    cm_contractor_id:     str,
+    updates:              Dict[str, Any],
+    operator:             str,
+    expected_updated_at:  str,
+) -> "ProformaDraft":
+    """Apply a subset of Customer Master commercial defaults to a draft.
+
+    ``updates`` maps field key → resolved CM value.  Only keys present in
+    ``updates`` (and in :data:`_CM_COMMERCIAL_FIELDS`) are written; any
+    non-empty draft value is overwritten ONLY when its key appears in
+    ``updates``.
+
+    Field → storage mapping:
+
+    * ``payment_method``    → ``payment_terms_json.method``
+    * ``payment_terms_days``→ ``payment_terms_json.days``
+    * ``invoice_language_id``→``payment_terms_json.invoice_language_id``
+    * ``vat_mode``          → ``vat_code`` column +
+                              ``decision_source = 'operator_vat_mode'``
+    * ``freight_amount``    → service charge type "freight" ``.amount``
+                              (upsert: update existing or create new)
+    * ``freight_service_id``→ service charge type "freight"
+                              ``.wfirma_service_id`` (upsert)
+    * ``insurance_rate``    → service charge type "insurance"
+                              ``.formula_basis.rate_pct`` (upsert).
+                              **Amount is NOT computed here** — that belongs
+                              to the service-charge slice.
+    * ``insurance_service_id``→ service charge type "insurance"
+                              ``.wfirma_service_id`` (upsert)
+
+    Writes atomically in one SQL UPDATE. Records audit event
+    ``commercial_defaults_from_customer_master``.
+
+    Raises
+    ------
+    ValueError
+        Bad arguments or unknown field key.
+    DraftNotFound
+        Draft not found.
+    DraftNotEditable
+        Draft is in a non-editable state.
+    DraftConflict
+        Optimistic-lock mismatch (expected_updated_at does not match).
+    """
+    if not (operator or "").strip():
+        raise ValueError("operator is required")
+    if not isinstance(updates, dict):
+        raise ValueError("updates must be a dict")
+
+    unknown = [k for k in updates if k not in _CM_COMMERCIAL_FIELDS]
+    if unknown:
+        raise ValueError(
+            f"unknown commercial field(s): {unknown!r}; "
+            f"allowed: {sorted(_CM_COMMERCIAL_FIELDS)}"
+        )
+
+    d = _load_for_edit(db_path, draft_id, expected_updated_at)
+
+    # ── Parse existing JSON blobs ─────────────────────────────────────────
+    try:
+        existing_pt: Dict[str, Any] = json.loads(d.payment_terms_json or "{}") or {}
+    except Exception:
+        existing_pt = {}
+    try:
+        existing_charges: List[Dict[str, Any]] = (
+            json.loads(d.service_charges_json or "[]") or []
+        )
+    except Exception:
+        existing_charges = []
+    if not isinstance(existing_charges, list):
+        existing_charges = []
+
+    # ── Before snapshot for audit ─────────────────────────────────────────
+    before: Dict[str, Any] = {
+        "payment_terms": {
+            k: existing_pt.get(k)
+            for k in ("method", "days", "invoice_language_id")
+        },
+        "vat_code": d.vat_code,
+        "freight": next(
+            (c for c in existing_charges if c.get("charge_type") == "freight"), None
+        ),
+        "insurance": next(
+            (c for c in existing_charges if c.get("charge_type") == "insurance"), None
+        ),
+    }
+
+    # ── Compute new payment_terms ─────────────────────────────────────────
+    new_pt = dict(existing_pt)
+    if "payment_method" in updates and updates["payment_method"] is not None:
+        new_pt["method"] = str(updates["payment_method"])
+    if "payment_terms_days" in updates and updates["payment_terms_days"] is not None:
+        try:
+            new_pt["days"] = int(updates["payment_terms_days"])
+        except (TypeError, ValueError):
+            new_pt["days"] = updates["payment_terms_days"]
+    if "invoice_language_id" in updates and updates["invoice_language_id"] is not None:
+        new_pt["invoice_language_id"] = str(updates["invoice_language_id"])
+
+    # ── Compute new vat_code / decision_source ────────────────────────────
+    new_vat_code = d.vat_code          # default: unchanged
+    new_decision_source = d.decision_source
+    if "vat_mode" in updates and updates["vat_mode"] is not None:
+        new_vat_code = str(updates["vat_mode"])
+        new_decision_source = "operator_vat_mode"
+
+    # ── Compute new service_charges (upsert freight / insurance) ─────────
+    fr_keys = frozenset(("freight_amount", "freight_service_id")) & updates.keys()
+    ins_keys = frozenset(("insurance_rate", "insurance_service_id")) & updates.keys()
+
+    new_charges: List[Dict[str, Any]] = [dict(c) for c in existing_charges]
+
+    def _next_charge_id() -> int:
+        used = {int(c.get("charge_id") or 0) for c in new_charges
+                if isinstance(c.get("charge_id"), int)}
+        return (max(used) if used else 0) + 1
+
+    if fr_keys:
+        fr_idx = next(
+            (i for i, c in enumerate(new_charges)
+             if isinstance(c, dict) and c.get("charge_type") == "freight"),
+            None,
+        )
+        if fr_idx is not None:
+            fr = dict(new_charges[fr_idx])
+            if "freight_amount" in updates and updates["freight_amount"] is not None:
+                try:
+                    fr["amount"] = float(updates["freight_amount"])
+                except (TypeError, ValueError):
+                    pass
+            if "freight_service_id" in updates and updates["freight_service_id"] is not None:
+                fr["wfirma_service_id"] = str(updates["freight_service_id"])
+            new_charges[fr_idx] = fr
+        else:
+            fr_new: Dict[str, Any] = {
+                "charge_id":         _next_charge_id(),
+                "charge_type":       "freight",
+                "amount":            0.0,
+                "currency":          (d.currency or "EUR").upper(),
+                "label":             "",
+                "wfirma_service_id": None,
+                "formula_basis":     None,
+            }
+            if "freight_amount" in updates and updates["freight_amount"] is not None:
+                try:
+                    fr_new["amount"] = float(updates["freight_amount"])
+                except (TypeError, ValueError):
+                    pass
+            if "freight_service_id" in updates and updates["freight_service_id"] is not None:
+                fr_new["wfirma_service_id"] = str(updates["freight_service_id"])
+            new_charges.append(fr_new)
+
+    if ins_keys:
+        ins_idx = next(
+            (i for i, c in enumerate(new_charges)
+             if isinstance(c, dict) and c.get("charge_type") == "insurance"),
+            None,
+        )
+        if ins_idx is not None:
+            ins = dict(new_charges[ins_idx])
+            if "insurance_service_id" in updates and updates["insurance_service_id"] is not None:
+                ins["wfirma_service_id"] = str(updates["insurance_service_id"])
+            if "insurance_rate" in updates and updates["insurance_rate"] is not None:
+                fb = dict(ins.get("formula_basis") or {})
+                try:
+                    fb["rate_pct"] = float(updates["insurance_rate"])
+                except (TypeError, ValueError):
+                    pass
+                ins["formula_basis"] = fb
+            new_charges[ins_idx] = ins
+        else:
+            ins_new: Dict[str, Any] = {
+                "charge_id":         _next_charge_id(),
+                "charge_type":       "insurance",
+                "amount":            0.0,
+                "currency":          (d.currency or "EUR").upper(),
+                "label":             "",
+                "wfirma_service_id": None,
+                "formula_basis":     None,
+            }
+            if "insurance_service_id" in updates and updates["insurance_service_id"] is not None:
+                ins_new["wfirma_service_id"] = str(updates["insurance_service_id"])
+            if "insurance_rate" in updates and updates["insurance_rate"] is not None:
+                fb: Dict[str, Any] = {}
+                try:
+                    fb["rate_pct"] = float(updates["insurance_rate"])
+                except (TypeError, ValueError):
+                    pass
+                if fb:
+                    ins_new["formula_basis"] = fb
+            new_charges.append(ins_new)
+
+    # ── After snapshot for audit ──────────────────────────────────────────
+    after: Dict[str, Any] = {
+        "payment_terms": {
+            k: new_pt.get(k)
+            for k in ("method", "days", "invoice_language_id")
+        },
+        "vat_code": new_vat_code,
+        "freight": next(
+            (c for c in new_charges if c.get("charge_type") == "freight"), None
+        ),
+        "insurance": next(
+            (c for c in new_charges if c.get("charge_type") == "insurance"), None
+        ),
+    }
+
+    # ── Atomic SQL write ─────────────────────────────────────────────────
+    new_state = _next_state_after_edit(d.draft_state)
+    now_ts = _now_utc_iso()
+
+    sets: List[str] = [
+        "draft_state=?", "updated_at=?",
+        "payment_terms_json=?", "service_charges_json=?",
+        "vat_code=?", "decision_source=?",
+    ]
+    args: List[Any] = [
+        new_state, now_ts,
+        json.dumps(new_pt, ensure_ascii=False, sort_keys=True),
+        json.dumps(new_charges, ensure_ascii=False, sort_keys=True),
+        new_vat_code,
+        new_decision_source,
+    ]
+    args.append(int(draft_id))
+
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_drafts_table(conn)
+        cur = conn.execute(
+            f"UPDATE proforma_drafts SET {', '.join(sets)} WHERE id=?",
+            tuple(args),
+        )
+        if cur.rowcount == 0:
+            raise DraftNotFound(f"draft id={draft_id} not found")
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM proforma_drafts WHERE id=? LIMIT 1",
+            (int(draft_id),),
+        ).fetchone()
+    if row is None:
+        raise DraftNotFound(f"draft id={draft_id} disappeared after update")
+    refreshed = _row_to_draft(row)
+
+    _record_draft_event(
+        db_path, draft_id=d.id,
+        event="commercial_defaults_from_customer_master",
+        detail_json=json.dumps(
+            {
+                "source_contractor_id": cm_contractor_id,
+                "source_name":          cm_name,
+                "selected_fields":      sorted(updates.keys()),
+                "before":               before,
+                "after":                after,
+                "from_state":           d.draft_state,
+                "to_state":             refreshed.draft_state,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,          # Decimal / datetime fallback
+        ),
+        operator=operator,
+    )
+    return refreshed
+
+
 # ── Customer-replacement migration warnings — ONE safe, stable contract ────────
 #
 # When the post-identity charge / reservation migration fails (see

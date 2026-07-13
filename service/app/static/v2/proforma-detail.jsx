@@ -4362,6 +4362,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               onEditField={(k, v) => setEditFields(prev => ({ ...prev, [k]: v }))}
               editError={editError}
             />
+            {/* ── CM commercial defaults — Preview→Apply (Slice 1) ──────── */}
+            <CustomerMasterSuggestions
+              suggestions={liveDraft.customer_master_suggestions}
+              draftId={liveDraft.id || (draft && draft.id)}
+              updatedAt={liveDraft.updated_at || (draft && draft.updated_at) || ''}
+              onReload={() => draftHook && draftHook.reload && draftHook.reload()}
+            />
             <ServiceChargesPanel
               charges={liveDraft.service_charges || []}
               canEdit={canEdit}
@@ -5566,17 +5573,99 @@ function CmValue({ v }) {
   );
 }
 
-function CustomerMasterSuggestions({ suggestions }) {
+// Map: suggestion field key → apply-commercial field key.
+// Only keys present here get a checkbox. Fields absent from this map
+// (customer_name, contractor_id, currency, insurance_amount) are
+// displayed read-only — they are not commercial defaults this slice applies.
+const _CM_APPLY_KEY_MAP = {
+  payment_method:     'payment_method',
+  payment_days:       'payment_terms_days',
+  invoice_language:   'invoice_language_id',
+  vat_wdt:            'vat_mode',
+  freight_amount:     'freight_amount',
+  freight_service_id: 'freight_service_id',
+  insurance_rate:     'insurance_rate',
+  insurance_service_id: 'insurance_service_id',
+};
+
+function CustomerMasterSuggestions({ suggestions, draftId, updatedAt, onReload }) {
   const sug = suggestions || null;
   const mapped = sug && sug.status === 'mapped';
   const conflict = mapped ? sug.identity_conflict : null;
+
+  // Build initial checked state: suggested = checked, conflict = unchecked.
+  const _initialChecked = () => {
+    const state = {};
+    if (!mapped) return state;
+    (sug.fields || []).forEach(f => {
+      const applyKey = _CM_APPLY_KEY_MAP[f.key];
+      if (!applyKey) return;                         // not applicable
+      if (f.source === 'suggested') state[applyKey] = true;
+      if (f.source === 'conflict')  state[applyKey] = false;
+    });
+    return state;
+  };
+
+  const [checked, setChecked] = React.useState(_initialChecked);
+  const [applying, setApplying] = React.useState(false);
+  const [applyError, setApplyError] = React.useState(null);
+  const [applySuccess, setApplySuccess] = React.useState(false);
+
+  // Re-init checkboxes when suggestions change (e.g. after reload)
+  React.useEffect(() => {
+    setChecked(_initialChecked());
+    setApplyError(null);
+    setApplySuccess(false);
+  }, [sug && sug.mapped_contractor_id, updatedAt]);
+
+  const checkedKeys = Object.keys(checked).filter(k => checked[k]);
+  const canApply = mapped && checkedKeys.length > 0 && !applying;
+
+  const handleToggle = (applyKey) => {
+    setChecked(prev => ({ ...prev, [applyKey]: !prev[applyKey] }));
+    setApplyError(null);
+    setApplySuccess(false);
+  };
+
+  const handleApply = () => {
+    if (!canApply) return;
+    setApplying(true);
+    setApplyError(null);
+    setApplySuccess(false);
+    window.PzApi.applyCustomerCommercial(draftId, checkedKeys, updatedAt || '')
+      .then(r => {
+        if (r && r.ok) {
+          setApplySuccess(true);
+          onReload && onReload();
+        } else {
+          const detail = (r && (r.detail || r.error)) || 'Apply failed.';
+          if (typeof detail === 'string' && detail.toLowerCase().includes('conflict')) {
+            setApplyError('Draft was changed by another action — reload the page and retry.');
+          } else if (typeof detail === 'string' && detail.toLowerCase().includes('not found')) {
+            setApplyError('Customer Master record not found — check the customer mapping.');
+          } else {
+            setApplyError(typeof detail === 'string' ? detail : 'Apply failed — check backend logs.');
+          }
+        }
+      })
+      .catch(e => {
+        const msg = (e && e.message) || 'Network error';
+        if (msg.toLowerCase().includes('409') || msg.toLowerCase().includes('conflict')) {
+          setApplyError('Draft was changed by another action — reload the page and retry.');
+        } else {
+          setApplyError(msg);
+        }
+      })
+      .finally(() => setApplying(false));
+  };
+
   return (
     <div data-testid="cm-suggestions-section">
-      <PfSectionLabel>Customer Master suggestions</PfSectionLabel>
+      <PfSectionLabel>Customer Master — commercial defaults</PfSectionLabel>
       <PfPanelCard>
         <div style={{ padding: '8px 20px 14px' }}>
           <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
-            Advisory only — read from Customer Master. The draft stays the saved record; nothing here is applied automatically.
+            Advisory only — read from Customer Master. Check the fields you want to copy to the draft, then click <strong>Apply Selected Suggestions</strong>. Nothing is applied automatically.
           </div>
 
           {conflict && (
@@ -5609,27 +5698,96 @@ function CustomerMasterSuggestions({ suggestions }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               {/* header */}
               <div style={{
-                display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr auto',
+                display: 'grid', gridTemplateColumns: '24px 1.2fr 1fr 1fr auto',
                 gap: 10, padding: '4px 0', borderBottom: '1px solid var(--border-subtle)',
                 fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
                 textTransform: 'uppercase', letterSpacing: '0.08em',
               }}>
+                <div></div>
                 <div>Field</div><div>Saved on draft</div><div>Customer Master</div><div>Source</div>
               </div>
-              {(sug.fields || []).map(f => (
-                <div key={f.key}
-                     data-testid={`cm-field-${f.key}`}
-                     style={{
-                       display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr auto',
-                       gap: 10, alignItems: 'center', padding: '6px 0',
-                       borderBottom: '1px solid var(--border-subtle)',
-                     }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 600 }}>{f.label}</div>
-                  <div data-testid={`cm-field-${f.key}-draft`}><CmValue v={f.draft} /></div>
-                  <div data-testid={`cm-field-${f.key}-suggestion`}><CmValue v={f.suggestion} /></div>
-                  <div><CmSourceBadge source={f.source} /></div>
+              {(sug.fields || []).map(f => {
+                const applyKey = _CM_APPLY_KEY_MAP[f.key];
+                const applicable = !!applyKey && (f.source === 'suggested' || f.source === 'conflict');
+                const isSaved    = f.source === 'saved';
+                return (
+                  <div key={f.key}
+                       data-testid={`cm-field-${f.key}`}
+                       style={{
+                         display: 'grid', gridTemplateColumns: '24px 1.2fr 1fr 1fr auto',
+                         gap: 10, alignItems: 'center', padding: '6px 0',
+                         borderBottom: '1px solid var(--border-subtle)',
+                         opacity: (!applyKey && !isSaved) ? 0.6 : 1,
+                       }}>
+                    {/* Checkbox column */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {applicable ? (
+                        <input
+                          type="checkbox"
+                          data-testid={`cm-check-${applyKey}`}
+                          checked={!!checked[applyKey]}
+                          onChange={() => handleToggle(applyKey)}
+                          disabled={applying}
+                          style={{ cursor: applying ? 'not-allowed' : 'pointer', accentColor: 'var(--accent)' }}
+                        />
+                      ) : isSaved ? (
+                        <span data-testid={`cm-saved-${f.key}`}
+                              style={{ color: 'var(--badge-green-text)', fontSize: 13, fontWeight: 700 }}
+                              title="Already saved on draft">✓</span>
+                      ) : (
+                        <span style={{ display: 'inline-block', width: 16 }} />
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 600 }}>{f.label}</div>
+                    <div data-testid={`cm-field-${f.key}-draft`}><CmValue v={f.draft} /></div>
+                    <div data-testid={`cm-field-${f.key}-suggestion`}><CmValue v={f.suggestion} /></div>
+                    <div><CmSourceBadge source={f.source} /></div>
+                  </div>
+                );
+              })}
+
+              {/* Apply error / success feedback */}
+              {applyError && (
+                <div data-testid="cm-apply-error" style={{
+                  marginTop: 10, padding: '8px 12px', borderRadius: 6,
+                  background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+                  fontSize: 12, color: 'var(--badge-red-text)',
+                }}>
+                  {applyError}
                 </div>
-              ))}
+              )}
+              {applySuccess && !applyError && (
+                <div data-testid="cm-apply-success" style={{
+                  marginTop: 10, padding: '8px 12px', borderRadius: 6,
+                  background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)',
+                  fontSize: 12, color: 'var(--badge-green-text)',
+                }}>
+                  Commercial defaults applied successfully.
+                </div>
+              )}
+
+              {/* Apply button */}
+              <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button
+                  data-testid="btn-apply-cm-commercial"
+                  disabled={!canApply}
+                  onClick={handleApply}
+                  style={{
+                    padding: '7px 18px', borderRadius: 6, border: 'none', cursor: canApply ? 'pointer' : 'not-allowed',
+                    background: canApply ? 'var(--accent)' : 'var(--bg-subtle)',
+                    color: canApply ? '#fff' : 'var(--text-3)',
+                    fontWeight: 700, fontSize: 12,
+                    opacity: applying ? 0.7 : 1,
+                  }}
+                >
+                  {applying ? 'Applying…' : 'Apply Selected Suggestions'}
+                </button>
+                {checkedKeys.length > 0 && !applying && (
+                  <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                    {checkedKeys.length} field{checkedKeys.length !== 1 ? 's' : ''} selected
+                  </span>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -5783,9 +5941,6 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
           </div>
         </PfPanelCard>
       </div>
-
-      {/* ── Customer Master suggestions (Slice 1; advisory, read-only) ────────── */}
-      <CustomerMasterSuggestions suggestions={detail.customer_master_suggestions} />
 
       {/* ── VAT & Insurance / KUKE (wireframe PanelCard; display-only, Slice 4) ── */}
       <VatInsurancePanel

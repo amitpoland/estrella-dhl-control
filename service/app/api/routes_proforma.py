@@ -7786,6 +7786,128 @@ def apply_customer_address(
     ))
 
 
+@router.post("/draft/{draft_id}/apply-customer-commercial", dependencies=[_auth],
+             summary="Apply selected Customer Master commercial defaults to the draft")
+def apply_customer_commercial(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Apply operator-selected Customer Master commercial defaults to a draft.
+
+    Body::
+
+        {
+          "expected_updated_at": "2026-06-10T09:00:00+00:00",
+          "fields": ["payment_method", "payment_terms_days", "vat_mode"]
+        }
+
+    ``fields`` — the operator-selected subset from:
+      payment_method, payment_terms_days, invoice_language_id, vat_mode,
+      freight_amount, freight_service_id, insurance_rate, insurance_service_id.
+
+    Only fields in ``fields`` are written. Non-empty draft values are
+    NEVER overwritten unless that field is explicitly listed.
+
+    Blocked when:
+    - No Customer Master record is linked or resolvable (404)
+    - Draft is in a non-editable state (409)
+    - Optimistic-lock conflict (409)
+    - No CM values available for the selected fields (400)
+
+    Response: {"ok": true, "draft": {...}}
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+
+    fields = body.get("fields")
+    if not isinstance(fields, list) or not fields:
+        raise HTTPException(status_code=400, detail="fields must be a non-empty list")
+
+    allowed = pildb._CM_COMMERCIAL_FIELDS
+    unknown = [f for f in fields if f not in allowed]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown field(s): {unknown!r}; allowed: {sorted(allowed)}",
+        )
+
+    # Resolve Customer Master via the shared helper (same as apply-customer-address)
+    d, cm, blocked = _resolve_cm_for_draft(draft_id)
+    if blocked:
+        raise HTTPException(status_code=404, detail=blocked)
+
+    eff = _cm_effective_defaults(cm)
+    cur_currency = (d.currency or "").strip().upper()
+
+    # Build updates dict — only fields the operator explicitly selected.
+    updates: Dict[str, Any] = {}
+    for f in fields:
+        if f == "payment_method":
+            v = (cm.preferred_payment_method or "").strip()
+            if v:
+                updates[f] = v
+        elif f == "payment_terms_days":
+            v = eff.get("payment_terms_days")
+            if v is not None:
+                updates[f] = v
+        elif f == "invoice_language_id":
+            v = (eff.get("default_language_id") or "").strip()
+            if v:
+                updates[f] = v
+        elif f == "vat_mode":
+            v = (cm.vat_mode or "").strip()
+            if v:
+                updates[f] = v
+        elif f == "freight_amount":
+            fr = pick_freight(cm, draft_currency=cur_currency)
+            if not fr.get("blocked"):
+                try:
+                    amt = float(fr.get("amount") or 0)
+                    if amt > 0:
+                        updates[f] = amt
+                except (TypeError, ValueError):
+                    pass
+        elif f == "freight_service_id":
+            v = (eff.get("freight_service_id") or "").strip()
+            if v:
+                updates[f] = v
+        elif f == "insurance_rate":
+            v = eff.get("insurance_rate")
+            if v is not None:
+                try:
+                    updates[f] = float(v)
+                except (TypeError, ValueError):
+                    pass
+        elif f == "insurance_service_id":
+            v = (eff.get("insurance_service_id") or "").strip()
+            if v:
+                updates[f] = v
+
+    if not updates:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Customer Master has no configured values for the selected "
+                "field(s); nothing to apply."
+            ),
+        )
+
+    return _draft_edit_dispatch(draft_id, lambda: pildb.apply_customer_commercial_to_draft(
+        _proforma_db_path(),
+        int(draft_id),
+        cm_name             = cm.bill_to_name or "",
+        cm_contractor_id    = cm.bill_to_contractor_id or "",
+        updates             = updates,
+        operator            = operator,
+        expected_updated_at = expected,
+    ))
+
+
 @router.get("/draft/{draft_id}/suggest-service-charges", dependencies=[_auth],
             summary="Combined freight + insurance suggestion from Customer Master")
 def suggest_service_charges(draft_id: int) -> JSONResponse:

@@ -222,7 +222,7 @@ def test_frontend_section_wired():
            ).read_text(encoding="utf-8")
     assert "CustomerMasterSuggestions" in jsx
     assert 'data-testid="cm-suggestions-section"' in jsx
-    assert "detail.customer_master_suggestions" in jsx
+    assert "customer_master_suggestions" in jsx
     assert 'data-testid="cm-identity-conflict"' in jsx
     for src in ("saved", "suggested", "conflict", "missing"):
         assert f"{src}:" in jsx.split("CM_SRC_BADGE", 1)[1][:600]

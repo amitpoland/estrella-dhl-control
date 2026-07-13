@@ -1076,6 +1076,18 @@
         expected_updated_at: updatedAt || '',
       }),
 
+    // POST /api/v1/proforma/draft/{draft_id}/apply-customer-commercial
+    // Applies operator-selected Customer Master commercial defaults.
+    // ``fields`` = string[] subset of:
+    //   payment_method, payment_terms_days, invoice_language_id, vat_mode,
+    //   freight_amount, freight_service_id, insurance_rate, insurance_service_id
+    // Records audit event commercial_defaults_from_customer_master.
+    applyCustomerCommercial: (draftId, fields, updatedAt) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/apply-customer-commercial`, {
+        fields,
+        expected_updated_at: updatedAt || '',
+      }),
+
 
     // NOTE: suggestServiceCharges + applyServiceCharges are defined once, in the
     // Wave-3 block below (search "apply-service-charges"). The earlier duplicate
