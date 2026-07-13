@@ -140,11 +140,8 @@ const ENTITY_COLUMNS = {
     { key: 'approval_status', label: 'Status' },
   ],
   roles: [
-    { key: 'name',   label: 'Role name' },
-    { key: 'desc',   label: 'Description' },
-    { key: 'create', label: 'Can create', toggle: true },
-    { key: 'edit',   label: 'Can edit', toggle: true },
-    { key: 'delete', label: 'Can delete', toggle: true },
+    { key: 'role',   label: 'Role' },
+    { key: 'source', label: 'Authority' },
   ],
 };
 
@@ -232,12 +229,12 @@ const MAPPING_INFO = {
   },
 };
 
-// ── Roles: static system data (no backend endpoint exists)
-const STATIC_ROLES = [
-  { id: 'r1', name: 'admin',    desc: 'Full access incl. role management',     create: true, edit: true, delete: true, lock: true },
-  { id: 'r2', name: 'manager',  desc: 'Can edit master data, no deletions',    create: true, edit: true, delete: false, lock: true },
-  { id: 'r3', name: 'operator', desc: 'Daily operations, limited master edits', create: true, edit: true, delete: false, lock: false },
-  { id: 'r4', name: 'viewer',   desc: 'Read-only access',                       create: false, edit: false, delete: false, lock: false },
+// Fallback role name list for pre-load state ONLY; the authoritative list comes
+// from the capability contract (auth/service.py ROLES). These are the real
+// system-defined roles — never the stale admin/manager/operator/viewer set.
+const STATIC_ROLES_NAMES = [
+  'admin', 'accounts', 'logistics', 'auditor', 'viewer',
+  'master_admin', 'master_editor', 'master_viewer',
 ];
 
 // ── Disabled-reason messages for write buttons
@@ -378,7 +375,7 @@ function RecordDetailModal({ record, entityLabel, onClose }) {
     onClick: onClose,
     style: {
       position: 'fixed', inset: 0, zIndex: 1000,
-      background: 'rgba(0,0,0,0.45)',
+      background: 'var(--overlay, rgba(0,0,0,0.45))',
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
     },
   },
@@ -388,7 +385,7 @@ function RecordDetailModal({ record, entityLabel, onClose }) {
         background: 'var(--bg)', color: 'var(--text)',
         border: '1px solid var(--border)', borderRadius: 8,
         maxWidth: 560, width: '100%', maxHeight: '80vh', overflowY: 'auto',
-        boxShadow: '0 12px 40px rgba(0,0,0,0.35)',
+        boxShadow: '0 12px 40px var(--shadow-heavy, rgba(0,0,0,0.35))',
       },
     },
       // Header
@@ -572,7 +569,7 @@ function BoxProfileEditModal({ record, onClose, onSaved }) {
           <div style={{ marginBottom: 12, fontSize: 12, color: 'var(--badge-red-text)' }} data-testid="box-edit-error">{error}</div>
         )}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <Btn variant="outline" small onClick={onClose}>Cancel</Btn>
+          <Btn variant="outline" small onClick={onClose} data-testid="btn-cancel-box-profile">Cancel</Btn>
           <Btn variant="gold" small onClick={save} disabled={saving} data-testid="btn-save-box-profile">
             {saving ? 'Saving…' : (isNew ? 'Create Box Profile' : 'Save Box Profile')}
           </Btn>
@@ -846,7 +843,7 @@ function NewClientModal({ onClose, onSaved }) {
 
   return (
     <div data-testid="new-client-modal" onClick={onClose} style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1050,
+      position: 'fixed', inset: 0, background: 'var(--overlay, rgba(0,0,0,0.45))', zIndex: 1050,
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
     }}>
       <div onClick={e => e.stopPropagation()} style={{
@@ -885,7 +882,7 @@ function _ImportPreviewModal({ entityId, preview, applying, onApply, onClose }) 
   const dupAdvisories = d.duplicate_vat_advisories || [];
   return (
     <div data-testid="import-preview-modal" onClick={onClose} style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1050,
+      position: 'fixed', inset: 0, background: 'var(--overlay, rgba(0,0,0,0.45))', zIndex: 1050,
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
     }}>
       <div onClick={e => e.stopPropagation()} style={{
@@ -948,10 +945,22 @@ function _DeleteConfirmMini({ record, entityId, onConfirm, onCancel }) {
     ? (record.bill_to_name || record.bill_to_contractor_id || record.id)
     : entityId === 'designs'
     ? (record.display_name || record.design_code)
+    : entityId === 'hs'
+    ? (record.hs_code || record.id)
+    : entityId === 'units'
+    ? (record.code || record.id)
+    : entityId === 'incoterms'
+    ? (record.code || record.id)
+    : entityId === 'carriers'
+    ? (record.carrier_code || record.id)
+    : entityId === 'vat'
+    ? (record.rate_code || record.id)
+    : entityId === 'fx'
+    ? ((record.from_currency && record.to_currency) ? (record.from_currency + '→' + record.to_currency) : record.id)
     : (record.name || record.id);
   return (
     <div data-testid="delete-confirm-dialog" onClick={onCancel} style={{
-      position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(0,0,0,0.45)',
+      position: 'fixed', inset: 0, zIndex: 1100, background: 'var(--overlay, rgba(0,0,0,0.45))',
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
     }}>
       <div onClick={e => e.stopPropagation()} style={{
@@ -1215,10 +1224,24 @@ function MasterPage() {
   // designDeleteConfirm: null (closed) | design record
   const [designDeleteConfirm, setDesignDeleteConfirm] = React.useState(null);
 
+  // ── Wave 7 state ──────────────────────────────────────────────────────────
+  // capabilities: null (not loaded) | { capabilities: {}, flags: {} } from getMasterCapabilities
+  const [capabilities, setCapabilities]             = React.useState(null);
+  // masterEditModal: null | { domain, record } (null record = create mode)
+  const [masterEditModal, setMasterEditModal]       = React.useState(null);
+  // userActionConfirm: null | { action: 'approve'|'reject'|'activate'|'deactivate', userId, label }
+  const [userActionConfirm, setUserActionConfirm]   = React.useState(null);
+  // userSetRole: null | { userId, currentRole }
+  const [userSetRole, setUserSetRole]               = React.useState(null);
+  // userActionRunning: true while user admin action is in flight
+  const [userActionRunning, setUserActionRunning]   = React.useState(false);
+
   // Per-entity data cache: { entityId: { records: [], loading: bool, error: string|null } }
   const [cache, setCache] = React.useState({});
 
   const perms = ROLE_MATRIX[role];
+  // Wave 7: per-entity capability descriptor from contract (null if not loaded)
+  const capForEntity = (capabilities && capabilities.capabilities && capabilities.capabilities[entity]) || null;
   const columns = ENTITY_COLUMNS[entity] || [];
   const currentEntity = ENTITY_TYPES.find(e => e.id === entity);
 
@@ -1227,9 +1250,15 @@ function MasterPage() {
 
   // ── Load entity data on tab switch
   React.useEffect(() => {
-    // Roles: use static data
+    // Roles: build from capability contract when available, fallback to STATIC_ROLES_NAMES.
+    // capabilities is in the deps so re-entering or staying on the Roles tab after the
+    // contract loads will automatically render the real values instead of the fallback.
     if (entity === 'roles') {
-      setCache(prev => ({ ...prev, roles: { records: STATIC_ROLES, loading: false, error: null } }));
+      var vals = (capabilities && capabilities.capabilities && capabilities.capabilities.roles && capabilities.capabilities.roles.values) || STATIC_ROLES_NAMES;
+      var roleRows = vals.map(function(v) {
+        return { role: (typeof v === 'string' ? v : (v.name || v.role || String(v))), source: 'System-defined (auth/service.py)' };
+      });
+      setCache(prev => ({ ...prev, roles: { records: roleRows, loading: false, error: null } }));
       return;
     }
 
@@ -1252,7 +1281,7 @@ function MasterPage() {
     }).catch(err => {
       setCache(prev => ({ ...prev, [entity]: { records: [], loading: false, error: String(err) } }));
     });
-  }, [entity, reloadTick]);
+  }, [entity, reloadTick, capabilities]);
 
   // ── Wave 6: load product_local overlay Set when on the products tab
   React.useEffect(() => {
@@ -1268,6 +1297,13 @@ function MasterPage() {
       }
     }).catch(() => {});
   }, [entity, reloadTick]);
+
+  // ── Wave 7: load capability contract once on mount ────────────────────────
+  React.useEffect(function() {
+    PzApi.getMasterCapabilities().then(function(res) {
+      if (res.ok) setCapabilities(res.data);
+    }).catch(function() {});
+  }, []);
 
   // ── Filtered records
   const records = (entityState.records || []).filter(r => {
@@ -1290,6 +1326,11 @@ function MasterPage() {
     if (eid === 'users')    return USERS_WRITE_DISABLED_REASON;
     if (eid === 'products') return 'Product CSV export/import is not available — products enter via Product Master sync from a purchase batch';
     if (eid === 'designs')  return 'Design CSV export/import is not available in this wave — manage designs individually via Create/Edit/Delete buttons';
+    // Wave 7: use capability contract reason_unavailable when available
+    if (capabilities && capabilities.capabilities && capabilities.capabilities[eid]) {
+      const cap = capabilities.capabilities[eid];
+      if (!cap.available && cap.reason_unavailable) return cap.reason_unavailable;
+    }
     return WRITE_DISABLED_REASON;
   };
 
@@ -1374,7 +1415,7 @@ function MasterPage() {
     }
   };
 
-  // ── Wave 5: Soft delete ───────────────────────────────────────────────────
+  // ── Wave 5 / Wave 7: Soft delete ─────────────────────────────────────────
   const handleDeleteRecord = async (eid, record) => {
     let res;
     if (eid === 'clients') {
@@ -1382,6 +1423,18 @@ function MasterPage() {
       res = await PzApi.deleteCustomerMaster(key, false);
     } else if (eid === 'suppliers') {
       res = await PzApi.deleteSupplier(record.id, false);
+    } else if (eid === 'hs') {
+      res = await PzApi.deleteHsCode(record.hs_code, false);
+    } else if (eid === 'units') {
+      res = await PzApi.deleteUnit(record.code, false);
+    } else if (eid === 'incoterms') {
+      res = await PzApi.deleteIncoterm(record.code, false);
+    } else if (eid === 'carriers') {
+      res = await PzApi.deleteCarrierConfig(record.carrier_code, false);
+    } else if (eid === 'vat') {
+      res = await PzApi.deleteVatConfig(record.vat_id || record.id, false);
+    } else if (eid === 'fx') {
+      res = await PzApi.deleteFxRate(record.fx_id || record.id, false);
     }
     setDeleteConfirm(null);
     if (res && res.ok) {
@@ -1547,6 +1600,14 @@ function MasterPage() {
                   data-testid="btn-new-record">
                   + New Design
                 </Btn>
+              ) : (['hs', 'fx', 'vat', 'carriers', 'incoterms', 'units'].indexOf(entity) !== -1 && capForEntity && capForEntity.available) ? (
+                <Btn variant="gold" small
+                  disabled={!perms.create}
+                  title={perms.create ? 'Create a new ' + currentEntity.singular + ' record' : 'Role has no create permission'}
+                  onClick={() => setMasterEditModal({ domain: entity, record: null })}
+                  data-testid="btn-new-record">
+                  + New {currentEntity.singular}
+                </Btn>
               ) : (
                 <Btn variant="gold" small disabled title={writeDisabledReason(entity)} data-testid="btn-new-record">
                   + New {currentEntity.singular}
@@ -1708,6 +1769,69 @@ function MasterPage() {
                                   Delete
                                 </Btn>
                               )}
+                              {/* Wave 7: Edit for 6 capability-driven CRUD domains */}
+                              {(['hs', 'fx', 'vat', 'carriers', 'incoterms', 'units'].indexOf(entity) !== -1 && capForEntity && capForEntity.available) && (
+                                <Btn small variant="gold"
+                                  disabled={!perms.edit}
+                                  title={perms.edit ? 'Edit ' + (currentEntity && currentEntity.singular) : 'Role has no edit permission'}
+                                  onClick={() => setMasterEditModal({ domain: entity, record: r })}
+                                  data-testid={'btn-edit-' + entity + '-' + rk}>
+                                  Edit
+                                </Btn>
+                              )}
+                              {/* FIX D: loading fallback while capabilities contract not yet loaded */}
+                              {(['hs', 'fx', 'vat', 'carriers', 'incoterms', 'units'].indexOf(entity) !== -1 && !capForEntity) && (
+                                <Btn small disabled title="Loading capabilities…" data-testid={'btn-edit-' + entity + '-loading'}>Edit</Btn>
+                              )}
+                              {/* Wave 7: Delete for 6 capability-driven CRUD domains (only if delete_route exists) */}
+                              {(['hs', 'fx', 'vat', 'carriers', 'incoterms', 'units'].indexOf(entity) !== -1 && capForEntity && capForEntity.available && capForEntity.delete_route) && (
+                                <Btn small variant="outline"
+                                  disabled={!perms.delete}
+                                  title={perms.delete ? 'Soft-delete this record (restorable)' : 'Role has no delete permission'}
+                                  onClick={() => setDeleteConfirm({ entityId: entity, record: r })}
+                                  data-testid={'btn-delete-' + entity + '-' + rk}
+                                  style={{ color: 'var(--badge-red-text, rgba(220,38,38,0.85))', borderColor: 'var(--badge-red-border, rgba(220,38,38,0.3))' }}>
+                                  Delete
+                                </Btn>
+                              )}
+                              {/* Wave 7: User admin actions — admin role only */}
+                              {entity === 'users' && role === 'admin' && (
+                                <React.Fragment>
+                                  {r.approval_status === 'pending' && (
+                                    <Btn small variant="gold"
+                                      onClick={() => setUserActionConfirm({ action: 'approve', userId: r.id, label: r.email || r.full_name })}
+                                      data-testid={'btn-approve-user-' + rk}>
+                                      Approve
+                                    </Btn>
+                                  )}
+                                  {r.approval_status === 'pending' && (
+                                    <Btn small variant="outline"
+                                      onClick={() => setUserActionConfirm({ action: 'reject', userId: r.id, label: r.email || r.full_name })}
+                                      data-testid={'btn-reject-user-' + rk}
+                                      style={{ color: 'var(--badge-red-text, rgba(220,38,38,0.85))', borderColor: 'var(--badge-red-border, rgba(220,38,38,0.3))' }}>
+                                      Reject
+                                    </Btn>
+                                  )}
+                                  <Btn small variant="outline"
+                                    onClick={() => setUserSetRole({ userId: r.id, currentRole: r.role, userLabel: r.email || r.full_name })}
+                                    data-testid={'btn-set-role-user-' + rk}>
+                                    Set Role
+                                  </Btn>
+                                  {r.is_active ? (
+                                    <Btn small variant="outline"
+                                      onClick={() => setUserActionConfirm({ action: 'deactivate', userId: r.id, label: r.email || r.full_name })}
+                                      data-testid={'btn-deactivate-user-' + rk}>
+                                      Deactivate
+                                    </Btn>
+                                  ) : (
+                                    <Btn small variant="gold"
+                                      onClick={() => setUserActionConfirm({ action: 'activate', userId: r.id, label: r.email || r.full_name })}
+                                      data-testid={'btn-activate-user-' + rk}>
+                                      Activate
+                                    </Btn>
+                                  )}
+                                </React.Fragment>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -1730,17 +1854,23 @@ function MasterPage() {
             </Card>
           )}
 
-          {/* Roles-specific info banner */}
+          {/* Roles-specific info banner — uses capability contract reason_unavailable when loaded */}
           {entity === 'roles' && (
             <div data-testid="roles-info-banner" style={{ marginTop: 12, padding: 12, background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 6, fontSize: 11, color: 'var(--text-3)' }}>
-              Roles are system-defined constants. No backend endpoint exists for role CRUD. Role assignment is managed per-user via the Users tab.
+              {(capForEntity && capForEntity.reason_unavailable)
+                ? capForEntity.reason_unavailable
+                : 'Roles are system-defined constants. No backend endpoint exists for role CRUD. Role assignment is managed per-user via the Users tab.'}
             </div>
           )}
 
-          {/* Users-specific info banner */}
+          {/* Users-specific info banner — shows admin action hint when acting as admin */}
           {entity === 'users' && (
             <div data-testid="users-info-banner" style={{ marginTop: 12, padding: 12, background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 6, fontSize: 11, color: 'var(--text-3)' }}>
-              Users are read-only in this view. User management (approve, reject, role change, activate/deactivate) requires admin endpoints not yet wired to this page.
+              {(capForEntity && capForEntity.note)
+                ? capForEntity.note
+                : role === 'admin'
+                  ? 'Admin user management: approve, reject, set role, activate, deactivate — visible per row above. These actions write to the auth system.'
+                  : 'User management actions (approve, reject, role change, activate/deactivate) are visible to admin role only.'}
             </div>
           )}
 
@@ -1912,6 +2042,20 @@ function MasterPage() {
           {/* Slice 1: Product Master Sync panel — Products tab only */}
           {entity === 'products' && <ProductMasterSyncPanel />}
 
+          {/* Wave 7: Capability note banner — FX and VAT render test-pinned disclaimer notes */}
+          {(entity === 'fx' || entity === 'vat' || (capForEntity && capForEntity.note)) && (
+            <div data-testid={'capability-note-' + entity} style={{
+              marginTop: 12, padding: 12, fontSize: 11, color: 'var(--text-2)',
+              background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)', borderRadius: 6,
+            }}>
+              {entity === 'fx'
+                ? ((capForEntity && capForEntity.note) || 'Reference only — FX Rates in this table are NEVER read by the calculation engine. The engine uses the ZC429/SAD exchange rate from the customs document. This table is for operator reference only.')
+                : entity === 'vat'
+                ? ((capForEntity && capForEntity.note) || 'Local VAT configuration reference. wFirma invoice VAT codes are not overridden by this table — wFirma manages its own VAT codes independently.')
+                : (capForEntity && capForEntity.note)}
+            </div>
+          )}
+
           {/* Sprint 38b: Mapping info banner for focus entities */}
           <MappingInfoBanner entityId={entity} />
         </div>
@@ -2017,6 +2161,134 @@ function MasterPage() {
           onConfirm={() => handleDeleteDesign(designDeleteConfirm)}
           onCancel={() => setDesignDeleteConfirm(null)}
         />
+      )}
+
+      {/* Wave 7: Generic master record create/edit modal */}
+      {masterEditModal !== null && (
+        <MasterRecordEditModal
+          domain={masterEditModal.domain}
+          capability={capabilities && capabilities.capabilities && capabilities.capabilities[masterEditModal.domain]}
+          columns={ENTITY_COLUMNS[masterEditModal.domain] || []}
+          record={masterEditModal.record}
+          onClose={() => setMasterEditModal(null)}
+          onSaved={() => { setMasterEditModal(null); handleReload(); }}
+        />
+      )}
+
+      {/* Wave 7: User admin action confirm dialog */}
+      {userActionConfirm !== null && (
+        <div data-testid="user-action-confirm" onClick={() => setUserActionConfirm(null)} style={{
+          position: 'fixed', inset: 0, zIndex: 1150,
+          background: 'var(--overlay, rgba(0,0,0,0.45))',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+        }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8,
+            maxWidth: 400, width: '100%', padding: 20,
+            boxShadow: '0 8px 30px var(--shadow-heavy, rgba(0,0,0,0.25))',
+            color: 'var(--text)',
+          }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8, textTransform: userActionConfirm.action === 'set_role' ? 'none' : 'capitalize' }}>
+              {userActionConfirm.action === 'set_role' ? 'Change user role?' : (userActionConfirm.action + ' user?')}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 16 }}>
+              {userActionConfirm.action === 'set_role'
+                ? <span>Change role of <b>{userActionConfirm.label}</b> to <b>{userActionConfirm.newRole}</b>? This is an access change.</span>
+                : <span><b>{userActionConfirm.label}</b> — confirm {userActionConfirm.action}.</span>}
+            </div>
+            {userActionRunning && (
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>Working...</div>
+            )}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <Btn variant="outline" small onClick={() => setUserActionConfirm(null)}
+                disabled={userActionRunning} data-testid="user-action-cancel">Cancel</Btn>
+              <Btn variant="gold" small disabled={userActionRunning}
+                data-testid="user-action-ok"
+                onClick={async () => {
+                  setUserActionRunning(true);
+                  let res;
+                  try {
+                    const { action, userId } = userActionConfirm;
+                    if (action === 'approve')    res = await PzApi.approveUser(userId);
+                    if (action === 'reject')     res = await PzApi.rejectUser(userId);
+                    if (action === 'activate')   res = await PzApi.activateUser(userId);
+                    if (action === 'deactivate') res = await PzApi.deactivateUser(userId);
+                    if (action === 'set_role')   res = await PzApi.setUserRole(userId, userActionConfirm.newRole);
+                  } catch (ex) { res = { ok: false, error: String(ex) }; }
+                  const confirmedAction = userActionConfirm.action;
+                  const confirmedNewRole = userActionConfirm.newRole;
+                  setUserActionRunning(false);
+                  setUserActionConfirm(null);
+                  if (res && res.ok) {
+                    setMpToast({
+                      msg: confirmedAction === 'set_role'
+                        ? 'Role changed to ' + confirmedNewRole
+                        : 'User ' + confirmedAction + ' applied',
+                      type: 'ok',
+                    });
+                    handleReload();
+                  } else {
+                    setMpToast({
+                      msg: confirmedAction === 'set_role'
+                        ? 'Set role to ' + confirmedNewRole + ' failed: ' + (res ? (res.error || 'Unknown') : 'No response')
+                        : 'Action failed: ' + (res ? (res.error || 'Unknown') : 'No response'),
+                      type: 'error',
+                    });
+                  }
+                }}>
+                {userActionConfirm.action === 'set_role' ? 'Confirm role change' : 'Confirm ' + userActionConfirm.action}
+              </Btn>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Wave 7: User set-role picker modal */}
+      {userSetRole !== null && (
+        <div data-testid="user-set-role-modal" onClick={() => setUserSetRole(null)} style={{
+          position: 'fixed', inset: 0, zIndex: 1150,
+          background: 'var(--overlay, rgba(0,0,0,0.45))',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+        }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8,
+            maxWidth: 360, width: '100%', padding: 20,
+            boxShadow: '0 8px 30px var(--shadow-heavy, rgba(0,0,0,0.25))',
+            color: 'var(--text)',
+          }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Set User Role</div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>
+              Select a new role — you will be asked to confirm before the change is applied.
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              {(capabilities && capabilities.capabilities && capabilities.capabilities.roles && Array.isArray(capabilities.capabilities.roles.values)
+                ? capabilities.capabilities.roles.values
+                : Object.keys(ROLE_MATRIX)
+              ).map(function(rv) {
+                const isCurrent = userSetRole && userSetRole.currentRole === rv;
+                return (
+                  <Btn key={rv}
+                    data-testid={'set-role-btn-' + rv}
+                    variant={isCurrent ? 'outline' : 'ghost'}
+                    small
+                    onClick={() => {
+                      const uid = userSetRole.userId;
+                      const userLabel = userSetRole.userLabel;
+                      setUserSetRole(null);
+                      setUserActionConfirm({ action: 'set_role', userId: uid, label: userLabel || uid, newRole: rv });
+                    }}
+                    style={{
+                      display: 'block', width: '100%', textAlign: 'left',
+                      marginBottom: 4, fontWeight: isCurrent ? 700 : 400,
+                    }}>
+                    {rv}{isCurrent ? ' (current)' : ''}
+                  </Btn>
+                );
+              })}
+            </div>
+            <Btn variant="outline" small onClick={() => setUserSetRole(null)} data-testid="set-role-cancel">Cancel</Btn>
+          </div>
+        </div>
       )}
 
       {/* Wave 5: inline toast notification (auto-clears after 4.5 s) */}
