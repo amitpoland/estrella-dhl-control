@@ -26,6 +26,7 @@ POST /api/v1/shipment/{batch_id}/packing_list
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import uuid
@@ -94,8 +95,19 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Windows reserved device names (case-insensitive, with or without extension).
+# A file named e.g. ``CON.pdf`` resolves to the console device on the win32
+# production host — rename any such name so the write lands on disk safely.
+_WIN_RESERVED_RE = re.compile(
+    r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", re.IGNORECASE
+)
+
+
 def _safe_name(name: str) -> str:
-    return "".join(c if c.isalnum() or c in "._- " else "_" for c in Path(name).name)
+    safe = "".join(c if c.isalnum() or c in "._- " else "_" for c in Path(name).name)
+    if _WIN_RESERVED_RE.match(safe):
+        safe = "_" + safe
+    return safe
 
 
 def _make_batch_id(tracking_no: str) -> str:

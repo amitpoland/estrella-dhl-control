@@ -30,6 +30,7 @@ from typing import Any, List, Optional
 from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..auth.dependencies import require_admin
 from ..services import description_engine as deng
 from ..services import wfirma_capabilities as wfc
 from ..services import wfirma_client
@@ -41,7 +42,8 @@ from ..services import wfirma_customer_auto_resolve as _wfcar
 log = get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/wfirma", tags=["wfirma"])
-_auth  = Depends(require_api_key)
+_auth       = Depends(require_api_key)
+_admin_auth = Depends(require_admin)
 
 
 def _operator_from_header(x_operator: Optional[str]) -> str:
@@ -1175,7 +1177,7 @@ def adopt_pending_found_for_batch(
 
     Response: { ok, batch_id, considered, adopted_count, adopted[], skipped[] }
     """
-    if ".." in batch_id or batch_id.startswith("/"):
+    if "/" in batch_id or ".." in batch_id:
         raise HTTPException(status_code=400, detail="Invalid batch_id.")
     op = _operator_from_header(x_operator)
 
@@ -1762,7 +1764,7 @@ def customer_master_sync_preview() -> JSONResponse:
     })
 
 
-@router.post("/customers/sync-from-wfirma/apply", dependencies=[_auth],
+@router.post("/customers/sync-from-wfirma/apply", dependencies=[_admin_auth],
              summary="Apply only the wFirma customer rows the operator selected")
 async def customer_master_sync_apply(request: Request) -> JSONResponse:
     """Per-row apply for Customer Master. Body: ``{"wfirma_ids": [...]}``.
@@ -1919,7 +1921,7 @@ def split_import_vs_sales_blockers(
 @router.get("/shipment/{batch_id:path}/setup-detail", dependencies=[_auth])
 def shipment_setup_detail(batch_id: str) -> JSONResponse:
     """READ-ONLY operator setup detail for products + customers + readiness."""
-    if ".." in batch_id or batch_id.startswith("/"):
+    if "/" in batch_id or ".." in batch_id:
         raise HTTPException(status_code=400, detail="Invalid batch_id.")
 
     from ..core.config import settings as _s

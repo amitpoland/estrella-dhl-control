@@ -181,6 +181,27 @@ _AREA3_ROUTES: frozenset[str] = frozenset({
     "routes_upload.py:POST:/shipment/{batch_id}/set_pz",
     "routes_warehouse.py:POST:/locations",
     "routes_warehouse.py:POST:/scan",
+    # ── Wave 5–7 additions (recorded 2026-07-13) ──────────────────────────────
+    # Operator-facing PZ / warehouse / intake / inventory surfaces added across
+    # Waves 5–7. All are session-cookie operator actions with NO api-key-only
+    # automation caller (verified: no .ps1 / scripts caller; only static UI JS).
+    # They remain bare pending the Area 3 guard burn-down (every Area 3 sibling
+    # above is still bare — upgrading these individually would fork the area).
+    "routes_inventory.py:POST:/fiscal-reconciliation/run",
+    "routes_inventory_returns.py:POST:/pieces/{piece_id}/correction/archive-proposal",
+    "routes_inventory_returns.py:POST:/pieces/{piece_id}/correction/identity",
+    "routes_inventory_returns.py:POST:/pieces/{piece_id}/qc-disposition",
+    "routes_inventory_returns.py:POST:/pieces/{piece_id}/reversal/{reversal_target}",
+    "routes_packing.py:DELETE:/{batch_id}/document/{document_id}",
+    "routes_packing.py:POST:/{batch_id}/approve-header-mapping",
+    "routes_packing.py:POST:/{batch_id}/manual-sales-allocation",
+    "routes_packing.py:POST:/{batch_id}/scored-pending/confirm",
+    "routes_packing.py:POST:/{batch_id}/suggest-column-mapping",
+    "routes_supplier_invoice_ocr.py:POST:/upload",
+    # NB: routes_upload document delete/replace are NOT listed here — Wave 8
+    # hardening (PR #910, MEDIUM-2) upgraded both to _write_auth (privileged),
+    # so they are no longer bare and must not appear in this allowlist.
+    "routes_warehouse_receipt.py:POST:/confirm",
 })
 
 # Area 4 — Proforma
@@ -217,6 +238,20 @@ _AREA4_ROUTES: frozenset[str] = frozenset({
     "routes_reservations.py:POST:/reservations/process-pending",
     "routes_reservations.py:POST:/reservations/{queue_id}/reset",
     "routes_reservations.py:POST:/wfirma/products/sync-by-codes",
+    # ── Wave 5–7 additions (recorded 2026-07-13) ──────────────────────────────
+    # Proforma draft edit/conflict/pricing operator surfaces + product-master
+    # auto-sync trigger added across Waves 5–7. Session-cookie operator actions
+    # with NO api-key-only automation caller (verified: static UI JS only).
+    # Bare pending the Area 4 guard burn-down (all Area 4 siblings above are
+    # still bare).
+    "routes_proforma.py:DELETE:/draft/{draft_id}",
+    "routes_proforma.py:POST:/draft/{draft_id}/apply-customer-address",
+    "routes_proforma.py:POST:/draft/{draft_id}/apply-service-charges",
+    "routes_proforma.py:POST:/draft/{draft_id}/conflicts/scan",
+    "routes_proforma.py:POST:/draft/{draft_id}/conflicts/{conflict_id}/resolve",
+    "routes_proforma.py:POST:/draft/{draft_id}/import-sales-prices",
+    "routes_proforma.py:POST:/draft/{draft_id}/resolve-ambiguity",
+    "routes_reservations.py:POST:/product-master/sync/{batch_id}",
 })
 
 # Area 5 — wFirma / accounting-sensitive / carrier / AI
@@ -238,7 +273,8 @@ _AREA5_ROUTES: frozenset[str] = frozenset({
     "routes_wfirma_capabilities.py:POST:/customers/auto-resolve-preview/{batch_id:path}",
     "routes_wfirma_capabilities.py:POST:/customers/create-internal-test",
     "routes_wfirma_capabilities.py:POST:/customers/sync",
-    "routes_wfirma_capabilities.py:POST:/customers/sync-from-wfirma/apply",
+    # /customers/sync-from-wfirma/apply upgraded to require_admin (Wave 8
+    # hardening MEDIUM-1) — parity with routes_customer_master; now privileged.
     "routes_wfirma_capabilities.py:POST:/goods/adopt/{product_code:path}",
     "routes_wfirma_capabilities.py:POST:/goods/auto-register-preview/{batch_id:path}",
     "routes_wfirma_capabilities.py:POST:/goods/auto-register/{batch_id:path}",
@@ -253,6 +289,20 @@ _AREA5_ROUTES: frozenset[str] = frozenset({
     "routes_wfirma_capabilities.py:PUT:/products/{product_code:path}",
     "routes_wfirma_reservation.py:POST:/reservations/create",
     "routes_wfirma_reservation.py:POST:/reservations/{draft_id}/reset-stuck",
+    # ── Wave 5–7 additions (recorded 2026-07-13) ──────────────────────────────
+    # wFirma / accounting-sensitive / carrier surfaces added across Waves 5–7.
+    # carrier /events/process is the carrier-webhook event processor (Run Now +
+    # webhook automation origin). The rest are session-cookie operator "Run Now"
+    # / edit surfaces with NO api-key-only automation caller (verified: static
+    # UI JS only; no .ps1 / scripts caller). Bare pending the Area 5 guard
+    # burn-down (all Area 5 siblings above are still bare).
+    "routes_carrier_actions.py:POST:/{batch_id}/shipment/{tracking_ref}/do-not-use",
+    "routes_carrier_shadow.py:POST:/events/process",
+    "routes_description_admin.py:POST:/product/{product_code:path}/validate",
+    "routes_description_admin.py:PUT:/product/{product_code:path}",
+    "routes_wfirma_capabilities.py:POST:/shipment/{batch_id:path}/adopt-pending-found",
+    "routes_wfirma_contractors.py:POST:/contractors/scan",
+    "routes_wfirma_sync_pull.py:POST:/payments-pull",
 })
 
 # Master allowlist — union of all five areas.
@@ -534,6 +584,14 @@ class TestRbacStructuralAllowlist:
         (Updated 2026-06-08: -5 stale from deleted files, +3 new from ingestion sprint PRs.)
         (Phase C Area 1 complete 2026-06-08: -33 routes upgraded to privileged. Total: 134.)
         (Phase C Area 2 complete 2026-06-08: -18 routes upgraded to privileged. Total: 116.)
+        (Wave 5–7 drift reconciliation 2026-07-13: +29 new bare routes allowlisted
+         across Areas 3–5; routes_customer_master validate-vat upgraded to _write_auth
+         (-0 net, not allowlisted). Total: 145.)
+        (Wave 8 reconciliation into PR #910 2026-07-13: -1 wfirma customers
+         sync-from-wfirma/apply upgraded to require_admin (MEDIUM-1); -2 routes_upload
+         document delete/replace upgraded to _write_auth (MEDIUM-2), so both were
+         withheld from the Area 3 additions above. Net Wave 5–7 additions: 27.
+         Total: 142.)
         """
         routes = _all_mutation_routes()
         bare_count = sum(1 for r in routes if r.auth_level == "bare")

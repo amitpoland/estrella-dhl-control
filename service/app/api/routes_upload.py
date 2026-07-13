@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import time
 import uuid
@@ -43,6 +44,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..core.role_gate import require_role_or_apikey, MASTER_ADMIN, MASTER_EDITOR
 from ..core.guards import guard_pz_requires_sad, guard_trigger_declared
 from ..core import timeline as tl
 from ..services import export_service
@@ -54,7 +56,12 @@ _DHL_BROKER_THRESHOLD_USD: float = 2500.0
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
-_auth  = Depends(require_api_key)
+_auth       = Depends(require_api_key)
+# Document delete/replace mutate master-data-class document state — gate them
+# with the master-role dependency (Wave 8 hardening MEDIUM-2). Degrades to
+# api-key semantics when master_role_enforcement is off (default), so this is a
+# no-op under current config and only tightens when role enforcement is on.
+_write_auth = Depends(require_role_or_apikey(MASTER_ADMIN, MASTER_EDITOR))
 
 _ALLOWED_EXT    = {".pdf"}
 _MAX_BYTES: int = settings.max_upload_bytes   # 20 MB
@@ -65,9 +72,20 @@ _CARRIERS = {"DHL", "FedEx", "Other"}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# Windows reserved device names (case-insensitive, with or without extension).
+# On the win32 production host a file literally named e.g. ``CON.pdf`` resolves
+# to the console device rather than a real file, which can hang or silently drop
+# the write. Rename any such name so it lands on disk safely.
+_WIN_RESERVED_RE = re.compile(
+    r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", re.IGNORECASE
+)
+
+
 def _safe_name(filename: str) -> str:
     name = Path(filename).name
     name = "".join(c if c.isalnum() or c in "._- " else "_" for c in name)
+    if _WIN_RESERVED_RE.match(name):
+        name = "_" + name
     return name or "file.pdf"
 
 
@@ -1517,7 +1535,7 @@ def serve_document_content(
     )
 
 
-@router.delete("/shipment/{batch_id}/documents/{document_id}", dependencies=[_auth])
+@router.delete("/shipment/{batch_id}/documents/{document_id}", dependencies=[_write_auth])
 def delete_batch_document(
     batch_id: str, document_id: str,
     x_operator:  Optional[str] = Header(None, alias="X-Operator"),
@@ -1597,7 +1615,7 @@ def delete_batch_document(
     })
 
 
-@router.post("/shipment/{batch_id}/documents/{document_id}/replace", dependencies=[_auth])
+@router.post("/shipment/{batch_id}/documents/{document_id}/replace", dependencies=[_write_auth])
 async def replace_batch_document(
     batch_id: str, document_id: str,
     file: UploadFile,
