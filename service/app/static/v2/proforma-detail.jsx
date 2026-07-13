@@ -377,7 +377,7 @@ function ProformaPartyCard({ title, name, lines, footer, footerMuted, warn, warn
 // ── Print-preview modal ────────────────────────────────────────────────────────
 // READ-ONLY. Never mutates draft state. Uses real docData/cmrData from ProformaDetailPage.
 // Requires: estrella-doc-tokens.css + estrella-doc-proforma.jsx + estrella-doc-cmr.jsx loaded in index.html.
-function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, packingData, onClose }) {
+function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, packingData, onClose, onEditRequest }) {
   // Portrait A4 (794px) → 0.88 fits 900px wrap.
   // Landscape A4 (1123px) → 0.87 fits 1200px wrap.
   // activeType MUST be declared before SCALE — SCALE depends on it.
@@ -537,6 +537,31 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
             {docData.warnings.map((w, i) => (
               <div key={i} style={{ fontSize: 11, color: '#FCD34D', lineHeight: 1.4 }}>
                 ⚠ {w.msg}
+                {w.code === 'NO_FX_RATE' && onEditRequest && (
+                  <button
+                    data-testid="warn-fix-fx-rate"
+                    onClick={() => { onClose(); onEditRequest(); }}
+                    style={{ marginLeft: 8, fontSize: 10, color: '#1a1a1a', background: '#F59E0B',
+                             border: 'none', borderRadius: 4, padding: '1px 7px', cursor: 'pointer',
+                             fontWeight: 600, verticalAlign: 'middle' }}
+                  >Set NBP rate in Overview ↗</button>
+                )}
+                {w.code === 'NO_ISSUE_DATE' && onEditRequest && (
+                  <button
+                    data-testid="warn-fix-issue-date"
+                    onClick={() => { onClose(); onEditRequest(); }}
+                    style={{ marginLeft: 8, fontSize: 10, color: '#1a1a1a', background: '#F59E0B',
+                             border: 'none', borderRadius: 4, padding: '1px 7px', cursor: 'pointer',
+                             fontWeight: 600, verticalAlign: 'middle' }}
+                  >Set issue date in Overview ↗</button>
+                )}
+                {w.code === 'MISSING_ORIGIN' && (
+                  <div data-testid="warn-origin-authority"
+                       style={{ fontSize: 10, color: '#D4A600', marginTop: 3, lineHeight: 1.4 }}>
+                    Origin is governed by Product Master (product_local.origin_country) — correct it there, not here.{' '}
+                    <a href="/v2/master?entity=products" style={{ color: '#F59E0B' }} target="_self">Open Product Master ↗</a>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -2455,7 +2480,11 @@ function ProformaReadinessPanel({
   resolvingDesign, resolveError, doResolveAmbiguity,
   savingVat, vatSaveError, doSaveEuVat,
   draftLines, reloadReadiness,
+  blockerPanelReasons,  // Set<string> — reasons already shown by ProformaBlockerPanel (Slice 5 dedup)
 }) {
+  // Slice 5: filter out blocker entries whose reason text is already rendered by
+  // ProformaBlockerPanel above. Gating is unchanged — this is display-only.
+  const _shownAbove = (blockerPanelReasons instanceof Set) ? blockerPanelReasons : new Set();
   return (
     <React.Fragment>
       {readinessPost && !readinessPost.ready && (
@@ -2468,14 +2497,16 @@ function ProformaReadinessPanel({
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 6 }}>
             ⛔ Not ready — {(readinessPost.blockers || []).length} blocking reason{(readinessPost.blockers || []).length === 1 ? '' : 's'} · Approve / Post / Convert stay gated until resolved
           </div>
-          {(readinessPost.blockers || []).map((b, i) => (
-            <div key={i} style={{ fontSize: 12, marginBottom: 4 }} data-testid={`readiness-blocker-${i}`}>
-              <span style={{ color: 'var(--badge-red-text)' }}>• {b.reason}</span>
-              <div style={{ color: 'var(--text-dim, var(--text))', opacity: 0.75, paddingLeft: 14 }}>
-                Fix: {b.repair_action}
+          <div data-testid="readiness-panel-blockers-deduped">
+            {(readinessPost.blockers || []).filter(b => !_shownAbove.has(b.reason)).map((b, i) => (
+              <div key={i} style={{ fontSize: 12, marginBottom: 4 }} data-testid={`readiness-blocker-${i}`}>
+                <span style={{ color: 'var(--badge-red-text)' }}>• {b.reason}</span>
+                <div style={{ color: 'var(--text-dim, var(--text))', opacity: 0.75, paddingLeft: 14 }}>
+                  Fix: {b.repair_action}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
           {/* ProductMappingResolver — wires wFirma search/adopt/create-and-adopt
               for each unmapped product_code. Only shown when the readiness gate
               surfaces a "not matched in wfirma_products" blocker. */}
@@ -4098,6 +4129,14 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const postBlockers    = (readinessPost    && readinessPost.blockers)    || [];
   const approveBlocked  = !!(readinessApprove && readinessApprove.ready === false);
   const postBlocked     = !!(readinessPost    && readinessPost.ready    === false);
+  // Slice 5: set of blocker reasons already rendered by ProformaBlockerPanel so that
+  // ProformaReadinessPanel can suppress duplicates (display-only — gating is unchanged).
+  const blockerPanelReasons = React.useMemo(() => {
+    const s = new Set();
+    approveBlockers.forEach(b => b.reason && s.add(b.reason));
+    postBlockers.forEach(b => b.reason && s.add(b.reason));
+    return s;
+  }, [approveBlockers, postBlockers]);
   const stateAllowsPost    = ['draft', 'pending_local', 'approved', 'post_failed'].includes(draftState);
   const alreadyConverted    = !!(liveDraft.wfirma_invoice_id) || draftState === 'converted';
   const stateAllowsConvert  = (draftState === 'posted' || draftState === 'ready') && !alreadyConverted;
@@ -4578,6 +4617,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         doSaveEuVat={doSaveEuVat}
         draftLines={liveDraft.editable_lines || []}
         reloadReadiness={reloadReadiness}
+        blockerPanelReasons={blockerPanelReasons}
       />
 
       {/* ── Party cards + address authority bar ─────────────────────────── */}
@@ -5140,6 +5180,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           docType={previewDocType}
           onDocTypeChange={setPreviewDocType}
           onClose={() => setShowPreview(false)}
+          onEditRequest={() => {
+            setShowPreview(false);
+            setActiveTab('overview');
+            handleEnterEdit();
+          }}
         />
       )}
       {showCancelModal && (
@@ -6331,7 +6376,7 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
             <InfoRow label="Payment due" value={(editMode ? (_editComputedDue || '—') : (detail.payment_due_date || '—'))} mono />
             {editMode ? (
               <PfFieldRow label={`${currency}/PLN rate`} hint="NBP">
-                <div style={{ width: '100%' }}>
+                <div data-testid="edit-exchange-rate" style={{ width: '100%' }}>
                   <EditableKvItem k="" value={editFields.exchange_rate || ''} onChange={v => onEditField('exchange_rate', v)} />
                 </div>
               </PfFieldRow>
