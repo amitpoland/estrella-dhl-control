@@ -6766,6 +6766,200 @@ def resolve_draft_design_ambiguity(
     })
 
 
+_ASSIGN_PACKING_CODE_CONFIRM_TOKEN = "YES_ASSIGN_PACKING_PRODUCT_CODE"
+
+
+def _overbill_unassigned_evidence(
+    readiness: Dict[str, Any], product_code: str, design_no: str,
+) -> Optional[Dict[str, Any]]:
+    """Return the surfaced ``unassigned_packing`` evidence entry for
+    (product_code, design_no) on this draft, or None.
+
+    The write route is BOUND to this evidence: a product_code may only be
+    assigned to a design's unassigned packing piece(s) when the readiness
+    authority is currently surfacing exactly that repair (the code is
+    over-billed AND the design carries packing rows with no product_code). This
+    is what prevents an arbitrary code being stamped onto an arbitrary design —
+    the same read-only authority the operator sees drives what the writer may
+    touch.
+    """
+    for e in (readiness.get("duplicate_product_codes") or []):
+        if not e.get("over_billed"):
+            continue
+        if str(e.get("product_code") or "") != product_code:
+            continue
+        for u in (e.get("unassigned_packing") or []):
+            if str(u.get("design_no") or "").strip() == design_no:
+                return u
+    return None
+
+
+@router.post("/draft/{draft_id}/assign-packing-product-code", dependencies=[_auth])
+def assign_packing_product_code(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Operator confirms a packing design's identity, stamping
+    ``packing_lines.product_code`` onto the currently-UNASSIGNED packing
+    piece(s) for that design so the over-bill authority credits them truthfully.
+
+    This is the write half of the read-only unassigned-packing evidence repair.
+    When a packing list arrives design-only (no product_code stamped), the two
+    real pieces for e.g. design JR07550 are invisible to the availability sum,
+    so a billed code shows ``available 0`` and the over-bill gate blocks with no
+    explanation. The operator confirms design → product_code here; the pieces
+    become countable and the blocker clears on TRUE data.
+
+    It does NOT weaken the over-bill gate. Availability is not invented: the
+    stamped rows already existed with quantity; assigning the code the operator
+    confirmed makes them count. The gate re-evaluates on the real numbers. The
+    write is refused unless the readiness authority is currently surfacing this
+    exact (product_code, design_no) as ``unassigned_packing`` evidence — no
+    arbitrary assignment, no auto-pick, no silent multi-row stamp.
+
+    Body::
+        {
+          "design_no":      "JR07550",
+          "product_code":   "EJL/26-27/380-1",
+          "expected_count": 1,                       # optional operator sanity-check
+          "confirm_token":  "YES_ASSIGN_PACKING_PRODUCT_CODE"
+        }
+
+    Errors: 400 (bad input / not a surfaced repair), 401/403 (auth),
+    409 (draft posted, or unassigned row count changed since read), 422
+    (bad confirm_token).
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator     = _require_operator(x_operator)
+    design_no    = str(body.get("design_no") or "").strip()
+    product_code = str(body.get("product_code") or "").strip()
+    token        = str(body.get("confirm_token") or "")
+    if not design_no or not product_code:
+        raise HTTPException(
+            status_code=400,
+            detail="design_no and product_code are both required",
+        )
+    if token != _ASSIGN_PACKING_CODE_CONFIRM_TOKEN:
+        raise HTTPException(
+            status_code=422,
+            detail=f"confirm_token must equal {_ASSIGN_PACKING_CODE_CONFIRM_TOKEN!r}",
+        )
+    expected_count: Optional[int] = None
+    if body.get("expected_count") is not None:
+        try:
+            expected_count = int(body.get("expected_count"))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400, detail="expected_count must be an integer")
+        if expected_count <= 0:
+            raise HTTPException(
+                status_code=400, detail="expected_count must be a positive integer")
+
+    db    = _proforma_db_path()
+    draft = pildb.get_draft_by_id(db, int(draft_id))
+    if draft is None:
+        raise HTTPException(status_code=404,
+                            detail=f"draft {draft_id} not found")
+    if draft.status in ("posted", "cancelled", "superseded"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"draft {draft_id} is {draft.status!r} — packing product_code "
+                   "assignment is only meaningful before posting",
+        )
+    batch_id = draft.batch_id or ""
+
+    # EVIDENCE GATE — the write may only touch what the READ authority surfaces.
+    readiness = _derive_draft_readiness(draft, intent="approve")
+    evidence  = _overbill_unassigned_evidence(readiness, product_code, design_no)
+    if evidence is None:
+        # Not a surfaced repair. Distinguish idempotent success (already stamped
+        # to THIS code) from a genuine bad request, using the canonical packing
+        # read — never invent state.
+        _design_rows = [
+            r for r in (pdb.get_packing_lines_for_batch(batch_id) or [])
+            if str(r.get("design_no") or "").strip() == design_no
+        ]
+        _assigned_codes = sorted({
+            str(r.get("product_code") or "").strip()
+            for r in _design_rows if str(r.get("product_code") or "").strip()
+        })
+        _unassigned = [
+            r for r in _design_rows if not str(r.get("product_code") or "").strip()
+        ]
+        if not _unassigned and _assigned_codes == [product_code]:
+            # Already fully assigned to this code — idempotent no-op.
+            return JSONResponse({
+                "ok":            True,
+                "idempotent":    True,
+                "assignment":    {"assigned": 0, "matched": 0,
+                                  "already_assigned_to": _assigned_codes,
+                                  "row_ids": []},
+                "readiness":     readiness,
+            })
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"product_code {product_code!r} / design_no {design_no!r} is not "
+                f"a surfaced unassigned-packing repair for draft {draft_id} — the "
+                "readiness authority is not reporting this code as over-billed "
+                "with unassigned packing pieces for this design. Re-check "
+                "readiness; assignment is only allowed for a currently-surfaced "
+                "over-bill blocker (no arbitrary product_code assignment)."
+            ),
+        )
+
+    # The operator's expected_count (if any) must agree with the surfaced
+    # evidence count before we even reach the writer's own TOCTOU guard.
+    ev_count = int(evidence.get("count") or 0)
+    if expected_count is not None and expected_count != ev_count:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"expected_count {expected_count} does not match the "
+                f"{ev_count} unassigned packing piece(s) currently surfaced for "
+                f"design {design_no!r} — re-check readiness."
+            ),
+        )
+
+    try:
+        result = pdb.assign_product_code_to_unassigned_design(
+            batch_id, design_no, product_code,
+            expected_count=ev_count or None,
+        )
+    except ValueError as exc:
+        # Count guard tripped (rows changed since the readiness read) → conflict.
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    try:
+        pildb._record_draft_event(
+            db,
+            draft_id    = int(draft_id),
+            event       = "packing_product_code_assigned",
+            detail_json = json.dumps({
+                "design_no":    design_no,
+                "product_code": product_code,
+                "assigned":     result.get("assigned"),
+                "row_ids":      result.get("row_ids"),
+                "batch_id":     batch_id,
+            }, ensure_ascii=False),
+            operator    = operator,
+        )
+    except Exception as exc:
+        log.warning("[draft %s] packing_product_code_assigned audit event failed "
+                    "(non-fatal): %s", draft_id, exc)
+
+    # Refresh readiness from TRUE data so the caller sees the blocker cleared.
+    return JSONResponse({
+        "ok":         True,
+        "assignment": result,
+        "readiness":  _derive_draft_readiness(draft, intent="approve"),
+    })
+
+
 # ── Phase 4 — lifecycle controls + line add/remove ─────────────────────────
 
 @router.post("/draft/{draft_id}/approve", dependencies=[_auth])

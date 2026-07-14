@@ -431,6 +431,20 @@
         product_code: productCode || '',
       }),
 
+    // POST /api/v1/proforma/draft/{draft_id}/assign-packing-product-code
+    // Operator confirms a packing design's identity, stamping product_code onto
+    // the currently-UNASSIGNED packing piece(s) for that design so the over-bill
+    // authority credits them truthfully. Backend refuses anything that is not a
+    // currently-surfaced unassigned-packing over-bill repair (no arbitrary
+    // assignment). Requires the explicit confirm_token.
+    assignPackingProductCode: (draftId, designNo, productCode, expectedCount) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/assign-packing-product-code`, {
+        design_no:      designNo    || '',
+        product_code:   productCode || '',
+        expected_count: (expectedCount == null ? undefined : expectedCount),
+        confirm_token:  'YES_ASSIGN_PACKING_PRODUCT_CODE',
+      }),
+
     // ── Customer Master ──────────────────────────────────────────────
 
     // GET /api/v1/customer-master[?q=...]

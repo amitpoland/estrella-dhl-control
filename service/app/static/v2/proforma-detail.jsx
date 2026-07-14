@@ -2428,6 +2428,130 @@ function ProductMappingResolver({ unmappedCodes, draftLines, reloadReadiness }) 
   );
 }
 
+// ── Unassigned-packing product_code assigner ──────────────────────────────────
+// The write half of the read-only unassigned-packing over-bill evidence. When a
+// packing list arrived design-only (no product_code stamped), the real pieces
+// for a design are invisible to the availability sum, so a billed code shows
+// "available 0" and the over-bill gate blocks with no explanation. Here the
+// operator confirms design → product_code; the backend stamps ONLY the currently
+// unassigned pieces (never invents availability, never auto-picks, refuses any
+// code that is not a currently-surfaced over-bill repair) and readiness reloads.
+function UnassignedPackingAssigner({ draftId, productCode, unassignedPacking, reloadReadiness }) {
+  const [perDesign, setPerDesign] = React.useState({});
+  const gs = (d) => perDesign[d] || { phase: 'idle', error: null };
+  const ss = (d, patch) => setPerDesign(prev => ({ ...prev, [d]: { ...gs(d), ...patch } }));
+
+  // doAssign — LOCAL write (X-Operator, no wFirma/fiscal write). Only fires from
+  // the explicit confirm button. Stamps exactly the surfaced piece count.
+  const doAssign = async (design, count) => {
+    ss(design, { phase: 'assigning', error: null });
+    const r = await window.PzApi.assignPackingProductCode(draftId, design, productCode, count);
+    if (!(r && r.ok)) {
+      ss(design, { phase: 'confirm', error: (r && (r.error || r.detail)) || 'Assignment failed — check backend logs.' });
+      return;
+    }
+    ss(design, { phase: 'assigned' });
+    reloadReadiness && reloadReadiness();
+  };
+
+  if (!unassignedPacking || unassignedPacking.length === 0) return null;
+  const codeTid = String(productCode || '').replace(/[^a-zA-Z0-9_-]/g, '-');
+  const dTid = (s) => String(s || '').replace(/[^a-zA-Z0-9_-]/g, '-');
+
+  return (
+    <div data-testid={`unassigned-packing-assigner-${codeTid}`} style={{ marginTop: 6 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+        {'Unassigned packing piece(s) exist for this code’s design(s) — confirm the identity to assign the product_code:'}
+      </div>
+      {unassignedPacking.map((u) => {
+        const design = String(u.design_no || '');
+        const count = Number(u.count || 0);
+        const st = gs(design);
+        const tid = dTid(design);
+        return (
+          <div key={design} data-testid={`unassigned-packing-row-${tid}`}
+               style={{ marginBottom: 8, paddingBottom: 6, borderBottom: '1px dashed var(--border)' }}>
+            <div style={{ fontSize: 11, color: 'var(--text)' }}>
+              <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{design}</span>
+              <span style={{ opacity: 0.75 }}>
+                {`  ·  ${count} piece${count === 1 ? '' : 's'} (qty ${+u.quantity})`}
+                {u.invoice_no ? `  ·  invoice ${u.invoice_no}` : ''}
+                {'  ·  no product_code assigned'}
+              </span>
+            </div>
+
+            {st.error && (
+              <div data-testid={`unassigned-packing-error-${tid}`}
+                   style={{ fontSize: 11, color: 'var(--badge-red-text)', marginTop: 4 }}>
+                {st.error}
+              </div>
+            )}
+
+            {st.phase === 'idle' && (
+              <button
+                data-testid={`btn-assign-packing-${codeTid}-${tid}`}
+                onClick={() => ss(design, { phase: 'confirm', error: null })}
+                style={{ marginTop: 4, background: 'var(--card)', color: 'var(--text)',
+                         border: '1px solid var(--border)', borderRadius: 4,
+                         fontSize: 12, padding: '4px 10px', cursor: 'pointer' }}>
+                {`Assign ${productCode} to ${design}…`}
+              </button>
+            )}
+
+            {st.phase === 'confirm' && (
+              <div data-testid={`unassigned-packing-confirm-${codeTid}-${tid}`}
+                   style={{ padding: '8px 10px', border: '1px solid var(--border)',
+                            borderRadius: 6, background: 'var(--bg)', marginTop: 4 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>
+                  {'Confirm packing identity'}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-2, var(--text))', marginBottom: 8 }}>
+                  {'Stamp product_code '}
+                  <strong style={{ fontFamily: 'monospace' }}>{productCode}</strong>
+                  {` onto the ${count} unassigned packing piece${count === 1 ? '' : 's'} for design `}
+                  <strong style={{ fontFamily: 'monospace' }}>{design}</strong>
+                  {'. This makes the real piece(s) countable so the over-bill gate re-checks on true data. It does not create availability or change quantity.'}
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    data-testid={`btn-confirm-assign-packing-${codeTid}-${tid}`}
+                    onClick={() => doAssign(design, count)}
+                    style={{ background: 'var(--accent, #c9a456)', color: '#1a1a1a',
+                             border: 'none', borderRadius: 4, fontSize: 12, fontWeight: 700,
+                             padding: '4px 12px', cursor: 'pointer' }}>
+                    {`Yes, assign to ${count} piece${count === 1 ? '' : 's'}`}
+                  </button>
+                  <button
+                    data-testid={`btn-cancel-assign-packing-${codeTid}-${tid}`}
+                    onClick={() => ss(design, { phase: 'idle', error: null })}
+                    style={{ background: 'var(--card)', color: 'var(--text)',
+                             border: '1px solid var(--border)', borderRadius: 4,
+                             fontSize: 12, padding: '4px 10px', cursor: 'pointer' }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {st.phase === 'assigning' && (
+              <span style={{ fontSize: 11, color: 'var(--text-2, var(--text))' }}>
+                {'⏳ Assigning product_code…'}
+              </span>
+            )}
+
+            {st.phase === 'assigned' && (
+              <span data-testid={`unassigned-packing-assigned-${codeTid}-${tid}`}
+                    style={{ fontSize: 11, color: 'var(--badge-green-text, green)', fontWeight: 600 }}>
+                {'✓ Assigned — readiness reloading…'}
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Blocker panel — consolidated "what's blocking" list ───────────────────────
 function ProformaBlockerPanel({ postBlockers, approveBlockers }) {
   const seen = new Set();
@@ -2479,7 +2603,7 @@ function ProformaReadinessPanel({
   readinessPost, linesByCode,
   resolvingDesign, resolveError, doResolveAmbiguity,
   savingVat, vatSaveError, doSaveEuVat,
-  draftLines, reloadReadiness,
+  draftLines, reloadReadiness, draftId,
   blockerPanelReasons,  // Set<string> — reasons already shown by ProformaBlockerPanel (Slice 5 dedup)
 }) {
   // Slice 5: filter out blocker entries whose reason text is already rendered by
@@ -2652,6 +2776,14 @@ function ProformaReadinessPanel({
                        style={{ fontSize: 10, color: 'var(--text)', opacity: 0.65, marginTop: 2, fontFamily: 'monospace' }}>
                     {designs.slice(0, 12).join(', ')}{designs.length > 12 ? ` +${designs.length - 12} more` : ''}
                   </div>
+                )}
+                {over && (d.unassigned_packing || []).length > 0 && (
+                  <UnassignedPackingAssigner
+                    draftId={draftId}
+                    productCode={d.product_code}
+                    unassignedPacking={d.unassigned_packing}
+                    reloadReadiness={reloadReadiness}
+                  />
                 )}
               </div>
             );
@@ -4617,6 +4749,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         doSaveEuVat={doSaveEuVat}
         draftLines={liveDraft.editable_lines || []}
         reloadReadiness={reloadReadiness}
+        draftId={liveDraft.id || (draft && draft.id)}
         blockerPanelReasons={blockerPanelReasons}
       />
 

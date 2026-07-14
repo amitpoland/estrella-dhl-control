@@ -817,6 +817,94 @@ def upsert_packing_lines(
     return inserted
 
 
+def assign_product_code_to_unassigned_design(
+    batch_id: str,
+    design_no: str,
+    product_code: str,
+    *,
+    expected_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Stamp *product_code* onto packing rows that carry *design_no* but have NO
+    product_code yet — the operator-confirmation repair for the over-bill
+    ``unassigned_by_design`` evidence (e.g. SHIPMENT_8341809162: design JR07550 →
+    EJL/26-27/380-1, whose packing rows arrived design-only with a blank code).
+
+    This is the canonical single-purpose product_code assignment writer for
+    ``packing_lines``. It ONLY touches rows where ``product_code`` IS NULL/'' AND
+    the trimmed ``design_no`` matches AND ``batch_id`` matches. It never
+    re-stamps an already-assigned row, never invents rows, never changes
+    quantity, and never picks a code on its own — the caller supplies the exact
+    (design → product_code) identity the operator confirmed. ``scan_code`` is
+    recomputed for each stamped row so the barcode identity stays consistent with
+    the bulk write path.
+
+    Safety / idempotency:
+      * ``expected_count`` — when provided, the number of currently-unassigned
+        matching rows MUST equal it; otherwise the write is REFUSED with
+        ``ValueError`` (TOCTOU guard: the operator confirmed a specific piece
+        count, so a changed row set must not be silently over/under-stamped).
+      * The write is all-or-nothing within a single connection: either every
+        matched row is stamped or none is (the ``expected_count`` check runs
+        before any UPDATE).
+
+    Returns::
+        {"assigned": int,            # rows stamped this call
+         "matched": int,             # unassigned rows found (== assigned on success)
+         "already_assigned_to": [product_code, …],  # codes already on this design's rows
+         "row_ids": [id, …]}         # ids stamped this call
+
+    A second call finds 0 unassigned rows → returns ``assigned=0`` (no error when
+    ``expected_count`` is None), which the caller treats as an idempotent no-op.
+    """
+    if _db_path is None:
+        raise RuntimeError("packing_db not initialised — call init_packing_db() first")
+    bid = str(batch_id or "").strip()
+    dsn = str(design_no or "").strip()
+    pc  = str(product_code or "").strip()
+    if not bid or not dsn or not pc:
+        raise ValueError("batch_id, design_no and product_code are all required")
+    now = _now_iso()
+    with _lock:
+        with _connect() as con:
+            # All rows for this design in this batch, split by assignment state.
+            rows = con.execute(
+                """SELECT * FROM packing_lines
+                   WHERE batch_id=? AND TRIM(design_no)=?""",
+                (bid, dsn),
+            ).fetchall()
+            unassigned = [r for r in rows
+                          if not str(r["product_code"] or "").strip()]
+            already = sorted({str(r["product_code"]).strip()
+                              for r in rows
+                              if str(r["product_code"] or "").strip()})
+            matched = len(unassigned)
+            if expected_count is not None and matched != int(expected_count):
+                # No partial stamp — the operator confirmed a specific count.
+                raise ValueError(
+                    f"expected {int(expected_count)} unassigned packing piece(s) "
+                    f"for design {dsn!r} in batch {bid!r}, found {matched} — "
+                    "re-check readiness before assigning (no partial stamp)"
+                )
+            row_ids: List[str] = []
+            for r in unassigned:
+                line = dict(r)
+                line["product_code"] = pc
+                scan_code = _compute_scan_code(line)
+                con.execute(
+                    """UPDATE packing_lines
+                       SET product_code=?, scan_code=?, updated_at=?
+                       WHERE id=?""",
+                    (pc, scan_code or None, now, r["id"]),
+                )
+                row_ids.append(str(r["id"]))
+    return {
+        "assigned":            len(row_ids),
+        "matched":             matched,
+        "already_assigned_to": already,
+        "row_ids":             row_ids,
+    }
+
+
 def get_line_counts_for_batch(batch_id: str) -> Dict[str, int]:
     """
     Return ``{packing_document_id: line_count}`` for all documents in *batch_id*.
