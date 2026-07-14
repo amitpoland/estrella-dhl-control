@@ -5180,11 +5180,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           docType={previewDocType}
           onDocTypeChange={setPreviewDocType}
           onClose={() => setShowPreview(false)}
-          onEditRequest={() => {
+          onEditRequest={canEdit ? () => {
             setShowPreview(false);
             setActiveTab('overview');
             handleEnterEdit();
-          }}
+          } : undefined}
         />
       )}
       {showCancelModal && (
@@ -5937,6 +5937,7 @@ const CM_SRC_BADGE = {
   saved:     { label: 'Saved on draft',                 bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
   suggested: { label: 'Suggested from Customer Master',  bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
   conflict:  { label: 'Conflict',                        bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+  advisory:  { label: 'Advisory — VAT resolved at posting', bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
   missing:   { label: 'Missing',                         bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
 };
 
@@ -5987,6 +5988,7 @@ function CustomerMasterSuggestions({ suggestions, draftId, updatedAt, onReload }
     (sug.fields || []).forEach(f => {
       const applyKey = _CM_APPLY_KEY_MAP[f.key];
       if (!applyKey) return;                         // not applicable
+      if (f.applicable === false) return;            // advisory-only (e.g. derived VAT hint) — never selectable/submitted
       if (f.source === 'suggested') state[applyKey] = true;
       if (f.source === 'conflict')  state[applyKey] = false;
     });
@@ -6095,7 +6097,7 @@ function CustomerMasterSuggestions({ suggestions, draftId, updatedAt, onReload }
               </div>
               {(sug.fields || []).map(f => {
                 const applyKey = _CM_APPLY_KEY_MAP[f.key];
-                const applicable = !!applyKey && (f.source === 'suggested' || f.source === 'conflict');
+                const applicable = !!applyKey && f.applicable !== false && (f.source === 'suggested' || f.source === 'conflict');
                 const isSaved    = f.source === 'saved';
                 return (
                   <div key={f.key}

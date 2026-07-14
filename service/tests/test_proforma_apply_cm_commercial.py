@@ -315,3 +315,99 @@ def test_persisted_values_survive_reload(api_client, tmp_storage):
 
     assert ins is not None, "insurance charge not found after reload"
     assert ins.get("wfirma_service_id") == _CM_INS_SVC_ID
+
+
+# ── VAT/WDT applicability — Preview and Apply must agree ─────────────────────
+# The Preview may show a DERIVED EU/WDT hint (cm_vat_hint) for context, but only
+# an EXPLICIT stored customer_master.vat_mode is a persistable default the
+# apply-customer-commercial command writes. A derived-only hint must be
+# advisory (not selectable, never submitted); a stored override must apply.
+
+def _clear_cm_vat_mode(tmp: Path) -> None:
+    """Remove the explicit stored vat_mode override on the seeded CM."""
+    with sqlite3.connect(str(tmp / "customer_master.sqlite")) as con:
+        con.execute("UPDATE customer_master SET vat_mode='' WHERE bill_to_contractor_id=?", (CID,))
+        con.commit()
+
+
+class TestCmFieldApplicable:
+    """_cm_field applicability contract (pure unit — no I/O)."""
+
+    def test_applicable_false_suggested_becomes_advisory(self):
+        from app.api.routes_proforma import _cm_field
+        row = _cm_field("vat_wdt", "VAT / WDT", None, "WDT", applicable=False)
+        assert row["applicable"] is False
+        assert row["source"] == "advisory", "derived (non-stored) default must be advisory, not 'suggested'"
+
+    def test_applicable_true_suggested_stays_selectable(self):
+        from app.api.routes_proforma import _cm_field
+        row = _cm_field("vat_wdt", "VAT / WDT", None, "WDT", applicable=True)
+        assert row.get("applicable") is not False
+        assert row["source"] == "suggested"
+
+    def test_default_applicable_true(self):
+        from app.api.routes_proforma import _cm_field
+        row = _cm_field("k", "l", None, "v")
+        assert row.get("applicable") is not False
+        assert row["source"] == "suggested"
+
+    def test_applicable_false_does_not_relabel_conflict_or_saved(self):
+        from app.api.routes_proforma import _cm_field
+        # conflict (both present, differ) must remain conflict even if not applicable
+        row = _cm_field("vat_wdt", "VAT / WDT", "PL", "WDT", applicable=False)
+        assert row["source"] == "conflict"
+
+
+class TestVatWdtProjection:
+    """Suggestion projection: stored vat_mode = applicable; derived-only = advisory."""
+
+    def test_stored_vat_mode_is_applicable_suggestion(self, api_client, tmp_storage):
+        draft_id = _seed_draft(tmp_storage)          # CM seeded with vat_mode='wdt'
+        d = _get_draft(api_client, draft_id)
+        vat = next(f for f in d["customer_master_suggestions"]["fields"] if f["key"] == "vat_wdt")
+        assert vat.get("applicable") is not False, "stored vat_mode must be an applicable default"
+        assert vat["source"] in ("suggested", "conflict")
+        assert (vat["suggestion"] or "").lower() == _CM_VAT_MODE  # shows the STORED value apply persists
+
+    def test_derived_only_vat_hint_is_advisory(self, api_client, tmp_storage):
+        _clear_cm_vat_mode(tmp_storage)              # no explicit override
+        with patch("app.api.routes_proforma.wfirma_client.resolve_vat_context_from_master",
+                   return_value={"vat_code": "WDT", "blocked": False}):
+            draft_id = _seed_draft(tmp_storage)
+            d = _get_draft(api_client, draft_id)
+        vat = next(f for f in d["customer_master_suggestions"]["fields"] if f["key"] == "vat_wdt")
+        assert vat.get("applicable") is False, "derived-only VAT/WDT must be advisory, not selectable"
+        assert vat["source"] == "advisory"
+        assert vat["suggestion"] == "WDT"            # derived hint still shown for context
+
+
+class TestVatWdtApply:
+    """Apply honours the authority split: stored applies; derived is a no-op."""
+
+    def test_stored_vat_mode_applies(self, api_client, tmp_storage):
+        draft_id = _seed_draft(tmp_storage)
+        d = _get_draft(api_client, draft_id)
+        r = _apply(api_client, draft_id, ["vat_mode"], d["updated_at"])
+        assert r.status_code == 200, r.text
+        assert (_get_draft(api_client, draft_id).get("vat_code") or "").lower() == _CM_VAT_MODE
+
+    def test_derived_vat_not_invented_on_apply(self, api_client, tmp_storage):
+        _clear_cm_vat_mode(tmp_storage)
+        draft_id = _seed_draft(tmp_storage)
+        d = _get_draft(api_client, draft_id)
+        # Selecting only vat_mode when no explicit override exists = nothing to apply.
+        r = _apply(api_client, draft_id, ["vat_mode"], d["updated_at"])
+        assert r.status_code == 400, r.text
+        assert _get_draft(api_client, draft_id).get("vat_code") is None
+
+    def test_freight_insurance_unchanged_when_vat_cleared(self, api_client, tmp_storage):
+        _clear_cm_vat_mode(tmp_storage)
+        draft_id = _seed_draft(tmp_storage)
+        d = _get_draft(api_client, draft_id)
+        r = _apply(api_client, draft_id, ["freight_service_id", "insurance_rate", "insurance_service_id"], d["updated_at"])
+        assert r.status_code == 200, r.text
+        reloaded = _get_draft(api_client, draft_id)
+        assert reloaded.get("vat_code") is None      # VAT untouched
+        charges = reloaded.get("service_charges") or []
+        assert next((c for c in charges if c.get("charge_type") == "freight"), None) is not None
+        assert next((c for c in charges if c.get("charge_type") == "insurance"), None) is not None

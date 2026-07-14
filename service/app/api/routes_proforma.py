@@ -4261,13 +4261,22 @@ def _cm_values_equal(a, b) -> bool:
         return str(a).strip().lower() == str(b).strip().lower()
 
 
-def _cm_field(key: str, label: str, draft_val, cm_val) -> Dict[str, Any]:
+def _cm_field(key: str, label: str, draft_val, cm_val,
+              applicable: bool = True) -> Dict[str, Any]:
     """Build one suggestion row with an honest SOURCE label.
 
     saved     — the draft carries a value (authoritative snapshot).
     suggested — draft empty, Customer Master offers a default.
     conflict  — both present and they DIFFER (draft wins; CM shown alongside).
     missing   — neither side has a value.
+    advisory  — the Customer Master value is DERIVED context (e.g. a VAT/WDT
+                hint), not an operator-maintained stored default; shown for
+                information but NOT selectable and never submitted to apply.
+
+    ``applicable=False`` marks a row whose Customer Master value the
+    apply-customer-commercial command cannot persist (no explicit stored
+    default). Such a row is display-only: no checkbox, never default-selected,
+    never sent. This keeps Preview and Apply in agreement about applicability.
 
     Never chooses between draft and CM; only labels what each holds.
     """
@@ -4280,8 +4289,16 @@ def _cm_field(key: str, label: str, draft_val, cm_val) -> Dict[str, Any]:
         source = "suggested"
     else:
         source = "missing"
-    return {"key": key, "label": label,
-            "draft": dv, "suggestion": sv, "source": source}
+    row = {"key": key, "label": label,
+           "draft": dv, "suggestion": sv, "source": source}
+    if not applicable:
+        row["applicable"] = False
+        # A derived (non-stored) default is advisory context — the apply
+        # command reads only the explicit stored value, so never present it as
+        # a selectable "suggested" default.
+        if source == "suggested":
+            row["source"] = "advisory"
+    return row
 
 
 def _customer_master_suggestions(d: "pildb.ProformaDraft",
@@ -4337,8 +4354,15 @@ def _customer_master_suggestions(d: "pildb.ProformaDraft",
         cm_ins_amt = (cm.insurance_fixed_amount_usd if cur == "USD"
                       else cm.insurance_fixed_amount_eur)
 
-        # VAT/WDT hint — best-effort context from the master; falls back to the
-        # raw vat_mode. Advisory only; never blocks, never writes.
+        # VAT/WDT — two distinct authorities, kept honest:
+        #  • cm_vat_stored: the EXPLICIT operator-maintained override the apply
+        #    command persists (mirrors apply-customer-commercial's read:
+        #    ``(cm.vat_mode or "").strip()``). Applicable + selectable.
+        #  • cm_vat_hint: the DERIVED EU/WDT context. Advisory only — the apply
+        #    command never persists it; final VAT is resolved at posting.
+        # When a stored override exists it is the applicable default (show that
+        # value so Preview == Apply); otherwise the derived hint is advisory.
+        cm_vat_stored = ("" if cm.vat_mode is None else str(cm.vat_mode)).strip()
         cm_vat_hint = None
         try:
             _r = wfirma_client.resolve_vat_context_from_master(cm)
@@ -4346,8 +4370,10 @@ def _customer_master_suggestions(d: "pildb.ProformaDraft",
                 cm_vat_hint = _r.get("vat_code") or _r.get("vat_context")
         except Exception:
             cm_vat_hint = None
-        if cm_vat_hint is None and cm.vat_mode is not None:
-            cm_vat_hint = str(cm.vat_mode)
+        if cm_vat_hint is None and cm_vat_stored:
+            cm_vat_hint = cm_vat_stored
+        vat_applicable = bool(cm_vat_stored)
+        vat_suggestion = cm_vat_stored if vat_applicable else cm_vat_hint
 
         fields = [
             _cm_field("customer_name", "Customer name",
@@ -4365,7 +4391,7 @@ def _customer_master_suggestions(d: "pildb.ProformaDraft",
                       None, eff.get("default_language_id")),
             _cm_field("vat_wdt", "VAT / WDT",
                       full.get("vat_code") or full.get("vat_context"),
-                      cm_vat_hint),
+                      vat_suggestion, applicable=vat_applicable),
             _cm_field("freight_amount", "Freight amount",
                       fr.get("amount"), cm_freight_amt),
             _cm_field("freight_service_id", "Freight service ID",

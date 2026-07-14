@@ -268,3 +268,85 @@ class TestSlice5BlockerDedup:
         assert count == 1, (
             f"ProductMappingResolver must appear exactly once in the source; found {count}"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Warn-fix action honesty — the edit-link is only active when the draft is
+# editable (canEdit), so an "active" button never silently no-ops.
+# Root cause fixed: handleEnterEdit() returns early when !canEdit, which made
+# the warn-fix buttons appear clickable but do nothing during the transient
+# canEdit-false window (post-apply reload) or on non-editable drafts.
+# Fix: pass onEditRequest only when canEdit; the buttons already guard on
+# `onEditRequest &&`, so they self-suppress (warning still shows as text).
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestWarnFixCanEditGating:
+    """The Preview warn-fix edit-links are gated on canEdit (honest + deterministic)."""
+
+    def test_onEditRequest_passed_only_when_canEdit(self):
+        """ProformaPreviewModal receives onEditRequest only when canEdit is true."""
+        text = src()
+        assert "onEditRequest={canEdit ?" in text, (
+            "onEditRequest must be gated on canEdit so the warn-fix buttons never "
+            "render as active when the draft is not editable"
+        )
+        # The false branch must yield undefined (which the buttons' `onEditRequest &&`
+        # guard treats as 'no active link').
+        assert re.search(r"onEditRequest=\{canEdit \?[\s\S]{0,200}\}\s*:\s*undefined\}", text), (
+            "When canEdit is false, onEditRequest must be undefined so the buttons self-suppress"
+        )
+
+    def test_warn_fix_buttons_guard_on_onEditRequest(self):
+        """Both warn-fix buttons only render when onEditRequest is truthy."""
+        text = src()
+        assert "w.code === 'NO_FX_RATE' && onEditRequest &&" in text, (
+            "NO_FX_RATE warn-fix button must guard on onEditRequest (absent when canEdit false)"
+        )
+        assert "w.code === 'NO_ISSUE_DATE' && onEditRequest &&" in text, (
+            "NO_ISSUE_DATE warn-fix button must guard on onEditRequest (absent when canEdit false)"
+        )
+
+    def test_warn_fix_click_uses_existing_edit_request_not_a_writer(self):
+        """warn-fix onClick invokes onClose()+onEditRequest() — no PzApi write/patch call."""
+        text = src()
+        # The button onClick must be the established edit-request handoff, not a new write.
+        assert text.count("onClick={() => { onClose(); onEditRequest(); }}") >= 2, (
+            "Both warn-fix buttons must invoke onClose()+onEditRequest() (existing edit path)"
+        )
+        # onEditRequest itself must call handleEnterEdit (existing edit mode), not a writer.
+        assert re.search(
+            r"onEditRequest=\{canEdit \?[\s\S]{0,200}handleEnterEdit\(\);[\s\S]{0,40}\}\s*:\s*undefined\}",
+            text,
+        ), "onEditRequest must call the existing handleEnterEdit, not create a new writer"
+        # Negative: the warn-fix buttons must not call an apply/patch/save writer directly.
+        for bad in ("applyCustomerCommercial", "patchDraft", "addServiceCharge", "apply-customer-commercial"):
+            assert f"onClick={{() => {{ onClose(); {bad}" not in text, (
+                f"warn-fix onClick must not call a writer ({bad})"
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VAT/WDT applicability — a derived (non-stored) VAT hint is advisory-only:
+# rendered for context but never given a selection checkbox and never submitted.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVatWdtAdvisoryRendering:
+    """Frontend honours the backend `applicable:false` contract (no checkbox)."""
+
+    def test_initial_checked_skips_non_applicable(self):
+        text = src()
+        assert "if (f.applicable === false) return;" in text, (
+            "_initialChecked must never default-select a non-applicable (advisory) field"
+        )
+
+    def test_row_checkbox_gated_on_applicable(self):
+        text = src()
+        assert "!!applyKey && f.applicable !== false && (f.source === 'suggested' || f.source === 'conflict')" in text, (
+            "the row 'applicable' flag must exclude fields the backend marks applicable:false"
+        )
+
+    def test_advisory_source_badge_exists(self):
+        text = src()
+        assert "advisory:" in text and "resolved at posting" in text.lower(), (
+            "an 'advisory' source badge must exist so a derived VAT hint reads as advisory, not 'suggested'"
+        )
