@@ -402,7 +402,7 @@ function Card({ children, style, onClick, 'data-testid': testid }) {
 // _excluded global-hoist collision (DECISIONS "V2-wide spread-rest collision
 // sweep") forbids `...rest` in V2 JSX; the census confirms these three attrs
 // are the complete forwarded set.
-function Btn({ children, onClick, variant = 'default', small, disabled, style: extraStyle, 'data-testid': testid, title, 'aria-label': ariaLabel }) {
+function Btn({ children, onClick, variant = 'default', small, disabled, style: extraStyle, 'data-testid': testid, title, 'aria-label': ariaLabel, 'data-action-state': actionState, 'data-backend-route': backendRoute }) {
   const variants = {
     default: { background: 'var(--text)', color: 'var(--card)', border: '1px solid var(--text)' },
     // `primary` = alias for gold/accent (C20A parity with the Btn in v2/dashboard-shared.js).
@@ -416,7 +416,7 @@ function Btn({ children, onClick, variant = 'default', small, disabled, style: e
   };
   const v = variants[variant] || variants.default;
   return (
-    <button onClick={onClick} disabled={disabled} data-testid={testid} title={title} aria-label={ariaLabel} style={{
+    <button onClick={onClick} disabled={disabled} data-testid={testid} title={title} aria-label={ariaLabel} data-action-state={actionState} data-backend-route={backendRoute} style={{
       ...v, borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer',
       padding: small ? '4px 10px' : '7px 14px',
       fontSize: small ? 11 : 12, fontWeight: 600,

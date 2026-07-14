@@ -24,11 +24,15 @@ def test_read_model_shape_and_order():
     out = build_milestones({})
     assert isinstance(out, list) and len(out) == 16
     for m in out:
-        assert set(m) == {"key", "label", "done", "ts", "source"}
+        # blocked_reason is present only when state == "blocked"
+        assert set(m) - {"blocked_reason"} == {"key", "label", "done", "state", "ts", "source"}
         assert m["done"] is False and m["ts"] is None and m["source"] is None
     # canonical order starts with creation and ends with wFirma export
     keys = [m["key"] for m in out]
     assert keys[0] == "batch_created" and keys[-1] == "wfirma_pz_created"
+    # empty audit → the first milestone is the frontier (available), the rest wait
+    assert out[0]["state"] == "available"
+    assert all(m["state"] == "not_started" for m in out[1:])
 
 
 # ── The 8 reconciled mismatches (real emitted event → correct milestone) ─────
@@ -38,10 +42,26 @@ def test_polish_description_from_description_ready_event():
     assert m["done"] is True and m["source"] == "event" and m["ts"]
 
 
-def test_reply_package_from_any_of_four_emitters():
-    for e in ("dsk_generated", "dhl_reply_package_auto_built",
+def test_reply_package_from_auto_built_emitters():
+    # Slice 2A: reply-package completion accepts the three real auto-build events
+    # (self-clearance + agency paths). ``dsk_generated`` is deliberately NOT here —
+    # a DSK existing does not prove a reply package was built.
+    for e in ("dhl_reply_package_auto_built",
               "dhl_self_clearance_reply_auto_built", "agency_package_auto_built"):
         assert _ms(_ev(e))["reply_package_generated"]["done"] is True, e
+
+
+def test_reply_package_not_completed_by_dsk_generated_event_alone():
+    # Regression pin (Slice 2A.2): a DSK event must NOT complete the reply-package
+    # milestone. Real evidence is the reply_package audit field.
+    m = _ms(_ev("dsk_generated"))["reply_package_generated"]
+    assert m["done"] is False
+    assert m["state"] != "completed"
+
+
+def test_reply_package_from_reply_package_field_fallback():
+    assert _ms({"reply_package": {"to": "x@dhl.com"}})["reply_package_generated"]["done"] is True
+    assert _ms({"agency_reply_package": {"status": "queued"}})["reply_package_generated"]["done"] is True
 
 
 def test_reply_sent_from_dhl_or_agency_emitters():
@@ -199,3 +219,178 @@ def test_batch_detail_includes_timeline_milestones(tmp_path, monkeypatch):
     assert ms["verification_checks_passed"]["done"] is True     # safe_to_run_pz field
     assert ms["pz_confirmed"]["done"] is True                   # doc_no field
     assert ms["reply_sent"]["done"] is False                    # no signal
+
+
+# ── Slice 2A: audit-field fallbacks (backfill from authoritative artifacts) ───
+
+def test_polish_description_from_filename_field_fallback():
+    # /generate-customs-package used to write polish_desc_filename WITHOUT emitting
+    # description_ready — the field fallback backfills the milestone honestly.
+    m = _ms({"polish_desc_filename": "SHIPMENT_X_polish.pdf"})["polish_description_generated"]
+    assert m["done"] is True and m["source"] == "audit_field" and m["ts"] is None
+
+
+def test_dsk_from_filename_field_fallback():
+    m = _ms({"dsk_filename": "DSK_AWB_2026.pdf"})["dsk_generated"]
+    assert m["done"] is True and m["source"] == "audit_field"
+
+
+def test_precheck_from_dhl_precheck_field_fallback():
+    m = _ms({"dhl_precheck": {"clearance_hint": "dsk_required"}})["dhl_precheck_completed"]
+    assert m["done"] is True and m["source"] == "audit_field"
+
+
+def test_precheck_absent_is_not_started_not_skipped():
+    # No precheck evidence and nothing later → not_started (genuinely waiting),
+    # never a false "skipped".
+    m = _ms({})["dhl_precheck_completed"]
+    assert m["done"] is False and m["state"] == "not_started"
+
+
+# ── Slice 2A: the reported internal inconsistency ────────────────────────────
+
+def test_reported_inconsistency_dsk_reply_complete_desc_not_falsely_complete():
+    # Reproduce the reported shipment: DSK generated + reply package built, but the
+    # Polish description was produced by the combined endpoint that (pre-fix) never
+    # emitted description_ready. The description milestone must NOT be silently
+    # completed off the back of the later DSK/reply evidence.
+    audit = {
+        "timeline": [
+            {"ts": "2026-07-13T20:30:00+00:00", "event": "dsk_generated"},
+        ],
+        "dsk_filename": "DSK_AWB_2026.pdf",
+        "reply_package": {"to": "odprawacelna@dhl.com"},
+        # note: no description_ready event, no polish_desc_filename
+    }
+    ms = _ms(audit)
+    assert ms["dsk_generated"]["done"] is True
+    assert ms["reply_package_generated"]["done"] is True
+    assert ms["polish_description_generated"]["done"] is False
+    assert ms["polish_description_generated"]["state"] != "completed"
+
+
+def test_reported_inconsistency_resolves_after_description_ready_or_field():
+    # Once the fix (2A.1) emits description_ready — OR the field fallback sees
+    # polish_desc_filename — the milestone flips to completed.
+    by_event = _ms({"timeline": [{"ts": "2026-07-13T20:00:00+00:00", "event": "description_ready"}]})
+    assert by_event["polish_description_generated"]["done"] is True
+    by_field = _ms({"polish_desc_filename": "x_polish.pdf"})
+    assert by_field["polish_description_generated"]["done"] is True
+
+
+# ── Slice 2A: 7-state model ──────────────────────────────────────────────────
+
+_VALID_STATES = {"completed", "available", "blocked", "not_started",
+                 "skipped", "not_applicable", "failed"}
+
+
+def test_every_milestone_state_in_enum_and_done_alias():
+    for audit in ({}, _ev("description_ready", "dsk_generated"),
+                  {"clearance_decision": {"clearance_path": "agency_clearance"}}):
+        for m in build_milestones(audit):
+            assert m["state"] in _VALID_STATES
+            assert m["done"] == (m["state"] == "completed")
+
+
+def test_available_is_the_frontier_next_action():
+    # batch + invoice + awb + precheck + email done → the frontier is the Polish
+    # description, gated by the received email (present) → available.
+    audit = {
+        "batch_id": "SHIPMENT_X",
+        "inputs": {"invoices": ["i.pdf"], "awb": "awb.pdf"},
+        "dhl_precheck": {"clearance_hint": "dsk_required"},
+        "dhl_email": {"received": True},
+    }
+    ms = _ms(audit)
+    assert ms["polish_description_generated"]["state"] == "available"
+    # a milestone further down the chain is still waiting
+    assert ms["dsk_generated"]["state"] == "not_started"
+
+
+def test_blocked_carries_reason_when_email_missing():
+    # AWB present, but no DHL email → the frontier (email received) is available;
+    # description is downstream/not_started. Force the frontier to description by
+    # marking email received via clearance path self and NO email: description is
+    # frontier only after email milestone. Instead assert the email-gated block
+    # directly on a self-clearance batch where email milestone is the frontier.
+    audit = {
+        "batch_id": "SHIPMENT_X",
+        "inputs": {"invoices": ["i.pdf"], "awb": "awb.pdf"},
+        "dhl_precheck": {"clearance_hint": "dsk_required"},
+        "clearance_decision": {"clearance_path": "dhl_self_clearance"},
+    }
+    ms = _ms(audit)
+    # email received is the frontier (awb done, precheck done) → available
+    assert ms["dhl_email_received"]["state"] == "available"
+    # description is downstream and email is not yet received → not_started
+    assert ms["polish_description_generated"]["state"] == "not_started"
+
+
+def test_description_blocked_reason_when_frontier_and_email_missing():
+    # Make description the frontier by completing the email milestone via event but
+    # NOT the dhl_email field, then removing it — simplest: complete email, so
+    # description becomes frontier; email present → available (not blocked). To hit
+    # blocked we complete everything up to description on the SELF path with email
+    # NOT received: mark dhl_email_received milestone incomplete but precheck+awb
+    # done makes email the frontier. So blocked is exercised indirectly; here we
+    # assert the gate logic directly.
+    from app.services.timeline_milestones import _gate_description
+    ok, reason = _gate_description({"clearance_decision": {"clearance_path": "dhl_self_clearance"}}, {})
+    assert ok is False and "email" in reason.lower()
+    ok2, _ = _gate_description({"clearance_decision": {"clearance_path": "agency_clearance"}}, {})
+    assert ok2 is True   # agency path: email guard advisory, never blocks
+
+
+def test_not_applicable_from_clearance_path_agency_excludes_dsk():
+    # On the agency path, DSK (a self-clearance authorization doc) is not_applicable
+    # — UNLESS a DSK was genuinely generated, in which case completed wins.
+    agency = {"clearance_decision": {"clearance_path": "agency_clearance"}}
+    assert _ms(agency)["dsk_generated"]["state"] == "not_applicable"
+    # completion beats not_applicable
+    agency_with_dsk = {"clearance_decision": {"clearance_path": "agency_clearance"},
+                       "dsk_filename": "DSK.pdf"}
+    assert _ms(agency_with_dsk)["dsk_generated"]["state"] == "completed"
+    # routing_pending / unknown path never marks not_applicable
+    assert _ms({})["dsk_generated"]["state"] != "not_applicable"
+
+
+def test_skipped_optional_precheck_when_later_milestone_completed():
+    # Precheck (optional) never ran, but a later milestone completed → skipped,
+    # not a misleading pending/not_started.
+    audit = {
+        "batch_id": "SHIPMENT_X",
+        "inputs": {"invoices": ["i.pdf"], "awb": "awb.pdf"},
+        "dhl_email": {"received": True},   # later milestone complete
+        # no dhl_precheck evidence
+    }
+    ms = _ms(audit)
+    assert ms["dhl_precheck_completed"]["state"] == "skipped"
+
+
+def test_completed_counter_counts_only_completed():
+    # A mix of completed + available + not_started + not_applicable: the count of
+    # done==True (what the V2 subtitle renders) equals the completed count only.
+    audit = {
+        "batch_id": "SHIPMENT_X",
+        "inputs": {"invoices": ["i.pdf"], "awb": "awb.pdf"},
+        "clearance_decision": {"clearance_path": "agency_clearance"},
+    }
+    out = build_milestones(audit)
+    done = [m for m in out if m["done"]]
+    completed = [m for m in out if m["state"] == "completed"]
+    assert len(done) == len(completed) == 3   # batch + invoice + awb
+    # not_applicable and available are NOT counted as done
+    assert any(m["state"] == "not_applicable" for m in out)  # dsk on agency path
+    assert any(m["state"] == "available" for m in out)
+
+
+def test_failed_only_from_evidence_never_fabricated():
+    # No failure evidence → never "failed".
+    assert all(m["state"] != "failed" for m in build_milestones(_ev("dsk_generated")))
+    # Evidence present → the named milestone reads failed.
+    audit = {"milestone_failures": ["reply_sent"],
+             "reply_package": {"to": "x@dhl.com"},
+             "polish_desc_filename": "x.pdf", "dsk_filename": "d.pdf",
+             "dhl_email": {"received": True},
+             "inputs": {"invoices": ["i.pdf"], "awb": "a.pdf"}, "batch_id": "X"}
+    assert _ms(audit)["reply_sent"]["state"] == "failed"

@@ -1037,6 +1037,80 @@
     getDhlFollowupStatus: () =>
       _get(`${BASE}/dhl/followup-automation/status`),
 
+    // ── DHL live tracking (carrier status) — read ───────────────────
+    // GET /api/v1/tracking/{tracking_no}?carrier=&batch_id=&refresh=
+    // Authority: tracking_service.get_tracking_status. Caches per-batch; gated by
+    // DHL_TRACKING_API_STATUS (default "pending" → fallback, NO live DHL call).
+    // Never raises server-side — returns { available, ok, status, status_label,
+    // last_event, last_location, last_update, source, tracking_url, ... }.
+    getDhlTracking: (trackingNo, batchId, opts = {}) => {
+      const qs = new URLSearchParams();
+      if (batchId)      qs.set('batch_id', batchId);
+      if (opts.carrier) qs.set('carrier', opts.carrier);
+      if (opts.refresh) qs.set('refresh', 'true');
+      const q = qs.toString();
+      return _get(`${BASE}/tracking/${encodeURIComponent(trackingNo)}${q ? '?' + q : ''}`);
+    },
+
+    // POST /api/v1/tracking/{tracking_no}/refresh?batch_id=
+    // Forces a fresh carrier read + patches audit.tracking under the batch lock.
+    // get_current_user (session) auth — no X-Operator, no operator prompt.
+    refreshDhlTracking: (trackingNo, batchId) => {
+      const q = batchId ? `?batch_id=${encodeURIComponent(batchId)}` : '';
+      return _post(`${BASE}/tracking/${encodeURIComponent(trackingNo)}/refresh${q}`);
+    },
+
+    // ── DHL correspondence commands (same backend authority as the DHL Console) ─
+    // Wired so the canonical V2 Shipment Detail page can run the proven follow-up
+    // workflow without leaving the shipment context. Send stays confirmation-gated
+    // in the UI; none of these fire wFirma / PZ / accounting / inventory writes.
+
+    // GET /api/v1/dhl/scan-inbox?batch_id=&refresh=  (require_api_key)
+    // Reads the mailbox; auto-sets dhl_email.received + emits dhl_email_received
+    // when a DHL customs sender email is matched for an active batch.
+    scanDhlInbox: (batchId, opts = {}) => {
+      const qs = new URLSearchParams();
+      if (batchId)      qs.set('batch_id', batchId);
+      if (opts.refresh) qs.set('refresh', 'true');
+      const q = qs.toString();
+      return _get(`${BASE}/dhl/scan-inbox${q ? '?' + q : ''}`);
+    },
+
+    // POST /api/v1/dhl/mark-email-received/{batch_id}  (admin/logistics)
+    markDhlEmailReceived: (batchId, body = {}) =>
+      _postM(`${BASE}/dhl/mark-email-received/${encodeURIComponent(batchId)}`, body),
+
+    // POST /api/v1/dhl/generate-description/{batch_id}?awb=&force=  (admin/logistics)
+    // Local Polish-description PDF + SAD-ready JSON generation; emits description_ready.
+    generatePolishDescription: (batchId, opts = {}) => {
+      const qs = new URLSearchParams();
+      if (opts.awb)   qs.set('awb', opts.awb);
+      if (opts.force) qs.set('force', 'true');
+      const q = qs.toString();
+      return _postM(`${BASE}/dhl/generate-description/${encodeURIComponent(batchId)}${q ? '?' + q : ''}`);
+    },
+
+    // POST /api/v1/dsk/generate  {batch_id, awb, value_usd}  (admin/logistics)
+    // Local DSK PDF generation; emits dsk_generated.
+    generateDsk: (batchId, opts = {}) =>
+      _postM(`${BASE}/dsk/generate`, { batch_id: batchId, awb: opts.awb, value_usd: opts.value_usd }),
+
+    // POST /api/v1/dsk/email-package  {batch_id, awb}  (admin/logistics)
+    // Builds the reply package (audit.reply_package) — does NOT send.
+    buildDhlReplyPackage: (batchId, opts = {}) =>
+      _postM(`${BASE}/dsk/email-package`, { batch_id: batchId, awb: opts.awb }),
+
+    // POST /api/v1/dhl/send-reply/{batch_id}  (admin/logistics)
+    // Queues the prepared reply for sending (SMTP-gated); emits reply_approved /
+    // dsk_transfer_sent. Confirmation-gated in the UI — never auto-sent.
+    sendDhlReply: (batchId) =>
+      _postM(`${BASE}/dhl/send-reply/${encodeURIComponent(batchId)}`),
+
+    // GET /api/v1/dashboard/batches/{batch_id}/dhl-action-state — next-action
+    // descriptor (which correspondence action the backend considers next).
+    getDhlActionState: (batchId) =>
+      _get(`${BASE}/dashboard/batches/${encodeURIComponent(batchId)}/dhl-action-state`),
+
     // GET /api/v1/admin/email-queue
     // Email queue: { pending_count, emails: [...] }.  Requires admin session.
     getEmailQueue: () =>

@@ -109,13 +109,21 @@ def test_all_action_testids_present():
 
 
 def test_action_controls_name_real_routes():
-    """Each backend-pending control names the real backend route it maps to."""
+    """Each action control names the real backend route it maps to.
+
+    Slice 2B wired the DHL correspondence actions to the existing backend
+    authority. Generate-DSK and Build-Reply-Package were previously MIS-ROUTED to
+    /api/v1/dhl/generate-customs-package (the Polish-description package endpoint);
+    the wired controls now name their true routes /api/v1/dsk/generate and
+    /api/v1/dsk/email-package. The remaining PZ/SAD controls stay backend-pending.
+    """
     src = _src()
     for route in (
         "/api/v1/dhl/scan-inbox",
         "/api/v1/dhl/mark-email-received/",
         "/api/v1/dhl/generate-description/",
-        "/api/v1/dhl/generate-customs-package/",
+        "/api/v1/dsk/generate",
+        "/api/v1/dsk/email-package",
         "/api/v1/dhl/send-reply/",
         "/api/v1/upload/shipment/",
         # wFirma PZ routes live under the upload router prefix (/api/v1/upload),

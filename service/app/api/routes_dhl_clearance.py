@@ -3671,6 +3671,20 @@ async def generate_customs_package(
     audit["customs_json_hash"]           = json_result.get("json_hash")
     _write_audit(batch_id, audit)
 
+    # Log timeline event — parity with generate_description (line ~3370).
+    # The combined package endpoint genuinely produced the Polish description PDF
+    # (asserted `generated` above); it must emit the SAME canonical milestone
+    # event so the ``polish_description_generated`` timeline milestone reconciles.
+    # Written AFTER the durable _write_audit (Lesson G / replay-safety) and only
+    # on the success path (past the pdf/json generated guards).
+    for sub in ("outputs", "working"):
+        _ap = settings.storage_root / sub / batch_id / "audit.json"
+        if _ap.exists():
+            tl.log_event(_ap, tl.EV_DESCRIPTION_READY, "dashboard", "admin",
+                         detail={"filename": pdf_result.get("filename", ""),
+                                 "source": "generate_customs_package"})
+            break
+
     pdf_fn  = pdf_result.get("filename", "")
     json_fn = json_result.get("filename", "")
 

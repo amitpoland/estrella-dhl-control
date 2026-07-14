@@ -463,6 +463,27 @@ def test_route_endpoint_uses_inject_from_sources_and_guards():
     # passes the customs_view kwarg (invoice_positions vs packing_rows), so
     # match the call prefix rather than an exact-paren signature.
     assert src.count("audit = _inject_rows_from_sources(batch_id, audit") >= 2
+
+
+def test_generate_customs_package_emits_description_ready_after_write():
+    """Slice 2A.1: the combined customs-package endpoint must emit the canonical
+    description_ready event (parity with /generate-description) so the
+    polish_description_generated timeline milestone reconciles. The event MUST be
+    logged AFTER the durable _write_audit (Lesson G / replay-safety)."""
+    src = (Path(__file__).resolve().parents[1] / "app" / "api"
+           / "routes_dhl_clearance.py").read_text(encoding="utf-8")
+    s = src.index("async def generate_customs_package(")
+    e = src.index("async def get_sad_ready(", s)
+    body = src[s:e]
+    assert "tl.EV_DESCRIPTION_READY" in body, (
+        "generate_customs_package must emit tl.EV_DESCRIPTION_READY"
+    )
+    # emission must come after the durable audit write on the success path
+    i_write = body.rfind("_write_audit(batch_id, audit)")
+    i_event = body.index("tl.EV_DESCRIPTION_READY")
+    assert i_write != -1 and i_write < i_event, (
+        "description_ready must be logged AFTER _write_audit (durable-first)"
+    )
     # The lines-missing guard fires at the production endpoints.
     assert src.count('"lines_missing_for_description"') >= 2
     # And the reconciliation guard fires there too.
