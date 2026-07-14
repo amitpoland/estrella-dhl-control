@@ -453,6 +453,271 @@ def get_registered_goods_state_batch(codes: List[str]) -> Dict[str, Dict[str, An
     }
 
 
+# ── deterministic position-key packing auto-assignment planner ───────────────
+# Replaces the REJECTED pack_sr-sequence resolver. Historical production
+# validation disproved the assumption that ``pack_sr`` order equals invoice-line
+# order (45.7% of multi-row invoices reversed; 16.7% of eligible invoices would
+# have been stamped with the WRONG product_code — e.g. EJL/26-27/390, /207,
+# /297). The ONLY canonical link between a design-only packing piece and its
+# product identity is the EXACT invoice-line key:
+#
+#     packing_lines.batch_id + norm(invoice_no) + packing_lines.invoice_line_position
+#         ==
+#     invoice_lines.batch_id + norm(invoice_no) + invoice_lines.line_position   (active)
+#
+# This planner is PURE and read-only. It NEVER uses pack_sr, row order, design
+# order, quantity totals, or draft lines to guess identity. It emits an
+# assignment ONLY on an exact, unique, quantity-consistent, non-conflicting key
+# match that holds for the ENTIRE invoice group; anything missing, duplicate,
+# inactive, blank, conflicting, or quantity-inconsistent yields NO assignment and
+# falls through to the operator-confirmation writer (Part 2). The stamp itself is
+# delegated to the canonical design-keyed writer
+# ``packing_db.assign_product_code_to_unassigned_design`` — so this planner also
+# guarantees the design-keyed, batch-wide write stays invoice-atomic (a design is
+# writable only when EVERY one of its unassigned rows batch-wide resolves through
+# a clean invoice to the SAME code).
+
+def _norm_inv(v: Any) -> str:
+    return str(v or "").strip()
+
+
+def _to_position(v: Any) -> Optional[int]:
+    """Coerce a line position to a positive int, else None (→ no key)."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f or not float(f).is_integer():     # NaN or non-integer → no key
+        return None
+    iv = int(f)
+    return iv if iv > 0 else None
+
+
+def _read_packing_full(
+    batch_id: str, packing_db_path: Optional[Path],
+) -> List[Dict[str, Any]]:
+    """Full packing rows (incl. ``id``) for the planner. Raises on read failure."""
+    bid = (batch_id or "").strip()
+    if packing_db_path is not None:
+        with sqlite3.connect(str(packing_db_path)) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT id, invoice_no, invoice_line_position, product_code, "
+                "design_no, quantity FROM packing_lines WHERE batch_id=?",
+                (bid,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    from . import packing_db as _pdb  # noqa: PLC0415
+    if getattr(_pdb, "_db_path", None) is None:
+        raise PackingAuthorityUnavailable(
+            "packing_db is not initialised — cannot plan position-key assignment")
+    return list(_pdb.get_packing_lines_for_batch(bid) or [])
+
+
+def _read_active_invoice_lines(
+    batch_id: str, documents_db_path: Optional[Path],
+) -> List[Dict[str, Any]]:
+    """Active invoice lines (the product_code MINT) for the planner."""
+    bid = (batch_id or "").strip()
+    if documents_db_path is not None:
+        with sqlite3.connect(str(documents_db_path)) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT invoice_no, line_position, product_code, quantity, active "
+                "FROM invoice_lines WHERE batch_id=? AND active=1",
+                (bid,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    from . import document_db as _ddb  # noqa: PLC0415
+    return list(_ddb.get_invoice_lines_for_batch(bid) or [])
+
+
+def plan_position_key_assignments(
+    batch_id: str,
+    *,
+    packing_rows:  Optional[List[Dict[str, Any]]] = None,
+    invoice_lines: Optional[List[Dict[str, Any]]] = None,
+    packing_db_path:   Optional[Path] = None,
+    documents_db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Plan deterministic packing product_code assignments by EXACT position key.
+
+    Pure + read-only. Returns::
+
+        {
+          "batch_id":         str,
+          "status":           "deterministic" | "none",
+          "assignments":      [{"design_no", "product_code", "expected_count",
+                                "rows": [{"row_id","invoice_no",
+                                          "invoice_line_position","quantity"}…]}],
+          "refusals":         [{"invoice_no", "reason", ...}],
+          "invoices_scanned": int,
+        }
+
+    A read failure (packing/invoice authority unreadable) returns an EMPTY plan
+    (status ``none``) — the readiness over-bill guard fails closed on its own, and
+    the caller treats an empty plan as "assign nothing".
+    """
+    bid = str(batch_id or "").strip()
+    out: Dict[str, Any] = {"batch_id": bid, "status": "none",
+                           "assignments": [], "refusals": [], "invoices_scanned": 0}
+    if packing_rows is None and not bid:
+        return out
+
+    def _q(v: Any) -> float:
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    try:
+        prows = (packing_rows if packing_rows is not None
+                 else _read_packing_full(bid, packing_db_path))
+        irows = (invoice_lines if invoice_lines is not None
+                 else _read_active_invoice_lines(bid, documents_db_path))
+    except Exception:
+        # Authority unreadable → assign nothing (fail closed elsewhere).
+        return out
+
+    # Active invoice-line codes indexed by (norm invoice_no, position). Blank
+    # invoice_no / position are dropped; duplicate positions are kept so the
+    # per-row check can detect and refuse them (rule: exactly one active line).
+    inv_by_pos: Dict[Any, List[Dict[str, Any]]] = {}
+    for r in irows:
+        if int(r.get("active", 1) or 0) != 1:       # respect injected active flag
+            continue
+        inv = _norm_inv(r.get("invoice_no"))
+        pos = _to_position(r.get("line_position"))
+        if not inv or pos is None:
+            continue
+        inv_by_pos.setdefault((inv, pos), []).append(
+            {"code": str(r.get("product_code") or "").strip(),
+             "qty": _q(r.get("quantity"))})
+
+    # Total packing quantity per (invoice, position) across ALL rows (assigned +
+    # unassigned) — the quantity-consistency check: the packing at a position
+    # must exactly account for the invoice line's quantity.
+    pack_qty_by_pos: Dict[Any, float] = {}
+    pack_by_inv: Dict[str, List[Dict[str, Any]]] = {}
+    for r in prows:
+        inv = _norm_inv(r.get("invoice_no"))
+        pack_by_inv.setdefault(inv, []).append(r)
+        pos = _to_position(r.get("invoice_line_position"))
+        if inv and pos is not None:
+            pack_qty_by_pos[(inv, pos)] = pack_qty_by_pos.get((inv, pos), 0.0) + _q(r.get("quantity"))
+
+    # Per-invoice: a clean invoice is one where EVERY unassigned packing row has
+    # an exact, unique, non-blank, quantity-consistent invoice-line match. Any
+    # deviation refuses the WHOLE invoice group (never a partial assignment).
+    row_code: Dict[str, str] = {}      # packing row id → matched code (clean invoices)
+    clean_invoices: set = set()
+    for inv, rows in pack_by_inv.items():
+        if not inv:
+            continue
+        out["invoices_scanned"] += 1
+        unassigned = [r for r in rows if not str(r.get("product_code") or "").strip()]
+        if not unassigned:
+            continue                    # nothing to do (idempotent no-op)
+        reason: Optional[str] = None
+        matched: List[Any] = []
+        for r in unassigned:
+            pos = _to_position(r.get("invoice_line_position"))
+            if pos is None:
+                reason = "a packing row has no invoice_line_position (no deterministic key)"
+                break
+            cands = inv_by_pos.get((inv, pos))
+            if not cands:
+                reason = f"no active invoice line at position {pos}"
+                break
+            if len(cands) != 1:
+                reason = f"duplicate active invoice line at position {pos}"
+                break
+            code = cands[0]["code"]
+            if not code:
+                reason = f"invoice line at position {pos} has a blank product_code"
+                break
+            if abs(pack_qty_by_pos.get((inv, pos), 0.0) - cands[0]["qty"]) > 1e-9:
+                reason = (f"quantity mismatch at position {pos} "
+                          f"(packing {pack_qty_by_pos.get((inv, pos), 0.0):g} vs "
+                          f"invoice {cands[0]['qty']:g})")
+                break
+            matched.append((r, code))
+        if reason is not None:
+            out["refusals"].append({"invoice_no": inv, "reason": reason})
+            continue
+        clean_invoices.add(inv)
+        for r, code in matched:
+            row_code[str(r.get("id"))] = code
+
+    # Design-keyed writer safety + invoice atomicity. The Part 2 writer stamps a
+    # design's unassigned rows BATCH-WIDE, so a design may be written only when
+    # ALL of its unassigned rows (across the batch) resolved through a clean
+    # invoice to ONE code. Blank design cannot be written (writer requires it) →
+    # blocked. A blocked design blocks every invoice it appears in; a blocked
+    # invoice blocks every design in it — resolved to a fixpoint.
+    design_rows: Dict[str, List[Dict[str, Any]]] = {}
+    design_invs: Dict[str, set] = {}
+    inv_designs: Dict[str, set] = {}
+    for r in prows:
+        if str(r.get("product_code") or "").strip():
+            continue                    # already assigned — never overwrite
+        d = str(r.get("design_no") or "").strip()
+        rid = str(r.get("id"))
+        inv = _norm_inv(r.get("invoice_no"))
+        design_rows.setdefault(d, []).append({
+            "row_id": rid, "invoice_no": inv,
+            "invoice_line_position": _to_position(r.get("invoice_line_position")),
+            "quantity": _q(r.get("quantity")),
+            "code": row_code.get(rid),
+        })
+        design_invs.setdefault(d, set()).add(inv)
+        inv_designs.setdefault(inv, set()).add(d)
+
+    blocked_designs: set = set()
+    design_code: Dict[str, str] = {}
+    for d, items in design_rows.items():
+        codes = {it["code"] for it in items if it["code"]}
+        unmatched = any(it["code"] is None for it in items)
+        if not d or unmatched or len(codes) != 1:
+            blocked_designs.add(d)
+        else:
+            design_code[d] = next(iter(codes))
+
+    blocked_invoices: set = {inv for inv in pack_by_inv
+                             if inv and inv not in clean_invoices}
+    changed = True
+    while changed:
+        changed = False
+        for inv in list(blocked_invoices):
+            for d in inv_designs.get(inv, ()):
+                if d not in blocked_designs:
+                    blocked_designs.add(d); changed = True
+        for d in list(blocked_designs):
+            for inv in design_invs.get(d, ()):
+                if inv not in blocked_invoices:
+                    blocked_invoices.add(inv); changed = True
+
+    for d, code in design_code.items():
+        if d in blocked_designs:
+            continue
+        rows = design_rows[d]
+        out["assignments"].append({
+            "design_no":      d,
+            "product_code":   code,
+            "expected_count": len(rows),
+            "rows":           [{"row_id": it["row_id"],
+                                "invoice_no": it["invoice_no"],
+                                "invoice_line_position": it["invoice_line_position"],
+                                "quantity": it["quantity"]} for it in rows],
+        })
+
+    out["assignments"].sort(key=lambda a: (a["rows"][0]["invoice_no"], a["product_code"]))
+    out["status"] = "deterministic" if out["assignments"] else "none"
+    return out
+
+
 __all__ = [
     "PackingAuthorityUnavailable",
     "resolve_batch_product_authority",
@@ -462,6 +727,7 @@ __all__ = [
     "reconcile_billed_ambiguity",
     "analyze_product_code_billing",
     "reconcile_billed_lines",
+    "plan_position_key_assignments",
     "get_registered_goods_state",
     "get_registered_goods_state_batch",
 ]

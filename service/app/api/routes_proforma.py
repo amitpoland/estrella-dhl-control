@@ -6509,6 +6509,68 @@ def _derive_draft_readiness(
         _add(f"VAT readiness check failed: {type(exc).__name__}: {exc}",
              "Inspect customer master data for this client.")
 
+    # ── 4c. Deterministic position-key packing product_code auto-assign ────
+    # BEFORE the over-bill guard, resolve the DETERMINISTIC subset of design-only
+    # packing pieces (product_code blank) using the EXACT invoice-line key
+    # (packing.invoice_line_position == active invoice_lines.line_position). This
+    # replaces the REJECTED pack_sr-sequence approach — production history proved
+    # pack_sr order is NOT invoice-line order (45.7% reversal; 16.7% wrong-stamp
+    # on codes like EJL/26-27/390 / /207 / /297). The planner emits an assignment
+    # ONLY on an exact, unique, quantity-consistent, non-conflicting key that
+    # holds for the whole invoice group; everything else (missing position — e.g.
+    # the invoice-380 defect, duplicate/inactive/blank line, quantity mismatch,
+    # cross-invoice design conflict) stays for the Part-2 operator-confirmation
+    # writer. The stamp reuses the canonical Part-2 writer (never overwrites a
+    # non-empty code, expected_count TOCTOU guard, all-or-nothing). Non-fatal: a
+    # failure leaves the over-bill blocker active. Only on an editable draft.
+    if str(getattr(draft, "status", "") or "").lower() not in (
+            "posted", "cancelled", "superseded"):
+        try:
+            from ..services.product_authority_resolver import (  # noqa: PLC0415
+                plan_position_key_assignments as _plan_pos_key,
+            )
+            _plan = _plan_pos_key(draft.batch_id or "")
+            _applied: List[Dict[str, Any]] = []
+            for _asg in _plan.get("assignments", []):
+                try:
+                    # Writer re-reads under its own lock and enforces the
+                    # expected_count TOCTOU guard, so a row set that changed since
+                    # planning is refused rather than mis-stamped.
+                    _res = pdb.assign_product_code_to_unassigned_design(
+                        draft.batch_id or "", _asg["design_no"], _asg["product_code"],
+                        expected_count=_asg.get("expected_count") or None)
+                    if _res.get("assigned"):
+                        _applied.append({
+                            "design_no":    _asg["design_no"],
+                            "product_code": _asg["product_code"],
+                            "assigned":     int(_res["assigned"]),
+                            "row_ids":      _res.get("row_ids"),
+                            "rows":         _asg.get("rows"),
+                        })
+                except ValueError as _wexc:
+                    log.info("[draft %s] position-key auto-assign skipped design "
+                             "%r (writer refused, left for manual): %s",
+                             getattr(draft, "id", None), _asg.get("design_no"), _wexc)
+            if _applied and getattr(draft, "id", None):
+                try:
+                    pildb._record_draft_event(
+                        _proforma_db_path(), draft_id=int(draft.id),
+                        event="packing_product_code_auto_assigned",
+                        detail_json=json.dumps({
+                            "batch_id":         draft.batch_id or "",
+                            "source_authority": "invoice_lines.line_position",
+                            "assignments":      _applied,
+                            "refusals":         _plan.get("refusals", []),
+                        }, ensure_ascii=False),
+                        operator="system:position-key-autoresolve")
+                except Exception as _aexc:
+                    log.warning("[draft %s] auto-assign audit event failed "
+                                "(non-fatal): %s", getattr(draft, "id", None), _aexc)
+        except Exception as _pexc:
+            log.warning("[draft %s] position-key auto-assign hook failed "
+                        "(non-fatal, over-bill gate stays active): %s",
+                        getattr(draft, "id", None), _pexc)
+
     # ── 5. Duplicate / over-bill product_code guard (billing integrity) ────
     # product_code = one purchase invoice line (a lot that may hold several
     # designs/pieces). A product_code MAY be billed on multiple draft lines, but
