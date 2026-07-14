@@ -279,7 +279,7 @@ function deriveDetail(audit, shipment) {
     // file the endpoint reports missing).
     polishDescGenerated: audit.polish_desc_file_exists != null ? audit.polish_desc_file_exists === true : !!audit.polish_desc_filename,
     dskGenerated:        audit.dsk_file_exists != null ? audit.dsk_file_exists === true : !!audit.dsk_filename,
-    replyPackageBuilt:   !!(audit.dhl_reply_package || audit.agency_reply_package),
+    replyPackageBuilt:   !!(audit.reply_package || audit.dhl_reply_package || audit.agency_reply_package),
     // Totals (PLN) — audit totals are authoritative; fall back to the list row
     netPln:   tot.net   != null ? tot.net   : (shipment.net   != null ? shipment.net   : null),
     grossPln: tot.gross != null ? tot.gross : (shipment.gross != null ? shipment.gross : null),
@@ -578,6 +578,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
             d={d} shipment={shipment} sadUploaded={sadUploaded}
             dhlEmailReceived={dhlEmailReceived} replySent={replySent}
             batchId={shipment && shipment.batch_id}
+            reloadNonce={reloadNonce}
             onReload={reloadDetail}
           />
         )}
@@ -939,7 +940,7 @@ const DHL_PIPELINE_STATES = [
 // NOTE: the 7-state pipeline state (from audit timeline) is a SEPARATE authority from the
 // coarse shipment.dhlStatus field (from batch summary). They should agree directionally;
 // the pipeline card clearly labels its source to avoid confusion if they diverge.
-function DhlReadinessCard({ batchId }) {
+function DhlReadinessCard({ batchId, reloadNonce }) {
   const [readiness, setReadiness] = React.useState(null);
   const [loading, setLoading]     = React.useState(true);
   const [errType, setErrType]     = React.useState(null);
@@ -947,6 +948,7 @@ function DhlReadinessCard({ batchId }) {
   React.useEffect(() => {
     if (!batchId) { setLoading(false); return; }
     let cancelled = false;
+    setLoading(true); setErrType(null);
     window.PzApi.getDhlReadiness(batchId)
       .then(r => {
         if (cancelled) return;
@@ -961,7 +963,7 @@ function DhlReadinessCard({ batchId }) {
         if (!cancelled) { setErrType('error'); setLoading(false); }
       });
     return () => { cancelled = true; };
-  }, [batchId]);
+  }, [batchId, reloadNonce]);
 
   if (!batchId) {
     return (
@@ -1053,7 +1055,245 @@ function DhlReadinessCard({ batchId }) {
   );
 }
 
-function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId, onReload }) {
+// Map a normalized PzApi error envelope to an operator-readable message.
+function _dhlActionError(res) {
+  const s = res && res.status;
+  if (s === 403) return 'You do not have permission to perform this DHL action.';
+  if (s === 404) return 'Shipment or DHL correspondence record was not found.';
+  if (s === 409) return 'Workflow state changed — reload the shipment.';
+  if (s === 422) return 'Required DHL data is incomplete: ' + ((res && res.error) || 'see details');
+  return (res && res.error) || 'Action failed.';
+}
+
+// ── Live DHL tracking card ────────────────────────────────────────────────────
+// Client of the canonical carrier-status authority (GET /api/v1/tracking/{awb}).
+// The BACKEND owns the live-call gate (DHL_TRACKING_API_STATUS) + caching + rate
+// limiting; the browser never calls DHL directly. Carrier state is a SEPARATE
+// concept from clearance state — this card never infers one from the other, and
+// never presents cached data as live (it labels last_update + source).
+function DhlTrackingCard({ batchId, awb, reloadNonce }) {
+  const [tracking, setTracking] = React.useState(null);
+  const [loading, setLoading]   = React.useState(true);
+  const [refreshing, setRefreshing] = React.useState(false);
+
+  const load = React.useCallback(async (refresh) => {
+    if (!awb) { setLoading(false); return; }
+    if (refresh) { setRefreshing(true); await window.PzApi.refreshDhlTracking(awb, batchId); }
+    const r = await window.PzApi.getDhlTracking(awb, batchId);
+    setTracking(r.ok ? r.data : { available: false, ok: false, status: 'error', message: r.error });
+    setLoading(false); setRefreshing(false);
+  }, [awb, batchId]);
+
+  React.useEffect(() => { let c = false; setLoading(true); load(false); return () => { c = true; }; }, [load, reloadNonce]);
+
+  const Row = ({ label, value, mono }) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, padding: '4px 0', fontSize: 12 }}>
+      <span style={{ color: 'var(--text-3)' }}>{label}</span>
+      <span style={{ color: 'var(--text)', fontWeight: 500, fontFamily: mono ? 'monospace' : 'inherit', textAlign: 'right' }}>{value}</span>
+    </div>
+  );
+
+  const header = (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase' }}>DHL Live Tracking</div>
+      <Btn variant="outline" small disabled={!awb || refreshing || loading}
+        onClick={() => load(true)} data-testid="dhl-tracking-refresh"
+        title="Refresh carrier tracking from the backend (no page reload)">
+        {refreshing ? '… Refreshing' : '↻ Refresh'}
+      </Btn>
+    </div>
+  );
+
+  let body;
+  if (!awb) {
+    body = <div style={{ fontSize: 12, color: 'var(--text-2)' }}>No AWB on this shipment — carrier tracking unavailable.</div>;
+  } else if (loading) {
+    body = <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Loading carrier tracking…</div>;
+  } else if (!tracking || tracking.available === false) {
+    const reason = (tracking && (tracking.message || tracking.status)) || 'no data returned';
+    body = (
+      <div data-testid="dhl-tracking-unavailable" style={{ fontSize: 12, color: 'var(--badge-amber-text)' }}>
+        Tracking unavailable — {reason}.
+        {tracking && tracking.last_update && (
+          <span style={{ color: 'var(--text-3)' }}> Last cached: {_fmtDate(tracking.last_update, true)}.</span>
+        )}
+      </div>
+    );
+  } else {
+    body = (
+      <div>
+        <Row label="AWB" value={_dash(tracking.tracking_no || awb)} mono />
+        <Row label="Carrier" value={_dash(tracking.carrier)} />
+        <Row label="Status" value={_dash(tracking.status_label || tracking.status)} />
+        <Row label="Latest event" value={_dash(tracking.last_event)} />
+        <Row label="Location" value={_dash(tracking.last_location)} />
+        <Row label="Event time" value={tracking.last_update ? _fmtDate(tracking.last_update, true) : '—'} mono />
+        {tracking.arrived_warehouse != null && <Row label="At warehouse" value={tracking.arrived_warehouse ? 'Yes' : 'No'} />}
+        {tracking.tracking_url && (
+          <div style={{ paddingTop: 6 }}>
+            <a href={tracking.tracking_url} target="_blank" rel="noopener noreferrer" data-testid="dhl-tracking-url"
+              style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600 }}>Open carrier tracking ↗</a>
+          </div>
+        )}
+        <div style={{ fontSize: 10, color: 'var(--text-3)', borderTop: '1px solid var(--border-subtle)', paddingTop: 5, marginTop: 6 }}>
+          Source: {_dash(tracking.source)} · GET /api/v1/tracking/&#123;awb&#125; · carrier state is independent of clearance state
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="dhl-tracking-card" style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-subtle)' }}>
+      {header}
+      {body}
+    </div>
+  );
+}
+
+// A state-aware DHL action control. Exactly ONE truthful state is rendered:
+// available (enabled) · running · completed (check + timestamp) · blocked (reason)
+// · unavailable. State is derived from BACKEND signals (audit fields on `d`),
+// never from button visibility. Names its real backend route in data-backend-route.
+function DhlActionButton({ label, icon, testid, route, state, reason, ts, onClick, variant }) {
+  const disabled = state !== 'available';
+  const title =
+    state === 'completed' ? `${label} — completed${ts ? ' · ' + _fmtDate(ts, true) : ''}`
+    : state === 'blocked' ? reason
+    : state === 'running' ? `${label} — running…`
+    : state === 'unavailable' ? (reason || `${label} — unavailable`)
+    : `${label} · ${route}`;
+  const glyph =
+    state === 'running' ? '… '
+    : state === 'completed' ? '✓ '
+    : (icon ? icon + ' ' : '');
+  return (
+    <Btn
+      variant={variant || (state === 'available' ? 'primary' : 'outline')}
+      small
+      disabled={disabled}
+      onClick={disabled ? undefined : onClick}
+      data-testid={testid}
+      data-action-state={state}
+      data-backend-route={route}
+      title={title}
+      aria-label={`${label}. ${state === 'blocked' ? 'Blocked: ' + reason : 'State: ' + state}. Backend route ${route}.`}
+    >
+      {glyph}{label}
+    </Btn>
+  );
+}
+
+// ── DHL correspondence actions — wired to the existing backend authority ───────
+// Same commands as the standalone DHL Console. Send stays confirmation-gated and
+// is never auto-fired after building a package. Every successful command reloads
+// the batch detail so readiness + timeline + document rows refresh from truth.
+function DhlActionsPanel({ d, dhlEmailReceived, replySent, batchId, awb, onReload }) {
+  const [busy, setBusy]         = React.useState('');       // action key currently running
+  const [msg, setMsg]           = React.useState(null);     // { ok, text }
+  const [confirmSend, setConfirmSend] = React.useState(false);
+
+  const run = async (key, fn, okText) => {
+    setBusy(key); setMsg(null);
+    let res;
+    try { res = await fn(); }
+    catch (e) { res = { ok: false, status: 0, error: (e && e.message) || String(e) }; }
+    setBusy('');
+    if (!res || !res.ok) { setMsg({ ok: false, text: _dhlActionError(res || {}) }); return false; }
+    setMsg({ ok: true, text: okText });
+    if (onReload) onReload();
+    return true;
+  };
+
+  // Per-action state derivation. Prefer the CANONICAL backend read-model
+  // (d.timelineMilestones — the same authority the Timeline renders) so the
+  // action buttons and the Timeline are consistent by construction; fall back to
+  // the coarse summary props + audit booleans only when the read-model is absent.
+  const _ms = {};
+  (d.timelineMilestones || []).forEach(m => { _ms[m.key] = m; });
+  const _done = (key) => (_ms[key] ? _ms[key].state === 'completed' : null);
+  const _na   = (key) => (_ms[key] ? _ms[key].state === 'not_applicable' : false);
+  const _coalesce = (v, fb) => (v != null ? v : fb);
+
+  const emailReceived = _coalesce(_done('dhl_email_received'), dhlEmailReceived);
+  const descCompleted = _coalesce(_done('polish_description_generated'), d.polishDescGenerated);
+  const dskCompleted  = _coalesce(_done('dsk_generated'), d.dskGenerated);
+  const pkgCompleted  = _coalesce(_done('reply_package_generated'), d.replyPackageBuilt);
+  const sendCompleted = _coalesce(_done('reply_sent'), replySent);
+
+  const emailState = emailReceived ? 'completed' : 'available';
+  const descState  = descCompleted ? 'completed' : (emailReceived ? 'available' : 'blocked');
+  const dskState   = dskCompleted ? 'completed'
+                   : (_na('dsk_generated') ? 'unavailable' : (emailReceived ? 'available' : 'blocked'));
+  const pkgState   = pkgCompleted ? 'completed'
+                   : ((descCompleted || dskCompleted) ? 'available' : 'blocked');
+  const sendState  = sendCompleted ? 'completed' : (pkgCompleted ? 'available' : 'blocked');
+
+  const B = (props) => <DhlActionButton {...props} />;
+
+  return (
+    <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <B label="Scan DHL Inbox" icon="⌕" testid="scan-dhl-inbox"
+           route={'GET /api/v1/dhl/scan-inbox'}
+           state={busy === 'scan' ? 'running' : 'available'}
+           onClick={() => run('scan', () => window.PzApi.scanDhlInbox(batchId), 'Inbox scanned — email state refreshed.')} />
+        <B label="Mark Email Received" icon="✓" testid="mark-email-received"
+           route={'POST /api/v1/dhl/mark-email-received/' + batchId}
+           state={busy === 'mark' ? 'running' : emailState}
+           ts={null}
+           onClick={() => run('mark', () => window.PzApi.markDhlEmailReceived(batchId, {}), 'DHL email marked received.')} />
+        <B label="Generate Polish Desc." icon="⊞" testid="generate-polish-desc"
+           route={'POST /api/v1/dhl/generate-description/' + batchId}
+           state={busy === 'desc' ? 'running' : descState}
+           reason="DHL clearance email has not been received yet."
+           onClick={() => run('desc', () => window.PzApi.generatePolishDescription(batchId, { awb }), 'Polish description generated.')} />
+        <B label="Generate DSK" icon="⊟" testid="generate-dsk"
+           route={'POST /api/v1/dsk/generate'}
+           state={busy === 'dsk' ? 'running' : dskState}
+           reason={dskState === 'unavailable' ? 'Not applicable — this shipment is on the agency clearance path.' : 'DHL clearance email has not been received yet.'}
+           onClick={() => run('dsk', () => window.PzApi.generateDsk(batchId, { awb }), 'DSK generated.')} />
+        <B label="Build Reply Package" icon="⊡" testid="build-reply-package"
+           route={'POST /api/v1/dsk/email-package'}
+           state={busy === 'pkg' ? 'running' : pkgState}
+           reason="Generate the Polish description or DSK first."
+           onClick={() => run('pkg', () => window.PzApi.buildDhlReplyPackage(batchId, { awb }), 'Reply package built (not sent).')} />
+        <B label="Send Reply to DHL" icon="↗" testid="send-reply" variant={sendState === 'available' ? 'gold' : 'outline'}
+           route={'POST /api/v1/dhl/send-reply/' + batchId}
+           state={busy === 'send' ? 'running' : sendState}
+           reason="Build the reply package before sending."
+           onClick={() => setConfirmSend(true)} />
+      </div>
+
+      {confirmSend && (
+        <div data-testid="send-reply-confirm" role="alertdialog" aria-label="Confirm send DHL reply"
+          style={{ marginTop: 12, padding: '12px 14px', borderRadius: 8, background: 'var(--card)', border: '1px solid var(--badge-amber-border)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Send the prepared reply to DHL?</div>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 10 }}>
+            This queues the reply email (recipient <code style={{ fontFamily: 'monospace' }}>odprawacelna@dhl.com</code>) for sending.
+            External communication — it will not be auto-sent without this confirmation.
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Btn variant="gold" small disabled={busy === 'send'} data-testid="send-reply-confirm-yes"
+              onClick={async () => { const ok = await run('send', () => window.PzApi.sendDhlReply(batchId), 'Reply queued for sending.'); if (ok) setConfirmSend(false); }}>
+              {busy === 'send' ? '… Sending' : 'Confirm & Queue Reply'}
+            </Btn>
+            <Btn variant="outline" small disabled={busy === 'send'} data-testid="send-reply-confirm-no"
+              onClick={() => setConfirmSend(false)}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+
+      {msg && (
+        <div data-testid="dhl-action-msg" role={msg.ok ? 'status' : 'alert'}
+          style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: msg.ok ? 'var(--badge-green-text)' : 'var(--badge-red-text)' }}>
+          {msg.ok ? '✓ ' : '⚠ '}{msg.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId, reloadNonce, onReload }) {
   const bid = batchId || '{batch_id}';
   // R-Q1: DHL is a standalone page authority. This sub-tab provides a status summary
   // and an entry point only. All DHL write actions live on the standalone /dhl page.
@@ -1086,7 +1326,8 @@ function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId
           }}
         >Open DHL Console ↗</a>
       </div>
-      <DhlReadinessCard batchId={batchId} />
+      <DhlTrackingCard batchId={batchId} awb={shipment && shipment.awb} reloadNonce={reloadNonce} />
+      <DhlReadinessCard batchId={batchId} reloadNonce={reloadNonce} />
       <SectionLabel>Step 1 · DHL clearance email & reply</SectionLabel>
       <PanelCard
         title="DHL Clearance"
@@ -1114,20 +1355,27 @@ function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId
             <InfoRow label="Reply Sent"          value={replySent ? 'Sent ✓ — see Timeline for exact time' : 'Not sent'} />
           </div>
         </div>
-        <BackendPendingBanner testid="dhl-actions-console-note">
-          DHL correspondence (inbox scan, description/DSK generation, reply send/approve) is
-          performed on the standalone <strong>DHL Console</strong>, which is the single authority
-          for DHL email correspondence. This page shows clearance status read-only — it does not
-          send DHL correspondence.
-        </BackendPendingBanner>
-        <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <PendingAction label="Scan DHL Inbox"      icon="⌕" testid="scan-dhl-inbox"      route={'GET /api/v1/dhl/scan-inbox'} />
-          <PendingAction label="Mark Email Received" icon="✓" testid="mark-email-received" route={'POST /api/v1/dhl/mark-email-received/' + bid} />
-          <PendingAction label="Generate Polish Desc." icon="⊞" testid="generate-polish-desc" route={'POST /api/v1/dhl/generate-description/' + bid} />
-          <PendingAction label="Generate DSK"        icon="⊟" testid="generate-dsk"        route={'POST /api/v1/dhl/generate-customs-package/' + bid} />
-          <PendingAction label="Build Reply Package" icon="⊡" testid="build-reply-package" route={'POST /api/v1/dhl/generate-customs-package/' + bid} />
-          <PendingAction label="Send Reply to DHL"   icon="↗" testid="send-reply"          route={'POST /api/v1/dhl/send-reply/' + bid} variant="gold" />
+        {/* Operational status note — the DHL Console remains ANOTHER view of the
+            same backend authority, but these actions now run here too. Not a
+            capability-suppression banner (Lesson M): the controls below are wired. */}
+        <div role="note" data-testid="dhl-actions-console-note" style={{
+          display: 'flex', alignItems: 'flex-start', gap: 10,
+          margin: '0 20px 4px', padding: '12px 14px', borderRadius: 8,
+          background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)',
+          color: 'var(--badge-blue-text)', fontSize: 12, lineHeight: 1.5,
+        }}>
+          <span aria-hidden="true" style={{ fontWeight: 800, flexShrink: 0 }}>ℹ</span>
+          <span>
+            DHL correspondence runs against the same backend authority as the standalone
+            <strong> DHL Console</strong>. You can run the proven follow-up workflow here, or
+            open the Console for the cross-shipment view. Each action below shows its real
+            state; sending a reply is confirmation-gated.
+          </span>
         </div>
+        <DhlActionsPanel
+          d={d} dhlEmailReceived={dhlEmailReceived} replySent={replySent}
+          batchId={batchId} awb={shipment && shipment.awb} onReload={onReload}
+        />
       </PanelCard>
 
       <SectionLabel style={{ marginTop: 8 }}>Step 2 · SAD / ZC429 customs document</SectionLabel>
@@ -1575,33 +1823,51 @@ function TimelineTab({ d, detailLoading }) {
   // means completion is proven by a customs/accounting field (e.g. verification,
   // PZ confirmed) that has no dedicated timeline event.
   if (milestones && milestones.length) {
-    const doneCount = milestones.filter(m => m.done).length;
+    // Slice 2A/2B 7-state model: the completed counter counts ONLY completed
+    // (never skipped / available / not_applicable). Each milestone renders exactly
+    // one truthful state derived backend-side from real evidence.
+    const doneCount = milestones.filter(m => m.state === 'completed').length;
+    // Visual + label spec per state (advisory display only — never a fiscal gate).
+    const STATE_UI = {
+      completed:      { glyph: '✓', dot: 'var(--badge-green-text)', bg: 'var(--badge-green-bg)', ink: 'var(--text)',            label: 'Completed' },
+      available:      { glyph: '▶', dot: 'var(--accent)',           bg: 'var(--card)',            ink: 'var(--text)',            label: 'Available — next action' },
+      blocked:        { glyph: '!', dot: 'var(--badge-red-text)',   bg: 'var(--badge-red-bg)',    ink: 'var(--badge-red-text)',  label: 'Blocked' },
+      failed:         { glyph: '✕', dot: 'var(--badge-red-text)',   bg: 'var(--badge-red-bg)',    ink: 'var(--badge-red-text)',  label: 'Failed — retry available' },
+      skipped:        { glyph: '⤼', dot: 'var(--text-3)',           bg: 'var(--bg-subtle)',       ink: 'var(--text-2)',          label: 'Skipped' },
+      not_applicable: { glyph: '–', dot: 'var(--border)',           bg: 'var(--bg-subtle)',       ink: 'var(--text-3)',          label: 'Not applicable to this clearance path' },
+      not_started:    { glyph: '○', dot: 'var(--border)',           bg: 'var(--bg)',              ink: 'var(--text-2)',          label: 'Pending' },
+    };
     return (
       <PanelCard title="Activity timeline" subtitle={`${doneCount} of ${milestones.length} milestones completed`}>
         <div data-testid="timeline-milestones" style={{ padding: '24px 28px' }}>
           <div style={{ position: 'relative', paddingLeft: 28 }}>
             <div style={{ position: 'absolute', left: 9, top: 6, bottom: 6, width: 2, background: 'var(--border)' }} />
-            {milestones.map(m => (
-              <div key={m.key} data-testid={`timeline-milestone-${m.key}`} data-done={m.done ? 'true' : 'false'}
-                style={{ position: 'relative', marginBottom: 14, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
-                <div style={{
-                  position: 'absolute', left: -28, width: 20, height: 20, borderRadius: 10,
-                  background: m.done ? 'var(--badge-green-bg)' : 'var(--bg)',
-                  border: '2px solid ' + (m.done ? 'var(--badge-green-text)' : 'var(--border)'),
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1, top: 0, flexShrink: 0,
-                }}>
-                  <span style={{ fontSize: m.done ? 10 : 8, color: m.done ? 'var(--badge-green-text)' : 'var(--text-3)', fontWeight: 800 }}>{m.done ? '✓' : '○'}</span>
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: m.done ? 600 : 500, color: m.done ? 'var(--text)' : 'var(--text-2)' }}>{m.label}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2, fontFamily: m.ts ? 'monospace' : 'inherit' }}>
-                    {m.done
-                      ? (m.ts ? _fmtDate(m.ts, true) : (m.source === 'audit_field' ? 'Completed — recorded in the customs / accounting authority' : 'Completed'))
-                      : 'Pending'}
+            {milestones.map(m => {
+              const st = STATE_UI[m.state] || STATE_UI.not_started;
+              const sub = m.state === 'completed'
+                ? (m.ts ? _fmtDate(m.ts, true) : (m.source === 'audit_field' ? 'Completed — recorded in the customs / accounting authority' : 'Completed'))
+                : m.state === 'blocked'
+                ? (m.blocked_reason || 'Blocked')
+                : st.label;
+              return (
+                <div key={m.key} data-testid={`timeline-milestone-${m.key}`} data-done={m.done ? 'true' : 'false'} data-state={m.state}
+                  style={{ position: 'relative', marginBottom: 14, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+                  <div style={{
+                    position: 'absolute', left: -28, width: 20, height: 20, borderRadius: 10,
+                    background: st.bg, border: '2px solid ' + st.dot,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1, top: 0, flexShrink: 0,
+                  }}>
+                    <span style={{ fontSize: 10, color: st.dot, fontWeight: 800 }}>{st.glyph}</span>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: m.state === 'completed' ? 600 : 500, color: st.ink }}>{m.label}</div>
+                    <div style={{ fontSize: 11, color: m.state === 'blocked' ? 'var(--badge-red-text)' : 'var(--text-3)', marginTop: 2, fontFamily: m.ts ? 'monospace' : 'inherit' }}>
+                      {sub}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </PanelCard>
