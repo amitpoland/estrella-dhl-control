@@ -377,7 +377,7 @@ function ProformaPartyCard({ title, name, lines, footer, footerMuted, warn, warn
 // ── Print-preview modal ────────────────────────────────────────────────────────
 // READ-ONLY. Never mutates draft state. Uses real docData/cmrData from ProformaDetailPage.
 // Requires: estrella-doc-tokens.css + estrella-doc-proforma.jsx + estrella-doc-cmr.jsx loaded in index.html.
-function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, packingData, onClose }) {
+function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, packingData, onClose, onEditRequest }) {
   // Portrait A4 (794px) → 0.88 fits 900px wrap.
   // Landscape A4 (1123px) → 0.87 fits 1200px wrap.
   // activeType MUST be declared before SCALE — SCALE depends on it.
@@ -537,6 +537,31 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
             {docData.warnings.map((w, i) => (
               <div key={i} style={{ fontSize: 11, color: '#FCD34D', lineHeight: 1.4 }}>
                 ⚠ {w.msg}
+                {w.code === 'NO_FX_RATE' && onEditRequest && (
+                  <button
+                    data-testid="warn-fix-fx-rate"
+                    onClick={() => { onClose(); onEditRequest(); }}
+                    style={{ marginLeft: 8, fontSize: 10, color: '#1a1a1a', background: '#F59E0B',
+                             border: 'none', borderRadius: 4, padding: '1px 7px', cursor: 'pointer',
+                             fontWeight: 600, verticalAlign: 'middle' }}
+                  >Set NBP rate in Overview ↗</button>
+                )}
+                {w.code === 'NO_ISSUE_DATE' && onEditRequest && (
+                  <button
+                    data-testid="warn-fix-issue-date"
+                    onClick={() => { onClose(); onEditRequest(); }}
+                    style={{ marginLeft: 8, fontSize: 10, color: '#1a1a1a', background: '#F59E0B',
+                             border: 'none', borderRadius: 4, padding: '1px 7px', cursor: 'pointer',
+                             fontWeight: 600, verticalAlign: 'middle' }}
+                  >Set issue date in Overview ↗</button>
+                )}
+                {w.code === 'MISSING_ORIGIN' && (
+                  <div data-testid="warn-origin-authority"
+                       style={{ fontSize: 10, color: '#D4A600', marginTop: 3, lineHeight: 1.4 }}>
+                    Origin is governed by Product Master (product_local.origin_country) — correct it there, not here.{' '}
+                    <a href="/v2/master?entity=products" style={{ color: '#F59E0B' }} target="_self">Open Product Master ↗</a>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -2130,6 +2155,279 @@ function ProformaStatusHeader({
   );
 }
 
+// ── Product mapping resolver — wires up wFirma search/adopt/create-and-adopt ──
+// Renders per-code controls attached to the "N product(s) not matched in
+// wfirma_products" readiness blocker. Operator-initiated only; no auto-calls.
+//
+// Safety invariants (campaign gate — non-negotiable):
+//   1. No API call fires on mount. All calls are triggered by explicit operator click.
+//   2. wfirmaGoodsSearch and wfirmaGoodsAdopt are read/mirror-only — safe on click.
+//   3. wfirmaGoodsCreateAndAdopt is a LIVE wFirma write. It MUST only fire after
+//      the operator clicks data-testid="btn-confirm-create-adopt-{code}" inside the
+//      explicit confirmation panel (phase === 'confirm_create'). There is no other
+//      code path that calls it.
+//   4. If the server returns 403 (WFIRMA_CREATE_PRODUCT_ALLOWED is false), the
+//      create button transitions to DISABLED with the exact server reason text.
+
+// Parse product codes embedded in a "not matched in wfirma_products" blocker
+// reason string. Format: "N product(s) not matched in wfirma_products
+// (missing wfirma_product_id): CODE1, CODE2, CODE3…"
+function _parseUnmappedProductCodes(blockers) {
+  const codes = [];
+  const seen = new Set();
+  for (const b of (blockers || [])) {
+    const r = b.reason || '';
+    if (r.includes('wfirma_product')) {
+      // Extract codes after the closing "): " of the parenthetical
+      const idx = r.lastIndexOf('): ');
+      if (idx !== -1) {
+        const part = r.slice(idx + 3).replace(/…$/, '').trim();
+        for (const c of part.split(',')) {
+          const code = c.trim();
+          if (code && code !== '...' && !seen.has(code)) {
+            seen.add(code);
+            codes.push(code);
+          }
+        }
+      }
+    }
+  }
+  return codes;
+}
+
+function ProductMappingResolver({ unmappedCodes, draftLines, reloadReadiness }) {
+  // Per-code state map.
+  // Phases: idle | searching | found | not_found | adopting | adopted |
+  //         confirm_create | creating
+  const [perCode, setPerCode] = React.useState({});
+
+  const gs = (code) => perCode[code] || { phase: 'idle', result: null, error: null, createBlocked: null };
+  const ss = (code, patch) =>
+    setPerCode(prev => ({ ...prev, [code]: { ...gs(code), ...patch } }));
+
+  // doSearch — safe read-only wFirma lookup. Only fires on explicit operator click.
+  const doSearch = async (code) => {
+    ss(code, { phase: 'searching', error: null, createBlocked: null });
+    const r = await window.PzApi.wfirmaGoodsSearch(code);
+    if (!r.ok) {
+      ss(code, { phase: 'idle', error: `Search failed: ${r.error || 'unknown error'}` });
+      return;
+    }
+    const d = r.data || {};
+    if (d.found) {
+      ss(code, { phase: 'found', result: d.result || {} });
+    } else {
+      ss(code, { phase: 'not_found' });
+    }
+  };
+
+  // doAdopt — mirror-only (no wFirma write). Safe on operator click.
+  const doAdopt = async (code) => {
+    ss(code, { phase: 'adopting', error: null });
+    const r = await window.PzApi.wfirmaGoodsAdopt(code);
+    if (!r.ok) {
+      const d = (r.data) || {};
+      const detail = (d.status === 'not_in_wfirma')
+        ? 'Not found in wFirma — use Create & adopt instead'
+        : (r.error || 'Adopt failed');
+      ss(code, { phase: 'found', error: detail });
+      return;
+    }
+    ss(code, { phase: 'adopted' });
+    reloadReadiness && reloadReadiness();
+  };
+
+  // doConfirmCreate — LIVE wFirma write. Only callable after the operator
+  // explicitly clicks data-testid="btn-confirm-create-adopt-{code}".
+  // This function MUST NOT be called from any other code path.
+  const doConfirmCreate = async (code) => {
+    // item_type from draft editable_lines (best-effort; empty falls back to deng)
+    const line = (draftLines || []).find(ln => (ln.product_code || '').trim() === code);
+    const itemType = (line && line.item_type) || '';
+    ss(code, { phase: 'creating', error: null, createBlocked: null });
+    const r = await window.PzApi.wfirmaGoodsCreateAndAdopt(code, { item_type: itemType, description_en: '' });
+    if (!r.ok) {
+      if (r.status === 403) {
+        // Flag disabled — disable the button and surface the exact server reason
+        const d = (r.data) || {};
+        const reasons = d.blocking_reasons || [r.error || 'wfirma_create_product_allowed is false'];
+        ss(code, { phase: 'not_found', createBlocked: reasons[0] });
+      } else if (r.status === 409) {
+        // Already in wFirma — switch to Adopt flow
+        const d = (r.data) || {};
+        ss(code, {
+          phase: 'found',
+          result: { wfirma_id: d.wfirma_product_id },
+          error: 'Already in wFirma — click Adopt to link it locally.',
+        });
+      } else {
+        ss(code, { phase: 'not_found', error: r.error || 'Create failed — see server logs' });
+      }
+      return;
+    }
+    ss(code, { phase: 'adopted' });
+    reloadReadiness && reloadReadiness();
+  };
+
+  if (!unmappedCodes || unmappedCodes.length === 0) return null;
+
+  const codeId = (c) => c.replace(/[^a-zA-Z0-9_-]/g, '-');
+
+  return (
+    <div data-testid="product-mapping-resolver" style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text)' }}>
+        Resolve product mapping — register each code in wFirma to clear this blocker:
+      </div>
+      {unmappedCodes.map(code => {
+        const st = gs(code);
+        const tid = codeId(code);
+        return (
+          <div key={code} data-testid={`product-resolver-row-${tid}`}
+               style={{ marginBottom: 10, paddingBottom: 8, borderBottom: '1px dashed var(--border)' }}>
+            <div style={{ fontSize: 11, marginBottom: 4 }}>
+              <span style={{ fontFamily: 'monospace', color: 'var(--text)', fontWeight: 600 }}>{code}</span>
+            </div>
+
+            {st.error && (
+              <div style={{ fontSize: 11, color: 'var(--badge-red-text)', marginBottom: 4 }}>
+                {st.error}
+              </div>
+            )}
+
+            {st.phase === 'idle' && (
+              <button
+                data-testid={`btn-resolve-mapping-${tid}`}
+                onClick={() => doSearch(code)}
+                style={{ background: 'var(--card)', color: 'var(--text)',
+                         border: '1px solid var(--border)', borderRadius: 4,
+                         fontSize: 12, padding: '4px 10px', cursor: 'pointer' }}>
+                Resolve mapping
+              </button>
+            )}
+
+            {st.phase === 'searching' && (
+              <span style={{ fontSize: 11, color: 'var(--text-2, var(--text))' }}>
+                ⏳ Searching in wFirma…
+              </span>
+            )}
+
+            {st.phase === 'found' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11, color: 'var(--badge-green-text, green)' }}>
+                  {'✓ Found in wFirma'}
+                  {st.result && st.result.wfirma_id ? ` (ID: ${st.result.wfirma_id})` : ''}
+                </span>
+                <button
+                  data-testid={`btn-adopt-${tid}`}
+                  onClick={() => doAdopt(code)}
+                  style={{ background: 'var(--accent, #c9a456)', color: '#1a1a1a',
+                           border: 'none', borderRadius: 4,
+                           fontSize: 12, fontWeight: 600,
+                           padding: '4px 10px', cursor: 'pointer' }}>
+                  Adopt (link locally)
+                </button>
+              </div>
+            )}
+
+            {st.phase === 'adopting' && (
+              <span style={{ fontSize: 11, color: 'var(--text-2, var(--text))' }}>
+                ⏳ Adopting mapping…
+              </span>
+            )}
+
+            {st.phase === 'adopted' && (
+              <span data-testid={`product-resolver-adopted-${tid}`}
+                    style={{ fontSize: 11, color: 'var(--badge-green-text, green)', fontWeight: 600 }}>
+                ✓ Adopted — readiness reloading…
+              </span>
+            )}
+
+            {/* not_found: show create-and-adopt. DISABLED with reason if server blocked
+                it (403); otherwise enabled but gated behind explicit confirmation. */}
+            {st.phase === 'not_found' && (
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-2, var(--text))', marginBottom: 4 }}>
+                  Not found in wFirma.
+                </div>
+                {st.createBlocked ? (
+                  <button
+                    data-testid={`btn-create-adopt-${tid}`}
+                    disabled
+                    title={st.createBlocked}
+                    style={{ background: 'var(--bg-subtle)', color: 'var(--text-3, #aaa)',
+                             border: '1px solid var(--border)', borderRadius: 4,
+                             fontSize: 12, padding: '4px 10px',
+                             cursor: 'not-allowed', opacity: 0.6 }}>
+                    {'Create in wFirma & adopt — blocked: '}
+                    {st.createBlocked}
+                  </button>
+                ) : (
+                  <button
+                    data-testid={`btn-create-adopt-${tid}`}
+                    onClick={() => ss(code, { phase: 'confirm_create' })}
+                    style={{ background: 'var(--card)', color: 'var(--badge-red-text)',
+                             border: '1px solid var(--badge-red-border)', borderRadius: 4,
+                             fontSize: 12, fontWeight: 600,
+                             padding: '4px 10px', cursor: 'pointer' }}>
+                    Create in wFirma &amp; adopt ⚠
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* confirm_create: explicit confirmation gate — the ONLY path to doConfirmCreate */}
+            {st.phase === 'confirm_create' && (
+              <div data-testid={`product-resolver-confirm-${tid}`}
+                   style={{ padding: '8px 10px',
+                            border: '1px solid var(--badge-red-border)',
+                            borderRadius: 6, background: 'var(--bg)', marginTop: 4 }}>
+                <div style={{ fontSize: 12, fontWeight: 700,
+                              color: 'var(--badge-red-text)', marginBottom: 4 }}>
+                  ⚠ This creates a NEW product in wFirma — a live accounting change. Confirm?
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-2, var(--text))', marginBottom: 8 }}>
+                  {'Product code: '}
+                  <strong style={{ fontFamily: 'monospace' }}>{code}</strong>
+                  <br />
+                  {'Will be blocked if '}
+                  <code>WFIRMA_CREATE_PRODUCT_ALLOWED</code>
+                  {' is not enabled on the server.'}
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    data-testid={`btn-confirm-create-adopt-${tid}`}
+                    onClick={() => doConfirmCreate(code)}
+                    style={{ background: 'var(--badge-red-bg)',
+                             color: 'var(--badge-red-text)',
+                             border: '1px solid var(--badge-red-border)',
+                             borderRadius: 4, fontSize: 12, fontWeight: 700,
+                             padding: '4px 12px', cursor: 'pointer' }}>
+                    Yes, create in wFirma
+                  </button>
+                  <button
+                    data-testid={`btn-cancel-create-adopt-${tid}`}
+                    onClick={() => ss(code, { phase: 'not_found' })}
+                    style={{ background: 'var(--card)', color: 'var(--text)',
+                             border: '1px solid var(--border)', borderRadius: 4,
+                             fontSize: 12, padding: '4px 10px', cursor: 'pointer' }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {st.phase === 'creating' && (
+              <span style={{ fontSize: 11, color: 'var(--text-2, var(--text))' }}>
+                ⏳ Creating in wFirma…
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Blocker panel — consolidated "what's blocking" list ───────────────────────
 function ProformaBlockerPanel({ postBlockers, approveBlockers }) {
   const seen = new Set();
@@ -2181,7 +2479,12 @@ function ProformaReadinessPanel({
   readinessPost, linesByCode,
   resolvingDesign, resolveError, doResolveAmbiguity,
   savingVat, vatSaveError, doSaveEuVat,
+  draftLines, reloadReadiness,
+  blockerPanelReasons,  // Set<string> — reasons already shown by ProformaBlockerPanel (Slice 5 dedup)
 }) {
+  // Slice 5: filter out blocker entries whose reason text is already rendered by
+  // ProformaBlockerPanel above. Gating is unchanged — this is display-only.
+  const _shownAbove = (blockerPanelReasons instanceof Set) ? blockerPanelReasons : new Set();
   return (
     <React.Fragment>
       {readinessPost && !readinessPost.ready && (
@@ -2194,14 +2497,26 @@ function ProformaReadinessPanel({
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 6 }}>
             ⛔ Not ready — {(readinessPost.blockers || []).length} blocking reason{(readinessPost.blockers || []).length === 1 ? '' : 's'} · Approve / Post / Convert stay gated until resolved
           </div>
-          {(readinessPost.blockers || []).map((b, i) => (
-            <div key={i} style={{ fontSize: 12, marginBottom: 4 }} data-testid={`readiness-blocker-${i}`}>
-              <span style={{ color: 'var(--badge-red-text)' }}>• {b.reason}</span>
-              <div style={{ color: 'var(--text-dim, var(--text))', opacity: 0.75, paddingLeft: 14 }}>
-                Fix: {b.repair_action}
+          <div data-testid="readiness-panel-blockers-deduped">
+            {(readinessPost.blockers || []).filter(b => !_shownAbove.has(b.reason)).map((b, i) => (
+              <div key={i} style={{ fontSize: 12, marginBottom: 4 }} data-testid={`readiness-blocker-${i}`}>
+                <span style={{ color: 'var(--badge-red-text)' }}>• {b.reason}</span>
+                <div style={{ color: 'var(--text-dim, var(--text))', opacity: 0.75, paddingLeft: 14 }}>
+                  Fix: {b.repair_action}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
+          {/* ProductMappingResolver — wires wFirma search/adopt/create-and-adopt
+              for each unmapped product_code. Only shown when the readiness gate
+              surfaces a "not matched in wfirma_products" blocker. */}
+          {_parseUnmappedProductCodes(readinessPost.blockers || []).length > 0 && (
+            <ProductMappingResolver
+              unmappedCodes={_parseUnmappedProductCodes(readinessPost.blockers || [])}
+              draftLines={draftLines || []}
+              reloadReadiness={reloadReadiness || (() => {})}
+            />
+          )}
           {readinessPost.vat_resolution && readinessPost.vat_resolution.needs_save_to_master && (
             <div data-testid="readiness-vat-resolver"
                  style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--border)',
@@ -3814,6 +4129,14 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const postBlockers    = (readinessPost    && readinessPost.blockers)    || [];
   const approveBlocked  = !!(readinessApprove && readinessApprove.ready === false);
   const postBlocked     = !!(readinessPost    && readinessPost.ready    === false);
+  // Slice 5: set of blocker reasons already rendered by ProformaBlockerPanel so that
+  // ProformaReadinessPanel can suppress duplicates (display-only — gating is unchanged).
+  const blockerPanelReasons = React.useMemo(() => {
+    const s = new Set();
+    approveBlockers.forEach(b => b.reason && s.add(b.reason));
+    postBlockers.forEach(b => b.reason && s.add(b.reason));
+    return s;
+  }, [approveBlockers, postBlockers]);
   const stateAllowsPost    = ['draft', 'pending_local', 'approved', 'post_failed'].includes(draftState);
   const alreadyConverted    = !!(liveDraft.wfirma_invoice_id) || draftState === 'converted';
   const stateAllowsConvert  = (draftState === 'posted' || draftState === 'ready') && !alreadyConverted;
@@ -4292,6 +4615,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         savingVat={savingVat}
         vatSaveError={vatSaveError}
         doSaveEuVat={doSaveEuVat}
+        draftLines={liveDraft.editable_lines || []}
+        reloadReadiness={reloadReadiness}
+        blockerPanelReasons={blockerPanelReasons}
       />
 
       {/* ── Party cards + address authority bar ─────────────────────────── */}
@@ -4361,6 +4687,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               editFields={editFields}
               onEditField={(k, v) => setEditFields(prev => ({ ...prev, [k]: v }))}
               editError={editError}
+            />
+            {/* ── CM commercial defaults — Preview→Apply (Slice 1) ──────── */}
+            <CustomerMasterSuggestions
+              suggestions={liveDraft.customer_master_suggestions}
+              draftId={liveDraft.id || (draft && draft.id)}
+              updatedAt={liveDraft.updated_at || (draft && draft.updated_at) || ''}
+              onReload={() => draftHook && draftHook.reload && draftHook.reload()}
             />
             <ServiceChargesPanel
               charges={liveDraft.service_charges || []}
@@ -4847,6 +5180,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           docType={previewDocType}
           onDocTypeChange={setPreviewDocType}
           onClose={() => setShowPreview(false)}
+          onEditRequest={canEdit ? () => {
+            setShowPreview(false);
+            setActiveTab('overview');
+            handleEnterEdit();
+          } : undefined}
         />
       )}
       {showCancelModal && (
@@ -4998,16 +5336,21 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, chargesLoading, chargesApplying, onFetchSuggestions, onApplyCharge, onDismissSuggestion, onDeleteCharge }) {
   const fmtAmt = (amt, cur) => `${Number(amt).toFixed(2)} ${cur || ''}`;
   const existingTypes = (charges || []).map(c => (c.charge_type || '').toLowerCase());
+  // Slice-2: both freight and insurance are already on the draft — CM preview
+  // is still available (Lesson M: no capability removal) but labelled advisory.
+  const allTypesApplied = existingTypes.includes('freight') && existingTypes.includes('insurance');
 
   return (
     <div data-testid="service-charges-panel" style={{ marginTop: 24, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Service Charges</span>
         {canEdit && (
+          /* Slice-2: relabelled to make CM read-only advisory status unmistakable.
+             The draft's service_charges_json is the authority; this is a preview. */
           <button
             data-testid="btn-suggest-charges"
             disabled={chargesLoading}
-            title="Load freight and insurance suggestions from Customer Master"
+            title="Advisory read-only preview from Customer Master — the saved draft lines are authoritative"
             onClick={onFetchSuggestions}
             style={{
               fontSize: 12, padding: '2px 10px',
@@ -5015,7 +5358,13 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
               borderRadius: 4, cursor: chargesLoading ? 'wait' : 'pointer',
               color: 'var(--text-2)',
             }}
-          >{chargesLoading ? '⏳ Loading…' : '↓ Suggest from Customer Master'}</button>
+          >{chargesLoading ? '⏳ Loading…' : '↓ Preview freight/insurance from Customer Master'}</button>
+        )}
+        {canEdit && allTypesApplied && (
+          <span data-testid="charges-all-applied-note"
+                style={{ fontSize: 11, color: 'var(--text-3)', fontStyle: 'italic' }}>
+            (both already applied from draft)
+          </span>
         )}
         {!canEdit && (
           <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
@@ -5024,7 +5373,7 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
         )}
       </div>
 
-      {/* Existing charges */}
+      {/* Existing charges — DRAFT AUTHORITY (service_charges_json on the saved draft) */}
       {charges.length === 0 && (
         <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>No service charges added.</div>
       )}
@@ -5043,6 +5392,24 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
           {c.label && (
             <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{c.label}</span>
           )}
+          {/* Slice-2: expose mapping-layer fields so the operator can see which
+              CM service ID and (insurance) rate are stored on the draft line.
+              (a) CM service ID → wfirma_service_id on the charge line
+              (b) Insurance rate → formula_basis.rate_pct stored by slice-1 apply */}
+          {c.wfirma_service_id && (
+            <span data-testid={`charge-svc-id-${c.charge_type}`}
+                  title="CM service ID stored on this draft charge line"
+                  style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'monospace' }}>
+              svc:{c.wfirma_service_id}
+            </span>
+          )}
+          {c.formula_basis && c.formula_basis.rate_pct != null && (
+            <span data-testid={`charge-rate-pct-${c.charge_type}`}
+                  title="Insurance rate (%) from Customer Master, stored on draft"
+                  style={{ fontSize: 10, color: 'var(--text-3)' }}>
+              rate:{c.formula_basis.rate_pct}%
+            </span>
+          )}
           {canEdit && (
             <button
               data-testid={`btn-delete-charge-${c.charge_type}`}
@@ -5058,7 +5425,10 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
         </div>
       ))}
 
-      {/* Suggestion panel */}
+      {/* Suggestion panel — ADVISORY ONLY (live CM re-read, not the draft authority).
+          Slice-2: header explicitly labels this as advisory. The Apply button is
+          suppressed when the charge type already exists on the draft (alreadyApplied
+          check below) — prevents a 400 dup-guard hit on POST /service-charges. */}
       {suggestion && !suggestion.error && (
         <div data-testid="charge-suggestion-panel" style={{
           marginTop: 8, padding: '10px 12px',
@@ -5066,7 +5436,7 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
           borderRadius: 6,
         }}>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text-2)' }}>
-            Suggestions (Customer Master, {suggestion.draft_currency || '—'}):
+            Advisory preview (Customer Master, {suggestion.draft_currency || '—'}) — read-only:
           </div>
           {suggestion.applyError && (
             <div data-testid="charge-apply-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginBottom: 6 }}>
@@ -5184,8 +5554,12 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
 // canEdit === true (editing state only).
 function ServiceProductRegistryPanel() {
   const { useState, useEffect } = React;
-  const [products, setProducts] = useState(null);
-  const [loading, setLoading]   = useState(true);
+  const [products, setProducts]     = useState(null);
+  const [loading, setLoading]       = useState(true);
+  // Slice-2: distinguish genuine-empty from load-failure so "No mappings
+  // registered" only appears when the GET returned ok:true with an empty set,
+  // not when the call failed (network error, 500, auth, etc.).
+  const [loadFailed, setLoadFailed] = useState(false);
   const [editing, setEditing]   = useState(null);  // charge_type being edited
   const [editVal, setEditVal]   = useState('');
   const [saving, setSaving]     = useState(false);
@@ -5193,9 +5567,20 @@ function ServiceProductRegistryPanel() {
 
   const load = () => {
     setLoading(true);
+    setLoadFailed(false);
     window.PzApi.getServiceProducts()
-      .then(r => { setProducts(r && r.ok !== false ? (r.data || r) : null); setLoading(false); })
-      .catch(() => { setProducts(null); setLoading(false); });
+      .then(r => {
+        if (r && r.ok !== false) {
+          setProducts(r.data || r);
+          setLoadFailed(false);
+        } else {
+          // Server returned ok:false (auth error, 5xx, etc.) — not "genuinely empty"
+          setProducts(null);
+          setLoadFailed(true);
+        }
+        setLoading(false);
+      })
+      .catch(() => { setProducts(null); setLoadFailed(true); setLoading(false); });
   };
   useEffect(() => { load(); }, []);
 
@@ -5222,8 +5607,17 @@ function ServiceProductRegistryPanel() {
         <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>Service Charge → wFirma Product Registry</span>
         {loading && <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Loading…</span>}
       </div>
-      {!loading && rows.length === 0 && (
-        <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 8 }}>
+      {/* Slice-2: only show "no mappings" when the GET succeeded with genuinely
+          zero rows. When loadFailed, show a distinct unavailable state instead. */}
+      {!loading && loadFailed && (
+        <div data-testid="service-product-registry-unavailable"
+             style={{ fontSize: 11.5, color: 'var(--badge-red-text)', marginBottom: 8 }}>
+          Mapping status unavailable — could not load the service-product registry.
+        </div>
+      )}
+      {!loading && !loadFailed && rows.length === 0 && (
+        <div data-testid="service-product-registry-empty"
+             style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 8 }}>
           No mappings registered. Map a charge type to its wFirma product ID to enable automatic line creation on Post.
         </div>
       )}
@@ -5543,6 +5937,7 @@ const CM_SRC_BADGE = {
   saved:     { label: 'Saved on draft',                 bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
   suggested: { label: 'Suggested from Customer Master',  bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
   conflict:  { label: 'Conflict',                        bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+  advisory:  { label: 'Advisory — VAT resolved at posting', bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
   missing:   { label: 'Missing',                         bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
 };
 
@@ -5566,17 +5961,100 @@ function CmValue({ v }) {
   );
 }
 
-function CustomerMasterSuggestions({ suggestions }) {
+// Map: suggestion field key → apply-commercial field key.
+// Only keys present here get a checkbox. Fields absent from this map
+// (customer_name, contractor_id, currency, insurance_amount) are
+// displayed read-only — they are not commercial defaults this slice applies.
+const _CM_APPLY_KEY_MAP = {
+  payment_method:     'payment_method',
+  payment_days:       'payment_terms_days',
+  invoice_language:   'invoice_language_id',
+  vat_wdt:            'vat_mode',
+  freight_amount:     'freight_amount',
+  freight_service_id: 'freight_service_id',
+  insurance_rate:     'insurance_rate',
+  insurance_service_id: 'insurance_service_id',
+};
+
+function CustomerMasterSuggestions({ suggestions, draftId, updatedAt, onReload }) {
   const sug = suggestions || null;
   const mapped = sug && sug.status === 'mapped';
   const conflict = mapped ? sug.identity_conflict : null;
+
+  // Build initial checked state: suggested = checked, conflict = unchecked.
+  const _initialChecked = () => {
+    const state = {};
+    if (!mapped) return state;
+    (sug.fields || []).forEach(f => {
+      const applyKey = _CM_APPLY_KEY_MAP[f.key];
+      if (!applyKey) return;                         // not applicable
+      if (f.applicable === false) return;            // advisory-only (e.g. derived VAT hint) — never selectable/submitted
+      if (f.source === 'suggested') state[applyKey] = true;
+      if (f.source === 'conflict')  state[applyKey] = false;
+    });
+    return state;
+  };
+
+  const [checked, setChecked] = React.useState(_initialChecked);
+  const [applying, setApplying] = React.useState(false);
+  const [applyError, setApplyError] = React.useState(null);
+  const [applySuccess, setApplySuccess] = React.useState(false);
+
+  // Re-init checkboxes when suggestions change (e.g. after reload)
+  React.useEffect(() => {
+    setChecked(_initialChecked());
+    setApplyError(null);
+    setApplySuccess(false);
+  }, [sug && sug.mapped_contractor_id, updatedAt]);
+
+  const checkedKeys = Object.keys(checked).filter(k => checked[k]);
+  const canApply = mapped && checkedKeys.length > 0 && !applying;
+
+  const handleToggle = (applyKey) => {
+    setChecked(prev => ({ ...prev, [applyKey]: !prev[applyKey] }));
+    setApplyError(null);
+    setApplySuccess(false);
+  };
+
+  const handleApply = () => {
+    if (!canApply) return;
+    setApplying(true);
+    setApplyError(null);
+    setApplySuccess(false);
+    window.PzApi.applyCustomerCommercial(draftId, checkedKeys, updatedAt || '')
+      .then(r => {
+        if (r && r.ok) {
+          setApplySuccess(true);
+          onReload && onReload();
+        } else {
+          const detail = (r && (r.detail || r.error)) || 'Apply failed.';
+          if (typeof detail === 'string' && detail.toLowerCase().includes('conflict')) {
+            setApplyError('Draft was changed by another action — reload the page and retry.');
+          } else if (typeof detail === 'string' && detail.toLowerCase().includes('not found')) {
+            setApplyError('Customer Master record not found — check the customer mapping.');
+          } else {
+            setApplyError(typeof detail === 'string' ? detail : 'Apply failed — check backend logs.');
+          }
+        }
+      })
+      .catch(e => {
+        const msg = (e && e.message) || 'Network error';
+        if (msg.toLowerCase().includes('409') || msg.toLowerCase().includes('conflict')) {
+          setApplyError('Draft was changed by another action — reload the page and retry.');
+        } else {
+          setApplyError(msg);
+        }
+      })
+      .finally(() => setApplying(false));
+  };
+
   return (
     <div data-testid="cm-suggestions-section">
-      <PfSectionLabel>Customer Master suggestions</PfSectionLabel>
+      <PfSectionLabel>Customer Master — commercial defaults</PfSectionLabel>
       <PfPanelCard>
         <div style={{ padding: '8px 20px 14px' }}>
           <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
-            Advisory only — read from Customer Master. The draft stays the saved record; nothing here is applied automatically.
+            Advisory only — read from Customer Master. Check the fields you want to copy to the draft, then click <strong>Apply Selected Suggestions</strong>. Nothing is applied automatically.
           </div>
 
           {conflict && (
@@ -5609,27 +6087,96 @@ function CustomerMasterSuggestions({ suggestions }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               {/* header */}
               <div style={{
-                display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr auto',
+                display: 'grid', gridTemplateColumns: '24px 1.2fr 1fr 1fr auto',
                 gap: 10, padding: '4px 0', borderBottom: '1px solid var(--border-subtle)',
                 fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
                 textTransform: 'uppercase', letterSpacing: '0.08em',
               }}>
+                <div></div>
                 <div>Field</div><div>Saved on draft</div><div>Customer Master</div><div>Source</div>
               </div>
-              {(sug.fields || []).map(f => (
-                <div key={f.key}
-                     data-testid={`cm-field-${f.key}`}
-                     style={{
-                       display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr auto',
-                       gap: 10, alignItems: 'center', padding: '6px 0',
-                       borderBottom: '1px solid var(--border-subtle)',
-                     }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 600 }}>{f.label}</div>
-                  <div data-testid={`cm-field-${f.key}-draft`}><CmValue v={f.draft} /></div>
-                  <div data-testid={`cm-field-${f.key}-suggestion`}><CmValue v={f.suggestion} /></div>
-                  <div><CmSourceBadge source={f.source} /></div>
+              {(sug.fields || []).map(f => {
+                const applyKey = _CM_APPLY_KEY_MAP[f.key];
+                const applicable = !!applyKey && f.applicable !== false && (f.source === 'suggested' || f.source === 'conflict');
+                const isSaved    = f.source === 'saved';
+                return (
+                  <div key={f.key}
+                       data-testid={`cm-field-${f.key}`}
+                       style={{
+                         display: 'grid', gridTemplateColumns: '24px 1.2fr 1fr 1fr auto',
+                         gap: 10, alignItems: 'center', padding: '6px 0',
+                         borderBottom: '1px solid var(--border-subtle)',
+                         opacity: (!applyKey && !isSaved) ? 0.6 : 1,
+                       }}>
+                    {/* Checkbox column */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {applicable ? (
+                        <input
+                          type="checkbox"
+                          data-testid={`cm-check-${applyKey}`}
+                          checked={!!checked[applyKey]}
+                          onChange={() => handleToggle(applyKey)}
+                          disabled={applying}
+                          style={{ cursor: applying ? 'not-allowed' : 'pointer', accentColor: 'var(--accent)' }}
+                        />
+                      ) : isSaved ? (
+                        <span data-testid={`cm-saved-${f.key}`}
+                              style={{ color: 'var(--badge-green-text)', fontSize: 13, fontWeight: 700 }}
+                              title="Already saved on draft">✓</span>
+                      ) : (
+                        <span style={{ display: 'inline-block', width: 16 }} />
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 600 }}>{f.label}</div>
+                    <div data-testid={`cm-field-${f.key}-draft`}><CmValue v={f.draft} /></div>
+                    <div data-testid={`cm-field-${f.key}-suggestion`}><CmValue v={f.suggestion} /></div>
+                    <div><CmSourceBadge source={f.source} /></div>
+                  </div>
+                );
+              })}
+
+              {/* Apply error / success feedback */}
+              {applyError && (
+                <div data-testid="cm-apply-error" style={{
+                  marginTop: 10, padding: '8px 12px', borderRadius: 6,
+                  background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+                  fontSize: 12, color: 'var(--badge-red-text)',
+                }}>
+                  {applyError}
                 </div>
-              ))}
+              )}
+              {applySuccess && !applyError && (
+                <div data-testid="cm-apply-success" style={{
+                  marginTop: 10, padding: '8px 12px', borderRadius: 6,
+                  background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)',
+                  fontSize: 12, color: 'var(--badge-green-text)',
+                }}>
+                  Commercial defaults applied successfully.
+                </div>
+              )}
+
+              {/* Apply button */}
+              <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button
+                  data-testid="btn-apply-cm-commercial"
+                  disabled={!canApply}
+                  onClick={handleApply}
+                  style={{
+                    padding: '7px 18px', borderRadius: 6, border: 'none', cursor: canApply ? 'pointer' : 'not-allowed',
+                    background: canApply ? 'var(--accent)' : 'var(--bg-subtle)',
+                    color: canApply ? '#fff' : 'var(--text-3)',
+                    fontWeight: 700, fontSize: 12,
+                    opacity: applying ? 0.7 : 1,
+                  }}
+                >
+                  {applying ? 'Applying…' : 'Apply Selected Suggestions'}
+                </button>
+                {checkedKeys.length > 0 && !applying && (
+                  <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                    {checkedKeys.length} field{checkedKeys.length !== 1 ? 's' : ''} selected
+                  </span>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -5784,9 +6331,6 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
         </PfPanelCard>
       </div>
 
-      {/* ── Customer Master suggestions (Slice 1; advisory, read-only) ────────── */}
-      <CustomerMasterSuggestions suggestions={detail.customer_master_suggestions} />
-
       {/* ── VAT & Insurance / KUKE (wireframe PanelCard; display-only, Slice 4) ── */}
       <VatInsurancePanel
         contractorId={detail.client_contractor_id}
@@ -5834,7 +6378,7 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
             <InfoRow label="Payment due" value={(editMode ? (_editComputedDue || '—') : (detail.payment_due_date || '—'))} mono />
             {editMode ? (
               <PfFieldRow label={`${currency}/PLN rate`} hint="NBP">
-                <div style={{ width: '100%' }}>
+                <div data-testid="edit-exchange-rate" style={{ width: '100%' }}>
                   <EditableKvItem k="" value={editFields.exchange_rate || ''} onChange={v => onEditField('exchange_rate', v)} />
                 </div>
               </PfFieldRow>

@@ -129,8 +129,14 @@ def test_source_labels_are_correct(seeded):
     }
     for key, src in expect.items():
         assert _by_key(sug, key)["source"] == src, f"{key} expected {src}"
-    # VAT/WDT is derived (BG + VAT-EU → WDT) or missing; never falsely "saved".
-    assert _by_key(sug, "vat_wdt")["source"] in {"suggested", "missing"}
+    # VAT/WDT: a DERIVED hint (no stored vat_mode) is 'advisory'; an explicit
+    # stored vat_mode override is 'suggested'; neither present → 'missing'.
+    # Never falsely "saved".
+    _vat = _by_key(sug, "vat_wdt")
+    assert _vat["source"] in {"suggested", "advisory", "missing"}
+    # A derived-only hint must be marked non-applicable (not a selectable default).
+    if _vat["source"] == "advisory":
+        assert _vat.get("applicable") is False
 
 
 def test_currency_conflict_keeps_draft_usd_visible(seeded):
@@ -222,7 +228,9 @@ def test_frontend_section_wired():
            ).read_text(encoding="utf-8")
     assert "CustomerMasterSuggestions" in jsx
     assert 'data-testid="cm-suggestions-section"' in jsx
-    assert "detail.customer_master_suggestions" in jsx
+    assert "customer_master_suggestions" in jsx
     assert 'data-testid="cm-identity-conflict"' in jsx
-    for src in ("saved", "suggested", "conflict", "missing"):
-        assert f"{src}:" in jsx.split("CM_SRC_BADGE", 1)[1][:600]
+    # CM_SRC_BADGE now includes the 'advisory' source (derived VAT/WDT hint).
+    badge_block = jsx.split("CM_SRC_BADGE", 1)[1][:800]
+    for src in ("saved", "suggested", "conflict", "advisory", "missing"):
+        assert f"{src}:" in badge_block

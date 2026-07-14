@@ -724,11 +724,19 @@
     searchWfirmaGoods: (q) =>
       _get(`${BASE}/wfirma/goods/search?q=${encodeURIComponent(q || '')}`),
 
+    // GET /api/v1/wfirma/goods/search?product_code=X — per-code lookup for the
+    // ProductMappingResolver in proforma-detail (resolves the product blocker).
+    // Uses the canonical product_code param (line 316 of routes_wfirma_capabilities.py).
+    // Returns { ok, found, result }. Read-only; never writes to wFirma or mirror.
+    wfirmaGoodsSearch: (productCode) =>
+      _get(`${BASE}/wfirma/goods/search?product_code=${encodeURIComponent(productCode || '')}`),
+
     // POST /api/v1/wfirma/goods/create-and-adopt/{code} — CANONICAL product create
     // path. Gated on WFIRMA_CREATE_PRODUCT_ALLOWED (403 "blocked" when off; 409 if
     // the product already exists in wFirma → caller should adopt). NEVER mints a
     // code — the operator supplies the existing product_master code in the URL.
     // body: {item_type, description_en?}. Returns { ok, ... } or the block payload.
+    // LIVE wFirma write — never call without explicit operator confirmation.
     wfirmaGoodsCreateAndAdopt: (code, body) =>
       _postM(`${BASE}/wfirma/goods/create-and-adopt/${encodeURIComponent(code)}`, body || {}),
 
@@ -739,6 +747,7 @@
 
     // POST /api/v1/wfirma/goods/update-and-adopt/{code} — edit wFirma metadata +
     // adopt. Gated on WFIRMA_EDIT_PRODUCT_ALLOWED. body: {item_type?, description_en?}
+    // wFirma write — never call without explicit operator confirmation.
     wfirmaGoodsUpdateAndAdopt: (code, body) =>
       _postM(`${BASE}/wfirma/goods/update-and-adopt/${encodeURIComponent(code)}`, body || {}),
 
@@ -1073,6 +1082,18 @@
     // Records audit event buyer_override_from_customer_master.
     applyCustomerAddress: (draftId, updatedAt) =>
       _postM(`${BASE}/proforma/draft/${draftId}/apply-customer-address`, {
+        expected_updated_at: updatedAt || '',
+      }),
+
+    // POST /api/v1/proforma/draft/{draft_id}/apply-customer-commercial
+    // Applies operator-selected Customer Master commercial defaults.
+    // ``fields`` = string[] subset of:
+    //   payment_method, payment_terms_days, invoice_language_id, vat_mode,
+    //   freight_amount, freight_service_id, insurance_rate, insurance_service_id
+    // Records audit event commercial_defaults_from_customer_master.
+    applyCustomerCommercial: (draftId, fields, updatedAt) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/apply-customer-commercial`, {
+        fields,
         expected_updated_at: updatedAt || '',
       }),
 
