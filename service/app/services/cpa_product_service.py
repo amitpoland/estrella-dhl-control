@@ -269,15 +269,20 @@ def analyze_product_code_billing(
     draft_lines: List[Dict[str, Any]],
     available_by_pc: Dict[str, Any],
     invoice_by_pc: Optional[Dict[str, str]] = None,
+    unassigned_by_design: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Aggregate billed quantity per product_code vs available quantity.
 
     Thin delegation to product_authority_resolver.analyze_product_code_billing.
     CPA is the single service boundary for product-authority logic; callers
     must not import product_authority_resolver.analyze_product_code_billing directly.
+
+    ``unassigned_by_design`` (from authority_snapshot) lets the over-bill result
+    carry evidence of packing pieces that exist for a code's design but were never
+    assigned a product_code — surfaced, never counted as available.
     """
     from .product_authority_resolver import analyze_product_code_billing as _f  # noqa: PLC0415
-    return _f(draft_lines, available_by_pc, invoice_by_pc)
+    return _f(draft_lines, available_by_pc, invoice_by_pc, unassigned_by_design)
 
 
 __all__ = [

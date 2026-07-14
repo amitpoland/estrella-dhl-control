@@ -139,6 +139,15 @@ def resolve_batch_product_authority(
     product_codes: set = set()
     seen_pairs: set = set()
     skipped_pairs: set = set()
+    # Packing pieces that carry a design_no but NO product_code assignment. These
+    # are real received/transit pieces the over-bill gate cannot credit to any
+    # product_code (product_code is the assignment key, and it is blank here — e.g.
+    # a packing list that yielded design-only, so ``invoice_line_position`` /
+    # ``product_code`` were never stamped). They are NOT counted as available
+    # quantity (that would invent availability); they are surfaced as EVIDENCE so a
+    # bare "available 0" is explained by the operator-repair reality: a piece exists
+    # for the design but its product_code assignment is missing.
+    unassigned_by_design: Dict[str, Dict[str, Any]] = {}
 
     for r in (rows or []):
         d = str(r.get("design_no") or "").strip()
@@ -153,6 +162,18 @@ def resolve_batch_product_authority(
             available[p] = available.get(p, 0.0) + q
             invoice_by.setdefault(p, str(r.get("invoice_no") or ""))
             product_codes.add(p)
+        elif d:
+            # design present, product_code blank → unassigned packing evidence.
+            try:
+                uq = float(r.get("quantity") or 0)
+            except (TypeError, ValueError):
+                uq = 0.0
+            u = unassigned_by_design.setdefault(
+                d, {"quantity": 0.0, "count": 0, "invoice_no": ""})
+            u["quantity"] += uq
+            u["count"]    += 1
+            if not u["invoice_no"]:
+                u["invoice_no"] = str(r.get("invoice_no") or "")
 
         # Design candidates exclude any pair with a blank side (rule 8).
         if not d or not p:
@@ -167,6 +188,7 @@ def resolve_batch_product_authority(
         "available_by_product_code": available,           # raw sums (no rounding)
         "invoice_by_product_code":   invoice_by,
         "product_codes":             product_codes,
+        "unassigned_by_design":      unassigned_by_design,  # design_no → {quantity,count,invoice_no}
         "rows_scanned":              len(seen_pairs),
         "rows_skipped":              len(skipped_pairs),
         "authority_available":       authority_available,  # False → fail closed
@@ -274,9 +296,10 @@ def reconcile_billed_ambiguity(
 
 
 def analyze_product_code_billing(
-    draft_lines:      List[Dict[str, Any]],
-    available_by_pc:  Dict[str, float],
-    invoice_by_pc:    Optional[Dict[str, str]] = None,
+    draft_lines:          List[Dict[str, Any]],
+    available_by_pc:      Dict[str, float],
+    invoice_by_pc:        Optional[Dict[str, str]] = None,
+    unassigned_by_design: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """#686 — aggregate billed quantity per product_code vs available quantity.
 
@@ -288,6 +311,7 @@ def analyze_product_code_billing(
     with ``over_billed=True`` listed first.
     """
     invoice_by_pc = invoice_by_pc or {}
+    unassigned_by_design = unassigned_by_design or {}
 
     def _q(v: Any) -> float:
         try:
@@ -323,7 +347,7 @@ def analyze_product_code_billing(
         # (~1e-14 at these magnitudes, well under 1e-9).
         over = e["billed"] > avail + 1e-9
         if len(e["lines"]) > 1 or over:
-            out.append({
+            entry = {
                 "product_code":  pc,
                 "invoice_no":    invoice_by_pc.get(pc, ""),
                 "billed_qty":    round(e["billed"], 4),
@@ -332,7 +356,27 @@ def analyze_product_code_billing(
                 "line_count":    len(e["lines"]),
                 "design_nos":    sorted(e["designs"]),
                 "lines":         e["lines"],
-            })
+            }
+            # EVIDENCE (not availability): when over-billed, attach any packing
+            # pieces that exist for THIS code's design(s) but carry no product_code
+            # assignment. This explains a low/zero available without inventing it —
+            # the gate still blocks; the operator sees the real unassigned piece(s)
+            # to repair via the product-code assignment path. Never added to
+            # available_qty, never auto-assigned.
+            if over:
+                unassigned: List[Dict[str, Any]] = []
+                for dn in sorted(e["designs"]):
+                    u = unassigned_by_design.get(dn)
+                    if u and _q(u.get("quantity")) > 0:
+                        unassigned.append({
+                            "design_no":  dn,
+                            "quantity":   round(_q(u.get("quantity")), 4),
+                            "count":      int(u.get("count") or 0),
+                            "invoice_no": u.get("invoice_no", ""),
+                        })
+                if unassigned:
+                    entry["unassigned_packing"] = unassigned
+            out.append(entry)
     out.sort(key=lambda x: (not x["over_billed"], x["product_code"]))
     return out
 

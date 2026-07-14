@@ -50,7 +50,8 @@ def test_snapshot_shape_and_keys():
     snap = par.resolve_batch_product_authority("B", packing_rows=EJL299_ROWS)
     assert set(snap) == {
         "batch_id", "design_to_product_codes", "available_by_product_code",
-        "invoice_by_product_code", "product_codes", "rows_scanned", "rows_skipped",
+        "invoice_by_product_code", "product_codes", "unassigned_by_design",
+        "rows_scanned", "rows_skipped",
         "authority_available", "authority_error",
     }
     # an injected-rows snapshot is a successful read

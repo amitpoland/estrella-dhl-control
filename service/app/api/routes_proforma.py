@@ -6545,7 +6545,8 @@ def _derive_draft_readiness(
             duplicate_product_codes = _analyze_product_code_billing(
                 _r_lines,
                 _auth["available_by_product_code"],
-                _auth["invoice_by_product_code"])
+                _auth["invoice_by_product_code"],
+                _auth.get("unassigned_by_design"))
     except Exception as exc:
         # FAIL CLOSED: an unexpected failure evaluating the over-bill guard is a
         # HARD BLOCKER, not a warning — never approve/post/convert when the
@@ -6561,16 +6562,42 @@ def _derive_draft_readiness(
         if _dp["over_billed"]:
             _designs = ", ".join(_dp["design_nos"][:6]) + (
                 "…" if len(_dp["design_nos"]) > 6 else "")
-            _add(
-                f"product_code {_dp['product_code']!r} is billed "
-                f"{_dp['billed_qty']:g} but only {_dp['available_qty']:g} "
-                f"available in packing (invoice {_dp['invoice_no']}) — "
-                f"over-billed across {_dp['line_count']} draft lines "
-                f"[{_designs}]: confirm split-quantity or correct the sales lines",
-                "Reduce the billed quantity to the available packing quantity, "
-                "or fix the product_code on the duplicated sales lines. Do NOT "
-                "auto-merge lines or silently pick one.",
-            )
+            # When the shortfall is because packing pieces exist for this code's
+            # design(s) but were never assigned a product_code, say so — an
+            # "available 0" that hides two real unassigned pieces is the actual
+            # defect. This is evidence only: the gate still blocks; the operator
+            # repairs by assigning the product_code (no auto-assign, no invented qty).
+            _unassigned = _dp.get("unassigned_packing") or []
+            if _unassigned:
+                _ev = "; ".join(
+                    f"{u['count']}× design {u['design_no']} (qty {u['quantity']:g}"
+                    + (f", invoice {u['invoice_no']}" if u.get("invoice_no") else "")
+                    + ")"
+                    for u in _unassigned)
+                _add(
+                    f"product_code {_dp['product_code']!r} is billed "
+                    f"{_dp['billed_qty']:g} but only {_dp['available_qty']:g} "
+                    f"assigned in packing — however {_ev} exist in packing "
+                    f"WITHOUT a product_code assignment [{_designs}]: assign the "
+                    f"product_code to the packing piece(s), do not reduce the "
+                    f"billed quantity",
+                    "Assign product_code "
+                    f"{_dp['product_code']!r} to the unassigned packing piece(s) "
+                    "for the listed design(s) via the product-code assignment "
+                    "path, then re-check readiness. Do NOT auto-merge lines, "
+                    "silently pick a code, or invent availability.",
+                )
+            else:
+                _add(
+                    f"product_code {_dp['product_code']!r} is billed "
+                    f"{_dp['billed_qty']:g} but only {_dp['available_qty']:g} "
+                    f"available in packing (invoice {_dp['invoice_no']}) — "
+                    f"over-billed across {_dp['line_count']} draft lines "
+                    f"[{_designs}]: confirm split-quantity or correct the sales lines",
+                    "Reduce the billed quantity to the available packing quantity, "
+                    "or fix the product_code on the duplicated sales lines. Do NOT "
+                    "auto-merge lines or silently pick one.",
+                )
 
     # Structured ambiguity data so the frontend renders an exact product_code
     # selector — ONLY for designs a billed line cannot resolve (rule 6). Designs
