@@ -332,11 +332,24 @@
 
     // PATCH /api/v1/proforma/draft/{draft_id}/service-charges/{charge_id} (X-Operator)
     // Edit an existing freight/insurance charge in place. charge_type is immutable.
-    // updates: { amount?, currency?, label?, wfirma_service_id?, rate_pct? }
+    // updates: { amount?, currency?, label?, wfirma_service_id?, rate_pct?, resolution? }
     updateServiceCharge: (draftId, chargeId, updates, updatedAt) =>
       _patch(`${BASE}/proforma/draft/${draftId}/service-charges/${chargeId}`, {
         expected_updated_at: updatedAt || '',
         updates,
+      }),
+
+    // POST /api/v1/proforma/draft/{draft_id}/service-charge-resolution (X-Operator)
+    // PR-6 — record an explicit commercial decision for a freight/insurance
+    // charge. A zero amount is valid (customer_courier / waived / not_applicable /
+    // manual_amount). 'calculated' is NOT accepted here — use Calculate from CM.
+    // resolution: 'manual_amount'|'customer_courier'|'waived'|'not_applicable'|'unresolved'
+    setChargeResolution: (draftId, chargeType, resolution, amount, updatedAt) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/service-charge-resolution`, {
+        expected_updated_at: updatedAt || '',
+        charge_type: chargeType,
+        resolution,
+        ...(amount != null ? { amount } : {}),
       }),
 
     // DELETE /api/v1/proforma/draft/{draft_id}

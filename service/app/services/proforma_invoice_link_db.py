@@ -2230,6 +2230,13 @@ EDITABLE_LINE_FIELDS = (
 
 ALLOWED_SERVICE_CHARGE_TYPES = ("freight", "insurance")
 
+# PR-6 — the resolution vocabulary is OWNED by the commercial_charge_authority
+# (the reader). The writer imports it so add/update persist only valid states.
+from .commercial_charge_authority import (  # noqa: E402
+    RESOLUTION_STATES,
+    RESOLUTION_CALCULATED,
+)
+
 
 # ── C-3g: service-charge product metadata registry ───────────────────────────
 # PROFORMA-authority store for service-charge line emission metadata
@@ -3218,6 +3225,19 @@ def add_draft_service_charge(
     if wsid is not None and not str(wsid).strip():
         raise ValueError("wfirma_service_id must be a non-empty string if provided")
 
+    # PR-6 — explicit charge resolution (never inferred from amount). A zero
+    # amount is valid when paired with customer_courier / waived / not_applicable
+    # / manual_amount. Absent → stored as None (the reader treats an ambiguous
+    # legacy zero as 'unresolved').
+    resolution = charge.get("resolution")
+    if resolution is not None:
+        resolution = str(resolution).strip().lower()
+        if resolution not in RESOLUTION_STATES:
+            raise ValueError(
+                f"resolution {charge.get('resolution')!r} not allowed; "
+                f"expected one of {sorted(RESOLUTION_STATES)}"
+            )
+
     # Validate formula_basis if present
     formula_basis = charge.get("formula_basis")
     if formula_basis is not None:
@@ -3271,6 +3291,7 @@ def add_draft_service_charge(
         "label":             str(charge.get("label") or "").strip(),
         "wfirma_service_id": str(wsid).strip() if wsid is not None else None,
         "formula_basis":     formula_basis,
+        "resolution":        resolution,
     }
     charges.append(new_charge)
 
@@ -3425,6 +3446,22 @@ def update_draft_service_charge(
                 raise ValueError(f"rate_pct must be numeric, got {rate!r}")
         charge["formula_basis"] = fb or None
 
+    if "resolution" in updates:
+        # PR-6 — persist the operator's explicit resolution decision. Setting a
+        # zero-state (customer_courier / waived / not_applicable) alongside
+        # amount=0 is a valid commercial decision, not an error.
+        res = updates.get("resolution")
+        if res is None or str(res).strip() == "":
+            charge["resolution"] = None
+        else:
+            res = str(res).strip().lower()
+            if res not in RESOLUTION_STATES:
+                raise ValueError(
+                    f"resolution {updates.get('resolution')!r} not allowed; "
+                    f"expected one of {sorted(RESOLUTION_STATES)}"
+                )
+            charge["resolution"] = res
+
     charges[idx] = charge
 
     refreshed = _commit_draft_update(
@@ -3522,6 +3559,13 @@ _CM_COMMERCIAL_FIELDS: frozenset = frozenset([
     "freight_service_id",
     "insurance_rate",
     "insurance_service_id",
+    # PR-6: freeze the computed insurance premium at write time. The route
+    # computes it via the ONE shared premium helper and passes the frozen amount
+    # + full formula_basis (sales_total/rate_pct/minimum) so the read authority
+    # never depends on live Customer Master data. insurance_rate stays supported
+    # for back-compat but no longer leaves amount=0.
+    "insurance_amount",
+    "insurance_formula_basis",
 ])
 
 
@@ -3638,7 +3682,36 @@ def apply_customer_commercial_to_draft(
 
     # ── Compute new service_charges (upsert freight / insurance) ─────────
     fr_keys = frozenset(("freight_amount", "freight_service_id")) & updates.keys()
-    ins_keys = frozenset(("insurance_rate", "insurance_service_id")) & updates.keys()
+    ins_keys = frozenset((
+        "insurance_rate", "insurance_service_id",
+        "insurance_amount", "insurance_formula_basis",
+    )) & updates.keys()
+
+    def _apply_insurance_freeze(chg: Dict[str, Any]) -> None:
+        """PR-6: freeze the premium from the ONE Calculate action. When the caller
+        supplies a computed insurance_amount + insurance_formula_basis, store BOTH
+        (the premium and its frozen evidence) and stamp resolution='calculated'
+        (an explicit operator action, never inferred). Falls back to the legacy
+        rate-only stamp otherwise."""
+        _froze = False
+        if "insurance_amount" in updates and updates["insurance_amount"] is not None:
+            try:
+                chg["amount"] = float(updates["insurance_amount"])
+                _froze = True
+            except (TypeError, ValueError):
+                pass
+        if "insurance_formula_basis" in updates and isinstance(updates["insurance_formula_basis"], dict):
+            chg["formula_basis"] = dict(updates["insurance_formula_basis"])
+            _froze = True
+        elif "insurance_rate" in updates and updates["insurance_rate"] is not None:
+            fb = dict(chg.get("formula_basis") or {})
+            try:
+                fb["rate_pct"] = float(updates["insurance_rate"])
+            except (TypeError, ValueError):
+                pass
+            chg["formula_basis"] = fb or None
+        if _froze:
+            chg["resolution"] = RESOLUTION_CALCULATED
 
     new_charges: List[Dict[str, Any]] = [dict(c) for c in existing_charges]
 
@@ -3692,13 +3765,7 @@ def apply_customer_commercial_to_draft(
             ins = dict(new_charges[ins_idx])
             if "insurance_service_id" in updates and updates["insurance_service_id"] is not None:
                 ins["wfirma_service_id"] = str(updates["insurance_service_id"])
-            if "insurance_rate" in updates and updates["insurance_rate"] is not None:
-                fb = dict(ins.get("formula_basis") or {})
-                try:
-                    fb["rate_pct"] = float(updates["insurance_rate"])
-                except (TypeError, ValueError):
-                    pass
-                ins["formula_basis"] = fb
+            _apply_insurance_freeze(ins)
             new_charges[ins_idx] = ins
         else:
             ins_new: Dict[str, Any] = {
@@ -3712,14 +3779,7 @@ def apply_customer_commercial_to_draft(
             }
             if "insurance_service_id" in updates and updates["insurance_service_id"] is not None:
                 ins_new["wfirma_service_id"] = str(updates["insurance_service_id"])
-            if "insurance_rate" in updates and updates["insurance_rate"] is not None:
-                fb: Dict[str, Any] = {}
-                try:
-                    fb["rate_pct"] = float(updates["insurance_rate"])
-                except (TypeError, ValueError):
-                    pass
-                if fb:
-                    ins_new["formula_basis"] = fb
+            _apply_insurance_freeze(ins_new)
             new_charges.append(ins_new)
 
     # ── After snapshot for audit ──────────────────────────────────────────

@@ -312,9 +312,10 @@ def compute_insurance_suggestion(
     # Formula mode
     rate = c.insurance_rate
     if rate is not None and Decimal(rate) > 0:
-        computed = Decimal(draft_sales_total) * Decimal(rate)
-        if minimum is not None and Decimal(minimum) > 0:
-            computed = max(computed, Decimal(minimum))
+        # ONE premium formula — reuse the shared authority helper (never a second
+        # formula). Computed here at WRITE/suggest time and FROZEN into the charge.
+        from .commercial_charge_authority import insurance_premium
+        computed = insurance_premium(draft_sales_total, rate, minimum)
 
         formula_basis: Dict[str, Any] = {
             "sales_total": str(Decimal(draft_sales_total)),
@@ -327,7 +328,7 @@ def compute_insurance_suggestion(
 
         return {
             "ok": True,
-            "amount": computed.quantize(Decimal("0.01")),
+            "amount": computed,
             "wfirma_service_id": service_id,
             "label": label,
             "formula_basis": formula_basis,
