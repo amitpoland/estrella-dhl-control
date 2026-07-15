@@ -1185,6 +1185,18 @@
         expected_updated_at: updatedAt || '',
       }),
 
+    // POST /api/v1/proforma/draft/{id}/confirm-product-review (X-Operator).
+    // Operator review-STATE authority: records the current authoritative review
+    // decision for a mapped product_code (badge → "Operator confirmed"). Never
+    // touches machine extraction evidence (extracted_confidence /
+    // requires_manual_review) and never changes a mapping. Advisory (Lesson N) —
+    // does not gate Approve/Post/Convert. expected_updated_at is optional OCC.
+    confirmProductReview: (draftId, productCode, updatedAt) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/confirm-product-review`, {
+        product_code: productCode,
+        expected_updated_at: updatedAt || '',
+      }),
+
 
     // NOTE: suggestServiceCharges + applyServiceCharges are defined once, in the
     // Wave-3 block below (search "apply-service-charges"). The earlier duplicate

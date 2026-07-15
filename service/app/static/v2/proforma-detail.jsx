@@ -3035,6 +3035,8 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
   const [rowErr,   setRowErr]   = React.useState({});      // line_id -> message (Authority Gap)
   const [options,  setOptions]  = React.useState(null);    // Product Master options (lazy)
   const [recheck,  setRecheck]  = React.useState({ busy: false, msg: null, err: null });
+  const [confirmBusy, setConfirmBusy] = React.useState(null);  // line_id being confirmed
+  const [confirmErr,  setConfirmErr]  = React.useState({});    // line_id -> message
 
   const reload = React.useCallback(() => {
     if (!draftId) { setLoading(false); return Promise.resolve(); }
@@ -3092,8 +3094,25 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ expected_updated_at: expectedUpdatedAt }),
     })
-      .then(r => { setRecheck({ busy: false, msg: `Re-checked · ${(r && r.enriched_count) || 0} enriched from Product Master`, err: null }); if (onSaved) onSaved(); return reload(); })
+      .then(r => { setRecheck({ busy: false, msg: `Re-checked · ${(r && r.enriched_count) || 0} enriched from Product Master · confirmed rows preserved`, err: null }); if (onSaved) onSaved(); return reload(); })
       .catch(e => setRecheck({ busy: false, msg: null, err: (e && e.message) || 'Re-check failed' }));
+  };
+
+  // Operator review-state authority: record the CURRENT authoritative decision
+  // for a mapped product_code. Uses PzApi (X-Operator injected). Never rewrites
+  // machine extraction evidence; the confidence % stays visible as history.
+  const confirmReview = (ln) => {
+    const code = (ln.product_code || '').trim();
+    if (!code) { setConfirmErr(p => ({ ...p, [ln.line_id]: 'Map a product code before confirming.' })); return; }
+    setConfirmBusy(ln.line_id); setConfirmErr(p => ({ ...p, [ln.line_id]: null }));
+    window.PzApi.confirmProductReview(draftId, code, expectedUpdatedAt)
+      .then(r => {
+        if (r && r.ok === false) throw new Error((r && r.error) || 'Confirm rejected');
+        setConfirmBusy(null);
+        if (onSaved) onSaved();
+        return reload();
+      })
+      .catch(e => { setConfirmBusy(null); setConfirmErr(p => ({ ...p, [ln.line_id]: (e && e.message) || 'Confirm failed' })); });
   };
 
   const box  = { padding: '16px 18px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12.5, lineHeight: 1.6 };
@@ -3182,9 +3201,9 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
                       <th style={{ padding: '8px 12px', fontWeight: 600 }}>Design</th>
                       <th style={{ padding: '8px 12px', fontWeight: 600 }}>Description</th>
                       <th style={{ padding: '8px 12px', fontWeight: 600, textAlign: 'right' }}>Qty</th>
-                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Confidence</th>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }} title="Immutable historical extraction evidence — never a gate, never overwritten by review.">Machine confidence</th>
                       <th style={{ padding: '8px 12px', fontWeight: 600 }}>Product Master</th>
-                      <th style={{ padding: '8px 12px', fontWeight: 600 }}>Review</th>
+                      <th style={{ padding: '8px 12px', fontWeight: 600 }} title="Current operator authority. Green = operator confirmed.">Review</th>
                       <th style={{ padding: '8px 12px', fontWeight: 600 }}>Actions</th>
                     </tr>
                   </thead>
@@ -3219,12 +3238,19 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
                             : <span data-testid="pf-source-row-unmatched" style={{ color: 'var(--badge-amber-text)' }}>unmatched</span>}
                         </td>
                         <td style={{ padding: '8px 12px' }} data-testid="pf-source-review-status">
-                          {/* Derived advisory status — never a gate. accepted := matched & no manual flag. */}
-                          {ln.unmatched
-                            ? <span style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>● Needs mapping</span>
-                            : (ln.requires_manual_review
-                                ? <span style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>● Needs review</span>
-                                : <span style={{ color: 'var(--badge-green-text, #2e7d32)', fontWeight: 600 }}>● Accepted</span>)}
+                          {/* Operator review authority drives this badge (never a gate).
+                              Green = OPERATOR CONFIRMED, not machine-accepted. The
+                              confidence % is separate, immutable historical evidence. */}
+                          {ln.operator_status === 'confirmed' && !ln.review_required
+                            ? <span style={{ color: 'var(--badge-green-text, #2e7d32)', fontWeight: 600 }}
+                                    title={ln.operator_confirmed_by ? `Confirmed by ${ln.operator_confirmed_by}${ln.operator_confirmed_at ? ' · ' + ln.operator_confirmed_at : ''}` : undefined}>✓ Operator confirmed</span>
+                            : (ln.review_reason === 'source_changed'
+                                ? <span style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }} title="Source changed since confirmation — re-confirm the mapping.">⟳ Re-check required</span>
+                                : (ln.unmatched
+                                    ? <span style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>● Needs mapping</span>
+                                    : (ln.requires_manual_review
+                                        ? <span style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>● Needs review</span>
+                                        : <span style={{ color: 'var(--text-2, var(--text))', fontWeight: 600 }}>● Suggested</span>)))}
                         </td>
                         <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
                           {isEdit ? (
@@ -3233,12 +3259,23 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
                               <button data-testid="pf-source-cancel" onClick={cancelEdit} disabled={saving} style={iBtn}>Cancel</button>
                             </React.Fragment>
                           ) : (
-                            <button data-testid="pf-source-edit" onClick={() => startEdit(ln)} style={iBtn}>Edit / Map</button>
+                            <React.Fragment>
+                              <button data-testid="pf-source-edit" onClick={() => startEdit(ln)} style={{ ...iBtn, marginRight: 6 }}>Edit / Map</button>
+                              {ln.product_code && !(ln.operator_status === 'confirmed' && !ln.review_required) && (
+                                <button data-testid="pf-source-confirm" onClick={() => confirmReview(ln)} disabled={confirmBusy === ln.line_id}
+                                        style={{ ...iBtn, color: 'var(--badge-green-text, #2e7d32)', borderColor: 'var(--badge-green-text, #2e7d32)', opacity: confirmBusy === ln.line_id ? 0.6 : 1 }}>
+                                  {confirmBusy === ln.line_id ? 'Confirming…' : (ln.review_reason === 'source_changed' ? 'Re-confirm' : 'Confirm')}
+                                </button>
+                              )}
+                            </React.Fragment>
                           )}
                         </td>
                       </tr>
                       {rowErr[ln.line_id] && (
                         <tr><td colSpan={8} data-testid="pf-source-row-error" style={{ padding: '4px 12px 8px', fontSize: 11, color: 'var(--badge-amber-text)' }}>Save failed · {rowErr[ln.line_id]}</td></tr>
+                      )}
+                      {confirmErr[ln.line_id] && (
+                        <tr><td colSpan={8} data-testid="pf-source-confirm-error" style={{ padding: '4px 12px 8px', fontSize: 11, color: 'var(--badge-amber-text)' }}>Confirm failed · {confirmErr[ln.line_id]}</td></tr>
                       )}
                       </React.Fragment>
                       );
@@ -3257,9 +3294,12 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
               <span style={{ color: 'var(--badge-amber-text)' }}>● 60–85% medium / needs review</span>{'  ·  '}
               <span style={{ color: 'var(--badge-red-text)' }}>● &lt;60% low</span>
               <div data-testid="pf-source-diff-note" style={{ marginTop: 4 }}>
-                <strong style={{ color: 'var(--badge-amber-text)' }}>Backend Pending:</strong> a per-field
-                extracted-vs-current diff is not shown — no original-extraction snapshot is retained; the
-                review reflects current line state against Product Master. Use <em>Edit / Map</em> to correct a row.
+                <strong style={{ color: 'var(--text-2, var(--text))' }}>Machine confidence vs operator review:</strong> the
+                percentage is immutable historical extraction evidence. The <em>Review</em> badge is the current
+                operator authority — it reads <span style={{ color: 'var(--badge-green-text, #2e7d32)' }}>Operator confirmed</span> once
+                you <em>Confirm</em> a mapping, and reopens only if the source changes on re-import. Confirming never
+                rewrites the confidence. A per-field extracted-vs-current diff is not retained (historical comparison
+                unavailable); use <em>Edit / Map</em> to correct, then <em>Confirm</em>.
               </div>
             </div>
           )}
