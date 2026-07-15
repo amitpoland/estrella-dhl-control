@@ -4948,12 +4948,49 @@ def get_proforma_draft_extraction(draft_id: int) -> JSONResponse:
             unmatched_count += 1
         conf = None
         needs_review = False
+        # Operator review-state authority (PR-2) — kept STRICTLY separate from the
+        # machine extraction evidence below. operator_status is the current
+        # authority that drives the badge; extracted_confidence stays as immutable
+        # historical evidence. review reopens only when the CURRENT source_revision
+        # no longer matches the one snapshotted at confirmation time.
+        operator_status = None
+        operator_confirmed_at = None
+        operator_confirmed_by = None
+        cur_source_rev = None
+        confirmed_source_rev = None
         if pk is not None:
             try:
                 conf = float(pk.get("extracted_confidence", 0) or 0)
             except Exception:
                 conf = None
             needs_review = bool(pk.get("requires_manual_review"))
+            operator_status = (pk.get("operator_review_status") or None)
+            operator_confirmed_at = pk.get("operator_confirmed_at") or None
+            operator_confirmed_by = pk.get("operator_confirmed_by") or None
+            confirmed_source_rev = pk.get("operator_source_revision") or None
+            try:
+                cur_source_rev = pdb.compute_source_revision(pk)
+            except Exception:
+                cur_source_rev = None
+
+        is_confirmed = (operator_status == "confirmed")
+        source_changed = bool(
+            is_confirmed and confirmed_source_rev is not None
+            and cur_source_rev is not None
+            and confirmed_source_rev != cur_source_rev
+        )
+        # review_required / review_reason — advisory display authority (never a gate).
+        if not product_matched:
+            review_required, review_reason = True, "unmapped"
+        elif is_confirmed and source_changed:
+            review_required, review_reason = True, "source_changed"
+        elif is_confirmed:
+            review_required, review_reason = False, None
+        elif needs_review:
+            review_required, review_reason = True, "low_confidence"
+        else:
+            review_required, review_reason = False, None
+
         out_lines.append({
             "line_id":                ln.get("line_id"),
             "product_code":           pc,
@@ -4965,8 +5002,23 @@ def get_proforma_draft_extraction(draft_id: int) -> JSONResponse:
                                       or (pk or {}).get("quantity"),
             "product_matched":        product_matched,
             "product_master_ref":     (pm.get("product_code") if pm else None),
+            # ── Machine extraction evidence (historical, immutable) ──
             "extracted_confidence":   conf,
+            "machine_confidence":     conf,
+            "machine_recommendation": {
+                "product_code":           pc or None,
+                "confidence":             conf,
+                "requires_manual_review": needs_review,
+            },
             "requires_manual_review": needs_review,
+            # ── Operator review-state authority (current) ──
+            "operator_status":        operator_status,          # None | 'confirmed'
+            "operator_confirmed_at":  operator_confirmed_at,
+            "operator_confirmed_by":  operator_confirmed_by,
+            "source_revision":        cur_source_rev,
+            "confirmed_source_revision": confirmed_source_rev,
+            "review_required":        review_required,
+            "review_reason":          review_reason,
             "unmatched":              (not product_matched),
         })
 
@@ -7020,6 +7072,90 @@ def assign_packing_product_code(
         "assignment": result,
         "readiness":  _derive_draft_readiness(draft, intent="approve"),
     })
+
+
+@router.post("/draft/{draft_id}/confirm-product-review", dependencies=[_auth])
+def confirm_draft_product_review(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Operator records the CURRENT authoritative review decision for a mapped
+    ``product_code`` — the confirmation that turns the advisory *Needs review* /
+    *Suggested* badge into *Operator confirmed*.
+
+    This is a review-STATE authority, deliberately distinct from the machine
+    extraction evidence: it NEVER alters ``extracted_confidence`` /
+    ``requires_manual_review`` (those remain immutable history), and it never
+    invents or changes a mapping — the row must already carry the ``product_code``
+    (assign it first via the editable-line remap or
+    ``/assign-packing-product-code``). Confirmation snapshots the current
+    source_revision so a later source change reopens review.
+
+    Advisory (Lesson N): this endpoint changes only review DISPLAY state — it never
+    gates Approve / Post / Convert, and it credits no availability.
+
+    Body::
+        { "product_code": "EJL/26-27/380-1",
+          "expected_updated_at": "..."   # optional; validated against the draft when present
+        }
+
+    Errors: 400 (bad input / product_code on no packing row), 401/403 (auth),
+    404 (draft missing), 409 (draft posted/cancelled/superseded, or stale lock).
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator     = _require_operator(x_operator)
+    product_code = str(body.get("product_code") or "").strip()
+    expected     = str(body.get("expected_updated_at") or "")
+    if not product_code:
+        raise HTTPException(status_code=400, detail="product_code is required")
+
+    db    = _proforma_db_path()
+    draft = pildb.get_draft_by_id(db, int(draft_id))
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    if draft.status in ("posted", "cancelled", "superseded"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"draft {draft_id} is {draft.status!r} — product review "
+                   "confirmation is only meaningful before posting",
+        )
+    # Optional optimistic lock against the draft — enforced only when supplied
+    # (this is an advisory display action, not a fiscal write).
+    if expected and str(getattr(draft, "updated_at", "") or "") != expected:
+        raise HTTPException(
+            status_code=409,
+            detail="draft changed since it was loaded — reload and retry",
+        )
+    batch_id = draft.batch_id or ""
+
+    try:
+        result = pdb.confirm_product_review(batch_id, product_code, operator)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        pildb._record_draft_event(
+            db,
+            draft_id    = int(draft_id),
+            event       = "product_review_confirmed",
+            detail_json = json.dumps({
+                "product_code":    product_code,
+                "confirmed":       result.get("confirmed"),
+                "source_revision": result.get("source_revision"),
+                "row_ids":         result.get("row_ids"),
+                "batch_id":        batch_id,
+            }, ensure_ascii=False),
+            operator    = operator,
+        )
+    except Exception as exc:
+        log.warning("[draft %s] product_review_confirmed audit event failed "
+                    "(non-fatal): %s", draft_id, exc)
+
+    return JSONResponse({"ok": True, "confirmation": result})
 
 
 # ── Phase 4 — lifecycle controls + line add/remove ─────────────────────────

@@ -20,6 +20,7 @@ Thread-safe: connection per call, WAL mode, threading.Lock.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -68,6 +69,44 @@ def _compute_scan_code(line: Dict[str, Any]) -> str:
     if design:
         return f"{pc}|{design}"
     return pc
+
+
+def compute_source_revision(row: Dict[str, Any]) -> str:
+    """Canonical fingerprint of the *source-identity* fields of a packing row.
+
+    This is the anchor for the operator review lifecycle: an operator confirms a
+    mapping AGAINST a specific source revision; when a later re-import materially
+    changes the source (design, item type, metal/karat, quantity, invoice
+    position, unit price, or source serial), the fingerprint changes and the
+    read model reopens review.
+
+    Deliberately EXCLUDES:
+      * ``product_code``          — that is the operator/assignment DECISION, not
+        the source; including it would let a manual re-map look like a source change.
+      * ``extracted_confidence``  — machine EVIDENCE; re-scoring confidence must
+        never reopen an operator-confirmed row.
+
+    Returns a 16-hex-char digest (stable across processes; no randomness).
+    """
+    def _num(v: Any, places: int) -> str:
+        try:
+            return f"{float(v or 0):.{places}f}"
+        except (TypeError, ValueError):
+            return f"{0:.{places}f}"
+
+    pos = row.get("invoice_line_position")
+    sr  = row.get("pack_sr")
+    parts = [
+        str(row.get("design_no") or "").strip().upper(),
+        str(row.get("item_type") or "").strip().lower(),
+        str(row.get("metal") or "").strip().lower(),
+        str(row.get("karat") or "").strip().lower(),
+        _num(row.get("quantity"), 3),
+        ("" if pos is None else str(pos)),
+        _num(row.get("unit_price"), 4),
+        ("" if sr is None or sr == "" else _num(sr, 0)),
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
 # ── Init ───────────────────────────────────────────────────────────────────────
@@ -158,6 +197,20 @@ def init_packing_db(db_path: Path) -> None:
         _add_column_if_missing(con, "packing_lines", "size",            "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(con, "packing_lines", "diamond_weight",  "REAL NOT NULL DEFAULT 0.0")
         _add_column_if_missing(con, "packing_lines", "color_weight",    "REAL NOT NULL DEFAULT 0.0")
+
+        # Operator review-state authority (PR-2) — SEPARATE from machine extraction
+        # evidence. extracted_confidence / requires_manual_review are IMMUTABLE
+        # historical machine evidence; the columns below are the CURRENT operator
+        # review authority that drives the UI badge and survives reload + re-import.
+        #   operator_review_status    : NULL/'' = unconfirmed; 'confirmed' = operator-confirmed
+        #   operator_confirmed_at/by  : who/when confirmed
+        #   operator_source_revision  : source_revision snapshot AT confirm time; the
+        #                               read model reopens review when the current
+        #                               computed source_revision no longer matches it.
+        _add_column_if_missing(con, "packing_lines", "operator_review_status",   "TEXT DEFAULT NULL")
+        _add_column_if_missing(con, "packing_lines", "operator_confirmed_at",    "TEXT DEFAULT NULL")
+        _add_column_if_missing(con, "packing_lines", "operator_confirmed_by",    "TEXT DEFAULT NULL")
+        _add_column_if_missing(con, "packing_lines", "operator_source_revision", "TEXT DEFAULT NULL")
 
         # P1 parser observability: per-document parser_diagnostic_json column
         # carries the structured diagnostic dict captured by extract_packing.
@@ -668,7 +721,7 @@ def upsert_packing_lines(
                     # filtering on it made the lookup miss and every pack_sr
                     # row duplicated on same-batch re-upload.
                     existing = con.execute(
-                        """SELECT id FROM packing_lines
+                        """SELECT id, operator_review_status, product_code FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
                              AND pack_sr IS ?
                            LIMIT 1""",
@@ -676,7 +729,7 @@ def upsert_packing_lines(
                     ).fetchone()
                 else:
                     existing = con.execute(
-                        """SELECT id FROM packing_lines
+                        """SELECT id, operator_review_status, product_code FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
                              AND invoice_line_position IS ?
                              AND design_no=? AND bag_id=?
@@ -699,7 +752,7 @@ def upsert_packing_lines(
                 # aggregate (N:1) matches collapse to a single row per invoice line.
                 if existing is None and bag_id:
                     existing = con.execute(
-                        """SELECT id FROM packing_lines
+                        """SELECT id, operator_review_status, product_code FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
                              AND invoice_line_position IS ?
                              AND bag_id=?
@@ -710,7 +763,7 @@ def upsert_packing_lines(
                 # force_reextract: if still no match (bag_id also changed), widen to position only
                 if existing is None and force_reextract:
                     existing = con.execute(
-                        """SELECT id FROM packing_lines
+                        """SELECT id, operator_review_status, product_code FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
                              AND invoice_line_position IS ?
                            LIMIT 1""",
@@ -723,6 +776,22 @@ def upsert_packing_lines(
                 scan_code = _compute_scan_code(line)
 
                 if existing and force_reextract:
+                    # Review-state guard (PR-2): never SILENTLY overwrite an
+                    # operator-confirmed mapping on re-extraction. For a confirmed
+                    # row, preserve the operator's product_code (and its scan_code);
+                    # all other extracted fields still refresh, so the row's
+                    # computed source_revision changes and the read model reopens
+                    # review — the operator re-confirms rather than losing the code.
+                    _confirmed = str(
+                        (existing["operator_review_status"] if existing else "") or ""
+                    ).strip().lower() == "confirmed"
+                    _eff_product_code = (
+                        existing["product_code"] if _confirmed else line.get("product_code")
+                    )
+                    if _confirmed:
+                        _scan_line = dict(line)
+                        _scan_line["product_code"] = _eff_product_code
+                        scan_code = _compute_scan_code(_scan_line)
                     con.execute(
                         """UPDATE packing_lines SET
                                packing_document_id=?, design_no=?, bag_id=?,
@@ -739,7 +808,7 @@ def upsert_packing_lines(
                             line.get("packing_document_id", ""),
                             line.get("design_no", ""),
                             line.get("bag_id", ""),
-                            line.get("product_code"),
+                            _eff_product_code,
                             line.get("batch_no", ""),
                             line.get("tray_id", ""),
                             line.get("item_type", ""),
@@ -902,6 +971,78 @@ def assign_product_code_to_unassigned_design(
         "matched":             matched,
         "already_assigned_to": already,
         "row_ids":             row_ids,
+    }
+
+
+def confirm_product_review(
+    batch_id: str,
+    product_code: str,
+    operator: str,
+) -> Dict[str, Any]:
+    """Record the operator's CURRENT authoritative review decision for a mapped
+    product_code, stamping the operator review-state columns on every packing row
+    that already carries this ``product_code`` in this batch.
+
+    This is the write half of the review-state authority. It is SEPARATE from the
+    machine extraction evidence: it never touches ``extracted_confidence`` or
+    ``requires_manual_review`` (those stay as immutable history), and it never
+    invents or changes a mapping — the row must already carry ``product_code``
+    (assign it first via :func:`assign_product_code_to_unassigned_design` / the
+    editable-line remap). Confirmation snapshots the current
+    :func:`compute_source_revision` per row so a later source change reopens review.
+
+    Returns::
+        {"confirmed": int,           # rows stamped
+         "product_code": str,
+         "source_revision": str|None, # snapshot of the first confirmed row
+         "row_ids": [id, …]}
+
+    Raises ValueError when batch_id/product_code/operator are blank, or when no
+    packing row currently carries this product_code (nothing to confirm — assign
+    the mapping first).
+    """
+    if _db_path is None:
+        raise RuntimeError("packing_db not initialised — call init_packing_db() first")
+    bid = str(batch_id or "").strip()
+    pc  = str(product_code or "").strip()
+    op  = str(operator or "").strip()
+    if not bid or not pc or not op:
+        raise ValueError("batch_id, product_code and operator are all required")
+    now = _now_iso()
+    with _lock:
+        with _connect() as con:
+            rows = con.execute(
+                """SELECT * FROM packing_lines
+                   WHERE batch_id=? AND TRIM(product_code)=?""",
+                (bid, pc),
+            ).fetchall()
+            if not rows:
+                raise ValueError(
+                    f"no packing row carries product_code {pc!r} in batch {bid!r} — "
+                    "assign the mapping before confirming (nothing to confirm)"
+                )
+            row_ids: List[str] = []
+            first_rev: Optional[str] = None
+            for r in rows:
+                rev = compute_source_revision(dict(r))
+                if first_rev is None:
+                    first_rev = rev
+                con.execute(
+                    """UPDATE packing_lines SET
+                           operator_review_status='confirmed',
+                           operator_confirmed_at=?,
+                           operator_confirmed_by=?,
+                           operator_source_revision=?,
+                           updated_at=?
+                       WHERE id=?""",
+                    (now, op, rev, now, r["id"]),
+                )
+                row_ids.append(str(r["id"]))
+    return {
+        "confirmed":       len(row_ids),
+        "product_code":    pc,
+        "source_revision": first_rev,
+        "row_ids":         row_ids,
     }
 
 
