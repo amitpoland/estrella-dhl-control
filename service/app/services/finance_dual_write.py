@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import finance_postings_db as fpdb
+from . import commercial_charge_authority
 
 
 log = logging.getLogger(__name__)
@@ -170,6 +171,12 @@ def _build_payload(
                 "finance_dual_write skipping unknown charge_type=%s batch=%s client=%s",
                 ct, batch_id, client_name,
             )
+            continue
+        # PR-6 — never post an UNRESOLVED charge: the wFirma document excludes it,
+        # so finance must too (even if a stale amount lingers on the row). Keeps
+        # the finance posting in lockstep with the commercial authority.
+        if ((raw.get("resolution") or "").strip().lower()
+                == commercial_charge_authority.RESOLUTION_UNRESOLVED):
             continue
         mapped_type = _LEGACY_TO_NEW_CHARGE_TYPES[ct]
         amount = raw.get("amount")

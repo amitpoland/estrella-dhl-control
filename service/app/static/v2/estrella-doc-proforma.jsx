@@ -102,6 +102,16 @@ function _formatIban(iban) {
   return raw.replace(/(.{4})/g, "$1 ").trim();
 }
 
+// PR-6 — charge cell text: a billable amount prints its value; an explicit zero
+// decision (client courier / waived / not applicable) prints its label so the
+// customer sees WHY it is zero; anything else is "— not set".
+function _ejChargeText(c, cur) {
+  if (!c || !c.present) return "— not set";
+  const amt = Number(c.amount) || 0;
+  if (amt > 0) return `${c.currency || cur} ${amt.toFixed(2)}`;
+  return c.note || c.resolution || `${c.currency || cur} 0.00`;
+}
+
 function EJDocBank({ banks }) {
   if (!banks || banks.length === 0) {
     return (
@@ -422,7 +432,7 @@ function EJProformaClassic({ docData }) {
               <div key={c.type} data-ej-charge={c.type} style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderBottom: "1px solid #E2E8F0", fontSize: 10 }}>
                 <span>{c.label}</span>
                 <span className="ej-mono" style={{ color: c.present ? undefined : "#94A3B8" }}>
-                  {c.present ? `${c.currency || cur} ${Number(c.amount).toFixed(2)}` : "— not set"}
+                  {_ejChargeText(c, cur)}
                 </span>
               </div>
             ))}
@@ -616,7 +626,7 @@ function EJProformaModern({ docData }) {
           {charges.map(c => (
             <span key={c.type} data-ej-charge={c.type}>
               {c.label}: <span className="ej-mono" style={{ color: c.present ? "#0B3D2E" : "#94A3B8", fontWeight: 600 }}>
-                {c.present ? `${c.currency || cur} ${Number(c.amount).toFixed(2)}` : "— not set"}</span>
+                {_ejChargeText(c, cur)}</span>
             </span>
           ))}
         </div>
@@ -766,9 +776,7 @@ function EJProformaBold({ docData }) {
                 <span>Goods {cur} {totalEur.toFixed(2)}</span>
                 {charges.map(c => (
                   <span key={c.type} data-ej-charge={c.type}>
-                    {c.label} {c.present
-                      ? <span className="ej-mono" style={{ color: "#0B3D2E", fontWeight: 600 }}>{c.currency || cur} {Number(c.amount).toFixed(2)}</span>
-                      : <span style={{ color: "#94A3B8" }}>— not set</span>}
+                    {c.label} <span className="ej-mono" style={{ color: c.present ? "#0B3D2E" : "#94A3B8", fontWeight: 600 }}>{_ejChargeText(c, cur)}</span>
                   </span>
                 ))}
               </div>

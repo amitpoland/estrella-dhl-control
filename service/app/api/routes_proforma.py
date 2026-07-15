@@ -1215,31 +1215,14 @@ def _build_preview(batch_id: str, client_name: str,
                 pass  # never let cross-validation break the preview
 
     # ── Service charges (operator-entered freight / insurance) ─────────────
-    # Loaded read-only here so the preview surfaces them before create.
     from ..services.insurance_wording import build_insurance_line_name as _ins_wording
     service_charges: List[Dict[str, Any]] = []
     service_charge_warnings: List[str] = []
-    try:
-        from ..services import proforma_service_charges_db as _scdb
-        service_charges = _scdb.list_charges(batch_id, client_name)
-    except Exception as exc:
-        log.warning("service_charges read failed for %s/%s: %s",
-                    batch_id, client_name, exc)
-    # Each charge contributes to the line-currency dominant calc and the
-    # final total. Operator MUST submit charges in the same currency as
-    # the product lines — mixed currencies block create.
-    sc_currencies = {(c.get("currency") or "").upper() for c in service_charges
-                     if (c.get("currency") or "").strip()}
-    if service_charges and currency != "unknown" and \
-       sc_currencies and sc_currencies != {currency}:
-        blocking_reasons.append(
-            f"service charge currency {sorted(sc_currencies)} does not match "
-            f"product line currency {currency!r}"
-        )
-    # PR-6 — the preview total consumes the DRAFT SNAPSHOT authority (never the
-    # live service-charge table), so preview, print, posting and finance agree.
-    # Falls back to the live list only before a draft snapshot exists.
+    # PR-6 — for an EXISTING draft the persisted snapshot is the SOLE source for
+    # BOTH the charge list AND the subtotal (never the live service-charge table),
+    # so preview, print, posting and finance read identical amounts + resolutions.
     _snap_cc = None
+    _from_snapshot = False
     try:
         _pf_db0 = _proforma_db_path()
         if _pf_db0.exists():
@@ -1250,10 +1233,33 @@ def _build_preview(batch_id: str, client_name: str,
                     _snap_list = _pvj.loads(_pv_draft.service_charges_json or "[]") or []
                 except Exception:
                     _snap_list = []
+                if not isinstance(_snap_list, list):
+                    _snap_list = []
+                service_charges = _snap_list
+                _from_snapshot = True
                 _snap_cc = commercial_charge_authority.resolve_commercial_charges(
                     _pv_draft.currency or currency, _snap_list)
     except Exception:
         _snap_cc = None
+        _from_snapshot = False
+    # Only before a draft snapshot exists does the live editing table apply.
+    if not _from_snapshot:
+        try:
+            from ..services import proforma_service_charges_db as _scdb
+            service_charges = _scdb.list_charges(batch_id, client_name)
+        except Exception as exc:
+            log.warning("service_charges read failed for %s/%s: %s",
+                        batch_id, client_name, exc)
+    # Operator MUST keep charges in the same currency as the product lines —
+    # mixed currencies block create (checked against the authoritative list).
+    sc_currencies = {(c.get("currency") or "").upper() for c in service_charges
+                     if (c.get("currency") or "").strip()}
+    if service_charges and currency != "unknown" and \
+       sc_currencies and sc_currencies != {currency}:
+        blocking_reasons.append(
+            f"service charge currency {sorted(sc_currencies)} does not match "
+            f"product line currency {currency!r}"
+        )
     if _snap_cc is not None:
         service_charge_total = _snap_cc["service_charge_subtotal"]
     else:
@@ -1336,6 +1342,11 @@ def _build_preview(batch_id: str, client_name: str,
                 "amount":               c.get("amount"),
                 "currency":             c.get("currency"),
                 "note":                 c.get("note") or "",
+                # PR-6 — carry the persisted resolution + frozen formula evidence
+                # so consumers render the operator's explicit decision (and a
+                # retry preserves provenance) without a second lookup.
+                "resolution":           c.get("resolution"),
+                "formula_basis":        c.get("formula_basis"),
                 "insurance_line_name":  (
                     _ins_wording()
                     if (c.get("charge_type") or "").lower() == "insurance"
@@ -1350,6 +1361,10 @@ def _build_preview(batch_id: str, client_name: str,
             "final_total":           final_total,
             "currency":              currency,
         },
+        # PR-6 — the resolved commercial-charge authority (freight/insurance
+        # totals, per-charge resolution, unresolved-for-review). Present only
+        # once a draft snapshot exists; the subtotal above is derived from it.
+        "commercial_charges": _snap_cc,
         # Diagnostic surface for the design→product bridge population that
         # ran at the top of this preview. Operator UI / debugging tools
         # use this to see what was projected and what's ambiguous.
@@ -1509,6 +1524,15 @@ def _build_service_charge_lines(
         if not ct or ct not in pildb.ALLOWED_SERVICE_CHARGE_TYPES:
             if ct:
                 unmapped.append(f"{ct}(unknown_type)")
+            continue
+
+        # PR-6 — never bill an UNRESOLVED charge. Use the SAME classifier as the
+        # commercial authority so an ambiguous legacy zero (no explicit resolution
+        # but insurance rate/formula evidence) is caught and noted here too — not
+        # just an explicitly-stored 'unresolved'. Surfaced for review, never billed.
+        if (commercial_charge_authority.classify_charge(c)["resolution"]
+                == commercial_charge_authority.RESOLUTION_UNRESOLVED):
+            unmapped.append(f"{ct}(unresolved)")
             continue
 
         # C-1f: mirror-first fiscal read (1d) — good_id from mirror, cache fallback
@@ -1897,7 +1921,13 @@ def proforma_create(
                         {"charge_type": c.get("charge_type"),
                          "amount":      c.get("amount"),
                          "currency":    c.get("currency"),
-                         "note":        c.get("note") or ""}
+                         "note":        c.get("note") or "",
+                         # PR-6 — preserve the operator's explicit resolution and
+                         # its frozen formula evidence on retry; stripping them
+                         # would silently downgrade a decided charge to a legacy
+                         # amount-inferred one and lose the audit provenance.
+                         "resolution":    c.get("resolution"),
+                         "formula_basis": c.get("formula_basis"),}
                         for c in _raw_service_charges
                     ],
                 )
@@ -6131,6 +6161,14 @@ def post_proforma_draft_service_charge(
     operator = _require_operator(x_operator)
     expected = str(body.get("expected_updated_at") or "")
     charge   = body.get("charge") or {}
+    # PR-6 — 'calculated' is reserved for the Calculate-from-Customer-Master action
+    # (which freezes the formula evidence). A bare add must not claim that provenance.
+    if (isinstance(charge, dict)
+            and str(charge.get("resolution") or "").strip().lower()
+            == commercial_charge_authority.RESOLUTION_CALCULATED):
+        raise HTTPException(
+            status_code=400,
+            detail="resolution 'calculated' is set only by Calculate from Customer Master")
     return _draft_edit_dispatch(draft_id, lambda: pildb.add_draft_service_charge(
         _proforma_db_path(),
         int(draft_id),
@@ -6169,6 +6207,12 @@ def patch_proforma_draft_service_charge(
     if not isinstance(updates, dict) or not updates:
         raise HTTPException(
             status_code=400, detail="updates must be a non-empty JSON object")
+    # PR-6 — 'calculated' provenance may only be stamped by the Calculate action.
+    if (str(updates.get("resolution") or "").strip().lower()
+            == commercial_charge_authority.RESOLUTION_CALCULATED):
+        raise HTTPException(
+            status_code=400,
+            detail="resolution 'calculated' is set only by Calculate from Customer Master")
     return _draft_edit_dispatch(draft_id, lambda: pildb.update_draft_service_charge(
         _proforma_db_path(),
         int(draft_id),
@@ -6176,6 +6220,127 @@ def patch_proforma_draft_service_charge(
         updates,
         operator,
         expected,
+    ))
+
+
+#: Resolutions an operator may set through the explicit-decision endpoint.
+#: ``calculated`` is deliberately excluded — it is produced ONLY by the
+#: Calculate-from-Customer-Master action (which also freezes the formula
+#: evidence), never by a bare resolution write.
+_MANUAL_RESOLUTIONS = frozenset({
+    commercial_charge_authority.RESOLUTION_MANUAL,
+    commercial_charge_authority.RESOLUTION_CUSTOMER_COURIER,
+    commercial_charge_authority.RESOLUTION_WAIVED,
+    commercial_charge_authority.RESOLUTION_NOT_APPLICABLE,
+    commercial_charge_authority.RESOLUTION_UNRESOLVED,
+})
+_ZERO_RESOLUTIONS = frozenset({
+    commercial_charge_authority.RESOLUTION_CUSTOMER_COURIER,
+    commercial_charge_authority.RESOLUTION_WAIVED,
+    commercial_charge_authority.RESOLUTION_NOT_APPLICABLE,
+})
+
+
+def _apply_charge_resolution(db_path, draft_id: int, charge_type: str,
+                             resolution: str, amount, operator: str, expected: str):
+    """Upsert an explicit charge resolution through the EXISTING service-charge
+    writer (no new writer, no new table). Zero-states persist amount 0; a manual
+    amount persists the supplied value; unresolved leaves the amount untouched.
+
+    Add-vs-update is decided from the current snapshot; the writer re-checks the
+    OCC token (expected_updated_at), so a concurrent edit still 409s.
+    """
+    import json as _jres
+    draft = pildb.get_draft_by_id(db_path, int(draft_id))
+    if draft is None:
+        raise pildb.DraftNotFound(f"draft id={draft_id} not found")
+    try:
+        charges = _jres.loads(draft.service_charges_json or "[]") or []
+    except Exception:
+        charges = []
+    existing = next(
+        (c for c in charges
+         if (c.get("charge_type") or "").strip().lower() == charge_type),
+        None,
+    )
+    if resolution in _ZERO_RESOLUTIONS:
+        eff_amount = 0.0
+    elif resolution == commercial_charge_authority.RESOLUTION_MANUAL:
+        eff_amount = float(amount if amount is not None else 0.0)
+    else:  # unresolved — do not touch the amount
+        eff_amount = None
+
+    if existing is not None:
+        updates: Dict[str, Any] = {"resolution": resolution}
+        if eff_amount is not None:
+            updates["amount"] = eff_amount
+        return pildb.update_draft_service_charge(
+            db_path, int(draft_id), int(existing.get("charge_id") or 0),
+            updates, operator, expected,
+        )
+    # No charge of this type yet — create one carrying the resolution.
+    charge = {
+        "charge_type": charge_type,
+        "amount":      (eff_amount if eff_amount is not None else 0.0),
+        "currency":    draft.currency or "",
+        "resolution":  resolution,
+    }
+    return pildb.add_draft_service_charge(db_path, int(draft_id), charge, operator, expected)
+
+
+@router.post("/draft/{draft_id}/service-charge-resolution", dependencies=[_auth])
+def post_proforma_draft_charge_resolution(
+    draft_id:  int,
+    body:      Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Record an operator's EXPLICIT commercial decision for a freight/insurance
+    charge (PR-6). A zero amount is valid here — it is a decision, not an error.
+
+    Body::
+        { "expected_updated_at": "...",
+          "charge_type": "freight" | "insurance",
+          "resolution":  "manual_amount" | "customer_courier" | "waived"
+                         | "not_applicable" | "unresolved",
+          "amount": 0 }        # required for manual_amount; ignored otherwise
+
+    ``calculated`` is NOT accepted here — use the Calculate-from-Customer-Master
+    action, which also freezes the premium formula evidence.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+    charge_type = str(body.get("charge_type") or "").strip().lower()
+    if charge_type not in pildb.ALLOWED_SERVICE_CHARGE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"charge_type must be one of {sorted(pildb.ALLOWED_SERVICE_CHARGE_TYPES)}")
+    resolution = str(body.get("resolution") or "").strip().lower()
+    if resolution == commercial_charge_authority.RESOLUTION_CALCULATED:
+        raise HTTPException(
+            status_code=400,
+            detail="resolution 'calculated' is set only by the Calculate-from-"
+                   "Customer-Master action, not this endpoint")
+    if resolution not in _MANUAL_RESOLUTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"resolution must be one of {sorted(_MANUAL_RESOLUTIONS)}")
+    amount = body.get("amount")
+    if resolution == commercial_charge_authority.RESOLUTION_MANUAL:
+        if amount is None:
+            raise HTTPException(
+                status_code=400, detail="amount is required for manual_amount")
+        try:
+            if float(amount) < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="amount must be a number >= 0")
+    return _draft_edit_dispatch(draft_id, lambda: _apply_charge_resolution(
+        _proforma_db_path(), int(draft_id), charge_type, resolution, amount,
+        operator, expected,
     ))
 
 
@@ -8989,6 +9154,9 @@ def apply_service_charges(
             "currency":          draft_currency,
             "label":             suggestion.get("label") or "",
             "wfirma_service_id": suggestion.get("wfirma_service_id"),
+            # PR-6 — this IS the explicit Calculate-from-Customer-Master action, so
+            # the resulting amount is a frozen 'calculated' resolution.
+            "resolution":        commercial_charge_authority.RESOLUTION_CALCULATED,
         }
         if ctype == "insurance" and suggestion.get("formula_basis"):
             charge["formula_basis"] = suggestion["formula_basis"]

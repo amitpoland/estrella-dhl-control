@@ -3988,19 +3988,29 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     return '—';
   })();
   // Freight + insurance for the preview — read from the ONE CommercialChargeAuthority
-  // (same-currency-only totals resolved from the draft snapshot) so the printed doc
-  // shows exactly the subtotal every other consumer uses. A type resolving to 0
-  // renders an explicit "not set" state (present:false), never a hidden/zero value.
+  // (same-currency-only, resolved from the draft snapshot). A billable amount prints
+  // its value; an explicit zero decision (client courier / waived / not applicable)
+  // prints its label so the customer sees WHY it is zero; an unresolved or absent
+  // charge renders "not set". Never a hidden/invented value.
   const _cc = liveDraft.commercial_charges || {};
-  const _ccAmt = { freight: Number(_cc.freight_total) || 0, insurance: Number(_cc.insurance_total) || 0 };
+  const _ccByType = {};
+  (_cc.charges || []).forEach(r => { if (r && r.charge_type) _ccByType[r.charge_type] = r; });
+  const _RES_DOC_LABEL = { customer_courier: 'Client courier', waived: 'Waived', not_applicable: 'Not applicable' };
   const previewCharges = ['freight', 'insurance'].map(t => {
-    const amt = _ccAmt[t];
+    const rec = _ccByType[t] || null;
+    const amt = rec ? (Number(rec.amount) || 0) : 0;
+    const res = rec ? rec.resolution : null;
+    const zeroDecision = res === 'customer_courier' || res === 'waived' || res === 'not_applicable';
     return {
-      type:     t,
-      label:    t === 'freight' ? 'Freight' : 'Insurance',
-      amount:   amt > 0 ? amt : null,
-      currency: _cc.currency || draftCurrency,
-      present:  amt > 0,
+      type:       t,
+      label:      t === 'freight' ? 'Freight' : 'Insurance',
+      amount:     amt > 0 ? amt : null,
+      currency:   _cc.currency || draftCurrency,
+      resolution: res,
+      note:       zeroDecision ? (_RES_DOC_LABEL[res] || '') : '',
+      // Show the row for a billable amount OR an explicit zero decision, so a
+      // waived/courier charge prints instead of silently disappearing.
+      present:    amt > 0 || zeroDecision,
     };
   });
   const previewDocData = {
@@ -4839,6 +4849,37 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       });
   };
 
+  // PR-6 — record an explicit commercial decision (customer_courier / waived /
+  // not_applicable / manual_amount / unresolved) via the canonical writer. A
+  // zero amount is a valid decision, never an error.
+  const handleSetResolution = (chargeType, resolution, amount) => {
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    return window.PzApi.setChargeResolution(id, chargeType, resolution, amount, updatedAt)
+      .then(r => {
+        if (r && r.ok === false) throw new Error((r && (r.error || r.detail)) || 'Save failed');
+        draftHook && draftHook.reload && draftHook.reload();
+        return r;
+      });
+  };
+
+  // PR-6 — Calculate from Customer Master (explicit action → 'calculated').
+  const handleCalculateFromCM = (chargeType) => {
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    return window.PzApi.applyServiceCharges(id, [chargeType], updatedAt)
+      .then(r => {
+        if (r && r.ok === false) throw new Error((r && (r.error || r.detail)) || 'Calculate failed');
+        // apply-service-charges is idempotent: an existing charge is SKIPPED, not
+        // recalculated. Surface that so the operator is not misled into thinking a
+        // stale amount was refreshed (edit the charge, or remove + recalculate).
+        const skip = (r && r.skipped || []).find(s => (s.charge_type || '') === chargeType);
+        if (skip) throw new Error(skip.reason || `${chargeType} already exists — edit it to change the amount`);
+        draftHook && draftHook.reload && draftHook.reload();
+        return r;
+      });
+  };
+
   // PR B — Save buyer edit from modal
   const handleBuyerEditSave = () => {
     if (buyerEditSaving) return;
@@ -5075,6 +5116,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             {/* Layer 2b — saved draft freight/insurance charges */}
             <ServiceChargesPanel
               charges={liveDraft.service_charges || []}
+              commercialCharges={liveDraft.commercial_charges}
               canEdit={canEdit}
               draftState={draftState}
               draftCurrency={draftCurrency}
@@ -5087,6 +5129,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               onApplyCharge={handleApplyCharge}
               onAddCharge={handleAddCharge}
               onUpdateCharge={handleUpdateCharge}
+              onSetResolution={handleSetResolution}
+              onCalculateFromCM={handleCalculateFromCM}
               onDismissSuggestion={() => setChargeSuggestion(null)}
               onDeleteCharge={(chargeId) => {
                 const id = liveDraft.id || (draft && draft.id);
@@ -5783,7 +5827,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 }
 
 // ── PR B — Service charges panel ────────────────────────────────────────────
-function ServiceChargesPanel({ charges, canEdit, draftState, draftCurrency, serviceProducts, onLoadServiceProducts, suggestion, chargesLoading, chargesApplying, onFetchSuggestions, onApplyCharge, onAddCharge, onUpdateCharge, onDismissSuggestion, onDeleteCharge }) {
+function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, draftCurrency, serviceProducts, onLoadServiceProducts, suggestion, chargesLoading, chargesApplying, onFetchSuggestions, onApplyCharge, onAddCharge, onUpdateCharge, onSetResolution, onCalculateFromCM, onDismissSuggestion, onDeleteCharge }) {
   const fmtAmt = (amt, cur) => `${Number(amt).toFixed(2)} ${cur || ''}`;
   const existingTypes = (charges || []).map(c => (c.charge_type || '').toLowerCase());
   // Slice-2: both freight and insurance are already on the draft — CM preview
@@ -5855,6 +5899,48 @@ function ServiceChargesPanel({ charges, canEdit, draftState, draftCurrency, serv
       .catch(e => { setEditBusy(false); setEditErr((e && e.message) || 'Update failed'); });
   };
 
+  // PR-6 — explicit resolution actions. A zero amount is a valid commercial
+  // decision here (customer courier / waived / not applicable / manual 0).
+  const [resBusy, setResBusy] = React.useState(null);   // `${type}:${resolution}` in flight
+  const [resErr,  setResErr]  = React.useState(null);
+  const RES_LABELS = {
+    calculated: 'Calculated', manual_amount: 'Manual', customer_courier: 'Client courier',
+    waived: 'Waived', not_applicable: 'N/A', unresolved: 'Needs decision',
+  };
+  const RES_COLORS = {
+    unresolved: { bg: 'var(--badge-amber-bg, #4a3a10)', fg: 'var(--badge-amber-text, #f2c14e)' },
+  };
+  const doResolution = (type, resolution, amount) => {
+    if (!onSetResolution) return;
+    setResBusy(`${type}:${resolution}`); setResErr(null);
+    Promise.resolve(onSetResolution(type, resolution, amount))
+      .then(() => setResBusy(null))
+      .catch(e => { setResBusy(null); setResErr((e && e.message) || 'Save failed'); });
+  };
+  const doCalculate = (type) => {
+    if (!onCalculateFromCM) return;
+    setResBusy(`${type}:calculated`); setResErr(null);
+    Promise.resolve(onCalculateFromCM(type))
+      .then(() => setResBusy(null))
+      .catch(e => { setResBusy(null); setResErr((e && e.message) || 'Calculate failed'); });
+  };
+  // Resolution action bar for one charge type (reused for existing + not-yet-added).
+  const ResolutionBar = ({ type }) => {
+    if (!canEdit) return null;
+    const rBtn = { fontSize: 10.5, padding: '2px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--text-2)' };
+    const busy = (r) => resBusy === `${type}:${r}`;
+    return (
+      <div data-testid={`charge-resolution-actions-${type}`} style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button data-testid={`btn-res-calculate-${type}`} disabled={!!resBusy} onClick={() => doCalculate(type)} style={rBtn} title="Calculate from Customer Master (freezes the amount)">{busy('calculated') ? '…' : 'Calculate from CM'}</button>
+        <button data-testid={`btn-res-manual-${type}`} disabled={!!resBusy} onClick={() => { const v = window.prompt(`Enter ${type} amount (${draftCurrency || 'EUR'}); 0 is allowed`, '0'); if (v === null) return; const n = parseFloat(v); if (isNaN(n) || n < 0) { setResErr('Enter a number >= 0'); return; } doResolution(type, 'manual_amount', n); }} style={rBtn} title="Enter the amount manually (0 allowed)">{busy('manual_amount') ? '…' : 'Enter manually'}</button>
+        <button data-testid={`btn-res-courier-${type}`} disabled={!!resBusy} onClick={() => doResolution(type, 'customer_courier', 0)} style={rBtn} title="Client provides their own courier (amount 0)">{busy('customer_courier') ? '…' : 'Client courier'}</button>
+        <button data-testid={`btn-res-waive-${type}`} disabled={!!resBusy} onClick={() => doResolution(type, 'waived', 0)} style={rBtn} title="Waive this charge (amount 0)">{busy('waived') ? '…' : 'Waive'}</button>
+        <button data-testid={`btn-res-na-${type}`} disabled={!!resBusy} onClick={() => doResolution(type, 'not_applicable', 0)} style={rBtn} title="Not applicable (amount 0)">{busy('not_applicable') ? '…' : 'Not applicable'}</button>
+      </div>
+    );
+  };
+  const unresolved = (commercialCharges && commercialCharges.unresolved_charges) || [];
+
   return (
     <div data-testid="service-charges-panel" style={{ marginTop: 24, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -5893,6 +5979,35 @@ function ServiceChargesPanel({ charges, canEdit, draftState, draftCurrency, serv
           <button data-testid="btn-add-insurance" onClick={() => openAdd('insurance')} style={iBtn}>+ Add insurance</button>
         )}
       </div>
+
+      {/* PR-6 — resolution actions for a charge type not yet on the draft, so an
+          operator can record "client courier / waived / not applicable / manual 0"
+          (a valid zero decision) without first adding a zero-amount row. */}
+      {canEdit && ['freight', 'insurance'].filter(t => !existingTypes.includes(t)).map(t => (
+        <div key={t} data-testid={`charge-resolution-new-${t}`}
+             style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 11, color: 'var(--text-2)', width: 80 }}>{t.charAt(0).toUpperCase() + t.slice(1)}:</span>
+          <ResolutionBar type={t} />
+        </div>
+      ))}
+
+      {/* PR-6 — unresolved charges surfaced for operator review (excluded from the
+          billable subtotal until an explicit decision is recorded). */}
+      {unresolved.length > 0 && (
+        <div data-testid="charges-unresolved-banner" role="alert" style={{
+          padding: '8px 12px', marginBottom: 8, borderRadius: 6,
+          background: 'var(--badge-amber-bg, #4a3a10)', color: 'var(--badge-amber-text, #f2c14e)',
+          border: '1px solid var(--badge-amber-text, #f2c14e)', fontSize: 12,
+        }}>
+          <strong>Needs a decision:</strong>{' '}
+          {unresolved.map(u => u.charge_type).join(', ')} — a zero amount with rate/formula
+          evidence but no explicit resolution is excluded from the total. Choose
+          Calculate from CM, Enter manually, Client courier, Waive, or Not applicable.
+        </div>
+      )}
+      {resErr && (
+        <div data-testid="charge-resolution-error" style={{ fontSize: 11, color: 'var(--badge-red-text)', marginBottom: 6 }}>{resErr}</div>
+      )}
 
       {/* Manual add form — writes via the canonical service-charge writer (POST /service-charges). */}
       {canEdit && addType && (
@@ -5935,6 +6050,20 @@ function ServiceChargesPanel({ charges, canEdit, draftState, draftCurrency, serv
           <span style={{ fontSize: 13, color: 'var(--text)', flex: 1 }}>
             {fmtAmt(c.amount, c.currency)}
           </span>
+          {/* PR-6 — persisted resolution badge (the operator's explicit decision). */}
+          {c.resolution && (
+            <span data-testid={`charge-resolution-${c.charge_type}`}
+                  data-resolution={c.resolution}
+                  title={`Resolution: ${RES_LABELS[c.resolution] || c.resolution}`}
+                  style={{
+                    fontSize: 10, padding: '1px 7px', borderRadius: 10,
+                    background: (RES_COLORS[c.resolution] || {}).bg || 'var(--badge-bg, var(--bg))',
+                    color: (RES_COLORS[c.resolution] || {}).fg || 'var(--text-2)',
+                    border: '1px solid var(--border)',
+                  }}>
+              {RES_LABELS[c.resolution] || c.resolution}
+            </span>
+          )}
           {c.label && (
             <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{c.label}</span>
           )}
@@ -5981,6 +6110,12 @@ function ServiceChargesPanel({ charges, canEdit, draftState, draftCurrency, serv
             >✕</button>
           )}
         </div>
+        {canEdit && !isEdit && (
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '0 10px 6px', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Resolve:</span>
+            <ResolutionBar type={c.charge_type} />
+          </div>
+        )}
         {canEdit && isEdit && (
           <div data-testid={`charge-edit-form-${c.charge_type}`} style={{ padding: '10px 12px', marginBottom: 6, background: 'var(--bg)', border: '1px solid var(--accent)', borderRadius: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{ fontSize: 11, color: 'var(--text-3)', width: 70 }}>Edit {c.charge_type}</span>
