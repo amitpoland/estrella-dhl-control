@@ -131,3 +131,17 @@ When `MISSING_SKILL` appears in routing output, record in `BACKLOG.md` with disp
 | `cowork-integration` | READ_ONLY (reference) | Architecture reference |
 | `engineering-lessons` | READ_ONLY (reference) | Lesson narratives |
 | `deploy` | DEPLOY_CAPABLE | Full 7-agent gate; highest risk |
+
+---
+
+## Handoff to agent selection
+
+Skills and agents are **separate routing layers**:
+- Selected skills define the **standards and constraints** for the package layer. Skills inform;
+  they do **not** select agents.
+- **Agent selection follows `.engineering-os/03_AGENT_ROUTER.md`** (§2 by-package routing).
+- Select the **minimum** sufficient set: one lead + the named reviewer council + one gate.
+  **Never activate all available agents** (`agent-router` quality gate; `chief-orchestrator`
+  anti-pattern).
+- Only **session-available installed skills** may be selected. An unavailable required skill is
+  **reported explicitly** — never fabricated, never silently replaced by a similarly named skill.

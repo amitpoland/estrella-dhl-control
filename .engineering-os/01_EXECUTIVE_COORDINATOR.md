@@ -74,6 +74,30 @@ ambiguity with a sensible default is not a reason to stop or to ask.
 
 ---
 
+## 2.1 Six-responsibility pre-execution load manifest (single canonical source)
+
+Before any execution the Coordinator loads all six documentation responsibilities. This table is
+the **one** canonical mapping — other files (e.g. `/feature`) reference it; none restate it. All
+entries point to **existing** canonical documents; no `PRD.md` / `ARCHITECTURE.md` / `RULES.md` /
+`PHASES.md` / `DESIGN.md` / `MEMORY.md` file is created. Reference stable section headings and
+paths, never brittle line numbers.
+
+| # | Responsibility | Canonical source(s) — stable heading/path | Fallback |
+|---|---|---|---|
+| 1 | **PRD / product requirements** | `CLAUDE.md` § "Business Feature Completeness Standard" · `.engineering-os/07_BUSINESS_OPERABILITY.md` · `PERSISTENT_REQUIREMENTS.md` (per-task PR-NNN) | — |
+| 2 | **ARCHITECTURE** | `CLAUDE.md` § "Architecture" · `.engineering-os/00_ENGINEERING_CONSTITUTION.md` · `docs/governance/AUTHORITY_MAP.md` (domain contracts under `service/docs/` where applicable) | — |
+| 3 | **RULES / governance** | `CLAUDE.md` § "MANDATORY GOVERNANCE GATES" (GATES 1–6) · `.claude/contracts/governance-precedence.md` | — |
+| 4 | **PHASES / lifecycle** | `.engineering-os/06_PACKAGE_LIFECYCLE.md` · `.claude/TASK_EXECUTION_PROTOCOL.md` · `CLAUDE.md` § "Feature lifecycle (seven stages)" | — |
+| 5 | **DESIGN** | `CLAUDE.md` § "FRONTEND AUTHORITY CONSTITUTION" · `.claude/skills/frontend-design.md` · `.claude/skills/ej-dashboard-design/SKILL.md` — **UI packages only** | mark **NOT APPLICABLE** for non-UI work |
+| 6 | **MEMORY / continuity** | `.claude/memory/PROJECT_STATE.md` · `.claude/memory/TASK_STATE.md` · `.claude/memory/engineering_lessons.md` (when applicable) | `.claude/memory/PROJECT_STATE_SUMMARY.md` when `PROJECT_STATE.md` absent |
+
+Rule: a package may not leave Intake until every **applicable** row is loaded (row 5 only when
+the classification is UI). A missing canonical file triggers its Fallback, never a silent skip.
+If a responsibility has **no** source and **no** fallback available (e.g. both MEMORY files
+absent), STOP with a continuity blocker — do not proceed.
+
+---
+
 ## 3. Dispatch contract (how the Coordinator delegates)
 
 - **To a skill:** "Standard X governs this layer — apply it." The Coordinator never restates

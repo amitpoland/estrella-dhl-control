@@ -33,7 +33,7 @@ for dispatch.
 | **Plugin (brand-voice family)** | 5 | marketplace plugin, not this repo |
 | **Total dispatchable `subagent_type`** | **≈ 80** | sum of the above |
 | **Overlap: repo ∩ dispatchable** | **15** | all repo agents are dispatchable |
-| **Overlap: repo ∩ user-level** | **0** | clean separation — no name collision |
+| **Overlap: repo ∩ user-level** | **0** (as of 2026-06-06) | clean separation — no name collision. **SUPERSEDED 2026-07-08:** the `AGENT_REGISTRY.md` 2026-07-08 refresh found **5** repo∩user name overlaps (`final-consistency-review`, `gap-detection`, `integration-boundary`, `reviewer-challenge`, `ux-flow`) after 7 agents were added to the repo. Both facts preserved — the "0" was accurate on 2026-06-06; the "5" is current. |
 
 **Plus skills:** 3 · **commands:** 8 (see SKILL_REGISTRY.md / COMMAND_REGISTRY.md).
 
