@@ -3029,6 +3029,118 @@ def remove_draft_service_charge(
     return refreshed
 
 
+def update_draft_service_charge(
+    db_path:              Path,
+    draft_id:             int,
+    charge_id:            int,
+    updates:              Dict[str, Any],
+    operator:             str,
+    expected_updated_at:  str,
+) -> ProformaDraft:
+    """Edit an existing service charge in place by ``charge_id``.
+
+    Completes CRUD on the canonical service-charge writer (add / update /
+    remove) so the operator can correct a freight/insurance amount, service
+    product mapping, label, or insurance rate WITHOUT a destructive
+    delete-then-re-add. ``charge_type`` is immutable (remove + add to change a
+    type). Only the keys present in ``updates`` are changed.
+
+    Editable keys: ``amount`` (>= 0), ``currency`` (must match draft lines),
+    ``label``, ``wfirma_service_id`` (non-empty when set, or null to clear),
+    ``rate_pct`` (insurance formula_basis.rate_pct; None/'' clears it).
+
+    Reuses the same validation, one-per-type invariant (untouched), currency
+    guard, and audit path as :func:`add_draft_service_charge`.
+    """
+    if not (operator or "").strip():
+        raise ValueError("operator is required")
+    if not isinstance(updates, dict):
+        raise ValueError("updates must be a JSON object")
+
+    d = _load_for_edit(db_path, draft_id, expected_updated_at)
+    try:
+        charges = json.loads(d.service_charges_json or "[]") or []
+    except Exception:
+        charges = []
+    idx = next(
+        (i for i, c in enumerate(charges)
+         if int(c.get("charge_id") or 0) == int(charge_id)),
+        None,
+    )
+    if idx is None:
+        raise ValueError(
+            f"charge_id={charge_id} not found on draft id={draft_id}")
+
+    before = dict(charges[idx])
+    charge = dict(charges[idx])
+
+    if "amount" in updates:
+        try:
+            amount = float(updates.get("amount") or 0)
+        except (TypeError, ValueError):
+            raise ValueError(f"amount must be numeric, got {updates.get('amount')!r}")
+        if amount < 0:
+            raise ValueError("amount must be >= 0")
+        charge["amount"] = amount
+
+    if "currency" in updates:
+        ccy = _validate_currency(str(updates.get("currency") or ""))
+        try:
+            lines = _ensure_line_ids(json.loads(d.editable_lines_json or "[]") or [])
+        except Exception:
+            lines = []
+        line_ccys = {(ln.get("currency") or "").upper()
+                     for ln in lines if ln.get("currency")}
+        if line_ccys and ccy not in line_ccys:
+            raise ValueError(
+                f"service charge currency {ccy} does not match draft line "
+                f"currencies {sorted(line_ccys)}"
+            )
+        charge["currency"] = ccy
+
+    if "label" in updates:
+        charge["label"] = str(updates.get("label") or "").strip()
+
+    if "wfirma_service_id" in updates:
+        wsid = updates.get("wfirma_service_id")
+        if wsid is None or str(wsid).strip() == "":
+            charge["wfirma_service_id"] = None
+        else:
+            charge["wfirma_service_id"] = str(wsid).strip()
+
+    if "rate_pct" in updates:
+        rate = updates.get("rate_pct")
+        fb = dict(charge.get("formula_basis") or {})
+        if rate is None or str(rate).strip() == "":
+            fb.pop("rate_pct", None)
+        else:
+            try:
+                fb["rate_pct"] = float(rate)
+            except (TypeError, ValueError):
+                raise ValueError(f"rate_pct must be numeric, got {rate!r}")
+        charge["formula_basis"] = fb or None
+
+    charges[idx] = charge
+
+    refreshed = _commit_draft_update(
+        db_path, d.id,
+        new_state           = _next_state_after_edit(d.draft_state),
+        new_service_charges = charges,
+    )
+    _record_draft_event(
+        db_path, draft_id=d.id, event="draft_service_charge_updated",
+        detail_json=json.dumps({
+            "charge_id":  int(charge_id),
+            "before":     before,
+            "after":      charge,
+            "from_state": d.draft_state,
+            "to_state":   refreshed.draft_state,
+        }, ensure_ascii=False, sort_keys=True),
+        operator=operator,
+    )
+    return refreshed
+
+
 def apply_customer_address_to_draft(
     db_path:              Path,
     draft_id:             int,
@@ -3116,6 +3228,7 @@ def apply_customer_commercial_to_draft(
     updates:              Dict[str, Any],
     operator:             str,
     expected_updated_at:  str,
+    audit_event:          str = "commercial_defaults_from_customer_master",
 ) -> "ProformaDraft":
     """Apply a subset of Customer Master commercial defaults to a draft.
 
@@ -3357,7 +3470,7 @@ def apply_customer_commercial_to_draft(
 
     _record_draft_event(
         db_path, draft_id=d.id,
-        event="commercial_defaults_from_customer_master",
+        event=audit_event,
         detail_json=json.dumps(
             {
                 "source_contractor_id": cm_contractor_id,
