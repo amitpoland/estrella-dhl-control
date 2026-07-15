@@ -411,3 +411,62 @@ class TestVatWdtApply:
         charges = reloaded.get("service_charges") or []
         assert next((c for c in charges if c.get("charge_type") == "freight"), None) is not None
         assert next((c for c in charges if c.get("charge_type") == "insurance"), None) is not None
+
+
+# ── INTEGER vat_mode regression — apply must never HTTP 500 ───────────────────
+# customer_master.vat_mode is an INTEGER column (222/228/229 wFirma enum ids). A
+# real production record therefore reads back as a Python int, and the previous
+# ``(cm.vat_mode or "").strip()`` raised ``AttributeError: 'int' object has no
+# attribute 'strip'`` — which escaped _draft_edit_dispatch as a raw HTTP 500.
+# The suite's other CM tests seed the STRING 'wdt', which is stored as TEXT and
+# masks the crash. These tests seed the real integer shape.
+
+def _set_cm_vat_mode_int(tmp: Path, value: int) -> None:
+    """Store an INTEGER vat_mode as a real wFirma enum id (222/228/229) would be."""
+    with sqlite3.connect(str(tmp / "customer_master.sqlite")) as con:
+        con.execute(
+            "UPDATE customer_master SET vat_mode=? WHERE bill_to_contractor_id=?",
+            (value, CID),
+        )
+        con.commit()
+
+
+class TestVatModeIntegerApply:
+    """Regression for the Customer Master Apply HTTP 500 on integer vat_mode."""
+
+    def test_integer_vat_mode_applies_without_500(self, api_client, tmp_storage):
+        _set_cm_vat_mode_int(tmp_storage, 228)       # real wFirma EU-reverse-charge id
+        draft_id = _seed_draft(tmp_storage)
+        d = _get_draft(api_client, draft_id)
+        r = _apply(api_client, draft_id, ["vat_mode"], d["updated_at"])
+        assert r.status_code != 500, r.text
+        assert r.status_code == 200, r.text
+        # persistence unchanged: coerced value stored to vat_code as today
+        assert _get_draft(api_client, draft_id).get("vat_code") == "228"
+
+    def test_integer_vat_mode_in_multi_field_apply(self, api_client, tmp_storage):
+        """vat_mode alongside other fields must not crash the batch apply."""
+        _set_cm_vat_mode_int(tmp_storage, 222)
+        draft_id = _seed_draft(tmp_storage)
+        d = _get_draft(api_client, draft_id)
+        r = _apply(api_client, draft_id,
+                   ["payment_method", "vat_mode", "freight_service_id"], d["updated_at"])
+        assert r.status_code == 200, r.text
+        reloaded = _get_draft(api_client, draft_id)
+        assert reloaded.get("vat_code") == "222"
+        assert (reloaded.get("payment_terms") or {}).get("method") == _CM_PAYMENT_METHOD
+
+
+class TestApplyNeverReturns500:
+    """A residual coercion failure on any selected field must surface as a
+    field-level 422, never a raw 500, for this operator-triggered command."""
+
+    def test_unexpected_field_error_returns_422_not_500(self, api_client, tmp_storage):
+        draft_id = _seed_draft(tmp_storage)
+        d = _get_draft(api_client, draft_id)
+        with patch("app.api.routes_proforma.pick_freight",
+                   side_effect=RuntimeError("boom")):
+            r = _apply(api_client, draft_id, ["freight_amount"], d["updated_at"])
+        assert r.status_code != 500, r.text
+        assert r.status_code == 422, r.text
+        assert "freight_amount" in r.text

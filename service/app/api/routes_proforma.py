@@ -8153,49 +8153,72 @@ def apply_customer_commercial(
     eff = _cm_effective_defaults(cm)
     cur_currency = (d.currency or "").strip().upper()
 
+    # Safe string coercion — Customer Master columns are typed (e.g. vat_mode is
+    # INTEGER 222/228/229), so a bare ``(x or "").strip()`` raises AttributeError
+    # on a non-str value and previously escaped as a raw HTTP 500 (uncaught by
+    # _draft_edit_dispatch). Mirror the proven read at _customer_master_suggestions
+    # (``("" if x is None else str(x)).strip()``) so operator-triggered apply can
+    # never crash on a legitimate typed master value.
+    def _s(x: Any) -> str:
+        return ("" if x is None else str(x)).strip()
+
     # Build updates dict — only fields the operator explicitly selected.
+    # Each field is coerced inside a guard so a bad master value yields a
+    # field-level 422, never a 500, for this operator-triggered command.
     updates: Dict[str, Any] = {}
     for f in fields:
-        if f == "payment_method":
-            v = (cm.preferred_payment_method or "").strip()
-            if v:
-                updates[f] = v
-        elif f == "payment_terms_days":
-            v = eff.get("payment_terms_days")
-            if v is not None:
-                updates[f] = v
-        elif f == "invoice_language_id":
-            v = (eff.get("default_language_id") or "").strip()
-            if v:
-                updates[f] = v
-        elif f == "vat_mode":
-            v = (cm.vat_mode or "").strip()
-            if v:
-                updates[f] = v
-        elif f == "freight_amount":
-            fr = pick_freight(cm, draft_currency=cur_currency)
-            if not fr.get("blocked"):
-                try:
-                    amt = float(fr.get("amount") or 0)
-                    if amt > 0:
-                        updates[f] = amt
-                except (TypeError, ValueError):
-                    pass
-        elif f == "freight_service_id":
-            v = (eff.get("freight_service_id") or "").strip()
-            if v:
-                updates[f] = v
-        elif f == "insurance_rate":
-            v = eff.get("insurance_rate")
-            if v is not None:
-                try:
-                    updates[f] = float(v)
-                except (TypeError, ValueError):
-                    pass
-        elif f == "insurance_service_id":
-            v = (eff.get("insurance_service_id") or "").strip()
-            if v:
-                updates[f] = v
+        try:
+            if f == "payment_method":
+                v = _s(cm.preferred_payment_method)
+                if v:
+                    updates[f] = v
+            elif f == "payment_terms_days":
+                v = eff.get("payment_terms_days")
+                if v is not None:
+                    updates[f] = v
+            elif f == "invoice_language_id":
+                v = _s(eff.get("default_language_id"))
+                if v:
+                    updates[f] = v
+            elif f == "vat_mode":
+                # vat_mode is Optional[int] (222/228/229). Persistence unchanged:
+                # the coerced string is stored to the draft vat_code column, as
+                # today. Classifying the enum id as a draft VAT authority is a
+                # separate commercial slice.
+                v = _s(cm.vat_mode)
+                if v:
+                    updates[f] = v
+            elif f == "freight_amount":
+                fr = pick_freight(cm, draft_currency=cur_currency)
+                if not fr.get("blocked"):
+                    try:
+                        amt = float(fr.get("amount") or 0)
+                        if amt > 0:
+                            updates[f] = amt
+                    except (TypeError, ValueError):
+                        pass
+            elif f == "freight_service_id":
+                v = _s(eff.get("freight_service_id"))
+                if v:
+                    updates[f] = v
+            elif f == "insurance_rate":
+                v = eff.get("insurance_rate")
+                if v is not None:
+                    try:
+                        updates[f] = float(v)
+                    except (TypeError, ValueError):
+                        pass
+            elif f == "insurance_service_id":
+                v = _s(eff.get("insurance_service_id"))
+                if v:
+                    updates[f] = v
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001 — never surface a raw 500 for operator apply
+            raise HTTPException(
+                status_code=422,
+                detail=f"Customer Master value for field '{f}' could not be applied: {e}",
+            )
 
     if not updates:
         raise HTTPException(
