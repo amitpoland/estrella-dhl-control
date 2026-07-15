@@ -472,8 +472,14 @@ class ProformaDraft:
     last_packing_sync_at:       Optional[str] = None
     packing_sync_warning:       Optional[str] = None
     # ── Phase 7 — commercial document fields ─────────────────────────
-    fx_rate_date:    Optional[str]   = None   # ISO date "YYYY-MM-DD" of NBP rate
-    fx_rate_source:  str             = "NBP"  # rate source label
+    fx_rate_date:      Optional[str] = None   # returned NBP table effective date (YYYY-MM-DD)
+    fx_rate_source:    str           = "NBP"  # rate source label: NBP | manual | identity
+    # PR-4 NBP authority — the requested accounting date the fetch was keyed to
+    # (the proforma issue date, or today when blank) and the NBP table number.
+    # Kept distinct from fx_rate_date because the engine may return a prior
+    # working-day table — the two dates are not always the same.
+    fx_accounting_date: Optional[str] = None  # requested accounting date (YYYY-MM-DD)
+    fx_table_number:    Optional[str] = None  # NBP Table A number, e.g. "A/089/2026"
     incoterm:        Optional[str]   = None   # per-shipment incoterm (DAP/FCA/…)
     insurance_eur:   Optional[float] = None   # declared shipment insurance EUR
     # ── Phase 3 — wFirma post-posting enrichment fields ──────────────
@@ -553,6 +559,8 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         # ── Phase 7 — commercial document fields ─────────────────────────
         ("fx_rate_date",   "TEXT"),
         ("fx_rate_source", "TEXT NOT NULL DEFAULT 'NBP'"),
+        ("fx_accounting_date", "TEXT"),   # PR-4: requested accounting date
+        ("fx_table_number",    "TEXT"),   # PR-4: NBP Table A number
         ("incoterm",       "TEXT"),
         ("insurance_eur",  "REAL"),
         # ── Phase 3 — wFirma post-posting enrichment fields ──────────────
@@ -1119,6 +1127,8 @@ def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
         # ── Phase 7 — commercial document fields ─────────────────────────
         fx_rate_date               = _opt("fx_rate_date"),
         fx_rate_source             = (_opt("fx_rate_source") or "NBP"),
+        fx_accounting_date         = _opt("fx_accounting_date"),
+        fx_table_number            = _opt("fx_table_number"),
         incoterm                   = _opt("incoterm"),
         insurance_eur              = _opt("insurance_eur"),
         # ── Phase 3 — wFirma post-posting enrichment fields ──────────────
@@ -2375,6 +2385,8 @@ def _commit_draft_update(
     new_insurance_eur:              Any                 = _UNCHANGED,
     new_fx_rate_date:               Any                 = _UNCHANGED,
     new_fx_rate_source:             Any                 = _UNCHANGED,
+    new_fx_accounting_date:         Any                 = _UNCHANGED,
+    new_fx_table_number:            Any                 = _UNCHANGED,
     # ── Sales price authority ────────────────────────────────────────
     new_sales_price_authority_total_eur: Any            = _UNCHANGED,
     new_sales_price_imported_at:         Any            = _UNCHANGED,
@@ -2465,6 +2477,12 @@ def _commit_draft_update(
     if new_fx_rate_source != _UNCHANGED:
         sets.append("fx_rate_source=?")
         args.append(new_fx_rate_source)
+    if new_fx_accounting_date != _UNCHANGED:
+        sets.append("fx_accounting_date=?")
+        args.append(new_fx_accounting_date)
+    if new_fx_table_number != _UNCHANGED:
+        sets.append("fx_table_number=?")
+        args.append(new_fx_table_number)
     # ── Sales price authority ────────────────────────────────────────
     if new_sales_price_authority_total_eur != _UNCHANGED:
         sets.append("sales_price_authority_total_eur=?")
@@ -2601,6 +2619,22 @@ def update_draft_fields(
         if not d.fx_rate_date:
             new_fx_rate_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    # PR-4 — manual exchange-rate override. A hand-typed rate is authored by the
+    # operator, not fetched from NBP: mark the source 'manual' and CLEAR the stale
+    # NBP table metadata (a table number captured for a previous fetched rate no
+    # longer describes this manual value). The before/after is audited below.
+    new_fx_rate_source  = "__unchanged__"
+    new_fx_table_number = "__unchanged__"
+    _fx_before = None
+    if "exchange_rate" in patch and new_exchange_rate != "__unchanged__":
+        _fx_before = {
+            "exchange_rate":  d.exchange_rate,
+            "fx_rate_source": d.fx_rate_source,
+            "fx_table_number": getattr(d, "fx_table_number", None),
+        }
+        new_fx_rate_source  = "manual"
+        new_fx_table_number = None
+
     # Currency change must not contradict service-charge currencies that
     # were locked in earlier.
     if new_currency is not None:
@@ -2630,14 +2664,95 @@ def update_draft_fields(
         new_incoterm         = new_incoterm,
         new_insurance_eur    = new_insurance_eur,
         new_fx_rate_date     = new_fx_rate_date,
+        new_fx_rate_source   = new_fx_rate_source,
+        new_fx_table_number  = new_fx_table_number,
     )
+    _fx_after = None
+    if _fx_before is not None:
+        _fx_after = {
+            "exchange_rate":   refreshed.exchange_rate,
+            "fx_rate_source":  refreshed.fx_rate_source,
+            "fx_table_number": getattr(refreshed, "fx_table_number", None),
+        }
     _record_draft_event(
         db_path, draft_id=d.id, event="draft_edited",
         detail_json=json.dumps({
             "fields_changed": sorted(list(patch.keys())),
             "from_state":     d.draft_state,
             "to_state":       refreshed.draft_state,
+            **({"fx_before": _fx_before, "fx_after": _fx_after}
+               if _fx_before is not None else {}),
         }, ensure_ascii=False, sort_keys=True),
+        operator=operator,
+    )
+    return refreshed
+
+
+def set_draft_nbp_rate(
+    db_path:              Path,
+    draft_id:            int,
+    *,
+    exchange_rate:       float,
+    accounting_date:     str,
+    table_date:          Optional[str],
+    table_number:        Optional[str],
+    source:              str,
+    operator:            str,
+    expected_updated_at: str,
+) -> ProformaDraft:
+    """Persist a fetched NBP (or PLN identity) rate atomically on the draft.
+
+    Written through the shared optimistic-lock + draft-edit path
+    (``_load_for_edit`` → ``_commit_draft_update``), so a stale
+    ``expected_updated_at`` raises :class:`DraftConflict` and a non-editable draft
+    raises :class:`DraftNotEditable`. The rate VALUE comes from the sole PZ NBP
+    authority via ``nbp_rate_service`` — this writer never computes a rate.
+
+    Persists: exchange_rate, fx_accounting_date (the requested date), fx_rate_date
+    (the returned NBP table date — may differ), fx_table_number, fx_rate_source
+    ('NBP' | 'identity'), updated_at. Records a ``nbp_rate_fetched`` audit event
+    with before/after.
+    """
+    if not (operator or "").strip():
+        raise ValueError("operator is required")
+    try:
+        rate = float(exchange_rate)
+    except (TypeError, ValueError):
+        raise ValueError(f"exchange_rate must be numeric, got {exchange_rate!r}")
+    if rate <= 0:
+        raise ValueError("exchange_rate must be > 0")
+
+    d = _load_for_edit(db_path, draft_id, expected_updated_at)
+    before = {
+        "exchange_rate":    d.exchange_rate,
+        "fx_rate_source":   d.fx_rate_source,
+        "fx_rate_date":     d.fx_rate_date,
+        "fx_accounting_date": getattr(d, "fx_accounting_date", None),
+        "fx_table_number":  getattr(d, "fx_table_number", None),
+    }
+    refreshed = _commit_draft_update(
+        db_path, d.id,
+        new_state           = _next_state_after_edit(d.draft_state),
+        new_exchange_rate   = rate,
+        new_fx_rate_date    = (table_date or None),
+        new_fx_rate_source  = source,
+        new_fx_accounting_date = accounting_date,
+        new_fx_table_number = (table_number or None),
+    )
+    _record_draft_event(
+        db_path, draft_id=d.id, event="nbp_rate_fetched",
+        detail_json=json.dumps({
+            "before":          before,
+            "after": {
+                "exchange_rate":    refreshed.exchange_rate,
+                "fx_rate_source":   refreshed.fx_rate_source,
+                "fx_rate_date":     refreshed.fx_rate_date,
+                "fx_accounting_date": getattr(refreshed, "fx_accounting_date", None),
+                "fx_table_number":  getattr(refreshed, "fx_table_number", None),
+            },
+            "from_state":      d.draft_state,
+            "to_state":        refreshed.draft_state,
+        }, ensure_ascii=False, sort_keys=True, default=str),
         operator=operator,
     )
     return refreshed
