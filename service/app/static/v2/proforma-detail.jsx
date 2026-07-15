@@ -4214,7 +4214,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // (tracking_ref) but NOT the legal document identity. The AWB is a field
   // referenced inside the CMR, never the document number.
   const _transport = (() => {
-    const ship = (carrierShipment && carrierShipment.tracking_ref) ? carrierShipment : null;
+    // A recorded carrier shipment is the outbound authority. It exists as soon as
+    // a booking is recorded (its stable export_shipment_id is set immediately);
+    // the AWB (tracking_ref) fills in when the booking completes and may be null.
+    const ship = carrierShipment || null;
     // Extracted packing totals (grams → kg): historical evidence, never overwritten.
     let _exNetG = 0, _exGrossG = 0;
     for (const ln of (liveDraft.editable_lines || [])) {
@@ -4247,20 +4250,25 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       drift: !!(liveDraft.weight_source_revision && liveDraft.weight_source_revision_current
                 && liveDraft.weight_source_revision !== liveDraft.weight_source_revision_current),
     };
-    // Stable transport-document identity: the draft's export shipment reference
-    // (batch_id). Independent of the AWB — a re-book changes tracking_ref, not this.
-    const export_shipment_id = liveDraft.batch_id || null;
+    // Stable export shipment identifier — the CARRIER SHIPMENT's own id from the
+    // carrier read model (carrier_shipments primary key, exposed as
+    // export_shipment_id). NEVER derived from the import batch_id and NEVER from
+    // the AWB/tracking_ref. A same-request re-book changes tracking_ref (the AWB)
+    // but not this id. When no carrier shipment exists, it is honestly null and the
+    // CMR has no document number — batch_id is never substituted.
+    const export_shipment_id = ship ? (ship.export_shipment_id || null) : null;
     return {
       linked:            !!ship,
       export_shipment_id,
-      outbound_awb:      ship ? ship.tracking_ref : null,
+      outbound_awb:      ship ? (ship.tracking_ref || null) : null,   // AWB only, from tracking_ref
       carrier:           ship ? (ship.carrier || 'DHL') : null,
       service:           ship ? (ship.service_code || null) : null,
       tracking_url:      ship ? (ship.tracking_url || null) : null,
       status:            ship ? (ship.state || ship.status || null) : null,
       dimensions:        ship ? (ship.dimensions || null) : null,
-      batch_ref:         liveDraft.batch_id || null,   // internal provenance only
+      batch_ref:         liveDraft.batch_id || null,   // import identity — internal provenance only
       cmr_number:        export_shipment_id ? `CMR-EJ-${export_shipment_id}` : null,
+      cmr_number_reason: export_shipment_id ? null : 'No export shipment identifier available',
       missing_reason:    ship ? null : 'No outbound shipment linked',
       effectiveWeight,
     };
@@ -4269,8 +4277,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
   const cmrPreviewData = {
     // Stable transport-document number — the export shipment reference, NOT the AWB.
-    cmr_no:   _transport.cmr_number || '—',
-    cmr_number_missing_reason: _transport.cmr_number ? null : 'No shipment reference for this draft',
+    // Honestly null (renderer shows the reason) when the carrier authority has no id.
+    cmr_no:   _transport.cmr_number || null,
+    cmr_number_missing_reason: _transport.cmr_number_reason,
     // Import batch id kept as internal provenance only — never the AWB.
     batch_ref: _transport.batch_ref,
     // Shared effective-weight read model (same object the Packing List uses).

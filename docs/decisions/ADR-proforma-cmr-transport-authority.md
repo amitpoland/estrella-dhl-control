@@ -36,20 +36,37 @@ operator manual override for the transport document.
    The import `batch_id` remains available **only** as internal provenance
    (`carrier.batch_ref` / `cmrPreviewData.batch_ref`) and must never be shown as the AWB.
 
-2. **CMR number is a STABLE transport-document identifier, INDEPENDENT of the AWB**
-   (operator ruling, pre-merge): `cmr_no = CMR-EJ-<export_shipment_id>` where the
-   export shipment reference is the draft's stable shipment key (`batch_id`). A
-   re-booking changes the AWB (`tracking_ref`) but must NOT change the legal document
-   identity, so the CMR number is deliberately not equal to the AWB. The AWB is a field
-   **referenced inside** the CMR (Box 16), never the document number. No sequential CMR
-   counter / new numbering store is introduced (that would be a separate authority
-   requiring its own ADR).
+2. **CMR number comes from the CARRIER SHIPMENT authority, INDEPENDENT of the AWB**
+   (operator ruling, pre-merge correction): `cmr_no = CMR-EJ-<export_shipment_id>` where
+   `export_shipment_id` is the carrier shipment's own stable identifier — the
+   `carrier_shipments` primary key (`idempotency_key`), surfaced explicitly through the
+   existing carrier read model (`GET /carrier/{batch}/shipment`). It is **NOT** the
+   import `batch_id` and **NOT** the AWB/`tracking_ref`.
+
+   `carrier_shipments` holds one row per `idempotency_key`; the AWB (`tracking_ref`) is
+   written onto that row and a same-request re-book updates the AWB **in place**, so the
+   AWB changes while `export_shipment_id` — and therefore the CMR number — does not. The
+   AWB is a field **referenced inside** the CMR (Box 16), never the document number.
+
+   **Honest missing (no faked authority):** when no carrier shipment is recorded,
+   `export_shipment_id` is `null`, the CMR number is `null`, and the reason
+   *"No export shipment identifier available"* is surfaced. The import `batch_id` is
+   **never** substituted. No sequential CMR counter / new numbering service is introduced.
+
+   **Known limitation + future authority:** `idempotency_key` is stable for a shipment
+   record and across a same-parameters re-book, but a materially different re-booking
+   (changed box/weight/dimensions) is a *new* carrier shipment record with a new
+   `idempotency_key`, so the CMR number would move for that case. A dedicated
+   cross-rebook export/dispatch identifier (cf. the never-built `dispatch_record`,
+   ADR-026) is the future authority; until it exists this ADR documents the current
+   behaviour honestly rather than inventing a stable id.
 
    *One resolver:* a single `_transport` projection (TransportDocumentAuthority) turns
-   Draft + carrierShipment into the transport-document object (export shipment id,
+   Draft + carrierShipment into the transport-document object (export_shipment_id,
    outbound AWB, carrier, service, tracking, status, effectiveWeight, cmr_number). The
    CMR, Packing List and Logistics panel consume ONLY this object — the UI never
-   assembles transport identity from multiple API responses.
+   assembles transport identity from multiple API responses. `batch_id` remains
+   available only as internal provenance (`batch_ref`).
 
 3. **Effective weight = extracted (historical) + manual override (effective on save).**
    Extracted packing weight (grams→kg) stays the historical evidence and is never

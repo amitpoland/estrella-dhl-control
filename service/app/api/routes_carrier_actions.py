@@ -426,6 +426,13 @@ def get_shipment(
     return JSONResponse({
         "batch_id": row["batch_id"],
         "idempotency_key": row["idempotency_key"],
+        # PR-5: the carrier shipment's own stable identifier, surfaced explicitly as
+        # the export shipment reference. It is the carrier_shipments primary key
+        # (one row per idempotency_key); a same-request re-book updates this row's
+        # tracking_ref (the AWB) in place, so the AWB changes while this stable id
+        # does not. This is the canonical source for the CMR document number —
+        # NEVER batch_id and NEVER tracking_ref.
+        "export_shipment_id": row["idempotency_key"],
         "mode": row["mode"],
         "state": row["state"],
         "simulated": bool(row["simulated"]),
