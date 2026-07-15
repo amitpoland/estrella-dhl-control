@@ -26,6 +26,18 @@ layer, and the minimum-set rule. Skills **define standards**; agents (`03`) exec
 
 ---
 
+## 1a. Responsibility layer vs runtime keyword selection
+
+Two layers, kept separate:
+- **Engineering OS defines which standard/responsibility applies** — this file (`04`) maps a
+  package layer to its owning skill standard; the six-responsibility manifest is `01 §2.1`.
+- **`.claude/SKILL_ROUTING.md` performs runtime keyword-to-skill selection** — it is the single
+  source for the keyword map + confidence algorithm consumed by `/feature`.
+- **Only session-available installed skills may be selected.** A required-but-unavailable skill is
+  reported explicitly (never silently replaced by a similarly named skill; Lesson B / GATE 5).
+
+---
+
 ## 2. Minimum Skill Principle (from `ej-dashboard-master`)
 
 Select the **smallest valid skill set** — **never more than TWO** project skills unless the

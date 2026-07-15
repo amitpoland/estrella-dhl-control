@@ -6,11 +6,67 @@ Execute the canonical five-phase protocol for every new feature.
 **Read `.claude/TASK_EXECUTION_PROTOCOL.md` completely before Phase 1.**
 
 Authority sources (load before any action):
+- `.engineering-os/01_EXECUTIVE_COORDINATOR.md` §2.1 — the **six-responsibility pre-execution load manifest** (PRD · ARCHITECTURE · RULES · PHASES · DESIGN · MEMORY). Load all applicable rows in the CONTEXT stage below. This is the single mapping; do not restate it here.
 - `.claude/TASK_EXECUTION_PROTOCOL.md` — full phase rules, exit criteria, HOLD conditions
 - `docs/governance/AUTHORITY_MAP.md` — write authority by domain
 - `docs/governance/anti-hold-and-completion.md` — Anti-HOLD spec, must-continue list
 - `.claude/memory/PROJECT_STATE.md` — current project state (RULE 1)
 - `.claude/memory/TASK_STATE.md` — in-flight task tracker
+
+---
+
+## Phase 0 — CONTEXT (MANDATORY — runs first; no second command required)
+
+`/feature` is the single canonical entrypoint. It performs the `/context` contract **internally** —
+the operator never runs `/context` separately. Execute this stage before anything else and emit the
+three blocks below **before planning**.
+
+1. Run the existing context contract inline (`.claude/commands/context-lite.md`, escalating to
+   `context-task.md` for multi-domain work): active task, branch, GATE-2 slot, recent commits.
+2. Inspect `README.md` and `CLAUDE.md`.
+3. Identify the applicable **architecture, authority, routes, services, models, configuration, and
+   tests** for the task (via `docs/governance/AUTHORITY_MAP.md` + `CLAUDE.md` § "Architecture").
+4. Identify the **current canonical implementation** for the touched module and **prevent duplicate
+   parallel implementations** (no `*New`/`*Modern`/`*V2`/`*Next` fork without approval — FRONTEND
+   AUTHORITY CONSTITUTION / Lesson F/M).
+5. Load the **six-responsibility manifest** from `.engineering-os/01_EXECUTIVE_COORDINATOR.md` §2.1
+   and resolve each applicable row (DESIGN only for UI packages).
+6. Enumerate **session-available installed skills**; select only applicable, currently available
+   skills; **record unavailable required skills explicitly — never silently substitute** a
+   similarly named skill (Lesson B / GATE 5).
+
+Required CONTEXT-stage output blocks (emit all three before Phase 2 PLAN):
+
+```
+CONTEXT
+─────────────────────────────────────────
+REPO_ROOT:            <path>
+CANONICAL_AUTHORITY:  <module → owner>
+ROUTES/SERVICES/MODELS/CONFIG/TESTS: <relevant paths>
+DUPLICATE_CHECK:      <canonical file confirmed; no parallel impl> | STOP
+PATH:                 Fast | Deep
+─────────────────────────────────────────
+
+SIX_RESPONSIBILITY_LOAD
+─────────────────────────────────────────
+PRD:          <loaded sources>
+ARCHITECTURE: <loaded sources>
+RULES:        <loaded sources>
+PHASES:       <loaded sources>
+DESIGN:       <loaded sources> | NOT APPLICABLE (non-UI)
+MEMORY:       <canonical source, or fallback used>
+─────────────────────────────────────────
+
+APPLICABLE_SKILLS
+─────────────────────────────────────────
+INSPECTED:    <session-available skills seen>
+SELECTED:     <chosen skill(s)> — reason each
+UNAVAILABLE:  <required-but-missing skill(s)> | none
+─────────────────────────────────────────
+```
+
+Then emit the `SKILL_ROUTING` block (Phase 1 Step 0) and, before dispatch, an `AGENT_SELECTION`
+block (lead · reviewers · gate · why-minimum, per `.engineering-os/03_AGENT_ROUTER.md`).
 
 ---
 
@@ -81,7 +137,12 @@ Rules:
 - **MISSING_SKILL** → add to `BACKLOG.md` (if not already present) with disposition SCHEDULED; use fallback `backend-route-and-service-builder`.
 - Full algorithm and sample resolutions: `.claude/SKILL_ROUTING.md`.
 
-1. Read `.claude/memory/PROJECT_STATE.md` and `TASK_STATE.md`.
+1. Load MEMORY / continuity (RULE 1):
+   - Read `.claude/memory/PROJECT_STATE.md` when present.
+   - Otherwise read `.claude/memory/PROJECT_STATE_SUMMARY.md` and **explicitly record the fallback** in the `SIX_RESPONSIBILITY_LOAD` MEMORY line.
+   - Then read `.claude/memory/TASK_STATE.md`.
+   - Read `.claude/memory/engineering_lessons.md` when applicable.
+   - If **both** `PROJECT_STATE.md` and `PROJECT_STATE_SUMMARY.md` are absent → **STOP with a continuity blocker**. Do not silently continue.
 2. If `TASK_STATE.md` shows `IN_PROGRESS` for a different task → HOLD (one-task rule).
 3. Update `TASK_STATE.md` → `IN_PROGRESS` for this task.
 4. **GATE 2 check:** Count open implementation PRs. If ≥ 3 → switch to merge-and-review mode; do not open another PR until count drops below 3.
