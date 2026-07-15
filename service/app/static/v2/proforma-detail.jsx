@@ -4898,6 +4898,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               editFields={editFields}
               onEditField={(k, v) => setEditFields(prev => ({ ...prev, [k]: v }))}
               editError={editError}
+              draftId={liveDraft.id || (draft && draft.id)}
+              expectedUpdatedAt={liveDraft.updated_at || (draft && draft.updated_at) || ''}
+              onReload={() => draftHook && draftHook.reload && draftHook.reload()}
             />
             {/* ── Commercial terms & charges — THREE DISTINCT AUTHORITIES ──
                 1. Customer Master DEFAULTS (advisory suggestions you can apply)
@@ -6690,8 +6693,27 @@ function CustomerMasterSuggestions({ suggestions, draftId, updatedAt, onReload }
 }
 
 // ── Overview tab ──────────────────────────────────────────────────────────────
-function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingReasons, exportBlockers, editMode, editFields, onEditField, editError }) {
+function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingReasons, exportBlockers, editMode, editFields, onEditField, editError, draftId, expectedUpdatedAt, onReload }) {
   const totalEur = lines.reduce((s, l) => s + l.netEur, 0);
+  // PR-4 — Fetch NBP rate (reuses the sole PZ NBP authority server-side). The
+  // manual override field below stays available; this is the automated path.
+  const [nbpBusy, setNbpBusy] = React.useState(false);
+  const [nbpErr,  setNbpErr]  = React.useState(null);
+  const [nbpMsg,  setNbpMsg]  = React.useState(null);
+  const fetchNbp = () => {
+    setNbpBusy(true); setNbpErr(null); setNbpMsg(null);
+    window.PzApi.fetchNbpRate(draftId, expectedUpdatedAt)
+      .then(r => {
+        if (r && r.ok === false) throw new Error((r && (r.error || r.detail)) || 'NBP fetch failed');
+        const nbp = (r && r.data && r.data.nbp) || (r && r.nbp) || {};
+        setNbpBusy(false);
+        setNbpMsg(nbp.source === 'identity'
+          ? `PLN identity rate 1.0000 (accounting date ${nbp.accounting_date})`
+          : `${nbp.currency}/PLN ${Number(nbp.rate).toFixed(4)} · NBP table ${nbp.table_number || '—'} (${nbp.table_date || '—'}) · accounting date ${nbp.accounting_date}${nbp.accounting_date_source === 'today_fallback' ? ' (today — no issue date)' : ''}`);
+        if (onReload) onReload();   // refresh totals from the canonical response
+      })
+      .catch(e => { setNbpBusy(false); setNbpErr((e && e.message) || 'NBP fetch failed'); });
+  };
   // Computed payment due in edit mode: sale_date (or invoice_date) + payment_days
   const _editComputedDue = (() => {
     if (!editMode) return null;
@@ -6889,8 +6911,23 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
             ) : (
               <InfoRow label={`${currency}/PLN rate`} value={fxRate ? fxRate.toFixed(4) : '—'} mono />
             )}
+            <InfoRow label="Rate source" value={detail.fx_rate_source || '—'} />
             <InfoRow label="NBP table" value={detail.nbp_table_number || '—'} mono />
-            <InfoRow label="Rate date" value={detail.exchange_rate_date || '—'} mono />
+            <InfoRow label="NBP table date" value={detail.fx_table_date || detail.exchange_rate_date || '—'} mono />
+            <InfoRow label="Accounting date" value={detail.fx_accounting_date || '—'} mono />
+            {/* Fetch NBP rate — automated path; the manual rate field above stays available. */}
+            {draftId && (
+              <div style={{ marginTop: 8 }}>
+                <button data-testid="fetch-nbp-rate" onClick={fetchNbp} disabled={nbpBusy}
+                        title="Fetch the NBP rate for the draft currency, keyed to the proforma issue date"
+                        style={{ fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 5, border: '1px solid var(--accent)', background: 'var(--bg)', color: 'var(--accent)', cursor: nbpBusy ? 'wait' : 'pointer', opacity: nbpBusy ? 0.6 : 1 }}>
+                  {nbpBusy ? '↻ Fetching NBP…' : '↻ Fetch NBP rate'}
+                </button>
+                <span style={{ fontSize: 11, color: 'var(--text-3)', marginLeft: 8 }}>USD / EUR fetched · PLN identity · manual override above</span>
+                {nbpMsg && <div data-testid="fetch-nbp-msg" style={{ fontSize: 11, color: 'var(--badge-green-text)', marginTop: 4 }}>{nbpMsg}</div>}
+                {nbpErr && <div data-testid="fetch-nbp-err" style={{ fontSize: 11, color: 'var(--badge-red-text)', marginTop: 4 }}>NBP fetch failed · {nbpErr}</div>}
+              </div>
+            )}
           </div>
         </PfPanelCard>
       </div>

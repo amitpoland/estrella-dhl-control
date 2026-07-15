@@ -83,18 +83,10 @@ class TestSlice4WarningAffordances:
         assert text.count("onEditRequest()") >= 2, (
             "Expected at least 2 onEditRequest() calls (one per fix button)"
         )
-        # Guard: no new nbp/fx-fetch method should have been added to PzApi
-        pz_api_block_match = re.search(
-            r"window\.PzApi\s*=\s*\{(.+?)\}\s*;",
-            text,
-            re.DOTALL,
-        )
-        if pz_api_block_match:
-            api_block = pz_api_block_match.group(1)
-            # No fetchNbp / fetchFxRate / getNbpRate style method
-            assert not re.search(r"fetchNbp|fetchFxRate|getNbpRate|nbpFetch", api_block, re.IGNORECASE), (
-                "A new NBP/FX fetch method was added to PzApi — not allowed (Slice 4 is display-only)"
-            )
+        # NOTE: the former "no NBP/FX fetch method in PzApi" guard was retired by
+        # ADR docs/decisions/ADR-proforma-nbp-fetch.md (PR-4). Proforma now fetches
+        # the NBP rate by reusing the sole PZ NBP authority — see the authority
+        # contract in test_proforma_nbp_fetch_authority_contract below.
 
     def test_warn_fix_fx_rate_uses_existing_edit_exchange_rate_field(self):
         """The edit-exchange-rate testid exists so warn-fix-fx-rate has a target."""
@@ -154,18 +146,52 @@ class TestSlice4WarningAffordances:
             "warn-origin-authority must mention Product Master or product_local.origin_country"
         )
 
-    def test_no_new_nbp_api_method_invented(self):
-        """No new PzApi method for NBP/FX fetch was introduced."""
-        text = src()
-        # Search for any method definition containing nbp or fx in its name
-        # in the PzApi object literal
-        assert not re.search(
-            r"(fetchNbp|fetchFxRate|getNbpRate|nbpFetch|fetchExchangeRate)\s*[:=]\s*(function|\(|\s*async)",
-            text,
-            re.IGNORECASE,
-        ), (
-            "A new NBP/FX-fetch method was invented in PzApi — forbidden (no backend for this exists)"
+    def test_proforma_nbp_fetch_authority_contract(self):
+        """PR-4 — REPLACES the old display-only prohibition per ADR
+        docs/decisions/ADR-proforma-nbp-fetch.md. Proforma now fetches the NBP
+        rate by REUSING the sole PZ NBP authority. This test pins the contract
+        that keeps it a reuse, not a second implementation."""
+        import pathlib as _pl
+        base = _pl.Path(__file__).parent.parent
+        pz_api  = (base / "app" / "static" / "v2" / "pz-api.js").read_text(encoding="utf-8")
+        routes  = (base / "app" / "api" / "routes_proforma.py").read_text(encoding="utf-8")
+        adapter = (base / "app" / "services" / "nbp_rate_service.py").read_text(encoding="utf-8")
+        jsx = src()
+
+        # 1. The frontend API wrapper exists (the previously-forbidden method).
+        assert re.search(r"fetchNbpRate\s*:", pz_api), "PzApi.fetchNbpRate wrapper must exist (ADR reversal)"
+        assert "/fetch-nbp-rate" in pz_api, "fetchNbpRate must call the fetch-nbp-rate route"
+
+        # 2. The backend route exists.
+        assert "fetch-nbp-rate" in routes and "def fetch_draft_nbp_rate" in routes, (
+            "POST /fetch-nbp-rate route must exist"
         )
+
+        # 3. The route delegates to the PZ NBP authority through the adapter, and the
+        #    adapter reuses get_nbp_rate rather than reimplementing it.
+        assert "nbp_rate_service" in routes, "route must delegate to nbp_rate_service"
+        assert "from pz_import_processor import get_nbp_rate" in adapter, (
+            "adapter must REUSE the PZ authority get_nbp_rate, not reimplement it"
+        )
+
+        # 4. No duplicate NBP client / rate calculator is introduced — the adapter
+        #    reuses the PZ engine and must NOT open its own HTTP client to NBP.
+        assert not re.search(r"requests\.(get|post)|httpx|urllib\.request|http\.client", adapter), (
+            "adapter must NOT open its own NBP HTTP client — it reuses get_nbp_rate"
+        )
+        assert not re.search(r"api\.nbp\.pl/api/exchangerates", routes), (
+            "route must NOT reimplement the NBP fetch — it delegates to the adapter/engine"
+        )
+
+        # 5. The manual override remains available.
+        assert 'data-testid="edit-exchange-rate"' in jsx, "manual exchange-rate override must remain"
+
+        # 6. No 1.0 fallback for USD/EUR failures — the adapter raises a controlled
+        #    error; PLN identity (1.0) is honest and separately labelled.
+        assert 'raise NbpRateError("upstream"' in adapter and 'raise NbpRateError("missing_rate"' in adapter, (
+            "USD/EUR upstream/missing failures must raise, never fall back to 1.0"
+        )
+        assert "identity" in adapter, "PLN identity rate must be labelled honestly, not treated as a fallback"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1205,6 +1205,17 @@
         expected_updated_at: updatedAt || '',
       }),
 
+    // POST /api/v1/proforma/draft/{id}/fetch-nbp-rate (X-Operator).
+    // Fetches + persists the NBP exchange rate for the draft currency, reusing the
+    // sole PZ NBP authority server-side (ADR-2026-07-15-proforma-nbp-fetch — this
+    // supersedes the earlier display-only prohibition). Returns the refreshed
+    // canonical draft plus an `nbp` evidence block (rate/source/table_number/
+    // table_date/accounting_date). USD/EUR fetched, PLN identity; other → 422.
+    fetchNbpRate: (draftId, updatedAt) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/fetch-nbp-rate`, {
+        expected_updated_at: updatedAt || '',
+      }),
+
     // POST /api/v1/proforma/draft/{id}/confirm-product-review (X-Operator).
     // Operator review-STATE authority: records the current authoritative review
     // decision for a mapped product_code (badge → "Operator confirmed"). Never

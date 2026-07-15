@@ -36,6 +36,7 @@ from ..services import customer_identity_resolver as _cir  # WF-3: canonical con
 from ..services import inventory_state_engine as ise
 from ..services import proforma_invoice_link_db as pildb
 from ..services import commercial_lookup
+from ..services import nbp_rate_service
 from ..services import wfirma_client
 from ..services.customer_master_db import (
     get_customer as get_customer_master,
@@ -4487,6 +4488,10 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         "wfirma_payment_due":    getattr(d, "wfirma_payment_due", None),
         "exchange_rate_date":    getattr(d, "fx_rate_date", None),
         "nbp_table":             getattr(d, "fx_rate_source", None),
+        # PR-4 NBP authority — explicit rate provenance for the FX panel.
+        "fx_rate_source":        getattr(d, "fx_rate_source", None),   # NBP | manual | identity
+        "fx_accounting_date":    getattr(d, "fx_accounting_date", None),
+        "fx_table_date":         getattr(d, "fx_rate_date", None),     # returned NBP table date
         "incoterm":              getattr(d, "incoterm", None),
         # Wireframe rebuild Slice 1 — additive display fields. Stored on the
         # draft since Phase 7 but never surfaced; read-only projection.
@@ -4512,6 +4517,13 @@ def _nbp_table_number_for(d: "pildb.ProformaDraft") -> Optional[str]:
     projection is display-only and returns None on any miss or error. It never
     influences exchange_rate itself, which stays the draft's stored value.
     """
+    # PR-4 — prefer the table number persisted on the draft by the NBP fetch
+    # command (the authoritative value that produced this exact rate). The
+    # master_data reference lookup below remains the fallback for older drafts
+    # whose rate predates fx_table_number persistence.
+    stored = (getattr(d, "fx_table_number", None) or "").strip()
+    if stored:
+        return stored
     rate_date = (getattr(d, "fx_rate_date", None) or "").strip()
     cur = (d.currency or "").strip().upper()
     if not rate_date or not cur or cur == "PLN":
@@ -8507,6 +8519,89 @@ def set_draft_commercial_defaults(
         expected_updated_at = expected,
         audit_event         = "commercial_defaults_operator_set",
     ))
+
+
+@router.post("/draft/{draft_id}/fetch-nbp-rate", dependencies=[_auth])
+def fetch_draft_nbp_rate(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Fetch the NBP exchange rate for the draft's currency and persist it.
+
+    Reuses the SOLE PZ NBP authority (``pz_import_processor.get_nbp_rate``) via the
+    server-safe ``nbp_rate_service`` adapter — no second NBP client, no rate
+    calculator here, and NEVER a 1.0 fallback for a USD/EUR failure.
+
+    Accounting-date basis: the proforma ISSUE date (``wfirma_issue_date``); today
+    only when the issue date is blank. The engine may return a prior working-day
+    table, so BOTH the requested accounting date and the returned NBP table date
+    are persisted and surfaced — they are not assumed equal.
+
+    Currency scope: USD, EUR (fetched); PLN (identity 1.0, source 'identity').
+    Any other currency → 422.
+
+    Body:: ``{ "expected_updated_at": "..." }``
+
+    Errors: 400 (bad input), 401/403 (auth), 404 (draft), 409 (stale lock /
+    non-editable), 422 (unsupported currency), 502 (NBP unavailable / malformed).
+    On any failure the draft is left unchanged.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+
+    db = _proforma_db_path()
+    draft = pildb.get_draft_by_id(db, int(draft_id))
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+
+    currency = (draft.currency or "").strip().upper()
+    if not currency:
+        raise HTTPException(
+            status_code=422,
+            detail="draft has no currency set — cannot fetch an NBP rate",
+        )
+
+    # Accounting date: proforma issue date → today when blank. Stated explicitly
+    # in the response; never silently substituted with another draft/shipment date.
+    from datetime import datetime as _dt, timezone as _tz
+    issue_date = (getattr(draft, "wfirma_issue_date", None) or "").strip()
+    accounting_date = issue_date or _dt.now(_tz.utc).strftime("%Y-%m-%d")
+    accounting_date_source = "issue_date" if issue_date else "today_fallback"
+
+    try:
+        res = nbp_rate_service.fetch_rate(currency, accounting_date)
+    except nbp_rate_service.NbpRateError as exc:
+        status = 422 if exc.kind == "unsupported_currency" else 502
+        raise HTTPException(status_code=status, detail=exc.message)
+
+    resp = _draft_edit_dispatch(draft_id, lambda: pildb.set_draft_nbp_rate(
+        db, int(draft_id),
+        exchange_rate       = res["rate"],
+        accounting_date     = accounting_date,
+        table_date          = res.get("table_date"),
+        table_number        = res.get("table_number"),
+        source              = res["source"],
+        operator            = operator,
+        expected_updated_at = expected,
+    ))
+    # Attach explicit rate evidence next to the refreshed canonical draft so the
+    # UI updates totals from the response without a competing local calc.
+    payload = json.loads(resp.body)
+    payload["nbp"] = {
+        "currency":               currency,
+        "rate":                   res["rate"],
+        "source":                 res["source"],
+        "table_number":           res.get("table_number"),
+        "table_date":             res.get("table_date"),
+        "accounting_date":        accounting_date,
+        "accounting_date_source": accounting_date_source,
+    }
+    return JSONResponse(payload)
 
 
 @router.get("/draft/{draft_id}/suggest-service-charges", dependencies=[_auth],
