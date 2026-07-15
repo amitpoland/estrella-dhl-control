@@ -3987,24 +3987,29 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     }
     return '—';
   })();
-  // Freight + insurance for the preview — surfaced explicitly so they are never
-  // silently absent. A charge with no draft entry renders an explicit "not set"
-  // state (present:false), not a hidden/zero value.
-  const _svcCharges = liveDraft.service_charges || [];
+  // Freight + insurance for the preview — read from the ONE CommercialChargeAuthority
+  // (same-currency-only totals resolved from the draft snapshot) so the printed doc
+  // shows exactly the subtotal every other consumer uses. A type resolving to 0
+  // renders an explicit "not set" state (present:false), never a hidden/zero value.
+  const _cc = liveDraft.commercial_charges || {};
+  const _ccAmt = { freight: Number(_cc.freight_total) || 0, insurance: Number(_cc.insurance_total) || 0 };
   const previewCharges = ['freight', 'insurance'].map(t => {
-    const c = _svcCharges.find(x => (x.charge_type || '').toLowerCase() === t && (Number(x.amount) || 0) !== 0);
+    const amt = _ccAmt[t];
     return {
       type:     t,
       label:    t === 'freight' ? 'Freight' : 'Insurance',
-      amount:   c ? (Number(c.amount) || 0) : null,
-      currency: (c && c.currency) || draftCurrency,
-      present:  !!c,
+      amount:   amt > 0 ? amt : null,
+      currency: _cc.currency || draftCurrency,
+      present:  amt > 0,
     };
   });
   const previewDocData = {
     doc_no:   _previewLabel,
     currency: draftCurrency,
     charges:  previewCharges,
+    // Authority-resolved same-currency subtotal (freight + insurance). The doc
+    // renderer prefers this over re-summing the charge rows — one subtotal source.
+    charges_total: Number(_cc.service_charge_subtotal) || 0,
     date:     liveDraft.invoice_date || liveDraft.created_at
               ? (liveDraft.invoice_date || liveDraft.created_at || '').slice(0, 10) : '—',
     due:      _dueFallback,
@@ -5097,6 +5102,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           lines={lines} currency={draftCurrency}
           onAddLine={() => setEditMode(true)}
           serviceCharges={liveDraft.service_charges}
+          commercialCharges={liveDraft.commercial_charges}
           draftId={draft && draft.id}
           expectedUpdatedAt={liveDraft.updated_at || (draft && draft.updated_at) || ''}
           editMode={editMode && canEdit}
@@ -5677,8 +5683,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // so the proforma gross total includes them). No new calculation
         // authority — this composes the values already on this page.
         const _awbLinesTotal = lines.reduce((s, l) => s + (Number(l.netEur) || 0), 0);
-        const _awbChargesTotal = (liveDraft.service_charges || []).reduce((s, c) =>
-          s + (((c.currency || draftCurrency) === draftCurrency) ? (Number(c.amount) || 0) : 0), 0);
+        // Service/shipping subtotal comes from the ONE CommercialChargeAuthority
+        // (same-currency-only, from the draft snapshot) — no independent UI re-sum.
+        const _awbChargesTotal = Number((liveDraft.commercial_charges || {}).service_charge_subtotal) || 0;
         const _awbDeclared = _awbLinesTotal + _awbChargesTotal;
         // Canonical proforma/order number — same field every panel on this
         // page displays (never the batch id).
@@ -7068,6 +7075,7 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
         vatContext={detail.vat_context}
         totalEur={totalEur}
         currency={currency}
+        resolvedInsurance={detail.commercial_charges && detail.commercial_charges.insurance_total}
       />
 
       {/* ── Dates & FX (wireframe PanelCard; edit controls preserved) ──────── */}
@@ -7204,7 +7212,7 @@ const PF_VAT_LABELS = {
   '0':  '0%',
 };
 
-function VatInsurancePanel({ contractorId, vatCode, vatContext, totalEur, currency }) {
+function VatInsurancePanel({ contractorId, vatCode, vatContext, totalEur, currency, resolvedInsurance }) {
   const [master, setMaster] = React.useState(null);
   // idle → loading → loaded | failed | missing-id  (fail-visible, never fail-open)
   const [masterFetch, setMasterFetch] = React.useState('idle');
@@ -7224,9 +7232,16 @@ function VatInsurancePanel({ contractorId, vatCode, vatContext, totalEur, curren
   const vatLabel = vatCode ? (PF_VAT_LABELS[String(vatCode)] || String(vatCode)) : '—';
   const rate = (m.insurance_rate != null && m.insurance_rate !== '' && !Number.isNaN(Number(m.insurance_rate)))
     ? Number(m.insurance_rate) : null;
-  const premium = (rate != null && totalEur > 0)
-    ? `${(totalEur * rate).toFixed(2)} ${currency} (est.)`
-    : '—';
+  // Prefer the frozen premium resolved by the CommercialChargeAuthority once a
+  // charge is saved; only fall back to a live Customer-Master estimate pre-save.
+  const _savedPremium = (resolvedInsurance != null && Number(resolvedInsurance) > 0)
+    ? Number(resolvedInsurance) : null;
+  const premium = (_savedPremium != null)
+    ? `${_savedPremium.toFixed(2)} ${currency}`
+    : (rate != null && totalEur > 0)
+      ? `${(totalEur * rate).toFixed(2)} ${currency} (est.)`
+      : '—';
+  const _premiumLabel = (_savedPremium != null) ? 'Premium (resolved)' : 'Premium (display-only)';
   const kukeApproved = m.kuke_approved === true ? 'Yes' : m.kuke_approved === false ? 'No' : '—';
   const kukeLimit = (m.kuke_limit != null && m.kuke_limit !== '')
     ? `${m.kuke_limit} ${m.kuke_currency || ''}`.trim() : '—';
@@ -7243,7 +7258,7 @@ function VatInsurancePanel({ contractorId, vatCode, vatContext, totalEur, curren
           <InfoRow label="KUKE limit" value={kukeLimit} mono />
           <InfoRow label="Insurance rate" value={rate != null ? `${(rate * 100).toFixed(2)}%` : '—'} mono />
           <div data-testid="pf-kuke-premium">
-            <InfoRow label="Premium (display-only)" value={premium} mono />
+            <InfoRow label={_premiumLabel} value={premium} mono />
           </div>
           {masterFetch === 'failed' && (
             <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 6 }} data-testid="pf-kuke-fetch-failed">
@@ -7342,7 +7357,7 @@ function OverviewFinancials({ contractorId, currency }) {
 // proforma-wireframe-rebuild). Product picker reads the existing read-only
 // product-options authority. Every op reloads the draft (onChanged) so the
 // OCC token (expected_updated_at) is always the server's latest.
-function ProformaLinesTab({ lines, currency, onAddLine, serviceCharges,
+function ProformaLinesTab({ lines, currency, onAddLine, serviceCharges, commercialCharges,
                             draftId, expectedUpdatedAt, editMode, onChanged }) {
   const cur = currency || 'EUR';
   const sym = cur === 'USD' ? '$' : cur === 'EUR' ? '€' : `${cur} `;
@@ -7440,14 +7455,12 @@ function ProformaLinesTab({ lines, currency, onAddLine, serviceCharges,
   const rawTxt = (line, key) => { const v = raw(line, key); return (v || v === 0) && String(v).trim() ? String(v) : '—'; };
   const rawWt = (line, key) => { const v = Number(raw(line, key) || 0); return v > 0 ? v.toFixed(2) : '—'; };
   const goods = lines.reduce((s, l) => s + l.netEur, 0);
-  const charges = Array.isArray(serviceCharges) ? serviceCharges : [];
-  const chargeAmt = (type) => {
-    const c = charges.find(x => x && x.charge_type === type);
-    return c && c.amount != null ? Number(c.amount) : null;
-  };
-  const freight = chargeAmt('freight');
-  const insurance = chargeAmt('insurance');
-  const grand = goods + (freight || 0) + (insurance || 0);
+  // PR-6 — read the ONE CommercialChargeAuthority (same-currency subtotal from the
+  // draft snapshot); no UI re-sum of charge amounts.
+  const _cc = commercialCharges || {};
+  const freight = (_cc.freight_total != null) ? Number(_cc.freight_total) : null;
+  const insurance = (_cc.insurance_total != null) ? Number(_cc.insurance_total) : null;
+  const grand = goods + (Number(_cc.service_charge_subtotal) || 0);
   const th = (txt, align) => (
     <th key={txt} style={{ padding: '9px 10px', textAlign: align || 'left', fontSize: 9.5, fontWeight: 700,
       color: 'var(--text-3)', letterSpacing: '0.05em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{txt}</th>

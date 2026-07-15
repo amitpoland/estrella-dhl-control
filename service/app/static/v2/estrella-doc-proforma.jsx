@@ -308,9 +308,12 @@ function EJProformaClassic({ docData }) {
   // Only fold SAME-currency charges into the grand total — a charge in another
   // currency (e.g. PLN freight on a USD draft) is shown in its own currency and
   // NOT summed, so the printed total is never a cross-currency misstatement.
-  const grandTotal = totalEur + chargesPresent
-    .filter(c => (c.currency || cur) === cur)
-    .reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  // Prefer the authority-resolved subtotal (docData.charges_total); fall back to
+  // summing the present same-currency rows only when it was not supplied.
+  const _chargesSubtotal = (typeof d.charges_total === "number")
+    ? d.charges_total
+    : chargesPresent.filter(c => (c.currency || cur) === cur).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  const grandTotal = totalEur + _chargesSubtotal;
   const totalPln = typeof d.total_pln === "number" ? d.total_pln : null;
 
   return (
@@ -471,9 +474,12 @@ function EJProformaModern({ docData }) {
   const chargesPresent = charges.filter(c => c && c.present);
   const totalEur = typeof d.total_eur === "number" ? d.total_eur : lines.reduce((s, l) => s + (l.netEur || 0), 0);
   // Same-currency charges only (cross-currency charges are shown, not summed).
-  const grandTotal = totalEur + chargesPresent
-    .filter(c => (c.currency || cur) === cur)
-    .reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  // Prefer the authority-resolved subtotal (docData.charges_total); fall back to
+  // summing the present same-currency rows only when it was not supplied.
+  const _chargesSubtotal = (typeof d.charges_total === "number")
+    ? d.charges_total
+    : chargesPresent.filter(c => (c.currency || cur) === cur).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  const grandTotal = totalEur + _chargesSubtotal;
   const totalPln = typeof d.total_pln === "number" ? d.total_pln : null;
 
   return (
@@ -653,9 +659,12 @@ function EJProformaBold({ docData }) {
   const chargesPresent = charges.filter(c => c && c.present);
   const totalEur = typeof d.total_eur === "number" ? d.total_eur : lines.reduce((s, l) => s + (l.netEur || 0), 0);
   // Same-currency charges only (cross-currency charges are shown, not summed).
-  const grandTotal = totalEur + chargesPresent
-    .filter(c => (c.currency || cur) === cur)
-    .reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  // Prefer the authority-resolved subtotal (docData.charges_total); fall back to
+  // summing the present same-currency rows only when it was not supplied.
+  const _chargesSubtotal = (typeof d.charges_total === "number")
+    ? d.charges_total
+    : chargesPresent.filter(c => (c.currency || cur) === cur).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  const grandTotal = totalEur + _chargesSubtotal;
   const totalPln = typeof d.total_pln === "number" ? d.total_pln : null;
 
   return (

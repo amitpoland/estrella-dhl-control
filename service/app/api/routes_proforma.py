@@ -36,6 +36,7 @@ from ..services import customer_identity_resolver as _cir  # WF-3: canonical con
 from ..services import inventory_state_engine as ise
 from ..services import proforma_invoice_link_db as pildb
 from ..services import commercial_lookup
+from ..services import commercial_charge_authority
 from ..services import nbp_rate_service
 from ..services import wfirma_client
 from ..services.customer_master_db import (
@@ -1235,8 +1236,29 @@ def _build_preview(batch_id: str, client_name: str,
             f"service charge currency {sorted(sc_currencies)} does not match "
             f"product line currency {currency!r}"
         )
-    service_charge_total = sum(float(c.get("amount") or 0)
-                                for c in service_charges)
+    # PR-6 — the preview total consumes the DRAFT SNAPSHOT authority (never the
+    # live service-charge table), so preview, print, posting and finance agree.
+    # Falls back to the live list only before a draft snapshot exists.
+    _snap_cc = None
+    try:
+        _pf_db0 = _proforma_db_path()
+        if _pf_db0.exists():
+            _pv_draft = pildb.get_draft(_pf_db0, batch_id, client_name)
+            if _pv_draft is not None:
+                import json as _pvj
+                try:
+                    _snap_list = _pvj.loads(_pv_draft.service_charges_json or "[]") or []
+                except Exception:
+                    _snap_list = []
+                _snap_cc = commercial_charge_authority.resolve_commercial_charges(
+                    _pv_draft.currency or currency, _snap_list)
+    except Exception:
+        _snap_cc = None
+    if _snap_cc is not None:
+        service_charge_total = _snap_cc["service_charge_subtotal"]
+    else:
+        service_charge_total = sum(float(c.get("amount") or 0)
+                                    for c in service_charges)
     product_total = sum((ln.get("line_value") or 0) for ln in lines)
     final_total   = product_total + service_charge_total
 
@@ -4472,6 +4494,12 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         "payment_terms":         _safe_loads(d.payment_terms_json,     {}),
         "editable_lines":        editable_lines,
         "service_charges":       _safe_loads(d.service_charges_json,   []),
+        # PR-6 CommercialChargeAuthority — the ONE resolved freight/insurance
+        # totals from the draft snapshot. Every consumer (preview, print, footer,
+        # AWB declared value, wFirma, finance) reads this; no re-summing. Customs
+        # CIF is a SEPARATE authority and is not represented here.
+        "commercial_charges":    commercial_charge_authority.resolve_commercial_charges(
+            d.currency or "", _safe_loads(d.service_charges_json, [])),
         # Legacy/source-of-truth for the wFirma posting payload — kept for
         # debug/operator visibility. The editable fields above are what the
         # dashboard should edit; source_lines is read-only history.
@@ -5478,7 +5506,10 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
         except Exception: return 0.0
     lines_total = sum(_num(ln.get("qty")) * _num(ln.get("unit_price"))
                       for ln in lines)
-    charges_total = sum(_num(c.get("amount")) for c in charges)
+    # PR-6 — charges subtotal from the ONE CommercialChargeAuthority (same-currency
+    # only, from the draft snapshot), never a local re-sum.
+    charges_total = commercial_charge_authority.resolve_commercial_charges(
+        d.currency or "", charges)["service_charge_subtotal"]
     grand_total = lines_total + charges_total
 
     # ── PLN reference total ────────────────────────────────────────────────────
@@ -8427,12 +8458,30 @@ def apply_customer_commercial(
                 if v:
                     updates[f] = v
             elif f == "insurance_rate":
-                v = eff.get("insurance_rate")
-                if v is not None:
+                # PR-6: FREEZE the computed premium at write time via the ONE
+                # shared helper (compute_insurance_suggestion → insurance_premium),
+                # persisting amount + full formula_basis. No more amount=0. The
+                # read authority then consumes the frozen snapshot, never live CM.
+                import json as _jw
+                try:
+                    _wlines = _jw.loads(d.editable_lines_json or "[]") or []
+                except Exception:
+                    _wlines = []
+                from decimal import Decimal as _DecW
+                _sales_total = sum(
+                    _DecW(str(ln.get("qty", 0) or 0)) * _DecW(str(ln.get("unit_price", 0) or 0))
+                    for ln in _wlines
+                )
+                _ins = compute_insurance_suggestion(cm, cur_currency, _sales_total)
+                if _ins.get("ok"):
                     try:
-                        updates[f] = float(v)
+                        _amt = float(_ins.get("amount") or 0)
                     except (TypeError, ValueError):
-                        pass
+                        _amt = 0.0
+                    if _amt > 0:
+                        updates["insurance_amount"] = _amt
+                        if _ins.get("formula_basis"):
+                            updates["insurance_formula_basis"] = _ins["formula_basis"]
             elif f == "insurance_service_id":
                 v = _s(eff.get("insurance_service_id"))
                 if v:
