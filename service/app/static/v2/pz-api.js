@@ -1216,6 +1216,24 @@
         expected_updated_at: updatedAt || '',
       }),
 
+    // POST /api/v1/proforma/draft/{id}/weight-override (X-Operator).
+    // Operator manual net/gross weight (KG) for the CMR / Packing List. The
+    // extracted packing weight stays the historical authority; this becomes the
+    // effective value only after this explicit save. fields: { manual_net_weight?,
+    // manual_gross_weight?, reason? }. Invalid weight → field-level 422.
+    setWeightOverride: (draftId, fields, updatedAt) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/weight-override`, {
+        ...(fields || {}),
+        expected_updated_at: updatedAt || '',
+      }),
+
+    // POST /api/v1/proforma/draft/{id}/clear-weight-override (X-Operator).
+    // Clears the manual override, restoring the extracted packing weight.
+    clearWeightOverride: (draftId, updatedAt) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/clear-weight-override`, {
+        expected_updated_at: updatedAt || '',
+      }),
+
     // POST /api/v1/proforma/draft/{id}/confirm-product-review (X-Operator).
     // Operator review-STATE authority: records the current authoritative review
     // decision for a mapped product_code (badge → "Operator confirmed"). Never

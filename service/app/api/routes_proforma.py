@@ -4502,12 +4502,49 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         # managed fx_rates reference store. Advisory display only — never an
         # input to any calculation. None when no matching observation exists.
         "nbp_table_number":      _nbp_table_number_for(d),
+        # PR-5 transport-document weight override. The EXTRACTED packing weight
+        # (grams, from packing_lines) stays the historical authority; the manual
+        # override (kg) becomes the EFFECTIVE value only after an explicit save.
+        # `weight_source_revision_current` lets the UI flag drift when the packing
+        # source changed since the override was confirmed — without overwriting it.
+        "manual_net_weight":      getattr(d, "manual_net_weight", None),
+        "manual_gross_weight":    getattr(d, "manual_gross_weight", None),
+        "weight_override_reason": getattr(d, "weight_override_reason", None),
+        "weight_confirmed_at":    getattr(d, "weight_confirmed_at", None),
+        "weight_confirmed_by":    getattr(d, "weight_confirmed_by", None),
+        "weight_source_revision": getattr(d, "weight_source_revision", None),
+        "weight_override_source": getattr(d, "weight_override_source", None),   # manual | cleared
+        "weight_source_revision_current": _extracted_weight_revision(getattr(d, "batch_id", "") or ""),
     }
     # Slice 1 (feat/proforma-cm-suggestions) — additive, read-only advisory
     # projection of the mapped Customer Master commercial defaults. Never
     # mutates the draft, the posting payload, or customer identity.
     full["customer_master_suggestions"] = _customer_master_suggestions(d, full)
     return full
+
+
+def _extracted_weight_revision(batch_id: str) -> Optional[str]:
+    """Fingerprint of the batch's EXTRACTED packing weight totals (grams).
+
+    Display-only provenance: the weight-override command snapshots this at confirm
+    time, and the draft projection recomputes it so the UI can flag that the
+    extracted source changed since the override was confirmed — WITHOUT overwriting
+    the operator's override. Returns None on any miss/error (advisory).
+    """
+    bid = (batch_id or "").strip()
+    if not bid:
+        return None
+    try:
+        rows = pdb.get_packing_lines_for_batch(bid) or []
+    except Exception:
+        return None
+    if not rows:
+        return None
+    net_g = sum(float(r.get("net_weight") or 0) for r in rows)
+    gross_g = sum(float(r.get("gross_weight") or 0) for r in rows)
+    import hashlib as _hl
+    payload = f"{len(rows)}|{net_g:.3f}|{gross_g:.3f}"
+    return _hl.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _nbp_table_number_for(d: "pildb.ProformaDraft") -> Optional[str]:
@@ -8602,6 +8639,96 @@ def fetch_draft_nbp_rate(
         "accounting_date_source": accounting_date_source,
     }
     return JSONResponse(payload)
+
+
+@router.post("/draft/{draft_id}/weight-override", dependencies=[_auth])
+def set_draft_weight_override(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Operator sets a manual net/gross weight (KG) for the CMR / Packing List.
+
+    The EXTRACTED packing weight (grams) remains the historical authority and is
+    NOT modified — the override becomes the effective transport-document value
+    only through this explicit save. At least one of net/gross is required; each
+    must be a non-negative number (else field-level 422). The extracted-weight
+    source revision is snapshotted so a later re-import can flag drift without
+    overwriting the override. Audited; OCC via expected_updated_at.
+
+    Body:: ``{ "expected_updated_at": "...", "manual_net_weight": 1.25,
+              "manual_gross_weight": 1.60, "reason": "scale reading" }``  (kg)
+
+    Errors: 400 (bad input), 401/403 (auth), 404 (draft), 409 (stale lock /
+    non-editable), 422 (invalid weight).
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+
+    def _validate(field: str, v: Any) -> Optional[float]:
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail=f"{field} must be a number (kg)")
+        if f < 0:
+            raise HTTPException(status_code=422, detail=f"{field} must be >= 0")
+        return f
+
+    net = _validate("manual_net_weight", body.get("manual_net_weight"))
+    gross = _validate("manual_gross_weight", body.get("manual_gross_weight"))
+    if net is None and gross is None:
+        raise HTTPException(
+            status_code=422,
+            detail="at least one of manual_net_weight / manual_gross_weight is required (kg)",
+        )
+
+    db = _proforma_db_path()
+    draft = pildb.get_draft_by_id(db, int(draft_id))
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    # Snapshot the extracted-weight source revision the override is confirmed against.
+    source_rev = _extracted_weight_revision(getattr(draft, "batch_id", "") or "")
+
+    return _draft_edit_dispatch(draft_id, lambda: pildb.set_draft_weight_override(
+        db, int(draft_id),
+        manual_net_weight   = net,
+        manual_gross_weight = gross,
+        reason              = str(body.get("reason") or ""),
+        source_revision     = source_rev,
+        operator            = operator,
+        expected_updated_at = expected,
+    ))
+
+
+@router.post("/draft/{draft_id}/clear-weight-override", dependencies=[_auth])
+def clear_draft_weight_override(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Clear the manual weight override, restoring the EXTRACTED packing weight as
+    the effective value (the extracted data was never overwritten). Audited; OCC.
+
+    Body:: ``{ "expected_updated_at": "..." }``
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+    return _draft_edit_dispatch(draft_id, lambda: pildb.clear_draft_weight_override(
+        _proforma_db_path(),
+        int(draft_id),
+        operator            = operator,
+        expected_updated_at = expected,
+    ))
 
 
 @router.get("/draft/{draft_id}/suggest-service-charges", dependencies=[_auth],

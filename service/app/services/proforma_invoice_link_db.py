@@ -482,6 +482,24 @@ class ProformaDraft:
     fx_table_number:    Optional[str] = None  # NBP Table A number, e.g. "A/089/2026"
     incoterm:        Optional[str]   = None   # per-shipment incoterm (DAP/FCA/…)
     insurance_eur:   Optional[float] = None   # declared shipment insurance EUR
+    # ── PR-5 transport-document weight override ──────────────────────
+    # Operator manual net/gross weight for the CMR / Packing List. The EXTRACTED
+    # packing weight (packing_lines, grams) stays the historical authority; these
+    # become the EFFECTIVE value only after an explicit save, and are stored in
+    # KILOGRAMS (transport-document unit). weight_source_revision records the
+    # extracted-source fingerprint at confirm time so a later re-import can flag
+    # drift without silently overwriting the override.
+    manual_net_weight:      Optional[float] = None   # kg
+    manual_gross_weight:    Optional[float] = None   # kg
+    weight_override_reason: Optional[str]   = None
+    weight_confirmed_at:    Optional[str]   = None
+    weight_confirmed_by:    Optional[str]   = None
+    weight_source_revision: Optional[str]   = None
+    # Provenance of the last operator weight action: 'manual' (override saved) |
+    # 'cleared' (override removed). The LIVE effective source (packing/carrier/
+    # manual/missing) is computed by the transport resolver; this column answers
+    # "why is this document showing this weight" after the fact.
+    weight_override_source: Optional[str]   = None
     # ── Phase 3 — wFirma post-posting enrichment fields ──────────────
     wfirma_issue_date:      Optional[str] = None   # from wFirma invoices/get
     wfirma_payment_due:     Optional[str] = None   # paymentdate from wFirma
@@ -563,6 +581,14 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         ("fx_table_number",    "TEXT"),   # PR-4: NBP Table A number
         ("incoterm",       "TEXT"),
         ("insurance_eur",  "REAL"),
+        # ── PR-5 transport-document weight override (kg) ─────────────────
+        ("manual_net_weight",      "REAL"),
+        ("manual_gross_weight",    "REAL"),
+        ("weight_override_reason", "TEXT"),
+        ("weight_confirmed_at",    "TEXT"),
+        ("weight_confirmed_by",    "TEXT"),
+        ("weight_source_revision", "TEXT"),
+        ("weight_override_source", "TEXT"),   # packing | carrier | manual | cleared
         # ── Phase 3 — wFirma post-posting enrichment fields ──────────────
         ("wfirma_issue_date",     "TEXT"),
         ("wfirma_payment_due",    "TEXT"),
@@ -1131,6 +1157,14 @@ def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
         fx_table_number            = _opt("fx_table_number"),
         incoterm                   = _opt("incoterm"),
         insurance_eur              = _opt("insurance_eur"),
+        # ── PR-5 transport-document weight override ──────────────────────
+        manual_net_weight          = _opt("manual_net_weight"),
+        manual_gross_weight        = _opt("manual_gross_weight"),
+        weight_override_reason     = _opt("weight_override_reason"),
+        weight_confirmed_at        = _opt("weight_confirmed_at"),
+        weight_confirmed_by        = _opt("weight_confirmed_by"),
+        weight_source_revision     = _opt("weight_source_revision"),
+        weight_override_source     = _opt("weight_override_source"),
         # ── Phase 3 — wFirma post-posting enrichment fields ──────────────
         wfirma_issue_date          = _opt("wfirma_issue_date"),
         wfirma_payment_due         = _opt("wfirma_payment_due"),
@@ -2387,6 +2421,14 @@ def _commit_draft_update(
     new_fx_rate_source:             Any                 = _UNCHANGED,
     new_fx_accounting_date:         Any                 = _UNCHANGED,
     new_fx_table_number:            Any                 = _UNCHANGED,
+    # ── PR-5 transport-document weight override ──────────────────────
+    new_manual_net_weight:          Any                 = _UNCHANGED,
+    new_manual_gross_weight:        Any                 = _UNCHANGED,
+    new_weight_override_reason:     Any                 = _UNCHANGED,
+    new_weight_confirmed_at:        Any                 = _UNCHANGED,
+    new_weight_confirmed_by:        Any                 = _UNCHANGED,
+    new_weight_source_revision:     Any                 = _UNCHANGED,
+    new_weight_override_source:     Any                 = _UNCHANGED,
     # ── Sales price authority ────────────────────────────────────────
     new_sales_price_authority_total_eur: Any            = _UNCHANGED,
     new_sales_price_imported_at:         Any            = _UNCHANGED,
@@ -2483,6 +2525,28 @@ def _commit_draft_update(
     if new_fx_table_number != _UNCHANGED:
         sets.append("fx_table_number=?")
         args.append(new_fx_table_number)
+    # ── PR-5 transport-document weight override ──────────────────────
+    if new_manual_net_weight != _UNCHANGED:
+        sets.append("manual_net_weight=?")
+        args.append(new_manual_net_weight)
+    if new_manual_gross_weight != _UNCHANGED:
+        sets.append("manual_gross_weight=?")
+        args.append(new_manual_gross_weight)
+    if new_weight_override_reason != _UNCHANGED:
+        sets.append("weight_override_reason=?")
+        args.append(new_weight_override_reason)
+    if new_weight_confirmed_at != _UNCHANGED:
+        sets.append("weight_confirmed_at=?")
+        args.append(new_weight_confirmed_at)
+    if new_weight_confirmed_by != _UNCHANGED:
+        sets.append("weight_confirmed_by=?")
+        args.append(new_weight_confirmed_by)
+    if new_weight_source_revision != _UNCHANGED:
+        sets.append("weight_source_revision=?")
+        args.append(new_weight_source_revision)
+    if new_weight_override_source != _UNCHANGED:
+        sets.append("weight_override_source=?")
+        args.append(new_weight_override_source)
     # ── Sales price authority ────────────────────────────────────────
     if new_sales_price_authority_total_eur != _UNCHANGED:
         sets.append("sales_price_authority_total_eur=?")
@@ -2752,6 +2816,132 @@ def set_draft_nbp_rate(
             },
             "from_state":      d.draft_state,
             "to_state":        refreshed.draft_state,
+        }, ensure_ascii=False, sort_keys=True, default=str),
+        operator=operator,
+    )
+    return refreshed
+
+
+def set_draft_weight_override(
+    db_path:              Path,
+    draft_id:            int,
+    *,
+    manual_net_weight:   Optional[float],
+    manual_gross_weight: Optional[float],
+    reason:              str,
+    source_revision:     Optional[str],
+    operator:            str,
+    expected_updated_at: str,
+) -> ProformaDraft:
+    """Persist an operator manual net/gross weight override on the draft (KG).
+
+    This is the sole transport-document weight-override writer. The EXTRACTED
+    packing weight (packing_lines, grams) remains the historical authority and is
+    NOT touched here — the override becomes the EFFECTIVE value only through this
+    explicit operator action. At least one of net/gross must be provided; each,
+    when provided, must be a non-negative number. ``source_revision`` snapshots
+    the extracted-weight fingerprint at confirm time so a later re-import can flag
+    drift without silently overwriting the override.
+
+    Written through the shared OCC + draft-edit path (``_load_for_edit`` →
+    ``_commit_draft_update``): a stale ``expected_updated_at`` raises
+    ``DraftConflict``; a non-editable draft raises ``DraftNotEditable``. Records a
+    ``weight_override_set`` audit event with before/after.
+    """
+    if not (operator or "").strip():
+        raise ValueError("operator is required")
+
+    def _num(v: Any, name: str) -> Optional[float]:
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"{name} must be numeric, got {v!r}")
+        if f < 0:
+            raise ValueError(f"{name} must be >= 0")
+        return f
+
+    net = _num(manual_net_weight, "manual_net_weight")
+    gross = _num(manual_gross_weight, "manual_gross_weight")
+    if net is None and gross is None:
+        raise ValueError("at least one of manual_net_weight / manual_gross_weight is required")
+
+    d = _load_for_edit(db_path, draft_id, expected_updated_at)
+    before = {
+        "manual_net_weight":   d.manual_net_weight,
+        "manual_gross_weight": d.manual_gross_weight,
+        "weight_override_reason": d.weight_override_reason,
+        "weight_source_revision": d.weight_source_revision,
+    }
+    now = _now_utc_iso()
+    refreshed = _commit_draft_update(
+        db_path, d.id,
+        new_state              = _next_state_after_edit(d.draft_state),
+        new_manual_net_weight  = net,
+        new_manual_gross_weight = gross,
+        new_weight_override_reason = (str(reason or "").strip() or None),
+        new_weight_confirmed_at    = now,
+        new_weight_confirmed_by    = operator,
+        new_weight_source_revision = (source_revision or None),
+        new_weight_override_source = "manual",
+    )
+    _record_draft_event(
+        db_path, draft_id=d.id, event="weight_override_set",
+        detail_json=json.dumps({
+            "before": before,
+            "after": {
+                "manual_net_weight":   refreshed.manual_net_weight,
+                "manual_gross_weight": refreshed.manual_gross_weight,
+                "weight_override_reason": refreshed.weight_override_reason,
+                "weight_source_revision": refreshed.weight_source_revision,
+                "weight_confirmed_by":    refreshed.weight_confirmed_by,
+            },
+            "from_state": d.draft_state,
+            "to_state":   refreshed.draft_state,
+        }, ensure_ascii=False, sort_keys=True, default=str),
+        operator=operator,
+    )
+    return refreshed
+
+
+def clear_draft_weight_override(
+    db_path:              Path,
+    draft_id:            int,
+    *,
+    operator:            str,
+    expected_updated_at: str,
+) -> ProformaDraft:
+    """Clear the manual weight override, restoring the EXTRACTED packing weight as
+    the effective value (it was never overwritten — the override simply took
+    precedence while present). Same OCC + audit path as the setter; records a
+    ``weight_override_cleared`` audit event.
+    """
+    if not (operator or "").strip():
+        raise ValueError("operator is required")
+    d = _load_for_edit(db_path, draft_id, expected_updated_at)
+    before = {
+        "manual_net_weight":   d.manual_net_weight,
+        "manual_gross_weight": d.manual_gross_weight,
+        "weight_override_reason": d.weight_override_reason,
+    }
+    refreshed = _commit_draft_update(
+        db_path, d.id,
+        new_state              = _next_state_after_edit(d.draft_state),
+        new_manual_net_weight  = None,
+        new_manual_gross_weight = None,
+        new_weight_override_reason = None,
+        new_weight_confirmed_at    = None,
+        new_weight_confirmed_by    = None,
+        new_weight_source_revision = None,
+        new_weight_override_source = "cleared",
+    )
+    _record_draft_event(
+        db_path, draft_id=d.id, event="weight_override_cleared",
+        detail_json=json.dumps({
+            "before": before,
+            "from_state": d.draft_state,
+            "to_state":   refreshed.draft_state,
         }, ensure_ascii=False, sort_keys=True, default=str),
         operator=operator,
     )
