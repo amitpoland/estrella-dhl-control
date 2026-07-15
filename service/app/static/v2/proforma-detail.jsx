@@ -3539,6 +3539,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [chargeSuggestion, setChargeSuggestion]  = React.useState(null);  // null | response obj
   const [chargesLoading,   setChargesLoading]    = React.useState(false);
   const [chargesApplying,  setChargesApplying]   = React.useState(null);  // 'freight'|'insurance'|null
+  const [serviceProducts,  setServiceProducts]   = React.useState(null);  // wFirma registry (lazy)
 
   // WIRED: fetch full draft detail (GET /api/v1/proforma/draft/{id})
   const draftHook = window.PzState.useDraft(draft && draft.id);
@@ -4657,6 +4658,43 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       .finally(() => setChargesApplying(null));
   };
 
+  // PR-3 — wFirma service-product registry (layer 3), fetched lazily for the
+  // freight/insurance service-product dropdown. Cached config read — not a live
+  // wFirma product query — and only fired when the operator opens the add/edit UI.
+  const loadServiceProducts = React.useCallback(() => {
+    if (serviceProducts !== null) return;
+    window.PzApi.getServiceProducts()
+      .then(r => {
+        const d = (r && r.data) || r || {};
+        setServiceProducts((d && d.service_products) || []);
+      })
+      .catch(() => setServiceProducts([]));
+  }, [serviceProducts]);
+
+  // PR-3 — manual add of a freight/insurance charge via the canonical writer.
+  const handleAddCharge = (charge) => {
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    return window.PzApi.addServiceCharge(id, charge, updatedAt)
+      .then(r => {
+        if (r && r.ok === false) throw new Error((r && (r.error || r.detail)) || 'Add failed');
+        draftHook && draftHook.reload && draftHook.reload();
+        return r;
+      });
+  };
+
+  // PR-3 — in-place edit of an existing charge via the canonical writer.
+  const handleUpdateCharge = (chargeId, updates) => {
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    return window.PzApi.updateServiceCharge(id, chargeId, updates, updatedAt)
+      .then(r => {
+        if (r && r.ok === false) throw new Error((r && (r.error || r.detail)) || 'Update failed');
+        draftHook && draftHook.reload && draftHook.reload();
+        return r;
+      });
+  };
+
   // PR B — Save buyer edit from modal
   const handleBuyerEditSave = () => {
     if (buyerEditSaving) return;
@@ -4861,22 +4899,47 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               onEditField={(k, v) => setEditFields(prev => ({ ...prev, [k]: v }))}
               editError={editError}
             />
-            {/* ── CM commercial defaults — Preview→Apply (Slice 1) ──────── */}
+            {/* ── Commercial terms & charges — THREE DISTINCT AUTHORITIES ──
+                1. Customer Master DEFAULTS (advisory suggestions you can apply)
+                2. SAVED DRAFT values / charges (what this proforma will bill)
+                3. wFirma service-product REGISTRY (mapping used only at posting)
+                Kept as separate panels so it is always clear which layer a value
+                comes from and which command persists the operator's decision. */}
+            <div data-testid="pf-commercial-section-note" style={{ marginTop: 20, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
+              <strong style={{ color: 'var(--text-2)' }}>Commercial terms &amp; charges</strong> — three layers:
+              <span style={{ color: 'var(--text-2)' }}> Customer Master defaults</span> (apply advisory) ·
+              <span style={{ color: 'var(--text-2)' }}> saved draft values/charges</span> (what bills) ·
+              <span style={{ color: 'var(--text-2)' }}> wFirma service-product registry</span> (used at posting).
+            </div>
+            {/* Layer 1 — CM commercial defaults — Preview→Apply (Slice 1) */}
             <CustomerMasterSuggestions
               suggestions={liveDraft.customer_master_suggestions}
               draftId={liveDraft.id || (draft && draft.id)}
               updatedAt={liveDraft.updated_at || (draft && draft.updated_at) || ''}
               onReload={() => draftHook && draftHook.reload && draftHook.reload()}
             />
+            {/* Layer 2a — operator-set commercial terms (controlled dropdowns) */}
+            <CommercialTermsEditor
+              draftId={liveDraft.id || (draft && draft.id)}
+              liveDraft={liveDraft}
+              updatedAt={liveDraft.updated_at || (draft && draft.updated_at) || ''}
+              onReload={() => draftHook && draftHook.reload && draftHook.reload()}
+            />
+            {/* Layer 2b — saved draft freight/insurance charges */}
             <ServiceChargesPanel
               charges={liveDraft.service_charges || []}
               canEdit={canEdit}
               draftState={draftState}
+              draftCurrency={draftCurrency}
+              serviceProducts={serviceProducts}
+              onLoadServiceProducts={loadServiceProducts}
               suggestion={chargeSuggestion}
               chargesLoading={chargesLoading}
               chargesApplying={chargesApplying}
               onFetchSuggestions={handleFetchChargeSuggestions}
               onApplyCharge={handleApplyCharge}
+              onAddCharge={handleAddCharge}
+              onUpdateCharge={handleUpdateCharge}
               onDismissSuggestion={() => setChargeSuggestion(null)}
               onDeleteCharge={(chargeId) => {
                 const id = liveDraft.id || (draft && draft.id);
@@ -4884,7 +4947,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                   .then(r => r && r.ok && draftHook && draftHook.reload && draftHook.reload());
               }}
             />
-            {/* PL-5: Service Product Registry Panel — wires GET/PUT /proforma/service-products */}
+            {/* Layer 3 — wFirma service-product registry — GET/PUT /proforma/service-products */}
             <ServiceProductRegistryPanel />
           </React.Fragment>
         )}
@@ -5506,12 +5569,77 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 }
 
 // ── PR B — Service charges panel ────────────────────────────────────────────
-function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, chargesLoading, chargesApplying, onFetchSuggestions, onApplyCharge, onDismissSuggestion, onDeleteCharge }) {
+function ServiceChargesPanel({ charges, canEdit, draftState, draftCurrency, serviceProducts, onLoadServiceProducts, suggestion, chargesLoading, chargesApplying, onFetchSuggestions, onApplyCharge, onAddCharge, onUpdateCharge, onDismissSuggestion, onDeleteCharge }) {
   const fmtAmt = (amt, cur) => `${Number(amt).toFixed(2)} ${cur || ''}`;
   const existingTypes = (charges || []).map(c => (c.charge_type || '').toLowerCase());
   // Slice-2: both freight and insurance are already on the draft — CM preview
   // is still available (Lesson M: no capability removal) but labelled advisory.
   const allTypesApplied = existingTypes.includes('freight') && existingTypes.includes('insurance');
+
+  // PR-3 — manual add / in-place edit state.
+  const [addType, setAddType] = React.useState(null);        // 'freight'|'insurance'|null
+  const [addForm, setAddForm] = React.useState({});
+  const [addBusy, setAddBusy] = React.useState(false);
+  const [addErr,  setAddErr]  = React.useState(null);
+  const [editId,  setEditId]  = React.useState(null);        // charge_id being edited
+  const [editForm, setEditForm] = React.useState({});
+  const [editBusy, setEditBusy] = React.useState(false);
+  const [editErr,  setEditErr]  = React.useState(null);
+
+  const iBtn = { fontSize: 11, padding: '2px 9px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--text-2)' };
+  const iIn  = { fontSize: 12, padding: '3px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' };
+  const svcOptions = (type) => (serviceProducts || [])
+    .filter(p => (p.charge_type || '').toLowerCase() === type);
+
+  const openAdd = (type) => {
+    if (onLoadServiceProducts) onLoadServiceProducts();
+    setAddType(type); setAddErr(null);
+    setAddForm({ amount: '', currency: draftCurrency || 'EUR', wfirma_service_id: '', rate_pct: '', label: '' });
+  };
+  const submitAdd = () => {
+    const amt = parseFloat(addForm.amount);
+    if (isNaN(amt) || amt < 0) { setAddErr('Enter a valid amount (>= 0).'); return; }
+    const charge = {
+      charge_type: addType, amount: amt,
+      currency: (addForm.currency || draftCurrency || 'EUR').toUpperCase(),
+      label: (addForm.label || '').trim(),
+      wfirma_service_id: (addForm.wfirma_service_id || '').trim() || null,
+    };
+    if (addType === 'insurance' && String(addForm.rate_pct).trim() !== '') {
+      const r = parseFloat(addForm.rate_pct);
+      if (!isNaN(r)) charge.formula_basis = { rate_pct: r };
+    }
+    setAddBusy(true); setAddErr(null);
+    Promise.resolve(onAddCharge && onAddCharge(charge))
+      .then(() => { setAddBusy(false); setAddType(null); })
+      .catch(e => { setAddBusy(false); setAddErr((e && e.message) || 'Add failed'); });
+  };
+  const openEdit = (c) => {
+    if (onLoadServiceProducts) onLoadServiceProducts();
+    setEditId(c.charge_id); setEditErr(null);
+    setEditForm({
+      amount: String(c.amount != null ? c.amount : ''),
+      wfirma_service_id: c.wfirma_service_id || '',
+      rate_pct: (c.formula_basis && c.formula_basis.rate_pct != null) ? String(c.formula_basis.rate_pct) : '',
+      label: c.label || '',
+    });
+  };
+  const submitEdit = (c) => {
+    const updates = {};
+    const amt = parseFloat(editForm.amount);
+    if (!isNaN(amt) && amt !== Number(c.amount)) updates.amount = amt;
+    if ((editForm.wfirma_service_id || '') !== (c.wfirma_service_id || '')) updates.wfirma_service_id = (editForm.wfirma_service_id || '').trim() || null;
+    if ((editForm.label || '') !== (c.label || '')) updates.label = (editForm.label || '').trim();
+    const curRate = (c.formula_basis && c.formula_basis.rate_pct != null) ? String(c.formula_basis.rate_pct) : '';
+    if (c.charge_type === 'insurance' && (editForm.rate_pct || '') !== curRate) {
+      updates.rate_pct = String(editForm.rate_pct).trim() === '' ? null : parseFloat(editForm.rate_pct);
+    }
+    if (Object.keys(updates).length === 0) { setEditId(null); return; }
+    setEditBusy(true); setEditErr(null);
+    Promise.resolve(onUpdateCharge && onUpdateCharge(c.charge_id, updates))
+      .then(() => { setEditBusy(false); setEditId(null); })
+      .catch(e => { setEditBusy(false); setEditErr((e && e.message) || 'Update failed'); });
+  };
 
   return (
     <div data-testid="service-charges-panel" style={{ marginTop: 24, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
@@ -5544,14 +5672,45 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
             (read-only — draft is in '{draftState}' state)
           </span>
         )}
+        {canEdit && !existingTypes.includes('freight') && (
+          <button data-testid="btn-add-freight" onClick={() => openAdd('freight')} style={iBtn}>+ Add freight</button>
+        )}
+        {canEdit && !existingTypes.includes('insurance') && (
+          <button data-testid="btn-add-insurance" onClick={() => openAdd('insurance')} style={iBtn}>+ Add insurance</button>
+        )}
       </div>
+
+      {/* Manual add form — writes via the canonical service-charge writer (POST /service-charges). */}
+      {canEdit && addType && (
+        <div data-testid={`charge-add-form-${addType}`} style={{ padding: '10px 12px', marginBottom: 8, background: 'var(--bg)', border: '1px solid var(--accent)', borderRadius: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', width: 70 }}>{addType.charAt(0).toUpperCase() + addType.slice(1)}</span>
+          <input data-testid="charge-add-amount" type="number" min="0" step="0.01" placeholder="amount" value={addForm.amount} onChange={e => setAddForm(p => ({ ...p, amount: e.target.value }))} style={{ ...iIn, width: 90 }} />
+          <input data-testid="charge-add-currency" placeholder="cur" value={addForm.currency} onChange={e => setAddForm(p => ({ ...p, currency: e.target.value }))} style={{ ...iIn, width: 56 }} />
+          <select data-testid="charge-add-service-product" value={addForm.wfirma_service_id} onChange={e => setAddForm(p => ({ ...p, wfirma_service_id: e.target.value }))} style={{ ...iIn, minWidth: 150 }}>
+            <option value="">— wFirma service product —</option>
+            {svcOptions(addType).map(p => <option key={p.wfirma_product_id || p.charge_type} value={p.wfirma_product_id || ''}>{(p.wfirma_product_id ? p.wfirma_product_id + ' · ' : '') + (p.product_name || p.charge_type)}</option>)}
+          </select>
+          {addType === 'insurance' && (
+            <input data-testid="charge-add-rate" type="number" min="0" step="0.01" placeholder="rate %" value={addForm.rate_pct} onChange={e => setAddForm(p => ({ ...p, rate_pct: e.target.value }))} style={{ ...iIn, width: 70 }} />
+          )}
+          <input data-testid="charge-add-label" placeholder="label (optional)" value={addForm.label} onChange={e => setAddForm(p => ({ ...p, label: e.target.value }))} style={{ ...iIn, width: 130 }} />
+          <button data-testid="charge-add-save" onClick={submitAdd} disabled={addBusy} style={{ ...iBtn, background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)', opacity: addBusy ? 0.6 : 1 }}>{addBusy ? 'Adding…' : 'Add'}</button>
+          <button data-testid="charge-add-cancel" onClick={() => setAddType(null)} disabled={addBusy} style={iBtn}>Cancel</button>
+          {addErr && <span data-testid="charge-add-error" style={{ fontSize: 11, color: 'var(--badge-red-text)', width: '100%' }}>{addErr}</span>}
+        </div>
+      )}
 
       {/* Existing charges — DRAFT AUTHORITY (service_charges_json on the saved draft) */}
       {charges.length === 0 && (
         <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>No service charges added.</div>
       )}
-      {charges.map(c => (
-        <div key={c.charge_id} data-testid={`charge-row-${c.charge_type}`} style={{
+      {charges.map(c => {
+        const isEdit = editId === c.charge_id;
+        const fb = c.formula_basis || {};
+        const basis = (fb.sales_total != null ? Number(fb.sales_total) : null);
+        return (
+        <React.Fragment key={c.charge_id}>
+        <div data-testid={`charge-row-${c.charge_type}`} style={{
           display: 'flex', alignItems: 'center', gap: 8,
           padding: '6px 10px', marginBottom: 4,
           background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6,
@@ -5566,22 +5725,34 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
             <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{c.label}</span>
           )}
           {/* Slice-2: expose mapping-layer fields so the operator can see which
-              CM service ID and (insurance) rate are stored on the draft line.
-              (a) CM service ID → wfirma_service_id on the charge line
-              (b) Insurance rate → formula_basis.rate_pct stored by slice-1 apply */}
+              wFirma service ID and (insurance) rate are stored on the draft line. */}
           {c.wfirma_service_id && (
             <span data-testid={`charge-svc-id-${c.charge_type}`}
-                  title="CM service ID stored on this draft charge line"
+                  title="wFirma service-product ID stored on this draft charge line"
                   style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'monospace' }}>
               svc:{c.wfirma_service_id}
             </span>
           )}
+          {/* Insurance rate (%) stored on the draft charge (Lesson M: keep visible). */}
           {c.formula_basis && c.formula_basis.rate_pct != null && (
             <span data-testid={`charge-rate-pct-${c.charge_type}`}
-                  title="Insurance rate (%) from Customer Master, stored on draft"
+                  title="Insurance rate (%) stored on this draft charge"
                   style={{ fontSize: 10, color: 'var(--text-3)' }}>
               rate:{c.formula_basis.rate_pct}%
             </span>
+          )}
+          {/* Insurance premium provenance: basis × rate = premium (the stored amount). */}
+          {c.charge_type === 'insurance' && fb.rate_pct != null && (
+            <span data-testid={`charge-premium-${c.charge_type}`}
+                  title="Insurance premium = basis × rate (the stored amount is the premium)"
+                  style={{ fontSize: 10, color: 'var(--text-3)' }}>
+              {basis != null ? `${basis.toFixed(2)} × ${fb.rate_pct}% = ${Number(c.amount).toFixed(2)}` : `= premium ${Number(c.amount).toFixed(2)}`}
+            </span>
+          )}
+          {canEdit && !isEdit && (
+            <button data-testid={`btn-edit-charge-${c.charge_type}`}
+                    title={`Edit ${c.charge_type} charge`}
+                    onClick={() => openEdit(c)} style={iBtn}>Edit</button>
           )}
           {canEdit && (
             <button
@@ -5596,7 +5767,26 @@ function ServiceChargesPanel({ charges, canEdit, draftState, suggestion, charges
             >✕</button>
           )}
         </div>
-      ))}
+        {canEdit && isEdit && (
+          <div data-testid={`charge-edit-form-${c.charge_type}`} style={{ padding: '10px 12px', marginBottom: 6, background: 'var(--bg)', border: '1px solid var(--accent)', borderRadius: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: 'var(--text-3)', width: 70 }}>Edit {c.charge_type}</span>
+            <input data-testid="charge-edit-amount" type="number" min="0" step="0.01" value={editForm.amount} onChange={e => setEditForm(p => ({ ...p, amount: e.target.value }))} style={{ ...iIn, width: 90 }} />
+            <select data-testid="charge-edit-service-product" value={editForm.wfirma_service_id} onChange={e => setEditForm(p => ({ ...p, wfirma_service_id: e.target.value }))} style={{ ...iIn, minWidth: 150 }}>
+              <option value="">— wFirma service product —</option>
+              {svcOptions(c.charge_type).map(p => <option key={p.wfirma_product_id || p.charge_type} value={p.wfirma_product_id || ''}>{(p.wfirma_product_id ? p.wfirma_product_id + ' · ' : '') + (p.product_name || p.charge_type)}</option>)}
+            </select>
+            {c.charge_type === 'insurance' && (
+              <input data-testid="charge-edit-rate" type="number" min="0" step="0.01" placeholder="rate %" value={editForm.rate_pct} onChange={e => setEditForm(p => ({ ...p, rate_pct: e.target.value }))} style={{ ...iIn, width: 70 }} />
+            )}
+            <input data-testid="charge-edit-label" placeholder="label" value={editForm.label} onChange={e => setEditForm(p => ({ ...p, label: e.target.value }))} style={{ ...iIn, width: 130 }} />
+            <button data-testid="charge-edit-save" onClick={() => submitEdit(c)} disabled={editBusy} style={{ ...iBtn, background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)', opacity: editBusy ? 0.6 : 1 }}>{editBusy ? 'Saving…' : 'Save'}</button>
+            <button data-testid="charge-edit-cancel" onClick={() => setEditId(null)} disabled={editBusy} style={iBtn}>Cancel</button>
+            {editErr && <span data-testid="charge-edit-error" style={{ fontSize: 11, color: 'var(--badge-red-text)', width: '100%' }}>{editErr}</span>}
+          </div>
+        )}
+        </React.Fragment>
+        );
+      })}
 
       {/* Suggestion panel — ADVISORY ONLY (live CM re-read, not the draft authority).
           Slice-2: header explicitly labels this as advisory. The Apply button is
@@ -6148,6 +6338,147 @@ const _CM_APPLY_KEY_MAP = {
   insurance_rate:     'insurance_rate',
   insurance_service_id: 'insurance_service_id',
 };
+
+// ── Operator-set commercial terms (controlled wFirma-backed dropdowns) ─────────
+// LAYER 2 of 3 (see the section note above the panels): the SAVED draft value,
+// chosen by the operator from controlled dropdowns sourced from the wFirma-backed
+// dictionary (GET /customer-master/dictionaries). Distinct from Customer Master
+// DEFAULTS (layer 1, apply-from-CM) and the wFirma service-product REGISTRY
+// (layer 3). Persists via POST /set-commercial-defaults — validated server-side
+// (invalid enum/id → field-level 422). The dictionary is fetched lazily on Edit,
+// never on page open, and it is a cached config read (no live wFirma product query).
+function CommercialTermsEditor({ draftId, liveDraft, updatedAt, onReload }) {
+  const [open, setOpen] = React.useState(false);
+  const [dicts, setDicts] = React.useState(null);
+  const [form, setForm] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+  const [msg, setMsg] = React.useState(null);
+
+  const pt = (liveDraft && liveDraft.payment_terms) || {};
+  const curPayment = pt.method || '';
+  const curDays    = (pt.days != null ? String(pt.days) : '');
+  const curLang    = pt.invoice_language_id || '';
+  const curVat     = liveDraft.vat_code || '';
+
+  // Payment methods come from the single dictionary authority (get_dictionaries
+  // now serves payment_methods, federated by CommercialLookupService). Static
+  // fallback covers the pre-load render only.
+  const PAY_METHODS = (dicts && dicts.payment_methods && dicts.payment_methods.length)
+    ? dicts.payment_methods
+    : [
+        { id: 'transfer', label: 'Bank transfer' },
+        { id: 'cash', label: 'Cash' },
+        { id: 'card', label: 'Card' },
+        { id: 'compensation', label: 'Compensation' },
+      ];
+  const vatModes  = (dicts && dicts.vat_modes) || [];
+  const languages = (dicts && dicts.languages) || [];
+  const _label = (list, id) => {
+    const m = (list || []).find(x => String(x.id) === String(id));
+    return m ? m.label : null;
+  };
+  const payLabel  = (id) => (_label(PAY_METHODS, id) || (id || '—'));
+  const langLabel = (id) => (dicts ? (_label(languages, id) || (id === '' ? 'Default' : id)) : (id || '—'));
+  const vatLabel  = (id) => (dicts ? (_label(vatModes, id) || (id || '—')) : (id || '—'));
+
+  const loadDicts = () => {
+    if (dicts) return;
+    window.PzApi.getCustomerDictionaries()
+      .then(r => setDicts((r && r.data) || r || {}))
+      .catch(() => setDicts({}));
+  };
+  const startEdit = () => {
+    loadDicts();
+    setForm({ payment_method: curPayment, payment_terms_days: curDays,
+              invoice_language_id: curLang, vat_mode: curVat });
+    setErr(null); setMsg(null); setOpen(true);
+  };
+  const setField = (k, v) => setForm(p => ({ ...(p || {}), [k]: v }));
+
+  const save = () => {
+    if (!form) return;
+    const fields = {};
+    if (form.payment_method !== curPayment) fields.payment_method = form.payment_method;
+    if (form.payment_terms_days !== curDays) {
+      const d = parseInt(form.payment_terms_days, 10);
+      if (!isNaN(d)) fields.payment_terms_days = d;
+    }
+    if (form.invoice_language_id !== curLang) fields.invoice_language_id = form.invoice_language_id;
+    if (form.vat_mode !== curVat && form.vat_mode) fields.vat_mode = form.vat_mode;
+    if (Object.keys(fields).length === 0) { setOpen(false); return; }
+    setBusy(true); setErr(null); setMsg(null);
+    window.PzApi.setCommercialDefaults(draftId, fields, updatedAt)
+      .then(r => {
+        if (r && r.ok === false) throw new Error((r && r.error) || 'Save rejected');
+        setBusy(false); setOpen(false); setMsg('Commercial terms updated');
+        if (onReload) onReload();
+      })
+      .catch(e => { setBusy(false); setErr((e && e.message) || 'Save failed'); });
+  };
+
+  const box = { padding: '12px 14px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, marginTop: 12 };
+  const sel = { padding: '4px 6px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', minWidth: 150 };
+  const btn = { padding: '3px 10px', fontSize: 12, fontWeight: 600, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' };
+  const row = { display: 'flex', alignItems: 'center', gap: 10, margin: '6px 0', flexWrap: 'wrap' };
+  const lab = { width: 130, fontSize: 12, color: 'var(--text-2)' };
+
+  return (
+    <div data-testid="pf-commercial-terms" style={box}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Commercial terms (draft)</span>
+        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>· operator-set · controlled wFirma values</span>
+        <div style={{ flex: 1 }} />
+        {!open && (
+          <button data-testid="pf-commercial-edit" onClick={startEdit} style={btn}>Edit</button>
+        )}
+      </div>
+
+      {!open ? (
+        <div style={{ fontSize: 12, color: 'var(--text)' }}>
+          <div style={row}><span style={lab}>Payment method</span><span data-testid="pf-ct-payment">{curPayment ? `${curPayment} · ${payLabel(curPayment)}` : '—'}</span></div>
+          <div style={row}><span style={lab}>Payment terms</span><span data-testid="pf-ct-days">{curDays !== '' ? `${curDays} days` : '—'}</span></div>
+          <div style={row}><span style={lab}>Invoice language</span><span data-testid="pf-ct-lang">{curLang ? `${curLang} · ${langLabel(curLang)}` : '—'}</span></div>
+          <div style={row}><span style={lab}>VAT / WDT</span><span data-testid="pf-ct-vat">{curVat ? `${curVat}${vatLabel(curVat) && vatLabel(curVat) !== curVat ? ' · ' + vatLabel(curVat) : ''}` : '—'}</span></div>
+          {msg && <div data-testid="pf-ct-msg" style={{ fontSize: 11, color: 'var(--badge-green-text)', marginTop: 4 }}>{msg}</div>}
+        </div>
+      ) : (
+        <div style={{ fontSize: 12 }}>
+          <div style={row}>
+            <span style={lab}>Payment method</span>
+            <select data-testid="pf-ct-payment-select" value={form.payment_method} onChange={e => setField('payment_method', e.target.value)} style={sel}>
+              <option value="">— select —</option>
+              {PAY_METHODS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+            </select>
+          </div>
+          <div style={row}>
+            <span style={lab}>Payment terms (days)</span>
+            <input data-testid="pf-ct-days-input" type="number" min="0" step="1" value={form.payment_terms_days} onChange={e => setField('payment_terms_days', e.target.value)} style={{ ...sel, minWidth: 80 }} />
+          </div>
+          <div style={row}>
+            <span style={lab}>Invoice language</span>
+            <select data-testid="pf-ct-lang-select" value={form.invoice_language_id} onChange={e => setField('invoice_language_id', e.target.value)} style={sel}>
+              {(languages.length ? languages : [{ id: '', label: '— Default —' }]).map(o => <option key={o.id} value={o.id}>{o.id ? `${o.id} · ${o.label}` : o.label}</option>)}
+            </select>
+          </div>
+          <div style={row}>
+            <span style={lab}>VAT / WDT</span>
+            <select data-testid="pf-ct-vat-select" value={form.vat_mode} onChange={e => setField('vat_mode', e.target.value)} style={sel}>
+              <option value="">— select —</option>
+              {vatModes.map(o => <option key={o.id} value={String(o.id)}>{o.id} · {o.label}</option>)}
+            </select>
+          </div>
+          {err && <div data-testid="pf-ct-err" style={{ fontSize: 11, color: 'var(--badge-red-text)', margin: '4px 0' }}>{err}</div>}
+          <div style={{ ...row, marginTop: 8 }}>
+            <button data-testid="pf-ct-save" onClick={save} disabled={busy} style={{ ...btn, background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)', opacity: busy ? 0.6 : 1 }}>{busy ? 'Saving…' : 'Save terms'}</button>
+            <button data-testid="pf-ct-cancel" onClick={() => setOpen(false)} disabled={busy} style={btn}>Cancel</button>
+            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Only valid wFirma values are accepted (invalid → rejected).</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function CustomerMasterSuggestions({ suggestions, draftId, updatedAt, onReload }) {
   const sug = suggestions || null;

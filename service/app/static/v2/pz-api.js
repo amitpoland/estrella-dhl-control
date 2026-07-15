@@ -330,6 +330,15 @@
     deleteServiceCharge: (draftId, chargeId) =>
       _del(`${BASE}/proforma/draft/${draftId}/service-charges/${chargeId}`),
 
+    // PATCH /api/v1/proforma/draft/{draft_id}/service-charges/{charge_id} (X-Operator)
+    // Edit an existing freight/insurance charge in place. charge_type is immutable.
+    // updates: { amount?, currency?, label?, wfirma_service_id?, rate_pct? }
+    updateServiceCharge: (draftId, chargeId, updates, updatedAt) =>
+      _patch(`${BASE}/proforma/draft/${draftId}/service-charges/${chargeId}`, {
+        expected_updated_at: updatedAt || '',
+        updates,
+      }),
+
     // DELETE /api/v1/proforma/draft/{draft_id}
     // Hard-delete a local-only cancelled draft (no wFirma refs).
     deleteDraft: (draftId) =>
@@ -1182,6 +1191,17 @@
     applyCustomerCommercial: (draftId, fields, updatedAt) =>
       _postM(`${BASE}/proforma/draft/${draftId}/apply-customer-commercial`, {
         fields,
+        expected_updated_at: updatedAt || '',
+      }),
+
+    // POST /api/v1/proforma/draft/{id}/set-commercial-defaults (X-Operator).
+    // Operator-CHOSEN commercial terms from controlled wFirma-backed dropdowns —
+    // distinct from applyCustomerCommercial (which copies Customer Master defaults).
+    // fields: { payment_method?, payment_terms_days?, invoice_language_id?, vat_mode? }
+    // Validated server-side: an invalid enum/id is rejected with a field-level 422.
+    setCommercialDefaults: (draftId, fields, updatedAt) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/set-commercial-defaults`, {
+        ...(fields || {}),
         expected_updated_at: updatedAt || '',
       }),
 

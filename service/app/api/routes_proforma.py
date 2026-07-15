@@ -35,6 +35,7 @@ from ..services import wfirma_db   as wfdb
 from ..services import customer_identity_resolver as _cir  # WF-3: canonical contractor.id resolver
 from ..services import inventory_state_engine as ise
 from ..services import proforma_invoice_link_db as pildb
+from ..services import commercial_lookup
 from ..services import wfirma_client
 from ..services.customer_master_db import (
     get_customer as get_customer_master,
@@ -6059,6 +6060,45 @@ def post_proforma_draft_service_charge(
     ))
 
 
+@router.patch("/draft/{draft_id}/service-charges/{charge_id}", dependencies=[_auth])
+def patch_proforma_draft_service_charge(
+    draft_id:   int,
+    charge_id:  int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Edit an existing freight/insurance charge IN PLACE via the canonical
+    service-charge writer — amount / currency / label / wfirma_service_id /
+    rate_pct. ``charge_type`` is immutable (remove + add to change a type). This
+    completes add / edit / remove on one writer so an amount correction or a
+    service-product remap is not a destructive delete-then-re-add.
+
+    Body::
+        { "expected_updated_at": "...",
+          "updates": {"amount": 55.0, "wfirma_service_id": "13002743"} }
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(charge_id, int) or charge_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid charge_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+    updates  = body.get("updates") or {}
+    if not isinstance(updates, dict) or not updates:
+        raise HTTPException(
+            status_code=400, detail="updates must be a non-empty JSON object")
+    return _draft_edit_dispatch(draft_id, lambda: pildb.update_draft_service_charge(
+        _proforma_db_path(),
+        int(draft_id),
+        int(charge_id),
+        updates,
+        operator,
+        expected,
+    ))
+
+
 def _preflight_approve(db_path, draft_id: int):
     """Return error string if draft fails sales-price/description checks, else None."""
     import json as _json_pf
@@ -8373,6 +8413,99 @@ def apply_customer_commercial(
         updates             = updates,
         operator            = operator,
         expected_updated_at = expected,
+    ))
+
+
+@router.post("/draft/{draft_id}/set-commercial-defaults", dependencies=[_auth])
+def set_draft_commercial_defaults(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Operator sets commercial terms DIRECTLY on the draft from controlled,
+    wFirma-backed dropdowns: payment method, payment terms days, invoice
+    language, VAT/WDT mode.
+
+    Distinct from ``apply-customer-commercial`` (which copies the Customer
+    Master defaults): here the operator CHOOSES the value. Every field is
+    validated against the canonical enum/id set; an invalid selection is
+    rejected with a field-level HTTP 422 and NOTHING is persisted. Valid values
+    are written through the SAME writer apply-customer-commercial uses (no second
+    writer), under a distinct ``commercial_defaults_operator_set`` audit event.
+
+    Body (all fields optional; at least one required)::
+        { "expected_updated_at": "...",
+          "payment_method":      "transfer",
+          "payment_terms_days":  30,
+          "invoice_language_id": "2",
+          "vat_mode":            "228" }
+
+    Errors: 400 (bad input / nothing to set), 401/403 (auth), 404 (draft),
+    409 (lock / non-editable), 422 (invalid enum/id selection).
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+
+    # CommercialLookupService is the single validation authority — the same one
+    # the Customer Master record validator and the UI dictionary consume, so the
+    # accepted enum/id sets cannot drift across surfaces.
+    def _reject(field: str, value: Any, allowed) -> None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"invalid {field}={value!r}; allowed: {sorted(allowed)}",
+        )
+
+    updates: Dict[str, Any] = {}
+
+    if body.get("payment_method") is not None:
+        v = str(body.get("payment_method") or "").strip().lower()
+        if v:
+            if not commercial_lookup.validate_payment_method(v):
+                _reject("payment_method", v, commercial_lookup.payment_method_ids())
+            updates["payment_method"] = v
+
+    if body.get("payment_terms_days") is not None:
+        try:
+            days = int(body.get("payment_terms_days"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422,
+                                detail="payment_terms_days must be an integer")
+        if days < 0:
+            raise HTTPException(status_code=422,
+                                detail="payment_terms_days must be >= 0")
+        updates["payment_terms_days"] = days
+
+    # invoice_language_id: "" is a VALID selection (default account language).
+    if body.get("invoice_language_id") is not None:
+        v = str(body.get("invoice_language_id") or "").strip()
+        if not commercial_lookup.validate_invoice_language(v):
+            _reject("invoice_language_id", v, commercial_lookup.invoice_language_ids())
+        updates["invoice_language_id"] = v
+
+    if body.get("vat_mode") is not None:
+        v = str(body.get("vat_mode") or "").strip()
+        if v:
+            if not commercial_lookup.validate_vat_mode(v):
+                _reject("vat_mode", v, commercial_lookup.vat_mode_ids())
+            updates["vat_mode"] = v
+
+    if not updates:
+        raise HTTPException(
+            status_code=400, detail="no commercial field supplied — nothing to set")
+
+    return _draft_edit_dispatch(draft_id, lambda: pildb.apply_customer_commercial_to_draft(
+        _proforma_db_path(),
+        int(draft_id),
+        cm_name             = "",
+        cm_contractor_id    = "",
+        updates             = updates,
+        operator            = operator,
+        expected_updated_at = expected,
+        audit_event         = "commercial_defaults_operator_set",
     ))
 
 

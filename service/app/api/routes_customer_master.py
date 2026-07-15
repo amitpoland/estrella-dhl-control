@@ -235,9 +235,11 @@ _INT_FIELDS = frozenset({"vat_mode", "payment_terms_days"})
 # Allowed values for preferred_payment_method.  Any other non-empty value is
 # rejected with 422 at the route layer before it reaches the DB.
 # Empty string and None are normalised to NULL (wFirma default).
-_ALLOWED_PAYMENT_METHODS: frozenset[str] = frozenset({
-    "transfer", "cash", "card", "compensation",
-})
+# Delegated to CommercialLookupService so the Customer Master record validator
+# and the operator set-commercial-defaults editor share ONE payment-method
+# authority and cannot drift apart.
+from ..services import commercial_lookup as _commercial_lookup
+_ALLOWED_PAYMENT_METHODS: frozenset = _commercial_lookup.payment_method_ids()
 
 # Optional string fields where an empty string from the UI must become None.
 # These fields are nullable in the DB; "" is never a valid stored value.

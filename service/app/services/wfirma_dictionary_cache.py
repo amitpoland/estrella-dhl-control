@@ -154,6 +154,18 @@ VAT_MODES: List[Dict[str, Any]] = [
 ]
 
 
+# ── Payment methods ──────────────────────────────────────────────────────────
+# The accounting method codes an operator may set on a draft / Customer Master.
+# Held here beside the other enum constants so the whole commercial surface has a
+# single dictionary authority (federated by commercial_lookup.CommercialLookup).
+PAYMENT_METHODS: List[Dict[str, Any]] = [
+    {"id": "transfer",     "label": "Bank transfer"},
+    {"id": "cash",         "label": "Cash"},
+    {"id": "card",         "label": "Card"},
+    {"id": "compensation", "label": "Compensation"},
+]
+
+
 # ── Currencies ───────────────────────────────────────────────────────────────
 # Locally accepted commercial currencies. The PZ engine reads NBP live rates;
 # this dictionary is purely UI presentation.
@@ -364,6 +376,7 @@ def get_dictionaries() -> Dict[str, Any]:
 
     return {
         "vat_modes":        list(VAT_MODES),
+        "payment_methods":  list(PAYMENT_METHODS),
         "currencies":       list(CURRENCIES),
         "languages":        list(LANGUAGES),
         "invoice_series":   invoice_series,
