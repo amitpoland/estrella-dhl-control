@@ -10,7 +10,8 @@ These pins hold the corrected sources:
   - Customer Reference  = canonical proforma number (never the batch id)
   - Shipment Reference  = internal batch id (unchanged)
   - Declared Value      = the Overview "Amount due" authority (billed lines
-                          total) + same-currency service/shipping charges
+                          total) + the CommercialChargeAuthority same-currency
+                          service-charge subtotal
   - Currency            = draft currency
   - Manual override + honest empty hint preserved
 """
@@ -63,10 +64,18 @@ def test_declared_value_uses_lines_total_authority():
 
 
 def test_declared_value_includes_same_currency_service_charges():
+    """Charges come from the ONE CommercialChargeAuthority subtotal (PR #923).
+
+    Same-currency-only is enforced inside resolve_commercial_charges()
+    (currency_rule: same_currency_only) — the UI must NOT re-sum the raw
+    service_charges list.
+    """
     block = _prefill_block()
     assert "_awbChargesTotal" in block
-    assert "liveDraft.service_charges" in block
-    assert "draftCurrency" in block  # currency-matched charges only
+    # exact authority read — one source, no fallback re-sum
+    assert "Number((liveDraft.commercial_charges || {}).service_charge_subtotal) || 0" in block
+    # the old UI re-sum over the raw charge list is gone from the prefill
+    assert "liveDraft.service_charges" not in block
 
 
 def test_declared_value_prefill_derived_not_hardcoded():
