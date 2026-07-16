@@ -3439,7 +3439,10 @@ def _build_convert_candidate(
             payment_days=_effective_days,
         ).isoformat()
 
-    # ── Operator description + audit suffix ───────────────────────────────────
+    # ── Operator description (customer-facing) + override audit note ─────────
+    # 2026-07-16 customer-clean revision: override metadata must NEVER enter
+    # the wFirma invoice <description> (customer document). It is returned as
+    # `override_note` for the AUDIT trail (audit.json event + server log) only.
     _op_desc = (operator_description or "").strip()
     _audit_parts = []
     if _override_method_en:
@@ -3450,8 +3453,7 @@ def _build_convert_candidate(
         _audit_parts.append(f"sale_date={_override_sale_date}")
     if _override_days is not None:
         _audit_parts.append(f"payment_days={_override_days}")
-    if _audit_parts:
-        _op_desc = (_op_desc + " [override: " + ", ".join(_audit_parts) + "]").strip()
+    _override_note = ("override: " + ", ".join(_audit_parts)) if _audit_parts else ""
 
     # ── Build FinalInvoicePlan ────────────────────────────────────────────────
     plan = p2i.build_final_invoice_plan(
@@ -3478,6 +3480,10 @@ def _build_convert_candidate(
         "paymentdate":       _paymentdate,
         "invoice_date":      _invoice_date,
         "core_hash":         core_hash,
+        # AUDIT-ONLY: override metadata — must never be appended to
+        # plan.description (customer-facing). Consumed by the execute route's
+        # audit event; intentionally absent from the disclosure response body.
+        "override_note":     _override_note,
     }
 
 
@@ -4013,7 +4019,16 @@ def proforma_to_invoice(
             wfirma_proforma_id=pid,
             operator=operator,
             outcome="approved",
+            # AUDIT-ONLY: override metadata moved out of the customer-facing
+            # description (customer-clean revision 2026-07-16).
+            override_note=_candidate.get("override_note", ""),
         )
+        if _candidate.get("override_note"):
+            log.info(
+                "[%s/%s] invoice convert approved with %s (audit-only; "
+                "not on the customer invoice)",
+                batch_id, cn, _candidate["override_note"],
+            )
     except Exception:
         pass
 

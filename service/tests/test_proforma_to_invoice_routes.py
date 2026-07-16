@@ -914,8 +914,10 @@ def test_disclose_hash_covers_description(client, storage):
     )
 
 
-def test_disclose_description_preview_reflects_override_method(client, storage):
-    """override_payment_method passed to disclose-convert is reflected in description_preview."""
+def test_disclose_description_preview_customer_clean_under_overrides(client, storage):
+    """Customer-clean revision 2026-07-16: overrides still change the CUSTOMER-RELEVANT
+    parts of the description (payment_days → terms sentence) but override METADATA
+    ([override: ...], field names, ids) must never appear in description_preview."""
     from app.api import routes_proforma as rp
 
     draft_id = _seed_issued_proforma_by_draft(storage)
@@ -932,13 +934,63 @@ def test_disclose_description_preview_reflects_override_method(client, storage):
         )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert "description_preview" in body
-    # The audit suffix "[override: payment_method=cash, ...]" should appear in description
-    assert "cash" in body["description_preview"] or "gotówka" in body["description_preview"] \
-        or "[override:" in body["description_preview"], (
-        "description_preview should reflect the override_payment_method "
-        "(either via payment-terms block or audit suffix)"
+    desc = body["description_preview"]
+    # Customer-relevant effect of the override IS reflected:
+    assert "within 14 days from the invoice date" in desc
+    # Internal metadata is NOT:
+    lowered = desc.lower()
+    for marker in ("[override:", "override", "payment_method=", "contractor",
+                   "hash", "idempotency", "id=", "draft"):
+        assert marker not in lowered, (
+            f"internal marker {marker!r} leaked into customer-facing description_preview: {desc!r}"
+        )
+    assert desc.startswith("Reference: Pro Forma Invoice PROF 92/2026."), desc
+    # The override metadata is still auditable server-side:
+    from app.api.routes_proforma import _build_convert_candidate  # sanity: helper exposes it
+    # (full audit-event coverage in test_execute_records_override_note_in_audit)
+
+
+def test_execute_records_override_note_in_audit(client, storage):
+    """Customer-clean revision: the override metadata removed from the customer
+    description is preserved in the invoice_approval_attempt audit event
+    (override_note detail field) AND never appears on the invoice."""
+    from app.services import audit_persist as ap
+
+    captured = {}
+    real = ap.record_invoice_approval_attempt
+
+    def _spy(audit_path, **kw):
+        if kw.get("outcome") == "approved":
+            captured.update(kw)
+        return real(audit_path, **kw)
+
+    _seed_issued_proforma(storage)
+    src_xml = _proforma_xml()
+    sent_xml = {}
+    fetch_calls = [src_xml, _created_invoice_xml(inv_id="500222")]
+
+    def _fake_http(method, module, op, body):
+        sent_xml["body"] = body
+        return 200, """<?xml version="1.0"?>
+<api><invoices><invoice><id>500222</id><fullnumber>FA 222/5/2026</fullnumber>
+</invoice></invoices><status><code>OK</code></status></api>"""
+
+    with _gate_invoice_on(), \
+         patch.object(ap, "record_invoice_approval_attempt", _spy), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http):
+        body = client.post(
+            _EXECUTE_URL.format(batch=BATCH, client=CLIENT),
+            headers={**_auth(), "X-Operator": "amit"},
+            json={"confirm": CONFIRM_TOKEN, "override_payment_days": 21},
+        ).json()
+
+    assert captured.get("override_note") == "override: payment_days=21", (
+        f"override_note missing from approved audit event: {captured!r} (response: {body})"
     )
+    # And the wFirma payload's <description> stays customer-clean:
+    assert "[override:" not in sent_xml.get("body", ""), sent_xml.get("body", "")[:400]
+    assert "override" not in sent_xml["body"].split("<description>")[1].split("</description>")[0].lower()
 
 
 def test_disclose_accepts_operator_description_for_hash_parity(client, storage):
