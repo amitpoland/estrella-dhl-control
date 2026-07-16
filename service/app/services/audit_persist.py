@@ -409,6 +409,7 @@ def record_invoice_approval_attempt(
     operator:           str,
     outcome:            str,   # "approved" | "blocked" | "failed"
     blocking_reason:    str = "",
+    override_note:      str = "",  # AUDIT-ONLY payment-override metadata; never on the invoice
 ) -> Dict[str, Any]:
     """
     Append an ``invoice_approval_attempt`` timeline event capturing every
@@ -448,6 +449,10 @@ def record_invoice_approval_attempt(
                 "operator":           op,
                 "outcome":            out,
                 "blocking_reason":    blocking_reason or "",
+                # Customer-clean revision 2026-07-16: operator payment-override
+                # metadata lives HERE (audit trail), never in the customer-facing
+                # wFirma invoice description.
+                "override_note":      override_note or "",
                 "human_approval_required": True,
             },
         )

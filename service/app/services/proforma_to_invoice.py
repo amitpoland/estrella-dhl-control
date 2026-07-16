@@ -31,10 +31,13 @@ Locked rules
        series than proforma — e.g. 15827921 WDT vs 15827088 proforma).
     6. <date> on the final invoice is operator-supplied (today by default);
        the original proforma date is preserved in <description>.
-    7. <description> ALWAYS includes a back-reference:
-            "Final invoice issued based on proforma <fullnumber> (id=<id>)"
-       prepended to whatever description the operator passes (or to the
-       original proforma description if none is supplied).
+    7. <description> is CUSTOMER-FACING and ALWAYS starts with the reference:
+            "Reference: Pro Forma Invoice <fullnumber>."
+       followed by the Payment-and-Ownership-Terms block (when payment_days
+       is set) and an explicit operator note if any. Internal identifiers
+       (remote proforma id, contractor id, override metadata, hashes) are
+       FORBIDDEN here — they live in the audit trail. The source proforma's
+       own description is no longer auto-copied (2026-07-16 revision).
     8. translation_language and company_account are copied if present.
     9. ship-to (contractor_receiver) is copied if present.
 
@@ -332,15 +335,19 @@ def partition_billable(
 
 # ── Plan builder ──────────────────────────────────────────────────────────────
 
-BACK_REFERENCE_TEMPLATE = "Final invoice issued based on proforma {pnum} (id={pid})."
+# CUSTOMER-FACING (operator-ratified wording, 2026-07-16 revision): the wFirma
+# invoice description is a customer document. It must NEVER carry internal
+# identifiers — remote proforma id, local draft id, contractor id, override
+# metadata, payload hash, idempotency key, or internal field names. Those live
+# in the audit trail (audit.json events + proforma_invoice_links), not here.
+BACK_REFERENCE_TEMPLATE = "Reference: Pro Forma Invoice {pnum}."
 
-# Operator-ratified campaign text (verbatim, 2026-07-16).
-# Appended to the invoice description when payment_days is set on the plan.
 PAYMENT_TERMS_TEMPLATE = (
-    "Payment and Ownership Terms: Payment due within {payment_days} Days from invoice date. "
-    "Ownership of goods remains with the seller until full payment is received. "
-    "This transaction is governed by the laws of Poland and recognized under applicable "
-    "EU and international trade conventions."
+    "Payment and Ownership Terms:\n"
+    "Payment due within {payment_days} days from the invoice date.\n"
+    "Ownership of the goods remains with the seller until full payment is received.\n"
+    "This transaction is governed by the laws of Poland and applicable EU and "
+    "international trade conventions."
 )
 
 
@@ -443,19 +450,20 @@ def build_final_invoice_plan(
 
     issue_date = invoice_date or date.today()
 
-    back_ref = BACK_REFERENCE_TEMPLATE.format(
-        pnum=snap.proforma_number, pid=snap.proforma_id,
-    )
-    # Build description: back_ref always first, then terms (exactly once when
-    # payment_days is set and > 0), then operator or original proforma description.
+    back_ref = BACK_REFERENCE_TEMPLATE.format(pnum=snap.proforma_number)
+    # Build the CUSTOMER-FACING description: reference line first, then terms
+    # (exactly once when payment_days is set and > 0), then an explicit
+    # operator-entered note if any. The source proforma's own description is
+    # intentionally NOT auto-copied any more (2026-07-16 customer-clean
+    # revision): it could carry stale or internal wording; the operator adds
+    # customer text deliberately via operator_description. Internal metadata
+    # (remote id, override values) goes to the audit trail, never here.
     desc_parts = [back_ref]
     if payment_days is not None and payment_days > 0:
         desc_parts.append(PAYMENT_TERMS_TEMPLATE.format(payment_days=payment_days))
     if operator_description and operator_description.strip():
         desc_parts.append(operator_description.strip())
-    elif snap.description:
-        desc_parts.append(snap.description)
-    description = " ".join(desc_parts)
+    description = "\n\n".join(desc_parts)
 
     return FinalInvoicePlan(
         type                    = "normal",

@@ -237,8 +237,77 @@ def test_plan_back_reference_always_prepended():
     snap = parse_proforma_xml(_proforma_xml())
     plan = build_final_invoice_plan(snap, final_series_id="15827921",
                                     invoice_date=date(2026, 6, 1))
-    expected = BACK_REFERENCE_TEMPLATE.format(pnum="PROF 90/2026", pid="98712989")
+    expected = BACK_REFERENCE_TEMPLATE.format(pnum="PROF 90/2026")
     assert plan.description.startswith(expected)
+
+
+# ── Customer-clean description (2026-07-16 revision) ─────────────────────────
+# The wFirma invoice description is a CUSTOMER document. Internal metadata must
+# never enter it; it lives in the audit trail instead.
+
+_INTERNAL_MARKERS = [
+    "id=",              # remote proforma id interpolation
+    "(id",              # old back-reference form
+    "[override:",       # payment-override audit suffix
+    "override",         # any override field leak
+    "contractor",       # contractor id field name
+    "draft",            # local draft id field name
+    "hash",             # payload hash
+    "idempotency",      # idempotency key
+    "wfirma_",          # internal field-name prefix
+    "payload",          # internal field name
+]
+
+
+def test_description_contains_no_internal_metadata():
+    """No remote id, override suffix, hash, idempotency key, or internal field
+    names may ever appear in the customer-facing description."""
+    snap = parse_proforma_xml(_proforma_xml())
+    plan = build_final_invoice_plan(
+        snap, final_series_id="15827921", invoice_date=date(2026, 6, 1),
+        payment_days=90,
+    )
+    lowered = plan.description.lower()
+    for marker in _INTERNAL_MARKERS:
+        assert marker not in lowered, (
+            f"internal marker {marker!r} leaked into the customer-facing description: "
+            f"{plan.description!r}"
+        )
+    assert "98712989" not in plan.description, "remote proforma id leaked"
+
+
+def test_description_is_exactly_reference_plus_terms_when_no_operator_text():
+    """With payment_days set and no operator note, the description is exactly the
+    customer-facing reference line + terms block — nothing else (the source
+    proforma's own description is intentionally no longer auto-copied)."""
+    from app.services.proforma_to_invoice import PAYMENT_TERMS_TEMPLATE
+    snap = parse_proforma_xml(_proforma_xml(description="Internal ops note XYZ-77"))
+    plan = build_final_invoice_plan(
+        snap, final_series_id="15827921", invoice_date=date(2026, 6, 1),
+        payment_days=90,
+    )
+    expected = (
+        BACK_REFERENCE_TEMPLATE.format(pnum="PROF 90/2026")
+        + "\n\n"
+        + PAYMENT_TERMS_TEMPLATE.format(payment_days=90)
+    )
+    assert plan.description == expected
+    assert "XYZ-77" not in plan.description, (
+        "source-proforma description must no longer be auto-copied"
+    )
+
+
+def test_customer_facing_wording_exact():
+    """Pin the exact ratified customer wording (2026-07-16 revision)."""
+    from app.services.proforma_to_invoice import PAYMENT_TERMS_TEMPLATE
+    terms = PAYMENT_TERMS_TEMPLATE.format(payment_days=90)
+    assert terms == (
+        "Payment and Ownership Terms:\n"
+        "Payment due within 90 days from the invoice date.\n"
+        "Ownership of the goods remains with the seller until full payment is received.\n"
+        "This transaction is governed by the laws of Poland and applicable EU and "
+        "international trade conventions."
+    )
 
 
 def test_plan_back_reference_appears_with_operator_description():
@@ -247,7 +316,7 @@ def test_plan_back_reference_appears_with_operator_description():
         snap, final_series_id="15827921", invoice_date=date(2026, 6, 1),
         operator_description="Final invoice for shipment May 2026",
     )
-    assert plan.description.startswith("Final invoice issued based on proforma PROF 90/2026")
+    assert plan.description.startswith("Reference: Pro Forma Invoice PROF 90/2026.")
     assert "shipment May 2026" in plan.description
 
 
@@ -255,7 +324,7 @@ def test_plan_back_reference_appears_when_proforma_description_blank():
     snap = parse_proforma_xml(_proforma_xml(description=""))
     plan = build_final_invoice_plan(snap, final_series_id="15827921",
                                     invoice_date=date(2026, 6, 1))
-    assert plan.description.startswith("Final invoice issued based on proforma")
+    assert plan.description.startswith("Reference: Pro Forma Invoice")
 
 
 def test_plan_uses_proforma_paymentdate_by_default():
@@ -336,7 +405,7 @@ def test_xml_contains_back_reference_in_description():
     plan = build_final_invoice_plan(snap, final_series_id="15827921",
                                     invoice_date=date(2026, 6, 1))
     xml = build_final_invoice_xml(plan)
-    assert "based on proforma PROF 90/2026" in xml
+    assert "Pro Forma Invoice PROF 90/2026" in xml
 
 
 def test_xml_carries_all_lines_with_correct_good_ids():
