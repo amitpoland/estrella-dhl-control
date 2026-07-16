@@ -28,8 +28,11 @@ Pins:
   11. remote invoice without proforma back-reference → REFUSED.
   12. operator-supplied id for a historical row (no captured id) → repaired
       with id_source=operator_supplied.
-  13. gates: missing confirm / missing operator / issued link / id conflict /
-      no id available → blocked, no state change.
+  13. gates: missing confirm / missing operator / id conflict /
+      no id available → blocked, no state change. An issued link is NOT a
+      gate anymore — it takes the draft-projection repair branch (2026-07-17
+      consolidation; full coverage in
+      test_convert_persist_scope_and_reconcile.py).
   14. reconcile performs NO wFirma write (invoices/get only).
   Source-grep:
   15. _verify_created_invoice is the single shared check authority.
@@ -546,15 +549,31 @@ def test_reconcile_blocked_without_operator(client, storage):
     assert any("operator attribution" in r for r in body["blocking_reasons"])
 
 
-def test_reconcile_blocked_when_link_already_issued(client, storage):
+def test_reconcile_issued_link_repairs_stale_draft_projection(client, storage):
+    """Integration consolidation 2026-07-17: an 'issued' link no longer
+    blocks — it takes the draft-projection branch (draft 67/52 incident
+    class): local link→draft copy, NO wFirma call, then noop when healthy."""
     _seed_issued_draft(storage)
     _seed_link(storage, status="pending", invoice_id=IID)
     pildb.mark_issued(_links_db(storage), PID, invoice_id=IID,
                       invoice_number=INUM, invoice_total=Decimal("306.00"))
-    body = _reconcile(client)
-    assert body["ok"] is False
-    assert body["status"] == "blocked"
-    assert any("already 'issued'" in r for r in body["blocking_reasons"])
+
+    def _no_wfirma(*a, **k):
+        raise AssertionError("issued-branch repair must not call wFirma")
+
+    with patch.object(wc, "fetch_invoice_xml", side_effect=_no_wfirma), \
+         patch.object(wc, "_http_request", side_effect=_no_wfirma):
+        body = _reconcile(client)
+    assert body["ok"] is True, body
+    assert body["status"] == "reconciled"
+    assert body["mode"] == "draft_projection_repair"
+    assert body["wfirma_write"] is False
+    assert body["wfirma_invoice_id"] == IID
+
+    # Healthy projection now → second call is a noop
+    body2 = _reconcile(client)
+    assert body2["ok"] is True
+    assert body2["status"] == "noop"
 
 
 def test_reconcile_blocked_on_invoice_id_conflict(client, storage):
