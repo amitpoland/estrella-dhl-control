@@ -1,27 +1,27 @@
 {
-  "_doc": "Single machine-readable authority for in-flight campaign branches. A session MUST read this before any reset/force-move/cherry-pick on a campaign branch, and MUST NOT write a campaign branch it does not own. See .campaigns/README.md.",
+  "_doc": "Single machine-readable authority for in-flight campaign branches. A session MUST read this before any reset/force-move/cherry-pick on a campaign branch, and MUST NOT write a campaign branch it does not own. Hard authority = owner + status + superseded[] + chartered_decision (rebase-stable); last_known_tip is an advisory tripwire, never a self-referential gate. See .campaigns/README.md.",
   "campaigns": {
     "transport-m1": {
       "branch": "fix/proforma-multidraft-transport-docs",
       "worktree": "C:\\PZ-pr7",
       "owner": "M1-gate session (\"Post-deployment transport audit and repairs\")",
-      "base": "origin/main@28784270 (pre-#924)",
-      "canonical_sha": "14d629f5",
       "status": "READY_FOR_REBASE_AFTER_PR924",
+      "chartered_decision": "Candidate A; independent Opus SELECT 929eac57 on back-compat criterion; operator-ratified 2026-07-16",
       "superseded": [
         {
           "sha": "eb61a012",
-          "why": "Candidate B lost chartered Opus selection on back-compat",
           "tag": "archive/candidate-b-eb61a012-2026-07-16",
           "disposition": "NEVER cherry-pick, NEVER merge"
         },
         {
           "sha": "929eac57",
-          "why": "Candidate A original; content landed as 14d629f5",
           "branch": "claude/upbeat-banach-728fa9",
-          "disposition": "redundant; archive branch, do not merge"
+          "disposition": "redundant; archive, do not merge"
         }
-      ]
+      ],
+      "last_known_tip": "14d629f5",
+      "last_known_tip_updated_at": "2026-07-16T16:55:00+02:00",
+      "base": "origin/main@28784270 (pre-#924)"
     }
   }
 }
