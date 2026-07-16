@@ -12,11 +12,14 @@ Sources (in priority order)
    common languages, common series shapes. These are derived from
    wFirma's published documentation and the production catalog we have
    already observed in real responses (PR #152 deep-fetch live data).
-2. **Live refresh (deferred):** a future batch may fetch series and
-   languages from wFirma's read-only ``invoiceseries/find`` and
-   ``languages/find`` endpoints and merge them on top of the baseline.
-   This module exposes a ``refresh_from_wfirma()`` stub the future PR
-   can flesh out without changing the public API.
+2. **Live refresh:** ``refresh_from_wfirma()`` fetches the series catalog
+   from wFirma's read-only ``series/find`` endpoint and merges it on top
+   of the baseline. It is the ONE shared refresh function behind all three
+   trigger surfaces (startup bootstrap, the periodic scheduler step in
+   ``wfirma_webhook_scheduler``, and the operator Run-Now endpoint
+   ``POST /dictionaries/refresh``). The last-good catalog is persisted to
+   ``series_cache.json`` under the storage root so NSSM restarts do not
+   lose it; ``get_refresh_status()`` exposes the four-questions status.
 
 Hard rule: this module NEVER calls wFirma write endpoints. It is
 read-only and tolerant to wFirma being unreachable — the baseline
@@ -43,6 +46,13 @@ log = logging.getLogger(__name__)
 #: Maximum age (hours) before the persisted cache is considered stale and a new
 #: live fetch is triggered during startup.  24 hours = once per day on average.
 SERIES_CACHE_TTL_HOURS: int = 24
+
+#: Minimum minutes between scheduled refresh ATTEMPTS (any trigger, any
+#: outcome). The webhook scheduler ticks every 30 seconds and a wFirma outage
+#: leaves the cache permanently "stale" — without this cooldown every tick
+#: would re-poll wFirma. Applies only to the scheduled path; the operator
+#: Run-Now endpoint is never cooldown-gated.
+SERIES_REFRESH_RETRY_COOLDOWN_MINUTES: int = 30
 
 _cache_file_path: Optional[Path] = None
 _cache_lock = threading.Lock()
@@ -246,11 +256,10 @@ def label_for_language(lang_id: Optional[str]) -> str:
 
 
 # B0 dictionary refresh 2026-05-17 — runtime in-memory cache of the live
-# wFirma catalog. Operator-triggered refresh overwrites the cache; until
-# a refresh runs (or after a process restart), get_dictionaries() falls
-# back to the baseline. Persistence to disk is intentionally deferred
-# (the live wFirma fetch is fast and operator-driven, so an in-memory
-# cache is sufficient for now).
+# wFirma catalog. A refresh (startup / scheduler / operator) overwrites the
+# cache; until one runs, get_dictionaries() falls back to the baseline (or
+# to the disk snapshot loaded via load_cache_from_disk() at startup, so an
+# NSSM restart no longer degrades to baseline).
 
 _LIVE_CACHE: Dict[str, Any] = {
     "invoice_series":  None,   # None = not refreshed yet; list = live catalog
@@ -272,37 +281,73 @@ _LIVE_CACHE: Dict[str, Any] = {
 }
 
 
+# Four-questions observability for the refresh capability (canonical status
+# shape — docs/patterns/status-endpoint.md). Updated by every
+# refresh_from_wfirma() run regardless of trigger; read by
+# get_refresh_status(). Process-local by design: "has a refresh run in THIS
+# process" is exactly what the operator needs to see after an NSSM restart.
+_REFRESH_STATUS: Dict[str, Any] = {
+    "last_started_at":   None,   # ISO 8601 — set at the start of every run
+    "last_completed_at": None,   # ISO 8601 — set when the run finishes
+    "last_trigger":      None,   # "startup" | "scheduler" | "api"
+    "duration_ms":       None,
+    "processed":         0,      # series rows returned by wFirma
+    "created":           0,      # always 0 — cache is replaced, not inserted into
+    "updated":           0,      # rows adopted into the live cache
+    "skipped":           0,      # hidden / non-invoice / non-proforma rows filtered
+    "errors":            0,      # 1 when the last run failed, else 0
+    "last_error":        None,   # str on failure, None on success
+}
+
+
 def _is_visible(entry: Dict[str, str]) -> bool:
     """Filter wFirma series entries that are hidden in the operator UI."""
     vis = (entry.get("visibility") or "").strip().lower()
     return vis in ("", "visible")
 
 
-def refresh_from_wfirma() -> Dict[str, Any]:
-    """Operator-triggered refresh of the live wFirma dictionaries.
+def refresh_from_wfirma(trigger: str = "api") -> Dict[str, Any]:
+    """Refresh of the live wFirma dictionaries — the ONE shared function
+    behind all three trigger surfaces (Business Feature Completeness):
+
+    - ``trigger="startup"``   — lifespan bootstrap in ``main.py``
+    - ``trigger="scheduler"`` — periodic ``wfirma_webhook_scheduler`` step
+    - ``trigger="api"``       — operator ``POST /dictionaries/refresh`` (Run Now)
 
     Hard rules:
     - Read-only against wFirma (only ``series/find`` today; languages and
       currencies have no live endpoint and remain on baseline).
     - Never raises. Failures are isolated per dictionary and surface in
-      ``source_state``.
+      ``source_state`` and ``get_refresh_status()``.
     - Merges live entries on top of baseline. Baseline placeholder rows
       stay so the dropdown always has a "Default series" option.
+    - On a FAILED fetch the previous live entries are kept (last-known-good)
+      so an autonomous scheduled refresh hitting a transient wFirma outage
+      cannot wipe a working catalog; only ``source_state`` flips to "error"
+      and ``fetched_at`` keeps the age of the data actually being served.
     - Mutates the module-level ``_LIVE_CACHE`` so subsequent
       ``get_dictionaries()`` calls in the same process return the live data.
     """
-    import datetime as _dt
-    from . import wfirma_client as _wfc
+    started = datetime.now(timezone.utc)
+    with _cache_lock:
+        _REFRESH_STATUS["last_started_at"] = started.strftime("%Y-%m-%dT%H:%M:%SZ")
+        _REFRESH_STATUS["last_trigger"]    = trigger
 
     invoice_live:  List[Dict[str, Any]] = []
     proforma_live: List[Dict[str, Any]] = []
     invoice_state  = "baseline"
     proforma_state = "baseline"
+    skipped = 0
+    fetch_error: Optional[str] = None
 
     try:
+        # Import inside the guard: even a broken wfirma_client module must
+        # surface as a recorded error, never as an exception to the caller.
+        from . import wfirma_client as _wfc
         all_series = _wfc.fetch_series()
-    except Exception:
+    except Exception as exc:
         all_series = []
+        fetch_error = f"{type(exc).__name__}: {exc}"
 
     if all_series:
         # Split by type. wFirma series types: normal, margin, proforma,
@@ -311,6 +356,7 @@ def refresh_from_wfirma() -> Dict[str, Any]:
         # defaults.
         for s in all_series:
             if not _is_visible(s):
+                skipped += 1
                 continue
             entry = {"id": s["id"], "label": s["label"], "code": s.get("code", "")}
             t = s.get("type") or ""
@@ -318,24 +364,52 @@ def refresh_from_wfirma() -> Dict[str, Any]:
                 invoice_live.append(entry)
             elif t == "proforma":
                 proforma_live.append(entry)
+            else:
+                skipped += 1
         invoice_state  = "live" if invoice_live  else "unavailable"
         proforma_state = "live" if proforma_live else "unavailable"
     else:
-        # Endpoint returned nothing — either CONTROLLER NOT FOUND or
-        # network error. Mark error; baseline serves.
+        # Endpoint returned nothing — either CONTROLLER NOT FOUND or a
+        # network error. Mark error, but KEEP the previous live entries
+        # (last-known-good): a scheduled refresh hitting a transient outage
+        # must not wipe a working catalog. With no prior live data this is
+        # a no-op and baseline serves, exactly as before. The actual capture
+        # happens inside the write lock below so a concurrent successful
+        # refresh cannot be overwritten with a stale pre-lock snapshot.
         invoice_state  = "error"
         proforma_state = "error"
+        if fetch_error is None:
+            fetch_error = "wFirma series/find returned no rows"
 
     # Acquire _cache_lock before mutating _LIVE_CACHE so concurrent refresh
     # calls (e.g. startup + operator dashboard request racing) cannot produce
     # a half-written cache state.  load_cache_from_disk() already holds the
     # lock on its writes; this makes refresh_from_wfirma() consistent with it.
     with _cache_lock:
+        if not all_series:
+            # Last-known-good capture — read and write-back under the SAME
+            # lock acquisition, so a successful refresh racing this failed
+            # one can never be erased by a stale snapshot.
+            invoice_live  = list(_LIVE_CACHE.get("invoice_series")  or [])
+            proforma_live = list(_LIVE_CACHE.get("proforma_series") or [])
         _LIVE_CACHE["invoice_series"]  = invoice_live  or None
         _LIVE_CACHE["proforma_series"] = proforma_live or None
         _LIVE_CACHE["source_state"]["invoice_series"]  = invoice_state
         _LIVE_CACHE["source_state"]["proforma_series"] = proforma_state
-        _LIVE_CACHE["fetched_at"] = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        if all_series:
+            # Only a successful fetch may claim a new fetched_at — after a
+            # failed one the kept entries are still the OLD catalog and must
+            # not look freshly fetched.
+            _LIVE_CACHE["fetched_at"] = started.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        completed = datetime.now(timezone.utc)
+        _REFRESH_STATUS["last_completed_at"] = completed.strftime("%Y-%m-%dT%H:%M:%SZ")
+        _REFRESH_STATUS["duration_ms"] = int((completed - started).total_seconds() * 1000)
+        _REFRESH_STATUS["processed"]   = len(all_series)
+        _REFRESH_STATUS["updated"]     = (len(invoice_live) + len(proforma_live)) if all_series else 0
+        _REFRESH_STATUS["skipped"]     = skipped
+        _REFRESH_STATUS["errors"]      = 1 if fetch_error else 0
+        _REFRESH_STATUS["last_error"]  = fetch_error
 
     # Persist to disk so NSSM restart can serve last-known-good data.
     # Non-fatal: in-memory cache is authoritative even if disk write fails.
@@ -343,6 +417,78 @@ def refresh_from_wfirma() -> Dict[str, Any]:
         _persist_cache_to_disk()
 
     return get_dictionaries()
+
+
+def should_attempt_scheduled_refresh(
+    cooldown_minutes: int = SERIES_REFRESH_RETRY_COOLDOWN_MINUTES,
+) -> bool:
+    """Return True when a background scheduler tick should attempt a live
+    refresh: the cache is stale AND the last refresh attempt (any trigger,
+    any outcome) is older than *cooldown_minutes*.
+
+    Cheap (in-memory only) — safe to call on every 30-second scheduler tick.
+    The cooldown is what keeps the scheduled path polite: a wFirma outage
+    leaves the cache permanently "stale", and without it every tick would
+    re-poll wFirma.
+    """
+    if not is_cache_stale():
+        return False
+    with _cache_lock:
+        last_attempt = _REFRESH_STATUS.get("last_started_at")
+    if not last_attempt:
+        return True
+    try:
+        attempted = datetime.fromisoformat(last_attempt.replace("Z", "+00:00"))
+        age_minutes = (datetime.now(timezone.utc) - attempted).total_seconds() / 60
+        return age_minutes >= cooldown_minutes
+    except Exception:
+        return True
+
+
+def get_refresh_status() -> Dict[str, Any]:
+    """Four-questions status snapshot for the series refresh capability
+    (canonical status shape — docs/patterns/status-endpoint.md).
+
+    1. What is the current state?  → ``healthy`` / ``running`` / ``source_state``
+    2. When did it last run?       → ``last_started_at`` / ``last_completed_at`` / ``fetched_at``
+    3. What happened?              → ``processed`` / ``updated`` / ``skipped`` / ``errors`` / ``last_error``
+    4. Can I run it now?           → ``POST /dictionaries/refresh`` is always enabled
+
+    Field mapping for this capability: ``processed`` = series rows returned
+    by wFirma; ``updated`` = rows adopted into the live cache; ``created`` =
+    always 0 (the cache is replaced atomically, nothing is inserted
+    incrementally); ``skipped`` = hidden / non-invoice / non-proforma rows
+    filtered out. Never raises.
+    """
+    with _cache_lock:
+        st = dict(_REFRESH_STATUS)
+        fetched_at   = _LIVE_CACHE.get("fetched_at")
+        source_state = dict(_LIVE_CACHE["source_state"])
+    started   = st["last_started_at"]
+    completed = st["last_completed_at"]
+    # Same fixed-width ISO format everywhere, so string comparison is
+    # chronological. running = a run started and hasn't completed yet.
+    running = bool(started and (completed is None or started > completed))
+    stale = is_cache_stale()
+    return {
+        "healthy":                (not stale) and st["last_error"] is None,
+        "running":                running,
+        "last_started_at":        started,
+        "last_completed_at":      completed,
+        "duration_ms":            st["duration_ms"],
+        "processed":              st["processed"],
+        "created":                st["created"],
+        "updated":                st["updated"],
+        "skipped":                st["skipped"],
+        "errors":                 st["errors"],
+        "last_error":             st["last_error"],
+        "last_trigger":           st["last_trigger"],
+        "fetched_at":             fetched_at,
+        "source_state":           source_state,
+        "is_stale":               stale,
+        "cache_ttl_hours":        SERIES_CACHE_TTL_HOURS,
+        "retry_cooldown_minutes": SERIES_REFRESH_RETRY_COOLDOWN_MINUTES,
+    }
 
 
 def get_dictionaries() -> Dict[str, Any]:
@@ -356,8 +502,6 @@ def get_dictionaries() -> Dict[str, Any]:
     # Build invoice_series: baseline placeholder + live entries (de-duped by id)
     inv_live  = _LIVE_CACHE.get("invoice_series")  or []
     pro_live  = _LIVE_CACHE.get("proforma_series") or []
-    seen_inv: set = {e["id"] for e in inv_live}
-    seen_pro: set = {e["id"] for e in pro_live}
     invoice_series  = list(INVOICE_SERIES) + [e for e in inv_live  if e["id"] not in {b["id"] for b in INVOICE_SERIES}]
     proforma_series = list(PROFORMA_SERIES) + [e for e in pro_live if e["id"] not in {b["id"] for b in PROFORMA_SERIES}]
 

@@ -825,6 +825,25 @@ def client_master_dictionaries_refresh() -> JSONResponse:
     return JSONResponse(body)
 
 
+@router.get("/dictionaries/status", dependencies=[_auth],
+            summary="Series dictionary refresh status (four-questions pattern)")
+def client_master_dictionaries_status() -> JSONResponse:
+    """Status of the series dictionary refresh capability, in the canonical
+    status shape (docs/patterns/status-endpoint.md): ``healthy`` / ``running``
+    / ``last_started_at`` / ``last_completed_at`` / ``duration_ms`` /
+    ``processed`` / ``created`` / ``updated`` / ``skipped`` / ``errors`` /
+    ``last_error``, plus capability extras (``fetched_at``, ``source_state``,
+    ``is_stale``, ``cache_ttl_hours``, ``retry_cooldown_minutes``,
+    ``last_trigger``).
+
+    Answers the four questions every sync screen must answer; the matching
+    "Run Now" action is ``POST /dictionaries/refresh`` (always enabled).
+    Read-only; never calls wFirma.
+    """
+    from ..services import wfirma_dictionary_cache as wdc
+    return JSONResponse(wdc.get_refresh_status())
+
+
 @router.get("/{contractor_id}", dependencies=[_auth], summary="Get one customer")
 def get_customer_endpoint(contractor_id: str) -> JSONResponse:
     """Read a customer by wFirma contractor id.  404 if not found."""
