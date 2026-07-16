@@ -54,6 +54,7 @@ from ..services.customer_master import (
     pick_freight, compute_insurance_suggestion,
     pick_proforma_series_id, pick_invoice_series_id,
     pick_invoice_series_id_for_vat_context,
+    resolve_final_invoice_series_id as _resolve_final_series,
 )
 from ..services.master_data_db import get_company_profile
 from ..services import name_normalization
@@ -3296,52 +3297,49 @@ def _link_already_exists(proforma_id: str) -> bool:
         return False
 
 
-def _build_conversion_plan(proforma_id: str, *, operator: str
-                             ) -> Dict[str, Any]:
+def _build_conversion_plan(
+    proforma_id: str,
+    *,
+    operator: str,
+    vat_context: str = "",
+    operator_series_in: str = "",
+) -> Dict[str, Any]:
     """Live-fetch the proforma, parse, build plan. Returns
     ``{"snap": ProformaSnapshot, "plan": FinalInvoicePlan,
-       "plan_xml": str}`` or raises ``RuntimeError`` / ``ValueError``."""
+       "plan_xml": str, "advisories": list[str]}``
+    or raises ``RuntimeError`` / ``ValueError``.
+
+    ADR-027 D6 (M-3): empty series is valid (omit <series>; wFirma
+    contractor default). Preview must not be stricter than execute.
+    """
     from ..services import proforma_to_invoice as p2i
     from ..core.timezone_utils import warsaw_today as _warsaw_today
 
     xml = wfirma_client.fetch_invoice_xml(proforma_id)
     snap = p2i.parse_proforma_xml(xml)
-    # Default series id = preserve source proforma's series. Operator
-    # may pass an override at execute time via the request body if
-    # they need to change series (e.g. WDT vs proforma).
-    # Fallback chain: VAT context (WDT always forces WDT series) →
-    # customer master preferred_invoice_series_id.
-    series_id = (snap.series_id or "").strip()
-    if not series_id or series_id == "0":
-        _cm_inv = get_customer_master(_customer_master_db_path(), snap.contractor_id)
-        if _cm_inv:
-            _vat_ctx_preview = (snap.vat_code or "").lower() if hasattr(snap, "vat_code") else ""
-            if _vat_ctx_preview == "wdt":
-                _vat_ctx_preview = "wdt"
-            elif _vat_ctx_preview == "export":
-                _vat_ctx_preview = "export"
-            else:
-                _vat_ctx_preview = "domestic"
-            series_id = pick_invoice_series_id_for_vat_context(
-                _cm_inv, _vat_ctx_preview,
-            ) or ""
-        else:
-            series_id = ""
+
+    # ADR-027 D6 — one resolver; source proforma series NEVER consulted.
+    _cm_inv = get_customer_master(_customer_master_db_path(), snap.contractor_id)
+    series_id, advisories = _resolve_final_series(
+        vat_context=vat_context,
+        operator_series_in=operator_series_in,
+        customer_master=_cm_inv,
+    )
+    if not series_id:
+        log.debug(
+            "preview: no series_id resolved for proforma %s; "
+            "<series> will be omitted (wFirma contractor default)",
+            proforma_id,
+        )
+
     plan = p2i.build_final_invoice_plan(
         snap,
-        final_series_id      = series_id or "0",   # validated below if "0"
+        final_series_id      = series_id,
         invoice_date         = _warsaw_today(),
         operator_description = "",
     )
-    if not plan.series_id or plan.series_id == "0":
-        raise ValueError(
-            f"source proforma {snap.proforma_number!r} has no series id "
-            "and no preferred_invoice_series_id in customer master "
-            "— cannot infer final-invoice series. Operator must set "
-            "series_id explicitly."
-        )
     plan_xml = p2i.build_final_invoice_xml(plan)
-    return {"snap": snap, "plan": plan, "plan_xml": plan_xml}
+    return {"snap": snap, "plan": plan, "plan_xml": plan_xml, "advisories": advisories}
 
 
 @router.get(
@@ -3406,8 +3404,14 @@ def proforma_to_invoice_preview(
             })
 
     from ..services import proforma_to_invoice as p2i_module
+    _vat_ctx_preview = (
+        (_cvp_draft.vat_context or "").lower().strip()
+        if _cvp_draft else ""
+    )
     try:
-        plan_data = _build_conversion_plan(pid, operator="")
+        plan_data = _build_conversion_plan(
+            pid, operator="", vat_context=_vat_ctx_preview,
+        )
     except p2i_module.ZeroBillableInvoice as exc:
         # #532: preview surfaces the same zero-billable block as execute, so
         # the operator sees the blocker before clicking Convert.
@@ -3470,6 +3474,7 @@ def proforma_to_invoice_preview(
             ],
         },
         "plan_xml":            plan_data["plan_xml"],
+        "advisories":          plan_data.get("advisories", []),
         "warning": (
             "Manual final invoice action. Confirming will create a real "
             "wFirma invoice and write a Proforma→Invoice link."
@@ -3483,6 +3488,7 @@ class _FinalInvoiceConfirmReq(_BaseModel):
     final_series_id:        Optional[str] = ""   # if blank, copy source proforma series
     override_payment_method: Optional[str] = ""  # transfer|cash|card|compensation
     override_invoice_date:   Optional[str] = ""  # YYYY-MM-DD; overrides wFirma invoice issue date
+    expected_payload_hash:   Optional[str] = ""  # Fix 4 (RC-4): hash from disclosure modal for staleness check
     override_sale_date:      Optional[str] = ""  # YYYY-MM-DD; base for payment due calculation
     override_payment_days:   Optional[int] = None  # adds to sale_date (or invoice_date) → paymentdate
 
@@ -3626,46 +3632,23 @@ def proforma_to_invoice(
         if _vat_ctx_exec not in ("wdt", "export"):
             _vat_ctx_exec = "domestic"
 
-        # What CM would choose for this vat_context (used for series
-        # selection and for Fix 3 series-mismatch advisory).
-        _cm_series_for_ctx = (
-            pick_invoice_series_id_for_vat_context(_cm_inv2, _vat_ctx_exec) or ""
-        ) if _cm_inv2 else ""
-
-        # ADR-027 D6 — invoice series precedence (WF3):
-        #   1. body.final_series_id (operator-chosen)  — wins if provided
-        #   2. customer_master series for vat_context  — SSOT
-        #   3. empty → <series> omitted; wFirma contractor default applies
-        # NOTE: snap.series_id (the proforma's own series) is intentionally
-        # NOT in the fallback chain — a proforma series (e.g. "PROF/2026")
-        # must not be reused for a final invoice.
+        # ADR-027 D6 — one canonical resolver (customer_master.py).
+        # Source proforma series is NEVER in the fallback chain.
+        # Returns (series_id, advisories).
         _operator_series_in = (body.final_series_id or "").strip()
-        series_id = _operator_series_in if (_operator_series_in and _operator_series_in != "0") else _cm_series_for_ctx
+        series_id, _series_advisories = _resolve_final_series(
+            vat_context=_vat_ctx_exec,
+            operator_series_in=_operator_series_in,
+            customer_master=_cm_inv2,
+        )
 
-        # Phase C — Fix 3: series-mismatch advisory (never blocks).
-        _series_advisories: list = []
-        if not _cm_series_for_ctx:
-            _series_advisories.append(
-                f"Customer Master has no preferred invoice series for "
-                f"vat_context='{_vat_ctx_exec}'; "
-                "wFirma contractor default will apply"
-            )
-        elif _operator_series_in and _operator_series_in != "0" and _operator_series_in != _cm_series_for_ctx:
-            _series_advisories.append(
-                f"Operator-provided series '{_operator_series_in}' differs from "
-                f"Customer Master preferred series '{_cm_series_for_ctx}' "
-                f"for vat_context='{_vat_ctx_exec}' (advisory — conversion continues)"
-            )
-        if series_id == "0":
-            series_id = ""  # normalise wFirma sentinel to empty
-        # series_id may now be empty → build_final_invoice_xml omits <series>
-        # (wFirma contractor default applies). This is valid per ADR-027 D6 step 3.
         if not series_id:
             log.info(
                 "[%s/%s] invoice convert: no series_id resolved; "
                 "<series> will be omitted (wFirma contractor default)",
                 batch_id, cn,
             )
+
         # Governance: passes silently for empty (step 3 = omit is valid);
         # raises only for literal "0" sentinel (invalid element).
         try:
@@ -3678,6 +3661,32 @@ def proforma_to_invoice(
                 "client_name":      cn,
                 "blocking_reasons": [str(exc)],
             })
+
+        # Authority: PROFORMA — named fiscal risk: misfiling a final invoice
+        # into a proforma-type series produces a misfiled document.
+        # Only blocks when dictionaries are live and the id is known proforma-type.
+        # Missing/unavailable dictionary → advisory only (ADR-027 D6 preserved).
+        if series_id:
+            try:
+                from ..services.wfirma_dictionary_cache import get_dictionaries as _get_dicts
+                _dicts = _get_dicts()
+                _inv_ids = {e["id"] for e in (_dicts.get("invoice_series") or []) if e.get("id")}
+                _pro_ids = {e["id"] for e in (_dicts.get("proforma_series") or []) if e.get("id")}
+                if series_id in _pro_ids and series_id not in _inv_ids:
+                    return JSONResponse({
+                        "ok":               False,
+                        "status":           "blocked",
+                        "batch_id":         batch_id,
+                        "client_name":      cn,
+                        "blocking_reasons": [
+                            f"series {series_id!r} is a PROFORMA-type series — a final "
+                            "invoice must use an invoice series. Select the correct "
+                            "invoice series from Customer Master or leave blank for "
+                            "wFirma contractor default."
+                        ],
+                    })
+            except Exception:
+                pass  # dictionaries unavailable → proceed (ADR-027 D6)
         # Resolve operator payment overrides
         _ALLOWED_PM_EN = {"transfer", "cash", "card", "compensation"}
         _PM_EN_TO_WF   = {"transfer": "przelew", "cash": "gotowka",
@@ -3779,6 +3788,7 @@ def proforma_to_invoice(
             paymentdate          = _paymentdate,
             paymentmethod        = _effective_method_wf,
             operator_description = _op_desc,
+            payment_days         = _effective_days,   # Fix 5: terms block
         )
     except p2i.ZeroBillableInvoice as exc:
         # #532: every line priced at zero (packing_promote / non-revenue).
@@ -3806,6 +3816,54 @@ def proforma_to_invoice(
                 f"plan build failed: {type(exc).__name__}: {exc}"
             ],
         })
+
+    # Fix 6 (RC-5): due-date advisories (Lesson N: ADVISORY, never blocking).
+    _due_date_advisories: list = []
+    if _paymentdate is not None:
+        try:
+            from datetime import date as _ddate
+            _pd = _ddate.fromisoformat(_paymentdate)
+            if _pd < _invoice_date:
+                _due_date_advisories.append(
+                    f"Due date {_paymentdate} is before invoice date "
+                    f"{_invoice_date.isoformat()} — review payment_days or override"
+                )
+        except Exception:
+            pass
+    elif _effective_days is None:
+        _due_date_advisories.append(
+            f"No payment_days configured; payment due inherited from source proforma: "
+            f"{snap.paymentdate}"
+        )
+
+    # Description length advisory (no description_length_policy.py; 900-char threshold).
+    if len(plan.description) > 900:
+        _series_advisories.append(
+            "invoice description truncated risk: description exceeds 900 characters"
+        )
+
+    # Fix 4 (RC-4): payload hash guard — detect proforma or series changes since disclosure.
+    # Absent hash → proceed (backward compatible). Mismatch → block.
+    _expected_hash = (body.expected_payload_hash or "").strip()
+    if _expected_hash:
+        try:
+            _recomputed_hash = p2i.compute_conversion_core_hash(
+                plan.contractor_id, plan.currency, series_id, snap.contents,
+            )
+            if _recomputed_hash != _expected_hash:
+                return JSONResponse({
+                    "ok":               False,
+                    "status":           "blocked",
+                    "batch_id":         batch_id,
+                    "client_name":      cn,
+                    "wfirma_proforma_id": pid,
+                    "blocking_reasons": [
+                        "Payload hash mismatch — proforma or series resolution changed "
+                        "since disclosure. Re-open the convert modal to refresh."
+                    ],
+                })
+        except Exception:
+            pass  # hash check is best-effort; never block on error
 
     # 4b. Optional receiver preflight (Step-3-style). Only fires when
     # the plan carries a contractor_receiver — guarantees that we never
@@ -4207,9 +4265,9 @@ def proforma_to_invoice(
         "excluded_line_count":      len(plan.excluded_lines),
         "excluded_line_names":      [l.name for l in plan.excluded_lines],
         "operator":                 operator,
-        # Phase C — Fix 3: series-mismatch advisories (non-blocking).
-        # Empty list in the normal case (CM series matched and was used).
-        "convert_advisories":       _series_advisories,
+        # Fix 2/6 (RC-2, RC-5): series + due-date advisories (Lesson N: non-blocking).
+        # Empty list in the normal case.
+        "convert_advisories":       _series_advisories + _due_date_advisories,
         # C-3d: advisory summary of the WAREHOUSE_STOCK → SALES_TRANSIT issue
         # (empty dict when the issue step was skipped; never blocks).
         "stock_issue":              _issue_summary,
@@ -10927,14 +10985,17 @@ def disclose_proforma_convert(
 
     operator = (x_operator or "").strip() or "unknown"
 
-    # Fetch customer master defaults for payment pre-fill
-    _cm_method, _cm_days = "", None
+    # Fetch customer master defaults for payment pre-fill AND series resolution.
+    # NOTE: uses the module-level `get_customer_master` alias (= customer_master_db
+    # .get_customer, imported at top of file). The previous local import of a
+    # non-existent `get_customer_master` name raised ImportError on every call,
+    # silently swallowed below — CM payment defaults never loaded in disclosure.
+    _cm_method, _cm_days, _cm_inv = "", None, None
     try:
-        from ..services.customer_master_db import get_customer_master as _get_cm
-        _cm_d = _get_cm(_customer_master_db_path(), snap.contractor_id)
-        if _cm_d:
-            _cm_method = (_cm_d.preferred_payment_method or "").strip()
-            _cm_days   = _cm_d.payment_terms_days
+        _cm_inv = get_customer_master(_customer_master_db_path(), snap.contractor_id)
+        if _cm_inv:
+            _cm_method = (_cm_inv.preferred_payment_method or "").strip()
+            _cm_days   = _cm_inv.payment_terms_days
     except Exception:
         pass
 
@@ -10950,19 +11011,36 @@ def disclose_proforma_convert(
     except Exception:
         pass
 
-    return JSONResponse(
-        build_invoice_convert_disclosure(
-            snap,
-            final_series_id=final_series_id,
-            operator=operator,
-            draft_method=_draft_method,
-            draft_days=_draft_days,
-            draft_invoice_date=_draft_invoice_date,
-            draft_sale_date=_draft_sale_date,
-            customer_default_method=_cm_method,
-            customer_default_days=_cm_days,
-        )
+    # Fix 2 (RC-2): unified series resolver — ADR-027 D6 — all three callers.
+    _vat_ctx_disclose = ((d.vat_context or "").lower().strip() if hasattr(d, "vat_context") else "")
+    _resolved_series, _series_advisories_d = _resolve_final_series(
+        vat_context=_vat_ctx_disclose,
+        operator_series_in=final_series_id,
+        customer_master=_cm_inv,
     )
+
+    # Fix 6 (RC-5): due-date advisories for disclosure modal (Lesson N: advisory only).
+    _due_date_advisories_d: list = []
+    if _draft_days is None and _cm_days is None:
+        _due_date_advisories_d.append(
+            f"No payment_days configured; payment due will be inherited from source proforma: "
+            f"{snap.paymentdate}"
+        )
+
+    disclosure = build_invoice_convert_disclosure(
+        snap,
+        final_series_id=_resolved_series,
+        operator=operator,
+        draft_method=_draft_method,
+        draft_days=_draft_days,
+        draft_invoice_date=_draft_invoice_date,
+        draft_sale_date=_draft_sale_date,
+        customer_default_method=_cm_method,
+        customer_default_days=_cm_days,
+    )
+    disclosure["series_advisories"]   = _series_advisories_d
+    disclosure["due_date_advisories"] = _due_date_advisories_d
+    return JSONResponse(disclosure)
 
 
 # ── Phase 5 — Dual-valuation endpoint ────────────────────────────────────────

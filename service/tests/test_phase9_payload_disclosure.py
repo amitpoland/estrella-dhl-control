@@ -73,19 +73,74 @@ class TestProformaPostDisclosure:
         assert "httpx." not in src
 
 
-class TestInvoiceConvertDisclosure:
-    """build_invoice_convert_disclosure for WF2.5."""
+def _proforma_xml_3lines(pnum="PROF 92/2026", pid="99990001snap",
+                          contractor_id="99990001", currency="EUR") -> str:
+    """3-line proforma XML fixture reused across disclosure tests.
+    Lines: Silver pendant 25.00 + Fedex Courier 75.00 + Insurance 20.00 = 120.00.
+    Mirrors the fixture in test_proforma_to_invoice.py (Lesson A real-builder).
+    """
+    return f"""<?xml version="1.0"?>
+<api>
+  <invoices>
+    <invoice>
+      <id>{pid}</id>
+      <fullnumber>{pnum}</fullnumber>
+      <type>proforma</type>
+      <date>2026-05-03</date>
+      <paymentdate>2026-05-10</paymentdate>
+      <paymentmethod>transfer</paymentmethod>
+      <currency>{currency}</currency>
+      <price_currency_exchange>1.000000</price_currency_exchange>
+      <total>120.00</total>
+      <netto>120.00</netto>
+      <description>Test proforma</description>
+      <contractor><id>{contractor_id}</id></contractor>
+      <series><id>15827088</id></series>
+      <invoicecontents>
+        <invoicecontent>
+          <name>Silver pendant</name>
+          <good><id>48461283</id></good>
+          <unit>szt.</unit>
+          <unit_count>1.0000</unit_count>
+          <price>25.00</price>
+          <vat_code><id>229</id></vat_code>
+        </invoicecontent>
+        <invoicecontent>
+          <name>Fedex Courier</name>
+          <good><id>13002743</id></good>
+          <unit>szt.</unit>
+          <unit_count>1.0000</unit_count>
+          <price>75.00</price>
+          <vat_code><id>229</id></vat_code>
+        </invoicecontent>
+        <invoicecontent>
+          <name>Insurance</name>
+          <good><id>13102217</id></good>
+          <unit>szt.</unit>
+          <unit_count>1.0000</unit_count>
+          <price>20.00</price>
+          <vat_code><id>229</id></vat_code>
+        </invoicecontent>
+      </invoicecontents>
+    </invoice>
+  </invoices>
+  <status><code>OK</code></status>
+</api>"""
 
-    def _make_snap(self) -> dict:
-        return {
-            "proforma_number": "PROF 92/2026",
-            "contractor_id":   "99990001",
-            "currency":        "EUR",
-            "series_id":       "555",
-            "lines": [
-                {"wfirma_good_id": "G001", "qty": 2, "unit_price": 100.0, "currency": "EUR"},
-            ],
-        }
+
+class TestInvoiceConvertDisclosure:
+    """build_invoice_convert_disclosure for WF2.5.
+
+    Lesson A (real-builder test): _make_snap() builds a REAL ProformaSnapshot
+    via parse_proforma_xml() — no dict stub.  The 3-line fixture (pendant 25.00 +
+    courier 75.00 + insurance 20.00 = 120.00) matches the canonical fixture in
+    test_proforma_to_invoice.py.
+    """
+
+    def _make_snap(self):
+        """Build a real ProformaSnapshot from live-shape XML (Lesson A)."""
+        from app.services.proforma_to_invoice import parse_proforma_xml
+        return parse_proforma_xml(_proforma_xml_3lines())
 
     def test_invoice_disclosure_has_required_fields(self):
         from app.services.payload_disclosure import build_invoice_convert_disclosure
@@ -99,12 +154,110 @@ class TestInvoiceConvertDisclosure:
         assert "IRREVERSIBLE" in d["warning"]
 
     def test_invoice_disclosure_shows_lines(self):
+        """RC-1 fix: disclosure reads snap.contents (not snap.lines) and uses
+        correct LineItem field names (good_id, unit_count, price)."""
         from app.services.payload_disclosure import build_invoice_convert_disclosure
         d = build_invoice_convert_disclosure(self._make_snap())
-        assert len(d["lines"]) == 1
-        assert d["lines"][0]["good_id"] == "G001"
+        assert len(d["lines"]) == 3, (
+            "Disclosure must expose all 3 lines from snap.contents; "
+            f"got {len(d['lines'])}"
+        )
+        assert d["lines"][0]["good_id"] == "48461283"
+
+    # ── RC-1 new tests (Lesson A regression pins) ─────────────────────────────
+
+    def test_line_count_matches_real_snap(self):
+        """line_count in fields_to_write == len(snap.contents) == 3."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        d = build_invoice_convert_disclosure(self._make_snap())
+        assert d["fields_to_write"]["line_count"] == 3
+
+    def test_lines_use_correct_field_names(self):
+        """Each line dict has good_id / name / unit_count / price — not wfirma_good_id / qty."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        d = build_invoice_convert_disclosure(self._make_snap())
+        line0 = d["lines"][0]
+        assert "good_id"    in line0, "RC-1: good_id missing from line projection"
+        assert "unit_count" in line0, "RC-1: unit_count missing from line projection"
+        assert "price"      in line0, "RC-1: price missing from line projection"
+        assert "name"       in line0, "RC-1: name missing from line projection"
+        # Old stub field names must NOT appear
+        assert "wfirma_good_id" not in line0
+        assert "qty"            not in line0
+        assert "unit_price"     not in line0
+
+    def test_grand_total_sums_all_three_lines(self):
+        """grand_total = 25.00 + 75.00 + 20.00 = 120.00 (freight + insurance included)."""
+        from decimal import Decimal
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        d = build_invoice_convert_disclosure(self._make_snap())
+        assert "grand_total" in d, "RC-4 prerequisite: grand_total key must be present"
+        assert Decimal(d["grand_total"]) == Decimal("120.00"), (
+            f"Expected 120.00, got {d['grand_total']} — freight/insurance lines may be missing"
+        )
+        assert d["grand_total_currency"] == "EUR"
+
+    def test_empty_resolved_series_hashes_empty_not_snap_series(self):
+        """Opus review D-1 regression: final_series_id="" (ADR-027 D6 step 3 —
+        validly resolved to EMPTY) must hash "" and must NOT fall back to the
+        proforma's own series. Otherwise the disclosure hash never matches the
+        execute hash and every hash-guarded convert is blocked for customers
+        without a Customer Master invoice series."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        from app.services.proforma_to_invoice import compute_conversion_core_hash
+        snap = self._make_snap()
+        d = build_invoice_convert_disclosure(snap, final_series_id="")
+        assert d["fields_to_write"]["series_id"] == "", (
+            "Resolved-empty series must not fall back to the proforma's series"
+        )
+        assert d["fields_to_write"]["series_name"] == "wFirma contractor default"
+        expected = compute_conversion_core_hash(
+            snap.contractor_id, snap.currency, "", snap.contents,
+        )
+        assert d["payload_core_hash"] == expected, (
+            "Disclosure hash must equal the execute-path hash for empty series"
+        )
+
+    def test_legacy_none_series_falls_back_to_snap_series(self):
+        """final_series_id=None (unspecified) keeps the legacy fallback to the
+        snap's own series — only the explicit empty string means D6 step 3."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = self._make_snap()
+        d = build_invoice_convert_disclosure(snap)
+        assert d["fields_to_write"]["series_id"] == snap.series_id
+
+    def test_payload_core_hash_present_and_stable(self):
+        """RC-4: payload_core_hash is present, non-empty, and deterministic."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = self._make_snap()
+        d1 = build_invoice_convert_disclosure(snap, final_series_id="777")
+        d2 = build_invoice_convert_disclosure(snap, final_series_id="777")
+        assert "payload_core_hash" in d1, "RC-4: payload_core_hash key must be present"
+        assert len(d1["payload_core_hash"]) == 64, (
+            "Expected SHA-256 hex digest (64 chars)"
+        )
+        assert d1["payload_core_hash"] == d2["payload_core_hash"], (
+            "Hash must be deterministic for the same inputs"
+        )
+
+    def test_payload_core_hash_changes_when_series_changes(self):
+        """Different series_id produces different hash."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        snap = self._make_snap()
+        d_a = build_invoice_convert_disclosure(snap, final_series_id="AAA")
+        d_b = build_invoice_convert_disclosure(snap, final_series_id="BBB")
+        assert d_a["payload_core_hash"] != d_b["payload_core_hash"]
+
+    def test_series_name_key_present(self):
+        """RC-4: series_name key present (may be empty if cache cold)."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        d = build_invoice_convert_disclosure(self._make_snap(), final_series_id="777")
+        assert "series_name" in d, "series_name key must be present in disclosure"
 
     # ── payment_resolved block ────────────────────────────────────────────────
+    # NOTE: These tests use inline dicts (not self._make_snap()) because they
+    # test payment-method resolution logic, not line content. build_invoice_convert_disclosure
+    # accepts Any via _get(), so dict input is valid for these cases.
 
     def test_payment_resolved_key_present(self):
         from app.services.payload_disclosure import build_invoice_convert_disclosure
@@ -118,7 +271,7 @@ class TestInvoiceConvertDisclosure:
     def test_payment_resolved_wfirma_polish_mapped_to_english(self):
         """snap.paymentmethod in wFirma Polish form → English in disclosure."""
         from app.services.payload_disclosure import build_invoice_convert_disclosure
-        snap = {**self._make_snap(), "paymentmethod": "przelew", "paymentdate": "2026-07-28"}
+        snap = {"currency": "EUR", "paymentmethod": "przelew", "paymentdate": "2026-07-28"}
         d = build_invoice_convert_disclosure(snap)
         pr = d["payment_resolved"]
         assert pr["method"] == "transfer"
@@ -135,7 +288,7 @@ class TestInvoiceConvertDisclosure:
             "kompensata": "compensation",
         }
         for wf_form, en_form in mapping.items():
-            snap = {**self._make_snap(), "paymentmethod": wf_form}
+            snap = {"currency": "EUR", "paymentmethod": wf_form}
             d = build_invoice_convert_disclosure(snap)
             assert d["payment_resolved"]["method"] == en_form, \
                 f"Expected {en_form!r} for wFirma form {wf_form!r}"
@@ -143,7 +296,7 @@ class TestInvoiceConvertDisclosure:
     def test_payment_resolved_falls_back_to_customer_master(self):
         """When snap has no paymentmethod, customer_default_method is used."""
         from app.services.payload_disclosure import build_invoice_convert_disclosure
-        snap = {**self._make_snap(), "paymentmethod": "", "paymentdate": ""}
+        snap = {"currency": "EUR", "paymentmethod": "", "paymentdate": ""}
         d = build_invoice_convert_disclosure(
             snap, customer_default_method="cash", customer_default_days=14
         )
@@ -156,7 +309,7 @@ class TestInvoiceConvertDisclosure:
     def test_payment_resolved_snap_takes_priority_over_customer_master(self):
         """wFirma proforma payment method wins over customer master default."""
         from app.services.payload_disclosure import build_invoice_convert_disclosure
-        snap = {**self._make_snap(), "paymentmethod": "kompensata"}
+        snap = {"currency": "EUR", "paymentmethod": "kompensata"}
         d = build_invoice_convert_disclosure(
             snap, customer_default_method="transfer", customer_default_days=30
         )
@@ -167,7 +320,7 @@ class TestInvoiceConvertDisclosure:
     def test_payment_resolved_source_not_set_when_no_data(self):
         """source == 'not_set' when neither snap nor customer master has a method."""
         from app.services.payload_disclosure import build_invoice_convert_disclosure
-        snap = {**self._make_snap(), "paymentmethod": ""}
+        snap = {"currency": "EUR", "paymentmethod": ""}
         d = build_invoice_convert_disclosure(snap)
         assert d["payment_resolved"]["source"] == "not_set"
         assert d["payment_resolved"]["method"] == ""
@@ -175,7 +328,7 @@ class TestInvoiceConvertDisclosure:
     def test_payment_method_in_fields_to_write(self):
         """Resolved payment_method is mirrored into fields_to_write for audit."""
         from app.services.payload_disclosure import build_invoice_convert_disclosure
-        snap = {**self._make_snap(), "paymentmethod": "przelew"}
+        snap = {"currency": "EUR", "paymentmethod": "przelew"}
         d = build_invoice_convert_disclosure(snap)
         assert d["fields_to_write"]["payment_method"] == "transfer"
 

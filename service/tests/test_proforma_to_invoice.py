@@ -514,3 +514,132 @@ def test_module_does_not_import_wfirma_client():
     src = Path(mod.__file__).read_text(encoding="utf-8")
     assert "wfirma_client" not in src
     assert "import requests" not in src
+
+
+# ── Fix 5 (RC-6): Payment and Ownership Terms block ────────────────────────
+
+def test_payment_terms_template_exported():
+    """PAYMENT_TERMS_TEMPLATE is exported (campaign constant — immutable)."""
+    from app.services.proforma_to_invoice import PAYMENT_TERMS_TEMPLATE
+    assert "{payment_days}" in PAYMENT_TERMS_TEMPLATE
+    assert "Payment and Ownership Terms" in PAYMENT_TERMS_TEMPLATE
+
+
+def test_terms_block_present_when_payment_days_set():
+    """Terms appear in description when payment_days=30 — exact campaign sentence."""
+    from app.services.proforma_to_invoice import PAYMENT_TERMS_TEMPLATE, build_final_invoice_plan
+    snap = parse_proforma_xml(_proforma_xml())
+    plan = build_final_invoice_plan(
+        snap, final_series_id="15827921",
+        invoice_date=date(2026, 6, 1),
+        payment_days=30,
+    )
+    expected_terms = PAYMENT_TERMS_TEMPLATE.format(payment_days=30)
+    assert expected_terms in plan.description, (
+        "Payment terms block must appear in description when payment_days=30"
+    )
+
+
+def test_terms_block_absent_when_payment_days_none():
+    """No terms block when payment_days is None (not every invoice has payment terms)."""
+    from app.services.proforma_to_invoice import PAYMENT_TERMS_TEMPLATE, build_final_invoice_plan
+    snap = parse_proforma_xml(_proforma_xml())
+    plan = build_final_invoice_plan(
+        snap, final_series_id="15827921",
+        invoice_date=date(2026, 6, 1),
+        payment_days=None,
+    )
+    assert "Payment and Ownership Terms" not in plan.description, (
+        "Terms block must be absent when payment_days is None"
+    )
+
+
+def test_back_reference_is_first_in_description():
+    """Back reference always prepends, even when terms block is present (Fix 5 order)."""
+    from app.services.proforma_to_invoice import BACK_REFERENCE_TEMPLATE, build_final_invoice_plan
+    snap = parse_proforma_xml(_proforma_xml())
+    plan = build_final_invoice_plan(
+        snap, final_series_id="15827921",
+        invoice_date=date(2026, 6, 1),
+        payment_days=30,
+    )
+    back_ref = BACK_REFERENCE_TEMPLATE.format(pnum="PROF 90/2026", pid="98712989")
+    assert plan.description.startswith(back_ref), (
+        "Back reference must be the FIRST thing in the description"
+    )
+    # Terms must follow back ref
+    assert "Payment and Ownership Terms" in plan.description
+    assert plan.description.index(back_ref) < plan.description.index("Payment and Ownership Terms")
+
+
+def test_terms_appear_exactly_once():
+    """Fix 5: terms block must appear exactly once — not duplicated."""
+    from app.services.proforma_to_invoice import build_final_invoice_plan
+    snap = parse_proforma_xml(_proforma_xml())
+    plan = build_final_invoice_plan(
+        snap, final_series_id="15827921",
+        invoice_date=date(2026, 6, 1),
+        payment_days=30,
+    )
+    assert plan.description.count("Payment and Ownership Terms") == 1, (
+        "Terms block must appear exactly once — not duplicated"
+    )
+
+
+def test_terms_with_operator_description():
+    """When operator_description is provided along with terms, all three parts appear
+    in correct order: back_ref → terms → operator_description."""
+    from app.services.proforma_to_invoice import BACK_REFERENCE_TEMPLATE, build_final_invoice_plan
+    snap = parse_proforma_xml(_proforma_xml())
+    op_desc = "Custom shipment note"
+    plan = build_final_invoice_plan(
+        snap, final_series_id="15827921",
+        invoice_date=date(2026, 6, 1),
+        payment_days=30,
+        operator_description=op_desc,
+    )
+    back_ref = BACK_REFERENCE_TEMPLATE.format(pnum="PROF 90/2026", pid="98712989")
+    assert plan.description.startswith(back_ref)
+    br_idx    = plan.description.index(back_ref)
+    terms_idx = plan.description.index("Payment and Ownership Terms")
+    opdesc_idx = plan.description.index(op_desc)
+    assert br_idx < terms_idx < opdesc_idx, (
+        "Order must be: back_reference → terms → operator_description"
+    )
+
+
+# ── Fix 4 (RC-4): compute_conversion_core_hash ──────────────────────────────
+
+def test_compute_hash_is_exported():
+    """compute_conversion_core_hash is in __all__ and callable."""
+    from app.services.proforma_to_invoice import compute_conversion_core_hash
+    snap = parse_proforma_xml(_proforma_xml())
+    h = compute_conversion_core_hash("9001", "EUR", "15827921", snap.contents)
+    assert isinstance(h, str) and len(h) == 64
+
+
+def test_compute_hash_deterministic():
+    """Same inputs → same SHA-256 hash on repeated calls."""
+    from app.services.proforma_to_invoice import compute_conversion_core_hash
+    snap = parse_proforma_xml(_proforma_xml())
+    h1 = compute_conversion_core_hash("9001", "EUR", "15827921", snap.contents)
+    h2 = compute_conversion_core_hash("9001", "EUR", "15827921", snap.contents)
+    assert h1 == h2
+
+
+def test_compute_hash_sensitive_to_series():
+    """Different series_id → different hash."""
+    from app.services.proforma_to_invoice import compute_conversion_core_hash
+    snap = parse_proforma_xml(_proforma_xml())
+    h1 = compute_conversion_core_hash("9001", "EUR", "AAA", snap.contents)
+    h2 = compute_conversion_core_hash("9001", "EUR", "BBB", snap.contents)
+    assert h1 != h2
+
+
+def test_compute_hash_sensitive_to_contractor():
+    """Different contractor_id → different hash."""
+    from app.services.proforma_to_invoice import compute_conversion_core_hash
+    snap = parse_proforma_xml(_proforma_xml())
+    h1 = compute_conversion_core_hash("9001", "EUR", "SER1", snap.contents)
+    h2 = compute_conversion_core_hash("9002", "EUR", "SER1", snap.contents)
+    assert h1 != h2

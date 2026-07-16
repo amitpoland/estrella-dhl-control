@@ -334,15 +334,68 @@ def partition_billable(
 
 BACK_REFERENCE_TEMPLATE = "Final invoice issued based on proforma {pnum} (id={pid})."
 
+# Operator-ratified campaign text (verbatim, 2026-07-16).
+# Appended to the invoice description when payment_days is set on the plan.
+PAYMENT_TERMS_TEMPLATE = (
+    "Payment and Ownership Terms: Payment due within {payment_days} Days from invoice date. "
+    "Ownership of goods remains with the seller until full payment is received. "
+    "This transaction is governed by the laws of Poland and recognized under applicable "
+    "EU and international trade conventions."
+)
+
+
+def compute_conversion_core_hash(
+    contractor_id: str,
+    currency: str,
+    series_id: str,
+    contents,  # List[LineItem] or List[dict]
+) -> str:
+    """SHA-256 over core conversion fields (contractor, currency, series, lines).
+
+    Sorted-line repr makes the hash stable regardless of insertion-order
+    differences. Used to detect proforma or series changes between the
+    disclosure modal and the execute call.
+
+    Authority: PROFORMA (immutable-preview contract, RC-4).
+    Pure function. No I/O. Stdlib only (hashlib, json).
+    """
+    import hashlib
+    import json as _json
+
+    def _safe_line_tuple(ln) -> list:
+        if isinstance(ln, dict):
+            return [
+                str(ln.get("good_id", "")),
+                str(ln.get("unit_count", "")),
+                str(ln.get("price", "")),
+                str(ln.get("vat_code_id", "")),
+            ]
+        return [
+            str(getattr(ln, "good_id", "")),
+            str(getattr(ln, "unit_count", "")),
+            str(getattr(ln, "price", "")),
+            str(getattr(ln, "vat_code_id", "")),
+        ]
+
+    payload = {
+        "contractor_id": str(contractor_id or ""),
+        "currency": str(currency or ""),
+        "series_id": str(series_id or ""),
+        "lines": sorted(_safe_line_tuple(ln) for ln in (contents or [])),
+    }
+    raw = _json.dumps(payload, sort_keys=True, ensure_ascii=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
 
 def build_final_invoice_plan(
     snap: ProformaSnapshot,
     *,
-    final_series_id:    str,
-    invoice_date:       Optional[date] = None,
-    paymentdate:        Optional[str]  = None,
-    paymentmethod:      Optional[str]  = None,
-    operator_description: Optional[str] = None,
+    final_series_id:      str,
+    invoice_date:         Optional[date] = None,
+    paymentdate:          Optional[str]  = None,
+    paymentmethod:        Optional[str]  = None,
+    operator_description: Optional[str]  = None,
+    payment_days:         Optional[int]  = None,
 ) -> FinalInvoicePlan:
     """Project a parsed proforma snapshot into a FinalInvoicePlan.
 
@@ -386,12 +439,16 @@ def build_final_invoice_plan(
     back_ref = BACK_REFERENCE_TEMPLATE.format(
         pnum=snap.proforma_number, pid=snap.proforma_id,
     )
+    # Build description: back_ref always first, then terms (exactly once when
+    # payment_days is set and > 0), then operator or original proforma description.
+    desc_parts = [back_ref]
+    if payment_days is not None and payment_days > 0:
+        desc_parts.append(PAYMENT_TERMS_TEMPLATE.format(payment_days=payment_days))
     if operator_description and operator_description.strip():
-        description = f"{back_ref} {operator_description.strip()}"
+        desc_parts.append(operator_description.strip())
     elif snap.description:
-        description = f"{back_ref} {snap.description}"
-    else:
-        description = back_ref
+        desc_parts.append(snap.description)
+    description = " ".join(desc_parts)
 
     return FinalInvoicePlan(
         type                    = "normal",
@@ -532,9 +589,11 @@ __all__ = [
     "NotAProforma",
     "ZeroBillableInvoice",
     "BACK_REFERENCE_TEMPLATE",
+    "PAYMENT_TERMS_TEMPLATE",
     "parse_proforma_xml",
     "build_final_invoice_plan",
     "build_final_invoice_xml",
+    "compute_conversion_core_hash",
     "is_billable_line",
     "partition_billable",
     "lines_match",

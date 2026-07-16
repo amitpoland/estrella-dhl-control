@@ -17,6 +17,30 @@ Rules and boundary vs PROJECT_STATE.md:
 
 ## Current task
 
+- **Task:** wFirma Proforma→Invoice Conversion Certification & Repair (operator campaign
+  2026-07-16, EOS v1.3; plan `C:\Users\Super Fashion\.claude\plans\campaign-breezy-stream.md`).
+- **Started:** 2026-07-16
+- **Status:** IN_PROGRESS
+- **Branch:** `fix/proforma-convert-certification` off `28784270` (origin/main tip).
+- **Diagnosis (ratified, Opus-confirmed):** RC-1 disclosure reads `lines` vs real
+  `contents` (payload_disclosure.py:160, + wrong field projection) → modal "0 line(s)";
+  RC-2 three divergent series resolutions (disclose/preview/execute — only execute follows
+  ADR-027 D6; preview shows proforma series 15827088); RC-3 modal total omits
+  freight/insurance (payload correct); RC-4 no preview hash contract + modal double
+  disclosure fetch; RC-5 stale due-date fallback; RC-6 no Payment-and-Ownership-Terms
+  block. wFirma has NO native proforma→invoice conversion (probes 2026-05-03).
+- **Operator decisions:** terms wording = campaign text verbatim (EN); series gate =
+  keep ADR-027 D6 omit-valid + NEW hard block only for proforma-type series.
+- **Execution:** 2 Sonnet implementation agents in flight (backend Fixes 1/2/4/5/6;
+  frontend Fixes 3/7). `WFIRMA_CREATE_INVOICE_ALLOWED` stays false. Pre-existing red:
+  test_proforma_to_invoice_routes.py::test_dashboard_renders_two_step_convert_flow
+  (V1 strings, red on origin/main — NOT this campaign's).
+- **Completion criteria:** all 7 fixes + ~19 tests green, golden 160/160, Opus code
+  review clean, GATE-6 non-writing browser cert, GATE-1 PR open. Live Phase-14
+  certification = separate operator-gated step.
+
+## Held task (operator redirect 2026-07-16 — preserved verbatim)
+
 - **Task:** Phase-C Inventory Master Campaign (platform `.claude/campaigns/phase-c-master/`) —
   launched 2026-07-03 per operator FINAL PRE-LAUNCH AMENDMENT (verbatim R4).
 - **Started:** 2026-07-03

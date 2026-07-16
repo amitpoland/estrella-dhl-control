@@ -8353,22 +8353,8 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
   const [confirmed,    setConfirmed]    = React.useState(false);
   const [loading,      setLoading]      = React.useState(false);
   const [apiError,     setApiError]     = React.useState(null);
-  const [disclose,     setDisclose]     = React.useState(null);
-  const [disclosing,   setDisclosing]   = React.useState(true);
-  const [disclosureErr,setDisclosureErr]= React.useState(null);
-
-  React.useEffect(() => {
-    window.PzApi.getDisclosureConvert(draft.id)
-      .then(r => {
-        if (r && r.ok) setDisclose(r.data);
-        else setDisclosureErr((r && r.error) || 'Preview unavailable');
-        setDisclosing(false);
-      })
-      .catch(e => { setDisclosureErr(e.message || 'Preview unavailable'); setDisclosing(false); });
-  }, [draft.id]);
-
   const [disclosure,        setDisclosure]        = React.useState(null);
-  const [disclosureLoading, setDisclosureLoading] = React.useState(false);
+  const [disclosureLoading, setDisclosureLoading] = React.useState(true);
   const [disclosureError,   setDisclosureError]   = React.useState(null);
 
   // Operator payment override state; pre-filled from disclosure on load
@@ -8378,6 +8364,7 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
   const [overrideSaleDate,    setOverrideSaleDate]    = React.useState(detail.sale_date || '');
   const [overrideDays,        setOverrideDays]        = React.useState('');
 
+  // Single disclosure fetch — loads payload preview AND pre-fills payment overrides (RC-4 fix)
   React.useEffect(() => {
     setDisclosureLoading(true);
     window.PzApi.getDisclosureConvert(draft.id)
@@ -8420,6 +8407,7 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
     if (overrideInvoiceDate) overrideBody.override_invoice_date   = overrideInvoiceDate;
     if (overrideSaleDate)    overrideBody.override_sale_date      = overrideSaleDate;
     if (overrideDays !== '') overrideBody.override_payment_days   = parseInt(overrideDays, 10);
+    if (disclosure && disclosure.payload_core_hash) overrideBody.expected_payload_hash = disclosure.payload_core_hash;
     window.PzApi.draftToInvoice(draft.id, overrideBody)
       .then(r => {
         const body = (r && r.data) || null;
@@ -8445,6 +8433,15 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
 
   const totalEur = detail.lines.reduce((s, l) => s + l.netEur, 0);
   const currency = detail.currency || 'EUR';
+  // Server grand total (includes freight + insurance lines) — falls back to client sum while loading
+  const grandTotal = disclosure && disclosure.grand_total != null ? Number(disclosure.grand_total) : null;
+  const grandTotalCurrency = (disclosure && disclosure.grand_total_currency) || currency;
+  // Pre-compute series display string for PAYLOAD PREVIEW section
+  const _pSeriesId   = disclosure && disclosure.fields_to_write && disclosure.fields_to_write.series_id;
+  const _pSeriesName = disclosure && disclosure.series_name;
+  const payloadSeriesDisplay = _pSeriesId && _pSeriesName
+    ? `${_pSeriesId} — ${_pSeriesName}`
+    : _pSeriesId || _pSeriesName || '(wFirma contractor default)';
 
   // Resolved display: override > disclosure > draft fallback
   const resolvedMethod     = overrideMethod
@@ -8476,6 +8473,9 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
           <div style={{ padding: '12px 14px', background: 'var(--badge-amber-bg)', borderLeft: '3px solid var(--badge-amber-text)', borderRadius: '0 6px 6px 0', marginBottom: 20, fontSize: 13, color: 'var(--text-2)' }}>
             This will create a wFirma <strong>WDT invoice</strong> and link it to this proforma.
             The invoice <strong>cannot be cancelled in wFirma</strong> after creation — only corrected via Korekta.
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-3)', lineHeight: 1.5 }}>
+              Creates a new final invoice in wFirma referencing this proforma number. wFirma has no native proforma→invoice conversion; lineage is recorded via the invoice description back-reference and the local conversion link.
+            </div>
           </div>
 
           {/* Payload section */}
@@ -8493,17 +8493,17 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
             ['Source proforma', (disclosure && disclosure.source_proforma) || detail.wfirma_proforma_fullnumber || '—'],
             ['Customer',        detail.customer.wfirmaName || detail.customer.name || '—'],
             ['Currency',        (disclosure && disclosure.fields_to_write && disclosure.fields_to_write.currency) || currency],
-            ['Series',          (disclosure && disclosure.fields_to_write && disclosure.fields_to_write.series_id) || '—'],
+            ['Series',          payloadSeriesDisplay, {'data-testid': 'convert-series-name'}],
             ['FX rate',         detail.fx && detail.fx.rate ? `${detail.fx.rate.toFixed(4)} PLN (table ${detail.fx.table})` : '—'],
             ['Sale date',       resolvedSaleDate],
             ['Payment method',  resolvedMethod],
             ['Payment due',     resolvedPaymentDue],
             ['Flag required',   (disclosure && disclosure.flag_required) || 'WFIRMA_CREATE_INVOICE_ALLOWED'],
-            [`Total (${currency})`, totalEur.toFixed(2)],
-          ].map(([k, v]) => (
+            [`Total (${grandTotal != null ? grandTotalCurrency : currency})`, grandTotal != null ? grandTotal.toFixed(2) : totalEur.toFixed(2), {'data-testid': 'convert-grand-total'}],
+          ].map(([k, v, rowProps]) => (
             <div key={k} style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: 14, padding: '5px 0', fontSize: 13 }}>
               <span style={{ color: 'var(--text-3)' }}>{k}</span>
-              <span style={{ fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-word' }}>{v}</span>
+              <span style={{ fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-word' }} {...(rowProps || {})}>{v}</span>
             </div>
           ))}
 
@@ -8582,46 +8582,66 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
             </div>
           </div>
 
-          {/* wFirma payload disclosure — live fetch from disclose-convert */}
+          {/* wFirma payload disclosure — single fetch shared with PAYLOAD PREVIEW (RC-4 fix) */}
           <div style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-3)', fontWeight: 700, marginBottom: 10, marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>WFIRMA INVOICE PREVIEW</div>
-          {disclosing ? (
+          {disclosureLoading ? (
             <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '6px 0' }}>⏳ Loading invoice payload preview…</div>
-          ) : disclosureErr ? (
+          ) : disclosureError ? (
             <div style={{ fontSize: 12, color: 'var(--badge-amber-text)', padding: '6px 10px', background: 'var(--badge-amber-bg)', borderRadius: 4 }}>
-              Preview unavailable: {disclosureErr}
+              Preview unavailable: {disclosureError}
             </div>
-          ) : disclose ? (() => {
-            const fw = disclose.fields_to_write || {};
+          ) : disclosure ? (() => {
+            const fw = disclosure.fields_to_write || {};
+            const fwSeriesId   = fw.series_id;
+            const fwSeriesName = disclosure.series_name;
+            const fwSeriesDisplay = fwSeriesId && fwSeriesName
+              ? `${fwSeriesId} — ${fwSeriesName}`
+              : fwSeriesId || '(wFirma contractor default)';
+            const lineCount = fw.line_count;
             return (
               <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 14px', fontSize: 12 }}>
                 {[
-                  ['Source proforma', disclose.source_proforma || '—'],
-                  ['Write target',    disclose.write_target    || '—'],
-                  ['Flag required',   disclose.flag_required   || '—'],
-                  ['Type',            fw.type                  || '—'],
-                  ['Contractor ID',   fw.contractor_id         || '—'],
-                  ['Currency',        fw.currency              || '—'],
-                  ['Series',          fw.series_id             || '(wFirma contractor default)'],
-                  ['Lines',           fw.line_count != null ? `${fw.line_count} line(s)` : '—'],
+                  ['Source proforma', disclosure.source_proforma || '—'],
+                  ['Write target',    disclosure.write_target    || '—'],
+                  ['Flag required',   disclosure.flag_required   || '—'],
+                  ['Type',            fw.type                    || '—'],
+                  ['Contractor ID',   fw.contractor_id           || '—'],
+                  ['Currency',        fw.currency                || '—'],
+                  ['Series',          fwSeriesDisplay],
+                  ['Lines',           lineCount != null ? `${lineCount} line(s)` : '—'],
                 ].map(([k, v]) => (
                   <div key={k} style={{ display: 'flex', gap: 12, padding: '3px 0', borderBottom: '1px dashed var(--border)' }}>
                     <span style={{ color: 'var(--text-3)', width: 130, flexShrink: 0 }}>{k}</span>
-                    <span style={{ fontFamily: 'monospace', wordBreak: 'break-word' }}>{v}</span>
+                    <span style={{ fontFamily: 'monospace', wordBreak: 'break-word' }}
+                      {...(k === 'Series' ? {'data-testid': 'convert-series-name'} : k === 'Lines' ? {'data-testid': 'convert-line-count'} : {})}
+                    >{v}</span>
                   </div>
                 ))}
-                {disclose.warning && (
+                {/* Series advisories (non-blocking, Lesson N) */}
+                {(disclosure.series_advisories || []).map((a, i) => (
+                  <div key={`sa-${i}`} style={{ marginTop: 4, padding: '4px 8px', background: 'var(--badge-amber-bg)', borderRadius: 4, color: 'var(--badge-amber-text)', fontSize: 11, lineHeight: 1.4 }}>
+                    ℹ {a}
+                  </div>
+                ))}
+                {/* Due-date advisories (non-blocking, Lesson N / Fix 6) */}
+                {(disclosure.due_date_advisories || []).map((a, i) => (
+                  <div key={`da-${i}`} style={{ marginTop: 4, padding: '4px 8px', background: 'var(--badge-amber-bg)', borderRadius: 4, color: 'var(--badge-amber-text)', fontSize: 11, lineHeight: 1.4 }}>
+                    ℹ {a}
+                  </div>
+                ))}
+                {disclosure.warning && (
                   <div style={{ marginTop: 8, padding: '6px 8px', background: 'var(--badge-amber-bg)', borderRadius: 4, color: 'var(--badge-amber-text)', lineHeight: 1.4 }}>
-                    {disclose.warning}
+                    {disclosure.warning}
                   </div>
                 )}
-                {(disclose.lines || []).length > 0 && (
+                {(disclosure.lines || []).length > 0 && (
                   <details style={{ marginTop: 8 }}>
-                    <summary style={{ cursor: 'pointer', color: 'var(--text-3)', fontSize: 11 }}>Show invoice lines ({disclose.lines.length})</summary>
+                    <summary style={{ cursor: 'pointer', color: 'var(--text-3)', fontSize: 11 }}>Show invoice lines ({disclosure.lines.length})</summary>
                     <div style={{ marginTop: 6 }}>
-                      {disclose.lines.map((l, i) => (
+                      {disclosure.lines.map((l, i) => (
                         <div key={i} style={{ display: 'flex', gap: 12, padding: '3px 0', borderBottom: '1px dashed var(--border)', fontSize: 11 }}>
-                          <span style={{ color: 'var(--text-3)', width: 80, flexShrink: 0 }}>good_id: {l.good_id || '—'}</span>
-                          <span style={{ fontFamily: 'monospace' }}>{l.qty} pc × {l.unit_price} {l.currency}</span>
+                          <span style={{ color: 'var(--text-2)', flex: 1 }}>{l.name || l.good_id || '—'}</span>
+                          <span style={{ fontFamily: 'monospace', flexShrink: 0 }}>{l.unit_count} pc × {l.price} {l.currency}</span>
                         </div>
                       ))}
                     </div>
