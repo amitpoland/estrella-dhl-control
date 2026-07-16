@@ -348,19 +348,27 @@ def test_no_newlines_in_output():
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _make_wfdb_mock(monkeypatch):
-    """Wire wfdb so _build_service_charge_lines finds both products."""
+    """Wire the product resolution so _build_service_charge_lines finds both
+    products. C-3g: identity (wfirma good id) now comes from the Product
+    MIRROR via routes_proforma._c1f_mirror_good_id; emission metadata
+    (display label, unit) comes from the PROFORMA authority's
+    service_product_registry (pildb.get_all_service_product_meta). The
+    legacy wfdb.get_product cache is no longer consulted by the route."""
     from app.api import routes_proforma
-    import app.services.wfirma_db as wfdb
-    monkeypatch.setattr(wfdb, "_db_path", Path("/tmp/_phantom.db"), raising=False)
+    import app.services.proforma_invoice_link_db as pildb
 
-    def _get(code: str):
-        if code == "freight":
-            return {"wfirma_product_id": "WFP-99001", "product_name_pl": "Fracht", "unit": "szt."}
-        if code == "insurance":
-            return {"wfirma_product_id": "WFP-99002", "product_name_pl": "Ubezpieczenie", "unit": "szt."}
-        return None
+    _good_ids = {"freight": "WFP-99001", "insurance": "WFP-99002"}
+    monkeypatch.setattr(routes_proforma, "_c1f_mirror_good_id",
+                        lambda ct: _good_ids.get(ct))
 
-    monkeypatch.setattr(wfdb, "get_product", _get)
+    _meta = {
+        "freight":   {"charge_type": "freight",   "product_name": "Fracht",
+                      "vat_rate": "23", "unit": "szt.", "updated_at": ""},
+        "insurance": {"charge_type": "insurance", "product_name": "Ubezpieczenie",
+                      "vat_rate": "23", "unit": "szt.", "updated_at": ""},
+    }
+    monkeypatch.setattr(pildb, "get_all_service_product_meta",
+                        lambda db_path: dict(_meta))
 
 
 def test_build_service_charge_lines_insurance_uses_canonical_wording(monkeypatch):

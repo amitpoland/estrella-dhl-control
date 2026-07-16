@@ -183,8 +183,9 @@ def _seed_cm(storage: Path, vat_eu_number=None, vat_eu_valid=None):
 
 
 def _line(product_code: str, name_pl: str = "Pierścionek złoty",
-          unit_price: float = 100.0) -> dict:
+          unit_price: float = 100.0, design_no: str = "") -> dict:
     return {"line_id": str(uuid.uuid4()), "product_code": product_code,
+            "design_no": design_no,
             "name_pl": name_pl, "unit_price": unit_price,
             "quantity": 1.0, "currency": "EUR"}
 
@@ -294,9 +295,14 @@ def _draft_row(storage: Path, draft_id: int) -> dict:
 # ── 1. Ambiguous design_no cannot approve ────────────────────────────────────
 
 def test_ambiguous_design_no_blocks_approve(client):
+    # #684 billed-line reconciliation: batch-level ambiguity only blocks when
+    # a BILLED line cannot be pinned to a valid product_code. A line that
+    # bills the ambiguous design without a resolved product_code is the
+    # genuine Draft-#32 hazard shape under the current authority.
     c, storage = client
     _seed_ambiguous_context()
-    draft_id = _seed_draft(storage, [_line(CODE_A), _line(CODE_B)])
+    draft_id = _seed_draft(storage, [_line(CODE_A), _line(CODE_B),
+                                     _line("", design_no=DESIGN)])
 
     r = _approve(c, draft_id)
     assert r.status_code == 422, r.text
@@ -419,9 +425,14 @@ def test_wdt_buyer_without_eu_vat_blocks_before_wfirma_call(client):
 # ── 6. Operator product selection clears the ambiguity blocker ───────────────
 
 def test_operator_selection_clears_ambiguity_blocker(client):
+    # #684: the ambiguity blocker fires only for a billed-but-unpinned
+    # design (see test 1) — seed one line billing DESIGN without a
+    # resolved product_code so the operator-selection flow has a genuine
+    # blocker to clear.
     c, storage = client
     _seed_ambiguous_context()
-    draft_id = _seed_draft(storage, [_line(CODE_A), _line(CODE_B)])
+    draft_id = _seed_draft(storage, [_line(CODE_A), _line(CODE_B),
+                                     _line("", design_no=DESIGN)])
 
     before = _readiness(c, draft_id, intent="approve")
     assert any(AMBIG_TEXT in br for br in before["blocking_reasons"]), before
@@ -489,7 +500,11 @@ def test_draft32_shape_reproduces_and_repairs(client):
     c, storage = client
     _seed_ambiguous_context(matched=False)        # 2 products NOT matched
     _seed_cm(storage, vat_eu_number=None)          # WDT, blank EU VAT
-    draft_id = _seed_draft(storage, [_line(CODE_A), _line(CODE_B)],
+    # #684: the third line bills DESIGN without a resolved product_code —
+    # the genuine ambiguity shape under billed-line reconciliation.
+    unpinned = _line("", design_no=DESIGN)
+    lines = [_line(CODE_A), _line(CODE_B), unpinned]
+    draft_id = _seed_draft(storage, lines,
                            status="approved", draft_state="approved")
 
     # Reproduce: approve re-validation refuses…
@@ -513,6 +528,17 @@ def test_draft32_shape_reproduces_and_repairs(client):
         headers=_op_headers(),
     )
     assert r1.status_code == 200, r1.text
+
+    # Repair 1b — the resolution NEVER edits draft lines (route contract);
+    # the operator applies the chosen product_code to the unpinned line.
+    unpinned["product_code"] = CODE_A
+    db = storage / "proforma_links.db"
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "UPDATE proforma_drafts SET editable_lines_json=? WHERE id=?",
+            (json.dumps(lines), draft_id),
+        )
+        conn.commit()
 
     # Repair 2 — both products registered in wfirma_products.
     _match_product(CODE_A, "991")

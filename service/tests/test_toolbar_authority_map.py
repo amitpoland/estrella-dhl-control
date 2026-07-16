@@ -195,10 +195,21 @@ def test_print_pdf_route_requires_wfirma_proforma_id():
 
 
 def test_cmr_print_not_exposed():
-    """CMR print is NOT exposed — no CMR backend route exists."""
+    """CMR print is NOT exposed — no CMR backend ROUTE exists in
+    routes_proforma.py. The former blanket substring pin (`"cmr" not in
+    file`) was retired: PR #922 made CMR a canonical transport document
+    (composed client-side from existing authority data) and the
+    weight-override route's docstring legitimately mentions the CMR /
+    Packing List. The invariant is unchanged: no CMR endpoint is
+    registered here."""
+    import re
     routes = _routes()
-    assert "cmr" not in routes.lower(), \
-        "No CMR route must exist in routes_proforma.py — not in project scope"
+    cmr_routes = re.findall(
+        r'@router\.(?:get|post|put|patch|delete)\(\s*["\'][^"\']*cmr[^"\']*["\']',
+        routes, flags=re.IGNORECASE,
+    )
+    assert not cmr_routes, \
+        f"No CMR route must be registered in routes_proforma.py: {cmr_routes}"
 
 
 # ── 4. Send — CONDITIONALLY ENABLED (M2 Phase 1B) ───────────────────────────
