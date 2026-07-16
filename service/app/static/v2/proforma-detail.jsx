@@ -4693,7 +4693,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         ? _cmrAggPackingLines.lines
         : lines.map(l => ({ origin: l.origin || liveDraft.origin_country || null }));
       const s = new Set();
-      for (const l of src) { const o = String(l.origin || '').trim(); if (o && o !== '—') s.add(o); }
+      for (const l of src) {
+        const o = String(l.origin || '').trim();
+        // Product Master stores ISO-2 codes ("IN"); print the full country name
+        // on the legal document. _cmrCountryName passes unknown/full names
+        // through unchanged, so "India" stays "India".
+        if (o && o !== '—') s.add(_cmrCountryName(o) || o);
+      }
       return s.size ? Array.from(s).join(' / ') : null;
     })(),
   };
