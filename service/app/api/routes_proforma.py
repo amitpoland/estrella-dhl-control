@@ -3846,6 +3846,9 @@ class _FinalInvoiceConfirmReq(_BaseModel):
 
 @router.post(
     "/to-invoice/{batch_id}/{client_name:path}",
+    # Privileged: creates a real wFirma invoice (irreversible fiscal write) —
+    # read-only session roles must be rejected, same guard as the reconcile
+    # repair route (2026-07-17 backend-safety HIGH finding).
     dependencies=[_auth_write],
 )
 def proforma_to_invoice(
@@ -11079,6 +11082,8 @@ def get_draft_invoice_link(draft_id: int) -> JSONResponse:
 
 @router.post(
     "/draft/{draft_id}/to-invoice",
+    # Privileged: delegates to proforma_to_invoice (wFirma invoices/add) —
+    # same guard as the batch/client route (2026-07-17 HIGH finding).
     dependencies=[_auth_write],
     summary="Sprint-24: convert proforma → invoice via draft_id (session-operator alias)",
 )
@@ -11136,7 +11141,13 @@ _VAC_NOTE_MARKER         = "verify-after-create"
 
 
 def _draft_for_proforma_id(pid: str) -> Optional["pildb.ProformaDraft"]:
-    """First proforma_drafts row whose wfirma_proforma_id == pid, or None."""
+    """First proforma_drafts row whose wfirma_proforma_id == pid, or None.
+
+    Ordering disclosure: proforma_drafts has NO unique constraint on
+    wfirma_proforma_id; search_drafts orders newest-first, so if two drafts
+    ever reference the same proforma this returns the NEWEST one. Follow-up
+    (GATE 4): store draft_id on the link row at mark_issued time so repair
+    has a direct reference instead of this heuristic."""
     try:
         res = pildb.search_drafts(
             _proforma_db_path(),
@@ -11160,7 +11171,12 @@ def _audit_vac_evidence(batch_id: str, pid: str) -> Optional[str]:
         audit_path = settings.storage_root / "outputs" / batch_id / "audit.json"
         if not audit_path.exists():
             return None
-        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        # BOM-safe: same loader audit_persist uses for its own reads — a
+        # PowerShell-written BOM must not silently downgrade the detection.
+        from ..services.audit_persist import _load as _audit_load
+        audit = _audit_load(audit_path)
+        if audit is None:
+            return None
         latest = None
         for entry in (audit.get("timeline") or []):
             if not isinstance(entry, dict):
@@ -11208,15 +11224,22 @@ def list_split_brain_invoice_links(proforma_id: str = "") -> JSONResponse:
 
     link_db = settings.storage_root / "proforma_links.db"
     pid_filter = (proforma_id or "").strip()
+    _SCAN_LIMIT = 200
+    truncated = False
     if pid_filter:
         one = plink.get_link_by_proforma(link_db, pid_filter)
         candidates = [one] if one is not None else []
     else:
-        candidates = (
-            plink.list_links(link_db, status="pending", limit=200)
-            + plink.list_links(link_db, status="failed",  limit=200)
-            + plink.list_links(link_db, status="issued",  limit=200)
-        )
+        _by_status = [
+            plink.list_links(link_db, status="pending", limit=_SCAN_LIMIT),
+            plink.list_links(link_db, status="failed",  limit=_SCAN_LIMIT),
+            plink.list_links(link_db, status="issued",  limit=_SCAN_LIMIT),
+        ]
+        # Honest reporting: a status bucket at exactly the scan limit may
+        # have been cut off — the report must say so, never present a
+        # capped scan as the complete picture.
+        truncated = any(len(rows) >= _SCAN_LIMIT for rows in _by_status)
+        candidates = [link for rows in _by_status for link in rows]
 
     entries = []
     for link in candidates:
@@ -11292,7 +11315,13 @@ def list_split_brain_invoice_links(proforma_id: str = "") -> JSONResponse:
             "reconcilable_without_input": bool(captured_id),
         })
 
-    return JSONResponse({"ok": True, "count": len(entries), "links": entries})
+    return JSONResponse({
+        "ok":         True,
+        "count":      len(entries),
+        "links":      entries,
+        "truncated":  truncated,
+        "scan_limit": _SCAN_LIMIT,
+    })
 
 
 class _ReconcileLinkReq(_BaseModel):
@@ -11486,6 +11515,10 @@ def _reconcile_issued_link_projection(
         },
         "wfirma_write":          False,
         "operator":              operator,
+        # Disclosed limitation: the link table does not carry these — a
+        # repaired draft keeps them NULL (only the forward path writes them).
+        "unrestored_fields":     ["sale_date", "payment_due",
+                                  "payment_method"],
     })
 
 
@@ -11581,6 +11614,13 @@ def reconcile_invoice_link(
 
     captured = (link.invoice_id or "").strip()
     supplied = (body.wfirma_invoice_id or "").strip()
+    if supplied and not supplied.isdigit():
+        # wFirma invoice ids are integers; the supplied value flows into the
+        # invoices/get URL path — reject anything that isn't a plain number
+        # (2026-07-17 security finding: path-separator injection).
+        return _blocked(
+            f"wfirma_invoice_id {supplied!r} is not a numeric wFirma id"
+        )
     if captured and supplied and captured != supplied:
         return _blocked(
             f"invoice id conflict — link row captured {captured!r} but "
@@ -11599,6 +11639,18 @@ def reconcile_invoice_link(
         return _blocked(
             f"no proforma_drafts row references wfirma_proforma_id {pid!r} — "
             "cannot rebuild the conversion plan or attribute the audit event"
+        )
+    # Conflict pre-check (mirrors the issued-branch guard): a draft already
+    # carrying a DIFFERENT invoice identity must never be overwritten by this
+    # repair — refuse before any wFirma fetch or link write.
+    _pre = pildb.get_draft_by_id(_proforma_db_path(), int(draft.id))
+    _pre_iid = (getattr(_pre, "wfirma_invoice_id", None) or "").strip() \
+        if _pre is not None else ""
+    if _pre_iid and _pre_iid != iid:
+        return _blocked(
+            f"draft {draft.id} already carries wfirma_invoice_id "
+            f"{_pre_iid!r} but this repair targets {iid!r} — data conflict, "
+            "refusing to overwrite; escalate to operator"
         )
 
     # ── Read-only wFirma re-fetch + identical verify matrix ──────────────────
@@ -11667,15 +11719,19 @@ def reconcile_invoice_link(
                               f"previous_status={previous_status})")[:500],
         )
     except Exception as exc:
+        # e.g. sqlite 'database is locked' — structured, retryable, never 500
+        # (same contract as the issued-branch persist failure).
         return JSONResponse({
             "ok":                False,
-            "status":            "failed",
+            "status":            "error",
+            "retryable":         True,
             "proforma_id":       pid,
             "wfirma_invoice_id": iid,
             "error":             f"mark_issued failed: "
                                  f"{type(exc).__name__}: {exc}"[:500],
         })
 
+    _draft_persisted = False
     try:
         from ..services.conversion_persistence import persist_invoice_to_draft as _pidr
         _pidr(
@@ -11684,7 +11740,11 @@ def reconcile_invoice_link(
             wfirma_invoice_id     = iid,
             wfirma_invoice_number = invoice_number,
         )
+        _draft_persisted = True
     except Exception as _pe:
+        # Disclosed below as draft_persisted=False — the link IS repaired
+        # (issued); the draft projection is now repairable via a second call
+        # (the issued branch picks it up as a stale projection).
         log.warning("[%s] reconcile persist_invoice_to_draft skipped: %s",
                     draft.batch_id, _pe)
 
@@ -11740,6 +11800,12 @@ def reconcile_invoice_link(
         "client_name":           draft.client_name,
         "operator":              operator,
         "wfirma_write":          False,
+        # False = the link row is repaired (issued) but the draft projection
+        # write failed — re-run this route; the issued branch completes it.
+        "draft_persisted":       _draft_persisted,
+        "advisory":              (None if _draft_persisted else
+                                  "draft projection not persisted — re-run "
+                                  "reconcile to complete the repair"),
     })
 
 

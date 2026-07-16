@@ -126,12 +126,36 @@ def test_s2_candidate_exposes_sale_date_and_payment_method():
 
 
 def test_s3_execute_response_declares_draft_persisted():
-    import app.api.routes_proforma as rp
-    src = Path(rp.__file__).read_text(encoding="utf-8-sig")
-    assert '"draft_persisted"' in src, (
+    """AST-strength pin (not a bare substring, which a comment satisfies):
+    the dict literal returned by proforma_to_invoice must carry the
+    draft_persisted key."""
+    fn = _find_func(_routes_proforma_tree(), "proforma_to_invoice")
+    dict_keys = {
+        k.value
+        for node in ast.walk(fn) if isinstance(node, ast.Dict)
+        for k in node.keys
+        if isinstance(k, ast.Constant) and isinstance(k.value, str)
+    }
+    assert "draft_persisted" in dict_keys, (
         "execute success response must surface the step-7b outcome as "
         "draft_persisted (silent persist failure = draft-67 incident class)"
     )
+
+
+def test_s4_convert_execute_routes_are_privileged():
+    """2026-07-17 backend-safety HIGH: both convert-execute routes create a
+    real wFirma invoice and must reject read-only session roles — same
+    guard as the canonical reconcile route."""
+    import app.api.routes_proforma as rp
+    src = Path(rp.__file__).read_text(encoding="utf-8-sig")
+    for anchor in ('"/to-invoice/{batch_id}/{client_name:path}"',
+                   '"/draft/{draft_id}/to-invoice"'):
+        i = src.index(anchor)
+        window = src[i:i + 400]
+        assert "dependencies=[_auth_write]" in window, (
+            f"route {anchor} must carry _auth_write "
+            "(require_api_key_privileged)"
+        )
 
 
 # ── Reconcile endpoint fixtures ───────────────────────────────────────────────
@@ -507,6 +531,25 @@ class TestReconcileConversionLink:
             "the superseded POST /draft/{id}/reconcile-conversion-link route "
             "must stay deleted — one reconciliation authority only"
         )
+
+    def test_r17_issued_branch_body_id_conflict_blocks(self, client, tmp_path):
+        """A body-supplied wfirma_invoice_id that differs from the ISSUED
+        link's own id is a conflict — blocked before any write."""
+        from app.services import proforma_invoice_link_db as pildb
+        db = tmp_path / "proforma_links.db"
+        _make_db(db)
+        did = _insert_draft(db)
+        _insert_link(db)   # issued, invoice_id="489960355"
+        r = _post_reconcile(client, db, body={
+            "confirm": "YES_RECONCILE_INVOICE_LINK",
+            "wfirma_invoice_id": "999999",
+        })
+        body = r.json()
+        assert body["ok"] is False and body["status"] == "blocked"
+        assert "invoice id conflict" in body["blocking_reasons"][0]
+        d = pildb.get_draft_by_id(Path(str(db)), did)
+        assert d.wfirma_invoice_id in (None, "")
+        assert d.draft_state == "posted"
 
     def test_r16_missing_confirm_token_blocked(self, client, tmp_path):
         from app.services import proforma_invoice_link_db as pildb

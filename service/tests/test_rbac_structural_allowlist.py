@@ -225,10 +225,10 @@ _AREA4_ROUTES: frozenset[str] = frozenset({
     "routes_proforma.py:POST:/draft/{draft_id}/reset-from-sales-packing",
     "routes_proforma.py:POST:/draft/{draft_id}/send-email",
     "routes_proforma.py:POST:/draft/{draft_id}/service-charges",
-    "routes_proforma.py:POST:/draft/{draft_id}/to-invoice",
+    # 2026-07-17 consolidation: both to-invoice execute routes upgraded to
+    # _auth_write (privileged) — removed from the bare allowlist.
     "routes_proforma.py:POST:/preview/{batch_id}/{client_name:path}",
     "routes_proforma.py:POST:/service-charges/{batch_id}/{client_name:path}",
-    "routes_proforma.py:POST:/to-invoice/{batch_id}/{client_name:path}",
     "routes_proforma.py:POST:/{wfirma_id}/refresh-line-names",
     "routes_proforma.py:PUT:/service-products/{charge_type}",
     "routes_proforma_adopt.py:POST:/adopt-issued/{batch_id}",

@@ -662,3 +662,161 @@ def test_source_grep_reconcile_has_no_invoices_add():
     assert "invoices" not in block or '"add"' not in block
     assert "_http_request" not in block
     assert "delete_invoice" not in block
+
+
+# ── 16. Consolidation mitigations (2026-07-17 GATE-1 review) ──────────────────
+
+def test_execute_reports_draft_persisted_false_when_persist_fails(client, storage):
+    """Forward path step 7b: mark_issued succeeds but persist_invoice_to_draft
+    raises — the response must disclose draft_persisted=False (behavioral
+    counterpart of source-pin S3)."""
+    import sqlite3 as _sq
+    _seed_issued_draft(storage)
+    fetch_calls = [_proforma_xml(), _created_invoice_xml()]
+
+    def _fake_http(method, module, op, body):
+        return 200, _invoices_add_response()
+
+    with _gate_invoice_on(), _readiness_ready(), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http), \
+         patch("app.services.conversion_persistence.persist_invoice_to_draft",
+               side_effect=_sq.OperationalError("database is locked")):
+        body = _convert(client)
+
+    assert body["ok"] is True, body
+    assert body["draft_persisted"] is False
+    # Link is issued; the canonical reconcile route can complete the repair.
+    link = pildb.get_link_by_proforma(_links_db(storage), PID)
+    assert link.status == "issued"
+
+
+def test_split_brain_repair_discloses_draft_persist_failure(client, storage):
+    """Split-brain branch: mark_issued lands but the draft projection write
+    fails — the 'reconciled' response must carry draft_persisted=False + an
+    advisory, and a SECOND call (issued branch, no wFirma) completes it."""
+    import sqlite3 as _sq
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id=IID)
+    _seed_audit(storage)
+
+    fetch_calls = [_proforma_xml(), _created_invoice_xml()]
+    with patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls), \
+         patch("app.services.conversion_persistence.persist_invoice_to_draft",
+               side_effect=_sq.OperationalError("database is locked")):
+        body = _reconcile(client)
+
+    assert body["ok"] is True, body
+    assert body["status"] == "reconciled"
+    assert body["draft_persisted"] is False
+    assert "re-run reconcile" in (body["advisory"] or "")
+    # Link repaired, draft still stale
+    assert pildb.get_link_by_proforma(_links_db(storage), PID).status == "issued"
+    draft = pildb.get_draft(_links_db(storage), BATCH, CLIENT)
+    assert draft.wfirma_invoice_id in (None, "")
+
+    # Second call: issued branch, local-only, completes the projection.
+    def _no_wfirma(*a, **k):
+        raise AssertionError("issued-branch repair must not call wFirma")
+    with patch.object(wc, "fetch_invoice_xml", side_effect=_no_wfirma):
+        body2 = _reconcile(client)
+    assert body2["status"] == "reconciled"
+    assert body2["mode"] == "draft_projection_repair"
+    draft = pildb.get_draft(_links_db(storage), BATCH, CLIENT)
+    assert draft.wfirma_invoice_id == IID
+    assert draft.draft_state == "converted"
+
+
+def test_reconcile_second_call_after_split_brain_repair_is_noop(client, storage):
+    """End-to-end idempotency across branches: split-brain repair, then a
+    second call routes the now-issued healthy link to the issued branch →
+    noop (no wFirma call)."""
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id=IID)
+    _seed_audit(storage)
+
+    fetch_calls = [_proforma_xml(), _created_invoice_xml()]
+    with patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls):
+        body = _reconcile(client)
+    assert body["status"] == "reconciled"
+
+    def _no_wfirma(*a, **k):
+        raise AssertionError("noop path must not call wFirma")
+    with patch.object(wc, "fetch_invoice_xml", side_effect=_no_wfirma):
+        body2 = _reconcile(client)
+    assert body2["ok"] is True
+    assert body2["status"] == "noop"
+
+
+def test_detection_excludes_healthy_issued_projection(client, storage):
+    """An issued link whose DRAFT already mirrors the invoice identity in
+    state 'converted' is healthy — excluded from the split-brain report."""
+    from app.services.conversion_persistence import persist_invoice_to_draft
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id=IID)
+    pildb.mark_issued(_links_db(storage), PID, invoice_id=IID,
+                      invoice_number=INUM, invoice_total=Decimal("306.00"))
+    draft = pildb.get_draft(_links_db(storage), BATCH, CLIENT)
+    persist_invoice_to_draft(
+        db_path=_links_db(storage), draft_id=int(draft.id),
+        wfirma_invoice_id=IID, wfirma_invoice_number=INUM,
+    )
+    body = client.get(_DETECT_URL, headers=_auth()).json()
+    assert body["count"] == 0, body
+    assert body["truncated"] is False
+
+
+def test_reconcile_rejects_non_numeric_supplied_id(client, storage):
+    """Operator-supplied wfirma_invoice_id flows into the invoices/get URL —
+    anything non-numeric is rejected before any wFirma call."""
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending")   # no captured id
+
+    def _no_wfirma(*a, **k):
+        raise AssertionError("validation must fire before any wFirma call")
+    with patch.object(wc, "fetch_invoice_xml", side_effect=_no_wfirma):
+        body = _reconcile(client, invoice_id="999/../../contractors/find")
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("not a numeric" in r for r in body["blocking_reasons"])
+
+
+def test_split_brain_blocked_on_pre_existing_draft_conflict(client, storage):
+    """Conflict pre-check: a draft already carrying a DIFFERENT invoice id
+    must block the split-brain repair BEFORE any wFirma fetch or link write."""
+    from app.services.conversion_persistence import persist_invoice_to_draft
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="failed", invoice_id=IID,
+               notes="verify-after-create FAILED: x")
+    draft = pildb.get_draft(_links_db(storage), BATCH, CLIENT)
+    persist_invoice_to_draft(
+        db_path=_links_db(storage), draft_id=int(draft.id),
+        wfirma_invoice_id="777777", wfirma_invoice_number="FA 7/2026",
+    )
+
+    def _no_wfirma(*a, **k):
+        raise AssertionError("conflict pre-check must fire before wFirma")
+    with patch.object(wc, "fetch_invoice_xml", side_effect=_no_wfirma):
+        body = _reconcile(client)
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("data conflict" in r for r in body["blocking_reasons"])
+    # Link untouched
+    assert pildb.get_link_by_proforma(_links_db(storage), PID).status == "failed"
+
+
+def test_reconcile_unrecognized_link_status_blocked(client, storage):
+    """A corrupted/future link status (neither pending/failed/issued) is
+    blocked, never routed to either repair branch."""
+    import sqlite3 as _sq
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id=IID)
+    conn = _sq.connect(str(_links_db(storage)))
+    conn.execute("UPDATE proforma_invoice_links SET status='archived' "
+                 "WHERE proforma_id=?", (PID,))
+    conn.commit()
+    conn.close()
+    body = _reconcile(client)
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("not reconcilable" in r for r in body["blocking_reasons"])
