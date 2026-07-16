@@ -494,6 +494,66 @@ def test_execute_does_not_emit_with_wrong_confirm(client, storage):
             if e.get("event") == EV_PROFORMA_CONVERTED_TO_INVOICE] == []
 
 
+# ── Step 7b: draft row persisted after successful conversion ───────────────
+# Draft 67 / PROF 160/2026 regression (2026-07-16): a swallowed NameError in
+# step 7b left the draft at draft_state='posted' / wfirma_invoice_id NULL
+# after EVERY successful conversion. These pins are behavioral (route → DB
+# row), complementing the AST scope pins in
+# test_convert_persist_scope_and_reconcile.py.
+
+def test_execute_persists_invoice_identity_to_draft(client, storage):
+    _seed_commercial_basis(storage)
+    _seed_audit(storage)
+    _seed_issued_proforma(storage)
+    fetch_calls = [_proforma_xml(), _created_invoice_xml()]
+    def _fake_http(method, module, op, body):
+        return 200, _INVOICE_OK
+    with _gate_invoice_on(), \
+         patch.object(wc, "fetch_invoice_xml",
+                      side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http):
+        body = client.post(
+            _EXECUTE_URL.format(b=_BATCH, c=_CLIENT),
+            headers={**_auth(), "X-Operator": "amit"},
+            json={"confirm": _CONFIRM}).json()
+    assert body["ok"] is True
+    assert body["draft_persisted"] is True
+
+    d = pildb.get_draft(storage / "proforma_links.db", _BATCH, _CLIENT)
+    assert d is not None
+    assert d.draft_state           == "converted"
+    assert d.wfirma_invoice_id     == "500001"
+    assert d.wfirma_invoice_number == "FA 1/5/2026"
+    assert d.converted_at, "converted_at must be stamped"
+
+
+def test_execute_surfaces_draft_persisted_false_on_persist_failure(client, storage):
+    """Persist failure stays non-fatal (the wFirma invoice exists) but must
+    be DISCLOSED as draft_persisted=False — never silent again."""
+    _seed_commercial_basis(storage)
+    _seed_audit(storage)
+    _seed_issued_proforma(storage)
+    fetch_calls = [_proforma_xml(), _created_invoice_xml()]
+    def _fake_http(method, module, op, body):
+        return 200, _INVOICE_OK
+    with _gate_invoice_on(), \
+         patch.object(wc, "fetch_invoice_xml",
+                      side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http), \
+         patch("app.services.conversion_persistence.persist_invoice_to_draft",
+               side_effect=RuntimeError("simulated persist failure")):
+        body = client.post(
+            _EXECUTE_URL.format(b=_BATCH, c=_CLIENT),
+            headers={**_auth(), "X-Operator": "amit"},
+            json={"confirm": _CONFIRM}).json()
+    assert body["ok"] is True, "conversion itself must still succeed"
+    assert body["status"] == "issued"
+    assert body["draft_persisted"] is False
+
+    d = pildb.get_draft(storage / "proforma_links.db", _BATCH, _CLIENT)
+    assert d.draft_state != "converted", "draft must reflect the failed persist"
+
+
 # ── Preview path NEVER emits (read-only) ──────────────────────────────────
 
 def test_preview_does_not_emit(client, storage):

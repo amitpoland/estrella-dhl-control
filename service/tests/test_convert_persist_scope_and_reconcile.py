@@ -278,3 +278,101 @@ class TestReconcileConversionLink:
         # Draft untouched
         d = pildb.get_draft_by_id(Path(str(db)), did)
         assert d.wfirma_invoice_id == "111111111"
+
+    def test_r8_missing_operator_header_is_400(self, client, tmp_path):
+        """_require_operator guard: no X-Operator header → HTTP 400, no write."""
+        from app.services import proforma_invoice_link_db as pildb
+        db = tmp_path / "proforma_links.db"
+        _make_db(db)
+        did = _insert_draft(db)
+        _insert_link(db)
+        with patch("app.api.routes_proforma._proforma_db_path",
+                   return_value=Path(str(db))):
+            r = client.post(
+                f"/api/v1/proforma/draft/{did}/reconcile-conversion-link")
+        assert r.status_code == 400, r.text
+        d = pildb.get_draft_by_id(Path(str(db)), did)
+        assert d.wfirma_invoice_id in (None, "")
+        assert d.draft_state == "posted"
+
+    def test_r9_issued_link_with_empty_invoice_id_blocks(self, client, tmp_path):
+        """An issued link missing invoice_id is inconsistent — blocked, not
+        repaired (mark_issued forbids this shape; simulate via raw SQL)."""
+        db = tmp_path / "proforma_links.db"
+        _make_db(db)
+        did = _insert_draft(db)
+        _insert_link(db, issued=False)
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "UPDATE proforma_invoice_links SET status='issued', invoice_id=NULL "
+            "WHERE proforma_id='488979043'")
+        conn.commit()
+        conn.close()
+
+        r = _post_reconcile(client, db, did)
+        body = r.json()
+        assert body["ok"] is False and body["status"] == "blocked"
+        assert "no invoice_id" in body["blocking_reasons"][0]
+
+    def test_r10_converted_state_with_null_invoice_id_is_repaired(self, client, tmp_path):
+        """Orphaned shape from a partial earlier write: draft_state='converted'
+        but wfirma_invoice_id NULL — must fall through to the repair path,
+        not the noop path."""
+        from app.services import proforma_invoice_link_db as pildb
+        db = tmp_path / "proforma_links.db"
+        _make_db(db)
+        did = _insert_draft(db, draft_state="converted", wfirma_invoice_id=None)
+        _insert_link(db)
+
+        r = _post_reconcile(client, db, did)
+        body = r.json()
+        assert body["ok"] is True and body["status"] == "reconciled"
+        d = pildb.get_draft_by_id(Path(str(db)), did)
+        assert d.wfirma_invoice_id == "489960355"
+        assert d.draft_state == "converted"
+
+    def test_r11_schema_migration_idempotent_both_paths(self, tmp_path):
+        """The post-conversion columns are now created by BOTH init_db
+        (_ADDITIVE_DRAFT_COLUMNS) and persist_invoice_to_draft's own ALTER
+        loop. Running both, in both orders, must not raise or corrupt."""
+        from app.services import proforma_invoice_link_db as pildb
+        from app.services.conversion_persistence import persist_invoice_to_draft
+
+        db = tmp_path / "order1.db"
+        pildb.init_db(db)               # columns via _ADDITIVE_DRAFT_COLUMNS
+        did = _insert_draft(db)
+        persist_invoice_to_draft(       # its ALTER loop hits duplicate columns
+            db_path=db, draft_id=did,
+            wfirma_invoice_id="489960355",
+            wfirma_invoice_number="WDT 145/2026",
+        )
+        pildb.init_db(db)               # re-init after persist — still clean
+        d = pildb.get_draft_by_id(db, did)
+        assert d.wfirma_invoice_id == "489960355"
+        assert d.draft_state == "converted"
+
+    def test_r12_reconcile_appends_audit_json_event(self, client, tmp_path):
+        """The reconcile route's audit.json timeline write (previously only
+        the draft-events table was asserted)."""
+        from app.core.config import settings
+        from app.services.audit_persist import EV_PROFORMA_CONVERTED_TO_INVOICE
+
+        db = tmp_path / "proforma_links.db"
+        _make_db(db)
+        did = _insert_draft(db)
+        _insert_link(db)
+        audit_dir = tmp_path / "outputs" / "BATCH_RECON_TEST"
+        audit_dir.mkdir(parents=True)
+        (audit_dir / "audit.json").write_text(
+            json.dumps({"status": "partial", "timeline": []}), encoding="utf-8")
+
+        with patch.object(settings, "storage_root", tmp_path):
+            r = _post_reconcile(client, db, did)
+        assert r.json()["status"] == "reconciled"
+
+        audit = json.loads((audit_dir / "audit.json").read_text(encoding="utf-8"))
+        events = [e for e in audit["timeline"]
+                  if e.get("event") == EV_PROFORMA_CONVERTED_TO_INVOICE]
+        assert len(events) == 1
+        assert events[0]["detail"]["wfirma_invoice_id"] == "489960355"
+        assert events[0]["detail"]["source"] == "reconcile_conversion_link"
