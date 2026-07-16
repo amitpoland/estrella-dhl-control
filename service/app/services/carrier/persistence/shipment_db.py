@@ -166,6 +166,31 @@ def get_shipment_by_batch_id(db_path: Path, batch_id: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def get_legacy_shipment(db_path: Path, batch_id: str) -> Optional[dict]:
+    """Newest legacy (NULL client_ref) shipment row for the batch, or None.
+
+    A legacy row predates client-scoped idempotency keys: a re-book of the
+    same batch that now sends client_ref computes a NEW key, so the
+    coordinator's completed-key replay will NOT match that row — a new
+    shipment record (and, in live mode, a new carrier booking) would be
+    created alongside it (ADR-proforma-cmr-short-number §Known limitation).
+
+    Powers the booking-modal legacy-rebook warning ONLY. It is not a
+    document-attribution path — that stays get_shipment_for_draft, which
+    owns the per-client leak rules. 'failed' rows are excluded: a failed
+    attempt is not a prior booking, and re-booking over one is the normal
+    retry path. Read-only — never mutates state.
+    """
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM carrier_shipments "
+            "WHERE batch_id = ? AND client_ref IS NULL AND state != 'failed' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (batch_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def get_shipment_for_draft(
     db_path: Path,
     batch_id: str,

@@ -1105,6 +1105,21 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   // incident: missing client_contractor_id silently booked AWB 1129315655).
   // 'missing-id' | 'loading' | 'loaded' | 'failed'
   const [masterState,   setMasterState]   = React.useState('missing-id');
+  // Legacy-rebook confirmation gate (ADR-proforma-cmr-short-number §Known
+  // limitation): a batch booked BEFORE client-scoped idempotency keys carries
+  // a legacy shipment row (client_ref NULL). This booking sends client_ref,
+  // which computes a NEW idempotency key → the coordinator will NOT replay
+  // the legacy row → a NEW shipment record (and, in live mode, a NEW DHL
+  // booking) is created alongside it. Booking is HELD until the operator
+  // explicitly confirms. FAIL VISIBLE: an unverifiable probe also arms the
+  // panel — never a silent pass-through (mirrors the 2026-07-06 baseline
+  // gate). Nothing is ever auto-cancelled and no DHL void call exists here.
+  // 'skip' (no client_ref sent → same legacy key → safe coordinator replay)
+  // | 'loading' | 'clear' | 'legacy' | 'failed'
+  const [legacyProbe,    setLegacyProbe]    = React.useState('loading');
+  const [legacyRow,      setLegacyRow]      = React.useState(null);
+  const [legacyConfirm,  setLegacyConfirm]  = React.useState(false);
+  const [legacyApproved, setLegacyApproved] = React.useState(false);
 
   // Load box types, service catalogue, and carrier status once on mount
   React.useEffect(() => {
@@ -1134,7 +1149,41 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     } else {
       setMasterState('missing-id');
     }
+    // Legacy-rebook probe — only relevant when this booking will send a
+    // client_ref (a no-client_ref booking recomputes the SAME legacy key and
+    // replays safely). A missing wrapper or failed probe arms the fail-visible
+    // panel via 'failed' — never a silent pass-through.
+    if (!prefill.client_name) {
+      setLegacyProbe('skip');
+    } else if (!window.PzApi.probeCarrierLegacyShipment) {
+      setLegacyProbe('failed');
+    } else {
+      window.PzApi.probeCarrierLegacyShipment(batchId)
+        .then(r => {
+          if (r && r.ok && r.data && r.data.legacy_exists) {
+            setLegacyRow(r.data);
+            setLegacyProbe('legacy');
+          } else if (r && r.ok && r.data) {
+            setLegacyProbe('clear');
+          } else {
+            // _get never rejects — it resolves { ok:false } — so THIS branch
+            // is the real error handler; the .catch below is belt-and-braces
+            // only. Do not remove this branch in favour of the catch.
+            setLegacyProbe('failed');
+          }
+        })
+        .catch(() => setLegacyProbe('failed'));
+    }
   }, []);
+
+  // Auto-dismiss a false-positive hold: if the operator submitted while the
+  // probe was still in flight and it then resolves 'clear' (no legacy row),
+  // the unverified panel has no reason to stay open. A 'legacy' resolution
+  // instead updates the open panel's wording in place (it renders from
+  // legacyProbe/legacyRow state).
+  React.useEffect(() => {
+    if (legacyConfirm && legacyProbe === 'clear') setLegacyConfirm(false);
+  }, [legacyProbe]);
 
   // Modal field → Customer Master ship_to_* field. This is the complete set
   // compared before booking; saves write ONLY these ship_to_* fields —
@@ -1292,6 +1341,19 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   };
 
   const doBooking = () => {
+    // Legacy-rebook gate — runs on EVERY path into booking (direct submit,
+    // save-then-book, keep-once, continue-without-saving). 'clear' and 'skip'
+    // proceed; 'legacy' / 'failed' / 'loading' HOLD for explicit operator
+    // confirmation. Confirming books a NEW shipment record only — it never
+    // cancels, replays, or voids the prior one.
+    if (legacyProbe !== 'clear' && legacyProbe !== 'skip' && !legacyApproved) {
+      setLegacyConfirm(true);
+      return;
+    }
+    executeBooking();
+  };
+
+  const executeBooking = () => {
     setLoading(true);
     setApiError(null);
 
@@ -1852,13 +1914,45 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             </div>
           )}
 
+          {/* Legacy-rebook confirmation — a pre-client_ref booking exists for
+              this batch (or could not be ruled out); booking is HELD until the
+              operator explicitly confirms creating a NEW shipment record.
+              No DHL void, no auto-cancel — the prior AWB stays as it is. */}
+          {legacyConfirm && (
+            <div style={{
+              padding: '14px 16px', background: 'var(--bg-subtle)', borderRadius: 8,
+              border: '1px solid var(--badge-amber-border)', marginBottom: 16,
+            }} data-testid="awb-legacy-rebook-panel">
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
+                {legacyProbe === 'legacy'
+                  ? `A prior booking exists for this batch (AWB ${(legacyRow && legacyRow.tracking_ref) || 'not recorded'}); continuing will create a NEW shipment record — it will not replay the old one.`
+                  : 'Could not verify whether a prior booking exists for this batch. If one exists, continuing will create a NEW shipment record — it will not replay the old one.'}
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 10 }}>
+                Nothing is cancelled or voided at DHL — the prior AWB (if any) stays exactly as it is.
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Btn variant="primary"
+                  onClick={() => { setLegacyApproved(true); setLegacyConfirm(false); executeBooking(); }}
+                  data-testid="awb-legacy-rebook-continue">
+                  Book NEW shipment
+                </Btn>
+                <Btn variant="ghost"
+                  onClick={() => { setLegacyConfirm(false); }}
+                  data-testid="awb-legacy-rebook-cancel">
+                  Cancel — do not book
+                </Btn>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ fontSize: 11, color: isPending ? 'var(--badge-amber-text, #92400e)' : 'var(--text-3)' }}>
               {_footerLabel} · batch: <code>{batchId}</code>
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <Btn variant="ghost" onClick={onClose} disabled={loading}>Cancel</Btn>
-              <Btn variant="primary" onClick={handleSubmit} disabled={loading || isPending || !!saveConfirm} data-testid="awb-submit-btn">
+              <Btn variant="primary" onClick={handleSubmit} disabled={loading || isPending || !!saveConfirm || legacyConfirm} data-testid="awb-submit-btn">
                 {loading ? 'Creating AWB…' : 'Create AWB'}
               </Btn>
             </div>

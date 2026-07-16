@@ -625,6 +625,16 @@
       _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`
         + (clientRef ? `?client_ref=${encodeURIComponent(clientRef)}` : '')),
 
+    // GET /api/v1/carrier/{batch_id}/shipment/legacy-probe
+    // Pre-booking probe (ADR-proforma-cmr-short-number §Known limitation):
+    // does a legacy (pre-client_ref) shipment row exist for this batch? A
+    // client_ref re-book computes a NEW idempotency key, so the coordinator
+    // will NOT replay that row — the AWB modal requires explicit operator
+    // confirmation first. Read-only; never books, never cancels/voids.
+    // Returns: { batch_id, legacy_exists, tracking_ref?, state?, created_at? }
+    probeCarrierLegacyShipment: (batchId) =>
+      _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment/legacy-probe`),
+
     // POST /api/v1/carrier/{batch_id}/shipment/{tracking_ref}/do-not-use
     // LOCAL operational flag for duplicate/unused labels — never calls DHL,
     // never voids the AWB, never deletes label PDFs.

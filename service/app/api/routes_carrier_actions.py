@@ -22,6 +22,17 @@ GET /api/v1/carrier/{batch_id}/shipment?client_ref={client_name}
     tracking_ref persisted since the 2026-07-06 incident fix; legacy rows
     return null fields honestly.
 
+GET /api/v1/carrier/{batch_id}/shipment/legacy-probe
+    Booking-modal pre-check (ADR-proforma-cmr-short-number §Known limitation):
+    does a legacy (pre-client_ref, NULL client_ref, non-failed) shipment row
+    exist for this batch? A re-book that now sends client_ref computes a NEW
+    idempotency key, so the coordinator will NOT replay that row — the V2 AWB
+    modal requires explicit operator confirmation before creating a new
+    shipment record alongside it. Read-only; no carrier-config gate; never
+    calls DHL; performs no cancellation or void.
+    Returns: batch_id, legacy_exists, and (when true) tracking_ref, state,
+    created_at of the newest legacy row.
+
 POST /api/v1/carrier/{batch_id}/label-package   ← Path-DOC (WF4.5)
     Generates outbound customs/shipping document package.
     UNGATED — no carrier_api_status / creds / allowlist check.
@@ -524,6 +535,46 @@ def get_shipment(
         "commercial_documents_url": commercial_documents_url,
         "documents_available": commercial_documents_url is not None,
         "saved_labels_exist": _batch_has_any_label(batch_id),
+    })
+
+
+@router.get(
+    "/{batch_id}/shipment/legacy-probe",
+    summary="Probe for a legacy (pre-client_ref) shipment row before re-booking",
+)
+def probe_legacy_shipment(
+    batch_id: str,
+    _auth: None = Depends(require_api_key),
+    db_path: Path = Depends(_get_shipment_db_path),
+) -> JSONResponse:
+    """Read-only pre-booking probe (ADR-proforma-cmr-short-number §Known
+    limitation).
+
+    A batch booked BEFORE client-scoped idempotency keys carries a legacy
+    row with NULL client_ref; a re-book that now sends client_ref computes a
+    NEW key, so the coordinator's completed-key replay will not match — a new
+    shipment record (and, in live mode, a new DHL booking) would be created
+    alongside the legacy row. The V2 AWB modal calls this before booking and
+    blocks on explicit operator confirmation when legacy_exists is true.
+
+    Deliberately NOT behind _get_carrier_config: the answer comes from the
+    local shipment DB only. Never mutates state, never calls DHL, and never
+    cancels/voids anything.
+    """
+    # Defensive-depth consistency with the other handlers in this file: a
+    # malformed batch_id cannot name a real batch, so answer honestly-false.
+    if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
+        return JSONResponse({"batch_id": batch_id, "legacy_exists": False})
+    shipment_db.init_db(db_path)
+    row = shipment_db.get_legacy_shipment(db_path, batch_id)
+    if row is None:
+        return JSONResponse({"batch_id": batch_id, "legacy_exists": False})
+    return JSONResponse({
+        "batch_id": batch_id,
+        "legacy_exists": True,
+        "tracking_ref": row.get("tracking_ref"),
+        "state": row.get("state"),
+        "created_at": row.get("created_at"),
     })
 
 

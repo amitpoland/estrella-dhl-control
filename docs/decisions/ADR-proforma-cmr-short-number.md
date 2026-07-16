@@ -64,7 +64,13 @@ shipment record (and, in live mode, a new carrier booking) is created alongside 
 row. The 2026-07-06 duplicate-AWB protection covers same-key replays only, not key-change
 replays. Current production exposure is zero (`carrier_shipments` has no `client_ref` rows
 yet); the residual operator-facing mitigation — a booking-modal warning when a legacy row
-exists for the batch — is tracked as a scheduled follow-up (GATE 4: SCHEDULED). The
+exists for the batch — is IMPLEMENTED (2026-07-16; closes the GATE 4 SCHEDULED item): the
+V2 AWB modal probes `GET /api/v1/carrier/{batch_id}/shipment/legacy-probe` (read-only, not
+behind the carrier-config gate) and HOLDS booking behind an explicit operator confirmation
+("A prior booking exists for this batch (AWB …); continuing will create a NEW shipment
+record — it will not replay the old one") whenever a non-failed legacy row exists — or when
+the probe cannot verify (fail-visible). No auto-cancel and no DHL void is performed. Pinned
+by `service/tests/test_awb_legacy_rebook_confirm.py`. The
 `get_shipment_for_draft` fallback additionally refuses to attribute a row scoped to a
 different client (defence-in-depth guard), so this limitation cannot re-open the
 cross-client leak.
