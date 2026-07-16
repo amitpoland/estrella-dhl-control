@@ -25,7 +25,7 @@ from fastapi import APIRouter, Cookie, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse, Response, HTMLResponse
 
 from ..core.config import settings
-from ..core.security import require_api_key
+from ..core.security import require_api_key, require_api_key_privileged
 from ..core.logging import get_logger
 from ..services import cpa_product_service as _cpa
 from ..services import document_db as ddb
@@ -67,6 +67,10 @@ from .sales_packing_parser import (
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/proforma", tags=["proforma"])
 _auth  = Depends(require_api_key)
+# Privileged guard for state-mutation routes (H-R5 / #502 class): session
+# callers must hold a write-capable role; read-only roles (viewer / auditor /
+# master_viewer) get 403. X-API-Key automation is admin-equivalent, unchanged.
+_auth_write = Depends(require_api_key_privileged)
 
 
 def _norm(s: str) -> str:
@@ -1409,7 +1413,7 @@ def _build_preview(batch_id: str, client_name: str,
 
 # ── HTTP endpoints ──────────────────────────────────────────────────────────
 
-@router.post("/preview/{batch_id}/{client_name:path}", dependencies=[_auth])
+@router.post("/preview/{batch_id}/{client_name:path}", dependencies=[_auth_write])
 def proforma_preview(batch_id: str, client_name: str) -> JSONResponse:
     """Read-only proforma preview — same shape as _build_preview."""
     cn = _validate_args(batch_id, client_name)
@@ -1790,7 +1794,7 @@ def _build_proforma_request(
     return _req, _vat_warnings
 
 
-@router.post("/create/{batch_id}/{client_name:path}", dependencies=[_auth])
+@router.post("/create/{batch_id}/{client_name:path}", dependencies=[_auth_write])
 def proforma_create(
     batch_id:     str,
     client_name:  str,
@@ -2190,7 +2194,7 @@ def proforma_create(
 # delete fails the local draft remains 'issued' so no data is lost.
 
 @router.post("/cancel-issued-for-reissue/{batch_id}/{client_name:path}",
-             dependencies=[_auth])
+             dependencies=[_auth_write])
 def cancel_issued_proforma_for_reissue(
     batch_id:    str,
     client_name: str,
@@ -2359,7 +2363,7 @@ class _AdoptIssuedBody(_BaseModel):
     reason: str
 
 
-@router.post("/adopt-issued/{batch_id}/{client_name:path}", dependencies=[_auth])
+@router.post("/adopt-issued/{batch_id}/{client_name:path}", dependencies=[_auth_write])
 def adopt_issued_proforma(
     batch_id:    str,
     client_name: str,
@@ -2539,7 +2543,7 @@ def _resolve_correct_line_name(product_code: str) -> Optional[str]:
     return (row.get("description_line") or "").strip() or None
 
 
-@router.post("/{wfirma_id}/refresh-line-names", dependencies=[_auth])
+@router.post("/{wfirma_id}/refresh-line-names", dependencies=[_auth_write])
 def proforma_refresh_line_names(wfirma_id: str) -> JSONResponse:
     """
     Refresh existing wFirma proforma line names from the locked product
@@ -3107,7 +3111,7 @@ def get_service_charges(batch_id: str, client_name: str) -> JSONResponse:
 
 @router.post(
     "/service-charges/{batch_id}/{client_name:path}",
-    dependencies=[_auth],
+    dependencies=[_auth_write],
 )
 def set_service_charges(
     batch_id: str, client_name: str, body: _ServiceChargesReq,
@@ -3140,7 +3144,7 @@ def set_service_charges(
 
 @router.delete(
     "/service-charges/{batch_id}/{client_name}/{charge_type}",
-    dependencies=[_auth],
+    dependencies=[_auth_write],
 )
 def delete_service_charge(
     batch_id: str, client_name: str, charge_type: str,
@@ -3685,7 +3689,7 @@ class _FinalInvoiceConfirmReq(_BaseModel):
 
 @router.post(
     "/to-invoice/{batch_id}/{client_name:path}",
-    dependencies=[_auth],
+    dependencies=[_auth_write],
 )
 def proforma_to_invoice(
     batch_id:    str,
@@ -5322,7 +5326,7 @@ def get_proforma_draft_extraction(draft_id: int) -> JSONResponse:
 
 # ── Sprint-24: clone endpoint ─────────────────────────────────────────────────
 
-@router.post("/draft/{draft_id}/clone", dependencies=[_auth])
+@router.post("/draft/{draft_id}/clone", dependencies=[_auth_write])
 def clone_proforma_draft(draft_id: int) -> JSONResponse:
     """Create a deep copy of a draft as a new unposted 'draft' row.
 
@@ -5431,7 +5435,7 @@ class _ServiceProductBody(_BaseModel):
     unit:              Optional[str] = "szt."
 
 
-@router.put("/service-products/{charge_type}", dependencies=[_auth])
+@router.put("/service-products/{charge_type}", dependencies=[_auth_write])
 def register_service_product(
     charge_type: str,
     body:        _ServiceProductBody,
@@ -6178,7 +6182,7 @@ def _draft_edit_dispatch(
     return JSONResponse(payload)
 
 
-@router.patch("/draft/{draft_id}", dependencies=[_auth])
+@router.patch("/draft/{draft_id}", dependencies=[_auth_write])
 def patch_proforma_draft(
     draft_id:  int,
     body:      Dict[str, Any],
@@ -6279,7 +6283,7 @@ def patch_proforma_draft(
     ))
 
 
-@router.patch("/draft/{draft_id}/lines/{line_id}", dependencies=[_auth])
+@router.patch("/draft/{draft_id}/lines/{line_id}", dependencies=[_auth_write])
 def patch_proforma_draft_line(
     draft_id:  int,
     line_id:   int,
@@ -6315,7 +6319,7 @@ def patch_proforma_draft_line(
     ))
 
 
-@router.post("/draft/{draft_id}/service-charges", dependencies=[_auth])
+@router.post("/draft/{draft_id}/service-charges", dependencies=[_auth_write])
 def post_proforma_draft_service_charge(
     draft_id:  int,
     body:      Dict[str, Any],
@@ -6354,7 +6358,7 @@ def post_proforma_draft_service_charge(
     ))
 
 
-@router.patch("/draft/{draft_id}/service-charges/{charge_id}", dependencies=[_auth])
+@router.patch("/draft/{draft_id}/service-charges/{charge_id}", dependencies=[_auth_write])
 def patch_proforma_draft_service_charge(
     draft_id:   int,
     charge_id:  int,
@@ -6464,7 +6468,7 @@ def _apply_charge_resolution(db_path, draft_id: int, charge_type: str,
     return pildb.add_draft_service_charge(db_path, int(draft_id), charge, operator, expected)
 
 
-@router.post("/draft/{draft_id}/service-charge-resolution", dependencies=[_auth])
+@router.post("/draft/{draft_id}/service-charge-resolution", dependencies=[_auth_write])
 def post_proforma_draft_charge_resolution(
     draft_id:  int,
     body:      Dict[str, Any],
@@ -7249,7 +7253,7 @@ def get_draft_readiness(draft_id: int, intent: str = "approve") -> JSONResponse:
     return JSONResponse({"ok": True, **_derive_draft_readiness(d, intent=_i)})
 
 
-@router.post("/draft/{draft_id}/resolve-ambiguity", dependencies=[_auth])
+@router.post("/draft/{draft_id}/resolve-ambiguity", dependencies=[_auth_write])
 def resolve_draft_design_ambiguity(
     draft_id:   int,
     body:       Dict[str, Any],
@@ -7369,7 +7373,7 @@ def _overbill_unassigned_evidence(
     return None
 
 
-@router.post("/draft/{draft_id}/assign-packing-product-code", dependencies=[_auth])
+@router.post("/draft/{draft_id}/assign-packing-product-code", dependencies=[_auth_write])
 def assign_packing_product_code(
     draft_id:   int,
     body:       Dict[str, Any],
@@ -7535,7 +7539,7 @@ def assign_packing_product_code(
     })
 
 
-@router.post("/draft/{draft_id}/confirm-product-review", dependencies=[_auth])
+@router.post("/draft/{draft_id}/confirm-product-review", dependencies=[_auth_write])
 def confirm_draft_product_review(
     draft_id:   int,
     body:       Dict[str, Any],
@@ -7621,7 +7625,7 @@ def confirm_draft_product_review(
 
 # ── Phase 4 — lifecycle controls + line add/remove ─────────────────────────
 
-@router.post("/draft/{draft_id}/approve", dependencies=[_auth])
+@router.post("/draft/{draft_id}/approve", dependencies=[_auth_write])
 def approve_proforma_draft(
     draft_id:  int,
     body:      Dict[str, Any],
@@ -7669,7 +7673,7 @@ def approve_proforma_draft(
     ))
 
 
-@router.post("/draft/{draft_id}/re-open", dependencies=[_auth])
+@router.post("/draft/{draft_id}/re-open", dependencies=[_auth_write])
 def reopen_proforma_draft(
     draft_id:  int,
     body:      Dict[str, Any],
@@ -7703,7 +7707,7 @@ def reopen_proforma_draft(
 
 
 
-@router.post("/draft/{draft_id}/import-sales-prices", dependencies=[_auth])
+@router.post("/draft/{draft_id}/import-sales-prices", dependencies=[_auth_write])
 def import_draft_sales_prices(
     draft_id:   int,
     body:       Dict[str, Any],
@@ -7817,7 +7821,7 @@ def import_draft_sales_prices(
     })
 
 
-@router.post("/draft/{draft_id}/cancel", dependencies=[_auth])
+@router.post("/draft/{draft_id}/cancel", dependencies=[_auth_write])
 def cancel_proforma_draft(
     draft_id:  int,
     body:      Dict[str, Any],
@@ -7845,7 +7849,7 @@ def cancel_proforma_draft(
     ))
 
 
-@router.delete("/draft/{draft_id}", dependencies=[_auth])
+@router.delete("/draft/{draft_id}", dependencies=[_auth_write])
 def purge_proforma_draft(
     draft_id:   int,
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
@@ -7995,7 +7999,7 @@ def _proforma_email_body(draft: "pildb.ProformaDraft", subject: str) -> str:
     )
 
 
-@router.post("/draft/{draft_id}/send-email", dependencies=[_auth])
+@router.post("/draft/{draft_id}/send-email", dependencies=[_auth_write])
 def send_proforma_email(
     draft_id:   int,
     body:       Dict[str, Any],
@@ -8199,7 +8203,7 @@ def send_proforma_email(
 
 
 @router.post("/draft/{draft_id}/reset-from-sales-packing",
-             dependencies=[_auth])
+             dependencies=[_auth_write])
 def reset_proforma_draft_from_sales_packing(
     draft_id:  int,
     body:      Dict[str, Any],
@@ -8292,7 +8296,7 @@ def reset_proforma_draft_from_sales_packing(
 
 
 @router.post("/draft/{draft_id}/enrich-from-product-descriptions",
-             dependencies=[_auth])
+             dependencies=[_auth_write])
 def enrich_proforma_draft_lines(
     draft_id:   int,
     body:       Dict[str, Any],
@@ -8357,7 +8361,7 @@ def enrich_proforma_draft_lines(
     })
 
 
-@router.post("/draft/{draft_id}/lines", dependencies=[_auth])
+@router.post("/draft/{draft_id}/lines", dependencies=[_auth_write])
 def post_proforma_draft_line(
     draft_id:  int,
     body:      Dict[str, Any],
@@ -8387,7 +8391,7 @@ def post_proforma_draft_line(
     ))
 
 
-@router.delete("/draft/{draft_id}/lines/{line_id}", dependencies=[_auth])
+@router.delete("/draft/{draft_id}/lines/{line_id}", dependencies=[_auth_write])
 def delete_proforma_draft_line(
     draft_id:             int,
     line_id:              int,
@@ -8412,7 +8416,7 @@ def delete_proforma_draft_line(
 
 
 @router.delete("/draft/{draft_id}/service-charges/{charge_id}",
-               dependencies=[_auth])
+               dependencies=[_auth_write])
 def delete_proforma_draft_service_charge(
     draft_id:             int,
     charge_id:            int,
@@ -8439,7 +8443,7 @@ def delete_proforma_draft_service_charge(
 
 # ── PR 2C.3c — bulk price recovery ───────────────────────────────────────────
 
-@router.post("/draft/{draft_id}/bulk-price-recovery", dependencies=[_auth])
+@router.post("/draft/{draft_id}/bulk-price-recovery", dependencies=[_auth_write])
 def post_bulk_price_recovery(
     draft_id:   int,
     body:       Dict[str, Any],
@@ -8611,7 +8615,7 @@ def _resolve_cm_for_draft(draft_id: int):
     return d, cm, None
 
 
-@router.post("/draft/{draft_id}/apply-customer-address", dependencies=[_auth],
+@router.post("/draft/{draft_id}/apply-customer-address", dependencies=[_auth_write],
              summary="Project Customer Master bill-to/ship-to onto the draft as buyer_override")
 def apply_customer_address(
     draft_id:   int,
@@ -8692,7 +8696,7 @@ def apply_customer_address(
     ))
 
 
-@router.post("/draft/{draft_id}/apply-customer-commercial", dependencies=[_auth],
+@router.post("/draft/{draft_id}/apply-customer-commercial", dependencies=[_auth_write],
              summary="Apply selected Customer Master commercial defaults to the draft")
 def apply_customer_commercial(
     draft_id:   int,
@@ -8855,7 +8859,7 @@ def apply_customer_commercial(
     ))
 
 
-@router.post("/draft/{draft_id}/set-commercial-defaults", dependencies=[_auth])
+@router.post("/draft/{draft_id}/set-commercial-defaults", dependencies=[_auth_write])
 def set_draft_commercial_defaults(
     draft_id:   int,
     body:       Dict[str, Any],
@@ -8948,7 +8952,7 @@ def set_draft_commercial_defaults(
     ))
 
 
-@router.post("/draft/{draft_id}/fetch-nbp-rate", dependencies=[_auth])
+@router.post("/draft/{draft_id}/fetch-nbp-rate", dependencies=[_auth_write])
 def fetch_draft_nbp_rate(
     draft_id:   int,
     body:       Dict[str, Any],
@@ -9031,7 +9035,7 @@ def fetch_draft_nbp_rate(
     return JSONResponse(payload)
 
 
-@router.post("/draft/{draft_id}/weight-override", dependencies=[_auth])
+@router.post("/draft/{draft_id}/weight-override", dependencies=[_auth_write])
 def set_draft_weight_override(
     draft_id:   int,
     body:       Dict[str, Any],
@@ -9096,7 +9100,7 @@ def set_draft_weight_override(
     ))
 
 
-@router.post("/draft/{draft_id}/clear-weight-override", dependencies=[_auth])
+@router.post("/draft/{draft_id}/clear-weight-override", dependencies=[_auth_write])
 def clear_draft_weight_override(
     draft_id:   int,
     body:       Dict[str, Any],
@@ -9242,7 +9246,7 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
     return JSONResponse({**base, "ok": True, "freight": freight_entry, "insurance": ins_entry})
 
 
-@router.post("/draft/{draft_id}/apply-service-charges", dependencies=[_auth],
+@router.post("/draft/{draft_id}/apply-service-charges", dependencies=[_auth_write],
              summary="Apply Customer Master freight/insurance as service charges")
 def apply_service_charges(
     draft_id:   int,
@@ -10007,7 +10011,7 @@ def _build_proforma_request_from_draft(
     ), _sc_wfirma_note, _vat_warnings_draft, _vat_freeze
 
 
-@router.post("/draft/{draft_id}/post", dependencies=[_auth])
+@router.post("/draft/{draft_id}/post", dependencies=[_auth_write])
 def post_proforma_draft_to_wfirma(
     draft_id:  int,
     body:      Dict[str, Any],
@@ -11013,7 +11017,7 @@ def get_draft_invoice_link(draft_id: int) -> JSONResponse:
 
 @router.post(
     "/draft/{draft_id}/to-invoice",
-    dependencies=[_auth],
+    dependencies=[_auth_write],
     summary="Sprint-24: convert proforma → invoice via draft_id (session-operator alias)",
 )
 def draft_to_invoice_by_id(
@@ -11291,7 +11295,7 @@ class _ConflictResolveBody(_BaseModel):
     resolution_reason: Optional[str] = None
 
 
-@router.post("/draft/{draft_id}/conflicts/scan", dependencies=[_auth],
+@router.post("/draft/{draft_id}/conflicts/scan", dependencies=[_auth_write],
              summary="ADR-029: detect advisory conflicts for a draft (flag-gated)")
 def scan_draft_conflicts(
     draft_id:   int,
@@ -11378,7 +11382,7 @@ def list_draft_conflicts(
     })
 
 
-@router.post("/draft/{draft_id}/conflicts/{conflict_id}/resolve", dependencies=[_auth],
+@router.post("/draft/{draft_id}/conflicts/{conflict_id}/resolve", dependencies=[_auth_write],
              summary="ADR-029: apply an operator resolution to a conflict (flag-gated)")
 def resolve_draft_conflict(
     draft_id:    int,
