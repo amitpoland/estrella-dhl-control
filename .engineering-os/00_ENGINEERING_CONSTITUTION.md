@@ -232,7 +232,7 @@ and its residue is classified. First full record set: the PFW closure
 
 The OS references only skills registered in `SKILL_REGISTRY.md` (9, FROZEN) and slash
 commands actually installed under `.claude/commands/` (`/deploy`, `/implement-slice`,
-`/engineering-lessons`, `/context-lite`, `/context-pr`, `/context-task`, `/pz-loop`, …).
+`/engineering-lessons`, `/context-lite`, `/context-pr`, `/context-task`, …).
 **`/context` and `/analyze` are NOT installed commands in this repository.** Where an
 installed skill's text references `/context`, meet its intent by **direct repository
 inspection** (read the router, canonical pages, registries, PROJECT_STATE) — do not claim to
@@ -309,60 +309,78 @@ composes with — does not replace — the **file-level** `git diff --name-only`
 
 ---
 
-## 13. Bounded Engineering Loop (v1.4 — ratified 2026-07-17)
+## 13. Bounded Engineering Loop — governance over native `/loop` and `/goal` (v1.4 — ratified 2026-07-17)
 
-The Bounded Engineering Loop is the **iterative** execution mode for work that converges through
-repeated apply→verify cycles (a diagnostic hunt, a flaky-test fix, a refactor toward a metric)
-rather than a single linear pass. It is **distinct from** the linear 5-phase `/feature` flow;
-its entry point is the `/pz-loop` command (`.claude/commands/pz-loop.md`). Sessions must not
-build ad-hoc loops outside this governance.
+Iterative work that converges through repeated apply→verify cycles (a diagnostic hunt, a
+flaky-test fix, a refactor toward a metric) runs on **Claude Code's native execution
+authorities**. The Engineering OS does **not** own loop execution; it owns the *governance*
+around it. There is **no project loop command** (`/loop`, `/goal`, or any branded equivalent) —
+an earlier v1.4 draft added one and it was removed as duplicate authority (see `VERSION_HISTORY.md`
+v1.4 correction note).
 
-**Required loop inputs — the loop may not start unless all four are stated:**
+### A. Native authority (availability confirmed at ratification 2026-07-17; §B covers the degraded path)
 
-- **OBJECTIVE** — one sentence stating the convergence goal (must be VERIFIED-checkable).
-- **STOP_CONDITIONS** — at least one explicit, objective exit condition. Aspirational phrasing
-  ("until it works") is not a stop condition.
-- **ITERATION_CAP** — the maximum number of iterations. **Default 5**; another value is allowed
-  but must be stated explicitly, even when accepting the default.
-- **VERIFY_CMD** — the real, executable command(s) run after each iteration to measure progress.
+- **`/goal`** (built-in command, min v2.1.139) owns work toward a **measurable completion
+  condition** with **independent convergence evaluation** — a fresh model judges the condition
+  after each turn, distinct from the model doing the work.
+- **`/loop`** (bundled skill) owns **repeated or self-paced execution**, polling, and monitoring
+  — fixed-interval or self-paced (the model chooses the delay and can stop autonomously).
+- **Engineering OS** owns **governance only**: task scope, evidence requirements (§11), canonical
+  authority, anti-bloat (§12), verification, limits, HOLD conditions, and operator gates. It
+  sequences and constrains the native tools; it does not execute the loop itself.
+
+### B. No duplicate implementation (binding)
+
+- The Engineering OS does **not** reimplement, rename, wrap, shadow, or clone `/goal` or `/loop`.
+- **No repository `/goal`, `/loop`, or branded equivalent** may be created while native
+  authority is available — doing so is duplicate authority (§5, §12) and is blocked.
+- If a native capability is **unavailable**, Claude must first **diagnose Claude Code version and
+  settings** (`disableBundledSkills`, `skillOverrides`, `disableAllHooks`,
+  `CLAUDE_CODE_DISABLE_CRON`) and **STOP for operator approval** before installing any replacement
+  or changing any setting — never silently build a substitute.
+
+### C. Routing rules
+
+- **Measurable implementation end state** → native **`/goal`** (independent convergence check).
+- **Interval polling or monitoring** → native **`/loop`**.
+- **Simple bounded task** → normal governed execution — do **not** force either command.
+- **Sensitive or irreversible action** → operator gate regardless of which command is used.
+
+### D. Required governance inputs (state before invoking native `/goal` or `/loop`)
+
+- OBJECTIVE · TASK_CLASSIFICATION · CANONICAL_AUTHORITY · ALLOWED_SCOPE · FORBIDDEN_SCOPE ·
+  SUCCESS_EVIDENCE · VERIFY_CMD (or equivalent verifier) · ITERATION_CAP or time cap ·
+  STOP_CONDITIONS · HOLD_CONDITIONS · OPERATOR_GATES · PROGRESS/MEMORY location · ROLLBACK_POINT
+  (where changes are permitted).
 
 If these cannot be derived safely from repository evidence, **STOP and request the missing
-decision** — do not invent them.
+decision** — do not invent them. Before iteration 1, classify prior work under **§11**: if PRIOR
+EVIDENCE exists, apply **§7.2** delta-verification rather than restarting solved work. Each
+iteration applies the **smallest** change (§12) and respects **§7.3–§7.5** (worktree/owner/
+concurrency) + the `CLAUDE.md` working-tree registry.
 
-**Per-iteration cycle:** apply the **smallest** change toward OBJECTIVE (§12) → run VERIFY_CMD →
-classify the result under §11 → check STOP_CONDITIONS → then exit **CONVERGED**, exit
-**CAP_REACHED**, pause **HOLD_TRIGGERED**, or continue. An iteration is a meaningful
-inspect/change/verify cycle, not a single tool call.
+### E. Honest enforcement boundary
 
-**Boundaries (referenced, not restated):**
+- The Engineering OS **ITERATION_CAP and STOP/HOLD vocabulary are governance instructions**,
+  evaluated by the model doing the work — **not mechanically enforced** unless bound to a verified
+  native mechanism or hook. `/goal`'s fresh-model evaluator and `/loop`'s 7-day expiry are native
+  mechanisms; a natural-language cap ("stop after N") is model-judged, not a harness counter.
+- **Do not describe advisory prompt rules as mechanically enforced.**
+- **This correction adds no new hook.** If deterministic enforcement of a cap or stop condition is
+  later required, it needs a **separate inspected and approved campaign** (a Stop hook or
+  equivalent), not a prompt claiming enforcement it does not have.
 
-- Each iteration respects **§7.3–§7.5** (isolated worktree, one implementation owner, concurrency
-  truth signals) and the `CLAUDE.md` **Canonical working-tree registry** + one-session rule; a
-  worktree/ownership conflict inside an iteration is a valid HOLD.
-- A HOLD arising in any iteration is **named per `CLAUDE.md` ANTI-HOLD** (the four HOLD
-  conditions) and pauses the loop; the full decision table is
-  `docs/governance/anti-hold-and-completion.md`. §13 adds no new HOLD conditions and does not
-  restate the four. Operator gates within a loop function identically to the **§7.6** campaign
-  gates.
-- Before iteration 1, classify prior work under **§11**: if PRIOR EVIDENCE exists, apply the
-  **§7.2** delta-verification rather than restarting solved work.
+### F. Exit states (each records evidence per §11 and the next exact step)
 
-At the iteration cap: **stop, preserve the worktree, report completed work + remaining failure
-with evidence (§11 tier), and recommend the exact next step.** Do not continue past the cap and
-do not restart solved work.
-
-**Worked examples (illustrative — the rule is above):**
-
-- **Example A — read-only request.** "Does endpoint X validate country?" → classify as read-only
-  inspection; run **one** evidence cycle and answer with a §11 tier. **No implementation loop
-  starts.** (A loop is for convergent *implementation*, not for a single lookup.)
-- **Example B — cap reached.** ITERATION_CAP = 5, STOP_CONDITIONS still unmet after iteration 5
-  → **STATUS = CAP_REACHED**; surface the current state, the last VERIFY_CMD result, and the next
-  exact step to the operator. The loop does **not** silently run a 6th iteration.
-- **Example C — operator gate inside the loop.** Iteration 3 would require a robocopy to `C:\PZ`
-  (a production mutation) → **STATUS = HOLD_TRIGGERED, HOLD = "Destructive production action"**;
-  the loop pauses and hands the operator the exact commands. The loop never crosses an operator
-  gate on its own.
+- **CONVERGED** — the completion condition holds (`/goal` evaluator or VERIFY_CMD confirms).
+- **CAP_REACHED** — iteration/time cap hit without convergence; stop, preserve state, hand the
+  operator the remaining failure + next step. Do not continue past the cap.
+- **HOLD_TRIGGERED** — a `CLAUDE.md` ANTI-HOLD condition arose (the four conditions; full table
+  `docs/governance/anti-hold-and-completion.md`) — pause, name it, do not restate the four here.
+- **OPERATOR_GATE** — a merge/deploy/production/fiscal/irreversible action is next; stop before
+  the gate and hand the operator the exact commands. The loop never crosses a gate on its own.
+- **VERIFICATION_FAILED** — VERIFY_CMD failed in a way the loop cannot resolve within scope;
+  report the failure with evidence and the next exact step.
 
 ---
 
