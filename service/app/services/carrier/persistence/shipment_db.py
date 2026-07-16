@@ -191,6 +191,40 @@ def get_legacy_shipment(db_path: Path, batch_id: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def get_client_shipment(
+    db_path: Path, batch_id: str, client_ref: Optional[str]
+) -> Optional[dict]:
+    """Newest non-failed shipment row scoped to EXACTLY this client, or None.
+
+    Companion to get_legacy_shipment: once a client-scoped row exists for the
+    batch, a same-params re-book computes the SAME per-client idempotency key,
+    so the coordinator replays (complete) or recovers (pending) that row — it
+    does NOT create a new record alongside the legacy one. The booking-modal
+    legacy-rebook warning is therefore suppressed when this returns a row
+    (reviewer-challenge MEDIUM-2, 2026-07-16). The legacy row itself is
+    deliberately never mutated — suppression is read-side only.
+
+    'failed' rows are excluded for the opposite reason: a failed client-scoped
+    attempt is NOT a prior booking (the coordinator refuses a same-key retry;
+    a changed-params retry computes a new key and books for real), so the
+    warning must still fire. Powers probe suppression ONLY — never a
+    document-attribution path (that stays get_shipment_for_draft, which owns
+    the per-client leak rules). Read-only — never mutates state.
+    """
+    if not (client_ref or "").strip():
+        # An empty/blank ref must never match: '' != NULL in SQLite, and a
+        # blank-scoped row would be a data bug, not a prior booking.
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM carrier_shipments "
+            "WHERE batch_id = ? AND client_ref = ? AND state != 'failed' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (batch_id, client_ref),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def get_shipment_for_draft(
     db_path: Path,
     batch_id: str,

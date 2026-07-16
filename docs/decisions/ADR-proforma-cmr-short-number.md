@@ -75,6 +75,21 @@ by `service/tests/test_awb_legacy_rebook_confirm.py`. The
 different client (defence-in-depth guard), so this limitation cannot re-open the
 cross-client leak.
 
+**Read-side suppression (2026-07-16, reviewer-challenge MEDIUM-2).** The legacy row is
+deliberately never marked superseded (no mutation of `carrier_shipments` — a supersede
+write is a separate, operator-approved decision), so `legacy_exists` would stay true
+forever and the warning would re-fire on every modal open even after the operator had
+already re-booked — at which point a same-params re-book REPLAYS the per-client COMPLETE
+row (coordinator idempotency) and the "will create a NEW shipment record" wording would be
+false, training operators to click through the gate. Resolution: the probe accepts an
+optional `client_ref` query param and then also reports `has_client_row` — whether a
+non-failed row scoped to exactly that client already exists for the batch
+(`get_client_shipment`; FAILED rows never count — a failed client attempt is not a prior
+booking and a changed-params retry books for real). The modal sends the draft's
+`client_name` and treats `legacy_exists && has_client_row` as clear (no panel). Without
+the param the probe response shape is unchanged. Suppression is read-side only; nothing
+in `carrier_shipments` is written. Pinned in the same test file.
+
 ## Consequences
 
 - CMR numbers are human-sized and stable, sourced from the single existing transport

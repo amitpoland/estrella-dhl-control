@@ -630,10 +630,15 @@
     // does a legacy (pre-client_ref) shipment row exist for this batch? A
     // client_ref re-book computes a NEW idempotency key, so the coordinator
     // will NOT replay that row — the AWB modal requires explicit operator
-    // confirmation first. Read-only; never books, never cancels/voids.
-    // Returns: { batch_id, legacy_exists, tracking_ref?, state?, created_at? }
-    probeCarrierLegacyShipment: (batchId) =>
-      _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment/legacy-probe`),
+    // confirmation first. Pass clientRef to also learn has_client_row: a
+    // non-failed row already scoped to THIS client means a same-params
+    // re-book replays it (no new record), so the modal suppresses the
+    // warning. Read-only; never books, never cancels/voids.
+    // Returns: { batch_id, legacy_exists, tracking_ref?, state?, created_at?,
+    //            has_client_row? (only when clientRef was sent) }
+    probeCarrierLegacyShipment: (batchId, clientRef) =>
+      _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment/legacy-probe`
+        + (clientRef ? `?client_ref=${encodeURIComponent(clientRef)}` : '')),
 
     // POST /api/v1/carrier/{batch_id}/shipment/{tracking_ref}/do-not-use
     // LOCAL operational flag for duplicate/unused labels — never calls DHL,

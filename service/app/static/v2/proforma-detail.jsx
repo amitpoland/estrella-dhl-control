@@ -1152,15 +1152,26 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     // Legacy-rebook probe — only relevant when this booking will send a
     // client_ref (a no-client_ref booking recomputes the SAME legacy key and
     // replays safely). A missing wrapper or failed probe arms the fail-visible
-    // panel via 'failed' — never a silent pass-through.
+    // panel via 'failed' — never a silent pass-through. Sending client_name
+    // lets the probe report has_client_row: once a non-failed row scoped to
+    // THIS client exists, a same-params re-book REPLAYS it (per-client key
+    // match, no new record), so the "will create a NEW shipment record"
+    // warning would be false — suppress it. Read-side only; the legacy row
+    // itself is never mutated.
     if (!prefill.client_name) {
       setLegacyProbe('skip');
     } else if (!window.PzApi.probeCarrierLegacyShipment) {
       setLegacyProbe('failed');
     } else {
-      window.PzApi.probeCarrierLegacyShipment(batchId)
+      window.PzApi.probeCarrierLegacyShipment(batchId, prefill.client_name)
         .then(r => {
-          if (r && r.ok && r.data && r.data.legacy_exists) {
+          if (r && r.ok && r.data && r.data.legacy_exists && r.data.has_client_row) {
+            // Suppressed: this client already re-booked (non-failed scoped
+            // row exists) — the warning no longer describes reality. An old
+            // backend without has_client_row (undefined → falsy) falls
+            // through to the 'legacy' arm below — fail-visible preserved.
+            setLegacyProbe('clear');
+          } else if (r && r.ok && r.data && r.data.legacy_exists) {
             setLegacyRow(r.data);
             setLegacyProbe('legacy');
           } else if (r && r.ok && r.data) {

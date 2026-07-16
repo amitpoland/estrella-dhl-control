@@ -544,6 +544,7 @@ def get_shipment(
 )
 def probe_legacy_shipment(
     batch_id: str,
+    client_ref: Optional[str] = None,
     _auth: None = Depends(require_api_key),
     db_path: Path = Depends(_get_shipment_db_path),
 ) -> JSONResponse:
@@ -557,24 +558,42 @@ def probe_legacy_shipment(
     alongside the legacy row. The V2 AWB modal calls this before booking and
     blocks on explicit operator confirmation when legacy_exists is true.
 
+    When the optional client_ref query param is sent, the response also
+    carries has_client_row: whether a non-failed row scoped to EXACTLY that
+    client already exists for the batch. If it does, a same-params re-book
+    replays that row (per-client key match) — no new record — so the modal
+    suppresses the warning (reviewer-challenge MEDIUM-2, 2026-07-16). The
+    legacy row is deliberately never mutated; suppression is read-side only.
+    Without the param the response shape is unchanged (no has_client_row key).
+
     Deliberately NOT behind _get_carrier_config: the answer comes from the
     local shipment DB only. Never mutates state, never calls DHL, and never
     cancels/voids anything.
     """
+    cr = (client_ref or "").strip() or None
     # Defensive-depth consistency with the other handlers in this file: a
     # malformed batch_id cannot name a real batch, so answer honestly-false.
     if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
-        return JSONResponse({"batch_id": batch_id, "legacy_exists": False})
+        body = {"batch_id": batch_id, "legacy_exists": False}
+        if cr:
+            body["has_client_row"] = False
+        return JSONResponse(body)
     shipment_db.init_db(db_path)
+    extra = {}
+    if cr:
+        extra["has_client_row"] = (
+            shipment_db.get_client_shipment(db_path, batch_id, cr) is not None
+        )
     row = shipment_db.get_legacy_shipment(db_path, batch_id)
     if row is None:
-        return JSONResponse({"batch_id": batch_id, "legacy_exists": False})
+        return JSONResponse({"batch_id": batch_id, "legacy_exists": False, **extra})
     return JSONResponse({
         "batch_id": batch_id,
         "legacy_exists": True,
         "tracking_ref": row.get("tracking_ref"),
         "state": row.get("state"),
         "created_at": row.get("created_at"),
+        **extra,
     })
 
 

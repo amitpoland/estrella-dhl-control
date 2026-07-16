@@ -24,6 +24,14 @@ Pins:
     silent pass-through (mirrors the 2026-07-06 baseline-gate incident fix)
   - no silent auto-cancel and no DHL void anywhere in the gate
   - no-client_ref bookings skip the gate (same legacy key → safe replay)
+  - read-side suppression (reviewer-challenge MEDIUM-2, 2026-07-16): with
+    ?client_ref= the probe also reports has_client_row (newest non-failed
+    row scoped to EXACTLY that client); the modal treats
+    legacy_exists && has_client_row as 'clear' — a same-params re-book
+    REPLAYS the client row (per-client key match), so the "will create a
+    NEW shipment record" warning would be false. FAILED client rows never
+    suppress (retry books for real). The legacy row is never mutated, and
+    a probe without client_ref keeps the original response shape.
 
 All backend tests use tmp_path. No production paths. No live calls.
 """
@@ -41,6 +49,7 @@ from app.services.carrier.models.shipment import (
     ShipmentState,
 )
 from app.services.carrier.persistence.shipment_db import (
+    get_client_shipment,
     get_legacy_shipment,
     init_db,
     insert_shipment,
@@ -148,6 +157,77 @@ class TestGetLegacyShipment:
         assert get_legacy_shipment(db, "B2") is None
 
 
+# ── shipment_db.get_client_shipment (MEDIUM-2 suppression source) ──────────────
+
+
+class TestGetClientShipment:
+    def test_complete_client_row_found(self, tmp_path):
+        db = _db(tmp_path)
+        _book(db, "kA", "B1", "Client A", "AWB-A")
+        row = get_client_shipment(db, "B1", "Client A")
+        assert row is not None
+        assert row["client_ref"] == "Client A"
+        assert row["tracking_ref"] == "AWB-A"
+
+    def test_different_client_never_matches(self, tmp_path):
+        """Another client's row must never suppress THIS client's warning —
+        that would re-open the cross-client attribution hole."""
+        db = _db(tmp_path)
+        _book(db, "kB", "B1", "Client B", "AWB-B")
+        assert get_client_shipment(db, "B1", "Client A") is None
+
+    def test_failed_client_row_is_not_a_prior_booking(self, tmp_path):
+        """A FAILED client-scoped attempt must NOT suppress: the coordinator
+        refuses a same-key retry, and a changed-params retry computes a new
+        key and books for real — the warning still describes reality."""
+        db = _db(tmp_path)
+        _book(db, "kFailA", "B1", "Client A", None, state=ShipmentState.FAILED)
+        assert get_client_shipment(db, "B1", "Client A") is None
+
+    def test_pending_client_row_counts(self, tmp_path):
+        """An in-flight (pending) client booking recovers under the SAME key —
+        no new record — so it suppresses like a complete row."""
+        db = _db(tmp_path)
+        insert_shipment(db, _pending("kPendA"), "B1", "Client A")
+        row = get_client_shipment(db, "B1", "Client A")
+        assert row is not None and row["state"] == "pending"
+
+    def test_legacy_row_never_matches(self, tmp_path):
+        """NULL-client_ref (legacy) rows are exactly what the warning is FOR —
+        they must never satisfy the suppression lookup."""
+        db = _db(tmp_path)
+        _book(db, "kLegacy", "B1", None, "AWB-LEGACY")
+        assert get_client_shipment(db, "B1", "Client A") is None
+
+    def test_empty_batch_is_none(self, tmp_path):
+        assert get_client_shipment(_db(tmp_path), "B1", "Client A") is None
+
+    def test_blank_client_ref_never_matches(self, tmp_path):
+        """Empty/blank refs must not match anything ('' != NULL in SQLite; a
+        blank-scoped row would be a data bug, not a prior booking)."""
+        db = _db(tmp_path)
+        _book(db, "kA", "B1", "Client A", "AWB-A")
+        assert get_client_shipment(db, "B1", "") is None
+        assert get_client_shipment(db, "B1", "   ") is None
+        assert get_client_shipment(db, "B1", None) is None
+
+    def test_newest_client_row_wins(self, tmp_path):
+        import sqlite3
+        db = _db(tmp_path)
+        _book(db, "kOldA", "B1", "Client A", "AWB-OLD-A")
+        _book(db, "kNewA", "B1", "Client A", "AWB-NEW-A")
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute(
+                "UPDATE carrier_shipments SET created_at='2026-01-01T00:00:00.000Z' "
+                "WHERE idempotency_key='kOldA'"
+            )
+            conn.execute(
+                "UPDATE carrier_shipments SET created_at='2026-06-01T00:00:00.000Z' "
+                "WHERE idempotency_key='kNewA'"
+            )
+        assert get_client_shipment(db, "B1", "Client A")["tracking_ref"] == "AWB-NEW-A"
+
+
 # ── GET /{batch_id}/shipment/legacy-probe ──────────────────────────────────────
 
 
@@ -227,6 +307,123 @@ class TestLegacyProbeRoute:
     def test_route_declared_in_source(self):
         assert '"/{batch_id}/shipment/legacy-probe"' in ROUTES
 
+    # ── ?client_ref= suppression source (reviewer-challenge MEDIUM-2) ──────────
+
+    def test_probe_with_client_ref_reports_client_row(self, tmp_path):
+        """Legacy row + COMPLETE row for THIS client → has_client_row True:
+        a same-params re-book replays the client row, so the modal may
+        suppress. legacy_exists stays honest (the legacy row is unchanged)."""
+        db = _db(tmp_path)
+        _book(db, "kLegacy", "BATCH1", None, "AWB-LEGACY")
+        _book(db, "kA", "BATCH1", "Client A", "AWB-A")
+        r = _probe_client(db).get(
+            "/api/v1/carrier/BATCH1/shipment/legacy-probe",
+            params={"client_ref": "Client A"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["legacy_exists"] is True
+        assert body["has_client_row"] is True
+
+    def test_probe_with_client_ref_no_client_row(self, tmp_path):
+        """Legacy row only → has_client_row False: the warning must fire."""
+        db = _db(tmp_path)
+        _book(db, "kLegacy", "BATCH1", None, "AWB-LEGACY")
+        r = _probe_client(db).get(
+            "/api/v1/carrier/BATCH1/shipment/legacy-probe",
+            params={"client_ref": "Client A"},
+        )
+        body = r.json()
+        assert body["legacy_exists"] is True
+        assert body["has_client_row"] is False
+
+    def test_probe_failed_client_row_never_suppresses(self, tmp_path):
+        db = _db(tmp_path)
+        _book(db, "kLegacy", "BATCH1", None, "AWB-LEGACY")
+        _book(db, "kFailA", "BATCH1", "Client A", None, state=ShipmentState.FAILED)
+        r = _probe_client(db).get(
+            "/api/v1/carrier/BATCH1/shipment/legacy-probe",
+            params={"client_ref": "Client A"},
+        )
+        assert r.json()["has_client_row"] is False
+
+    def test_probe_other_clients_row_never_suppresses(self, tmp_path):
+        db = _db(tmp_path)
+        _book(db, "kLegacy", "BATCH1", None, "AWB-LEGACY")
+        _book(db, "kB", "BATCH1", "Client B", "AWB-B")
+        r = _probe_client(db).get(
+            "/api/v1/carrier/BATCH1/shipment/legacy-probe",
+            params={"client_ref": "Client A"},
+        )
+        body = r.json()
+        assert body["legacy_exists"] is True
+        assert body["has_client_row"] is False
+
+    def test_probe_without_client_ref_keeps_original_shape(self, tmp_path):
+        """Backward compat: no ?client_ref= → the has_client_row key is ABSENT
+        (response byte-identical to the pre-suppression contract)."""
+        db = _db(tmp_path)
+        _book(db, "kLegacy", "BATCH1", None, "AWB-LEGACY")
+        _book(db, "kA", "BATCH1", "Client A", "AWB-A")
+        body = _probe_client(db).get(
+            "/api/v1/carrier/BATCH1/shipment/legacy-probe"
+        ).json()
+        assert "has_client_row" not in body
+        assert body["legacy_exists"] is True
+
+    def test_probe_blank_client_ref_treated_as_absent(self, tmp_path):
+        db = _db(tmp_path)
+        _book(db, "kLegacy", "BATCH1", None, "AWB-LEGACY")
+        client = _probe_client(db)
+        for blank in ("", "   "):
+            body = client.get(
+                "/api/v1/carrier/BATCH1/shipment/legacy-probe",
+                params={"client_ref": blank},
+            ).json()
+            assert "has_client_row" not in body, repr(blank)
+            assert body["legacy_exists"] is True
+
+    def test_probe_with_client_ref_but_no_legacy_row(self, tmp_path):
+        """No legacy row → legacy_exists False; has_client_row still reported
+        (uniform shape whenever client_ref is sent — the modal ignores it)."""
+        db = _db(tmp_path)
+        _book(db, "kA", "BATCH1", "Client A", "AWB-A")
+        body = _probe_client(db).get(
+            "/api/v1/carrier/BATCH1/shipment/legacy-probe",
+            params={"client_ref": "Client A"},
+        ).json()
+        assert body["legacy_exists"] is False
+        assert body["has_client_row"] is True
+
+    def test_probe_malformed_batch_with_client_ref_is_honest_false(self, tmp_path):
+        body = _probe_client(_db(tmp_path)).get(
+            "/api/v1/carrier/x%00y/shipment/legacy-probe",
+            params={"client_ref": "Client A"},
+        ).json()
+        assert body["legacy_exists"] is False
+        assert body["has_client_row"] is False
+
+    def test_probe_with_client_ref_is_read_only(self, tmp_path):
+        import sqlite3
+        db = _db(tmp_path)
+        _book(db, "kLegacy", "BATCH1", None, "AWB-LEGACY")
+        _book(db, "kA", "BATCH1", "Client A", "AWB-A")
+        _probe_client(db).get(
+            "/api/v1/carrier/BATCH1/shipment/legacy-probe",
+            params={"client_ref": "Client A"},
+        )
+        with sqlite3.connect(str(db)) as conn:
+            rows = conn.execute(
+                "SELECT idempotency_key, client_ref, state, tracking_ref "
+                "FROM carrier_shipments ORDER BY idempotency_key"
+            ).fetchall()
+        # Both rows byte-identical to what was seeded — the legacy row is
+        # NEVER mutated (no supersede write; suppression is read-side only).
+        assert rows == [
+            ("kA", "Client A", "complete", "AWB-A"),
+            ("kLegacy", None, "complete", "AWB-LEGACY"),
+        ]
+
 
 # ── Modal gate: every booking path held until explicit confirmation ────────────
 
@@ -285,9 +482,36 @@ class TestProbeWiring:
     def test_api_wrapper_is_read_only_get(self):
         assert "probeCarrierLegacyShipment" in API
         m = re.search(
-            r"probeCarrierLegacyShipment: \(batchId\) =>\s*\n\s*_get\(", API)
+            r"probeCarrierLegacyShipment: \(batchId, clientRef\) =>\s*\n\s*_get\(", API)
         assert m, "probe wrapper must be a plain _get (read-only, no mutation)"
         assert "/shipment/legacy-probe" in API
+
+    def test_api_wrapper_sends_client_ref_only_when_truthy(self):
+        """The wrapper appends ?client_ref= (URL-encoded) only for a truthy
+        clientRef — a falsy one keeps the original param-less request."""
+        seg = API[API.index("probeCarrierLegacyShipment"):
+                  API.index("markCarrierShipmentDoNotUse")]
+        assert "legacy-probe" in seg
+        assert "(clientRef ? `?client_ref=${encodeURIComponent(clientRef)}` : '')" in seg
+
+    def test_modal_passes_client_name_to_probe(self):
+        assert ("probeCarrierLegacyShipment(batchId, prefill.client_name)"
+                in _modal_src())
+
+    def test_legacy_with_client_row_suppresses_to_clear(self):
+        """Suppression branch (MEDIUM-2): legacy_exists && has_client_row →
+        'clear', checked BEFORE the plain legacy_exists arm; the suppress
+        branch itself never touches legacyRow (panel never renders in
+        'clear'). An old backend without has_client_row (undefined → falsy)
+        falls through to the 'legacy' arm — fail-visible preserved."""
+        src = _modal_src()
+        cond = "r.data.legacy_exists && r.data.has_client_row"
+        assert cond in src
+        after = src[src.index(cond):]
+        clear_at = after.index("setLegacyProbe('clear')")
+        assert clear_at < after.index("setLegacyRow(r.data)")
+        assert clear_at < after.index("setLegacyProbe('legacy')")
+        assert "setLegacyRow" not in after[:clear_at]
 
     def test_no_client_ref_booking_skips_gate(self):
         """No client_ref sent ⇒ same legacy idempotency key ⇒ the coordinator
