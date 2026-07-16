@@ -428,8 +428,27 @@
     // Read-only payload preview for the proforma→invoice convert action.
     // Returns the exact fields that would be sent to wFirma — no write, no invoice created.
     // 422 if draft has no wfirma_proforma_id (not yet posted). 502 if wFirma unreachable.
-    getDisclosureConvert: (draftId) =>
-      _get(`${BASE}/proforma/draft/${draftId}/disclose-convert`),
+    // Optional params: { override_payment_method, override_invoice_date,
+    //                    override_sale_date, override_payment_days }
+    // When supplied the response includes description_preview and a payload_core_hash
+    // that covers the exact description text (so the execute guard catches stale modals).
+    getDisclosureConvert: (draftId, params) => {
+      let url = `${BASE}/proforma/draft/${draftId}/disclose-convert`;
+      if (params) {
+        const qs = new URLSearchParams();
+        if (params.override_payment_method)
+          qs.append('override_payment_method', params.override_payment_method);
+        if (params.override_invoice_date)
+          qs.append('override_invoice_date', params.override_invoice_date);
+        if (params.override_sale_date)
+          qs.append('override_sale_date', params.override_sale_date);
+        if (params.override_payment_days != null)
+          qs.append('override_payment_days', String(params.override_payment_days));
+        const qstr = qs.toString();
+        if (qstr) url += '?' + qstr;
+      }
+      return _get(url);
+    },
 
     // GET /api/v1/proforma/draft/{draft_id}/events
     // Returns event timeline for the draft.

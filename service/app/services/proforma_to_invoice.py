@@ -349,12 +349,18 @@ def compute_conversion_core_hash(
     currency: str,
     series_id: str,
     contents,  # List[LineItem] or List[dict]
+    description: str = "",
 ) -> str:
-    """SHA-256 over core conversion fields (contractor, currency, series, lines).
+    """SHA-256 over core conversion fields (contractor, currency, series, lines, description).
 
     Sorted-line repr makes the hash stable regardless of insertion-order
     differences. Used to detect proforma or series changes between the
     disclosure modal and the execute call.
+
+    ``description`` covers the final invoice description (back-reference + terms)
+    so that the preview shown to the operator is byte-equivalent to what is posted.
+    Default is "" for backward compatibility with callers that do not yet supply
+    the description; omitting it produces a different hash from one that supplies it.
 
     Authority: PROFORMA (immutable-preview contract, RC-4).
     Pure function. No I/O. Stdlib only (hashlib, json).
@@ -382,6 +388,7 @@ def compute_conversion_core_hash(
         "currency": str(currency or ""),
         "series_id": str(series_id or ""),
         "lines": sorted(_safe_line_tuple(ln) for ln in (contents or [])),
+        "description": str(description or ""),
     }
     raw = _json.dumps(payload, sort_keys=True, ensure_ascii=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

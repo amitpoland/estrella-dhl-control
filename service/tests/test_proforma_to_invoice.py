@@ -643,3 +643,48 @@ def test_compute_hash_sensitive_to_contractor():
     h1 = compute_conversion_core_hash("9001", "EUR", "SER1", snap.contents)
     h2 = compute_conversion_core_hash("9002", "EUR", "SER1", snap.contents)
     assert h1 != h2
+
+
+# ── Description-covering hash (Phase 9 / description_preview) ────────────────
+
+def test_compute_hash_backward_compat_no_description():
+    """4-positional-arg calls still produce a 64-char SHA-256 (backward compat)."""
+    from app.services.proforma_to_invoice import compute_conversion_core_hash
+    snap = parse_proforma_xml(_proforma_xml())
+    h = compute_conversion_core_hash("9001", "EUR", "SER1", snap.contents)
+    assert isinstance(h, str) and len(h) == 64
+
+
+def test_compute_hash_sensitive_to_description():
+    """Different description → different hash (description is now part of payload)."""
+    from app.services.proforma_to_invoice import compute_conversion_core_hash
+    snap = parse_proforma_xml(_proforma_xml())
+    h1 = compute_conversion_core_hash(
+        "9001", "EUR", "SER1", snap.contents, description="Back-ref PROF 1/2026"
+    )
+    h2 = compute_conversion_core_hash(
+        "9001", "EUR", "SER1", snap.contents, description="Back-ref PROF 2/2026"
+    )
+    assert h1 != h2, "Different descriptions must produce different hashes"
+
+
+def test_compute_hash_empty_description_equals_omitted():
+    """Omitting description= (backward compat) gives the same hash as description=""."""
+    from app.services.proforma_to_invoice import compute_conversion_core_hash
+    snap = parse_proforma_xml(_proforma_xml())
+    h_omit  = compute_conversion_core_hash("9001", "EUR", "SER1", snap.contents)
+    h_empty = compute_conversion_core_hash("9001", "EUR", "SER1", snap.contents, description="")
+    assert h_omit == h_empty, (
+        "Omitting description= must give the same hash as description='' "
+        "(default parameter backward-compat)"
+    )
+
+
+def test_compute_hash_with_description_deterministic():
+    """Same description → same hash on repeated calls."""
+    from app.services.proforma_to_invoice import compute_conversion_core_hash
+    snap = parse_proforma_xml(_proforma_xml())
+    desc = "Dotyczy faktury pro forma nr PROF 99/2026. Warunki płatności: przelew 30 dni."
+    h1 = compute_conversion_core_hash("9001", "EUR", "S1", snap.contents, description=desc)
+    h2 = compute_conversion_core_hash("9001", "EUR", "S1", snap.contents, description=desc)
+    assert h1 == h2

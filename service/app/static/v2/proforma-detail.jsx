@@ -8359,16 +8359,27 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
 
   // Operator payment override state; pre-filled from disclosure on load
   const defaultsApplied = React.useRef(false);
+  const debounceRef     = React.useRef(null);
+  // Monotonic fetch sequence — a slow earlier disclosure response must never
+  // overwrite a newer one, or the displayed hash/description would desync from
+  // the override inputs and the server hash guard would false-positive block.
+  const fetchSeqRef     = React.useRef(0);
   const [overrideMethod,      setOverrideMethod]      = React.useState('');
   const [overrideInvoiceDate, setOverrideInvoiceDate] = React.useState('');
   const [overrideSaleDate,    setOverrideSaleDate]    = React.useState(detail.sale_date || '');
   const [overrideDays,        setOverrideDays]        = React.useState('');
 
-  // Single disclosure fetch — loads payload preview AND pre-fills payment overrides (RC-4 fix)
-  React.useEffect(() => {
+  // Single disclosure fetch helper — shared by initial load and debounced override re-fetch
+  // (RC-4 fix). When params are supplied the server computes description_preview and
+  // payload_core_hash for exactly those override values, guaranteeing that what the
+  // operator reads is byte-for-byte what will be posted to wFirma.
+  const fetchDisclosure = (params) => {
+    const seq = ++fetchSeqRef.current;
     setDisclosureLoading(true);
-    window.PzApi.getDisclosureConvert(draft.id)
+    setDisclosureError(null);
+    window.PzApi.getDisclosureConvert(draft.id, params)
       .then(r => {
+        if (seq !== fetchSeqRef.current) return;  // stale response — a newer fetch is in flight/landed
         if (r && r.data) {
           setDisclosure(r.data);
           if (!defaultsApplied.current) {
@@ -8385,9 +8396,37 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
           setDisclosureError((r && r.error) || 'Payload preview unavailable');
         }
       })
-      .catch(() => setDisclosureError('Payload preview unavailable'))
-      .finally(() => setDisclosureLoading(false));
+      .catch(() => {
+        if (seq !== fetchSeqRef.current) return;
+        setDisclosureError('Payload preview unavailable');
+      })
+      .finally(() => {
+        if (seq !== fetchSeqRef.current) return;  // newer fetch owns the loading state
+        setDisclosureLoading(false);
+      });
+  };
+
+  // Initial disclosure fetch — no override params → server uses draft / CM defaults
+  React.useEffect(() => {
+    fetchDisclosure();
   }, [draft.id]);
+
+  // Re-fetch the disclosure whenever the operator changes a payment override field.
+  // Debounced 400 ms to avoid a request on every keystroke in the payment-days input.
+  // Guard on defaultsApplied so we skip the initial render before the first fetch lands.
+  React.useEffect(() => {
+    if (!defaultsApplied.current) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      const params = {};
+      if (overrideMethod)      params.override_payment_method = overrideMethod;
+      if (overrideInvoiceDate) params.override_invoice_date   = overrideInvoiceDate;
+      if (overrideSaleDate)    params.override_sale_date      = overrideSaleDate;
+      if (overrideDays !== '') params.override_payment_days   = parseInt(overrideDays, 10);
+      fetchDisclosure(params);
+    }, 400);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [overrideMethod, overrideInvoiceDate, overrideSaleDate, overrideDays]);
 
   const computedPaymentDue = React.useMemo(() => {
     if (!overrideSaleDate || overrideDays === '') return '';
@@ -8647,6 +8686,47 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
                     </div>
                   </details>
                 )}
+                {/* Description preview: exact text that will be posted to wFirma (RC-4 + Phase 9) */}
+                {disclosure.description_preview != null && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 700, marginBottom: 4 }}>
+                      FINAL INVOICE DESCRIPTION (exact text posted to wFirma)
+                    </div>
+                    <pre
+                      data-testid="convert-description-preview"
+                      style={{
+                        fontFamily: 'monospace', fontSize: 11, whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word', background: 'var(--bg-subtle)',
+                        border: '1px solid var(--border)', borderRadius: 4,
+                        padding: '8px 10px', color: 'var(--text-2)',
+                        maxHeight: 200, overflowY: 'auto', margin: 0,
+                      }}
+                    >{disclosure.description_preview}</pre>
+                  </div>
+                )}
+                {/* Recoverable-failure affordance (Lesson M): the Convert button is
+                    gated on description_preview by operator governance (rule 9 —
+                    "full final description must be visible before confirmation").
+                    If the preview failed for a transient reason, the operator can
+                    retry here instead of the capability being silently dead. */}
+                {!disclosureLoading && disclosure.description_preview == null && (
+                  <div style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--warn, #b45309)', borderRadius: 4, fontSize: 12, color: 'var(--text-2)' }}>
+                    Final invoice description preview unavailable — conversion is blocked until it loads.
+                    <button
+                      data-testid="convert-preview-retry"
+                      onClick={() => {
+                        const params = {};
+                        if (overrideMethod)      params.override_payment_method = overrideMethod;
+                        if (overrideInvoiceDate) params.override_invoice_date   = overrideInvoiceDate;
+                        if (overrideSaleDate)    params.override_sale_date      = overrideSaleDate;
+                        if (overrideDays !== '') params.override_payment_days   = parseInt(overrideDays, 10);
+                        fetchDisclosure(params);
+                      }}
+                      style={{ marginLeft: 10, padding: '2px 10px', fontSize: 12, cursor: 'pointer',
+                               background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)' }}
+                    >↻ Reload preview</button>
+                  </div>
+                )}
               </div>
             );
           })() : null}
@@ -8695,12 +8775,12 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
             <Btn variant="outline" onClick={onClose} disabled={loading}>Cancel</Btn>
             <Btn
               variant="danger"
-              disabled={!confirmed || loading}
+              disabled={!confirmed || loading || disclosureLoading || !(disclosure && disclosure.description_preview)}
               onClick={handleConvert}
               data-testid="convert-modal-submit"
               style={{
-                opacity: (confirmed && !loading) ? 1 : 0.5,
-                cursor:  (confirmed && !loading) ? 'pointer' : 'not-allowed',
+                opacity: (confirmed && !loading && !disclosureLoading && disclosure && disclosure.description_preview) ? 1 : 0.5,
+                cursor:  (confirmed && !loading && !disclosureLoading && disclosure && disclosure.description_preview) ? 'pointer' : 'not-allowed',
               }}
             >
               {loading ? '⏳ Converting…' : '⚠ Convert to Invoice'}

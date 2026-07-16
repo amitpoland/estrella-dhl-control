@@ -601,3 +601,89 @@ class TestPreFlightReadiness:
         result = check_proforma_post_readiness(draft)
         assert result["ready"] is False
         assert any("zero" in b.lower() or "price" in b.lower() for b in result["blockers"])
+
+
+# ── Phase 9 description_preview passthrough tests ─────────────────────────────
+
+class TestDescriptionPreviewPassthrough:
+    """build_invoice_convert_disclosure: description_preview and
+    payload_core_hash_override new parameters (Phase 9 / RC-4)."""
+
+    def _make_snap(self):
+        from app.services.proforma_to_invoice import parse_proforma_xml
+        return parse_proforma_xml(_proforma_xml_3lines())
+
+    def test_description_preview_absent_when_not_passed(self):
+        """Without description_preview= the key must NOT appear in the result."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        d = build_invoice_convert_disclosure(self._make_snap())
+        assert "description_preview" not in d, (
+            "description_preview must not appear unless explicitly passed"
+        )
+
+    def test_description_preview_present_when_passed(self):
+        """When description_preview= is supplied it is forwarded as-is."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        preview_text = "Dotyczy faktury pro forma nr PROF 92/2026.\nWarunki płatności: przelew 30 dni."
+        d = build_invoice_convert_disclosure(
+            self._make_snap(), description_preview=preview_text
+        )
+        assert "description_preview" in d, "description_preview key must be present when passed"
+        assert d["description_preview"] == preview_text
+
+    def test_description_preview_none_is_absent(self):
+        """Explicit None is the same as omitted — key must NOT appear."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        d = build_invoice_convert_disclosure(self._make_snap(), description_preview=None)
+        assert "description_preview" not in d
+
+    def test_description_preview_empty_string_is_forwarded(self):
+        """Empty string is a valid (if unusual) description_preview — forwarded as ''."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        d = build_invoice_convert_disclosure(self._make_snap(), description_preview="")
+        assert "description_preview" in d
+        assert d["description_preview"] == ""
+
+    def test_payload_core_hash_override_replaces_computed_hash(self):
+        """When payload_core_hash_override= is supplied it wins over the internally
+        computed hash.  This ensures disclose and execute use the SAME description-
+        covering hash rather than each computing their own."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        fixed_hash = "a" * 64
+        d = build_invoice_convert_disclosure(
+            self._make_snap(),
+            final_series_id="777",
+            payload_core_hash_override=fixed_hash,
+        )
+        assert d["payload_core_hash"] == fixed_hash, (
+            "payload_core_hash_override must replace the internally computed hash"
+        )
+
+    def test_payload_core_hash_override_none_uses_computed(self):
+        """When payload_core_hash_override is None, the module computes the hash normally."""
+        from app.services.payload_disclosure import build_invoice_convert_disclosure
+        from app.services.proforma_to_invoice import compute_conversion_core_hash
+        snap = self._make_snap()
+        d = build_invoice_convert_disclosure(
+            snap, final_series_id="777", payload_core_hash_override=None
+        )
+        expected = compute_conversion_core_hash(
+            snap.contractor_id, snap.currency, "777", snap.contents
+        )
+        assert d["payload_core_hash"] == expected
+
+    def test_description_covering_hash_differs_from_bare_hash(self):
+        """A hash computed WITH a description must differ from one without,
+        confirming that the description_preview is cryptographically bound."""
+        from app.services.proforma_to_invoice import compute_conversion_core_hash
+        snap = self._make_snap()
+        h_no_desc = compute_conversion_core_hash(
+            snap.contractor_id, snap.currency, "777", snap.contents
+        )
+        h_with_desc = compute_conversion_core_hash(
+            snap.contractor_id, snap.currency, "777", snap.contents,
+            description="Dotyczy faktury pro forma nr PROF 92/2026.",
+        )
+        assert h_no_desc != h_with_desc, (
+            "Hash with description must differ from hash without — description must be in payload"
+        )

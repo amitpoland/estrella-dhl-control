@@ -3297,6 +3297,190 @@ def _link_already_exists(proforma_id: str) -> bool:
         return False
 
 
+def _build_convert_candidate(
+    cv_draft,
+    snap,
+    *,
+    operator_series_in: str = "",
+    override_payment_method: str = "",
+    override_invoice_date: str = "",
+    override_sale_date: str = "",
+    override_payment_days=None,
+    operator_description: str = "",
+) -> Dict[str, Any]:
+    """Shared builder for proforma→invoice conversion: resolves series, payment,
+    builds the FinalInvoicePlan and computes the description-covering hash.
+
+    This helper is the SINGLE authority for conversion resolution logic.
+    Both the DISCLOSE route and the EXECUTE route call it with identical
+    parameters so that preview == execute byte-for-byte.
+
+    Args:
+        cv_draft:                ProformaDraft (or None) — supplies vat_context
+                                 and payment_terms_json.
+        snap:                    ProformaSnapshot from parse_proforma_xml.
+        operator_series_in:      Operator-supplied series id (may be empty).
+        override_payment_method: English method name (transfer|cash|card|compensation).
+                                 Empty string = no override.
+        override_invoice_date:   YYYY-MM-DD or "".
+        override_sale_date:      YYYY-MM-DD or "".
+        override_payment_days:   int or None.
+        operator_description:    Optional extra description text (audit suffix
+                                 appended for overrides).
+
+    Returns dict with keys:
+        plan:              FinalInvoicePlan
+        series_id:         str
+        series_advisories: list[str]
+        effective_days:    int | None
+        paymentdate:       str | None  (ISO date or None)
+        invoice_date:      date
+        core_hash:         str  (description-covering SHA-256 hex)
+
+    Raises:
+        ZeroBillableInvoice  — if all lines are priced at 0.
+        Any exception from build_final_invoice_plan / parse_proforma_xml.
+    """
+    from ..services import proforma_to_invoice as p2i
+    from ..core.timezone_utils import warsaw_today as _warsaw_today
+    from datetime import datetime as _dt
+    import json as _djson
+
+    _PM_EN_TO_WF = {
+        "transfer":     "przelew",
+        "cash":         "gotowka",
+        "card":         "karta",
+        "compensation": "kompensata",
+    }
+
+    # ── CM fetch ──────────────────────────────────────────────────────────────
+    _cm = get_customer_master(_customer_master_db_path(), snap.contractor_id)
+
+    # ── VAT context (frozen draft beats snap) ─────────────────────────────────
+    _vat_ctx = (
+        ((cv_draft.vat_context or "").lower() if cv_draft else "")
+        or ((snap.vat_code or "").lower() if hasattr(snap, "vat_code") else "")
+    )
+    if _vat_ctx not in ("wdt", "export"):
+        _vat_ctx = "domestic"
+
+    # ── Series resolution ─────────────────────────────────────────────────────
+    series_id, series_advisories = _resolve_final_series(
+        vat_context=_vat_ctx,
+        operator_series_in=operator_series_in,
+        customer_master=_cm,
+    )
+
+    # ── Payment override values ───────────────────────────────────────────────
+    _override_method_en  = (override_payment_method or "").strip().lower()
+    _override_method_wf  = _PM_EN_TO_WF.get(_override_method_en) if _override_method_en else None
+    _override_inv_date   = (override_invoice_date or "").strip() or None
+    _override_sale_date  = (override_sale_date or "").strip() or None
+    _override_days       = override_payment_days  # Optional[int]
+
+    # ── Draft payment fields (lower priority than modal overrides) ────────────
+    _draft_pt: dict = {}
+    try:
+        _draft_pt = _djson.loads(
+            (cv_draft.payment_terms_json if cv_draft else None) or "{}"
+        ) or {}
+    except Exception:
+        pass
+    _draft_method_en        = (_draft_pt.get("method") or "").strip()
+    _draft_inv_date_str     = (_draft_pt.get("invoice_date") or "").strip() or None
+    _draft_sale_date_str    = (_draft_pt.get("sale_date") or "").strip() or None
+    _draft_days             = _draft_pt.get("days")  # Optional[int]
+
+    # ── Effective payment method: override > draft > CM ───────────────────────
+    _effective_method_en = _override_method_en or _draft_method_en
+    _effective_method_wf = _PM_EN_TO_WF.get(_effective_method_en) if _effective_method_en else None
+    if not _effective_method_en and _cm and (_cm.preferred_payment_method or "").strip():
+        _effective_method_en = (_cm.preferred_payment_method or "").strip().lower()
+        _effective_method_wf = _PM_EN_TO_WF.get(_effective_method_en) if _effective_method_en else None
+
+    # ── Invoice date: override > draft > today ────────────────────────────────
+    _invoice_date = _warsaw_today()
+    if _override_inv_date:
+        try:
+            _invoice_date = _dt.fromisoformat(_override_inv_date).date()
+        except ValueError:
+            pass
+    elif _draft_inv_date_str:
+        try:
+            _invoice_date = _dt.fromisoformat(_draft_inv_date_str).date()
+        except ValueError:
+            pass
+
+    # ── Sale date for payment due ─────────────────────────────────────────────
+    _sale_date_for_payment = None
+    if _override_sale_date:
+        try:
+            _sale_date_for_payment = _dt.fromisoformat(_override_sale_date).date()
+        except ValueError:
+            pass
+    elif _draft_sale_date_str:
+        try:
+            _sale_date_for_payment = _dt.fromisoformat(_draft_sale_date_str).date()
+        except ValueError:
+            pass
+
+    # ── Effective payment days: override > draft > CM ─────────────────────────
+    _effective_days = _override_days if _override_days is not None else _draft_days
+    if _effective_days is None and _cm and _cm.payment_terms_days is not None:
+        _effective_days = _cm.payment_terms_days
+
+    # ── Payment due date ──────────────────────────────────────────────────────
+    _paymentdate = None
+    if _effective_days is not None:
+        from ..services.payment_date_resolver import compute_payment_due as _cpd
+        _paymentdate = _cpd(
+            invoice_date=_invoice_date,
+            sale_date=_sale_date_for_payment,
+            payment_days=_effective_days,
+        ).isoformat()
+
+    # ── Operator description + audit suffix ───────────────────────────────────
+    _op_desc = (operator_description or "").strip()
+    _audit_parts = []
+    if _override_method_en:
+        _audit_parts.append(f"payment_method={_override_method_en}")
+    if _override_inv_date:
+        _audit_parts.append(f"invoice_date={_override_inv_date}")
+    if _override_sale_date:
+        _audit_parts.append(f"sale_date={_override_sale_date}")
+    if _override_days is not None:
+        _audit_parts.append(f"payment_days={_override_days}")
+    if _audit_parts:
+        _op_desc = (_op_desc + " [override: " + ", ".join(_audit_parts) + "]").strip()
+
+    # ── Build FinalInvoicePlan ────────────────────────────────────────────────
+    plan = p2i.build_final_invoice_plan(
+        snap,
+        final_series_id      = series_id,
+        invoice_date         = _invoice_date,
+        paymentdate          = _paymentdate,
+        paymentmethod        = _effective_method_wf,
+        operator_description = _op_desc,
+        payment_days         = _effective_days,
+    )
+
+    # ── Description-covering hash ─────────────────────────────────────────────
+    core_hash = p2i.compute_conversion_core_hash(
+        plan.contractor_id, plan.currency, series_id, snap.contents,
+        description=plan.description,
+    )
+
+    return {
+        "plan":              plan,
+        "series_id":         series_id,
+        "series_advisories": series_advisories,
+        "effective_days":    _effective_days,
+        "paymentdate":       _paymentdate,
+        "invoice_date":      _invoice_date,
+        "core_hash":         core_hash,
+    }
+
+
 def _build_conversion_plan(
     proforma_id: str,
     *,
@@ -3606,41 +3790,52 @@ def proforma_to_invoice(
                 "readiness_intent": "convert",
             })
 
-    _series_advisories: list = []  # Phase C Fix 3: populated inside try block
+    _series_advisories: list = []  # Phase C Fix 3: populated from candidate
     # 3+4. Fetch + parse + plan
+    # Payment-method validation runs BEFORE the wFirma round-trip (cheap gate first).
+    _ALLOWED_PM_EN = {"transfer", "cash", "card", "compensation"}
+    _pre_method = (body.override_payment_method or "").strip().lower()
+    if _pre_method and _pre_method not in _ALLOWED_PM_EN:
+        return JSONResponse({
+            "ok": False, "status": "blocked",
+            "batch_id": batch_id, "client_name": cn,
+            "blocking_reasons": [
+                f"override_payment_method '{_pre_method}' not valid. "
+                f"Must be one of: transfer, cash, card, compensation."
+            ],
+        })
+
+    # _core_hash is the description-covering candidate hash; used by the hash guard below.
+    # Initialised here so the guard can reference it even if the try block is not reached
+    # (in practice we always return early on exception, but this prevents UnboundLocalError).
+    _core_hash: str = ""
     try:
         from ..services import proforma_to_invoice as p2i
         from ..services import proforma_invoice_link_db as plink
-        from ..core.timezone_utils import warsaw_today as _warsaw_today
 
         proforma_xml = wfirma_client.fetch_invoice_xml(pid)
         snap = p2i.parse_proforma_xml(proforma_xml)
 
-        # Phase C — Fix 2: fetch CM once for all field resolution
-        # (series, payment method, payment days). This replaces the
-        # conditional fetch that was inside the series block.
-        _cm_inv2 = get_customer_master(_customer_master_db_path(), snap.contractor_id)
-
-        # VAT context drives series selection and advisory surfacing.
-        # draft.vat_context (frozen at creation) beats snap.vat_code.
-        _vat_ctx_exec = (
-            (_cv_draft.vat_context or "").lower()
-            if _cv_draft else ""
-        ) or (
-            (snap.vat_code or "").lower() if hasattr(snap, "vat_code") else ""
+        # _build_convert_candidate owns ALL of: CM fetch, VAT-context, series resolution,
+        # payment-override chain, paymentdate computation, operator-description audit suffix,
+        # build_final_invoice_plan, and the description-covering SHA-256 hash.
+        # Both EXECUTE and DISCLOSE call the same helper, guaranteeing byte-for-byte parity.
+        _candidate = _build_convert_candidate(
+            _cv_draft, snap,
+            operator_series_in      = (body.final_series_id or "").strip(),
+            override_payment_method = (body.override_payment_method or ""),
+            override_invoice_date   = (body.override_invoice_date or ""),
+            override_sale_date      = (body.override_sale_date or ""),
+            override_payment_days   = body.override_payment_days,
+            operator_description    = (body.operator_description or ""),
         )
-        if _vat_ctx_exec not in ("wdt", "export"):
-            _vat_ctx_exec = "domestic"
-
-        # ADR-027 D6 — one canonical resolver (customer_master.py).
-        # Source proforma series is NEVER in the fallback chain.
-        # Returns (series_id, advisories).
-        _operator_series_in = (body.final_series_id or "").strip()
-        series_id, _series_advisories = _resolve_final_series(
-            vat_context=_vat_ctx_exec,
-            operator_series_in=_operator_series_in,
-            customer_master=_cm_inv2,
-        )
+        plan               = _candidate["plan"]
+        series_id          = _candidate["series_id"]
+        _series_advisories = _candidate["series_advisories"]
+        _effective_days    = _candidate["effective_days"]
+        _paymentdate       = _candidate["paymentdate"]
+        _invoice_date      = _candidate["invoice_date"]
+        _core_hash         = _candidate["core_hash"]
 
         if not series_id:
             log.info(
@@ -3648,6 +3843,18 @@ def proforma_to_invoice(
                 "<series> will be omitted (wFirma contractor default)",
                 batch_id, cn,
             )
+
+        # Empty description guard: description must be non-empty (it contains at minimum
+        # the back-reference line). An empty description indicates a builder error.
+        if not (plan.description or "").strip():
+            return JSONResponse({
+                "ok":               False,
+                "status":           "blocked",
+                "batch_id":         batch_id,
+                "client_name":      cn,
+                "wfirma_proforma_id": pid,
+                "blocking_reasons": ["invoice description is empty — back-reference builder failed"],
+            })
 
         # Governance: passes silently for empty (step 3 = omit is valid);
         # raises only for literal "0" sentinel (invalid element).
@@ -3687,109 +3894,6 @@ def proforma_to_invoice(
                     })
             except Exception:
                 pass  # dictionaries unavailable → proceed (ADR-027 D6)
-        # Resolve operator payment overrides
-        _ALLOWED_PM_EN = {"transfer", "cash", "card", "compensation"}
-        _PM_EN_TO_WF   = {"transfer": "przelew", "cash": "gotowka",
-                          "card": "karta", "compensation": "kompensata"}
-        _override_method_en = (body.override_payment_method or "").strip().lower()
-        if _override_method_en and _override_method_en not in _ALLOWED_PM_EN:
-            return JSONResponse({
-                "ok": False, "status": "blocked",
-                "batch_id": batch_id, "client_name": cn,
-                "blocking_reasons": [
-                    f"override_payment_method '{_override_method_en}' not valid. "
-                    f"Must be one of: transfer, cash, card, compensation."
-                ],
-            })
-        _override_method_wf   = _PM_EN_TO_WF.get(_override_method_en) if _override_method_en else None
-        _override_invoice_date = (body.override_invoice_date or "").strip() or None
-        _override_sale_date   = (body.override_sale_date or "").strip() or None
-        _override_days        = body.override_payment_days  # Optional[int]
-
-        # Read saved draft payment fields (lower priority than modal overrides, higher than snap)
-        import json as _djson
-        _draft_pt = {}
-        try:
-            _draft_pt = _djson.loads((_cv_draft.payment_terms_json if _cv_draft else None) or "{}") or {}
-        except Exception:
-            pass
-        _draft_method_en        = (_draft_pt.get("method") or "").strip()
-        _draft_invoice_date_str = (_draft_pt.get("invoice_date") or "").strip() or None
-        _draft_sale_date_str    = (_draft_pt.get("sale_date") or "").strip() or None
-        _draft_days             = _draft_pt.get("days")  # Optional[int]
-
-        # Effective payment method: modal override > draft saved > snap (via build_final_invoice_plan)
-        _effective_method_en = _override_method_en or _draft_method_en
-        _effective_method_wf = _PM_EN_TO_WF.get(_effective_method_en) if _effective_method_en else None
-
-        # Compute invoice_date and paymentdate: modal override > draft > today/snap
-        from datetime import timedelta as _td, datetime as _dt
-        _invoice_date = _warsaw_today()
-        if _override_invoice_date:
-            try:
-                _invoice_date = _dt.fromisoformat(_override_invoice_date).date()
-            except ValueError:
-                pass
-        elif _draft_invoice_date_str:
-            try:
-                _invoice_date = _dt.fromisoformat(_draft_invoice_date_str).date()
-            except ValueError:
-                pass
-        # Payment due: base = max(sale_date, invoice_date) so due is never
-        # before the invoice date (fixes OMARA sale_date < invoice_date bug).
-        _sale_date_for_payment = None
-        if _override_sale_date:
-            try:
-                _sale_date_for_payment = _dt.fromisoformat(_override_sale_date).date()
-            except ValueError:
-                pass
-        elif _draft_sale_date_str:
-            try:
-                _sale_date_for_payment = _dt.fromisoformat(_draft_sale_date_str).date()
-            except ValueError:
-                pass
-        _effective_days = _override_days if _override_days is not None else _draft_days
-
-        # Phase C — Fix 2: Customer Master is payment authority.
-        # CM fields fill in when no modal override and no saved draft value.
-        if not _effective_method_en and _cm_inv2 and (_cm_inv2.preferred_payment_method or "").strip():
-            _effective_method_en = (_cm_inv2.preferred_payment_method or "").strip().lower()
-            _effective_method_wf = _PM_EN_TO_WF.get(_effective_method_en) if _effective_method_en else None
-        if _effective_days is None and _cm_inv2 and _cm_inv2.payment_terms_days is not None:
-            _effective_days = _cm_inv2.payment_terms_days
-
-        _paymentdate = None
-        if _effective_days is not None:
-            from ..services.payment_date_resolver import compute_payment_due as _cpd
-            _paymentdate = _cpd(
-                invoice_date=_invoice_date,
-                sale_date=_sale_date_for_payment,
-                payment_days=_effective_days,
-            ).isoformat()
-
-        # Build operator_description; append modal override annotations for audit trail
-        _op_desc = (body.operator_description or "").strip()
-        _audit_parts = []
-        if _override_method_en:
-            _audit_parts.append(f"payment_method={_override_method_en}")
-        if _override_invoice_date:
-            _audit_parts.append(f"invoice_date={_override_invoice_date}")
-        if _override_sale_date:
-            _audit_parts.append(f"sale_date={_override_sale_date}")
-        if _override_days is not None:
-            _audit_parts.append(f"payment_days={_override_days}")
-        if _audit_parts:
-            _op_desc = (_op_desc + " [override: " + ", ".join(_audit_parts) + "]").strip()
-
-        plan = p2i.build_final_invoice_plan(
-            snap,
-            final_series_id      = series_id,
-            invoice_date         = _invoice_date,
-            paymentdate          = _paymentdate,
-            paymentmethod        = _effective_method_wf,
-            operator_description = _op_desc,
-            payment_days         = _effective_days,   # Fix 5: terms block
-        )
     except p2i.ZeroBillableInvoice as exc:
         # #532: every line priced at zero (packing_promote / non-revenue).
         # Block the invoice — never POST a zero-value document to wFirma.
@@ -3842,15 +3946,14 @@ def proforma_to_invoice(
             "invoice description truncated risk: description exceeds 900 characters"
         )
 
-    # Fix 4 (RC-4): payload hash guard — detect proforma or series changes since disclosure.
-    # Absent hash → proceed (backward compatible). Mismatch → block.
+    # Fix 4 (RC-4): payload hash guard — detect proforma, series, or description changes
+    # since disclosure. Absent hash → proceed (backward compatible). Mismatch → block.
+    # Uses the description-covering _core_hash computed by _build_convert_candidate so that
+    # any change to the final invoice description text also trips the stale-modal guard.
     _expected_hash = (body.expected_payload_hash or "").strip()
     if _expected_hash:
         try:
-            _recomputed_hash = p2i.compute_conversion_core_hash(
-                plan.contractor_id, plan.currency, series_id, snap.contents,
-            )
-            if _recomputed_hash != _expected_hash:
+            if _core_hash != _expected_hash:
                 return JSONResponse({
                     "ok":               False,
                     "status":           "blocked",
@@ -3858,7 +3961,7 @@ def proforma_to_invoice(
                     "client_name":      cn,
                     "wfirma_proforma_id": pid,
                     "blocking_reasons": [
-                        "Payload hash mismatch — proforma or series resolution changed "
+                        "Payload hash mismatch — proforma, series, or description changed "
                         "since disclosure. Re-open the convert modal to refresh."
                     ],
                 })
@@ -10956,12 +11059,26 @@ def disclose_proforma_post(draft_id: int) -> JSONResponse:
 def disclose_proforma_convert(
     draft_id: int,
     final_series_id: str = "",
+    override_payment_method: str = "",
+    override_invoice_date: str = "",
+    override_sale_date: str = "",
+    override_payment_days: Optional[int] = None,
+    operator_description: str = "",
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
 ) -> JSONResponse:
     """Return the exact payload that would be sent to wFirma on Convert.
 
     Read-only — fetches the proforma XML from wFirma (no write), builds the
     disclosure. Operator reviews before clicking the final Convert button.
+
+    The disclosure now includes ``description_preview`` (the exact description
+    text that will be posted to wFirma) and ``payload_core_hash`` covering that
+    description so the execute route can detect any stale modal.
+
+    Override query params mirror the _FinalInvoiceConfirmReq body fields so that
+    the modal can re-fetch the disclosure whenever the operator changes payment
+    method, invoice date, sale date, or payment days — keeping the preview
+    byte-for-byte identical to what will be posted.
     """
     from ..services.payload_disclosure import build_invoice_convert_disclosure
     from ..services import proforma_to_invoice as p2i
@@ -11012,6 +11129,7 @@ def disclose_proforma_convert(
         pass
 
     # Fix 2 (RC-2): unified series resolver — ADR-027 D6 — all three callers.
+    # (Still needed for `_resolved_series` passed to build_invoice_convert_disclosure.)
     _vat_ctx_disclose = ((d.vat_context or "").lower().strip() if hasattr(d, "vat_context") else "")
     _resolved_series, _series_advisories_d = _resolve_final_series(
         vat_context=_vat_ctx_disclose,
@@ -11019,9 +11137,41 @@ def disclose_proforma_convert(
         customer_master=_cm_inv,
     )
 
-    # Fix 6 (RC-5): due-date advisories for disclosure modal (Lesson N: advisory only).
+    # Description preview + description-covering hash via _build_convert_candidate.
+    # This is the SAME helper called by the execute route so preview == execute.
+    # On ZeroBillableInvoice the description preview is omitted (not a hard error
+    # here — the execute route will block if the operator tries to proceed).
+    _desc_preview: Optional[str] = None
+    _hash_override: Optional[str] = None
+    _candidate_eff_days: Optional[int] = None  # for due-date advisory below
+    try:
+        _dc = _build_convert_candidate(
+            d, snap,
+            operator_series_in      = final_series_id,
+            override_payment_method = override_payment_method,
+            override_invoice_date   = override_invoice_date,
+            override_sale_date      = override_sale_date,
+            override_payment_days   = override_payment_days,
+            # Opus review fix 3: execute accepts operator_description (it changes the
+            # final description and therefore the hash); disclose must accept it too
+            # or API callers using it get a guaranteed hash-mismatch block.
+            operator_description    = operator_description,
+        )
+        _desc_preview        = _dc["plan"].description
+        _hash_override       = _dc["core_hash"]
+        _candidate_eff_days  = _dc["effective_days"]
+    except p2i.ZeroBillableInvoice:
+        pass  # advisory — execute will block
+    except Exception:
+        pass  # best-effort; disclosure still shows payment/series block
+
+    # Fix 6 (RC-5): due-date advisories (Lesson N: advisory only).
+    # Use candidate's effective_days when available; fall back to draft/CM comparison.
     _due_date_advisories_d: list = []
-    if _draft_days is None and _cm_days is None:
+    _eff_days_for_advisory = _candidate_eff_days if _candidate_eff_days is not None else (
+        _draft_days if _draft_days is not None else _cm_days
+    )
+    if _eff_days_for_advisory is None:
         _due_date_advisories_d.append(
             f"No payment_days configured; payment due will be inherited from source proforma: "
             f"{snap.paymentdate}"
@@ -11037,6 +11187,8 @@ def disclose_proforma_convert(
         draft_sale_date=_draft_sale_date,
         customer_default_method=_cm_method,
         customer_default_days=_cm_days,
+        description_preview=_desc_preview,
+        payload_core_hash_override=_hash_override,
     )
     disclosure["series_advisories"]   = _series_advisories_d
     disclosure["due_date_advisories"] = _due_date_advisories_d
