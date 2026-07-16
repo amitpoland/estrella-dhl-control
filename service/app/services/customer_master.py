@@ -409,6 +409,75 @@ def pick_proforma_series_id(c: CustomerMaster, default: Optional[str] = None) ->
     return c.preferred_proforma_series_id or default
 
 
+def _normalise_vat_context(vat_context: str) -> str:
+    """Map raw vat_context string to one of: wdt | export | domestic."""
+    ctx = (vat_context or "").lower().strip()
+    if ctx in ("wdt", "export"):
+        return ctx
+    return "domestic"
+
+
+def resolve_final_invoice_series_id(
+    *,
+    vat_context: str = "",
+    operator_series_in: str = "",
+    customer_master=None,
+) -> tuple:
+    """ADR-027 D6: canonical series resolver for final-invoice conversion.
+
+    Precedence (first non-empty wins):
+      1. operator_series_in (operator override — non-empty, non-"0")
+      2. Customer Master series for vat_context
+      3. "" → <series> omitted; wFirma contractor default applies
+
+    The source proforma's own series is NEVER consulted — a proforma-type
+    series must never be used for a final invoice.
+
+    Authority: PROFORMA (series selection; named fiscal risk: misfiling an
+    invoice into the proforma series).
+
+    Returns:
+        (series_id: str, advisories: list[str])
+    """
+    advisories: list = []
+
+    # Normalise "0" sentinel to empty (wFirma internal; never a real series)
+    op_in = (operator_series_in or "").strip()
+    if op_in == "0":
+        op_in = ""
+
+    ctx = _normalise_vat_context(vat_context)
+
+    # Step 1: operator override wins
+    if op_in:
+        # Advisory when operator series differs from what CM would choose
+        if customer_master is not None:
+            try:
+                cm_series = pick_invoice_series_id_for_vat_context(customer_master, ctx)
+            except ValueError:
+                cm_series = ""
+            if cm_series and op_in != cm_series:
+                advisories.append(
+                    f"Operator-provided series {op_in!r} differs from "
+                    f"Customer Master preferred series {cm_series!r} "
+                    f"for vat_context={ctx!r} (advisory — conversion continues)"
+                )
+        return op_in, advisories
+
+    # Step 2: Customer Master series for vat_context
+    if customer_master is not None:
+        try:
+            cm_series = pick_invoice_series_id_for_vat_context(customer_master, ctx)
+            return cm_series, advisories
+        except ValueError as exc:
+            # Missing CM series is an advisory (not a blocker) — ADR-027 D6 step 3
+            advisories.append(str(exc))
+            return "", advisories
+
+    # Step 3: empty → omit <series>; wFirma contractor default applies
+    return "", advisories
+
+
 def pick_vat_mode(c: CustomerMaster) -> Optional[int]:
     """Return the customer's stored vat_mode (222 / 228 / 229) or None.
 

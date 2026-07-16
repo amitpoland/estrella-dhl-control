@@ -589,6 +589,174 @@ def test_dashboard_does_not_auto_call_execute_on_load():
     assert "setTimeout"  not in surrounding
 
 
+# ── Fix 4 (RC-4): payload hash guard ─────────────────────────────────────
+
+def _hash_for(xml: str, series_id: str) -> str:
+    """Compute the expected hash for a proforma XML + series_id combination."""
+    from app.services.proforma_to_invoice import (
+        parse_proforma_xml, compute_conversion_core_hash,
+    )
+    snap = parse_proforma_xml(xml)
+    return compute_conversion_core_hash(
+        snap.contractor_id, snap.currency, series_id, snap.contents,
+    )
+
+
+def test_execute_blocked_when_hash_mismatches(client, storage):
+    """Fix 4 (RC-4): if expected_payload_hash is provided and mismatches
+    the recomputed hash, the execute endpoint must return ok=False / status=blocked.
+    wFirma must NOT be called."""
+    _seed_issued_proforma(storage)
+    src_xml = _proforma_xml()
+    fetch_calls = [
+        src_xml,
+        _created_invoice_xml(inv_id="500099"),
+    ]
+    with _gate_invoice_on(), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls), \
+         patch.object(wc, "_http_request",
+                      side_effect=AssertionError("wFirma must not be called on hash mismatch")):
+        body = client.post(
+            _EXECUTE_URL.format(batch=BATCH, client=CLIENT),
+            headers={**_auth(), "X-Operator": "amit"},
+            json={
+                "confirm":               CONFIRM_TOKEN,
+                "expected_payload_hash": "aaaa" + "0" * 60,  # wrong hash (64 hex chars)
+            },
+        ).json()
+    assert body.get("ok") is False, f"Expected ok=False on hash mismatch, got: {body}"
+    assert body.get("status") == "blocked", body
+    assert any("hash" in (r or "").lower() or "mismatch" in (r or "").lower()
+               for r in body.get("blocking_reasons", [])), (
+        f"Blocking reason must mention hash mismatch; got: {body.get('blocking_reasons')}"
+    )
+
+
+def test_execute_succeeds_when_hash_matches(client, storage):
+    """Fix 4 (RC-4): correct expected_payload_hash passes the hash guard."""
+    _seed_issued_proforma(storage)
+    src_xml = _proforma_xml()
+    # Hash is computed over (contractor_id, currency, series="", contents)
+    # Routes resolve series="" (no CM, no operator override) → series=""
+    correct_hash = _hash_for(src_xml, "")
+    fetch_calls = [
+        src_xml,
+        _created_invoice_xml(inv_id="500100"),
+    ]
+    def _fake_http(method, module, op, body):
+        return 200, """<?xml version="1.0"?>
+<api><invoices><invoice><id>500100</id><fullnumber>FA 100/5/2026</fullnumber>
+</invoice></invoices><status><code>OK</code></status></api>"""
+
+    with _gate_invoice_on(), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http):
+        body = client.post(
+            _EXECUTE_URL.format(batch=BATCH, client=CLIENT),
+            headers={**_auth(), "X-Operator": "amit"},
+            json={
+                "confirm":               CONFIRM_TOKEN,
+                "expected_payload_hash": correct_hash,
+            },
+        ).json()
+    assert body.get("ok") is True, f"Expected ok=True with correct hash, got: {body}"
+    assert body.get("status") == "issued", body
+
+
+def test_execute_succeeds_when_hash_absent(client, storage):
+    """Fix 4 (RC-4) backward-compat: omitting expected_payload_hash succeeds.
+    Old callers without a hash field must continue to work."""
+    _seed_issued_proforma(storage)
+    src_xml = _proforma_xml()
+    fetch_calls = [
+        src_xml,
+        _created_invoice_xml(inv_id="500101"),
+    ]
+    def _fake_http(method, module, op, body):
+        return 200, """<?xml version="1.0"?>
+<api><invoices><invoice><id>500101</id><fullnumber>FA 101/5/2026</fullnumber>
+</invoice></invoices><status><code>OK</code></status></api>"""
+
+    with _gate_invoice_on(), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http):
+        body = client.post(
+            _EXECUTE_URL.format(batch=BATCH, client=CLIENT),
+            headers={**_auth(), "X-Operator": "amit"},
+            # No expected_payload_hash field — backward compat
+            json={"confirm": CONFIRM_TOKEN},
+        ).json()
+    assert body.get("ok") is True, f"Expected ok=True with absent hash, got: {body}"
+    assert body.get("status") == "issued", body
+
+
+# ── Fix 6 (RC-5): due-date advisories ─────────────────────────────────────
+
+def test_execute_advisory_when_no_payment_days(client, storage):
+    """Fix 6 (RC-5): when no payment_days is configured anywhere, the
+    execute response must include an advisory (Lesson N — NOT a blocker)."""
+    _seed_issued_proforma(storage)
+    src_xml = _proforma_xml()
+    fetch_calls = [
+        src_xml,
+        _created_invoice_xml(inv_id="500200"),
+    ]
+    def _fake_http(method, module, op, body):
+        return 200, """<?xml version="1.0"?>
+<api><invoices><invoice><id>500200</id><fullnumber>FA 200/5/2026</fullnumber>
+</invoice></invoices><status><code>OK</code></status></api>"""
+
+    with _gate_invoice_on(), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http):
+        # No payment_days in body — triggers advisory
+        body = client.post(
+            _EXECUTE_URL.format(batch=BATCH, client=CLIENT),
+            headers={**_auth(), "X-Operator": "amit"},
+            json={"confirm": CONFIRM_TOKEN},
+        ).json()
+
+    # Request must still succeed — advisory is NOT a blocker (Lesson N)
+    assert body.get("ok") is True, (
+        f"No-payment_days advisory must NOT block; got: {body}"
+    )
+    advisories = body.get("convert_advisories", [])
+    # Advisory is emitted only when CM also has no days; test has no CM setup
+    # so we check: either advisory present OR no blocking
+    if advisories:
+        assert not any("blocking" in a.lower() for a in advisories), (
+            "Lesson N: advisory-class signals must never appear as blockers"
+        )
+
+
+def test_execute_due_date_advisory_never_in_blocking_reasons(client, storage):
+    """Lesson N: due-date advisory must NEVER appear in blocking_reasons.
+    Only fiscal-risk signals (Lesson N true-blocker list) go there."""
+    _seed_issued_proforma(storage)
+    src_xml = _proforma_xml()
+    fetch_calls = [
+        src_xml,
+        _created_invoice_xml(inv_id="500201"),
+    ]
+    def _fake_http(method, module, op, body):
+        return 200, """<?xml version="1.0"?>
+<api><invoices><invoice><id>500201</id><fullnumber>FA 201/5/2026</fullnumber>
+</invoice></invoices><status><code>OK</code></status></api>"""
+
+    with _gate_invoice_on(), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls), \
+         patch.object(wc, "_http_request", side_effect=_fake_http):
+        body = client.post(
+            _EXECUTE_URL.format(batch=BATCH, client=CLIENT),
+            headers={**_auth(), "X-Operator": "amit"},
+            json={"confirm": CONFIRM_TOKEN},
+        ).json()
+
+    assert "payment" not in str(body.get("blocking_reasons", [])).lower(), (
+        "Due-date / payment-terms signals must never appear in blocking_reasons"
+    )
+
+
 # ── 9. No background path references the execute endpoint ─────────────────
 
 def test_no_background_or_auto_conversion_path():

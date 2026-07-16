@@ -21,6 +21,7 @@ Two disclosure types:
 from __future__ import annotations
 
 import logging
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
 log = logging.getLogger(__name__)
@@ -129,7 +130,7 @@ _PM_MAP_TO_WF = {v: k for k, v in _PM_MAP_TO_EN.items()}
 
 def build_invoice_convert_disclosure(
     proforma_snap: Any,
-    final_series_id: str = "",
+    final_series_id: Optional[str] = None,
     operator: str = "",
     draft_method: str = "",
     draft_days: Optional[int] = None,
@@ -156,8 +157,14 @@ def build_invoice_convert_disclosure(
     proforma_number  = _get("proforma_number", "")
     contractor_id    = _get("contractor_id", "")
     currency         = _get("currency", "")
-    series_id        = final_series_id or _get("series_id", "")
-    source_lines     = _get("lines", []) or []
+    # None = caller did not resolve a series (legacy) → fall back to the snap's own.
+    # ""   = ADR-027 D6 step 3: series validly resolved to EMPTY (<series> omitted,
+    #        wFirma contractor default). Must NOT fall back to the proforma's series —
+    #        the execute path hashes "" and a falsy fallback here desynchronises
+    #        payload_core_hash (Opus review D-1).
+    series_id        = _get("series_id", "") if final_series_id is None else final_series_id
+    # RC-1 fix: ProformaSnapshot field is `contents`, not `lines`
+    source_lines     = _get("contents", []) or []
 
     # Payment method resolution: draft saved > wFirma XML (Polish) > customer master
     snap_method_wf   = (_get("paymentmethod", "") or "").strip()
@@ -171,7 +178,84 @@ def build_invoice_convert_disclosure(
         "not_set"
     )
 
-    return {
+    # RC-1 fix: line projection uses correct LineItem field names.
+    # Backward-compat: also accept dict-input (legacy callers).
+    def _proj_line(ln) -> Dict[str, Any]:
+        if isinstance(ln, dict):
+            return {
+                "good_id":    str(ln.get("good_id", "") or ""),
+                "name":       str(ln.get("name", "") or ""),
+                "unit_count": str(ln.get("unit_count", "") or ""),
+                "price":      str(ln.get("price", "") or ""),
+                "currency":   currency,
+            }
+        return {
+            "good_id":    str(getattr(ln, "good_id", "") or ""),
+            "name":       str(getattr(ln, "name", "") or ""),
+            "unit_count": str(getattr(ln, "unit_count", "") or ""),
+            "price":      str(getattr(ln, "price", "") or ""),
+            "currency":   currency,
+        }
+
+    projected_lines = [_proj_line(ln) for ln in source_lines[:50]]
+
+    # grand_total = sum(price × unit_count) across all source lines
+    _grand_total = Decimal("0")
+    for ln in source_lines:
+        try:
+            if isinstance(ln, dict):
+                _p = Decimal(str(ln.get("price", "0") or "0"))
+                _q = Decimal(str(ln.get("unit_count", "1") or "1"))
+            else:
+                _p = Decimal(str(getattr(ln, "price", "0") or "0"))
+                _q = Decimal(str(getattr(ln, "unit_count", "1") or "1"))
+            _grand_total += _p * _q
+        except InvalidOperation:
+            pass  # safe fallback: skip malformed line
+    grand_total = str(_grand_total)
+
+    # series_name from wfirma_dictionary_cache (graceful on miss / error)
+    series_name = "wFirma contractor default" if not series_id else ""
+    series_name_note = ""
+    try:
+        from .wfirma_dictionary_cache import get_dictionaries as _get_dicts
+        _catalog = {
+            e["id"]: e.get("label", "")
+            for e in (_get_dicts().get("invoice_series") or [])
+            if e.get("id")
+        }
+        if not series_id:
+            pass  # label already set — must not depend on cache availability
+        elif series_id in _catalog:
+            series_name = _catalog[series_id]
+        else:
+            series_name = ""
+            series_name_note = "refresh dictionary cache to resolve name"
+    except Exception:
+        pass  # cache unavailable — series_name stays empty
+
+    # payload_core_hash for immutable-preview contract (RC-4)
+    payload_core_hash = ""
+    try:
+        from .proforma_to_invoice import compute_conversion_core_hash as _chash
+        payload_core_hash = _chash(contractor_id, currency, series_id, source_lines)
+    except Exception:
+        pass  # pure-function — failure is non-fatal
+
+    _fields_to_write: Dict[str, Any] = {
+        "type":           "normal (final invoice)",
+        "contractor_id":  contractor_id,
+        "currency":       currency,
+        "series_id":      series_id,
+        "series_name":    series_name,
+        "payment_method": resolved_method,
+        "line_count":     len(source_lines),
+        "operator":       operator,
+    }
+    if series_name_note:
+        _fields_to_write["series_name_note"] = series_name_note
+
+    _result: Dict[str, Any] = {
         "disclosure_type":   "invoice_convert",
         "write_target":      "wFirma invoices/add (type=normal — FINAL INVOICE)",
         "flag_required":     "WFIRMA_CREATE_INVOICE_ALLOWED",
@@ -186,24 +270,12 @@ def build_invoice_convert_disclosure(
             "customer_default_days":   customer_default_days,
             "source":                  resolved_source,
         },
-        "fields_to_write": {
-            "type":           "normal (final invoice)",
-            "contractor_id":  contractor_id,
-            "currency":       currency,
-            "series_id":      series_id,
-            "payment_method": resolved_method,
-            "line_count":     len(source_lines),
-            "operator":       operator,
-        },
-        "lines": [
-            {
-                "good_id":    getattr(ln, "wfirma_good_id", ln.get("wfirma_good_id", "") if isinstance(ln, dict) else ""),
-                "qty":        getattr(ln, "qty", ln.get("qty", 0) if isinstance(ln, dict) else 0),
-                "unit_price": getattr(ln, "unit_price", ln.get("unit_price", 0) if isinstance(ln, dict) else 0),
-                "currency":   getattr(ln, "currency", ln.get("currency", currency) if isinstance(ln, dict) else currency),
-            }
-            for ln in source_lines[:50]
-        ],
+        "fields_to_write": _fields_to_write,
+        "lines":           projected_lines,
+        "grand_total":          grand_total,
+        "grand_total_currency": currency,
+        "series_name":          series_name,
+        "payload_core_hash":    payload_core_hash,
         "confirm_token_required": "YES_CREATE_FINAL_INVOICE_FROM_PROFORMA",
         "warning": (
             "This action will CREATE a FINAL TAX INVOICE in your live wFirma account. "
@@ -211,6 +283,9 @@ def build_invoice_convert_disclosure(
             "Verify contractor, series, currency, and all lines before confirming."
         ),
     }
+    if series_name_note:
+        _result["series_name_note"] = series_name_note
+    return _result
 
 
 # ── Pre-flight readiness ──────────────────────────────────────────────────────
