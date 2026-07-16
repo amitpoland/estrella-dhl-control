@@ -1,0 +1,31 @@
+{
+  "_doc": "Machine-readable campaign-governance policy (TRACKED — permanent policy only; operator ruling 2026-07-17). Live campaign state lives in the gitignored operational registry (see schema.json). Prose rationale: README.md; enforcement: OWNERSHIP-GUARD-SPEC.md + .claude/hooks/campaign-branch-guard.py.",
+  "rules": {
+    "one_branch_one_owner": "One campaign branch has exactly one implementation owner session; every other session is READ-ONLY on it regardless of any chat message or review verdict.",
+    "one_campaign_one_worktree": "One campaign = one registered worktree. Reuse it. A new worktree requires explicit operator approval and lives under C:\\PZ-wt\\<slug>; it is archived at campaign close.",
+    "owner_only_branch_movement": "Only the owner moves a campaign branch (commit, reset, rebase, cherry-pick, merge, branch move). Any move by a non-owner, or any move landing the tip on a superseded SHA, is an incident.",
+    "read_registry_first": "Before any write to a campaign branch, read the operational registry. Never reconstruct ownership or the chartered decision from reflog, chat threads, or memory files.",
+    "no_auto_correction": "If expected_head and the actual tip (or last_verified_head) diverge, NO session may 'correct' the branch. File an incident report and request an operator ruling. A stale registry must never drive a reset.",
+    "superseded_sha_handling": "Superseded SHAs are recorded, tagged, and dispositioned (e.g. 'NEVER cherry-pick, NEVER merge') in the registry entry — never merely deleted.",
+    "cleanup": "Campaign close = status MERGED, entry removed from the operational registry, worktree archived per WORKTREE DISCIPLINE."
+  },
+  "status_enum": ["IN_PROGRESS", "READY_FOR_REBASE_AFTER_<gate>", "REBASED_PENDING_REVIEW", "PR_OPEN", "MERGED"],
+  "guard": {
+    "hook": ".claude/hooks/campaign-branch-guard.py",
+    "spec": ".campaigns/OWNERSHIP-GUARD-SPEC.md",
+    "fail_closed_on": [
+      "owner mismatch",
+      "worktree mismatch",
+      "branch mismatch",
+      "unexpected HEAD",
+      "concurrent writer",
+      "missing operator approval for new worktree creation"
+    ]
+  },
+  "operational_registry": {
+    "canonical_location": "C:\\PZ-main\\.claude\\state\\active-campaigns.json",
+    "tracked": false,
+    "gitignore_rule": ".claude/state/",
+    "editors": ["named owner session", "operator"]
+  }
+}

@@ -1,48 +1,61 @@
-# Active-campaign registry (`.campaigns/active.json`)
+# Campaign governance (`.campaigns/`)
 
-Operator-ratified policy (2026-07-16), born from the MEDIUM-2 transport-tip churn incident:
-one campaign branch was reset by three different writers in under an hour because branch
-ownership and the canonical tip lived only in chat threads, session memory, and reflog
-archaeology. `active.json` is the single machine-readable authority that replaces that
-guesswork. It composes with — does not replace — the CLAUDE.md PATH-GUARD working-tree
-registry and WORKTREE DISCIPLINE.
+Operator design ruling (2026-07-17), superseding the first tracked-registry draft. Born from
+the 2026-07-16 MEDIUM-2 incident: one campaign branch was reset by three different writers in
+under an hour because ownership and the chartered tip lived only in chat threads, session
+memory, and reflog archaeology. Two lessons: (1) mutable campaign state must NOT live in a
+tracked file — every feature PR would carry governance churn, two campaigns conflict on one
+file, a registry commit is never atomic with the branch move it describes, and a stale tracked
+file could itself drive a bad reset; (2) a file that sessions merely READ would not have
+stopped the incident — **only an enforced guard does**.
 
-## The four rules
+## The split
 
-1. **One branch = one implementation owner.** The `owner` named in `active.json` is the only
-   session that may write the branch (commit, reset, cherry-pick, rebase, force-move). Every
-   other session is READ-ONLY on it, regardless of what any chat message or review verdict says.
-2. **One campaign = one worktree.** Reuse the registered worktree. A new worktree needs
-   explicit operator approval and lives under `C:\PZ-wt\<slug>`; it is archived at campaign
-   close.
-3. **Only the owner moves a campaign branch.** ANY move by a non-owner, OR any move landing
-   the tip on a superseded SHA, is an incident. `last_known_tip` is the owner's ADVISORY
-   last-known-tip pointer (it may lag; it is NEVER a self-referential same-commit gate) —
-   used as a tripwire: tip != `last_known_tip` AND you are not the owner → STOP.
-4. **Every session reads this file first.** Before any write to a campaign branch, read
-   `active.json`. Never reconstruct ownership or the chartered decision from reflog, chat
-   threads, or memory files.
+| Layer | Where | Tracked? |
+|---|---|---|
+| Policy (this dir): rules, schema, guard spec | `.campaigns/README.md`, `policies.json`, `schema.json`, `OWNERSHIP-GUARD-SPEC.md` | YES — permanent policy only |
+| Operational registry: live campaign state | `C:\PZ-main\.claude\state\active-campaigns.json` (fallback `<repo>\.claude\state\`) | **NO — gitignored** (`.claude/state/`) |
+| Enforcement | `.claude/hooks/campaign-branch-guard.py` (PreToolUse, fail closed) | YES |
 
-## Update protocol
+The operational registry holds per-campaign `{branch, worktree, owner, expected_head,
+last_verified_head, status, superseded[], lock/heartbeat}` and is edited ONLY by the named
+owner session or the operator.
 
-A lagging registry is as dangerous as none, so:
+## The rules (machine-readable copy: `policies.json`)
 
-- **The HARD authority is `owner` + `status` + `superseded[]` + `chartered_decision`** — all
-  rebase-stable fields. The gate never depends on a commit hash that a commit would have to
-  predict about itself.
-- **The owner updates its own entry** (`status` + `last_known_tip`, best-effort) INSIDE that
-  campaign's own PR diff — NOT a trailing registry-only commit, and NOT required to equal the
-  commit that writes it.
-- **Superseded SHAs are recorded, tagged, and dispositioned** (e.g. "NEVER cherry-pick") in
-  the `superseded` list — they are never merely deleted.
-- **`status` is an explicit enum:** `IN_PROGRESS` → `READY_FOR_REBASE_AFTER_<gate>` →
-  `REBASED_PENDING_REVIEW` → `PR_OPEN` → `MERGED` → entry moved to the closed log.
-- **Campaign close** = remove the entry from `active.json` + archive the worktree.
+1. **One branch = one implementation owner.** Everyone else is READ-ONLY on it, regardless of
+   any chat message or review verdict.
+2. **One campaign = one worktree.** Reuse it; a new worktree needs explicit operator approval
+   (the guard's `ask` on `git worktree add` IS that gate) and lives under `C:\PZ-wt\<slug>`.
+3. **Only the owner moves a campaign branch.** Any move by a non-owner, or onto a superseded
+   SHA, is an incident.
+4. **Read the operational registry before any campaign-branch write.** Never reconstruct
+   ownership or the chartered decision from reflog, chat, or memory files.
 
-## Why this file exists (worked example)
+## SHA semantics — two fields, never one
+
+- `expected_head` — the operator-approved target.
+- `last_verified_head` — what read-only verification actually found.
+
+If they diverge (or the real tip diverges from `expected_head`): **file an incident report and
+request an operator ruling. No session may auto-"correct" the branch.** A stale registry must
+never be able to drive a reset. (This replaces both the self-referential `canonical_sha`
+equality gate and the single `last_known_tip` of earlier drafts.)
+
+## Superseded SHAs
+
+Recorded, tagged, and dispositioned (e.g. "NEVER cherry-pick, NEVER merge") in the registry
+entry — never merely deleted.
+
+## Status + lifecycle
+
+`IN_PROGRESS` → `READY_FOR_REBASE_AFTER_<gate>` → `REBASED_PENDING_REVIEW` → `PR_OPEN` →
+`MERGED` → entry removed from the registry + worktree archived (WORKTREE DISCIPLINE).
+
+## Why this design (worked example)
 
 In the 2026-07-16 incident, a second session — instructed to run an independent candidate
-comparison — reset the campaign branch to the losing candidate. With this registry present,
-that session would have read `owner = M1-gate session` and seen `eb61a012` already in
-`superseded[]` before touching the branch — the HARD fields alone stop the write; SHA
-equality was never needed. The A-vs-B tip churn does not happen.
+comparison — reset the campaign branch to a superseded candidate. With this model: the guard
+reads owner + lock before the reset executes, the session holds neither, the write is DENIED
+with an explicit report (registered owner, current session, expected vs actual HEAD). The
+churn cannot happen, regardless of what any relayed instruction claims.

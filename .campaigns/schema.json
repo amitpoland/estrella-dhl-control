@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "estrella-pz/campaigns/active-campaigns.schema.json",
+  "title": "Operational active-campaign registry (GITIGNORED — never tracked)",
+  "description": "Schema for the operational registry at the canonical state location (C:\\PZ-main\\.claude\\state\\active-campaigns.json). Mutable live campaign state lives ONLY there, never in a tracked file (operator ruling 2026-07-17). Edited only by the named owner session or the operator.",
+  "type": "object",
+  "required": ["campaigns"],
+  "properties": {
+    "campaigns": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["branch", "worktree", "owner", "expected_head", "status"],
+        "properties": {
+          "branch": { "type": "string", "description": "Campaign branch name (exactly one implementation owner)." },
+          "worktree": { "type": "string", "description": "The ONE registered worktree for this campaign." },
+          "owner": { "type": "string", "description": "Human-readable owner session label." },
+          "expected_head": {
+            "type": "string", "pattern": "^[0-9a-f]{8,40}$",
+            "description": "Operator-approved target SHA. Divergence from the actual tip is an INCIDENT to report — never auto-correct; a stale file must never drive a reset."
+          },
+          "last_verified_head": {
+            "type": "string", "pattern": "^[0-9a-f]{8,40}$",
+            "description": "What read-only verification actually found at last check. May lag expected_head; divergence => incident report + operator ruling."
+          },
+          "status": {
+            "type": "string",
+            "pattern": "^(IN_PROGRESS|READY_FOR_REBASE_AFTER_[A-Z0-9_]+|REBASED_PENDING_REVIEW|PR_OPEN|MERGED)$"
+          },
+          "chartered_decision": { "type": "string", "description": "Human label of the operator-ratified decision governing this branch tip." },
+          "superseded": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["sha", "disposition"],
+              "properties": {
+                "sha": { "type": "string", "pattern": "^[0-9a-f]{8,40}$" },
+                "tag": { "type": "string" },
+                "branch": { "type": "string" },
+                "why": { "type": "string" },
+                "disposition": { "type": "string", "description": "e.g. 'NEVER cherry-pick, NEVER merge'" }
+              }
+            }
+          },
+          "lock": {
+            "type": ["object", "null"],
+            "description": "Write-lock held by the active owner session. null = unclaimed; guard escalates to the operator on any write while unclaimed.",
+            "properties": {
+              "session_id": { "type": "string" },
+              "claimed_at": { "type": "string", "format": "date-time" },
+              "heartbeat_at": { "type": "string", "format": "date-time" }
+            },
+            "required": ["session_id", "claimed_at"]
+          }
+        }
+      }
+    }
+  }
+}

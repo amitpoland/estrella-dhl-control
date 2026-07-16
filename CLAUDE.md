@@ -106,8 +106,12 @@ Reading from any path not listed below is a source-drift risk.
    must disposition it (reuse / salvage+delete), not ignore it.
 
 **Campaign-branch write rule (enforced):** Before any reset/force-move/cherry-pick on a campaign
-branch, read `.campaigns/active.json` (per-campaign owner + canonical SHA authority; rules in
-`.campaigns/README.md`). A session that is not the registered owner never writes the branch.
+branch, read the OPERATIONAL registry `C:\PZ-main\.claude\state\active-campaigns.json`
+(gitignored — mutable campaign state is never tracked). Policy + schema + guard spec:
+`.campaigns/`. Enforcement: `.claude/hooks/campaign-branch-guard.py` (PreToolUse, fail closed)
+denies campaign-branch writes on owner/worktree/branch mismatch, unexpected HEAD, or a
+concurrent writer; `expected_head`≠actual tip is an INCIDENT requiring an operator ruling —
+never auto-correct.
 
 **Subagent reading rule (enforced):** All verification reads and git operations must use `C:\PZ-verify`.
 
