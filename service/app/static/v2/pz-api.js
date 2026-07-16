@@ -615,12 +615,15 @@
     createCarrierShipment: (batchId, body) =>
       _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`, body),
 
-    // GET /api/v1/carrier/{batch_id}/shipment
-    // Most-recent recorded carrier shipment for the batch (404 when none).
-    // Returns the same AWB logistics/document contract as create, plus
-    // created_at + error. Legacy rows return null tracking_ref honestly.
-    getCarrierShipment: (batchId) =>
-      _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`),
+    // GET /api/v1/carrier/{batch_id}/shipment?client_ref={client_name}
+    // The carrier shipment that belongs to THIS client's draft (404 when none).
+    // client_ref (draft client_name) scopes resolution to one client so two
+    // clients in the same import batch never resolve to the same AWB/CMR
+    // (2026-07-16 cross-client AWB leak). Legacy single-client batches still
+    // resolve; multi-client legacy batches return an honest 404.
+    getCarrierShipment: (batchId, clientRef) =>
+      _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`
+        + (clientRef ? `?client_ref=${encodeURIComponent(clientRef)}` : '')),
 
     // POST /api/v1/carrier/{batch_id}/shipment/{tracking_ref}/do-not-use
     // LOCAL operational flag for duplicate/unused labels — never calls DHL,

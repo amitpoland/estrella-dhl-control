@@ -36,6 +36,7 @@ from pydantic import BaseModel
 from ..core.security import require_api_key
 from ..services.carrier.coordinator import CarrierCoordinator, CoordinatorConfig
 from ..services.carrier.factory import CarrierConfig
+from ..services.carrier.cmr_number import cmr_document_number
 from ..services.carrier.models.shipment import CarrierGateError, ShipmentRequest
 from ..services.carrier.persistence import shipment_db
 
@@ -86,6 +87,43 @@ def _get_shipment_db_path() -> Path:
     root = settings.carrier_storage_root or (settings.storage_root / "carrier")
     root.mkdir(parents=True, exist_ok=True)
     return root / "carrier_shipments.db"
+
+
+def _batch_not_multi_client(batch_id: str) -> bool:
+    """True unless the proforma authority AFFIRMATIVELY shows >1 client draft.
+
+    Draft identity is (batch_id, client_name), so distinct client_name for a
+    batch = number of client drafts. Governs the legacy single-client fallback
+    in get_shipment_for_draft (attributing a NULL-client_ref row to a draft).
+
+    Safety model: the resolver already refuses to fall back unless there is
+    EXACTLY ONE shipment row for the batch. The only case that guard cannot
+    catch is a multi-client batch with a single (pre-client_ref) booking —
+    detectable only via proforma. proforma_links.db is always present in
+    production, so:
+      * DB absent (e.g. unit tests, fresh env) → permissive (True): the
+        single-row guard is sufficient; there is no multi-client data to leak.
+      * DB present, ≤1 distinct client → single-client → True.
+      * DB present, >1 distinct client → multi-client → False (deny fallback,
+        honest-missing — this is the leak fix).
+      * DB present but unreadable → strict (False): never guess when real
+        proforma data exists but we failed to read it.
+    """
+    from ..core.config import settings
+    link_db = settings.storage_root / "proforma_links.db"
+    if not link_db.exists():
+        return True
+    try:
+        from ..services import proforma_invoice_link_db as pildb
+        drafts = pildb.list_drafts_for_batch(link_db, batch_id)
+        names = {
+            (getattr(d, "client_name", "") or "").strip()
+            for d in drafts
+        }
+        names.discard("")
+        return len(names) <= 1
+    except Exception:
+        return False
 
 
 # ── Label / document location helpers ─────────────────────────────────────────
@@ -243,6 +281,9 @@ class ShipmentRequestBody(BaseModel):
     receiver_vat_id: Optional[str] = None     # receiver EU VAT number
     receiver_eori: Optional[str] = None       # receiver EORI number
     box_type_code: Optional[str] = None       # Box Master profile selected in the modal
+    client_ref: Optional[str] = None          # per-client shipment scope (draft client_name);
+                                              # scopes idempotency key + row to one client so
+                                              # two clients in the same batch never share an AWB
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -350,6 +391,7 @@ def create_shipment(
         receiver_vat_id=body.receiver_vat_id,
         receiver_eori=body.receiver_eori,
         box_type_code=body.box_type_code,
+        client_ref=(body.client_ref or None),
     )
     try:
         result = coordinator.create_shipment(request)
@@ -397,16 +439,31 @@ def create_shipment(
 @router.get("/{batch_id}/shipment")
 def get_shipment(
     batch_id: str,
+    client_ref: Optional[str] = None,
     _auth: None = Depends(require_api_key),
     _config: CarrierConfig = Depends(_get_carrier_config),
     db_path: Path = Depends(_get_shipment_db_path),
 ) -> JSONResponse:
     shipment_db.init_db(db_path)
-    row = shipment_db.get_shipment_by_batch_id(db_path, batch_id)
+    # Per-client resolution — a shipment belongs to ONE client's draft, never to
+    # "the latest row for the whole batch" (2026-07-16 cross-client AWB leak).
+    # An exact (batch_id, client_ref) row is always safe; a legacy NULL-client_ref
+    # row is attributed only when the batch is unambiguously single-client.
+    _client = (client_ref or "").strip() or None
+    row = shipment_db.get_shipment_for_draft(
+        db_path,
+        batch_id,
+        _client,
+        allow_single_client_fallback=_batch_not_multi_client(batch_id),
+    )
     if row is None:
         raise HTTPException(
             status_code=404,
-            detail=f"No shipment found for batch {batch_id!r}.",
+            detail=(
+                f"No shipment linked to this client for batch {batch_id!r}."
+                if _client else
+                f"No shipment found for batch {batch_id!r}."
+            ),
         )
 
     tracking_ref = row.get("tracking_ref")
@@ -433,6 +490,13 @@ def get_shipment(
         # does not. This is the canonical source for the CMR document number —
         # NEVER batch_id and NEVER tracking_ref.
         "export_shipment_id": row["idempotency_key"],
+        # Short, deterministic CMR document number derived from export_shipment_id
+        # (ADR-proforma-cmr-short-number). The full id above stays as audit
+        # provenance; only this short form is printed on the CMR. Independent of
+        # the AWB; rebook-stable; NEVER batch_id.
+        "cmr_number": cmr_document_number(row["idempotency_key"]),
+        # Per-client shipment scope (draft client_name); null for legacy rows.
+        "client_ref": row.get("client_ref"),
         "mode": row["mode"],
         "state": row["state"],
         "simulated": bool(row["simulated"]),

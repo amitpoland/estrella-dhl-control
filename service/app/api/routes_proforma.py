@@ -4852,6 +4852,8 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         # source changed since the override was confirmed — without overwriting it.
         "manual_net_weight":      getattr(d, "manual_net_weight", None),
         "manual_gross_weight":    getattr(d, "manual_gross_weight", None),
+        "manual_tare_weight":     getattr(d, "manual_tare_weight", None),   # kg
+        "tare_weight_source":     getattr(d, "tare_weight_source", None),   # manual | cleared
         "weight_override_reason": getattr(d, "weight_override_reason", None),
         "weight_confirmed_at":    getattr(d, "weight_confirmed_at", None),
         "weight_confirmed_by":    getattr(d, "weight_confirmed_by", None),
@@ -9182,10 +9184,12 @@ def set_draft_weight_override(
 
     net = _validate("manual_net_weight", body.get("manual_net_weight"))
     gross = _validate("manual_gross_weight", body.get("manual_gross_weight"))
-    if net is None and gross is None:
+    tare = _validate("manual_tare_weight", body.get("manual_tare_weight"))
+    if net is None and gross is None and tare is None:
         raise HTTPException(
             status_code=422,
-            detail="at least one of manual_net_weight / manual_gross_weight is required (kg)",
+            detail="at least one of manual_net_weight / manual_gross_weight / "
+                   "manual_tare_weight is required (kg)",
         )
 
     db = _proforma_db_path()
@@ -9199,6 +9203,7 @@ def set_draft_weight_override(
         db, int(draft_id),
         manual_net_weight   = net,
         manual_gross_weight = gross,
+        manual_tare_weight  = tare,
         reason              = str(body.get("reason") or ""),
         source_revision     = source_rev,
         operator            = operator,
@@ -10634,7 +10639,12 @@ def _master_db_path() -> "Path":
 
 
 def _carrier_shipment_db_path() -> "Path":
-    return settings.storage_root / "carrier_shipments.db"
+    # Canonical carrier store location — MUST match routes_carrier_actions
+    # (_get_shipment_db_path): {carrier_storage_root or storage_root/carrier}/
+    # carrier_shipments.db. The previous storage_root/carrier_shipments.db was a
+    # wrong path that silently returned null carrier fields in the shipment panel.
+    root = settings.carrier_storage_root or (settings.storage_root / "carrier")
+    return root / "carrier_shipments.db"
 
 
 def _build_shipment_panel(batch_id: Optional[str]) -> Dict[str, Any]:

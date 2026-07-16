@@ -168,7 +168,10 @@ function EJCMRClassic({ cmrData }) {
               {carrier ? `${carrier.origin || "—"} · ${carrier.pickup || "—"}` : "—"}
             </EJCMRBox>
             <EJCMRBox n="5" label="Documents attached" border="left">
-              {d.doc_ref ? `Proforma ${d.doc_ref} · Packing list · Hallmark cert` : "Packing list · Hallmark cert"}
+              {/* List only documents actually attached to the CMR. "Hallmark
+                  certificate" was hardcoded but no such certificate is produced
+                  (2026-07-16 doc-authority repair) — removed. */}
+              {d.doc_ref ? `Proforma ${d.doc_ref} · Packing list` : "Packing list"}
             </EJCMRBox>
           </div>
 

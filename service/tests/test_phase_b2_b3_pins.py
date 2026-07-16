@@ -144,19 +144,24 @@ def test_inventory_page_has_no_spread_rest_components():
 
 # ── B3: real client_po preferred, legacy fallback preserved ──────────────────
 
-def test_proforma_detail_prefers_persisted_client_po():
+def test_proforma_detail_client_po_never_bleeds_purchase_invoice():
+    """2026-07-16 authority repair: client_po is the CLIENT PO only. It must NEVER
+    fall back to pk.invoice_no (the SUPPLIER purchase invoice) — that mix put the
+    purchase invoice into the Client PO column. The purchase invoice is now its
+    own typed field (purchase_invoice_no)."""
     src = _read("proforma-detail.jsx")
-    assert "pk.client_po || pk.invoice_no || ln.client_ref" in src, \
-        "B3: the persisted column must be preferred; legacy expression is the fallback"
-    assert "494c4665" in src, "the fix must cite the persistence commit"
+    assert "client_po:    pk.client_po || ''," in src, \
+        "client_po must resolve to pk.client_po only (honest-missing else)"
+    assert "purchase_invoice_no: pk.invoice_no || ''," in src, \
+        "supplier purchase invoice must be its own typed field, separate from client_po"
+    # the old cross-authority fallback must be gone
+    assert "pk.client_po || pk.invoice_no || ln.client_ref" not in src
 
 
-def test_b3_fallback_semantics():
-    """'' (legacy backfill default) is falsy → pre-fix rows keep the legacy
-    display; a persisted value wins. Pure-expression check mirroring the JSX."""
-    def js_expr(pk_client_po, pk_invoice_no, ln_client_ref):
-        return pk_client_po or pk_invoice_no or ln_client_ref or ""
-    assert js_expr("PO-2026-7", "EJL/26-27/300", "VER") == "PO-2026-7"
-    assert js_expr("", "EJL/26-27/300", "VER") == "EJL/26-27/300"
-    assert js_expr("", "", "VER") == "VER"
-    assert js_expr("", "", "") == ""
+def test_b3_client_po_typed_separation_semantics():
+    """client_po draws ONLY from the client PO column; it never adopts the
+    supplier purchase invoice. Pure-expression check mirroring the JSX."""
+    def client_po(pk_client_po):
+        return pk_client_po or ""
+    assert client_po("PO-2026-7") == "PO-2026-7"
+    assert client_po("") == ""            # missing → honest blank, NOT invoice_no

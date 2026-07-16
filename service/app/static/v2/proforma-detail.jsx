@@ -1322,6 +1322,10 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       receiver_eori:      form.receiver_eori || null,
       special_instructions: form.special_instructions || null,
       box_type_code:      form.box_type_code || null,
+      // Per-client shipment scope — the draft's client_name. Scopes the
+      // idempotency key + carrier row to this client so two clients in the same
+      // import batch never collide onto one AWB/CMR (2026-07-16 leak fix).
+      client_ref:         prefill.client_name || null,
     })
       .then(r => {
         // PzApi wraps responses as { ok, data } / { ok:false, error }.
@@ -3282,7 +3286,16 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
                               confidence % is separate, immutable historical evidence. */}
                           {ln.operator_status === 'confirmed' && !ln.review_required
                             ? <span style={{ color: 'var(--badge-green-text, #2e7d32)', fontWeight: 600 }}
-                                    title={ln.operator_confirmed_by ? `Confirmed by ${ln.operator_confirmed_by}${ln.operator_confirmed_at ? ' · ' + ln.operator_confirmed_at : ''}` : undefined}>✓ Operator confirmed</span>
+                                    title={ln.operator_confirmed_by ? `Confirmed by ${ln.operator_confirmed_by}${ln.operator_confirmed_at ? ' · ' + ln.operator_confirmed_at : ''}` : undefined}>
+                                ✓ Operator confirmed
+                                {/* Operational confidence AFTER confirmation is 100% —
+                                    shown alongside, never overwriting, the historical
+                                    machine confidence in the column at left (2026-07-16). */}
+                                <span data-testid="pf-source-operational-confidence"
+                                      style={{ display: 'block', fontSize: 10.5, fontWeight: 700, color: 'var(--badge-green-text, #2e7d32)' }}>
+                                  100% operational
+                                </span>
+                              </span>
                             : (ln.review_reason === 'source_changed'
                                 ? <span style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }} title="Source changed since confirmation — re-confirm the mapping.">⟳ Re-check required</span>
                                 : (ln.unmatched
@@ -3782,20 +3795,29 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [disclosure, setDisclosure] = React.useState(null);
   React.useEffect(() => {
     if (!draft || !draft.id) return;
+    // Reset before the async fetch so a previous draft's disclosure is never
+    // shown while this draft's response is in flight.
+    setDisclosure(null);
     window.EstrellaShared.apiFetch(`/api/v1/proforma/draft/${draft.id}/disclose-post`)
       .then(d => setDisclosure(d))
       .catch(() => setDisclosure(null));
   }, [draft && draft.id]);
 
-  // WIRED: recorded carrier shipment (GET /api/v1/carrier/{batch_id}/shipment).
+  // WIRED: recorded carrier shipment
+  // (GET /api/v1/carrier/{batch_id}/shipment?client_ref={client_name}).
   // Read-only AWB/logistics/document visibility — 404 (no shipment yet) → null.
+  // client_ref scopes the lookup to THIS client's draft so a sibling client in
+  // the same import batch never shows this draft's AWB/CMR (2026-07-16 leak).
   const [carrierShipment, setCarrierShipment] = React.useState(null);
   const loadCarrierShipment = React.useCallback(() => {
     if (!draft || !draft.batch_id || !window.PzApi.getCarrierShipment) return;
-    window.PzApi.getCarrierShipment(draft.batch_id)
+    // Reset before the async fetch — never leave the previous draft's shipment
+    // visible during the request window.
+    setCarrierShipment(null);
+    window.PzApi.getCarrierShipment(draft.batch_id, draft.client_name || undefined)
       .then(r => setCarrierShipment(r && r.ok ? r.data : null))
       .catch(() => setCarrierShipment(null));
-  }, [draft && draft.batch_id]);
+  }, [draft && draft.batch_id, draft && draft.client_name]);
   React.useEffect(() => { loadCarrierShipment(); }, [loadCarrierShipment]);
 
   // R-2 — split-brain conversion-link detection (read-only). The backend
@@ -3827,7 +3849,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // PR-5 — manual transport-document weight override (kg). The extracted packing
   // weight stays the historical authority; these become effective only on save.
   const [wtEdit, setWtEdit] = React.useState(false);
-  const [wtForm, setWtForm] = React.useState({ net: '', gross: '', reason: '' });
+  const [wtForm, setWtForm] = React.useState({ net: '', gross: '', tare: '', reason: '' });
   const [wtBusy, setWtBusy] = React.useState(false);
   const [wtErr,  setWtErr]  = React.useState(null);
   const _wtUpdatedAt = () => (liveDraft.updated_at || (draft && draft.updated_at) || '');
@@ -3836,6 +3858,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     setWtForm({
       net:   (liveDraft.manual_net_weight   != null ? String(liveDraft.manual_net_weight)   : ''),
       gross: (liveDraft.manual_gross_weight != null ? String(liveDraft.manual_gross_weight) : ''),
+      tare:  (liveDraft.manual_tare_weight  != null ? String(liveDraft.manual_tare_weight)  : ''),
       reason: liveDraft.weight_override_reason || '',
     });
     setWtErr(null); setWtEdit(true);
@@ -3844,8 +3867,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     const fields = { reason: wtForm.reason };
     if (String(wtForm.net).trim()   !== '') fields.manual_net_weight   = parseFloat(wtForm.net);
     if (String(wtForm.gross).trim() !== '') fields.manual_gross_weight = parseFloat(wtForm.gross);
-    if (fields.manual_net_weight == null && fields.manual_gross_weight == null) {
-      setWtErr('Enter a net and/or gross weight (kg).'); return;
+    if (String(wtForm.tare).trim()  !== '') fields.manual_tare_weight  = parseFloat(wtForm.tare);
+    if (fields.manual_net_weight == null && fields.manual_gross_weight == null && fields.manual_tare_weight == null) {
+      setWtErr('Enter a net, gross and/or tare weight (kg).'); return;
     }
     setWtBusy(true); setWtErr(null);
     window.PzApi.setWeightOverride(_wtDraftId(), fields, _wtUpdatedAt())
@@ -4338,9 +4362,16 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       ? lines.reduce((s, l) => s + l.netEur, 0) * fxRate : null,
     // AWB tracking number lives in carrier storage, not in the draft.
     // batch_id is a system reference, not a DHL tracking number — never show it as AWB.
-    // EJDocCarrierRow renders "AWB pending" when awb is null.
-    carrier:  liveDraft.batch_id
-      ? { awb: null, batch_ref: liveDraft.batch_id, incoterm: liveDraft.incoterm || 'DAP' } : null,
+    // The real outbound AWB is the client-scoped carrier shipment's tracking_ref
+    // (same authority the CMR uses); null → EJDocCarrierRow shows "AWB pending".
+    // carrierShipment is already resolved per-client, so this cannot leak a
+    // sibling client's AWB (2026-07-16 fix).
+    carrier:  (liveDraft.batch_id || carrierShipment)
+      ? {
+          awb: (carrierShipment && carrierShipment.tracking_ref) || null,
+          batch_ref: liveDraft.batch_id,
+          incoterm: liveDraft.incoterm || 'DAP',
+        } : null,
     // EUR first — the document currency leads; sort is stable for the rest.
     // Backend returns flat iban_eur/iban_usd/iban_pln/swift/bank_name fields (not bank_accounts[]).
     // Adapt here so EJDocBank receives a normalised array regardless of future schema changes.
@@ -4489,7 +4520,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   //
   // Weight precedence (fixed; never inferred/averaged/divided):
   //   net   : manual → packing extraction → missing
-  //   gross : manual → carrier booking → packing extraction → missing
+  //   tare  : manual → missing (no extracted tare authority)
+  //   gross : manual → carrier booking → packing extraction →
+  //           calculated (net+tare, only when BOTH are explicit) → missing
+  // A calculated gross is DISPLAY-ONLY (source 'calculated_net_plus_tare') and
+  // is never persisted as extracted truth.
   //
   // CMR number is a STABLE transport-document identifier (the export shipment
   // reference), INDEPENDENT of the AWB: a re-booking changes the AWB
@@ -4510,25 +4545,36 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     const exNet = _exNetG / 1000, exGross = _exGrossG / 1000;
     const mNet   = (liveDraft.manual_net_weight   != null && liveDraft.manual_net_weight   !== '') ? Number(liveDraft.manual_net_weight)   : null;
     const mGross = (liveDraft.manual_gross_weight != null && liveDraft.manual_gross_weight !== '') ? Number(liveDraft.manual_gross_weight) : null;
+    const mTare  = (liveDraft.manual_tare_weight  != null && liveDraft.manual_tare_weight  !== '') ? Number(liveDraft.manual_tare_weight)  : null;
     const bookGross = (ship && ship.weight_kg != null) ? Number(ship.weight_kg) : null;
     const net = mNet != null
       ? { kg: mNet, source: 'manual', reason: null }
       : (exNet > 0 ? { kg: exNet, source: 'packing', reason: null }
          : { kg: null, source: 'missing', reason: 'Packing contains no extracted net weight' });
+    // Tare has no extracted authority — manual only.
+    const tare = mTare != null
+      ? { kg: mTare, source: 'manual', reason: null }
+      : { kg: null, source: 'missing', reason: 'No tare weight entered' };
     const gross = mGross != null
       ? { kg: mGross, source: 'manual', reason: null }
       : (bookGross != null ? { kg: bookGross, source: 'carrier', reason: null }
          : (exGross > 0 ? { kg: exGross, source: 'packing', reason: null }
-            : { kg: null, source: 'missing', reason: 'No extracted gross weight and no carrier booking weight' }));
+            // net + tare → calculated gross, ONLY when both are explicit and in
+            // kg. Display-only; never persisted, never split across categories.
+            : ((net.kg != null && tare.kg != null)
+               ? { kg: net.kg + tare.kg, source: 'calculated_net_plus_tare', reason: null }
+               : { kg: null, source: 'missing', reason: 'No extracted gross weight and no carrier booking weight' })));
     const effectiveWeight = {
       net: net.kg,     net_source: net.source,     net_reason: net.reason,
+      tare: tare.kg,   tare_source: tare.source,   tare_reason: tare.reason,
       gross: gross.kg, gross_source: gross.source, gross_reason: gross.reason,
       extracted_net_kg: exNet, extracted_gross_kg: exGross,
       source_revision: liveDraft.weight_source_revision || null,
       confirmed_by:    liveDraft.weight_confirmed_by || null,
       confirmed_at:    liveDraft.weight_confirmed_at || null,
       override_source: liveDraft.weight_override_source || null,
-      overridden:      (mNet != null || mGross != null),
+      tare_override_source: liveDraft.tare_weight_source || null,
+      overridden:      (mNet != null || mGross != null || mTare != null),
       drift: !!(liveDraft.weight_source_revision && liveDraft.weight_source_revision_current
                 && liveDraft.weight_source_revision !== liveDraft.weight_source_revision_current),
     };
@@ -4549,8 +4595,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       status:            ship ? (ship.state || ship.status || null) : null,
       dimensions:        ship ? (ship.dimensions || null) : null,
       batch_ref:         liveDraft.batch_id || null,   // import identity — internal provenance only
-      cmr_number:        export_shipment_id ? `CMR-EJ-${export_shipment_id}` : null,
-      cmr_number_reason: export_shipment_id ? null : 'No export shipment identifier available',
+      // Short, deterministic CMR document number from the ONE backend authority
+      // (ADR-proforma-cmr-short-number: CMR-EJ-<10 hex>). The full
+      // export_shipment_id above stays as audit provenance and is never printed.
+      // No frontend re-derivation of the format — consume ship.cmr_number.
+      cmr_number:        ship ? (ship.cmr_number || null) : null,
+      cmr_number_reason: (ship && ship.cmr_number) ? null : 'No export shipment identifier available',
       missing_reason:    ship ? null : 'No outbound shipment linked',
       effectiveWeight,
     };
@@ -4661,11 +4711,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // authority; number them sequentially.
         sr:           i + 1,
         ctg:          _cmrItemLabel(ln.item_type || pk.item_type),  // Pendant / Ring / Earrings
-        // Phase B slice B3 (PROJECT_STATE DECISIONS "Phase B slices B2+B3"):
-        // client_po is PERSISTED since 494c4665 — prefer the real column;
-        // the invoice_no||client_ref expression is the legacy FALLBACK only
-        // for pre-fix rows where the column backfilled to ''.
-        client_po:    pk.client_po || pk.invoice_no || ln.client_ref || '',
+        // client_po is the CLIENT's purchase-order reference (persisted since
+        // 494c4665). It must NEVER fall back to pk.invoice_no — that is the
+        // SUPPLIER purchase-invoice number, a different authority; mixing them
+        // put the purchase invoice into the Client PO column (2026-07-16 repair).
+        // Missing → '' (renderer shows '—'), never a cross-authority value.
+        client_po:    pk.client_po || '',
+        // Supplier purchase-invoice number — its OWN typed field, kept separate
+        // from client_po above so the two identities never merge.
+        purchase_invoice_no: pk.invoice_no || '',
         product_code: ln.product_code || pk.product_code || '—',
         design:       ln.design_no    || pk.design_no    || '—',
         kt:           (pk.metal || '').split('/')[0] || '', // "14KT"
@@ -4685,16 +4739,25 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // HSN intentionally shown outside Europe only (operator decision 2026-06-09):
         // EU/WDT shipments render "—". packing_lines has no hs_code column.
         hsn:          ln.hs_code || pk.hs_code || '',
-        // Origin defaults to India (goods manufacturing origin) — same default the
-        // CMR uses (line ~1287). packing_lines has no origin column.
-        origin:       ln.origin || pk.origin || 'India',
+        // Origin authority = Product Master (product_local.origin_country),
+        // surfaced per-line as ln.origin and at draft level as
+        // liveDraft.origin_country — the SAME chain the CMR goods block uses
+        // (line ~3849). Never the hardcoded 'India' UI default (2026-07-16
+        // repair); honest '—' when the authority has none.
+        origin:       ln.origin || liveDraft.origin_country || '—',
       };
     });
     const grand_total = rows.reduce((s, r) => s + r.total_value, 0);
     const total_qty   = rows.reduce((s, r) => s + r.qty,         0);
     return {
       doc_ref:     _previewLabel,
-      invoice_ref: invoiceProjection.invoiceId ? String(invoiceProjection.invoiceId) : null,
+      // wFirma INVOICE FULL NUMBER (e.g. "FV 5/2026") on the packing-list document —
+      // never the internal numeric shell id (2026-07-16 transport repair). Routed
+      // through the single invoiceProjection authority (#937) instead of reading the
+      // draft mirror directly: invoiceNumber prefers the canonical invoice-link row and
+      // falls back to the draft's wfirma_invoice_number. Honest-null when no issued
+      // invoice number exists yet.
+      invoice_ref: invoiceProjection.invoiceNumber || null,
       issued_date: liveDraft.created_at ? (liveDraft.created_at || '').split('T')[0] : '',
       seller:      cmrPreviewData.seller,
       shipto:      cmrPreviewData.shipto,
@@ -5510,6 +5573,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           // in kg via grams / 1000. Stored data is never rewritten.
           const _fmtG = (v) => (Number(v) > 0 ? Number(v).toFixed(3) + ' g' : '—');
           const _fmtKgFromG = (g) => (Number(g) > 0 ? (Number(g) / 1000).toFixed(3) + ' kg' : '—');
+          // Short source suffix for a weight tile label — makes the origin of
+          // each shown weight explicit (never a silent carrier-as-packing gross).
+          const _wSrcLabel = (src) => ({
+            manual: ' (manual)', packing: ' (packing)', carrier: ' (carrier booking)',
+            calculated_net_plus_tare: ' (net + tare)', missing: '',
+          }[src] || '');
           const _kv = (k, v, testid) => (
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '6px 0', borderBottom: '1px solid var(--border)' }} data-testid={testid}>
               <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{k}</span>
@@ -5549,10 +5618,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 14, marginBottom: 14 }}>
                 {/* PR-5: tiles show the EFFECTIVE weight from the one transport
                     resolver, so the Logistics panel matches the CMR / Packing List. */}
-                <PfStatTile label="Gross weight" value={_ew.gross != null ? `${Number(_ew.gross).toFixed(3)} kg` : 'Missing'} accent="var(--accent)" data-testid="pf-logistics-tile-gross" />
-                <PfStatTile label="Net weight" value={_ew.net != null ? `${Number(_ew.net).toFixed(3)} kg` : 'Missing'} data-testid="pf-logistics-tile-net" />
+                {/* Every weight tile names its SOURCE so a carrier-booking gross
+                    is never shown as if it were the packing gross (2026-07-16). */}
+                <PfStatTile label={`Gross weight${_wSrcLabel(_ew.gross_source)}`} value={_ew.gross != null ? `${Number(_ew.gross).toFixed(3)} kg` : 'Missing'} accent="var(--accent)" data-testid="pf-logistics-tile-gross" />
+                <PfStatTile label={`Net weight${_wSrcLabel(_ew.net_source)}`} value={_ew.net != null ? `${Number(_ew.net).toFixed(3)} kg` : 'Missing'} data-testid="pf-logistics-tile-net" />
                 <PfStatTile label="Items" value={_cmrTotalPcs > 0 ? _cmrTotalPcs : '—'} data-testid="pf-logistics-tile-items" />
-                <PfStatTile label="Tare weight" value="—" data-testid="pf-logistics-tile-tare" />
+                <PfStatTile label={`Tare weight${_wSrcLabel(_ew.tare_source)}`} value={_ew.tare != null ? `${Number(_ew.tare).toFixed(3)} kg` : '—'} data-testid="pf-logistics-tile-tare" />
               </div>
               {_wl.length > 0 ? (
                 <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 12 }} data-testid="pf-logistics-weights">
@@ -5598,7 +5669,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                   const _wBtn = { fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' };
                   const _wIn  = { fontSize: 12, padding: '3px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', width: 80 };
                   const _badge = (src) => {
-                    const m = { manual: ['Manual override', 'var(--badge-amber-text)'], packing: ['Extracted from packing', 'var(--badge-green-text, #2e7d32)'], carrier: ['Carrier booking', 'var(--accent)'], missing: ['Missing', 'var(--badge-red-text)'] }[src] || ['—', 'var(--text-3)'];
+                    const m = { manual: ['Manual override', 'var(--badge-amber-text)'], packing: ['Extracted from packing', 'var(--badge-green-text, #2e7d32)'], carrier: ['Carrier booking', 'var(--accent)'], calculated_net_plus_tare: ['Calculated (net + tare)', 'var(--badge-amber-text)'], missing: ['Missing', 'var(--badge-red-text)'] }[src] || ['—', 'var(--text-3)'];
                     return <span style={{ fontSize: 10, fontWeight: 700, color: m[1], border: `1px solid ${m[1]}`, borderRadius: 4, padding: '1px 6px', marginLeft: 8 }}>{m[0]}</span>;
                   };
                   const _fkg = (kg) => (kg != null && Number(kg) > 0 ? `${Number(kg).toFixed(3)} kg` : null);
@@ -5609,6 +5680,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                         {_fkg(_ew.net) != null
                           ? <React.Fragment><span style={{ fontWeight: 600 }}>{_fkg(_ew.net)}</span>{_badge(_ew.net_source)}</React.Fragment>
                           : <span style={{ color: 'var(--badge-red-text)', fontSize: 12 }}>Missing — {_ew.net_reason}</span>}
+                      </div>
+                      <div data-testid="pf-weight-tare" style={{ display: 'flex', alignItems: 'center', margin: '4px 0', fontSize: 13 }}>
+                        <span style={{ width: 150, color: 'var(--text-2)' }}>Tare weight</span>
+                        {_fkg(_ew.tare) != null
+                          ? <React.Fragment><span style={{ fontWeight: 600 }}>{_fkg(_ew.tare)}</span>{_badge(_ew.tare_source)}</React.Fragment>
+                          : <span style={{ color: 'var(--text-3)', fontSize: 12 }}>— {_ew.tare_reason}</span>}
                       </div>
                       <div data-testid="pf-weight-gross" style={{ display: 'flex', alignItems: 'center', margin: '4px 0', fontSize: 13 }}>
                         <span style={{ width: 150, color: 'var(--text-2)' }}>Gross weight</span>
@@ -5631,12 +5708,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                       {!wtEdit ? (
                         <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
                           {canEdit && <button data-testid="pf-weight-edit" onClick={startWtEdit} style={_wBtn}>Edit weights</button>}
-                          {canEdit && (liveDraft.manual_net_weight != null || liveDraft.manual_gross_weight != null) &&
+                          {canEdit && (liveDraft.manual_net_weight != null || liveDraft.manual_gross_weight != null || liveDraft.manual_tare_weight != null) &&
                             <button data-testid="pf-weight-clear" onClick={clearWeight} disabled={wtBusy} style={_wBtn}>Clear override</button>}
                         </div>
                       ) : (
                         <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                           <label style={{ fontSize: 12 }}>Net (kg) <input data-testid="pf-weight-net-input" type="number" min="0" step="0.001" value={wtForm.net} onChange={e => setWtForm(p => ({ ...p, net: e.target.value }))} style={_wIn} /></label>
+                          <label style={{ fontSize: 12 }}>Tare (kg) <input data-testid="pf-weight-tare-input" type="number" min="0" step="0.001" value={wtForm.tare} onChange={e => setWtForm(p => ({ ...p, tare: e.target.value }))} style={_wIn} /></label>
                           <label style={{ fontSize: 12 }}>Gross (kg) <input data-testid="pf-weight-gross-input" type="number" min="0" step="0.001" value={wtForm.gross} onChange={e => setWtForm(p => ({ ...p, gross: e.target.value }))} style={_wIn} /></label>
                           <input data-testid="pf-weight-reason" placeholder="reason" value={wtForm.reason} onChange={e => setWtForm(p => ({ ...p, reason: e.target.value }))} style={{ ..._wIn, width: 150 }} />
                           <button data-testid="pf-weight-save" onClick={saveWeight} disabled={wtBusy} style={{ ..._wBtn, background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)', opacity: wtBusy ? 0.6 : 1 }}>{wtBusy ? 'Saving…' : 'Save'}</button>

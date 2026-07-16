@@ -39,6 +39,12 @@ CREATE TABLE IF NOT EXISTS carrier_shipments (
 _ADDITIVE_COLUMNS = [
     ("service_product", "TEXT"),       # carrier service code (e.g. EXPRESS_WORLDWIDE)
     ("dimensions_json", "TEXT"),       # JSON snapshot of ShipmentRequest.dimensions
+    # Per-client shipment ownership.  One import batch is split into several
+    # per-client proforma drafts (draft identity = (batch_id, client_name)); a
+    # shipment belongs to exactly one client.  Nullable: legacy rows predate
+    # this column and carry NULL — get_shipment_for_draft only attributes such
+    # a row to a draft when the batch is unambiguously single-client.
+    ("client_ref", "TEXT"),
     ("tracking_ref", "TEXT"),          # AWB / tracking number, written at COMPLETE
                                        # (2026-07-06 duplicate-AWB incident fix)
     # AWB logistics visibility — Proforma V2 Logistics tab summary fields
@@ -82,12 +88,20 @@ def init_db(db_path: Path) -> None:
                     raise
 
 
-def insert_shipment(db_path: Path, result: ShipmentResult, batch_id: str) -> None:
+def insert_shipment(
+    db_path: Path,
+    result: ShipmentResult,
+    batch_id: str,
+    client_ref: Optional[str] = None,
+) -> None:
     """
     Record a new shipment idempotency entry.
 
     Live mode results are rejected — AWBs must never appear in this table.
     tracking_ref is also absent from the schema for the same structural reason.
+
+    client_ref (optional) scopes the row to a single client within the batch;
+    None is stored for legacy/unscoped callers.
     """
     if result.mode == ShipmentMode.LIVE:
         raise ValueError(
@@ -98,13 +112,14 @@ def insert_shipment(db_path: Path, result: ShipmentResult, batch_id: str) -> Non
         conn.execute(
             """
             INSERT INTO carrier_shipments
-                (idempotency_key, batch_id, mode, state, error, simulated,
+                (idempotency_key, batch_id, client_ref, mode, state, error, simulated,
                  service_product, dimensions_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.idempotency_key,
                 batch_id,
+                client_ref,
                 result.mode.value,
                 result.state.value,
                 result.error,
@@ -136,13 +151,69 @@ def get_shipment(db_path: Path, idempotency_key: str) -> Optional[dict]:
 
 
 def get_shipment_by_batch_id(db_path: Path, batch_id: str) -> Optional[dict]:
-    """Return the most recent shipment row for the given batch_id, or None."""
+    """Return the most recent shipment row for the given batch_id, or None.
+
+    Batch-scoped — returns one row per batch regardless of client. Retained for
+    internal/webhook correlation (batch_id ↔ tracking_ref) and legacy callers.
+    For per-draft document resolution use get_shipment_for_draft, which never
+    leaks one client's AWB onto another client's draft in the same batch.
+    """
     with _connect(db_path) as conn:
         row = conn.execute(
             "SELECT * FROM carrier_shipments WHERE batch_id = ? ORDER BY created_at DESC LIMIT 1",
             (batch_id,),
         ).fetchone()
     return dict(row) if row else None
+
+
+def get_shipment_for_draft(
+    db_path: Path,
+    batch_id: str,
+    client_ref: Optional[str] = None,
+    *,
+    allow_single_client_fallback: bool = False,
+) -> Optional[dict]:
+    """Resolve the carrier shipment that belongs to ONE client's draft.
+
+    One import batch is split into several per-client proforma drafts. The
+    carrier shipment belongs to exactly one client, so a draft must never be
+    shown another client's AWB/CMR (2026-07-16 cross-client AWB contamination).
+
+    Resolution order:
+      1. Exact per-client match — the newest row with (batch_id, client_ref).
+         This is the correct path for any shipment booked after client_ref was
+         introduced.
+      2. Legacy single-client fallback — only when *allow_single_client_fallback*
+         is True (caller has proven the batch maps to exactly one client draft)
+         AND exactly one shipment row exists for the batch. That single row is
+         unambiguously this client's, even though it predates client_ref (NULL).
+      3. Otherwise None (honest missing) — a multi-client batch with no exact
+         per-client row must NOT fall back to "the latest batch row", which is
+         precisely the contamination bug.
+
+    Never mutates state — purely read-only.
+    """
+    with _connect(db_path) as conn:
+        if client_ref:
+            row = conn.execute(
+                "SELECT * FROM carrier_shipments "
+                "WHERE batch_id = ? AND client_ref = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (batch_id, client_ref),
+            ).fetchone()
+            if row:
+                return dict(row)
+
+        if allow_single_client_fallback:
+            rows = conn.execute(
+                "SELECT * FROM carrier_shipments WHERE batch_id = ? "
+                "ORDER BY created_at DESC",
+                (batch_id,),
+            ).fetchall()
+            if len(rows) == 1:
+                return dict(rows[0])
+
+    return None
 
 
 def update_state(

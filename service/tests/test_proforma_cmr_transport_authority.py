@@ -64,13 +64,18 @@ def test_export_shipment_id_from_carrier_authority_not_alias():
 
 
 def test_cmr_number_from_authority_or_honest_null():
-    # cmr_number is a pure function of export_shipment_id …
-    assert re.search(r"cmr_number:\s*export_shipment_id\s*\?\s*`CMR-EJ-\$\{export_shipment_id\}`\s*:\s*null", _JSX)
-    # … honest null + reason when the authority has no id (never batch_id).
-    assert re.search(r"cmr_number_reason:\s*export_shipment_id\s*\?\s*null\s*:", _JSX)
+    # cmr_number is the SHORT, deterministic number from the ONE backend authority
+    # (ADR-proforma-cmr-short-number). The frontend CONSUMES ship.cmr_number and
+    # no longer re-derives the long CMR-EJ-<64hex> format from the raw id.
+    assert re.search(r"cmr_number:\s*ship\s*\?\s*\(ship\.cmr_number", _JSX)
+    # … honest null + reason when the authority has no number (never batch_id).
+    assert re.search(r"cmr_number_reason:\s*\(ship\s*&&\s*ship\.cmr_number\)\s*\?\s*null\s*:", _JSX)
     assert "No export shipment identifier available" in _JSX
     assert re.search(r"cmr_no:\s*_transport\.cmr_number", _JSX)
-    # the CMR number must NOT be built from the AWB / tracking_ref or the batch id
+    # backend derives the short number from the stable export_shipment_id
+    assert 'cmr_document_number(row["idempotency_key"])' in _ROUTES_CARRIER
+    # the frontend must NOT rebuild the long number from the raw id / AWB / batch id
+    assert "`CMR-EJ-${export_shipment_id}`" not in _JSX
     assert not re.search(r"CMR-EJ-\$\{[^}]*tracking_ref", _JSX)
     assert "`CMR-EJ-${batchId}`" not in _JSX
 
@@ -143,9 +148,14 @@ def test_gross_weight_uses_effective_projection():
 # ── weight source precedence documented; never inferred/averaged/divided ──────
 
 def test_weight_precedence_documented():
-    assert re.search(r"manual\s*.\s*carrier booking\s*.\s*packing extraction\s*.\s*missing", _JSX)
+    # gross precedence now includes the additive tare-derived calculated source
+    # (manual → carrier booking → packing extraction → calculated(net+tare) → missing)
+    assert re.search(r"manual\s*.\s*carrier booking\s*.\s*packing extraction", _JSX)
+    assert re.search(r"calculated \(net\+tare", _JSX)
     # net precedence has no carrier source (only manual → packing → missing)
     assert re.search(r"manual\s*.\s*packing extraction\s*.\s*missing", _JSX)
+    # tare has no extracted authority — manual only
+    assert re.search(r"tare\s*:\s*manual\s*.\s*missing", _JSX)
 
 
 # ── 13: no live DHL from a document render or the weight endpoints ────────────

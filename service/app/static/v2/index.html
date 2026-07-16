@@ -773,6 +773,7 @@ function App() {
                   </div>
                 : proformaDraft
                   ? <ProformaDetailPage
+                      key={proformaDraft.id}
                       draft={proformaDraft}
                       onBack={handleProformaBack}
                       // Conversion succeeded in wFirma. Stay on the page: the detail

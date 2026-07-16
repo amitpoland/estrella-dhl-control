@@ -197,6 +197,7 @@ class CarrierCoordinator:
                     simulated=True,
                 ),
                 request.batch_id,
+                getattr(request, "client_ref", None),
             )
 
         # Adapter call — pure, deterministic, no side effects.

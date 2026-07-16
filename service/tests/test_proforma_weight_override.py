@@ -243,3 +243,44 @@ def test_reimport_preserves_override_and_flags_drift(client):
     assert dd["weight_source_revision"] == confirmed_rev        # snapshot unchanged
     # … and the current extracted revision now differs → drift is detectable.
     assert dd["weight_source_revision_current"] != confirmed_rev
+
+
+# ── Tare weight (2026-07-16 additive layer) ──────────────────────────────────
+
+def test_tare_persists_and_clears(client):
+    c, storage = client
+    _seed_packing()
+    did = _seed_draft(storage)
+    d = _get(c, did)
+    r = _set(c, did, {"expected_updated_at": d["updated_at"],
+                      "manual_net_weight": 1.20, "manual_tare_weight": 0.30})
+    assert r.status_code == 200, r.text
+    dd = _get(c, did)
+    assert dd["manual_tare_weight"] == 0.30
+    assert dd["tare_weight_source"] == "manual"
+    # Clear restores extracted (tare removed too).
+    r = _clear(c, did, dd["updated_at"])
+    assert r.status_code == 200, r.text
+    ddd = _get(c, did)
+    assert ddd["manual_tare_weight"] is None
+    assert ddd["tare_weight_source"] == "cleared"
+
+
+def test_tare_only_save_allowed(client):
+    c, storage = client
+    _seed_packing()
+    did = _seed_draft(storage)
+    d = _get(c, did)
+    r = _set(c, did, {"expected_updated_at": d["updated_at"], "manual_tare_weight": 0.25})
+    assert r.status_code == 200, r.text
+    assert _get(c, did)["manual_tare_weight"] == 0.25
+
+
+def test_no_weight_incl_tare_422(client):
+    c, storage = client
+    _seed_packing()
+    did = _seed_draft(storage)
+    d = _get(c, did)
+    # reason only, no net/gross/tare → still 422
+    r = _set(c, did, {"expected_updated_at": d["updated_at"], "reason": "x"})
+    assert r.status_code == 422
