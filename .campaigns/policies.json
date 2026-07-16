@@ -9,7 +9,16 @@
     "superseded_sha_handling": "Superseded SHAs are recorded, tagged, and dispositioned (e.g. 'NEVER cherry-pick, NEVER merge') in the registry entry — never merely deleted.",
     "cleanup": "Campaign close = status MERGED, entry removed from the operational registry, worktree archived per WORKTREE DISCIPLINE."
   },
-  "status_enum": ["IN_PROGRESS", "READY_FOR_REBASE_AFTER_<gate>", "REBASED_PENDING_REVIEW", "PR_OPEN", "MERGED"],
+  "state_enum": ["IN_PROGRESS", "READY_FOR_REBASE", "REBASED_PENDING_REVIEW", "PR_OPEN", "MERGED", "FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED"],
+  "phase_examples": ["WAITING_FOR_PR924", "AWAITING_OPUS_REVIEW", "AWAITING_DEPLOY_GATE"],
+  "state_operation_matrix": {
+    "_doc": "Operator second ruling §6: the guard enforces STATE, not just ownership. Ownership match alone is NOT sufficient to permit a write.",
+    "FROZEN": { "allowed": ["read", "verify", "review"], "denied": ["commit", "reset", "rebase", "cherry-pick", "merge", "branch-move"] },
+    "LOCKED": { "allowed": ["read", "verify", "review"], "denied": ["commit", "reset", "rebase", "cherry-pick", "merge", "branch-move"] },
+    "DEPLOYING": { "allowed": ["read", "verify", "review"], "denied": ["commit", "reset", "rebase", "cherry-pick", "merge", "branch-move"] },
+    "ARCHIVED": { "allowed": ["read"], "denied": ["commit", "reset", "rebase", "cherry-pick", "merge", "branch-move"] },
+    "OTHER_STATES": { "allowed": ["owner writes with claimed lock"], "denied": ["any non-owner write"] }
+  },
   "guard": {
     "hook": ".claude/hooks/campaign-branch-guard.py",
     "spec": ".campaigns/OWNERSHIP-GUARD-SPEC.md",

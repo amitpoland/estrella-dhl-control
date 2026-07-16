@@ -10,7 +10,7 @@
       "type": "object",
       "additionalProperties": {
         "type": "object",
-        "required": ["branch", "worktree", "owner", "expected_head", "status"],
+        "required": ["branch", "worktree", "owner", "expected_head", "state"],
         "properties": {
           "branch": { "type": "string", "description": "Campaign branch name (exactly one implementation owner)." },
           "worktree": { "type": "string", "description": "The ONE registered worktree for this campaign." },
@@ -23,9 +23,19 @@
             "type": "string", "pattern": "^[0-9a-f]{8,40}$",
             "description": "What read-only verification actually found at last check. May lag expected_head; divergence => incident report + operator ruling."
           },
-          "status": {
+          "state": {
             "type": "string",
-            "pattern": "^(IN_PROGRESS|READY_FOR_REBASE_AFTER_[A-Z0-9_]+|REBASED_PENDING_REVIEW|PR_OPEN|MERGED)$"
+            "enum": ["IN_PROGRESS", "READY_FOR_REBASE", "REBASED_PENDING_REVIEW", "PR_OPEN", "MERGED", "FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED"],
+            "description": "Lifecycle state (operator second ruling §5/§6). FROZEN/LOCKED/DEPLOYING/ARCHIVED are write-restricted: the guard denies commit/reset/rebase/cherry-pick/merge EVEN FOR THE OWNER — ownership match alone never permits a write."
+          },
+          "phase": {
+            "type": "string",
+            "description": "The gate the campaign is waiting on or passing through, e.g. WAITING_FOR_PR924 (§5: a session reads the whole lifecycle, not merely which branch exists)."
+          },
+          "heartbeat": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Advisory top-level owner heartbeat (§5 entry shape); enforcement uses lock.heartbeat_at."
           },
           "chartered_decision": { "type": "string", "description": "Human label of the operator-ratified decision governing this branch tip." },
           "superseded": {

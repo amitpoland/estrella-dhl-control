@@ -18,8 +18,18 @@ stopped the incident — **only an enforced guard does**.
 | Enforcement | `.claude/hooks/campaign-branch-guard.py` (PreToolUse, fail closed) | YES |
 
 The operational registry holds per-campaign `{branch, worktree, owner, expected_head,
-last_verified_head, status, superseded[], lock/heartbeat}` and is edited ONLY by the named
-owner session or the operator.
+last_verified_head, state, phase, superseded[], lock/heartbeat}` and is edited ONLY by the
+named owner session or the operator. `state` is the lifecycle stage; `phase` is the gate being
+waited on (e.g. `state: FROZEN`, `phase: WAITING_FOR_PR924`) — a session reads the whole
+campaign lifecycle, not merely which branch exists (§5; designed for 10–20 parallel campaigns).
+
+**State beats ownership (§6):** in FROZEN / LOCKED / DEPLOYING / ARCHIVED states the guard
+denies commit/reset/rebase/cherry-pick/merge for ALL sessions — including the owner. Ownership
+match alone is never sufficient to permit a write.
+
+**Session-start banner (§7):** `.claude/hooks/campaign-session-banner.py` emits the compact
+campaign card (Campaign / Owner / State / Expected HEAD / Worktree / Allowed operations) at
+every session open — context comes from the registry, never from chat archaeology.
 
 ## The rules (machine-readable copy: `policies.json`)
 

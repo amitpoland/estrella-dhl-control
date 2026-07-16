@@ -173,6 +173,17 @@ def main():
         target_tree = worktree if os.path.isdir(worktree) else cwd
         owner = entry.get("owner", "?")
         expected = (entry.get("expected_head") or "").lower()
+        state = (entry.get("state") or entry.get("status") or "").upper()
+        phase = entry.get("phase") or ""
+
+        # 4a — STATE enforcement (operator second ruling §6): write-restricted states
+        # deny EVEN FOR THE OWNER. Ownership match alone never permits a write.
+        if state in ("FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED"):
+            _emit("deny", f"campaign-branch-guard[{name}]: campaign state is {state}"
+                          f"{' (phase ' + phase + ')' if phase else ''} — allowed: read/verify/review; "
+                          f"denied: commit/reset/rebase/cherry-pick/merge for ALL sessions including "
+                          f"the owner (§6 state matrix). Operator/owner must transition the state first.")
+            return 0
 
         actual_branch = _git(["branch", "--show-current"], target_tree)
         actual_head = (_git(["rev-parse", "HEAD"], target_tree) or "").lower()
@@ -191,16 +202,26 @@ def main():
                           f"only be written in its registered worktree {worktree} (check 3).")
             return 0
 
-        # 4 — owner / lock
+        # 4 — owner / lock (with checks 6 + stale-lock recovery folded into the
+        # denial classification: a non-holder is ALWAYS denied; the message
+        # distinguishes a live concurrent writer from a stale/crashed owner)
         lock = entry.get("lock")
         if not lock:
             _emit("ask", f"campaign-branch-guard[{name}]: write-lock unclaimed. Registered owner: "
                          f"{owner}. Operator must confirm this session may claim it (check 4).")
             return 0
         if lock.get("session_id") != session_id:
-            _emit("deny", f"campaign-branch-guard[{name}]: owner mismatch — lock held by session "
-                          f"{lock.get('session_id', '?')[:12]}…, current session {session_id[:12]}…; "
-                          f"registered owner: {owner} (check 4).")
+            if _heartbeat_fresh(lock):
+                _emit("deny", f"campaign-branch-guard[{name}]: concurrent writer — lock held by "
+                              f"session {lock.get('session_id', '?')[:12]}… with a fresh heartbeat; "
+                              f"registered owner: {owner} (check 6).")
+            else:
+                _emit("deny", f"campaign-branch-guard[{name}]: owner mismatch — lock held by session "
+                              f"{lock.get('session_id', '?')[:12]}… (heartbeat STALE >"
+                              f"{HEARTBEAT_FRESH_MINUTES} min — possibly a crashed owner); current "
+                              f"session {session_id[:12]}…; registered owner: {owner}. Stale-owner "
+                              f"recovery: only the operator may reassign the lock by editing the "
+                              f"registry entry (check 4).")
             return 0
 
         # 5 — unexpected HEAD
@@ -208,12 +229,6 @@ def main():
             _emit("deny", f"campaign-branch-guard[{name}]: unexpected HEAD {actual_head[:8]} "
                           f"(expected {expected[:8]}). File an incident and request an operator "
                           f"ruling — NEVER auto-correct (check 5).")
-            return 0
-
-        # 6 — concurrent writer (a different session's fresh heartbeat)
-        if lock.get("session_id") != session_id and _heartbeat_fresh(lock):
-            _emit("deny", f"campaign-branch-guard[{name}]: concurrent writer — fresh heartbeat by "
-                          f"another session (check 6).")
             return 0
 
         return 0  # all checks passed for the matching entry

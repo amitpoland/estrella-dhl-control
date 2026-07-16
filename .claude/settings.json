@@ -11,6 +11,11 @@
             "type": "command",
             "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/pz-gap-detection.py\"",
             "timeout": 20
+          },
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/campaign-session-banner.py\"",
+            "timeout": 10
           }
         ]
       }

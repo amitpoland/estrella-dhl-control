@@ -34,10 +34,29 @@ only — ordinary work is unaffected). `git worktree add` is always in scope (ru
 | 1 | Registry unreadable/corrupt while a campaign entry may apply | `ask` (surface to operator; never silently allow) |
 | 2 | Branch checked out at the target tree matches the entry's `branch` (branch mismatch) | `deny` |
 | 3 | Target tree is the entry's registered `worktree` (worktree mismatch) | `deny` |
-| 4 | Session holds the entry's `lock` (`lock.session_id == payload session_id`) — owner mismatch | `deny`; if `lock` is null (unclaimed) → `ask` (operator confirms the claimant) |
+| 4a | **STATE enforcement (§6)**: campaign `state` ∉ {FROZEN, LOCKED, DEPLOYING, ARCHIVED} | `deny` — for ALL sessions **including the owner**; ownership match alone never permits a write |
+| 4 | Session holds the entry's `lock` (`lock.session_id == payload session_id`) — owner mismatch | `deny`; if `lock` is null (unclaimed) → `ask` (operator confirms the claimant). A non-holder's denial is classified: fresh heartbeat (<15 min) → **concurrent writer (check 6)**; stale heartbeat → **stale/crashed owner** — only the operator may reassign the lock by editing the registry entry |
 | 5 | Current HEAD starts with `expected_head` (unexpected HEAD) | `deny` + instruct: file incident, request operator ruling, NEVER auto-correct |
-| 6 | No concurrent writer: lock heartbeat by a DIFFERENT session fresher than 15 min | `deny` |
 | 7 | `git worktree add` without operator approval | `ask` (the ask prompt IS the operator-approval gate) |
+
+## Per-state operation matrix (§6)
+
+| State | Allowed | Denied (all sessions, incl. owner) |
+|---|---|---|
+| FROZEN / LOCKED / DEPLOYING | read, verify, review | commit, reset, rebase, cherry-pick, merge, branch move |
+| ARCHIVED | read | all writes |
+| other states | owner writes with claimed lock | any non-owner write |
+
+Registry-field divergence (`expected_head` ≠ `last_verified_head`) is governed by
+`policies.json → rules.no_auto_correction`: incident report + operator ruling, never
+an auto-correct — the guard's check 5 enforces the write-time actual-HEAD case.
+
+## Session-start banner (§7)
+
+`.claude/hooks/campaign-session-banner.py` (SessionStart) emits one compact card per
+active campaign — Campaign / Owner / State / Expected HEAD / Worktree / Allowed
+operations — so no session reconstructs campaign context from chat history. Silent
+when no registry exists; an unreadable registry prints a treat-as-restricted warning.
 
 ## Denial report
 
