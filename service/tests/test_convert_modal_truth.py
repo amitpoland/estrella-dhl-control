@@ -157,6 +157,65 @@ def test_old_duplicate_state_vars_removed():
     assert "[disclosureErr," not in block, "[disclosureErr, still present — duplicate state not removed"
 
 
+# ── Phase 9 / description_preview pins ───────────────────────────────────────
+
+def test_description_preview_testid_present():
+    """data-testid='convert-description-preview' must be in the source (Phase 9)."""
+    block = _modal_block()
+    assert "convert-description-preview" in block, (
+        "data-testid='convert-description-preview' not found in ConvertToInvoiceModal. "
+        "The description preview block (Phase 9) is missing."
+    )
+
+
+def test_description_preview_reads_from_disclosure():
+    """description_preview must be read from disclosure (server authority, not client-reconstructed)."""
+    block = _modal_block()
+    assert "disclosure.description_preview" in block, (
+        "disclosure.description_preview not referenced in ConvertToInvoiceModal. "
+        "The description must come from the server disclosure (RC-4 / Phase 9)."
+    )
+
+
+def test_convert_button_blocked_while_disclosure_loading():
+    """Convert button must be disabled while disclosureLoading (description not yet available)."""
+    block = _modal_block()
+    assert "disclosureLoading" in block, (
+        "disclosureLoading not referenced in Convert button disabled condition."
+    )
+
+
+def test_debounce_ref_present():
+    """debounceRef must be declared — required for re-fetch debouncing on override changes."""
+    block = _modal_block()
+    assert "debounceRef" in block, (
+        "debounceRef not found in ConvertToInvoiceModal. "
+        "Override-change re-fetch debouncing is not wired."
+    )
+
+
+def test_override_params_passed_to_api():
+    """getDisclosureConvert must be called with an override params object."""
+    block = _modal_block()
+    # The re-fetch effect passes an object with override_payment_method etc.
+    assert "override_payment_method" in block, (
+        "override_payment_method not passed to getDisclosureConvert re-fetch. "
+        "Payment method override will not be reflected in description preview."
+    )
+    assert "override_invoice_date" in block, (
+        "override_invoice_date not passed to getDisclosureConvert re-fetch."
+    )
+
+
+def test_pre_tag_used_for_description_preview():
+    """description_preview must be rendered in a <pre> tag for monospace + line-break fidelity."""
+    block = _modal_block()
+    assert "pre" in block and "convert-description-preview" in block, (
+        "<pre> element with convert-description-preview testid not found. "
+        "Description must be rendered verbatim in a <pre> block."
+    )
+
+
 def test_single_useeffect_comment_present():
     """The merged useEffect must carry a comment identifying it as the single fetch (RC-4)."""
     block = _modal_block()

@@ -138,12 +138,20 @@ def build_invoice_convert_disclosure(
     draft_sale_date: Optional[str] = None,
     customer_default_method: str = "",
     customer_default_days: Optional[int] = None,
+    description_preview: Optional[str] = None,
+    payload_core_hash_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the payload disclosure for a proforma→invoice convert (WF2.5).
 
     proforma_snap: a ProformaSnapshot instance or dict (from parse_proforma_xml).
     customer_default_method: preferred_payment_method from customer_master (English).
     customer_default_days:   payment_terms_days from customer_master.
+    description_preview: when provided (str), included in result as "description_preview"
+        — the exact final invoice description that will be posted to wFirma.  Callers
+        that supply this should also supply payload_core_hash_override so the hash is
+        consistent with the description-covering execute path.
+    payload_core_hash_override: when provided (str), used as "payload_core_hash" instead
+        of the internally-computed hash.  Legacy callers (no override) keep old behavior.
     Returns a JSON-serialisable disclosure dict.
     No wFirma call. No DB write.
     """
@@ -234,13 +242,19 @@ def build_invoice_convert_disclosure(
     except Exception:
         pass  # cache unavailable — series_name stays empty
 
-    # payload_core_hash for immutable-preview contract (RC-4)
+    # payload_core_hash for immutable-preview contract (RC-4).
+    # When payload_core_hash_override is supplied the caller has already computed a
+    # description-covering hash via _build_convert_candidate; use it directly.
+    # Legacy callers (no override) compute the old hash without description.
     payload_core_hash = ""
-    try:
-        from .proforma_to_invoice import compute_conversion_core_hash as _chash
-        payload_core_hash = _chash(contractor_id, currency, series_id, source_lines)
-    except Exception:
-        pass  # pure-function — failure is non-fatal
+    if payload_core_hash_override is not None:
+        payload_core_hash = payload_core_hash_override
+    else:
+        try:
+            from .proforma_to_invoice import compute_conversion_core_hash as _chash
+            payload_core_hash = _chash(contractor_id, currency, series_id, source_lines)
+        except Exception:
+            pass  # pure-function — failure is non-fatal
 
     _fields_to_write: Dict[str, Any] = {
         "type":           "normal (final invoice)",
@@ -285,6 +299,10 @@ def build_invoice_convert_disclosure(
     }
     if series_name_note:
         _result["series_name_note"] = series_name_note
+    # description_preview — exact final invoice description that will be posted.
+    # Only included when the caller supplies it (via _build_convert_candidate route).
+    if description_preview is not None:
+        _result["description_preview"] = description_preview
     return _result
 
 

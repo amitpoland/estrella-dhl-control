@@ -592,13 +592,43 @@ def test_dashboard_does_not_auto_call_execute_on_load():
 # ── Fix 4 (RC-4): payload hash guard ─────────────────────────────────────
 
 def _hash_for(xml: str, series_id: str) -> str:
-    """Compute the expected hash for a proforma XML + series_id combination."""
+    """Compute the expected hash for a proforma XML + series_id combination.
+    Legacy helper: does NOT include description in the hash. Used only by the
+    hash-mismatch test (which supplies a deliberately wrong hash anyway)."""
     from app.services.proforma_to_invoice import (
         parse_proforma_xml, compute_conversion_core_hash,
     )
     snap = parse_proforma_xml(xml)
     return compute_conversion_core_hash(
         snap.contractor_id, snap.currency, series_id, snap.contents,
+    )
+
+
+def _hash_for_with_desc(xml: str, series_id: str) -> str:
+    """Compute the description-covering hash that matches _build_convert_candidate.
+
+    Replicates _build_convert_candidate with no CM, no overrides, and no draft
+    payment terms — the exact conditions present in test_execute_succeeds_when_hash_matches.
+    Both the route and this helper call warsaw_today() in the same test run, so
+    they return the same date.
+    """
+    from app.services.proforma_to_invoice import (
+        parse_proforma_xml, build_final_invoice_plan, compute_conversion_core_hash,
+    )
+    from app.core.timezone_utils import warsaw_today
+    snap = parse_proforma_xml(xml)
+    plan = build_final_invoice_plan(
+        snap,
+        final_series_id=series_id,
+        invoice_date=warsaw_today(),
+        paymentdate=None,
+        paymentmethod=None,
+        operator_description="",
+        payment_days=None,
+    )
+    return compute_conversion_core_hash(
+        plan.contractor_id, plan.currency, series_id, snap.contents,
+        description=plan.description,
     )
 
 
@@ -633,12 +663,17 @@ def test_execute_blocked_when_hash_mismatches(client, storage):
 
 
 def test_execute_succeeds_when_hash_matches(client, storage):
-    """Fix 4 (RC-4): correct expected_payload_hash passes the hash guard."""
+    """Fix 4 (RC-4): correct expected_payload_hash passes the hash guard.
+
+    Since _build_convert_candidate now includes plan.description in the hash
+    (Phase 9 RC-4 extension), the correct hash is computed by _hash_for_with_desc
+    which replicates that computation for the no-CM / no-override case.
+    """
     _seed_issued_proforma(storage)
     src_xml = _proforma_xml()
-    # Hash is computed over (contractor_id, currency, series="", contents)
-    # Routes resolve series="" (no CM, no operator override) → series=""
-    correct_hash = _hash_for(src_xml, "")
+    # Description-covering hash: includes back-reference description so the
+    # preview and execute hashes are byte-equivalent (RC-4 / Phase 9 contract).
+    correct_hash = _hash_for_with_desc(src_xml, "")
     fetch_calls = [
         src_xml,
         _created_invoice_xml(inv_id="500100"),
@@ -787,4 +822,145 @@ def test_no_background_or_auto_conversion_path():
     assert found_in == [], (
         f"execute URL referenced outside the allowed UI/route surface: "
         f"{found_in}"
+    )
+
+
+# ── Phase 9: disclose-convert with override query params ──────────────────────
+
+_DISCLOSE_URL = "/api/v1/proforma/draft/{draft_id}/disclose-convert"
+
+
+def _seed_issued_proforma_by_draft(storage, *, wfirma_id="467236963",
+                                    client_name=CLIENT) -> int:
+    """Seed an issued proforma and return the draft id."""
+    db = storage / "proforma_links.db"
+    pildb.upsert_pending_draft(
+        db, batch_id=BATCH, client_name=client_name,
+        currency="EUR", exchange_rate=None, source_lines_json="[]",
+    )
+    pildb.mark_draft_issued(db, BATCH, client_name, wfirma_proforma_id=wfirma_id)
+    draft = pildb.get_draft(db, BATCH, client_name)
+    return draft.id
+
+
+def test_disclose_returns_description_preview(client, storage):
+    """disclose-convert returns description_preview when _build_convert_candidate succeeds."""
+    from unittest.mock import patch as _patch
+    import importlib
+    # Stub get_customer_master so the candidate builder doesn't need a real CM DB
+    from app.api import routes_proforma as rp
+
+    draft_id = _seed_issued_proforma_by_draft(storage)
+
+    def _fake_cm(path, contractor_id):
+        return None  # no CM → uses snap/draft defaults
+
+    with _patch.object(rp, "get_customer_master", _fake_cm), \
+         patch.object(wc, "fetch_invoice_xml", return_value=_proforma_xml()):
+        r = client.get(
+            _DISCLOSE_URL.format(draft_id=draft_id),
+            headers=_auth(),
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "description_preview" in body, (
+        "disclose-convert must include description_preview (Phase 9)"
+    )
+    # Back-reference must appear in the description
+    assert "PROF 92/2026" in body["description_preview"], (
+        "description_preview must contain the proforma back-reference number"
+    )
+
+
+def test_disclose_hash_covers_description(client, storage):
+    """payload_core_hash from disclose-convert must change when description changes.
+
+    We verify indirectly: two calls with different override_payment_days produce
+    different descriptions → different hashes (since payment days affect the
+    payment-terms block in the description).
+    """
+    from app.api import routes_proforma as rp
+
+    draft_id = _seed_issued_proforma_by_draft(storage)
+
+    def _fake_cm(path, contractor_id):
+        return None
+
+    with patch.object(rp, "get_customer_master", _fake_cm), \
+         patch.object(wc, "fetch_invoice_xml", return_value=_proforma_xml()):
+        r30 = client.get(
+            _DISCLOSE_URL.format(draft_id=draft_id),
+            params={"override_payment_days": 30},
+            headers=_auth(),
+        )
+        r60 = client.get(
+            _DISCLOSE_URL.format(draft_id=draft_id),
+            params={"override_payment_days": 60},
+            headers=_auth(),
+        )
+
+    assert r30.status_code == 200, r30.text
+    assert r60.status_code == 200, r60.text
+
+    h30 = r30.json().get("payload_core_hash")
+    h60 = r60.json().get("payload_core_hash")
+
+    assert h30 and h60, "payload_core_hash must be present in both responses"
+    # Descriptions will differ because payment-terms block uses effective_days
+    # which differs (30 vs 60). Hashes must therefore differ.
+    assert h30 != h60, (
+        "Hashes must differ when payment_days differ "
+        "(description changes → hash changes — RC-4 coverage)"
+    )
+
+
+def test_disclose_description_preview_reflects_override_method(client, storage):
+    """override_payment_method passed to disclose-convert is reflected in description_preview."""
+    from app.api import routes_proforma as rp
+
+    draft_id = _seed_issued_proforma_by_draft(storage)
+
+    def _fake_cm(path, contractor_id):
+        return None
+
+    with patch.object(rp, "get_customer_master", _fake_cm), \
+         patch.object(wc, "fetch_invoice_xml", return_value=_proforma_xml()):
+        r = client.get(
+            _DISCLOSE_URL.format(draft_id=draft_id),
+            params={"override_payment_method": "cash", "override_payment_days": 14},
+            headers=_auth(),
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "description_preview" in body
+    # The audit suffix "[override: payment_method=cash, ...]" should appear in description
+    assert "cash" in body["description_preview"] or "gotówka" in body["description_preview"] \
+        or "[override:" in body["description_preview"], (
+        "description_preview should reflect the override_payment_method "
+        "(either via payment-terms block or audit suffix)"
+    )
+
+
+def test_disclose_accepts_operator_description_for_hash_parity(client, storage):
+    """Opus review fix 3: execute accepts operator_description (changes description →
+    changes hash). Disclose must accept the same param so an API caller supplying it
+    can obtain a matching expected_payload_hash instead of a guaranteed mismatch."""
+    from app.api import routes_proforma as rp
+
+    draft_id = _seed_issued_proforma_by_draft(storage)
+
+    def _fake_cm(path, contractor_id):
+        return None
+
+    with patch.object(rp, "get_customer_master", _fake_cm), \
+         patch.object(wc, "fetch_invoice_xml", return_value=_proforma_xml()):
+        plain = client.get(_DISCLOSE_URL.format(draft_id=draft_id), headers=_auth()).json()
+        with_desc = client.get(
+            _DISCLOSE_URL.format(draft_id=draft_id),
+            params={"operator_description": "Extra shipping note for customs"},
+            headers=_auth(),
+        ).json()
+    assert "Extra shipping note for customs" in with_desc["description_preview"]
+    assert with_desc["payload_core_hash"] != plain["payload_core_hash"], (
+        "operator_description changes the final description and must change the hash"
     )
