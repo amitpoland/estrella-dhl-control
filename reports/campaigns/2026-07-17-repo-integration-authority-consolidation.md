@@ -1,7 +1,10 @@
 # Repository Integration and Authority Consolidation Campaign — /context + /plan
 
 Date: 2026-07-17 · Session: xenodochial-wiles-6f88af (worktree) · Framework: EJ Engineering OS v1.3 (docs-only, subordinate to CLAUDE.md GATES 1–6)
-Status: /context COMPLETE · /plan COMPLETE · Phase A in execution
+Status: /context COMPLETE · /plan COMPLETE · Phase A BUILT + REVIEWED (4 verdicts, all
+mitigations applied) on `integration/convert-persist-reconcile-authority` @ local —
+PUSH + PR-OPEN blocked by session push permission (operator action; PR body ready at
+`reports/campaigns/2026-07-17-phase-a-pr-body.md`)
 
 ---
 
@@ -239,8 +242,36 @@ integration branch + PR (GATE 1 applies at PR-open).
 | test/927-repoint-convert-flow-pins | PR #931 — merge, then worktree auto-retires |
 | governance/stage1-scorecard-salvage | PR #924 — operator merge |
 
+## Phase A execution record (2026-07-17)
+
+Branch `integration/convert-persist-reconcile-authority` (local, off d5a453fd):
+`3973b01f → 8ca70366 → ea897a9b` (lehmann cherry-picks) → `1032c71b` (saha cherry-pick,
+all clean) → `e54ee576` (consolidation: duplicate route deleted, canonical POST with
+issued/split-brain branches, stale_draft_projection detection, one audit event,
+privileged auth) → `3a895bdb` (GATE-1 mitigations: _auth_write on both convert-execute
+routes, draft_persisted disclosure + retryable errors in split-brain branch, scan
+truncation disclosure, numeric-id guard, conflict pre-check, BOM-safe audit read,
+unrestored_fields disclosure, +11 behavioral tests, S3→AST pin).
+
+GATE 1: backend-safety PASS-W-F, reviewer-challenge PASS-W-M, security PASS-W-F,
+test-coverage adopted — every HIGH/MEDIUM fixed inline; two REJECTED-with-reasoning
+(preflight-except hardening; behavioral role-403 test) recorded in the PR body.
+Evidence: affected 18 suites 483 passed / 32 failed with ALL 32 proven identical on
+clean origin/main (29 unregistered pre-existing → GATE-4 chip task_d5609595; 2 RBAC
+drift task_6a5ee6b3; 1 registered #927). Root PZ regression green; smoke 63 green.
+
+GATE-4 follow-ups filed: task_d5609595 (pre-existing failure cluster);
+draft_id-on-link-row enrichment (reviewer-challenge LOW-1) — record in next session or
+fold into the production-repair session.
+
 ## Next Exact Step
 
-Phase A execution: build `integration/convert-persist-reconcile-authority`, consolidate
-per matrix A, run the required test set, dispatch the GATE-1 reviewer gate, open the PR
-(operator-only merge).
+OPERATOR: (1) grant push permission or run
+`git push -u origin integration/convert-persist-reconcile-authority` from the worktree,
+then `gh pr create --title "fix(proforma): post-conversion persistence + one canonical
+reconcile authority (draft 67/52)" --body-file reports/campaigns/2026-07-17-phase-a-pr-body.md`;
+(2) merge order per this report: #931 → #924 → #926 → Phase A PR → #932(+lock port +
+trigger-vocab rename to startup/scheduler/operator) → dictionary UI PR → payment-provenance
+PR → portability PR; (3) after Phase A deploy: operator-approved draft 67 + 52 repair via
+`GET /invoice-links/split-brain` (expect both as stale_draft_projection) then
+`POST /invoice-links/{proforma_id}/reconcile` each + noop re-run proof — no wFirma write.
