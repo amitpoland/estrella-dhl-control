@@ -31,7 +31,6 @@ unconditional block.
 | `test_carrier_config_defaults.py::test_dhl_express_api_key_default_is_none` | env: DHL creds set | ENVIRONMENTAL — asserts `Settings().dhl_express_api_key is None`; `DHL_EXPRESS_API_KEY` is set in the deploy/review env → returns the live key. Passes with env cleared (see above). |
 | `test_carrier_config_defaults.py::test_dhl_express_api_secret_default_is_none` | env: DHL creds set | ENVIRONMENTAL — asserts `Settings().dhl_express_api_secret is None`; `DHL_EXPRESS_API_SECRET` set in env. Passes with env cleared. |
 | `test_carrier_config_defaults.py::test_dhl_express_account_number_default_is_none` | env: DHL creds set | ENVIRONMENTAL — asserts `Settings().dhl_express_account_number is None`; `DHL_EXPRESS_ACCOUNT_NUMBER` set in env. Passes with env cleared. |
-| `test_proforma_to_invoice_routes.py::test_dashboard_renders_two_step_convert_flow` | Issue #927 | Stale V1 pins: greps `shipment-detail.html` for "Convert Proforma to Invoice" / "Manual final invoice action" / "real wFirma invoice" — strings absent from the current V1 page. Proven pre-existing on clean `origin/main` `28784270` (stash-verified ×2, 2026-07-16); NOT in the metered PZ/Carrier suites; not introduced by PR #925. Repair: re-point pins at the canonical V2 convert surface (see #927). |
 
 The PZ suite reports `1 failed, 257 passed` (258 collected). The gate accepts **only** the
 documented failure(s). When #613 is fixed: remove this row and bump the PZ required count to 258.
@@ -72,6 +71,7 @@ When a new golden batch is committed or a new test is added:
 | Date | PZ required | Carrier required | Reason |
 |------|-------------|------------------|--------|
 | 2026-07-16 | 257 | 584 | GATE-4 SCHEDULED disposition from PR #925 deploy gate (no floor change): registered `test_proforma_to_invoice_routes.py::test_dashboard_renders_two_step_convert_flow` as a known-failing exclusion (Issue #927) — stale V1 shipment-detail.html string pins, proven pre-existing on `origin/main` `28784270`, outside both metered suites. Gate-time fresh evidence for #925: PZ 257 pass / 1 documented #613 fail; Carrier 584 pass / 4 documented env fails / 1 skip / 0 err. |
+| 2026-07-16 | 257 | 584 | **Removed** the Issue #927 exclusion row (no floor change): `test_dashboard_renders_two_step_convert_flow` DELETED — its stale V1 shipment-detail.html pins were repointed at the canonical V2 convert surface (`app/static/v2/proforma-detail.jsx` ConvertToInvoiceModal) as 8 new pins in `test_convert_modal_truth.py` §"Issue #927" (entry button, two-step preview→execute, exact confirm token YES_CREATE_FINAL_INVOICE_FROM_PROFORMA, irreversibility warning + acknowledgement checkbox, execute gating, single execute call site). Suite is outside both metered PZ/Carrier patterns; test file + this file changed in the same commit per update protocol. Closes #927. |
 | 2026-05-13 | 160 | 366 | Baseline established (V2.0 engine) |
 | 2026-05-22 | 160 | 381 | count update — carrier suite grew from new adapter/idempotency tests |
 | 2026-06-09 | 160 | 412 | count update — carrier suite grew from phase5/plt/doc-package/routes tests |
