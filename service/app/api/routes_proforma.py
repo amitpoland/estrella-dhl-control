@@ -3343,6 +3343,9 @@ def _build_convert_candidate(
         paymentdate:       str | None  (ISO date or None)
         invoice_date:      date
         core_hash:         str  (description-covering SHA-256 hex)
+        sale_date:         str | None  (ISO date; execute step 7b persistence)
+        payment_method_en: str | None  (en method; execute step 7b persistence)
+        override_note:     str  (audit-only; never customer-facing)
 
     Raises:
         ZeroBillableInvoice  — if all lines are priced at 0.
@@ -7898,7 +7901,8 @@ def purge_proforma_draft(
     return JSONResponse({"ok": True, "purged_draft_id": draft_id})
 
 
-@router.post("/draft/{draft_id}/reconcile-conversion-link", dependencies=[_auth])
+@router.post("/draft/{draft_id}/reconcile-conversion-link",
+             dependencies=[_auth_write])
 def reconcile_draft_conversion_link(
     draft_id:   int,
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
@@ -7918,6 +7922,11 @@ def reconcile_draft_conversion_link(
     Idempotent: a draft already carrying the link's invoice identity in
     state 'converted' returns status='noop'. A draft carrying a DIFFERENT
     invoice id is a data conflict → blocked, operator escalation.
+
+    Limitation (disclosed): the link table does not carry sale_date or
+    payment_method, so this route cannot restore those enrichment fields —
+    they stay NULL on a repaired draft. Only the forward execute path
+    persists them.
     """
     if not isinstance(draft_id, int) or draft_id <= 0:
         raise HTTPException(status_code=400, detail="invalid draft_id")
@@ -7992,30 +8001,47 @@ def reconcile_draft_conversion_link(
     }
 
     from ..services.conversion_persistence import persist_invoice_to_draft
-    persist_invoice_to_draft(
-        db_path               = _proforma_db_path(),
-        draft_id              = int(draft_id),
-        wfirma_invoice_id     = link_inv_id,
-        wfirma_invoice_number = link_inv_num,
-        converted_at          = (link.converted_at or None),
-    )
+    try:
+        persist_invoice_to_draft(
+            db_path               = _proforma_db_path(),
+            draft_id              = int(draft_id),
+            wfirma_invoice_id     = link_inv_id,
+            wfirma_invoice_number = link_inv_num,
+            converted_at          = (link.converted_at or None),
+        )
+    except Exception as exc:
+        # e.g. sqlite 'database is locked' under concurrent writers — return
+        # a structured error the operator can retry, not a 500.
+        log.error("[%s] reconcile persist failed for draft %s: %s",
+                  d.batch_id, draft_id, exc)
+        return JSONResponse({
+            "ok": False, "status": "error", "draft_id": draft_id,
+            "detail": f"persist failed: {type(exc).__name__}: {exc}",
+        })
 
     # Append-only audit: draft event log + audit.json timeline event. The
     # timeline helper is idempotent on (batch_id, proforma_id, invoice_id),
     # so if step 8 already recorded the conversion this is a no-op.
-    pildb._record_draft_event(
-        _proforma_db_path(),
-        draft_id    = int(draft_id),
-        event       = "conversion_link_reconciled",
-        detail_json = json.dumps({
-            "wfirma_proforma_id":    pid,
-            "wfirma_invoice_id":     link_inv_id,
-            "wfirma_invoice_number": link_inv_num,
-            "before":                before,
-            "source":                "reconcile_conversion_link",
-        }),
-        operator    = operator,
-    )
+    # Both audit writes are best-effort AFTER the state repair succeeded —
+    # a failed event write must not 500 a route whose repair already landed
+    # (a retry would noop and the event would be unrecoverable).
+    try:
+        pildb._record_draft_event(
+            _proforma_db_path(),
+            draft_id    = int(draft_id),
+            event       = "conversion_link_reconciled",
+            detail_json = json.dumps({
+                "wfirma_proforma_id":    pid,
+                "wfirma_invoice_id":     link_inv_id,
+                "wfirma_invoice_number": link_inv_num,
+                "before":                before,
+                "source":                "reconcile_conversion_link",
+            }),
+            operator    = operator,
+        )
+    except Exception as _exc:
+        log.warning("[%s] reconcile draft-event append skipped: %s",
+                    d.batch_id, _exc)
     try:
         from ..services.audit_persist import record_proforma_converted_to_invoice
         from ..core.config import settings as _s5

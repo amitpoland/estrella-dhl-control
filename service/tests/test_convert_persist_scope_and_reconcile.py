@@ -105,7 +105,7 @@ def test_s2_candidate_exposes_sale_date_and_payment_method():
 
 def test_s3_execute_response_declares_draft_persisted():
     import app.api.routes_proforma as rp
-    src = Path(rp.__file__).read_text(encoding="utf-8")
+    src = Path(rp.__file__).read_text(encoding="utf-8-sig")
     assert '"draft_persisted"' in src, (
         "execute success response must surface the step-7b outcome as "
         "draft_persisted (silent persist failure = draft-67 incident class)"
@@ -350,6 +350,25 @@ class TestReconcileConversionLink:
         d = pildb.get_draft_by_id(db, did)
         assert d.wfirma_invoice_id == "489960355"
         assert d.draft_state == "converted"
+
+    def test_r13_partial_write_state_is_repaired(self, client, tmp_path):
+        """Partial-write shape: wfirma_invoice_id already matches the link but
+        draft_state is still 'posted' (e.g. crash between writes). Must be
+        REPAIRED (state fixed), not noop'd — the noop guard requires both
+        the id match AND state 'converted'."""
+        from app.services import proforma_invoice_link_db as pildb
+        db = tmp_path / "proforma_links.db"
+        _make_db(db)
+        did = _insert_draft(db, wfirma_invoice_id="489960355",
+                            draft_state="posted")
+        _insert_link(db)
+
+        r = _post_reconcile(client, db, did)
+        body = r.json()
+        assert body["ok"] is True and body["status"] == "reconciled"
+        d = pildb.get_draft_by_id(Path(str(db)), did)
+        assert d.draft_state == "converted"
+        assert d.wfirma_invoice_id == "489960355"
 
     def test_r12_reconcile_appends_audit_json_event(self, client, tmp_path):
         """The reconcile route's audit.json timeline write (previously only
