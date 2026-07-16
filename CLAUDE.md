@@ -105,6 +105,10 @@ Reading from any path not listed below is a source-drift risk.
 6. A worktree that outlives its campaign is governance debt; the next session that finds one
    must disposition it (reuse / salvage+delete), not ignore it.
 
+**Campaign-branch write rule (enforced):** Before any reset/force-move/cherry-pick on a campaign
+branch, read `.campaigns/active.json` (per-campaign owner + canonical SHA authority; rules in
+`.campaigns/README.md`). A session that is not the registered owner never writes the branch.
+
 **Subagent reading rule (enforced):** All verification reads and git operations must use `C:\PZ-verify`.
 
 **One-session rule (enforced):** Only one Claude Code session may operate against
