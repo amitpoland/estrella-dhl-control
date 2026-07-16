@@ -207,3 +207,21 @@ def test_weight_override_source_column():
 def test_weight_source_badges_present():
     for label in ("Manual override", "Extracted from packing", "Carrier booking", "Missing"):
         assert label in _JSX
+
+
+# ── 2026-07-16 independent-review Condition 1: no hardcoded goods origin ──────
+
+def test_cmr_renderer_has_no_hardcoded_origin_country():
+    """The CMR goods blocks (Classic + Modern) must derive origin from the typed
+    data contract (d.goods_origin_country / per-line l.origin), never a
+    hardcoded country literal. Honest omission when the authority has none."""
+    assert "Country of Origin: India" not in _CMR
+    assert 'l.origin || "India"' not in _CMR
+    assert _CMR.count("goods_origin_country") >= 2   # Classic + Modern variants
+
+
+def test_cmr_data_origin_from_authority_not_hardcoded():
+    """proforma-detail.jsx must not default any origin field to 'India' — the
+    authority chain is ln/l.origin → liveDraft.origin_country → honest null/—."""
+    assert "|| 'India'" not in _JSX
+    assert "goods_origin_country" in _JSX

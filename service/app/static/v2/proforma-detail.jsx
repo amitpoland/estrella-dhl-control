@@ -4478,8 +4478,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       const itemType = ln.item_type || pk.item_type || 'other';
       const key = String(itemType).toUpperCase();
       if (!groups[key]) {
+        // Origin authority = Product Master (per-line ln.origin → draft-level
+        // origin_country) — same chain as the Packing List; honest null when
+        // the authority has none. Never the hardcoded 'India' UI default
+        // (2026-07-16 independent-review Condition 1).
         groups[key] = { item_type: _cmrItemLabel(itemType), qty: 0, net_weight: null,
-                        origin: pk.origin || ln.origin || 'India' };
+                        origin: ln.origin || pk.origin || liveDraft.origin_country || null };
       }
       const q = Number(ln.qty) || 0;                       // DRAFT billed qty (authority)
       groups[key].qty += q;
@@ -4672,10 +4676,26 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     goods_summary: _cmrAggPackingLines.goods_summary || '',
     // CMR lines: aggregated by item_type ONLY — transport summary, not commercial detail
     // Each entry: { item_type, qty, net_weight, origin } — 3-6 rows max
-    // Fallback to proforma lines when packing data not yet loaded
+    // Fallback to proforma lines when packing data not yet loaded.
+    // Origin authority = Product Master chain (ln.origin → draft origin_country);
+    // honest null when the authority has none — never a hardcoded country.
     lines: _cmrAggPackingLines.lines.length > 0
       ? _cmrAggPackingLines.lines
-      : lines.map(l => ({ item_type: l.desc, qty: l.qty, net_weight: null, origin: l.origin || 'India' })),
+      : lines.map(l => ({ item_type: l.desc, qty: l.qty, net_weight: null,
+                          origin: l.origin || liveDraft.origin_country || null })),
+    // Typed goods-origin for the CMR goods block — distinct per-line origins from
+    // the SAME lines the document renders (Product Master authority), honest null
+    // when unknown so the renderer omits the label instead of guessing
+    // (2026-07-16 independent-review Condition 1: the renderer previously
+    // hardcoded "Country of Origin: India").
+    goods_origin_country: (() => {
+      const src = _cmrAggPackingLines.lines.length > 0
+        ? _cmrAggPackingLines.lines
+        : lines.map(l => ({ origin: l.origin || liveDraft.origin_country || null }));
+      const s = new Set();
+      for (const l of src) { const o = String(l.origin || '').trim(); if (o && o !== '—') s.add(o); }
+      return s.size ? Array.from(s).join(' / ') : null;
+    })(),
   };
   // ──────────────────────────────────────────────────────────────────────────
 

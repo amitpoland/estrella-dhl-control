@@ -54,6 +54,21 @@ counter (either would fork the transport-document identity).
    the birthday bound, widening `_SHORT_LEN` is a one-line, separately-ADR'd change; it does
    not require a new authority.
 
+## Known limitation — legacy-batch rebook creates a new shipment record (2026-07-16 review POST-2)
+
+`compute_idempotency_key` now includes `client_ref` when present (the cross-client leak fix).
+A batch booked BEFORE this change carries a legacy key computed without `client_ref`; a
+post-deploy re-book of that same batch through the V2 flow (which now sends `client_ref`)
+computes a different key → coordinator cache miss → the adapter is invoked → a **new**
+shipment record (and, in live mode, a new carrier booking) is created alongside the legacy
+row. The 2026-07-06 duplicate-AWB protection covers same-key replays only, not key-change
+replays. Current production exposure is zero (`carrier_shipments` has no `client_ref` rows
+yet); the residual operator-facing mitigation — a booking-modal warning when a legacy row
+exists for the batch — is tracked as a scheduled follow-up (GATE 4: SCHEDULED). The
+`get_shipment_for_draft` fallback additionally refuses to attribute a row scoped to a
+different client (defence-in-depth guard), so this limitation cannot re-open the
+cross-client leak.
+
 ## Consequences
 
 - CMR numbers are human-sized and stable, sourced from the single existing transport

@@ -183,7 +183,12 @@ function EJCMRClassic({ cmrData }) {
             }}>
               <span style={{ color: "#475569", fontWeight: 600 }}>Goods: </span>
               <span>{d.goods_summary}</span>
-              <span style={{ marginLeft: 10, color: "#64748B" }}>Country of Origin: India</span>
+              {/* Goods origin from the typed data contract (Product Master authority
+                  via d.goods_origin_country) — label omitted when unknown; the
+                  previous hardcoded country was removed (2026-07-16 review C1). */}
+              {d.goods_origin_country ? (
+                <span style={{ marginLeft: 10, color: "#64748B" }}>Country of Origin: {d.goods_origin_country}</span>
+              ) : null}
             </div>
           )}
 
@@ -399,7 +404,11 @@ function EJCMRModern({ cmrData }) {
           }}>
             <span style={{ fontWeight: 600, color: "#0B3D2E" }}>Goods: </span>
             <span>{d.goods_summary}</span>
-            <span style={{ marginLeft: 10, color: "#64748B" }}>· Country of Origin: India</span>
+            {/* Data-driven origin (Product Master authority) — omitted when unknown;
+                hardcoded country removed (2026-07-16 review C1, Modern variant). */}
+            {d.goods_origin_country ? (
+              <span style={{ marginLeft: 10, color: "#64748B" }}>· Country of Origin: {d.goods_origin_country}</span>
+            ) : null}
           </div>
         )}
 
@@ -427,7 +436,9 @@ function EJCMRModern({ cmrData }) {
               <tr key={`${l.item_type || ""}${i}`}>
                 <td><span style={{ fontWeight: 600 }}>{l.item_type || "—"}</span></td>
                 <td style={{ fontSize: 9.5, color: "#475569" }}>Polybag + Jewellery box</td>
-                <td>{l.origin || "India"}</td>
+                {/* Per-line origin from the data contract — honest "—" when the
+                    authority has none (was hardcoded "India"; 2026-07-16 C1). */}
+                <td>{l.origin || "—"}</td>
                 <td className="ej-r ej-num">
                   {l.net_weight != null ? `${Number(l.net_weight).toFixed(3)} g` : "—"}
                 </td>

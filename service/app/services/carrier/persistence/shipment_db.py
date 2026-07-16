@@ -211,7 +211,20 @@ def get_shipment_for_draft(
                 (batch_id,),
             ).fetchall()
             if len(rows) == 1:
-                return dict(rows[0])
+                row = dict(rows[0])
+                # Defence-in-depth (independent of the caller's multi-client
+                # gate): the fallback may attribute ONLY a legacy NULL-client_ref
+                # row. A row scoped to a DIFFERENT client must never be returned
+                # to this requestor — even if the outer gate misfires (e.g.
+                # proforma_links.db path drift), the original cross-client leak
+                # cannot recur (2026-07-16 independent-review POST-1).
+                if (
+                    row.get("client_ref")
+                    and client_ref
+                    and row["client_ref"] != client_ref
+                ):
+                    return None
+                return row
 
     return None
 

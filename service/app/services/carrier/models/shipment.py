@@ -94,6 +94,12 @@ def compute_idempotency_key(request: ShipmentRequest) -> str:
     longer collide onto one row/AWB/CMR. It is added only when truthy, so a
     request without it produces the exact same key as before this change —
     legacy rows and existing callers are unaffected.
+
+    KNOWN LIMITATION (ADR-proforma-cmr-short-number §Known limitation): a
+    batch booked before this change has a legacy key WITHOUT client_ref; a
+    post-deploy re-book that now sends client_ref computes a NEW key, so the
+    coordinator's completed-key replay will not match and a new shipment
+    record is created. Same-key replay protection (2026-07-06) is unchanged.
     """
     payload = {
         "batch_id": request.batch_id,

@@ -210,3 +210,27 @@ def test_route_unknown_client_multi_batch_404(tmp_path):
     client = _client_for(db)
     r = client.get("/api/v1/carrier/B1/shipment?client_ref=Client%20C")
     assert r.status_code == 404
+
+
+def test_fallback_never_returns_other_clients_scoped_row(tmp_path):
+    """Defence-in-depth (2026-07-16 review POST-1): even with the fallback gate
+    OPEN (simulating a misfired/absent multi-client check), a single row scoped
+    to a DIFFERENT client must never be attributed to the requestor. Only a
+    legacy NULL-client_ref row may fall back."""
+    db = _db(tmp_path)
+    _book(db, "kA", "B1", "Client A", "AWB-A")   # scoped to A, only row in batch
+
+    # Client B must NOT inherit A's row even though the batch is single-row
+    # and the caller (wrongly) allows the fallback.
+    assert get_shipment_for_draft(
+        db, "B1", "Client B", allow_single_client_fallback=True
+    ) is None
+
+    # The owner still resolves via exact match; an unscoped (no client_ref)
+    # legacy-style read of a single-row batch still resolves.
+    assert get_shipment_for_draft(
+        db, "B1", "Client A", allow_single_client_fallback=True
+    )["tracking_ref"] == "AWB-A"
+    assert get_shipment_for_draft(
+        db, "B1", None, allow_single_client_fallback=True
+    )["tracking_ref"] == "AWB-A"

@@ -6,14 +6,21 @@ POST /api/v1/carrier/{batch_id}/shipment
     503 if carrier_api_status == "pending".
     Returns: batch_id, idempotency_key, mode, state, tracking_ref, simulated.
 
-GET /api/v1/carrier/{batch_id}/shipment
-    Returns most-recent recorded shipment for the batch.
-    Returns: batch_id, idempotency_key, mode, state, simulated, error, plus the
-    AWB logistics/document contract (tracking_ref, carrier, service_code,
-    box_type_code, weight_kg, dimensions, declared_value, currency, created_at,
-    label_download_url, commercial_documents_url, documents_available,
-    saved_labels_exist). tracking_ref persisted since the 2026-07-06 incident
-    fix; legacy rows return null fields honestly.
+GET /api/v1/carrier/{batch_id}/shipment?client_ref={client_name}
+    CLIENT-SCOPED shipment resolution (2026-07-16 cross-client AWB leak fix):
+    returns the shipment that belongs to THIS client's draft — exact
+    (batch_id, client_ref) match, with a legacy single-client fallback only
+    when the batch is not affirmatively multi-client. A multi-client batch
+    with no per-client row returns 404 honest-missing; it is NEVER the
+    "most-recent row for the batch".
+    Returns: batch_id, idempotency_key, export_shipment_id, cmr_number
+    (short CMR-EJ-<10 hex>, ADR-proforma-cmr-short-number), client_ref, mode,
+    state, simulated, error, plus the AWB logistics/document contract
+    (tracking_ref, carrier, service_code, box_type_code, weight_kg, dimensions,
+    declared_value, currency, created_at, label_download_url,
+    commercial_documents_url, documents_available, saved_labels_exist).
+    tracking_ref persisted since the 2026-07-06 incident fix; legacy rows
+    return null fields honestly.
 
 POST /api/v1/carrier/{batch_id}/label-package   ← Path-DOC (WF4.5)
     Generates outbound customs/shipping document package.
