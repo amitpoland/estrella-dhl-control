@@ -68,14 +68,17 @@ re-derived (`09 §3 rule 5`). Before running any inspection, check whether it is
 in PROJECT_STATE, a capability manifest, or a prior sealed package; if so, cite it and move on.
 Re-running a closed inspection is a token-economy violation, not diligence.
 
-## 4.2 Evidence gate for OS amendments (v1.4+)
+## 4.2 Evidence gate for OS amendments (v1.5+)
 
-The active canonical version is **v1.3** (`00 §6`; delta ledger `VERSION_HISTORY.md` — v1.1,
-v1.2, and v1.3 were each ratified 2026-07-10 on recorded evidence per this rule). This
+The active canonical version is **v1.4** (`00 §6`; delta ledger `VERSION_HISTORY.md`). v1.1,
+v1.2, and v1.3 were each ratified 2026-07-10 on recorded evidence per this rule; **v1.4**
+(2026-07-17) was ratified by **operator directive** — the same class as v1.2, disclosed in
+`VERSION_HISTORY.md` (evidence-classification note), not package-friction evidence. This
 Knowledge Engine remains the **evidence store for future amendments**: a proposed OS change
 must be backed by an observed failure or friction captured in a real package's record
 (PROJECT_STATE, scorecard, lesson, or Phase-9 closure record) — not by speculation. No recorded
-evidence = no v1.4 change.
+evidence = no v1.5 change, unless the operator again exercises directive ratification (disclosed
+in `VERSION_HISTORY.md`).
 
 ## 5. Recall caveat
 

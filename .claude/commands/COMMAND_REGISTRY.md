@@ -1,7 +1,7 @@
 # COMMAND_REGISTRY.md — Atlas V2 Slash Commands
 
 **Source of truth for slash commands version-controlled in `.claude/commands/`.**
-Updated 2026-06-20. 9 project commands.
+Updated 2026-07-17. 15 project commands.
 
 > **Capability legend:**
 > - **READ-ONLY** — inspects/reports; edits nothing.
@@ -24,6 +24,18 @@ Updated 2026-06-20. 9 project commands.
 | `/patch` | WRITE-CAPABLE | Smallest safe code patch for a task | required before merge/deploy |
 | `/pz-shipment` | WRITE-CAPABLE | Run a live PZ shipment batch (process_batch + Cliq post) | required — live batch + Cliq |
 | `/deploy` | DEPLOY-CAPABLE | Full production deploy via the mandatory 7-agent gate | required — production mutation |
+| `/pz-loop` | WRITE-CAPABLE (loop) | Engineering OS bounded iterative loop (`00 §13`); refuses to start without OBJECTIVE / STOP_CONDITIONS / ITERATION_CAP / VERIFY_CMD | required for any mutating iteration + before merge |
+| `/authority-census` | READ-ONLY | Audit authority ownership across modules (HTML/JSX/routes) | not required (read-only) |
+| `/context-lite` | READ-ONLY | Lightweight context load for a simple/single-domain task | not required (read-only) |
+| `/context-pr` | READ-ONLY | PR-scoped context load | not required (read-only) |
+| `/context-task` | READ-ONLY | Task-scoped (multi-domain) context load | not required (read-only) |
+| `/implement-slice` | WRITE-CAPABLE | Execute one named campaign slice under the implement-guard | required before merge |
+
+> **Backfill note (2026-07-17):** `/authority-census`, `/context-lite`, `/context-pr`,
+> `/context-task`, and `/implement-slice` were added to `.claude/commands/` after the
+> 2026-06-20 registry update and are recorded here as quick-matrix rows to restore the
+> source-of-truth count (9 → 15). Full per-command detail sections for these five are a
+> **SCHEDULED** backlog item, not written in this change.
 
 ---
 
@@ -84,6 +96,28 @@ Updated 2026-06-20. 9 project commands.
 - **Safe usage:** Production deploy AFTER: PR merged to main, the 7-agent gate returns READY-TO-DEPLOY, and the operator has authorized. Static-only deploys still run the full gate.
 - **Forbidden usage:** Any deploy without the 7-agent gate; deploying a dirty tree; deploying engine/root files without the separate sync (Lesson J); bypassing a security block.
 - **Capability:** DEPLOY-CAPABLE — highest risk. **Operator approval + full gate mandatory.**
+
+### `/pz-loop` — WRITE-CAPABLE (loop) ⚠️
+- **Purpose:** Run the Engineering OS **bounded iterative loop** for a stated task — the
+  iterative counterpart to `/feature`'s linear protocol, for work that converges through
+  repeated apply→verify cycles. All loop mechanics are governed by
+  `.engineering-os/00_ENGINEERING_CONSTITUTION.md §13`; the command file is only the entry point.
+- **Required inputs (refuses to start without all four):** `OBJECTIVE`, `STOP_CONDITIONS` (an
+  aspirational phrase is not a stop condition), `ITERATION_CAP` (default 5, still must be stated),
+  `VERIFY_CMD` (a real executable command). Also refuses if `TASK_STATE.md` shows a different task
+  `IN_PROGRESS`, if canonical authority/ownership is unclear, or if the first action begins beyond
+  an operator gate.
+- **Safe usage:** Convergent diagnostic or implementation work with an objective verifier and an
+  explicit cap. Each iteration applies the smallest change (`00 §12`) and classifies results under
+  the Evidence Contract (`00 §11`).
+- **Forbidden usage:** Starting without the four inputs; running past `ITERATION_CAP`; restarting
+  solved work; crossing any operator gate (merge, deploy, production mutation, fiscal/wFirma
+  write) inside an iteration. Do **not** create a `/loop` project command — `/pz-loop` is the only
+  loop command (`/loop` is a reserved platform-level skill name; do not shadow it with a
+  `loop.md` project command regardless).
+- **Capability:** WRITE-CAPABLE for mutating iterations (READ-ONLY iterations run freely). GATE 1
+  applies at loop exit before any PR opens; **operator approval required before any iteration that
+  mutates production.**
 
 ---
 
