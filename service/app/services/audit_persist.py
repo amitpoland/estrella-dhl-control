@@ -47,6 +47,7 @@ EV_PROFORMA_ISSUED                  = "proforma_issued"
 EV_PROFORMA_CANCELLED               = "proforma_cancelled"
 EV_PROFORMA_CONVERTED_TO_INVOICE    = "proforma_converted_to_invoice"
 EV_INVOICE_APPROVAL_ATTEMPT         = "invoice_approval_attempt"
+EV_INVOICE_LINK_RECONCILED          = "invoice_link_reconciled"
 EV_INVENTORY_DIRECT_DISPATCH_MARKED = "inventory_direct_dispatch_marked"
 EV_WFIRMA_PZ_MAPPING_REFRESHED      = "wfirma_pz_mapping_refreshed"
 
@@ -396,6 +397,88 @@ def record_proforma_converted_to_invoice(
             "wfirma_proforma_id": pid,
             "wfirma_invoice_id":  iid,
             "reason": "appended"}
+
+
+def record_invoice_link_reconciled(
+    audit_path: Path,
+    *,
+    batch_id:           str,
+    client_name:        str,
+    wfirma_proforma_id: str,
+    wfirma_invoice_id:  str,
+    invoice_number:     str,
+    operator:           str,
+    previous_status:    str = "",
+    id_source:          str = "link_row",   # "link_row" | "operator_supplied"
+) -> Dict[str, Any]:
+    """
+    Append an ``invoice_link_reconciled`` timeline event recording that a
+    split-brain proforma_invoice_links row (real wFirma invoice existed but
+    the local link stayed 'pending'/'failed') was repaired by the operator-
+    gated reconcile action. LOCAL-state repair only — no wFirma write.
+
+    Idempotent on ``(batch_id, wfirma_proforma_id, wfirma_invoice_id)``.
+    Append-only; never modifies existing timeline entries.
+
+    Returns ``{"appended": bool, "wfirma_proforma_id": str,
+                "wfirma_invoice_id": str, "reason": str}``.
+    """
+    pid = (wfirma_proforma_id or "").strip()
+    iid = (wfirma_invoice_id  or "").strip()
+    if not pid:
+        return {"appended": False, "wfirma_proforma_id": "",
+                "wfirma_invoice_id": iid, "reason": "wfirma_proforma_id is empty"}
+    if not iid:
+        return {"appended": False, "wfirma_proforma_id": pid,
+                "wfirma_invoice_id": "", "reason": "wfirma_invoice_id is empty"}
+
+    audit = _load(audit_path)
+    if audit is None:
+        return {"appended": False, "wfirma_proforma_id": pid,
+                "wfirma_invoice_id": iid,
+                "reason": "audit.json missing or unreadable"}
+
+    timeline = audit.get("timeline") or []
+    if isinstance(timeline, list):
+        for entry in timeline:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("event") != EV_INVOICE_LINK_RECONCILED:
+                continue
+            d = entry.get("detail") or {}
+            if (d.get("batch_id") == batch_id
+                    and (d.get("wfirma_proforma_id") or "") == pid
+                    and (d.get("wfirma_invoice_id")  or "") == iid):
+                return {"appended": False, "wfirma_proforma_id": pid,
+                        "wfirma_invoice_id": iid, "reason": "already recorded"}
+
+    try:
+        tl.log_event(
+            audit_path, EV_INVOICE_LINK_RECONCILED, "operator",
+            operator or "operator",
+            detail={
+                "batch_id":           batch_id,
+                "client_name":        client_name,
+                "wfirma_proforma_id": pid,
+                "wfirma_invoice_id":  iid,
+                "invoice_number":     invoice_number or "",
+                "operator":           operator or "",
+                "previous_status":    previous_status or "",
+                "id_source":          id_source or "link_row",
+                "wfirma_write":       False,
+            },
+        )
+    except Exception as exc:
+        log.warning(
+            "audit_persist.record_invoice_link_reconciled timeline "
+            "emit failed (non-fatal): %s", exc,
+        )
+        return {"appended": False, "wfirma_proforma_id": pid,
+                "wfirma_invoice_id": iid,
+                "reason": f"timeline emit failed: {exc}"}
+
+    return {"appended": True, "wfirma_proforma_id": pid,
+            "wfirma_invoice_id": iid, "reason": "appended"}
 
 
 # ── Human invoice approval boundary ──────────────────────────────────────────

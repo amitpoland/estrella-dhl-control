@@ -3690,6 +3690,149 @@ def proforma_to_invoice_preview(
     })
 
 
+def _verify_created_invoice(plan, verify_xml: str) -> None:
+    """Verify-after-create check set: confirm that a fetched wFirma invoice
+    matches the FinalInvoicePlan it was (supposedly) created from.
+
+    SINGLE AUTHORITY for the post-create verification checks. Called by:
+      * step 6b of POST /to-invoice (immediately after invoices/add), and
+      * POST /invoice-links/{proforma_id}/reconcile (R-2 split-brain repair),
+    so both paths apply the IDENTICAL matrix: type, contractor, line count,
+    per-line fields (name, good_id, unit_count, price, vat), currency,
+    total (±0.02), and receiver.
+
+    Raises RuntimeError on the first mismatch; returns None when all pass.
+    Pure comparison — performs no I/O and no writes.
+    """
+    import xml.etree.ElementTree as _VET
+    verify_root = _VET.fromstring(verify_xml)
+    v_inv = verify_root.find(".//invoice")
+    if v_inv is None:
+        raise RuntimeError(
+            "verify-after-create: fetched invoice "
+            "but no <invoice> element in response"
+        )
+
+    # Check 1: invoice ID exists
+    v_id = (v_inv.findtext("id") or "").strip()
+    if not v_id:
+        raise RuntimeError(
+            "verify-after-create: fetched invoice has empty <id>"
+        )
+
+    # Check 2: type is normal (not proforma)
+    v_type = (v_inv.findtext("type") or "").strip().lower()
+    if v_type not in ("normal", "vat"):
+        raise RuntimeError(
+            f"verify-after-create: expected type='normal' or 'vat', "
+            f"got type={v_type!r} — wFirma may have created wrong document type"
+        )
+
+    # Check 3: contractor matches source proforma
+    v_contractor_node = v_inv.find("contractor")
+    v_contractor_id = (
+        (v_contractor_node.findtext("id") or "").strip()
+        if v_contractor_node is not None else ""
+    )
+    if v_contractor_id != plan.contractor_id:
+        raise RuntimeError(
+            f"verify-after-create: contractor mismatch — "
+            f"expected={plan.contractor_id!r} got={v_contractor_id!r}"
+        )
+
+    # Check 4: line count matches source proforma
+    v_lines = verify_root.findall(".//invoicecontent")
+    expected_line_count = len(plan.contents)
+    actual_line_count = len(v_lines)
+    if actual_line_count != expected_line_count:
+        raise RuntimeError(
+            f"verify-after-create: line count mismatch — "
+            f"expected={expected_line_count} persisted={actual_line_count} "
+            f"(wFirma silently dropped lines)"
+        )
+
+    # Check 4b: per-line field verification (name, good_id, unit_count, price, vat)
+    for idx, (expected_line, actual_el) in enumerate(
+        zip(plan.contents, v_lines), start=1
+    ):
+        _a_name = (actual_el.findtext("name") or "").strip()
+        _a_good_node = actual_el.find("good")
+        _a_good_id = (
+            (_a_good_node.findtext("id") or "").strip()
+            if _a_good_node is not None else ""
+        )
+        _a_unit_count = (actual_el.findtext("unit_count") or "").strip()
+        _a_price = (actual_el.findtext("price") or "").strip()
+        _a_vat_node = actual_el.find("vat_code")
+        _a_vat_id = (
+            (_a_vat_node.findtext("id") or "").strip()
+            if _a_vat_node is not None else ""
+        )
+        _mismatches = []
+        if _a_name != expected_line.name:
+            _mismatches.append(
+                f"name: expected={expected_line.name!r} got={_a_name!r}"
+            )
+        if _a_good_id != expected_line.good_id:
+            _mismatches.append(
+                f"good_id: expected={expected_line.good_id!r} got={_a_good_id!r}"
+            )
+        if _a_unit_count != expected_line.unit_count:
+            _mismatches.append(
+                f"unit_count: expected={expected_line.unit_count!r} got={_a_unit_count!r}"
+            )
+        if _a_price != expected_line.price:
+            _mismatches.append(
+                f"price: expected={expected_line.price!r} got={_a_price!r}"
+            )
+        if _a_vat_id != expected_line.vat_code_id:
+            _mismatches.append(
+                f"vat_code_id: expected={expected_line.vat_code_id!r} got={_a_vat_id!r}"
+            )
+        if _mismatches:
+            raise RuntimeError(
+                f"verify-after-create: line {idx} field mismatch — "
+                + "; ".join(_mismatches)
+            )
+
+    # Check 5: currency matches
+    v_currency = (v_inv.findtext("currency") or "").strip()
+    if v_currency and v_currency != plan.currency:
+        raise RuntimeError(
+            f"verify-after-create: currency mismatch — "
+            f"expected={plan.currency!r} got={v_currency!r}"
+        )
+
+    # Check 6: total matches within rounding tolerance (0.02)
+    from decimal import Decimal as _D, InvalidOperation as _DI
+    v_total_str = (v_inv.findtext("total") or "0").strip()
+    try:
+        v_total = _D(v_total_str)
+    except _DI:
+        v_total = _D("0")
+    total_diff = abs(v_total - plan.expected_total)
+    if total_diff > _D("0.02"):
+        raise RuntimeError(
+            f"verify-after-create: total mismatch beyond tolerance — "
+            f"expected={plan.expected_total} got={v_total} "
+            f"diff={total_diff} (tolerance=0.02)"
+        )
+
+    # Check 7: contractor_receiver preserved when present
+    if plan.contractor_receiver_id:
+        v_rcv_node = v_inv.find("contractor_receiver")
+        v_rcv_id = (
+            (v_rcv_node.findtext("id") or "").strip()
+            if v_rcv_node is not None else ""
+        )
+        if v_rcv_id != plan.contractor_receiver_id:
+            raise RuntimeError(
+                f"verify-after-create: contractor_receiver mismatch — "
+                f"expected={plan.contractor_receiver_id!r} "
+                f"got={v_rcv_id!r}"
+            )
+
+
 class _FinalInvoiceConfirmReq(_BaseModel):
     confirm:                str
     operator_description:   Optional[str] = ""
@@ -4104,6 +4247,20 @@ def proforma_to_invoice(
                 f"invoices/add response missing id ({wfirma_inv_id!r}) "
                 f"or fullnumber ({wfirma_inv_num!r})"
             )
+        # R-2: durably capture the remote invoice identity on the link row
+        # IMMEDIATELY — before verify-after-create (6b) and mark_issued (7).
+        # If any later local step fails, the row stays 'pending'/'failed'
+        # but now carries the id of the REAL wFirma invoice, so the
+        # split-brain reconcile workflow can re-fetch and repair it.
+        # Best-effort: capture failure must not fail a successful create.
+        try:
+            plink.record_invoice_identity(
+                link_db, pid,
+                invoice_id=wfirma_inv_id, invoice_number=wfirma_inv_num,
+            )
+        except Exception as _cap_exc:
+            log.warning("[%s] invoice identity capture skipped: %s",
+                        batch_id, _cap_exc)
     except Exception as exc:
         try:
             plink.mark_failed(link_db, pid,
@@ -4125,136 +4282,13 @@ def proforma_to_invoice(
     # line count, currency, total (within rounding), and receiver.
     # Failure here means the invoice EXISTS in wFirma but is malformed —
     # mark_failed so the operator knows to inspect manually.
+    # The check set itself lives in _verify_created_invoice — the SINGLE
+    # authority shared with the R-2 reconcile route so both paths apply the
+    # identical matrix (type, contractor, lines, per-line fields, currency,
+    # total, receiver).
     try:
         verify_xml = wfirma_client.fetch_invoice_xml(wfirma_inv_id)
-        import xml.etree.ElementTree as _VET
-        verify_root = _VET.fromstring(verify_xml)
-        v_inv = verify_root.find(".//invoice")
-        if v_inv is None:
-            raise RuntimeError(
-                f"verify-after-create: fetched invoice {wfirma_inv_id} "
-                "but no <invoice> element in response"
-            )
-
-        # Check 1: invoice ID exists (already guaranteed by reaching here)
-        v_id = (v_inv.findtext("id") or "").strip()
-        if not v_id:
-            raise RuntimeError(
-                "verify-after-create: fetched invoice has empty <id>"
-            )
-
-        # Check 2: type is normal (not proforma)
-        v_type = (v_inv.findtext("type") or "").strip().lower()
-        if v_type not in ("normal", "vat"):
-            raise RuntimeError(
-                f"verify-after-create: expected type='normal' or 'vat', "
-                f"got type={v_type!r} — wFirma may have created wrong document type"
-            )
-
-        # Check 3: contractor matches source proforma
-        v_contractor_node = v_inv.find("contractor")
-        v_contractor_id = (
-            (v_contractor_node.findtext("id") or "").strip()
-            if v_contractor_node is not None else ""
-        )
-        if v_contractor_id != plan.contractor_id:
-            raise RuntimeError(
-                f"verify-after-create: contractor mismatch — "
-                f"expected={plan.contractor_id!r} got={v_contractor_id!r}"
-            )
-
-        # Check 4: line count matches source proforma
-        v_lines = verify_root.findall(".//invoicecontent")
-        expected_line_count = len(plan.contents)
-        actual_line_count = len(v_lines)
-        if actual_line_count != expected_line_count:
-            raise RuntimeError(
-                f"verify-after-create: line count mismatch — "
-                f"expected={expected_line_count} persisted={actual_line_count} "
-                f"(wFirma silently dropped lines)"
-            )
-
-        # Check 4b: per-line field verification (name, good_id, unit_count, price, vat)
-        for idx, (expected_line, actual_el) in enumerate(
-            zip(plan.contents, v_lines), start=1
-        ):
-            _a_name = (actual_el.findtext("name") or "").strip()
-            _a_good_node = actual_el.find("good")
-            _a_good_id = (
-                (_a_good_node.findtext("id") or "").strip()
-                if _a_good_node is not None else ""
-            )
-            _a_unit_count = (actual_el.findtext("unit_count") or "").strip()
-            _a_price = (actual_el.findtext("price") or "").strip()
-            _a_vat_node = actual_el.find("vat_code")
-            _a_vat_id = (
-                (_a_vat_node.findtext("id") or "").strip()
-                if _a_vat_node is not None else ""
-            )
-            _mismatches = []
-            if _a_name != expected_line.name:
-                _mismatches.append(
-                    f"name: expected={expected_line.name!r} got={_a_name!r}"
-                )
-            if _a_good_id != expected_line.good_id:
-                _mismatches.append(
-                    f"good_id: expected={expected_line.good_id!r} got={_a_good_id!r}"
-                )
-            if _a_unit_count != expected_line.unit_count:
-                _mismatches.append(
-                    f"unit_count: expected={expected_line.unit_count!r} got={_a_unit_count!r}"
-                )
-            if _a_price != expected_line.price:
-                _mismatches.append(
-                    f"price: expected={expected_line.price!r} got={_a_price!r}"
-                )
-            if _a_vat_id != expected_line.vat_code_id:
-                _mismatches.append(
-                    f"vat_code_id: expected={expected_line.vat_code_id!r} got={_a_vat_id!r}"
-                )
-            if _mismatches:
-                raise RuntimeError(
-                    f"verify-after-create: line {idx} field mismatch — "
-                    + "; ".join(_mismatches)
-                )
-
-        # Check 5: currency matches
-        v_currency = (v_inv.findtext("currency") or "").strip()
-        if v_currency and v_currency != plan.currency:
-            raise RuntimeError(
-                f"verify-after-create: currency mismatch — "
-                f"expected={plan.currency!r} got={v_currency!r}"
-            )
-
-        # Check 6: total matches within rounding tolerance (0.02)
-        from decimal import Decimal as _D, InvalidOperation as _DI
-        v_total_str = (v_inv.findtext("total") or "0").strip()
-        try:
-            v_total = _D(v_total_str)
-        except _DI:
-            v_total = _D("0")
-        total_diff = abs(v_total - plan.expected_total)
-        if total_diff > _D("0.02"):
-            raise RuntimeError(
-                f"verify-after-create: total mismatch beyond tolerance — "
-                f"expected={plan.expected_total} got={v_total} "
-                f"diff={total_diff} (tolerance=0.02)"
-            )
-
-        # Check 7: contractor_receiver preserved when present
-        if plan.contractor_receiver_id:
-            v_rcv_node = v_inv.find("contractor_receiver")
-            v_rcv_id = (
-                (v_rcv_node.findtext("id") or "").strip()
-                if v_rcv_node is not None else ""
-            )
-            if v_rcv_id != plan.contractor_receiver_id:
-                raise RuntimeError(
-                    f"verify-after-create: contractor_receiver mismatch — "
-                    f"expected={plan.contractor_receiver_id!r} "
-                    f"got={v_rcv_id!r}"
-                )
-
+        _verify_created_invoice(plan, verify_xml)
     except Exception as exc:
         _vac_note = f"verify-after-create FAILED: {type(exc).__name__}: {exc}"
         try:
@@ -11261,6 +11295,370 @@ def draft_to_invoice_by_id(
     )
 
     return proforma_to_invoice(d.batch_id, d.client_name, body, x_operator=operator)
+
+
+# ── R-2 split-brain conversion-link recovery ─────────────────────────────────
+#
+# Failure matrix this covers (POST /to-invoice steps 6/6b/7):
+#   * step 6b verify-after-create FAILED  → link status 'failed', invoice
+#     EXISTS in wFirma (id captured on the link row since the R-2 fix;
+#     historical rows carry it only in audit.json / server log),
+#   * step 7 mark_issued crashed          → link stays 'pending', invoice
+#     EXISTS in wFirma.
+# Standing rules preserved: NO retry (UNIQUE(proforma_id) blocks it), NO
+# duplicate create, NEVER delete the remote invoice. Recovery is strictly:
+# read-only detection + operator-gated LOCAL repair after a read-only
+# re-fetch re-passes the identical verify-after-create matrix.
+
+_RECONCILE_CONFIRM_TOKEN = "YES_RECONCILE_INVOICE_LINK"
+_VAC_NOTE_MARKER         = "verify-after-create"
+
+
+def _draft_for_proforma_id(pid: str) -> Optional["pildb.ProformaDraft"]:
+    """First proforma_drafts row whose wfirma_proforma_id == pid, or None."""
+    try:
+        res = pildb.search_drafts(
+            _proforma_db_path(),
+            filters={"wfirma_proforma_id": pid},
+            page=1, page_size=1,
+        )
+        results = res.get("results") or []
+        return results[0] if results else None
+    except Exception:
+        return None
+
+
+def _audit_vac_evidence(batch_id: str, pid: str) -> Optional[str]:
+    """Latest verify-after-create failure blocking_reason recorded in the
+    batch's audit.json for this proforma_id, or None. Read-only — this is
+    the second detection source for rows where mark_failed itself failed
+    (link left 'pending' but the audit event was still appended)."""
+    if not (batch_id or "").strip():
+        return None
+    try:
+        audit_path = settings.storage_root / "outputs" / batch_id / "audit.json"
+        if not audit_path.exists():
+            return None
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        latest = None
+        for entry in (audit.get("timeline") or []):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("event") != "invoice_approval_attempt":
+                continue
+            d = entry.get("detail") or {}
+            if (d.get("wfirma_proforma_id") or "") != pid:
+                continue
+            if (d.get("outcome") or "") != "failed":
+                continue
+            reason = d.get("blocking_reason") or ""
+            if _VAC_NOTE_MARKER in reason:
+                latest = reason
+        return latest
+    except Exception:
+        return None
+
+
+@router.get(
+    "/invoice-links/split-brain",
+    dependencies=[_auth],
+    summary="R-2: read-only report of split-brain conversion links "
+            "(local link pending/failed while a real wFirma invoice exists)",
+)
+def list_split_brain_invoice_links(proforma_id: str = "") -> JSONResponse:
+    """Read-only detection. Lists proforma_invoice_links rows in status
+    'pending'/'failed' that evidence a REAL wFirma invoice:
+
+      * confirmed_split_brain — invoice_id captured on the link row, OR the
+        link notes / audit.json record a verify-after-create failure (the
+        invoice was created; a later local step failed),
+      * suspected_split_brain — 'pending' row without a captured id (the
+        request died between invoices/add and the local promote; the id, if
+        any, is only in the server log).
+
+    Plain 'failed' rows with no evidence (invoices/add itself was rejected —
+    no remote invoice) are excluded. No wFirma call, no write.
+    """
+    from ..services import proforma_invoice_link_db as plink
+
+    link_db = settings.storage_root / "proforma_links.db"
+    pid_filter = (proforma_id or "").strip()
+    if pid_filter:
+        one = plink.get_link_by_proforma(link_db, pid_filter)
+        candidates = [one] if one is not None else []
+    else:
+        candidates = (
+            plink.list_links(link_db, status="pending", limit=200)
+            + plink.list_links(link_db, status="failed",  limit=200)
+        )
+
+    entries = []
+    for link in candidates:
+        if link.status not in ("pending", "failed"):
+            continue
+        captured_id = (link.invoice_id or "").strip()
+        vac_in_notes = _VAC_NOTE_MARKER in (link.notes or "")
+        draft = _draft_for_proforma_id(link.proforma_id)
+        batch_id = draft.batch_id if draft else ""
+        audit_evidence = _audit_vac_evidence(batch_id, link.proforma_id)
+
+        if captured_id or vac_in_notes or audit_evidence:
+            classification = "confirmed_split_brain"
+        elif link.status == "pending":
+            classification = "suspected_split_brain"
+        else:
+            continue
+
+        entries.append({
+            "proforma_id":         link.proforma_id,
+            "proforma_number":     link.proforma_number,
+            "status":              link.status,
+            "classification":      classification,
+            "captured_invoice_id": captured_id,
+            "invoice_number":      link.invoice_number or "",
+            "notes":               link.notes or "",
+            "converted_at":        link.converted_at,
+            "operator":            link.operator,
+            "currency":            link.currency,
+            "source_total":        str(link.source_total),
+            "batch_id":            batch_id,
+            "client_name":         draft.client_name if draft else "",
+            "draft_id":            draft.id if draft else None,
+            "draft_state":         draft.draft_state if draft else "",
+            "audit_evidence":      audit_evidence or "",
+            # Reconcile can run without operator input only when the id
+            # was captured; otherwise the operator must supply it.
+            "reconcilable_without_input": bool(captured_id),
+        })
+
+    return JSONResponse({"ok": True, "count": len(entries), "links": entries})
+
+
+class _ReconcileLinkReq(_BaseModel):
+    confirm:           str = ""
+    # Operator-supplied wFirma invoice id — only needed for historical rows
+    # where the id was never captured on the link row (pre-R-2 fix).
+    wfirma_invoice_id: Optional[str] = ""
+
+
+@router.post(
+    "/invoice-links/{proforma_id}/reconcile",
+    dependencies=[_auth],
+    summary="R-2: operator-gated split-brain link repair — "
+            "read-only wFirma re-fetch + local state repair; NO wFirma write",
+)
+def reconcile_invoice_link(
+    proforma_id: str,
+    body:        _ReconcileLinkReq,
+    x_operator:  Optional[str] = Header(None, alias="X-Operator"),
+    session_user: Optional[dict] = Depends(_get_current_user_optional),
+) -> JSONResponse:
+    """Repair a split-brain conversion link (authority: PROFORMA).
+
+    Gates (all must pass; each miss returns status='blocked'):
+      • operator attribution — authenticated session, else X-Operator header
+      • body.confirm == "YES_RECONCILE_INVOICE_LINK"
+      • link row exists and is in 'pending'/'failed' (never touches 'issued')
+      • a wFirma invoice id is available (captured on the link row, or
+        operator-supplied for historical rows; a conflict between the two
+        refuses repair)
+
+    Then (ALL wFirma access read-only — invoices/get only, never add/edit/
+    delete): re-fetch the source proforma, rebuild the conversion plan via
+    the same _build_convert_candidate authority, re-fetch the remote invoice
+    by id, require its description to back-reference the source proforma,
+    and re-run the IDENTICAL verify-after-create matrix
+    (_verify_created_invoice). Any mismatch → status='refused', local state
+    untouched.
+
+    On pass, repairs LOCAL state only: mark_issued on the link row,
+    persist_invoice_to_draft (draft shows the invoice identity, Convert
+    stays hidden), and an append-only `invoice_link_reconciled` audit event.
+    """
+    from ..services import proforma_invoice_link_db as plink
+    from ..services import proforma_to_invoice as p2i
+
+    pid      = (proforma_id or "").strip()
+    link_db  = settings.storage_root / "proforma_links.db"
+    operator = (
+        ((session_user or {}).get("full_name") or "").strip()
+        or ((session_user or {}).get("email") or "").strip()
+        or (x_operator or "").strip()
+    )
+
+    def _blocked(*reasons: str) -> JSONResponse:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "proforma_id":      pid,
+            "blocking_reasons": list(reasons),
+        })
+
+    if not operator:
+        return _blocked(
+            "operator attribution required — authenticate with a session "
+            "or send a non-empty X-Operator header"
+        )
+    if (body.confirm or "").strip() != _RECONCILE_CONFIRM_TOKEN:
+        return _blocked(
+            f"confirm token missing or wrong — send confirm="
+            f"'{_RECONCILE_CONFIRM_TOKEN}' to reconcile this link"
+        )
+
+    link = plink.get_link_by_proforma(link_db, pid)
+    if link is None:
+        return _blocked(f"no conversion link row for proforma_id {pid!r}")
+    if link.status == "issued":
+        return _blocked(
+            f"link for proforma_id {pid!r} is already 'issued' "
+            f"(invoice {link.invoice_number or link.invoice_id}) — "
+            "nothing to reconcile"
+        )
+    if link.status not in ("pending", "failed"):
+        return _blocked(
+            f"link status {link.status!r} is not reconcilable — "
+            "only 'pending'/'failed' rows can be repaired"
+        )
+
+    captured = (link.invoice_id or "").strip()
+    supplied = (body.wfirma_invoice_id or "").strip()
+    if captured and supplied and captured != supplied:
+        return _blocked(
+            f"invoice id conflict — link row captured {captured!r} but "
+            f"request supplied {supplied!r}; refusing repair"
+        )
+    iid = captured or supplied
+    if not iid:
+        return _blocked(
+            "no wfirma_invoice_id available — the link row captured none; "
+            "supply the id from the original error response / server log"
+        )
+    id_source = "link_row" if captured else "operator_supplied"
+
+    draft = _draft_for_proforma_id(pid)
+    if draft is None or draft.id is None:
+        return _blocked(
+            f"no proforma_drafts row references wfirma_proforma_id {pid!r} — "
+            "cannot rebuild the conversion plan or attribute the audit event"
+        )
+
+    # ── Read-only wFirma re-fetch + identical verify matrix ──────────────────
+    try:
+        proforma_xml = wfirma_client.fetch_invoice_xml(pid)
+        snap = p2i.parse_proforma_xml(proforma_xml)
+        if (link.proforma_number or "") and (snap.proforma_number or "") \
+                and snap.proforma_number != link.proforma_number:
+            raise RuntimeError(
+                f"proforma identity drift — link recorded "
+                f"{link.proforma_number!r} but wFirma returns "
+                f"{snap.proforma_number!r}"
+            )
+
+        _cv_draft = pildb.get_draft_by_id(_proforma_db_path(), int(draft.id))
+        _candidate = _build_convert_candidate(_cv_draft, snap)
+        plan = _candidate["plan"]
+
+        verify_xml = wfirma_client.fetch_invoice_xml(iid)
+
+        # Identity guard: the converter always writes a back-reference to
+        # the source proforma into the invoice description. A remote invoice
+        # without it is NOT the invoice this flow created (protects against
+        # an operator-supplied id pointing at a look-alike manual invoice).
+        import xml.etree.ElementTree as _RET
+        _r_inv  = _RET.fromstring(verify_xml).find(".//invoice")
+        _r_desc = (_r_inv.findtext("description") or "") if _r_inv is not None else ""
+        _r_num  = (
+            (_r_inv.findtext("fullnumber")
+             or _r_inv.findtext("full_number")
+             or _r_inv.findtext("number")
+             or "").strip()
+            if _r_inv is not None else ""
+        )
+        if snap.proforma_number and snap.proforma_number not in _r_desc:
+            raise RuntimeError(
+                f"remote invoice {iid} does not back-reference source "
+                f"proforma {snap.proforma_number!r} in its description — "
+                "refusing repair"
+            )
+
+        _verify_created_invoice(plan, verify_xml)
+    except Exception as exc:
+        return JSONResponse({
+            "ok":                False,
+            "status":            "refused",
+            "proforma_id":       pid,
+            "wfirma_invoice_id": iid,
+            "id_source":         id_source,
+            "reconcile_refused": True,
+            "error":             f"{type(exc).__name__}: {exc}"[:500],
+        })
+
+    # ── Local repair (the ONLY writes; wFirma untouched) ─────────────────────
+    previous_status = link.status
+    invoice_number  = _r_num or (link.invoice_number or "")
+    try:
+        plink.mark_issued(
+            link_db, pid,
+            invoice_id     = iid,
+            invoice_number = invoice_number,
+            invoice_total  = plan.expected_total,
+            notes          = (f"reconciled by {operator} from proforma "
+                              f"{snap.proforma_number} "
+                              f"(id_source={id_source}, "
+                              f"previous_status={previous_status})")[:500],
+        )
+    except Exception as exc:
+        return JSONResponse({
+            "ok":                False,
+            "status":            "failed",
+            "proforma_id":       pid,
+            "wfirma_invoice_id": iid,
+            "error":             f"mark_issued failed: "
+                                 f"{type(exc).__name__}: {exc}"[:500],
+        })
+
+    try:
+        from ..services.conversion_persistence import persist_invoice_to_draft as _pidr
+        _pidr(
+            db_path               = _proforma_db_path(),
+            draft_id              = int(draft.id),
+            wfirma_invoice_id     = iid,
+            wfirma_invoice_number = invoice_number,
+        )
+    except Exception as _pe:
+        log.warning("[%s] reconcile persist_invoice_to_draft skipped: %s",
+                    draft.batch_id, _pe)
+
+    try:
+        from ..services.audit_persist import record_invoice_link_reconciled
+        record_invoice_link_reconciled(
+            settings.storage_root / "outputs" / draft.batch_id / "audit.json",
+            batch_id           = draft.batch_id,
+            client_name        = draft.client_name,
+            wfirma_proforma_id = pid,
+            wfirma_invoice_id  = iid,
+            invoice_number     = invoice_number,
+            operator           = operator,
+            previous_status    = previous_status,
+            id_source          = id_source,
+        )
+    except Exception as _ae:
+        log.warning("[%s] reconcile audit append skipped: %s",
+                    draft.batch_id, _ae)
+
+    return JSONResponse({
+        "ok":                    True,
+        "status":                "reconciled",
+        "proforma_id":           pid,
+        "wfirma_invoice_id":     iid,
+        "wfirma_invoice_number": invoice_number,
+        "previous_status":       previous_status,
+        "id_source":             id_source,
+        "batch_id":              draft.batch_id,
+        "client_name":           draft.client_name,
+        "operator":              operator,
+        "wfirma_write":          False,
+    })
 
 
 # ── Phase 9 — Payload disclosure endpoints ───────────────────────────────────

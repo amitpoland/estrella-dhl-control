@@ -3482,6 +3482,123 @@ function WorkflowRail({ draftState, wfirmaProformaId, wfirmaInvoiceId }) {
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
+// ── R-2 Conversion recovery panel ────────────────────────────────────────────
+// Shown ONLY when the backend split-brain report (GET /proforma/invoice-links/
+// split-brain — the sole authority; the UI never derives this locally) flags
+// this draft's proforma: the local conversion link is stuck 'pending'/'failed'
+// while a REAL invoice exists in wFirma. Offers the operator-gated LOCAL
+// repair: the backend re-fetches the remote invoice read-only, re-runs the
+// identical verify-after-create matrix, and only then repairs local state.
+// NO wFirma write, no retry of invoices/add, never deletes the remote invoice.
+function ConversionRecoveryPanel({ entry, onReconciled }) {
+  const [confirmChecked, setConfirmChecked] = React.useState(false);
+  const [manualId,       setManualId]       = React.useState('');
+  const [busy,           setBusy]           = React.useState(false);
+  const [error,          setError]          = React.useState(null);
+  const [refused,        setRefused]        = React.useState(null);
+  if (!entry) return null;
+
+  const capturedId  = entry.captured_invoice_id || '';
+  const effectiveId = capturedId || manualId.trim();
+  const canRepair   = confirmChecked && !!effectiveId && !busy;
+
+  const doReconcile = () => {
+    if (!canRepair) return;
+    setBusy(true); setError(null); setRefused(null);
+    const body = { confirm: 'YES_RECONCILE_INVOICE_LINK' };
+    if (!capturedId) body.wfirma_invoice_id = manualId.trim();
+    window.PzApi.reconcileInvoiceLink(entry.proforma_id, body)
+      .then(r => {
+        setBusy(false);
+        const d = (r && r.data) || {};
+        if (r && r.ok && d.ok) { onReconciled && onReconciled(d); return; }
+        if (d && d.reconcile_refused) {
+          setRefused(d.error || 'Repair refused — the remote invoice does not match this proforma.');
+          return;
+        }
+        setError(
+          (d && d.blocking_reasons && d.blocking_reasons.join('; '))
+          || (d && d.error) || (r && r.error) || 'Reconcile failed'
+        );
+      })
+      .catch(e => { setBusy(false); setError((e && e.message) || 'Reconcile failed'); });
+  };
+
+  const row = (label, value, tid) => (
+    <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 10, padding: '2px 0', fontSize: 12 }}>
+      <span style={{ color: 'var(--badge-red-text)', opacity: 0.85 }}>{label}</span>
+      <span style={{ fontFamily: 'monospace', color: 'var(--badge-red-text)', fontWeight: 600 }} {...(tid ? { 'data-testid': tid } : {})}>{value}</span>
+    </div>
+  );
+
+  return (
+    <div role="alert" data-testid="convert-recovery-panel"
+         style={{ margin: '8px 24px 0', padding: '12px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--badge-red-text)' }}>
+        ⚠ Conversion needs recovery — a wFirma invoice exists but the local link is &lsquo;{entry.status}&rsquo;
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--badge-red-text)', margin: '6px 0 8px', opacity: 0.9 }}>
+        The invoice was created in wFirma, but a later local step failed, so this
+        page still shows the proforma as unconverted. Repair re-checks the remote
+        invoice (read-only) and, only if it matches this proforma exactly, marks
+        the local link issued. Nothing is written to wFirma.
+      </div>
+      {row('Link status',     entry.status,                          'convert-recovery-status')}
+      {row('Classification',  entry.classification,                  'convert-recovery-classification')}
+      {row('Proforma',        entry.proforma_number || entry.proforma_id)}
+      {capturedId
+        ? row('wFirma invoice ID', capturedId, 'convert-recovery-captured-id')
+        : (
+          <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 10, padding: '4px 0', fontSize: 12, alignItems: 'center' }}>
+            <span style={{ color: 'var(--badge-red-text)', opacity: 0.85 }}>wFirma invoice ID</span>
+            <input
+              type="text" value={manualId}
+              onChange={e => setManualId(e.target.value)}
+              placeholder="not captured — enter the id from the original error / server log"
+              data-testid="convert-recovery-invoice-id-input"
+              style={{ fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', maxWidth: 360, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--badge-red-border)', borderRadius: 4 }}
+            />
+          </div>
+        )}
+      {entry.notes ? row('Failure note', (entry.notes || '').slice(0, 300)) : null}
+      {refused && (
+        <div data-testid="convert-recovery-refused" style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--badge-red-border)', borderRadius: 4, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }}>
+          ⛔ Repair refused (no local change was made): {refused}
+          <div style={{ fontWeight: 400, marginTop: 4 }}>
+            The remote invoice does not match this proforma — inspect it manually in wFirma before any further action.
+          </div>
+        </div>
+      )}
+      {error && (
+        <div data-testid="convert-recovery-error" style={{ marginTop: 8, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }}>
+          ⚠ {error}
+        </div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 10 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--badge-red-text)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={confirmChecked}
+                 onChange={e => setConfirmChecked(e.target.checked)}
+                 data-testid="convert-recovery-confirm-checkbox" />
+          I confirm the invoice {effectiveId ? `(id ${effectiveId}) ` : ''}exists in wFirma and should be linked to this proforma
+        </label>
+        <button
+          type="button"
+          onClick={doReconcile}
+          disabled={!canRepair}
+          data-testid="convert-recovery-reconcile-btn"
+          title={canRepair
+            ? 'Writes the LOCAL link + draft only — verifies against wFirma read-only, never writes to wFirma'
+            : (!effectiveId ? 'Enter the wFirma invoice id first' : 'Tick the confirmation first')}
+          style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, borderRadius: 4, border: '1px solid var(--badge-red-border)', background: canRepair ? 'var(--badge-red-text)' : 'transparent', color: canRepair ? 'var(--badge-red-bg)' : 'var(--badge-red-text)', cursor: canRepair ? 'pointer' : 'not-allowed', opacity: busy ? 0.6 : 1 }}
+        >
+          {busy ? 'Verifying against wFirma…' : 'Repair local link (verify remote, write local DB only)'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
   const [showConvertModal, setShowConvertModal]  = React.useState(false);
@@ -3564,6 +3681,25 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       .catch(() => setCarrierShipment(null));
   }, [draft && draft.batch_id]);
   React.useEffect(() => { loadCarrierShipment(); }, [loadCarrierShipment]);
+
+  // R-2 — split-brain conversion-link detection (read-only). The backend
+  // report is the SOLE authority (Lesson F rule 5 — the UI never derives
+  // this locally). Only queried while the draft points at a posted proforma
+  // that has NOT completed conversion locally.
+  const [splitBrainEntry, setSplitBrainEntry] = React.useState(null);
+  const loadSplitBrain = React.useCallback(() => {
+    const pid = liveDraft.wfirma_proforma_id;
+    if (!pid || liveDraft.wfirma_invoice_id || !window.PzApi.getInvoiceLinkSplitBrain) {
+      setSplitBrainEntry(null); return;
+    }
+    window.PzApi.getInvoiceLinkSplitBrain(pid)
+      .then(r => {
+        const links = (r && r.ok && r.data && r.data.links) || [];
+        setSplitBrainEntry(links.length ? links[0] : null);
+      })
+      .catch(() => setSplitBrainEntry(null));
+  }, [liveDraft.wfirma_proforma_id, liveDraft.wfirma_invoice_id]);
+  React.useEffect(() => { loadSplitBrain(); }, [loadSplitBrain]);
 
   // PR-5 — manual transport-document weight override (kg). The extracted packing
   // weight stays the historical authority; these become effective only on save.
@@ -4974,6 +5110,18 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             </div>
           ))}
         </div>
+      )}
+
+      {/* ── R-2 CONVERSION RECOVERY — split-brain link repair (Lesson M:
+          extends this existing page; backend report is the sole trigger) ── */}
+      {splitBrainEntry && (
+        <ConversionRecoveryPanel
+          entry={splitBrainEntry}
+          onReconciled={() => {
+            setSplitBrainEntry(null);
+            draftHook && draftHook.reload && draftHook.reload();
+          }}
+        />
       )}
 
       {/* ── PROFORMA STATUS HEADER — persistent, always visible ───────────────── */}

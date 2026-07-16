@@ -424,6 +424,19 @@
     draftToInvoice: (draftId, body) =>
       _postM(`${BASE}/proforma/draft/${draftId}/to-invoice`, body || {}),
 
+    // GET /api/v1/proforma/invoice-links/split-brain[?proforma_id=...]
+    // R-2 read-only detection: conversion links stuck 'pending'/'failed'
+    // while a REAL wFirma invoice exists. No write, no wFirma call.
+    getInvoiceLinkSplitBrain: (proformaId) =>
+      _get(`${BASE}/proforma/invoice-links/split-brain${proformaId ? `?proforma_id=${encodeURIComponent(proformaId)}` : ''}`),
+
+    // POST /api/v1/proforma/invoice-links/{proforma_id}/reconcile
+    // R-2 operator-gated LOCAL repair of a split-brain link. Re-fetches the
+    // remote invoice read-only, re-runs verify-after-create; NO wFirma write.
+    // body: { confirm: 'YES_RECONCILE_INVOICE_LINK', wfirma_invoice_id? }
+    reconcileInvoiceLink: (proformaId, body) =>
+      _postM(`${BASE}/proforma/invoice-links/${encodeURIComponent(proformaId)}/reconcile`, body || {}),
+
     // GET /api/v1/proforma/draft/{draft_id}/disclose-convert
     // Read-only payload preview for the proforma→invoice convert action.
     // Returns the exact fields that would be sent to wFirma — no write, no invoice created.
