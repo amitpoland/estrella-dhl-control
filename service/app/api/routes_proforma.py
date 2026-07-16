@@ -3487,6 +3487,14 @@ def _build_convert_candidate(
         "paymentdate":       _paymentdate,
         "invoice_date":      _invoice_date,
         "core_hash":         core_hash,
+        # Post-conversion draft persistence (execute step 7b) needs the
+        # resolved sale date and payment method. These are locals of THIS
+        # helper — referencing them from the execute route raised a silent
+        # NameError (draft 67 / PROF 160/2026 incident, 2026-07-16), leaving
+        # wfirma_invoice_id NULL and draft_state stuck at 'posted'.
+        "sale_date":         (_sale_date_for_payment.isoformat()
+                              if _sale_date_for_payment else None),
+        "payment_method_en": _effective_method_en or None,
         # AUDIT-ONLY: override metadata — must never be appended to
         # plan.description (customer-facing). Consumed by the execute route's
         # audit event; intentionally absent from the disclosure response body.
@@ -4296,7 +4304,13 @@ def proforma_to_invoice(
 
     # 7b. Persist wFirma invoice identity to draft table so the UI can
     # hide the Convert button and show the invoice number after reload.
-    # Runs only when mark_issued succeeded; non-fatal on error.
+    # Runs only when mark_issued succeeded; non-fatal on error (the wFirma
+    # invoice already exists), but the outcome is surfaced in the response
+    # as `draft_persisted` — a silent failure here left draft 67 showing an
+    # active Convert button with wfirma_invoice_id NULL (2026-07-16).
+    # sale_date / payment_method come from the SAME candidate the plan was
+    # built from — never from _build_convert_candidate's local scope.
+    _draft_persisted = False
     if link_marked_issued and _cv_draft is not None:
         try:
             from ..services.conversion_persistence import persist_invoice_to_draft as _pid
@@ -4305,13 +4319,16 @@ def proforma_to_invoice(
                 draft_id              = int(_cv_draft.id),
                 wfirma_invoice_id     = wfirma_inv_id,
                 wfirma_invoice_number = wfirma_inv_num,
-                sale_date             = _paymentdate and _sale_date_for_payment.isoformat()
-                                        if _sale_date_for_payment else None,
+                sale_date             = _candidate.get("sale_date"),
                 payment_due           = _paymentdate,
-                payment_method        = _effective_method_en or None,
+                payment_method        = _candidate.get("payment_method_en"),
             )
+            _draft_persisted = True
         except Exception as _pe:
-            log.warning("[%s] persist_invoice_to_draft skipped: %s", batch_id, _pe)
+            log.error("[%s] persist_invoice_to_draft FAILED for draft %s: %s "
+                      "— draft row keeps stale state; repair via "
+                      "POST /draft/{id}/reconcile-conversion-link",
+                      batch_id, getattr(_cv_draft, "id", None), _pe)
 
     # 8. Append-only audit hardening: emit a `proforma_converted_to_invoice`
     # timeline event so audit.json carries proof of the manual conversion.
@@ -4396,6 +4413,10 @@ def proforma_to_invoice(
         # C-3d: advisory summary of the WAREHOUSE_STOCK → SALES_TRANSIT issue
         # (empty dict when the issue step was skipped; never blocks).
         "stock_issue":              _issue_summary,
+        # Step 7b outcome: False means the wFirma invoice EXISTS but the local
+        # draft row was not updated (stale Convert button until reconciled via
+        # POST /draft/{id}/reconcile-conversion-link). Advisory, never blocks.
+        "draft_persisted":          _draft_persisted,
     })
 
 
@@ -7875,6 +7896,162 @@ def purge_proforma_draft(
     except pildb.DraftNotEditable as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return JSONResponse({"ok": True, "purged_draft_id": draft_id})
+
+
+@router.post("/draft/{draft_id}/reconcile-conversion-link", dependencies=[_auth])
+def reconcile_draft_conversion_link(
+    draft_id:   int,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Audited repair: re-sync a draft row from its ISSUED proforma→invoice
+    link when execute step 7b failed to persist (draft 67 / PROF 160/2026
+    incident: the link row said issued + invoice 489960355, but the draft
+    kept wfirma_invoice_id NULL and draft_state='posted', so the UI showed
+    an active Convert button).
+
+    Authority: the proforma_invoice_links row is the source of truth for a
+    completed conversion; the draft row is a projection of it. This route
+    ONLY copies link → draft via persist_invoice_to_draft (the single
+    writer for post-conversion draft fields). It makes NO wFirma call and
+    never touches the link row itself.
+
+    Idempotent: a draft already carrying the link's invoice identity in
+    state 'converted' returns status='noop'. A draft carrying a DIFFERENT
+    invoice id is a data conflict → blocked, operator escalation.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    operator = _require_operator(x_operator)
+
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+
+    pid = (d.wfirma_proforma_id or "").strip()
+    if not pid:
+        return JSONResponse({
+            "ok": False, "status": "blocked", "draft_id": draft_id,
+            "blocking_reasons": [
+                "draft has no wfirma_proforma_id — no conversion link can exist"
+            ],
+        })
+
+    from ..services import proforma_invoice_link_db as plink
+    link = plink.get_link_by_proforma(_proforma_link_db_path(), pid)
+    if link is None:
+        return JSONResponse({
+            "ok": False, "status": "blocked", "draft_id": draft_id,
+            "blocking_reasons": [
+                f"no conversion link found for proforma {pid!r} — "
+                "nothing to reconcile"
+            ],
+        })
+    if link.status != "issued":
+        return JSONResponse({
+            "ok": False, "status": "blocked", "draft_id": draft_id,
+            "blocking_reasons": [
+                f"conversion link status is {link.status!r} — only 'issued' "
+                "links may be reconciled onto the draft"
+            ],
+        })
+    link_inv_id  = (link.invoice_id or "").strip()
+    link_inv_num = (link.invoice_number or "").strip()
+    if not link_inv_id:
+        return JSONResponse({
+            "ok": False, "status": "blocked", "draft_id": draft_id,
+            "blocking_reasons": [
+                "issued link carries no invoice_id — link row is inconsistent; "
+                "escalate to operator"
+            ],
+        })
+
+    existing_inv_id = (getattr(d, "wfirma_invoice_id", None) or "").strip()
+    if existing_inv_id and existing_inv_id != link_inv_id:
+        return JSONResponse({
+            "ok": False, "status": "blocked", "draft_id": draft_id,
+            "blocking_reasons": [
+                f"draft already carries wfirma_invoice_id {existing_inv_id!r} "
+                f"but the link says {link_inv_id!r} — data conflict, refusing "
+                "to overwrite; escalate to operator"
+            ],
+        })
+    if existing_inv_id == link_inv_id and d.draft_state == "converted":
+        return JSONResponse({
+            "ok": True, "status": "noop", "draft_id": draft_id,
+            "wfirma_invoice_id":     existing_inv_id,
+            "wfirma_invoice_number": getattr(d, "wfirma_invoice_number", "") or "",
+            "draft_state":           d.draft_state,
+            "detail": "draft already reconciled — nothing to do",
+        })
+
+    before = {
+        "draft_state":           d.draft_state,
+        "wfirma_invoice_id":     existing_inv_id or None,
+        "wfirma_invoice_number": (getattr(d, "wfirma_invoice_number", None)
+                                  or None),
+    }
+
+    from ..services.conversion_persistence import persist_invoice_to_draft
+    persist_invoice_to_draft(
+        db_path               = _proforma_db_path(),
+        draft_id              = int(draft_id),
+        wfirma_invoice_id     = link_inv_id,
+        wfirma_invoice_number = link_inv_num,
+        converted_at          = (link.converted_at or None),
+    )
+
+    # Append-only audit: draft event log + audit.json timeline event. The
+    # timeline helper is idempotent on (batch_id, proforma_id, invoice_id),
+    # so if step 8 already recorded the conversion this is a no-op.
+    pildb._record_draft_event(
+        _proforma_db_path(),
+        draft_id    = int(draft_id),
+        event       = "conversion_link_reconciled",
+        detail_json = json.dumps({
+            "wfirma_proforma_id":    pid,
+            "wfirma_invoice_id":     link_inv_id,
+            "wfirma_invoice_number": link_inv_num,
+            "before":                before,
+            "source":                "reconcile_conversion_link",
+        }),
+        operator    = operator,
+    )
+    try:
+        from ..services.audit_persist import record_proforma_converted_to_invoice
+        from ..core.config import settings as _s5
+        record_proforma_converted_to_invoice(
+            _s5.storage_root / "outputs" / d.batch_id / "audit.json",
+            batch_id           = d.batch_id,
+            client_name        = d.client_name,
+            wfirma_proforma_id = pid,
+            wfirma_invoice_id  = link_inv_id,
+            invoice_number     = link_inv_num,
+            operator           = operator,
+            source             = "reconcile_conversion_link",
+        )
+    except Exception as _exc:
+        log.warning("[%s] reconcile audit append skipped: %s",
+                    d.batch_id, _exc)
+
+    after = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    return JSONResponse({
+        "ok":                    True,
+        "status":                "reconciled",
+        "draft_id":              draft_id,
+        "batch_id":              d.batch_id,
+        "client_name":           d.client_name,
+        "wfirma_proforma_id":    pid,
+        "wfirma_invoice_id":     link_inv_id,
+        "wfirma_invoice_number": link_inv_num,
+        "before":                before,
+        "after": {
+            "draft_state":           after.draft_state if after else None,
+            "wfirma_invoice_id":     (getattr(after, "wfirma_invoice_id", None)
+                                      if after else None),
+            "wfirma_invoice_number": (getattr(after, "wfirma_invoice_number", None)
+                                      if after else None),
+        },
+    })
 
 
 # ── M2: Send Proforma Email ─────────────────────────────────────────────────

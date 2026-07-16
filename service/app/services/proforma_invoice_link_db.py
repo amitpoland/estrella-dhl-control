@@ -610,6 +610,17 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         # column never becomes the unique key (avoids re-keying service charges
         # / authority joins). Default '' = unprojected (repaired by backfill).
         ("client_contractor_id", "TEXT NOT NULL DEFAULT ''"),
+        # ── Post-conversion identity (conversion_persistence.py) ─────────────
+        # Previously these existed ONLY after the first persist_invoice_to_draft
+        # call ran its own ALTER loop (which stays in place for old DB files).
+        # Declaring them here makes a fresh schema complete at startup so
+        # readers (_opt) and the reconcile route never see a half-migrated DB.
+        ("wfirma_invoice_id",     "TEXT"),
+        ("wfirma_invoice_number", "TEXT"),
+        ("payment_due",           "TEXT"),
+        ("payment_method",        "TEXT"),
+        ("sale_date",             "TEXT"),
+        ("converted_at",          "TEXT"),
     )
     for _col, _ddl in _ADDITIVE_DRAFT_COLUMNS:
         try:
