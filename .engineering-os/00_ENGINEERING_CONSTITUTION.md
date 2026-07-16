@@ -1,6 +1,6 @@
 # 00 — Engineering Constitution
 
-**EJ Engineering OS v1.3** · docs-only framework · created 2026-07-08 (v1.0) · **v1.3 ratified 2026-07-10**
+**EJ Engineering OS v1.4** · docs-only framework · created 2026-07-08 (v1.0) · v1.3 ratified 2026-07-10 · **v1.4 ratified 2026-07-17**
 Status: **REFERENCE** — this is an execution framework, not application code. It changes no
 behavior on its own. It composes with, and is subordinate to, `CLAUDE.md` GATES 1–6, the
 Engineering Lessons, and the 7-agent deploy gate. Version delta + evidence:
@@ -132,10 +132,14 @@ changes land only "after evidence from real packages." That evidence arrived: th
 campaign day ran every package under v1.1 practice, the operator mandated the Phase-8
 certification doctrine (v1.2), and the first Phase-9 knowledge-capture record set shipped
 (v1.3). **v1.1, v1.2, and v1.3 are ratified on that recorded evidence** — the delta ledger with
-per-version citations is `VERSION_HISTORY.md`. The active canonical version is **v1.3**
-(sections 7–10 below). Future changes go into **v1.4+** under the same evidence gate
-(`10 §4.2`): an observed failure or friction captured in a real package's record, never
-speculation. Extensions remain a separate, separately-approved package — never silent sprawl.
+per-version citations is `VERSION_HISTORY.md`. The active canonical version is **v1.4**
+(sections 7–14 below). **v1.4** (Policy Cohesion, ratified 2026-07-17) was ratified by
+**operator directive** — the same ratification class as v1.2's operator-mandated Phase-8, **not**
+pure package-friction evidence; the departure is disclosed in `VERSION_HISTORY.md`
+(evidence-classification note), not dressed up as friction it does not have. Future changes go
+into **v1.5+** under the same evidence gate (`10 §4.2`): an observed failure or friction captured
+in a real package's record, never speculation — unless the operator again exercises directive
+ratification. Extensions remain a separate, separately-approved package — never silent sprawl.
 
 ---
 
@@ -234,3 +238,172 @@ installed skill's text references `/context`, meet its intent by **direct reposi
 inspection** (read the router, canonical pages, registries, PROJECT_STATE) — do not claim to
 have run a command that does not exist, and disclose an unavailable skill/command instead of
 simulating it (GATE 5 substitution-disclosure applies to commands as well as agents).
+
+---
+
+## 11. Evidence Contract (v1.4 — ratified 2026-07-17)
+
+Every claim that could influence a gate, a seal, or a "done" statement is classified into
+exactly one **input evidence tier** before the OS acts on it:
+
+- **VERIFIED** — independently confirmed **this session** by direct evidence: a file read, a
+  `git hash-object` match, an authenticated endpoint probe, a test run, a DB read, or browser
+  inspection. Cite the concrete source.
+- **PRIOR EVIDENCE** — on record in a durable artifact (`PROJECT_STATE.md`, a closure record,
+  a scorecard, a merged PR, a dated ADR) but **not re-confirmed this session**. PRIOR EVIDENCE
+  is usable, but triggers **delta-verification per §7.2** before the next stage proceeds — verify
+  the delta against the record, do not re-derive from scratch and do not trust it blindly.
+- **UNVERIFIED** — assumed, inferred, stale, self-reported, or relayed by chat. **UNVERIFIED may
+  never seal a phase, close a package, or justify a "done" claim.** A completion claim that
+  arrives in this tier is handled by the **§8.4 HALT protocol** (refuse to seal, state the
+  contradicting evidence, hand the operator the exact commands) — §11 does not restate that
+  protocol; it routes to it.
+
+Rules: never present UNVERIFIED information as fact; never invent file paths, commands, test
+results, runtime/deploy state, or root causes; if evidence is missing, inspect it or disclose
+the limitation rather than guessing. Keep **code completion, merge completion, deployment
+completion, and live-activation** as separate claims, each with its own tier.
+
+**Distinct from — and compatible with — the output three-state contract.** `CLAUDE.md
+§Verification rules` (`True` = verified / `False` = confirmed mismatch / `None` = could-not-
+verify) governs what a **verification result means** (output semantics). §11 governs how an
+**incoming claim is classified** before the OS relies on it (input semantics). They compose:
+a `None` output is not evidence and classifies as UNVERIFIED input; a `False` output is
+VERIFIED evidence of a mismatch. §11 adds the tier label to the §7.7 standard output format; it
+does not redefine §7.7's meaning of "evidence."
+
+---
+
+## 12. MODULAR-MINIMAL execution principle + Anti-Bloat gate (v1.4 — ratified 2026-07-17)
+
+**MODULAR-MINIMAL** is the named execution form of the §0.1 primary objective (speed,
+correctness, low token usage). Every change is the **smallest complete set** that satisfies the
+stated, VERIFIED objective — and nothing more:
+
+- Extend the existing canonical authority (page, service, route, writer, model, config); do not
+  add a duplicate. This is the per-change expression of §5 ("does not create duplicate
+  authority") and of the `CLAUDE.md` **FRONTEND AUTHORITY CONSTITUTION** (one authority per
+  module; five pre-development checks) — consult those for the UI application; §12 does not
+  restate them. For EJ Dashboard modules, the **Phase-C Constitution §13/§14** (`CLAUDE.md`:
+  "no new pages", "no duplicate services") and **Lessons F and M** are the binding
+  domain-specific expressions — consult them before any UI or service-layer change.
+- Do not add abstraction, dependency, page, table, or route for hypothetical future use. A new
+  abstraction must have demonstrated current use and a named owner.
+- Do not mix unrelated cleanup or modernization into a bounded task. **Modernization is not a
+  default mode** and is never inferred from "improve", "clean up", or "modernize" in passing —
+  a structural rewrite, dependency upgrade, or legacy retirement requires an explicitly approved
+  modernization/replacement package.
+- Remove any temporary parallel path the change introduced before completion. If the same
+  defect returns after a prior fix, **stop additive patching and inspect for a surviving
+  duplicate authority** (the recurrence is the signal).
+
+**Anti-Bloat Verification gate** — runs at the IMPLEMENT → VERIFY transition (`06` stage 7),
+before any seal. It answers, in the closure record: (1) Was every new file necessary? (2) Could
+this have extended an existing canonical module instead? (3) Did the change create or preserve
+duplicate authority? (4) Did any file change outside the declared scope? (5) Does each new
+abstraction have demonstrated current use? (6) Was any dependency added unnecessarily? (7) Is
+temporary/dead code left behind? (8) Is the diff size proportionate to the requirement? Any
+unexplained "yes" to a risk question **blocks the seal**. This is the **architectural** gate; it
+composes with — does not replace — the **file-level** `git diff --name-only` plan-list guard in
+`/feature` Phase 3. The two are complementary layers.
+
+---
+
+## 13. Bounded Engineering Loop — governance over native `/loop` and `/goal` (v1.4 — ratified 2026-07-17)
+
+Iterative work that converges through repeated apply→verify cycles (a diagnostic hunt, a
+flaky-test fix, a refactor toward a metric) runs on **Claude Code's native execution
+authorities**. The Engineering OS does **not** own loop execution; it owns the *governance*
+around it. There is **no project loop command** (`/loop`, `/goal`, or any branded equivalent) —
+an earlier v1.4 draft added one and it was removed as duplicate authority (see `VERSION_HISTORY.md`
+v1.4 correction note).
+
+### A. Native authority (availability confirmed at ratification 2026-07-17; §B covers the degraded path)
+
+- **`/goal`** (built-in command, min v2.1.139) owns work toward a **measurable completion
+  condition** with **independent convergence evaluation** — a fresh model judges the condition
+  after each turn, distinct from the model doing the work.
+- **`/loop`** (bundled skill) owns **repeated or self-paced execution**, polling, and monitoring
+  — fixed-interval or self-paced (the model chooses the delay and can stop autonomously).
+- **Engineering OS** owns **governance only**: task scope, evidence requirements (§11), canonical
+  authority, anti-bloat (§12), verification, limits, HOLD conditions, and operator gates. It
+  sequences and constrains the native tools; it does not execute the loop itself.
+
+### B. No duplicate implementation (binding)
+
+- The Engineering OS does **not** reimplement, rename, wrap, shadow, or clone `/goal` or `/loop`.
+- **No repository `/goal`, `/loop`, or branded equivalent** may be created while native
+  authority is available — doing so is duplicate authority (§5, §12) and is blocked.
+- If a native capability is **unavailable**, Claude must first **diagnose Claude Code version and
+  settings** (`disableBundledSkills`, `skillOverrides`, `disableAllHooks`,
+  `CLAUDE_CODE_DISABLE_CRON`) and **STOP for operator approval** before installing any replacement
+  or changing any setting — never silently build a substitute.
+
+### C. Routing rules
+
+- **Measurable implementation end state** → native **`/goal`** (independent convergence check).
+- **Interval polling or monitoring** → native **`/loop`**.
+- **Simple bounded task** → normal governed execution — do **not** force either command.
+- **Sensitive or irreversible action** → operator gate regardless of which command is used.
+
+### D. Required governance inputs (state before invoking native `/goal` or `/loop`)
+
+- OBJECTIVE · TASK_CLASSIFICATION · CANONICAL_AUTHORITY · ALLOWED_SCOPE · FORBIDDEN_SCOPE ·
+  SUCCESS_EVIDENCE · VERIFY_CMD (or equivalent verifier) · ITERATION_CAP or time cap ·
+  STOP_CONDITIONS · HOLD_CONDITIONS · OPERATOR_GATES · PROGRESS/MEMORY location · ROLLBACK_POINT
+  (where changes are permitted).
+
+If these cannot be derived safely from repository evidence, **STOP and request the missing
+decision** — do not invent them. Before iteration 1, classify prior work under **§11**: if PRIOR
+EVIDENCE exists, apply **§7.2** delta-verification rather than restarting solved work. Each
+iteration applies the **smallest** change (§12) and respects **§7.3–§7.5** (worktree/owner/
+concurrency) + the `CLAUDE.md` working-tree registry.
+
+### E. Honest enforcement boundary
+
+- The Engineering OS **ITERATION_CAP and STOP/HOLD vocabulary are governance instructions**,
+  evaluated by the model doing the work — **not mechanically enforced** unless bound to a verified
+  native mechanism or hook. `/goal`'s fresh-model evaluator and `/loop`'s 7-day expiry are native
+  mechanisms; a natural-language cap ("stop after N") is model-judged, not a harness counter.
+- **Do not describe advisory prompt rules as mechanically enforced.**
+- **This correction adds no new hook.** If deterministic enforcement of a cap or stop condition is
+  later required, it needs a **separate inspected and approved campaign** (a Stop hook or
+  equivalent), not a prompt claiming enforcement it does not have.
+
+### F. Exit states (each records evidence per §11 and the next exact step)
+
+- **CONVERGED** — the completion condition holds (`/goal` evaluator or VERIFY_CMD confirms).
+- **CAP_REACHED** — iteration/time cap hit without convergence; stop, preserve state, hand the
+  operator the remaining failure + next step. Do not continue past the cap.
+- **HOLD_TRIGGERED** — a `CLAUDE.md` ANTI-HOLD condition arose (the four conditions; full table
+  `docs/governance/anti-hold-and-completion.md`) — pause, name it, do not restate the four here.
+- **OPERATOR_GATE** — a merge/deploy/production/fiscal/irreversible action is next; stop before
+  the gate and hand the operator the exact commands. The loop never crosses a gate on its own.
+- **VERIFICATION_FAILED** — VERIFY_CMD failed in a way the loop cannot resolve within scope;
+  report the failure with evidence and the next exact step.
+
+---
+
+## 14. OS-load arming, operator gates, and user-facing output (v1.4 — ratified 2026-07-17)
+
+**Arming.** §11–§14 are **armed automatically** whenever `CLAUDE.md` names this OS version in its
+"Engineering OS (canonical version pointer)" section — the pointer is always in context at
+session start (no hook reads `.engineering-os/` directly, and none is required). These policies
+are **not opt-in**; naming v1.4 in the pointer is what activates them. Arming the OS does **not**
+start implementation — the actual task determines whether the session runs one read-only evidence
+cycle, a bounded diagnostic loop (§13), a bounded implementation loop, a monitoring cycle, or an
+operator-gated release workflow.
+
+**Operator gates.** The conditions that pause for the operator are **owned by `CLAUDE.md`
+ANTI-HOLD** (the four HOLD conditions) and `docs/governance/anti-hold-and-completion.md`, and
+mirrored for campaigns at **§7.6**. **§14 defines no new gate conditions** — this is an explicit
+non-duplication declaration. A loop or campaign may *prepare and verify* a gated action (merge,
+deploy, schema/destructive migration, credentials, fiscal/wFirma write, branch/worktree
+deletion, force-push, changing canonical authority) but must **not cross the gate**.
+
+**User-facing output hygiene.** Every status claim the OS emits carries a §11 evidence tier;
+speculative completion language ("probably done", "should be working", "likely deployed") is not
+valid output. Business-facing documents and operator-facing screens must not expose implementation
+metadata, internal IDs, payload hashes, debugging state, or developer overrides unless explicitly
+requested. The §7.7 standard campaign output format is extended with the evidence-tier field on
+the STATUS line; §14 does not otherwise redefine §7.7.

@@ -1,7 +1,7 @@
 # COMMAND_REGISTRY.md — Atlas V2 Slash Commands
 
 **Source of truth for slash commands version-controlled in `.claude/commands/`.**
-Updated 2026-06-20. 9 project commands.
+Updated 2026-07-17. 14 project commands.
 
 > **Capability legend:**
 > - **READ-ONLY** — inspects/reports; edits nothing.
@@ -24,6 +24,19 @@ Updated 2026-06-20. 9 project commands.
 | `/patch` | WRITE-CAPABLE | Smallest safe code patch for a task | required before merge/deploy |
 | `/pz-shipment` | WRITE-CAPABLE | Run a live PZ shipment batch (process_batch + Cliq post) | required — live batch + Cliq |
 | `/deploy` | DEPLOY-CAPABLE | Full production deploy via the mandatory 7-agent gate | required — production mutation |
+| `/authority-census` | READ-ONLY | Audit authority ownership across modules (HTML/JSX/routes) | not required (read-only) |
+| `/context-lite` | READ-ONLY | Lightweight context load for a simple/single-domain task | not required (read-only) |
+| `/context-pr` | READ-ONLY | PR-scoped context load | not required (read-only) |
+| `/context-task` | READ-ONLY | Task-scoped (multi-domain) context load | not required (read-only) |
+| `/implement-slice` | WRITE-CAPABLE | Execute one named campaign slice under the implement-guard | required before merge |
+
+> **Backfill note (2026-07-17):** `/authority-census`, `/context-lite`, `/context-pr`,
+> `/context-task`, and `/implement-slice` were added to `.claude/commands/` after the
+> 2026-06-20 registry update and are recorded here as quick-matrix rows to restore the
+> source-of-truth count. Full per-command detail sections for these five are a
+> **SCHEDULED** backlog item, not written in this change. (Count 9 → 14: the 9 originals plus
+> these 5 backfills. There is no project `/loop` or `/goal` command — repetition and convergence
+> are owned by native Claude Code `/loop` and `/goal`; see `00 §13`.)
 
 ---
 
@@ -84,6 +97,12 @@ Updated 2026-06-20. 9 project commands.
 - **Safe usage:** Production deploy AFTER: PR merged to main, the 7-agent gate returns READY-TO-DEPLOY, and the operator has authorized. Static-only deploys still run the full gate.
 - **Forbidden usage:** Any deploy without the 7-agent gate; deploying a dirty tree; deploying engine/root files without the separate sync (Lesson J); bypassing a security block.
 - **Capability:** DEPLOY-CAPABLE — highest risk. **Operator approval + full gate mandatory.**
+
+> **Loop / convergence work** is owned by Claude Code's **native** `/loop` (repetition,
+> monitoring, self-paced iteration) and `/goal` (measurable completion with independent
+> convergence evaluation). The Engineering OS supplies the *governance* around them (`00 §13`);
+> it creates **no** project loop command. Do not add a `loop.md`, `goal.md`, or branded
+> equivalent while native authority is available.
 
 ---
 
