@@ -1413,7 +1413,10 @@ def _build_preview(batch_id: str, client_name: str,
 
 # ── HTTP endpoints ──────────────────────────────────────────────────────────
 
-@router.post("/preview/{batch_id}/{client_name:path}", dependencies=[_auth_write])
+# Read-only by contract (POST only for the path-param routing pattern; no
+# writes, no live wFirma calls — pinned by test_proforma_draft_editor_contract).
+# Stays on bare _auth so read-only session roles keep loading proforma pages.
+@router.post("/preview/{batch_id}/{client_name:path}", dependencies=[_auth])
 def proforma_preview(batch_id: str, client_name: str) -> JSONResponse:
     """Read-only proforma preview — same shape as _build_preview."""
     cn = _validate_args(batch_id, client_name)
