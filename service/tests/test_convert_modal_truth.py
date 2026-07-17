@@ -222,3 +222,101 @@ def test_single_useeffect_comment_present():
     assert "Single disclosure fetch" in block, (
         "Single-fetch comment not found. Add it to make the RC-4 fix legible to future readers."
     )
+
+
+# ── Issue #927: two-step convert-flow pins (repointed from V1) ────────────────
+# Coverage migrated from test_proforma_to_invoice_routes.py::
+# test_dashboard_renders_two_step_convert_flow, which grepped the frozen V1
+# shipment-detail.html for strings that no longer exist there. The canonical
+# convert surface is the V2 ConvertToInvoiceModal in proforma-detail.jsx.
+# Preserved coverage: entry button, two-step preview→execute flow,
+# irreversibility warning, exact confirm token, execute gating, no auto-execute.
+
+def _entry_button_block() -> str:
+    """Extract the reservation-tab entry button that opens the convert modal."""
+    idx = SRC.index('data-testid="reservation-convert-btn"')
+    return SRC[max(0, idx - 400): idx + 200]
+
+
+def test_convert_entry_button_labelled_and_gated():
+    """Entry button keeps the operator-facing label and is gated on canConvert."""
+    block = _entry_button_block()
+    assert "Convert Proforma to Invoice" in block, (
+        "Entry button label 'Convert Proforma to Invoice' not found near "
+        "reservation-convert-btn."
+    )
+    assert "disabled={!canConvert}" in block, (
+        "Entry button is not gated on canConvert — convert must not be "
+        "offered before the proforma is posted to wFirma."
+    )
+
+
+def test_two_step_flow_preview_then_execute():
+    """Step 1: disclosure preview fetch on modal open. Step 2: separate
+    operator-clicked handleConvert. The execute call must not live inside
+    the preview path."""
+    block = _modal_block()
+    assert "fetchDisclosure" in block, "Preview step (fetchDisclosure) missing."
+    assert "const handleConvert" in block, "Execute handler (handleConvert) missing."
+    handler = block[block.index("const handleConvert"): block.index("const totalEur")]
+    assert "PzApi.draftToInvoice(" in handler, (
+        "Execute call PzApi.draftToInvoice() not inside handleConvert."
+    )
+
+
+def test_execute_endpoint_called_exactly_once():
+    """No auto/background execute path: draftToInvoice has exactly ONE call
+    site in the whole page (inside handleConvert)."""
+    count = SRC.count("PzApi.draftToInvoice(")
+    assert count == 1, (
+        f"Expected exactly 1 call to PzApi.draftToInvoice(), found {count} — "
+        "investigate whether a background/auto execute path was introduced."
+    )
+
+
+def test_confirm_token_exact_string():
+    """The execute body must carry the exact confirm token (backend contract)."""
+    block = _modal_block()
+    assert "confirm: 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA'" in block, (
+        "Exact confirm token YES_CREATE_FINAL_INVOICE_FROM_PROFORMA not sent "
+        "in the convert POST body."
+    )
+
+
+def test_irreversibility_warning_present():
+    """Modal must warn the operator the action is irreversible in wFirma."""
+    block = _modal_block()
+    assert "Irreversible Action" in block, "'Irreversible Action' header missing."
+    assert "cannot be cancelled in wFirma" in block, (
+        "Korekta-only warning ('cannot be cancelled in wFirma') missing."
+    )
+
+
+def test_confirm_checkbox_acknowledges_irreversibility():
+    """Operator must tick an explicit irreversibility acknowledgement."""
+    block = _modal_block()
+    assert "convert-modal-confirm-checkbox" in block, (
+        "data-testid='convert-modal-confirm-checkbox' missing."
+    )
+    assert "I understand this action is irreversible and will immediately post to wFirma" in block, (
+        "Irreversibility acknowledgement text missing from confirm checkbox."
+    )
+
+
+def test_execute_gated_on_confirmation():
+    """Both the handler and the submit button refuse to fire unconfirmed."""
+    block = _modal_block()
+    assert "if (!confirmed || loading) return;" in block, (
+        "handleConvert guard on confirmed/loading missing."
+    )
+    assert "disabled={!confirmed || loading || disclosureLoading" in block, (
+        "Submit button disabled condition on confirmed/loading/disclosureLoading missing."
+    )
+
+
+def test_execute_button_testid_present():
+    """data-testid='convert-modal-submit' must be present for automation."""
+    block = _modal_block()
+    assert 'data-testid="convert-modal-submit"' in block, (
+        "data-testid='convert-modal-submit' not found on the execute button."
+    )

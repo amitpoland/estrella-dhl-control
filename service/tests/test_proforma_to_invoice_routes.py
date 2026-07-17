@@ -545,27 +545,12 @@ def test_execute_marks_link_failed_when_wfirma_rejects(client, storage):
 
 
 # ── 8. Dashboard source-grep ──────────────────────────────────────────────
-
-def test_dashboard_renders_two_step_convert_flow():
-    # The Proforma→Invoice conversion UI lives in shipment-detail.html
-    # (batch detail page). dashboard.html is the shipment-list page.
-    src = Path("app/static/shipment-detail.html").read_text(encoding="utf-8")
-    # Button label per scope rule.
-    assert "Convert Proforma to Invoice" in src
-    # Manual final invoice warning per scope rule.
-    assert "Manual final invoice action" in src
-    assert "real wFirma invoice"          in src
-    # Two-step flow: preview-first then execute.
-    assert "loadConvertPreview"           in src
-    assert "executeConvert"               in src
-    # Confirm token must be the exact string.
-    assert "YES_CREATE_FINAL_INVOICE_FROM_PROFORMA" in src
-    # The execute button is gated by the confirm token comparison.
-    assert "confirmToken" in src
-    # data-testids for automation.
-    assert 'data-testid={`btn-convert-proforma-${d.client_name}`}' in src
-    assert 'data-testid={`convert-execute-${d.client_name}`}'      in src
-
+# NOTE (Issue #927): test_dashboard_renders_two_step_convert_flow used to live
+# here, pinning V1 shipment-detail.html strings. V1 is frozen (Frontend
+# Authority Constitution); the canonical convert surface is the V2 modal in
+# app/static/v2/proforma-detail.jsx. Its coverage (two-step preview→execute,
+# irreversibility warning, exact confirm token, execute gating) moved to
+# test_convert_modal_truth.py §"Issue #927".
 
 def test_dashboard_does_not_auto_call_execute_on_load():
     """Source-grep guard: the execute endpoint must be referenced ONLY
