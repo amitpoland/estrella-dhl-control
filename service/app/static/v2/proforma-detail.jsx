@@ -3533,6 +3533,11 @@ function deriveInvoiceProjection(d, link) {
     // stages[] index 3 is the terminal node and `done = i < rank`, so the
     // terminal rank must be 4 — a rank of 3 can never mark it done.
     railRank:      invoiced ? 4 : null,
+    // Mirror health — deliberately AND where `invoiced` is OR. This mirrors the
+    // BACKEND's own health test (split-brain report: a link is healthy only when
+    // the draft carries the invoice id AND draft_state='converted'). It is the
+    // drift question, not the invoiced question, so it cannot reuse `invoiced`.
+    mirrorHealthy: !!id && st === 'converted',
   };
 }
 
@@ -3763,6 +3768,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // WIRED: fetch full draft detail (GET /api/v1/proforma/draft/{id})
   const draftHook = window.PzState.useDraft(draft && draft.id);
   const liveDraft = (draftHook.data && draftHook.data.draft) ? draftHook.data.draft : (draft || {});
+  // SINGLE INVOICE-LINK AUTHORITY — derived ONCE, immediately after liveDraft so
+  // that EVERY invoice-dependent consumer below sits downstream of it. Nothing in
+  // this component may re-derive "is this invoiced?" / "is the mirror healthy?"
+  // from draft_state or wfirma_invoice_id: two projections reading two authorities
+  // is exactly what produced the 2026-07-17 contradiction.
+  const [invoiceLink, setInvoiceLink] = React.useState(null);   // canonical conversion-link row
+  const invoiceProjection = React.useMemo(
+    () => deriveInvoiceProjection(liveDraft, invoiceLink), [liveDraft, invoiceLink]
+  );
 
   // WIRED: fetch post disclosure (GET /api/v1/proforma/draft/{id}/disclose-post)
   const [disclosure, setDisclosure] = React.useState(null);
@@ -3795,8 +3809,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // case (id present, draft_state still 'posted') — the exact drift this report
   // exists to surface.
   const [splitBrainEntry, setSplitBrainEntry] = React.useState(null);
-  const _projectionHealthy = !!liveDraft.wfirma_invoice_id
-    && String(liveDraft.draft_state || '').toLowerCase() === 'converted';
+  const _projectionHealthy = invoiceProjection.mirrorHealthy;
   const loadSplitBrain = React.useCallback(() => {
     const pid = liveDraft.wfirma_proforma_id;
     if (!pid || _projectionHealthy || !window.PzApi.getInvoiceLinkSplitBrain) {
@@ -3877,7 +3890,6 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // backend convert gate shares the post blocker set).
   const [readinessApprove, setReadinessApprove] = React.useState(null);
   const [readinessPost,    setReadinessPost]    = React.useState(null);
-  const [invoiceLink,      setInvoiceLink]      = React.useState(null);   // canonical conversion-link row
   const [resolvingDesign,  setResolvingDesign]  = React.useState(null);   // design_no in flight
   const [resolveError,     setResolveError]     = React.useState(null);
   const [savingVat,        setSavingVat]        = React.useState(false);  // WDT vat→master save in flight
@@ -4682,7 +4694,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     const total_qty   = rows.reduce((s, r) => s + r.qty,         0);
     return {
       doc_ref:     _previewLabel,
-      invoice_ref: liveDraft.wfirma_invoice_id ? String(liveDraft.wfirma_invoice_id) : null,
+      invoice_ref: invoiceProjection.invoiceId ? String(invoiceProjection.invoiceId) : null,
       issued_date: liveDraft.created_at ? (liveDraft.created_at || '').split('T')[0] : '',
       seller:      cmrPreviewData.seller,
       shipto:      cmrPreviewData.shipto,
@@ -4702,12 +4714,6 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // ──────────────────────────────────────────────────────────────────────────
 
   const draftState    = liveDraft.draft_state || liveDraft.status || (draft && draft.status) || '';
-  // SINGLE INVOICE-LINK AUTHORITY — derived ONCE here and threaded to every
-  // invoice-dependent projection (status header, workflow rail, toolbar gate,
-  // identity card). Nothing below may re-derive "is this invoiced?" locally.
-  const invoiceProjection = React.useMemo(
-    () => deriveInvoiceProjection(liveDraft, invoiceLink), [liveDraft, invoiceLink]
-  );
   // SINGLE READINESS AUTHORITY — backend-derived blockers. State gating says
   // whether the lifecycle ALLOWS the action; readiness says whether the data
   // is SAFE for it. Both must pass. While readiness is still loading (null)
@@ -5735,7 +5741,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               : { label, href, testid };
           };
           const _proformaNo  = liveDraft.wfirma_proforma_fullnumber || (draft && draft.wfirma_proforma_fullnumber) || '';
-          const _invoiceNo   = liveDraft.wfirma_invoice_number || (liveDraft.wfirma_invoice_id ? String(liveDraft.wfirma_invoice_id) : '');
+          const _invoiceNo   = invoiceProjection.invoiceNumber || (invoiceProjection.invoiceId ? String(invoiceProjection.invoiceId) : '');
           const _docs = [
             {
               key: 'proforma', name: 'Proforma PDF',
@@ -7620,7 +7626,7 @@ function ProformaOverviewTab({ detail, invoiceProjection, lines, fxRate, vatReso
             <InfoRow label="JPK codes" value={detail.jpk_codes || 'none'} />
             <InfoRow label="Warehouse" value={detail.warehouse || 'Main'} />
             <InfoRow label="wFirma proforma ID" value={detail.wfirma_proforma_id || '—'} mono />
-            <InfoRow label="wFirma invoice ID" value={detail.wfirma_invoice_id || '—'} mono />
+            <InfoRow label="wFirma invoice ID" value={invoiceProjection.invoiceId || '—'} mono />
             <InfoRow label="Source" value={detail.clone_source || detail.source_description || detail.source || '—'} />
           </div>
         </PfPanelCard>

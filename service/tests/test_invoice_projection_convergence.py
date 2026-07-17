@@ -96,6 +96,71 @@ def test_page_derives_the_projection_exactly_once():
     )
 
 
+def test_no_invoice_field_is_read_outside_the_projection():
+    """
+    GOVERNANCE PIN (operator rule, 2026-07-17): no UI component may read an
+    invoice-link field directly for a lifecycle/display decision — every read
+    goes through deriveInvoiceProjection.
+
+    Scope note, stated honestly: this pin governs the INVOICE domain only.
+    `draftState` is still read directly by the approve / post / edit / cancel /
+    send gates, because those are NOT invoice-link decisions and this projection
+    models invoice-link facts only. Routing them through it would be a category
+    error. Collapsing the wider draft_state machine (and retiring the
+    `draft_state || status` fallback) is a separate campaign.
+    """
+    body = SRC[SRC.index("function ProformaDetailPage("):]
+    allowed_substrings = (
+        # The reconcile REQUEST PAYLOAD — a wire field, not a projection read.
+        "body.wfirma_invoice_id = manualId.trim()",
+    )
+    offenders = []
+    for i, line in enumerate(body.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            continue
+        if any(a in stripped for a in allowed_substrings):
+            continue
+        for field in ("wfirma_invoice_id", "wfirma_invoice_number", "converted_at"):
+            # Reading it off the draft (liveDraft./draft./detail.) is the
+            # bypass; reading it off `src.` inside the projection is the point.
+            for owner in ("liveDraft.", "detail.", "draft."):
+                if owner + field in stripped:
+                    offenders.append(f"{stripped[:90]}")
+    assert not offenders, (
+        "These read an invoice-link field directly instead of consuming "
+        "invoiceProjection — that is a second authority, and a second authority "
+        "is what put 'Invoice Created' next to an actionable Convert button:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_mirror_health_lives_in_the_projection():
+    """The split-brain gate's health test is an invoice-domain decision and must
+    come from the projection, not from a local re-read of draft_state."""
+    block = _block("function deriveInvoiceProjection(")
+    assert "mirrorHealthy" in block, (
+        "mirrorHealthy (id present AND draft_state==='converted' — deliberately "
+        "AND where `invoiced` is OR) must be part of the single projection."
+    )
+    assert "invoiceProjection.mirrorHealthy" in SRC, (
+        "The split-brain gate must consume invoiceProjection.mirrorHealthy "
+        "rather than re-deriving the backend's health test locally."
+    )
+
+
+def test_projection_is_derived_before_its_first_consumer():
+    """ORDERING PIN. `_projectionHealthy` (the split-brain gate) sits high in
+    ProformaDetailPage, so the projection must be derived immediately after
+    liveDraft — otherwise a consumer above the useMemo cannot reach it and the
+    only way to compile is to re-derive locally, which is the bypass this file
+    exists to forbid."""
+    body = SRC[SRC.index("function ProformaDetailPage("):]
+    assert body.index("const invoiceProjection") < body.index("const _projectionHealthy"), (
+        "invoiceProjection must be derived BEFORE _projectionHealthy consumes it."
+    )
+
+
 # ── Pin 2b: the Convert gate answers from the CANONICAL link row ─────────────
 #
 # Origin (2026-07-17, draft 64 / proforma_id 489002275): the Convert modal opened
@@ -370,12 +435,15 @@ def test_split_brain_gate_keys_on_full_health():
     suppressed the recovery panel for exactly that case.
 
     The health test must mirror the backend's: id present AND state 'converted'.
+    It lives in deriveInvoiceProjection as `mirrorHealthy` (see
+    test_mirror_health_lives_in_the_projection); the gate only consumes it.
     """
-    health = SRC[SRC.index("const _projectionHealthy"):]
-    health = health[:health.index(";")]
-    assert "wfirma_invoice_id" in health and "'converted'" in health, (
-        "The split-brain skip condition must require BOTH a linked invoice id "
-        f"AND draft_state === 'converted'. Got: {health!r}"
+    block = _block("function deriveInvoiceProjection(")
+    health = block[block.index("mirrorHealthy:"):]
+    health = health[:health.index(",")]
+    assert "id" in health and "'converted'" in health, (
+        "The skip condition must require BOTH a linked invoice id AND "
+        f"draft_state === 'converted'. Got: {health!r}"
     )
 
     gate = SRC[SRC.index("const loadSplitBrain"):]
