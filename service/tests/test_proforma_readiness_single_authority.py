@@ -299,6 +299,14 @@ def test_ambiguous_design_no_blocks_approve(client):
     # a BILLED line cannot be pinned to a valid product_code. A line that
     # bills the ambiguous design without a resolved product_code is the
     # genuine Draft-#32 hazard shape under the current authority.
+    #
+    # KNOWN-FAILING (chip task_81ea7aea): this test currently fails NOT
+    # because of the seed shape but because the readiness gate is fail-open —
+    # _derive_draft_readiness reads preview.get("ambiguous_design_codes") at
+    # top level while the key only exists nested at
+    # preview["design_product_bridge"]["ambiguous_design_codes"], so the
+    # AMBIG blocker class can never fire. Goes green with the one-line
+    # nested-key fix (verified 12/12). See test-baseline.md.
     c, storage = client
     _seed_ambiguous_context()
     draft_id = _seed_draft(storage, [_line(CODE_A), _line(CODE_B),

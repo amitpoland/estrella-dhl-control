@@ -82,10 +82,16 @@ def _stub_route_lookups(monkeypatch):
             "warnings":          [],
             "ambiguous_designs": {},
             "resolved_designs":  {},
+            "vat_resolution":    None,
+            "duplicate_product_codes": [],
+            "product_authority_available": True,
         }
     monkeypatch.setattr(rp, "_derive_draft_readiness", _stub_readiness)
 
-    monkeypatch.setattr(rp, "_resolve_customer", lambda name, batch_id=None: {
+    # client_contractor_id kwarg added by the CM-selection authority chain —
+    # accept it like the real signature (stale-lambda TypeError otherwise).
+    monkeypatch.setattr(rp, "_resolve_customer",
+                        lambda name, batch_id=None, client_contractor_id="": {
         "ambiguous": False, "candidates": [],
         "customer": {
             "name": name, "country": "PL", "vat_id": "PL1234567890",
@@ -495,9 +501,11 @@ def test_phase8_pdf_filename_uses_fullnumber(client, tmp_path, monkeypatch):
 
     # Now hit the PDF endpoint. fetch_invoice_pdf is stubbed to return
     # plain bytes; we only care about the filename header.
+    # The route treats < 200 bytes as a broken wFirma response (Lesson-G
+    # blank-PDF guard → 502) — pad the fake body past the floor.
     monkeypatch.setattr(
         wfirma_client, "fetch_invoice_pdf",
-        lambda invoice_id: b"%PDF-1.4\n%fake\n%%EOF\n",
+        lambda invoice_id: b"%PDF-1.4\n" + b"%fake-padding\n" * 20 + b"%%EOF\n",
     )
     fresh = pildb.get_draft_by_id(db, d.id)
     assert fresh.wfirma_proforma_fullnumber == "PROF 92/2026"

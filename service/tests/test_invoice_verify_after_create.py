@@ -192,6 +192,9 @@ def _neutralize_convert_readiness(monkeypatch):
             "warnings":          [],
             "ambiguous_designs": {},
             "resolved_designs":  {},
+            "vat_resolution":    None,
+            "duplicate_product_codes": [],
+            "product_authority_available": True,
         }
     monkeypatch.setattr(rp, "_derive_draft_readiness", _stub_readiness)
 

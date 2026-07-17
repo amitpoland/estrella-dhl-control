@@ -204,8 +204,11 @@ def test_cmr_print_not_exposed():
     registered here."""
     import re
     routes = _routes()
+    # Scope: routes_proforma.py registers everything on the single `router`
+    # APIRouter with string-literal paths (no f-string decorators today);
+    # an f-string route path would evade this pattern and needs a pin update.
     cmr_routes = re.findall(
-        r'@router\.(?:get|post|put|patch|delete)\(\s*["\'][^"\']*cmr[^"\']*["\']',
+        r'@router\.(?:get|post|put|patch|delete)\(\s*f?["\'][^"\']*cmr[^"\']*["\']',
         routes, flags=re.IGNORECASE,
     )
     assert not cmr_routes, \
