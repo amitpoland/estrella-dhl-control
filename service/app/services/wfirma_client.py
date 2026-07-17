@@ -2603,6 +2603,106 @@ def fetch_payments_for_contractor(
     return out
 
 
+def _normalise_fullnumber(value: Any) -> str:
+    """Canonical comparison form for a wFirma ``<fullnumber>``.
+
+    Collapses internal whitespace and casefolds so an operator typing
+    "wdt  144/2026" still matches wFirma's "WDT 144/2026". Two invoices
+    differing only in case/spacing do not exist in practice, so this
+    widens matching without widening ambiguity.
+    """
+    return " ".join(str(value or "").split()).casefold()
+
+
+def find_invoices_by_fullnumber(full_number: str) -> List[Dict[str, str]]:
+    """
+    Resolve a human-readable invoice number (``<fullnumber>``, e.g.
+    "WDT 144/2026") to the immutable wFirma invoice id(s) carrying it.
+
+    READ-ONLY: issues ``GET invoices/find`` only. Never calls
+    invoices/add|edit|delete and never mutates remote state.
+
+    A ``fullnumber`` condition IS sent (a documented filterable field for
+    invoices/find), but the response is NEVER trusted to actually be
+    filtered: wFirma silently ignores filter shapes it does not support
+    and returns an unfiltered collection instead. That is the exact trap
+    that made :func:`fetch_invoice_xml` abandon find-by-id — the parser
+    took the first node of a first-1000 collection and returned an
+    unrelated invoice. Every returned node is therefore re-checked
+    Python-side for an EXACT ``<fullnumber>`` match, the same defence
+    :func:`fetch_payments_for_contractor` applies to its date filter.
+    Consequence: a silently-ignored filter degrades to "not found"
+    (a refusal), never to a wrong match.
+
+    Returns one dict {"id", "fullnumber"} per EXACT match:
+      * ``[]``        — no invoice carries this number.
+      * one entry     — unambiguous.
+      * >1 entry      — genuinely ambiguous (numbers are unique per
+                        series/year, NOT globally); the caller must
+                        refuse rather than pick one.
+
+    Raises ValueError on an empty number; RuntimeError on HTTP ≥ 400 /
+    non-OK status / malformed XML; ConnectionError on network failure.
+    """
+    wanted_raw = (full_number or "").strip()
+    if not wanted_raw:
+        raise ValueError("full_number is required")
+    wanted = _normalise_fullnumber(wanted_raw)
+
+    out: List[Dict[str, str]] = []
+    seen_ids: set = set()
+    start = 0
+    page_size = _INVOICE_LEDGER_PAGE_LIMIT
+    while True:
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<api><invoices><parameters>'
+              '<conditions>'
+                f'<condition><field>fullnumber</field>'
+                f'<operator>eq</operator>'
+                f'<value>{_esc(wanted_raw)}</value></condition>'
+              '</conditions>'
+              f'<page><start>{start}</start><limit>{page_size}</limit></page>'
+            '</parameters></invoices></api>'
+        )
+        http_status, response_text = _http_request(
+            "GET", "invoices", "find", body)
+        if http_status >= 400:
+            raise RuntimeError(
+                f"invoices/find HTTP {http_status} (start={start}): "
+                f"{response_text[:200]}"
+            )
+        code, desc = _parse_status(response_text)
+        if code != "OK":
+            raise RuntimeError(f"invoices/find wFirma status={code}: {desc}")
+        try:
+            root = ET.fromstring(response_text)
+        except ET.ParseError as exc:
+            raise RuntimeError(
+                f"invoices/find: malformed XML at start={start}: {exc}"
+            ) from exc
+
+        invoices = root.findall(".//invoice")
+        if not invoices:
+            break
+        for inv in invoices:
+            # Python-side exact re-check — the filter is a hint, not proof.
+            inv_num = (inv.findtext("fullnumber") or "").strip()
+            if _normalise_fullnumber(inv_num) != wanted:
+                continue
+            inv_id = (inv.findtext("id") or "").strip()
+            if not inv_id or inv_id in seen_ids:
+                continue
+            seen_ids.add(inv_id)
+            out.append({"id": inv_id, "fullnumber": inv_num})
+        if len(invoices) < page_size:
+            break
+        start += page_size
+        if start >= _INVOICE_LEDGER_SAFETY_CAP:
+            break
+    return out
+
+
 def fetch_invoice_xml(invoice_id: str) -> str:
     """
     Read a single invoice (or proforma) by id.
