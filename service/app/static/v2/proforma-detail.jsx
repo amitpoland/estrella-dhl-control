@@ -4757,10 +4757,16 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // the draft — it is a link-row problem the reconcile route repairs. Name the state
   // and route there; the generic 'post first' text would be actively misleading on a
   // posted draft (Lesson M: unavailable WITH a stated reason and a route to repair).
+  // Only 'pending' and 'failed' are reconcilable — the canonical reconcile route
+  // refuses anything else ("only 'pending'/'failed' rows can be repaired"). So only
+  // those two may point at the Recovery panel. 'rolled_back' is a schema value with
+  // NO writer and NO repair path in this codebase: promising the panel there would
+  // send the operator to a door that refuses them, which is precisely the fake
+  // affordance this page is meant to stop telling.
   const _linkConvertReason = {
     pending:     'A previous conversion attempt is unresolved — whether wFirma created an invoice is unknown. Reconcile it in the Conversion Recovery panel before converting.',
     failed:      'The last conversion attempt failed and wFirma may still have created an invoice. Reconcile it in the Conversion Recovery panel to establish the truth.',
-    rolled_back: 'This proforma has a rolled-back conversion link — reconcile it in the Conversion Recovery panel before converting.',
+    rolled_back: 'This proforma’s conversion link is rolled back. There is no self-service repair for this state — escalate to an operator before converting.',
   }[invoiceProjection.reason] || '';
   const convertDisabledReason = !stateAllowsConvert
     ? (alreadyConverted
@@ -5953,6 +5959,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           draft={draft}
           detail={detail}
           onClose={() => setShowConvertModal(false)}
+          // Failed/blocked attempt: modal STAYS open showing the error, but the page
+          // must re-read the conversion link, because a failed attempt leaves a
+          // 'failed' row that now blocks retry server-side. Without this the button
+          // re-enables over a row the server refuses.
+          onAttemptSettled={reloadReadiness}
           onSuccess={() => {
             setShowConvertModal(false);
             // Re-fetch the canonical draft (which mirrors the proforma_invoice_links
@@ -8682,7 +8693,15 @@ function PostToWFirmaModal({ draft, liveDraft, onClose, onSuccess }) {
 // ── Convert to Invoice Modal ──────────────────────────────────────────────────
 // WIRED: POST /api/v1/proforma/draft/{id}/to-invoice
 // confirm_token: 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA'
-function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
+// `onAttemptSettled` MUST be called on EVERY terminal outcome, not just success.
+// A conversion that fails still LEAVES A LINK ROW BEHIND: the row is written
+// write-ahead (create_pending_link) before the wFirma call, and a failure moves it
+// pending -> failed. If the page does not re-read the link after a failed attempt,
+// its invoiceLink state stays at the pre-attempt value, `blocked` falls back to
+// false, and the Convert button re-enables over a row the server will now refuse —
+// resurrecting the exact doomed modal this whole change exists to kill, just in the
+// failure path instead of on page load.
+function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess, onAttemptSettled }) {
   const [confirmed,    setConfirmed]    = React.useState(false);
   const [loading,      setLoading]      = React.useState(false);
   const [apiError,     setApiError]     = React.useState(null);
@@ -8793,6 +8812,11 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
               : (body.error || 'Conversion blocked — check backend logs.')
           );
           setLoading(false);
+          // The attempt may have left a link row behind (write-ahead), so the gate
+          // must re-read it. A refused attempt (status:"blocked") did NOT create one,
+          // but a failed one (status:"failed") did — the page cannot tell from here,
+          // and re-reading is cheap and always correct.
+          onAttemptSettled && onAttemptSettled();
         } else {
           onSuccess && onSuccess();
         }
@@ -8800,6 +8824,9 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
       .catch(e => {
         setApiError((e && e.message) ? e.message : 'Conversion failed — check backend logs.');
         setLoading(false);
+        // Transport failure is the MOST dangerous case for a stale gate: the request
+        // may well have reached the server and created (or failed) the link row.
+        onAttemptSettled && onAttemptSettled();
       });
   };
 

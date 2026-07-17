@@ -223,15 +223,63 @@ def test_convert_gate_consumes_blocked_not_invoiced():
 
 
 def test_convert_disabled_reason_names_the_link_state():
-    """Lesson M: unavailable WITH a stated reason and a route to repair."""
+    """Lesson M: unavailable WITH a stated reason — and a route to repair ONLY where
+    a repair actually exists.
+
+    This pin originally demanded that all three blocked states point at the Recovery
+    panel. That was wrong, and GATE-1 review caught it: the reconcile route repairs
+    only 'pending'/'failed', so sending 'rolled_back' there promised a door that
+    refuses the operator. Naming the state is required; promising a repair is only
+    allowed where one exists (see
+    test_only_reconcilable_states_point_at_the_recovery_panel).
+    """
     for status in ("pending", "failed", "rolled_back"):
         assert f"{status}:" in SRC, (
             f"convertDisabledReason must give link status {status!r} its own reason "
             "— a generic message sends the operator to fix the wrong thing."
         )
-    assert SRC.count("Conversion Recovery panel") >= 3, (
-        "Each link-blocked reason must route to the reconcile affordance — the "
-        "repair for a stranded link is reconcile, not retry."
+    assert SRC.count("Conversion Recovery panel") >= 2, (
+        "The two RECONCILABLE states ('pending'/'failed') must route to the reconcile "
+        "affordance — the repair for a stranded link is reconcile, not retry."
+    )
+
+
+def test_failed_attempt_resyncs_the_gate():
+    """GATE-1 finding (reviewer-challenge, 2026-07-17). The gate was closed on page
+    LOAD but not after an in-session failure — which resurrected the identical bug.
+
+    The link row is written write-ahead, so a FAILED conversion still leaves a row
+    ('pending' -> 'failed'). If the modal's failure path does not re-read the link,
+    invoiceLink stays at its pre-attempt value, `blocked` falls back to false, and
+    Convert re-enables over a row the server now refuses — the doomed modal, reborn
+    in the failure path. Both terminal failure branches (ok:false AND the transport
+    catch) must resync.
+    """
+    handler = SRC[SRC.index("const handleConvert"):]
+    handler = handler[:handler.index("\n  };")]
+    assert handler.count("onAttemptSettled") >= 2, (
+        "Both failure branches of handleConvert — the ok:false branch and the "
+        ".catch() transport branch — must call onAttemptSettled to re-read the "
+        "conversion link. A failed attempt leaves a row that blocks retry."
+    )
+    assert "onAttemptSettled={reloadReadiness}" in SRC, (
+        "ConvertToInvoiceModal must be wired to re-read the link after a settled "
+        "attempt; otherwise the gate is stale exactly when it matters most."
+    )
+
+
+def test_only_reconcilable_states_point_at_the_recovery_panel():
+    """GATE-1 finding. The canonical reconcile route repairs ONLY 'pending'/'failed'
+    ("only 'pending'/'failed' rows can be repaired"). A reason that sends the
+    operator to the Recovery panel for any other state promises a door that refuses
+    them — a fake affordance, which is the class of lie this page exists to stop."""
+    reasons = SRC[SRC.index("const _linkConvertReason"):]
+    reasons = reasons[:reasons.index("}[invoiceProjection.reason]")]
+    rolled = reasons[reasons.index("rolled_back:"):]
+    rolled = rolled[:rolled.index("\n")]
+    assert "Recovery panel" not in rolled, (
+        "'rolled_back' is NOT reconcilable — the reconcile route refuses it, and no "
+        "writer for it even exists. Its reason must not point at the Recovery panel."
     )
 
 
