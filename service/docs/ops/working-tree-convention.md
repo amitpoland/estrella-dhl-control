@@ -78,3 +78,26 @@ and `windows-deploy-runbook-template.md` are on the #437 / #435 branches. The sc
 tree's modified tracked files were stale experiments superseded by VERIFY_DIR work
 (it was 11 commits behind `e49f697` at retirement). No sole copy of anything was
 discarded.
+
+## Repository Consolidation (2026-07-17) — 4-permanent-folder architecture
+
+Operator ruling 2026-07-17 ended the worktree explosion (76 `PZ*` folders on `C:\`,
+81 worktrees, 353 local branches). The permanent set is now exactly:
+
+| Folder | Role |
+|---|---|
+| `C:\PZ` | Production (NSSM) — untouchable |
+| `C:\PZ-main` | Integration, pinned to `main`, ff-only |
+| `C:\PZ-verify` | Verification, primary git tree, source of truth |
+| `C:\PZ-active` | Current implementation campaign (one at a time) |
+| `C:\PZ-archive` | Cold storage: zips + salvaged evidence (not git) |
+
+Everything else is temporary: approved worktrees live under `C:\PZ-wt\<campaign-slug>`
+and are deleted when the campaign closes. Before creating any worktree: `git worktree list`
+first, reuse if possible, and obtain explicit operator approval for a new one. Before
+deleting any tree: salvage dirty files to `C:\PZ-archive\evidence-<date>\` and archive-tag
+unique commits (`archive/<name>-<date>`).
+
+The retired scratch clone `C:\Users\Super Fashion\PZ APP` was decommissioned 2026-07-17:
+21 worktrees removed, full clone (incl. `.git`) preserved as `C:\PZ-archive\PZ-APP-retired.zip`,
+folder deleted. Full disposition log: `C:\PZ-archive\dispositions-2026-07-17.log`.

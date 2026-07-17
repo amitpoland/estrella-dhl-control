@@ -66,3 +66,6 @@ service/proforma_links.db
 
 # Operational audit reports may contain real customer PII — keep local, not published (PII phase-2, cat 3)
 tasks/reports/
+
+# Operational campaign-state registry (mutable live state — never tracked; operator ruling 2026-07-17)
+.claude/state/

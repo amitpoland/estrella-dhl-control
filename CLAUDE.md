@@ -72,22 +72,48 @@ Production: `C:\PZ` | Service: `PZService` (NSSM, port 47213) | Public: `https:/
 
 ---
 
-## Canonical working-tree registry (PATH GUARD — permanent)
+## Canonical working-tree registry (PATH GUARD — permanent, consolidated 2026-07-17)
 
 All subagent file reads, hash verification, and git operations must target exactly one of these paths.
 Reading from any path not listed below is a source-drift risk.
 
+**Permanent folders (exactly these — no other permanent tree may be created):**
+
 | Path | Role | Status |
 |---|---|---|
 | `C:\PZ` | Production — NSSM AppDirectory (`PZService`, port 47213) | LIVE — never `reset --hard`, never robocopy'd INTO |
-| `C:\PZ-verify` | Verification clone — tracks `origin/main` | SOURCE OF TRUTH for all git/file-hash checks |
-| `C:\Users\Super Fashion\PZ APP` | Former scratch clone | **RETIRED 2026-06-04** — not a source of truth |
+| `C:\PZ-main` | Integration — pinned to `main`, ff-only pulls, no feature work | PERMANENT |
+| `C:\PZ-verify` | Verification clone (primary git tree) | SOURCE OF TRUTH for all git/file-hash checks |
+| `C:\PZ-active` | Current implementation campaign (one at a time) | PERMANENT (role); physical folder rotates per campaign |
+| `C:\PZ-archive` | Cold storage — zips + salvaged evidence, not a git tree | PERMANENT, read-only |
+
+`C:\Users\Super Fashion\PZ APP` (former scratch clone, RETIRED 2026-06-04) was **DECOMMISSIONED
+2026-07-17**: all 21 of its worktrees removed, full clone (incl. `.git`, 270 branches) preserved at
+`C:\PZ-archive\PZ-APP-retired.zip`, folder deleted. Any reference to that path is stale.
+
+**WORKTREE DISCIPLINE (enforced — Repository Consolidation ruling, operator-ratified 2026-07-17):**
+
+1. **Before any task that needs a working tree**: run `git worktree list` and reuse a suitable
+   existing tree. If one exists, DO NOT create another.
+2. **New worktrees require explicit operator approval** — never create one by default.
+3. **Location**: approved temporary worktrees live under `C:\PZ-wt\<campaign-slug>` — never at
+   `C:\` root, never in Temp/scratchpad directories.
+4. **Lifecycle**: a temporary worktree is deleted when its campaign closes (PR merged or
+   abandoned-with-archive-tag). Campaign end = `git worktree remove` in the same session.
+5. **Before deleting any tree**: salvage dirty files to `C:\PZ-archive\evidence-<date>\<tree>\`
+   and archive-tag unique commits (`archive/<name>-<date>`) — GATE 3 applies.
+6. A worktree that outlives its campaign is governance debt; the next session that finds one
+   must disposition it (reuse / salvage+delete), not ignore it.
+
+**Campaign-branch write rule (enforced):** Before any reset/force-move/cherry-pick on a campaign
+branch, read the OPERATIONAL registry `C:\PZ-main\.claude\state\active-campaigns.json`
+(gitignored — mutable campaign state is never tracked). Policy + schema + guard spec:
+`.campaigns/`. Enforcement: `.claude/hooks/campaign-branch-guard.py` (PreToolUse, fail closed)
+denies campaign-branch writes on owner/worktree/branch mismatch, unexpected HEAD, or a
+concurrent writer; `expected_head`≠actual tip is an INCIDENT requiring an operator ruling —
+never auto-correct.
 
 **Subagent reading rule (enforced):** All verification reads and git operations must use `C:\PZ-verify`.
-Reading from `C:\Users\Super Fashion\PZ APP` is **forbidden** — that tree is retired, diverged from
-`origin/main`, and returned false-negative verification results on four separate runs (2026-06-04).
-It is NOT the NSSM AppDirectory and NOT safe to read, verify, or deploy from. If any subagent
-or skill needs to inspect the repo, the path is `C:\PZ-verify`, not the scratch clone.
 
 **One-session rule (enforced):** Only one Claude Code session may operate against
 `C:\PZ-verify` at a time. A second concurrent session on the same tree races branch
