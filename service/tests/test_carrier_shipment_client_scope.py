@@ -32,12 +32,30 @@ from app.services.carrier.persistence.shipment_db import (
     insert_shipment,
     update_state,
 )
+from app.core.config import settings
+from app.services import proforma_invoice_link_db as pildb
 
 
 def _db(tmp_path):
     path = tmp_path / "carrier_shipments.db"
     init_db(path)
     return path
+
+
+def _seed_proforma_drafts(storage_root, batch_id, client_names):
+    """Seed proforma_links.db under *storage_root* with one active v=1 draft per
+    client name, via the canonical create-path (no raw SQL). This is exactly what
+    `_batch_not_multi_client` reads (settings.storage_root / "proforma_links.db")
+    to decide whether the batch is single- or multi-client. Returns the db path."""
+    link_db = storage_root / "proforma_links.db"
+    pildb.init_db(link_db)
+    line = [{"product_code": "RNG-1", "design_no": "D1", "qty": 1, "unit_price": 10.0,
+             "currency": "EUR", "price_source": "sales_packing_list"}]
+    for cn in client_names:
+        pildb.auto_create_draft_from_sales_packing(
+            link_db, batch_id=batch_id, client_name=cn,
+            currency="EUR", lines=line, operator="test")
+    return link_db
 
 
 def _pending(key: str) -> ShipmentResult:
@@ -234,3 +252,60 @@ def test_fallback_never_returns_other_clients_scoped_row(tmp_path):
     assert get_shipment_for_draft(
         db, "B1", None, allow_single_client_fallback=True
     )["tracking_ref"] == "AWB-A"
+
+
+# ── route path: `_batch_not_multi_client` proforma-DB guard (2026-07-17 gate) ───
+# The pre-existing route tests above override `_get_shipment_db_path` but NOT
+# `settings.storage_root`, so the proforma multi-client guard read by the route
+# (`allow_single_client_fallback=_batch_not_multi_client(batch_id)`) was never
+# exercised — the batch always looked single-client (no proforma_links.db). These
+# tests seed the canonical proforma_links.db so the guard fires through the route,
+# and prove the 404 is caused by the proforma guard, NOT carrier-side row logic.
+
+
+def test_route_no_client_ref_multi_client_proforma_denies_legacy_fallback(tmp_path, monkeypatch):
+    """No-client_ref GET on a MULTI-CLIENT proforma batch that has a single legacy
+    NULL-client_ref carrier row → 404. `_batch_not_multi_client` counts 2 distinct
+    client drafts, denies the single-row fallback, and the legacy AWB is NOT returned."""
+    carrier_db = _db(tmp_path)
+    _book(carrier_db, "kLegacy", "MC1", None, "AWB-LEGACY")          # ONE legacy NULL-client row
+    _seed_proforma_drafts(tmp_path, "MC1", ["Client A", "Client B"])  # TWO distinct clients
+    monkeypatch.setattr(settings, "storage_root", tmp_path, raising=False)
+    client = _client_for(carrier_db)
+
+    r = client.get("/api/v1/carrier/MC1/shipment")   # NO client_ref
+    assert r.status_code == 404, r.text
+    assert "AWB-LEGACY" not in r.text                # no legacy shipment payload leaks
+
+
+def test_route_no_client_ref_single_client_proforma_resolves_legacy(tmp_path, monkeypatch):
+    """CAUSATION CONTROL — identical carrier state (the SAME single legacy row), but a
+    SINGLE-CLIENT proforma batch → `_batch_not_multi_client` allows the fallback → 200
+    with the legacy AWB. The ONLY variable vs the 404 test is the proforma client count,
+    proving the 404 is caused by the proforma multi-client guard, not by carrier-side
+    duplicate-row logic (there is exactly ONE carrier row in both cases)."""
+    carrier_db = _db(tmp_path)
+    _book(carrier_db, "kLegacy", "SC1", None, "AWB-LEGACY")   # SAME single legacy row
+    _seed_proforma_drafts(tmp_path, "SC1", ["Client A"])      # ONE client only
+    monkeypatch.setattr(settings, "storage_root", tmp_path, raising=False)
+    client = _client_for(carrier_db)
+
+    r = client.get("/api/v1/carrier/SC1/shipment")   # NO client_ref
+    assert r.status_code == 200, r.text
+    assert r.json()["tracking_ref"] == "AWB-LEGACY"
+
+
+def test_batch_not_multi_client_reads_proforma_db(tmp_path, monkeypatch):
+    """Direct unit pin on the guard function itself (the specific untested surface):
+    it reads settings.storage_root/proforma_links.db and returns False for a
+    multi-client batch, True for a single-client batch, and True when the proforma DB
+    is absent (permissive — no proforma data to contradict)."""
+    from app.api.routes_carrier_actions import _batch_not_multi_client
+
+    monkeypatch.setattr(settings, "storage_root", tmp_path, raising=False)
+    assert _batch_not_multi_client("ABSENT") is True          # no proforma_links.db yet
+
+    _seed_proforma_drafts(tmp_path, "B1", ["Client A", "Client B"])
+    _seed_proforma_drafts(tmp_path, "B2", ["Client A"])
+    assert _batch_not_multi_client("B1") is False             # 2 distinct clients → deny fallback
+    assert _batch_not_multi_client("B2") is True              # 1 client → allow fallback
