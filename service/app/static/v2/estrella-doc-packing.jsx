@@ -23,6 +23,12 @@
 //   .grand_total  number       — sum of all total_value; must equal proforma total
 //   .total_qty    number       — sum of all qty
 //
+// NOTE: the builder also emits `purchase_invoice_no` per row (supplier purchase
+// invoice, IMPORT_PZ authority). It is INTENTIONALLY NOT rendered here — a
+// customer-facing sales/transport document never carries the supplier purchase
+// invoice number. Invoice identity on this document = `.invoice_ref` (the wFirma
+// SALES invoice). See PROJECT_STATE.md DECISIONS 2026-07-18.
+//
 // Value authority: sales price (same as Proforma + Invoice). NOT landed cost / PZ.
 // Currency from draft.currency (per-client). Falls back to 'EUR' only as default.
 //
