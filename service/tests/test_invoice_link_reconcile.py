@@ -820,3 +820,84 @@ def test_reconcile_unrecognized_link_status_blocked(client, storage):
     assert body["ok"] is False
     assert body["status"] == "blocked"
     assert any("not reconcilable" in r for r in body["blocking_reasons"])
+
+
+# ── 4. Duplicate-guard truthfulness ──────────────────────────────────────────
+#
+# Origin (2026-07-17, draft 64 / proforma_id 489002275): the convert modal opened
+# on a proforma that already had a link row, the operator confirmed the
+# irreversible action, and the server refused. The refusal was right; the message
+# just did not say WHICH state blocked, so 'already invoiced' and 'an attempt is
+# stranded' — which need opposite responses — looked identical to the operator.
+
+@pytest.mark.parametrize("status", ["pending", "failed", "issued"])
+def test_link_already_exists_blocks_on_every_status(storage, status):
+    """REGRESSION PIN (Lesson N true-blocker #5 — duplicate document risk).
+
+    'pending' and 'failed' must block exactly as hard as 'issued'. After an
+    ambiguous wFirma failure we cannot know whether an invoice was created, so a
+    retry could double-issue one. Narrowing this guard to 'issued' would be a
+    fiscal regression: the repair for a stranded row is reconcile, never a retry.
+    """
+    from app.api import routes_proforma as rp
+    _seed_link(storage, status="failed" if status == "failed" else "pending")
+    if status == "issued":
+        pildb.mark_issued(_links_db(storage), PID, invoice_id=IID,
+                          invoice_number=INUM, invoice_total=Decimal("306.00"))
+    with patch.object(settings, "storage_root", storage):
+        assert rp._link_status(PID) == status
+        assert rp._link_already_exists(PID) is True, (
+            f"status={status!r} must block a second conversion"
+        )
+
+
+def test_link_status_is_none_when_no_row_exists(storage):
+    """No row = convertible. The guard must not block a first conversion."""
+    from app.api import routes_proforma as rp
+    with patch.object(settings, "storage_root", storage):
+        assert rp._link_status(PID) is None
+        assert rp._link_already_exists(PID) is False
+
+
+@pytest.mark.parametrize("status", ["pending", "failed"])
+def test_duplicate_refusal_names_the_link_status(client, storage, status):
+    """The operator must be able to tell 'already invoiced' from 'stranded'."""
+    _seed_issued_draft(storage)
+    _seed_link(storage, status=status)
+    with _gate_invoice_on(), _readiness_ready():
+        body = _convert(client)
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert body["link_status"] == status
+    assert any(f"status={status!r}" in r for r in body["blocking_reasons"]), (
+        f"refusal must name the blocking status; got {body['blocking_reasons']}"
+    )
+
+
+# ── 5. Write-ahead failure durability ────────────────────────────────────────
+
+def test_failed_convert_reports_when_link_state_could_not_be_recorded(client, storage):
+    """The link row is written BEFORE the wFirma call (write-ahead reservation).
+    If invoices/add fails AND mark_failed cannot land, the row is stranded in
+    'pending' — so the API must not answer a clean 'failed', which would assert a
+    state the database does not hold. It must disclose the strand and name the
+    repair."""
+    _seed_issued_draft(storage)
+    _seed_audit(storage)
+    with _gate_invoice_on(), _readiness_ready(), \
+         patch.object(wc, "fetch_invoice_xml", return_value=_proforma_xml()), \
+         patch.object(wc, "_http_request", side_effect=RuntimeError("wFirma 500")), \
+         patch.object(pildb, "mark_failed", side_effect=RuntimeError("db locked")):
+        body = _convert(client)
+
+    assert body["ok"] is False
+    assert body["status"] == "failed"
+    assert body.get("link_state_unrecorded") is True, (
+        "a swallowed mark_failed leaves the row in 'pending' while the response "
+        "claims 'failed' — the strand must be disclosed, not hidden"
+    )
+    assert any("reconcile" in r.lower() for r in body["blocking_reasons"])
+    # The row must SURVIVE: wFirma may hold a real invoice, and this row is the
+    # duplicate guard. Deleting it to 'unblock' the operator is how you
+    # double-issue an invoice.
+    assert pildb.get_link_by_proforma(_links_db(storage), PID) is not None

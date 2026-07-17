@@ -3478,27 +3478,58 @@ function DocumentsRegistry({ batchId }) {
 // conversion_persistence.persist_invoice_to_draft() as wfirma_invoice_id /
 // wfirma_invoice_number / converted_at / draft_state='converted'.
 //
-// Drift between the link and this mirror is NOT guessed at here: it is detected
-// by GET /proforma/invoice-links/split-brain (classification
-// 'stale_draft_projection') and repaired by the canonical reconcile route.
-//
 // EVERY invoice-dependent projection on this page MUST derive from this function
 // — never from draft_state or wfirma_invoice_id directly. Two projections reading
 // two authorities is what produced the 2026-07-17 contradiction: an "Invoice
 // Created" card and an actionable Convert button on the same screen.
-function deriveInvoiceProjection(d) {
+//
+// `link` is the canonical row (GET /proforma/draft/{id}/invoice-link) — the exact
+// row the backend convert guard reads. Passing it in is what closed the second
+// 2026-07-17 defect: the page used to answer "is this converted?" from the mirror
+// ALONE, which reflects SUCCESS only, so a 'pending' / 'failed' / not-yet-mirrored
+// 'issued' link left Convert live and the operator reached an irreversible-action
+// modal the server was certain to refuse (draft 64 / proforma_id 489002275).
+//
+// Two distinct questions, deliberately not collapsed:
+//   invoiced — is there an invoice to SHOW? (drives identity card, rail, chips)
+//   blocked  — may a conversion be attempted? (drives the Convert gate)
+// They differ: a pending/failed link is NOT an invoice, yet still blocks. `blocked`
+// mirrors the backend guard _link_already_exists(), which refuses on ANY status —
+// after an ambiguous wFirma failure we cannot know whether an invoice exists, so a
+// retry could double-issue one (Lesson N true-blocker #5). Repair for a stranded
+// link is the reconcile route, never a looser gate here.
+//
+// When no link has loaded (null — fetch in flight or failed) this degrades to the
+// mirror alone, exactly as before; the backend enforces the same rule regardless,
+// so an early click cannot slip through.
+function deriveInvoiceProjection(d, link) {
   const src = d || {};
   const id  = src.wfirma_invoice_id || '';
   const st  = String(src.draft_state || '').toLowerCase();
   // OR, not AND: gating stays conservative so a half-mirrored row can never
   // re-open the Convert path. 'converted' is the terminal member of
   // DRAFT_LIFECYCLE_STATES.
-  const invoiced = !!id || st === 'converted';
+  const mirrorInvoiced = !!id || st === 'converted';
+  // '' when there is no link row, or none has loaded yet.
+  const linkStatus = (link && link.ok) ? String(link.status || '').toLowerCase() : '';
+  // The link is CANONICAL; the draft is its projection. Only an 'issued' link is
+  // an invoice — 'pending'/'failed'/'rolled_back' are attempts, not documents.
+  const invoiced = linkStatus
+    ? linkStatus === 'issued'
+    : mirrorInvoiced;
   return {
     invoiced,
-    invoiceId:     id,
-    invoiceNumber: src.wfirma_invoice_number || '',
-    convertedAt:   src.converted_at || '',
+    // BROADER than `invoiced` by design: any link row at all closes Convert.
+    blocked:       !!linkStatus || mirrorInvoiced,
+    // '' | pending | issued | failed | rolled_back — why Convert is closed.
+    reason:        linkStatus,
+    linkStatus,
+    // Identity comes from the canonical row first; the mirror is the fallback for
+    // when no link has loaded. This is what lets an 'issued' link whose mirror has
+    // not caught up still render a real invoice number instead of a blank card.
+    invoiceId:     (link && link.invoice_id) || id,
+    invoiceNumber: (link && link.invoice_number) || src.wfirma_invoice_number || '',
+    convertedAt:   (link && link.converted_at) || src.converted_at || '',
     // stages[] index 3 is the terminal node and `done = i < rank`, so the
     // terminal rank must be 4 — a rank of 3 can never mark it done.
     railRank:      invoiced ? 4 : null,
@@ -3846,6 +3877,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // backend convert gate shares the post blocker set).
   const [readinessApprove, setReadinessApprove] = React.useState(null);
   const [readinessPost,    setReadinessPost]    = React.useState(null);
+  const [invoiceLink,      setInvoiceLink]      = React.useState(null);   // canonical conversion-link row
   const [resolvingDesign,  setResolvingDesign]  = React.useState(null);   // design_no in flight
   const [resolveError,     setResolveError]     = React.useState(null);
   const [savingVat,        setSavingVat]        = React.useState(false);  // WDT vat→master save in flight
@@ -3863,6 +3895,14 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     window.PzApi.getDraftReadiness(id, 'post')
       .then(r => setReadinessPost((r && r.ok && r.data) ? r.data : null))
       .catch(() => setReadinessPost(null));
+    // The canonical conversion-link row the backend convert guard reads. Same
+    // lifecycle as readiness: reload whenever the draft changes, since converting
+    // (or reconciling) is exactly what creates or moves this row. A failed fetch
+    // stores null and the projection degrades to the draft mirror — the backend
+    // enforces the identical rule either way, so nothing slips through.
+    window.PzApi.getDraftInvoiceLink(id)
+      .then(r => setInvoiceLink((r && r.ok && r.data) ? r.data : null))
+      .catch(() => setInvoiceLink(null));
   };
   React.useEffect(reloadReadiness, [draft && draft.id, liveDraft.updated_at]);
 
@@ -4666,7 +4706,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // invoice-dependent projection (status header, workflow rail, toolbar gate,
   // identity card). Nothing below may re-derive "is this invoiced?" locally.
   const invoiceProjection = React.useMemo(
-    () => deriveInvoiceProjection(liveDraft), [liveDraft]
+    () => deriveInvoiceProjection(liveDraft, invoiceLink), [liveDraft, invoiceLink]
   );
   // SINGLE READINESS AUTHORITY — backend-derived blockers. State gating says
   // whether the lifecycle ALLOWS the action; readiness says whether the data
@@ -4687,7 +4727,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   }, [approveBlockers, postBlockers]);
   const stateAllowsPost    = ['draft', 'pending_local', 'approved', 'post_failed'].includes(draftState);
   const alreadyConverted    = invoiceProjection.invoiced;
-  const stateAllowsConvert  = draftState === 'posted' && !alreadyConverted;
+  // Gate on `blocked`, NOT on `invoiced`: a pending/failed link is not an invoice
+  // but still forbids a second attempt, exactly as the backend guard does.
+  const stateAllowsConvert  = draftState === 'posted' && !invoiceProjection.blocked;
   const stateAllowsApprove  = ['draft', 'editing', 'post_failed'].includes(draftState);
   const canPost       = stateAllowsPost && !postBlocked;
   const canConvert    = stateAllowsConvert && !postBlocked;
@@ -4705,10 +4747,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const postDisabledReason = !stateAllowsPost
     ? (alreadyPosted ? 'Already posted to wFirma' : `Cannot post in '${draftState}' state`)
     : (postBlocked ? `Blocked: ${_firstBlockerText(postBlockers)}` : '');
+  // A stranded conversion link is not something the operator can clear by acting on
+  // the draft — it is a link-row problem the reconcile route repairs. Name the state
+  // and route there; the generic 'post first' text would be actively misleading on a
+  // posted draft (Lesson M: unavailable WITH a stated reason and a route to repair).
+  const _linkConvertReason = {
+    pending:     'A previous conversion attempt is unresolved — whether wFirma created an invoice is unknown. Reconcile it in the Conversion Recovery panel before converting.',
+    failed:      'The last conversion attempt failed and wFirma may still have created an invoice. Reconcile it in the Conversion Recovery panel to establish the truth.',
+    rolled_back: 'This proforma has a rolled-back conversion link — reconcile it in the Conversion Recovery panel before converting.',
+  }[invoiceProjection.reason] || '';
   const convertDisabledReason = !stateAllowsConvert
     ? (alreadyConverted
         ? `Already converted — invoice ${invoiceProjection.invoiceNumber || invoiceProjection.invoiceId || 'created'}`
-        : (isBlocked ? 'Conversion blocked — see Reservation tab' : 'Post to wFirma first, then convert'))
+        : (_linkConvertReason
+            || (isBlocked ? 'Conversion blocked — see Reservation tab' : 'Post to wFirma first, then convert')))
     : (postBlocked ? `Blocked: ${_firstBlockerText(postBlockers)}` : '');
 
   // M5 — Edit mode: enabled when draft is in an editable state

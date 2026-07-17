@@ -3289,9 +3289,15 @@ def _gather_conversion_inputs(batch_id: str, client_name: str
     return pid, None
 
 
-def _link_already_exists(proforma_id: str) -> bool:
-    """True if a proforma_invoice_links row already exists for this
-    proforma_id (any status). Uses the canonical conversion link DB."""
+def _link_status(proforma_id: str) -> Optional[str]:
+    """The status of this proforma_id's conversion link, or None if no row
+    exists: pending | issued | failed | rolled_back.
+
+    AUTHORITY: PROFORMA. This is the read behind the duplicate-conversion guard.
+    The status distinguishes 'already invoiced' from 'an attempt is stranded',
+    which the operator needs in order to pick the right repair — but it never
+    softens the guard: see _link_already_exists().
+    """
     try:
         from ..services import proforma_invoice_link_db as plink
         from ..core.config import settings as _s
@@ -3299,9 +3305,21 @@ def _link_already_exists(proforma_id: str) -> bool:
         # alongside proforma_drafts (init'd by main.py).
         link_db = _s.storage_root / "proforma_links.db"
         existing = plink.get_link_by_proforma(link_db, proforma_id)
-        return existing is not None
+        return existing.status if existing is not None else None
     except Exception:
-        return False
+        return None
+
+
+def _link_already_exists(proforma_id: str) -> bool:
+    """True if a proforma_invoice_links row already exists for this
+    proforma_id (ANY status). Uses the canonical conversion link DB.
+
+    Lesson N true-blocker #5 (duplicate document risk): 'pending' and 'failed'
+    block just as hard as 'issued'. After an ambiguous wFirma failure we cannot
+    know whether an invoice was created, so a retry could double-issue one. The
+    repair for a stranded row is the reconcile route, never a looser guard here.
+    """
+    return _link_status(proforma_id) is not None
 
 
 def _build_convert_candidate(
@@ -3580,16 +3598,18 @@ def proforma_to_invoice_preview(
             "client_name":      cn,
             "blocking_reasons": [err],
         })
-    if _link_already_exists(pid):
+    _existing_link = _link_status(pid)
+    if _existing_link is not None:
         return JSONResponse({
             "ok":               False,
             "status":           "blocked",
             "batch_id":         batch_id,
             "client_name":      cn,
             "wfirma_proforma_id": pid,
+            "link_status":      _existing_link,
             "blocking_reasons": [
-                f"proforma_id {pid!r} already has a conversion link — "
-                "refusing duplicate conversion"
+                f"proforma_id {pid!r} already has a conversion link "
+                f"(status={_existing_link!r}) — refusing duplicate conversion"
             ],
         })
 
@@ -3924,17 +3944,19 @@ def proforma_to_invoice(
         })
 
     # 2b. Duplicate-conversion guard (pre-flight; UNIQUE catches races
-    # at insert time too).
-    if _link_already_exists(pid):
+    # at insert time too). ANY status blocks — see _link_already_exists().
+    _existing_link = _link_status(pid)
+    if _existing_link is not None:
         return JSONResponse({
             "ok":               False,
             "status":           "blocked",
             "batch_id":         batch_id,
             "client_name":      cn,
             "wfirma_proforma_id": pid,
+            "link_status":      _existing_link,
             "blocking_reasons": [
-                f"proforma_id {pid!r} already has a conversion link — "
-                "refusing duplicate conversion"
+                f"proforma_id {pid!r} already has a conversion link "
+                f"(status={_existing_link!r}) — refusing duplicate conversion"
             ],
         })
 
@@ -4265,19 +4287,38 @@ def proforma_to_invoice(
             log.warning("[%s] invoice identity capture skipped: %s",
                         batch_id, _cap_exc)
     except Exception as exc:
+        # The write-ahead row is 'pending' at this point. Move it to 'failed' so
+        # the link table records what actually happened. NEVER delete it: wFirma
+        # may hold a real invoice, and the row is the duplicate guard.
+        _link_state_recorded = True
         try:
             plink.mark_failed(link_db, pid,
                                notes=f"{type(exc).__name__}: {exc}"[:500])
-        except Exception:
-            pass
-        return JSONResponse({
+        except Exception as _mark_exc:
+            # mark_failed itself failed (locked/missing DB). The row is stranded
+            # in 'pending'. Do NOT swallow: reporting a clean "failed" while the
+            # database still says "pending" is the API asserting a state it does
+            # not hold. Say so, and name the repair.
+            _link_state_recorded = False
+            log.error("[%s] mark_failed did not land for proforma_id=%s — link "
+                      "row stranded in 'pending': %s", batch_id, pid, _mark_exc)
+        _resp = {
             "ok":               False,
             "status":           "failed",
             "batch_id":         batch_id,
             "client_name":      cn,
             "wfirma_proforma_id": pid,
             "error":            f"{type(exc).__name__}: {exc}",
-        })
+        }
+        if not _link_state_recorded:
+            _resp["link_state_unrecorded"] = True
+            _resp["blocking_reasons"] = [
+                f"Conversion failed AND the link row for proforma_id {pid!r} could "
+                "not be moved out of 'pending'. Its true state in wFirma is "
+                "unknown and further conversion stays blocked — reconcile this "
+                "link to establish whether an invoice exists."
+            ]
+        return JSONResponse(_resp)
 
     # 6b. Verify-after-create: fetch the created invoice back from wFirma
     # and confirm it matches the source proforma's shape. This mirrors the

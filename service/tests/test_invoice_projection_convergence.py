@@ -90,9 +90,91 @@ def test_derive_invoice_projection_reads_the_draft_mirror_fields():
 
 def test_page_derives_the_projection_exactly_once():
     """One useMemo in ProformaDetailPage; every consumer takes it as a prop."""
-    assert SRC.count("deriveInvoiceProjection(liveDraft)") == 1, (
+    assert SRC.count("deriveInvoiceProjection(liveDraft, invoiceLink)") == 1, (
         "The projection must be derived ONCE in ProformaDetailPage and threaded "
         "down. A second derivation site is a second authority."
+    )
+
+
+# ── Pin 2b: the Convert gate answers from the CANONICAL link row ─────────────
+#
+# Origin (2026-07-17, draft 64 / proforma_id 489002275): the Convert modal opened
+# on a proforma that already had a conversion link, the operator confirmed the
+# irreversible action, and the server refused —
+#   "proforma_id '489002275' already has a conversion link — refusing duplicate
+#    conversion"
+# The refusal was CORRECT (Lesson N true-blocker #5: after an ambiguous wFirma
+# failure a retry can double-issue an invoice). The modal opening was the bug.
+#
+# Root cause: two definitions of "converted". The backend guard
+# _link_already_exists() refuses on ANY link status; the page derived its answer
+# from the draft mirror, which reflects SUCCESS only. So 'pending', 'failed', and
+# not-yet-mirrored 'issued' each left the button live and the modal doomed.
+#
+# Authority: proforma_invoice_links is canonical; proforma_drafts is its
+# projection. GET /proforma/draft/{id}/invoice-link had existed since Sprint-24
+# with NO caller — the correct API was built and never wired.
+
+def test_projection_takes_the_canonical_link_row():
+    signature = SRC[SRC.index("function deriveInvoiceProjection("):]
+    signature = signature[:signature.index(")")]
+    assert "link" in signature, (
+        "deriveInvoiceProjection must accept the conversion-link row — without it "
+        "the gate sees only the draft mirror, which reflects success only, and a "
+        "pending/failed link re-opens a modal the server must reject."
+    )
+
+
+def test_blocked_is_broader_than_invoiced():
+    """The whole defect in one assertion: a pending/failed link is NOT an invoice,
+    yet must still forbid a second attempt. Collapsing these two questions into
+    one signal is what produced the doomed modal."""
+    block = _block("function deriveInvoiceProjection(")
+    assert "blocked:" in block and "invoiced," in block, (
+        "The projection must expose BOTH `invoiced` (is there an invoice to show?) "
+        "and `blocked` (may a conversion be attempted?) — they are different."
+    )
+    assert "blocked:       !!linkStatus || mirrorInvoiced" in block, (
+        "`blocked` must be true for ANY link status, mirroring the backend guard "
+        "_link_already_exists(). Narrowing it to 'issued' re-opens the doomed-modal "
+        "path on pending/failed rows."
+    )
+
+
+def test_only_an_issued_link_counts_as_an_invoice():
+    """No fake success: a pending/failed link must never render as an invoice."""
+    block = _block("function deriveInvoiceProjection(")
+    assert "linkStatus === 'issued'" in block, (
+        "Only status 'issued' may set `invoiced` — 'pending'/'failed' are attempts, "
+        "not documents, and must not produce an identity card or a rail checkmark."
+    )
+
+
+def test_convert_gate_consumes_blocked_not_invoiced():
+    assert "!invoiceProjection.blocked" in SRC, (
+        "stateAllowsConvert must gate on invoiceProjection.blocked — gating on "
+        "`invoiced` alone is exactly the bug: it lets pending/failed through."
+    )
+
+
+def test_convert_disabled_reason_names_the_link_state():
+    """Lesson M: unavailable WITH a stated reason and a route to repair."""
+    for status in ("pending", "failed", "rolled_back"):
+        assert f"{status}:" in SRC, (
+            f"convertDisabledReason must give link status {status!r} its own reason "
+            "— a generic message sends the operator to fix the wrong thing."
+        )
+    assert SRC.count("Conversion Recovery panel") >= 3, (
+        "Each link-blocked reason must route to the reconcile affordance — the "
+        "repair for a stranded link is reconcile, not retry."
+    )
+
+
+def test_page_wires_the_existing_endpoint():
+    assert "getDraftInvoiceLink" in SRC, (
+        "ProformaDetailPage must fetch the link row via PzApi.getDraftInvoiceLink. "
+        "The endpoint has existed since Sprint-24 with no caller — the system built "
+        "the right API and never wired it."
     )
 
 

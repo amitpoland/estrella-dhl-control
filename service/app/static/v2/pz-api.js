@@ -431,6 +431,15 @@
     draftInvoicePdfUrl: (draftId) =>
       `${BASE}/proforma/draft/${encodeURIComponent(draftId)}/invoice.pdf`,
 
+    // GET /api/v1/proforma/draft/{draft_id}/invoice-link
+    // Read-only join on proforma_invoice_links for this draft's proforma id.
+    // Returns { ok:true, status:'pending'|'issued'|'failed'|'rolled_back', ... }
+    // or { ok:false, status:'not_converted' } when no link row exists. This is
+    // the row the backend convert guard reads, so the page can gate on the same
+    // authority instead of on the draft mirror alone.
+    getDraftInvoiceLink: (draftId) =>
+      _get(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/invoice-link`),
+
     // GET /api/v1/proforma/invoice-links/split-brain[?proforma_id=...]
     // R-2 read-only detection: conversion links stuck 'pending'/'failed'
     // while a REAL wFirma invoice exists. No write, no wFirma call.
