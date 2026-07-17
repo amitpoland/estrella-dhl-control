@@ -136,13 +136,22 @@ function PfStatTile({ label, value, accent, 'data-testid': testid }) {
 // Draft lifecycle chip colors (wireframe PF_STATUS_CHIP), keyed by the LIVE
 // draft_state values. Lifecycle display only — readiness stays with the
 // ProformaStatusHeader readiness pill (Lesson N: no gating semantics here).
+//
+// Every key here must be a value the page can actually observe in `draftState`
+// (= draft_state || legacy status). A backend state with no key here makes
+// PfProformaStatusChip render null — that is how the chip silently vanished on
+// converted drafts. Keys are therefore DRAFT_LIFECYCLE_STATES plus the legacy
+// `status` aliases the draftState fallback can still surface ('issued', which
+// _ensure_drafts_table backfills to draft_state='posted').
 const PF_STATUS_CHIP = {
   draft:           { label: 'Draft',            bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
   editing:         { label: 'Editing',          bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
   approved:        { label: 'Approved',         bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
   posting:         { label: 'Posting…',         bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
   posted:          { label: 'Posted to wFirma', bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  // Legacy `status` alias — reachable only via the draftState fallback.
   issued:          { label: 'Issued',           bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  converted:       { label: 'Invoiced',         bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
   post_failed:     { label: 'Post Failed',      bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
   cancelled:       { label: 'Cancelled',        bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
   superseded:      { label: 'Superseded',       bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
@@ -1867,6 +1876,7 @@ function ProformaActionBar({
   handleApprove, canApprove, approving, approveDisabledReason, approveError,
   canPost, setShowPostModal, postDisabledReason,
   canConvert, setShowConvertModal, convertDisabledReason,
+  invoiceProjection, onViewInvoice,
   setShowPreview,
   handleDownloadPdf, canPrint,
   setShowSendModal, canSend, sendDisabledReason,
@@ -2025,6 +2035,10 @@ function ProformaActionBar({
             >
               ↑ Post to wFirma
             </Btn>
+            {/* Convert — Lesson M five-state model. Once a canonical invoice link
+                exists this capability is genuinely 'unavailable' (not suppressed):
+                it stays rendered and named, drops the ⚠/amber "act on me" styling,
+                and states exactly which invoice already consumed it. */}
             <Btn
               variant="outline" small
               onClick={() => canConvert && setShowConvertModal(true)}
@@ -2032,11 +2046,24 @@ function ProformaActionBar({
               title={canConvert
                 ? 'Convert this posted proforma to a wFirma invoice'
                 : convertDisabledReason}
-              style={{ color: 'var(--badge-amber-text)', borderColor: 'var(--badge-amber-border)' }}
+              style={invoiceProjection.invoiced
+                ? undefined
+                : { color: 'var(--badge-amber-text)', borderColor: 'var(--badge-amber-border)' }}
               data-testid="tb-convert"
             >
-              ⚠ Convert to Invoice
+              {invoiceProjection.invoiced ? 'Convert to Invoice' : '⚠ Convert to Invoice'}
             </Btn>
+            {/* The follow-up action that replaces Convert once the invoice exists. */}
+            {invoiceProjection.invoiced && (
+              <Btn
+                variant="primary" small
+                onClick={onViewInvoice}
+                title={`Open the wFirma invoice ${invoiceProjection.invoiceNumber || invoiceProjection.invoiceId} (read-only)`}
+                data-testid="tb-view-invoice"
+              >
+                ↗ View wFirma Invoice
+              </Btn>
+            )}
             <Btn
               variant="outline" small
               onClick={() => canCancel && setShowCancelModal(true)}
@@ -2098,13 +2125,20 @@ function ProformaActionBar({
 
 // ── Proforma status header — readiness pill, customer chip, shipment chip ─────
 function ProformaStatusHeader({
+  invoiceProjection,
   alreadyPosted, readinessPost, postBlocked, postBlockers,
   approveBlocked, approveBlockers,
   stateAllowsApprove, alreadyApproved,
   canPost, canConvert,
   customer, _cmrTotalPcs, liveDraft, draft,
 }) {
-  const pill = alreadyPosted
+  // The invoice link is the TERMINAL truth and must be consulted FIRST — ahead of
+  // alreadyPosted, which is false for a converted draft. Reading draft_state alone
+  // here is what reported "Ready / Next: Review draft" on a draft that already had
+  // a wFirma invoice.
+  const pill = invoiceProjection.invoiced
+    ? { label: 'Invoiced', tone: 'green' }
+    : alreadyPosted
     ? { label: 'Posted', tone: 'green' }
     : (readinessPost == null)
       ? { label: 'Checking readiness…', tone: 'neutral' }
@@ -2117,7 +2151,12 @@ function ProformaStatusHeader({
   const custMapped = !!customer.wfirmaId;
   const pieces = (typeof _cmrTotalPcs === 'number' && _cmrTotalPcs > 0) ? _cmrTotalPcs : null;
   const awb = liveDraft.batch_id || (draft && draft.batch_id) || null;
-  const nextAction = (postBlocked && postBlockers.length)
+  // Same precedence rule as the pill: an invoiced draft has exactly one sensible
+  // follow-up. Without this first branch every condition below evaluates false on
+  // a converted draft and it falls through to the literal default 'Review draft'.
+  const nextAction = invoiceProjection.invoiced
+    ? 'Open invoice in wFirma'
+    : (postBlocked && postBlockers.length)
     ? postBlockers[0].repair_action
     : (approveBlocked && approveBlockers.length)
       ? approveBlockers[0].repair_action
@@ -3433,15 +3472,47 @@ function DocumentsRegistry({ batchId }) {
   );
 }
 
+// ── deriveInvoiceProjection — THE single invoice-link authority for this page ──
+// Backend authority: the proforma_invoice_links row (status='issued'). It is
+// mirrored onto proforma_drafts by the ONE writer
+// conversion_persistence.persist_invoice_to_draft() as wfirma_invoice_id /
+// wfirma_invoice_number / converted_at / draft_state='converted'.
+//
+// Drift between the link and this mirror is NOT guessed at here: it is detected
+// by GET /proforma/invoice-links/split-brain (classification
+// 'stale_draft_projection') and repaired by the canonical reconcile route.
+//
+// EVERY invoice-dependent projection on this page MUST derive from this function
+// — never from draft_state or wfirma_invoice_id directly. Two projections reading
+// two authorities is what produced the 2026-07-17 contradiction: an "Invoice
+// Created" card and an actionable Convert button on the same screen.
+function deriveInvoiceProjection(d) {
+  const src = d || {};
+  const id  = src.wfirma_invoice_id || '';
+  const st  = String(src.draft_state || '').toLowerCase();
+  // OR, not AND: gating stays conservative so a half-mirrored row can never
+  // re-open the Convert path. 'converted' is the terminal member of
+  // DRAFT_LIFECYCLE_STATES.
+  const invoiced = !!id || st === 'converted';
+  return {
+    invoiced,
+    invoiceId:     id,
+    invoiceNumber: src.wfirma_invoice_number || '',
+    convertedAt:   src.converted_at || '',
+    // stages[] index 3 is the terminal node and `done = i < rank`, so the
+    // terminal rank must be 4 — a rank of 3 can never mark it done.
+    railRank:      invoiced ? 4 : null,
+  };
+}
+
 // ── Workflow rail (authority-backed) ───────────────────────────────────────────
-// Derived STRICTLY from the proforma-draft state machine (draft_state), which is
-// always present on the draft and cross-confirmed by the wFirma authority ids
-// (wfirma_proforma_id = posted, wfirma_invoice_id = invoiced). No fabricated
-// stage: reservation loads lazily and shipment/customs are SEPARATE authorities
-// (Lesson N) with no draft-level state — they are pointed to their own tabs, not
-// shown as rail nodes. A wrong stage here would be fake readiness; every node maps
-// to a real, always-available signal.
-function WorkflowRail({ draftState, wfirmaProformaId, wfirmaInvoiceId }) {
+// Derived from the proforma-draft state machine (draft_state) for the pre-invoice
+// stages, and from the ONE invoice projection (deriveInvoiceProjection) for the
+// terminal stage. No fabricated stage: reservation loads lazily and
+// shipment/customs are SEPARATE authorities (Lesson N) with no draft-level state
+// — they are pointed to their own tabs, not shown as rail nodes. A wrong stage
+// here would be fake readiness; every node maps to a real, always-available signal.
+function WorkflowRail({ draftState, wfirmaProformaId, invoiced }) {
   const st = String(draftState || '').toLowerCase();
   const railBox = { padding: '10px 24px', background: 'var(--card)', borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)' };
   if (st === 'cancelled' || st === 'superseded') {
@@ -3453,10 +3524,10 @@ function WorkflowRail({ draftState, wfirmaProformaId, wfirmaInvoiceId }) {
       </div>
     );
   }
-  const RANK = { draft: 0, editing: 0, post_failed: 0, approved: 1, posted: 2, converted: 3 };
+  const RANK = { draft: 0, editing: 0, post_failed: 0, approved: 1, posted: 2, converted: 4 };
   let rank = RANK[st] != null ? RANK[st] : 0;
   if (wfirmaProformaId && rank < 2) rank = 2;   // proforma document exists → posted
-  if (wfirmaInvoiceId) rank = 3;                 // invoice exists → invoiced
+  if (invoiced) rank = 4;                        // invoice exists → all four stages done
   const stages = ['Review', 'Approved', 'Posted', 'Invoiced'];
   return (
     <div data-testid="pf-workflow-rail" style={{ ...railBox, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -3684,12 +3755,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
   // R-2 — split-brain conversion-link detection (read-only). The backend
   // report is the SOLE authority (Lesson F rule 5 — the UI never derives
-  // this locally). Only queried while the draft points at a posted proforma
-  // that has NOT completed conversion locally.
+  // this locally). Queried whenever the draft points at a posted proforma whose
+  // local projection is not FULLY healthy.
+  //
+  // The health test must match the backend's, which treats a link as healthy only
+  // when the draft mirrors BOTH the invoice id AND draft_state='converted'.
+  // Skipping on a truthy wfirma_invoice_id alone hid the 'stale_draft_projection'
+  // case (id present, draft_state still 'posted') — the exact drift this report
+  // exists to surface.
   const [splitBrainEntry, setSplitBrainEntry] = React.useState(null);
+  const _projectionHealthy = !!liveDraft.wfirma_invoice_id
+    && String(liveDraft.draft_state || '').toLowerCase() === 'converted';
   const loadSplitBrain = React.useCallback(() => {
     const pid = liveDraft.wfirma_proforma_id;
-    if (!pid || liveDraft.wfirma_invoice_id || !window.PzApi.getInvoiceLinkSplitBrain) {
+    if (!pid || _projectionHealthy || !window.PzApi.getInvoiceLinkSplitBrain) {
       setSplitBrainEntry(null); return;
     }
     window.PzApi.getInvoiceLinkSplitBrain(pid)
@@ -3698,7 +3777,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         setSplitBrainEntry(links.length ? links[0] : null);
       })
       .catch(() => setSplitBrainEntry(null));
-  }, [liveDraft.wfirma_proforma_id, liveDraft.wfirma_invoice_id]);
+  }, [liveDraft.wfirma_proforma_id, _projectionHealthy]);
   React.useEffect(() => { loadSplitBrain(); }, [loadSplitBrain]);
 
   // PR-5 — manual transport-document weight override (kg). The extracted packing
@@ -3850,7 +3929,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           setShowReservationModal(false);
           loadReservationPreview();   // refresh reservation state
           reloadReadiness();          // refresh proforma readiness
-          draftHook && draftHook.refresh && draftHook.refresh();  // refresh draft
+          draftHook && draftHook.reload && draftHook.reload();  // refresh draft
         } else {
           // backend error rides in r.error as "HTTP <status>: <json body>"
           let msg = (r && r.error) || 'reservation create failed';
@@ -4583,6 +4662,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // ──────────────────────────────────────────────────────────────────────────
 
   const draftState    = liveDraft.draft_state || liveDraft.status || (draft && draft.status) || '';
+  // SINGLE INVOICE-LINK AUTHORITY — derived ONCE here and threaded to every
+  // invoice-dependent projection (status header, workflow rail, toolbar gate,
+  // identity card). Nothing below may re-derive "is this invoiced?" locally.
+  const invoiceProjection = React.useMemo(
+    () => deriveInvoiceProjection(liveDraft), [liveDraft]
+  );
   // SINGLE READINESS AUTHORITY — backend-derived blockers. State gating says
   // whether the lifecycle ALLOWS the action; readiness says whether the data
   // is SAFE for it. Both must pass. While readiness is still loading (null)
@@ -4601,13 +4686,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     return s;
   }, [approveBlockers, postBlockers]);
   const stateAllowsPost    = ['draft', 'pending_local', 'approved', 'post_failed'].includes(draftState);
-  const alreadyConverted    = !!(liveDraft.wfirma_invoice_id) || draftState === 'converted';
-  const stateAllowsConvert  = (draftState === 'posted' || draftState === 'ready') && !alreadyConverted;
+  const alreadyConverted    = invoiceProjection.invoiced;
+  const stateAllowsConvert  = draftState === 'posted' && !alreadyConverted;
   const stateAllowsApprove  = ['draft', 'editing', 'post_failed'].includes(draftState);
   const canPost       = stateAllowsPost && !postBlocked;
   const canConvert    = stateAllowsConvert && !postBlocked;
   const isBlocked     = draftState === 'post_failed' || draftState === 'convert_blocked';
-  const alreadyPosted = draftState === 'posted' || draftState === 'invoiced';
+  const alreadyPosted = draftState === 'posted';
   const canPrint      = !!(liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id));
   const canApprove    = stateAllowsApprove && !approveBlocked;
   const alreadyApproved = draftState === 'approved';
@@ -4622,7 +4707,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     : (postBlocked ? `Blocked: ${_firstBlockerText(postBlockers)}` : '');
   const convertDisabledReason = !stateAllowsConvert
     ? (alreadyConverted
-        ? `Already converted — invoice ${liveDraft.wfirma_invoice_number || liveDraft.wfirma_invoice_id || 'created'}`
+        ? `Already converted — invoice ${invoiceProjection.invoiceNumber || invoiceProjection.invoiceId || 'created'}`
         : (isBlocked ? 'Conversion blocked — see Reservation tab' : 'Post to wFirma first, then convert'))
     : (postBlocked ? `Blocked: ${_firstBlockerText(postBlockers)}` : '');
 
@@ -4699,6 +4784,37 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
     } catch (e) {
       setPrintError('PDF download failed — ' + (e.message || 'network error'));
+    }
+  };
+
+  // View the final wFirma invoice this proforma was converted to. Read-only —
+  // fetches the PDF wFirma already holds; creates nothing. Mirrors
+  // handleDownloadPdf so both document reads report failures the same way.
+  const handleViewInvoice = async () => {
+    const id = liveDraft.id || (draft && draft.id);
+    if (!id) return;
+    setPrintError(null);
+    try {
+      const resp = await fetch(window.PzApi.draftInvoicePdfUrl(id), { credentials: 'include' });
+      if (!resp.ok) {
+        let errMsg = `Could not open the invoice (HTTP ${resp.status})`;
+        try {
+          const j = await resp.json();
+          errMsg = (j.detail && j.detail.error) || j.detail || errMsg;
+        } catch (_) {}
+        setPrintError(errMsg);
+        return;
+      }
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      const label = invoiceProjection.invoiceNumber || invoiceProjection.invoiceId || 'invoice';
+      a.download = String(label).replace(/[^\w.\- ]/g, '_') + '.pdf';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+    } catch (e) {
+      setPrintError('Invoice download failed — ' + (e.message || 'network error'));
     }
   };
 
@@ -5060,6 +5176,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         approveDisabledReason={approveDisabledReason} approveError={approveError}
         canPost={canPost} setShowPostModal={setShowPostModal} postDisabledReason={postDisabledReason}
         canConvert={canConvert} setShowConvertModal={setShowConvertModal} convertDisabledReason={convertDisabledReason}
+        invoiceProjection={invoiceProjection} onViewInvoice={handleViewInvoice}
         setShowPreview={setShowPreview}
         handleDownloadPdf={handleDownloadPdf} canPrint={canPrint}
         setShowSendModal={setShowSendModal} canSend={canSend} sendDisabledReason={sendDisabledReason}
@@ -5126,6 +5243,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
       {/* ── PROFORMA STATUS HEADER — persistent, always visible ───────────────── */}
       <ProformaStatusHeader
+        invoiceProjection={invoiceProjection}
         alreadyPosted={alreadyPosted}
         readinessPost={readinessPost}
         postBlocked={postBlocked}
@@ -5186,11 +5304,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         draftState={draftState}
       />
 
-      {/* ── Workflow rail (authority-backed: draft_state machine) ───────────── */}
+      {/* ── Workflow rail (authority-backed: draft_state machine + invoice link) ── */}
       <WorkflowRail
         draftState={draftState}
         wfirmaProformaId={liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id)}
-        wfirmaInvoiceId={liveDraft.wfirma_invoice_id || (draft && draft.wfirma_invoice_id)}
+        invoiced={invoiceProjection.invoiced}
       />
 
       {/* ── Tab strip (wireframe: 2px accent underline, card band) ─────────── */}
@@ -5222,6 +5340,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           <React.Fragment>
             <ProformaOverviewTab
               detail={detail}
+              invoiceProjection={invoiceProjection}
               lines={lines}
               fxRate={fxRate}
               vatResolution={vatResolution}
@@ -5767,7 +5886,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           onClose={() => setShowPostModal(false)}
           onSuccess={() => {
             setShowPostModal(false);
-            draftHook && draftHook.refresh && draftHook.refresh();
+            draftHook && draftHook.reload && draftHook.reload();
           }}
         />
       )}
@@ -5778,6 +5897,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           onClose={() => setShowConvertModal(false)}
           onSuccess={() => {
             setShowConvertModal(false);
+            // Re-fetch the canonical draft (which mirrors the proforma_invoice_links
+            // row) before anything renders. Optimistic UI is not sufficient here:
+            // the invoice identity is assigned by wFirma and only the server knows
+            // it. Every projection re-derives from the reloaded draft.
+            draftHook && draftHook.reload && draftHook.reload();
+            reloadReadiness();
             onConvert && onConvert(draft);
           }}
         />
@@ -7187,7 +7312,7 @@ function CustomerMasterSuggestions({ suggestions, draftId, updatedAt, onReload }
 }
 
 // ── Overview tab ──────────────────────────────────────────────────────────────
-function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingReasons, exportBlockers, editMode, editFields, onEditField, editError, draftId, expectedUpdatedAt, onReload }) {
+function ProformaOverviewTab({ detail, invoiceProjection, lines, fxRate, vatResolution, blockingReasons, exportBlockers, editMode, editFields, onEditField, editError, draftId, expectedUpdatedAt, onReload }) {
   const totalEur = lines.reduce((s, l) => s + l.netEur, 0);
   // PR-4 — Fetch NBP rate (reuses the sole PZ NBP authority server-side). The
   // manual override field below stays available; this is the automated path.
@@ -7225,8 +7350,10 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
-      {/* Invoice identity card — shown after successful conversion */}
-      {detail.wfirma_invoice_id && (
+      {/* Invoice identity card — shown after successful conversion. Gated on the
+          SAME projection as the toolbar, rail and status header, so this card can
+          never appear beside an actionable Convert button again. */}
+      {invoiceProjection.invoiced && (
         <div style={{
           padding: '12px 16px',
           background: 'var(--badge-green-bg)',
@@ -7240,11 +7367,11 @@ function ProformaOverviewTab({ detail, lines, fxRate, vatResolution, blockingRea
               Invoice Created
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>
-              {detail.wfirma_invoice_number
-                ? <span>wFirma invoice <strong style={{ fontFamily: 'monospace' }}>{detail.wfirma_invoice_number}</strong></span>
-                : <span>wFirma invoice ID <strong style={{ fontFamily: 'monospace' }}>{detail.wfirma_invoice_id}</strong></span>
+              {invoiceProjection.invoiceNumber
+                ? <span>wFirma invoice <strong style={{ fontFamily: 'monospace' }}>{invoiceProjection.invoiceNumber}</strong></span>
+                : <span>wFirma invoice ID <strong style={{ fontFamily: 'monospace' }}>{invoiceProjection.invoiceId}</strong></span>
               }
-              {detail.converted_at && <span style={{ marginLeft: 8 }}>· {(detail.converted_at || '').slice(0, 10)}</span>}
+              {invoiceProjection.convertedAt && <span style={{ marginLeft: 8 }}>· {(invoiceProjection.convertedAt || '').slice(0, 10)}</span>}
             </div>
           </div>
         </div>
@@ -8940,4 +9067,4 @@ function ConvertToInvoiceModal({ draft, detail, onClose, onSuccess }) {
   );
 }
 
-Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal, CancelDraftModal, PurgeDraftModal, PriorInvoiceHistoryModal, SendProformaModal });
+Object.assign(window, { ProformaDetailPage, ConvertToInvoiceModal, PostToWFirmaModal, CancelDraftModal, PurgeDraftModal, PriorInvoiceHistoryModal, SendProformaModal, deriveInvoiceProjection });

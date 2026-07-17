@@ -847,14 +847,28 @@ def test_post_draft_endpoint_exists_in_backend():
 
 def test_workflow_rail_derives_from_draft_state():
     """The workflow rail must be derived from the real draft_state machine +
-    wFirma authority ids — never a fabricated/hardcoded stage."""
+    wFirma authority — never a fabricated/hardcoded stage.
+
+    2026-07-17 (projection convergence): the terminal signal is no longer the raw
+    `wfirmaInvoiceId` prop. It is `invoiced`, produced by deriveInvoiceProjection
+    — the ONE invoice-link authority the identity card, status header and convert
+    gate also consume. The rule this test protects is unchanged (the rail must
+    cross-confirm against real wFirma authority, never guess); the derivation is
+    now shared rather than re-done here, which is what stops the rail disagreeing
+    with the rest of the page.
+    """
     src = _src()
     assert "function WorkflowRail" in src, "WorkflowRail component must exist"
     code = _code_only(src)
-    # Rank is driven by draft_state values + the two wFirma authority ids.
-    assert "wfirmaProformaId" in code and "wfirmaInvoiceId" in code, (
-        "WorkflowRail must cross-confirm stage with wfirma_proforma_id / "
-        "wfirma_invoice_id authority — not a standalone guess"
+    # Rank is driven by draft_state values + the wFirma proforma id + the single
+    # derived invoice authority.
+    assert "wfirmaProformaId" in code, (
+        "WorkflowRail must cross-confirm the posted stage with wfirma_proforma_id "
+        "authority — not a standalone guess"
+    )
+    assert "invoiced" in code and "deriveInvoiceProjection" in code, (
+        "WorkflowRail's terminal stage must come from deriveInvoiceProjection "
+        "(the single invoice-link authority) — not a standalone guess"
     )
     for token in ("draft", "approved", "posted", "converted"):
         assert token in code, f"WorkflowRail rank map must reference draft_state '{token}'"

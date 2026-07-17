@@ -11032,6 +11032,116 @@ def draft_to_invoice_preview_by_id(draft_id: int) -> JSONResponse:
 
 
 @router.get(
+    "/draft/{draft_id}/invoice.pdf",
+    # READ-ONLY document fetch. Viewing the invoice a conversion produced is a
+    # read, so it stays on the bare read guard and remains available to
+    # read-only roles — same shape as the proforma document.pdf route (#934).
+    dependencies=[_auth],
+    summary="Download the PDF of the wFirma invoice this draft was converted to (read-only)",
+)
+async def draft_invoice_pdf(draft_id: int) -> Response:
+    """Download the PDF of the final wFirma invoice linked to this draft.
+
+    This is the backend for the "View wFirma Invoice" follow-up action that
+    replaces Convert once a canonical invoice link exists.
+
+    READ-ONLY: calls ``wfirma_client.fetch_invoice_pdf`` (path-based
+    ``GET invoices/download/{id}``) — the SAME helper the proforma
+    ``document.pdf`` route uses. Never writes to wFirma, never creates an invoice.
+
+    Authority: ``draft.wfirma_invoice_id``, the draft-side mirror of the
+    ``proforma_invoice_links`` row written by
+    ``conversion_persistence.persist_invoice_to_draft``. If that field is empty
+    the draft is not converted and there is nothing to show — 404, never a guess.
+
+    Returns:
+      200 + ``application/pdf`` — bytes streamed back to the operator.
+      404 — no such draft, or the draft has no ``wfirma_invoice_id``.
+      502 — wFirma fetch failed, or returned an unusably small body.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+
+    invoice_id = (getattr(d, "wfirma_invoice_id", None) or "").strip()
+    if not invoice_id:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error":    "This draft has no linked wFirma invoice.",
+                "code":     "INVOICE_NOT_LINKED",
+                "draft_id": draft_id,
+            },
+        )
+
+    try:
+        pdf_bytes = wfirma_client.fetch_invoice_pdf(invoice_id)
+    except Exception as exc:
+        log.warning(
+            "[draft %s] draft_invoice_pdf: fetch_invoice_pdf failed for id=%s: %s",
+            draft_id, invoice_id, exc,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error":             f"wFirma PDF fetch failed: {exc}",
+                "code":              "INVOICE_PDF_FETCH_FAILED",
+                "draft_id":          draft_id,
+                "wfirma_invoice_id": invoice_id,
+            },
+        )
+
+    # Same blank-PDF guard as proforma_document_pdf: wFirma occasionally returns
+    # a near-empty body that opens but prints blank. Fail loudly instead.
+    if len(pdf_bytes) < 200:
+        log.warning(
+            "[draft %s] draft_invoice_pdf: suspiciously small PDF (%d bytes) "
+            "for wfirma_invoice_id=%s — returning 502 instead of serving blank",
+            draft_id, len(pdf_bytes), invoice_id,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": (
+                    f"wFirma returned an unusably small PDF ({len(pdf_bytes)} bytes) "
+                    f"for invoice id={invoice_id}."
+                ),
+                "code":              "INVOICE_PDF_EMPTY",
+                "wfirma_invoice_id": invoice_id,
+            },
+        )
+
+    # fullnumber carries wFirma series notation ("WDT 144/2026") — slashes are
+    # invalid in Content-Disposition / on disk, so sanitise to underscores.
+    fullnumber = (getattr(d, "wfirma_invoice_number", None) or "").strip()
+    if fullnumber:
+        safe = "".join(c if (c.isalnum() or c in "._- ") else "_" for c in fullnumber)
+        filename = f"{safe}.pdf"
+    else:
+        filename = f"invoice-{invoice_id}.pdf"
+
+    log.info(
+        "[draft %s] draft_invoice_pdf: served %d bytes for wfirma_invoice_id=%s",
+        draft_id, len(pdf_bytes), invoice_id,
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            # Lesson G: live-fetched / regenerable artifacts MUST carry no-store,
+            # or a stale invoice PDF can survive in the browser cache.
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma":        "no-cache",
+            "Expires":       "0",
+        },
+    )
+
+
+@router.get(
     "/draft/{draft_id}/invoice-link",
     dependencies=[_auth],
     summary="Sprint-24: conversion result for a draft (read-only join on proforma_invoice_links)",

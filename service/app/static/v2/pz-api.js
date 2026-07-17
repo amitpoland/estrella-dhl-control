@@ -424,6 +424,13 @@
     draftToInvoice: (draftId, body) =>
       _postM(`${BASE}/proforma/draft/${draftId}/to-invoice`, body || {}),
 
+    // GET /api/v1/proforma/draft/{draft_id}/invoice.pdf
+    // Read-only URL for the final wFirma invoice PDF this draft converted to.
+    // Transport-layer URL builder only (Lesson F: pz-api.js decides nothing) —
+    // the caller navigates to it. 404 when the draft has no linked invoice.
+    draftInvoicePdfUrl: (draftId) =>
+      `${BASE}/proforma/draft/${encodeURIComponent(draftId)}/invoice.pdf`,
+
     // GET /api/v1/proforma/invoice-links/split-brain[?proforma_id=...]
     // R-2 read-only detection: conversion links stuck 'pending'/'failed'
     // while a REAL wFirma invoice exists. No write, no wFirma call.
