@@ -11288,6 +11288,33 @@ def draft_to_invoice_by_id(
 # re-fetch re-passes the identical verify-after-create matrix.
 
 _RECONCILE_CONFIRM_TOKEN = "YES_RECONCILE_INVOICE_LINK"
+
+# Draft lifecycle states a repair must never write over. Operator ruling
+# 2026-07-17 (GATE-4 salvage): when a booked wFirma invoice exists but the
+# local draft was cancelled, the CANCELLATION WINS — reconcile refuses and
+# escalates rather than silently reversing an operator's decision. Without
+# this, persist_invoice_to_draft's unconditional
+# ``SET draft_state='converted'`` resurrects the draft and proforma-list
+# (which filters out 'cancelled', not 'converted') re-shows it as a live
+# invoiced document. Re-running a repair after un-cancelling is always
+# available; silently un-cancelling is not.
+_RECONCILE_TERMINAL_DRAFT_STATES = ("cancelled", "superseded")
+
+
+def _terminal_draft_refusal(d) -> str:
+    """Blocking reason when a draft sits in a terminal lifecycle state.
+
+    Returns "" when the draft may be repaired, so callers read as
+    ``if reason: return _blocked(reason)``. Shared by both reconcile
+    branches so they refuse on identical grounds with identical wording.
+    """
+    state = (getattr(d, "draft_state", "") or "").strip()
+    if state in _RECONCILE_TERMINAL_DRAFT_STATES:
+        return (
+            f"draft {getattr(d, 'id', None)} is in terminal state {state!r} "
+            "— cannot repair; escalate to operator"
+        )
+    return ""
 _VAC_NOTE_MARKER         = "verify-after-create"
 
 
@@ -11546,6 +11573,12 @@ def _reconcile_issued_link_projection(
     d = pildb.get_draft_by_id(_proforma_db_path(), int(draft.id))
     if d is None:
         return _blocked(f"draft {draft.id} vanished during repair — retry")
+
+    # Terminal-state guard: refuse before the write, whatever the identity
+    # says — a cancelled draft is not a stale projection to repair.
+    _terminal = _terminal_draft_refusal(d)
+    if _terminal:
+        return _blocked(_terminal)
 
     existing_inv_id = (getattr(d, "wfirma_invoice_id", None) or "").strip()
     if existing_inv_id and existing_inv_id != link_inv_id:
@@ -11896,6 +11929,13 @@ def reconcile_invoice_link(
     # carrying a DIFFERENT invoice identity must never be overwritten by this
     # repair — refuse before any wFirma fetch or link write.
     _pre = pildb.get_draft_by_id(_proforma_db_path(), int(draft.id))
+    # Terminal-state guard (same authority as the issued branch): a cancelled
+    # or superseded draft must never be resurrected by a repair. Refused here
+    # so neither mark_issued nor persist_invoice_to_draft runs — the ruling is
+    # "changes nothing locally", not "changes only the link".
+    _terminal = _terminal_draft_refusal(_pre or draft)
+    if _terminal:
+        return _blocked(_terminal)
     _pre_iid = (getattr(_pre, "wfirma_invoice_id", None) or "").strip() \
         if _pre is not None else ""
     if _pre_iid and _pre_iid != iid:
@@ -12016,6 +12056,12 @@ def reconcile_invoice_link(
                 "id_source":             id_source,
                 "mode":                  "split_brain_repair",
                 "source":                "invoice_link_reconcile",
+                # mode='split_brain_repair' alone reads as a COMPLETE repair.
+                # When mark_issued succeeded but the draft persist failed, the
+                # link is issued while the draft projection is still stale —
+                # record it so an audit reader cannot mistake a partial repair
+                # for a complete one (it was previously response-only).
+                "draft_persisted":       _draft_persisted,
             }),
             operator    = operator,
         )

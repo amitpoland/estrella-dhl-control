@@ -40,6 +40,7 @@ Pins:
 from __future__ import annotations
 
 import json
+import sqlite3
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -1214,3 +1215,126 @@ def test_reconcile_rejects_id_and_number_together_on_issued_link(client, storage
     assert body["ok"] is False
     assert body["status"] == "blocked"
     assert any("both" in r for r in body["blocking_reasons"])
+
+
+# ── 6. Terminal draft states are never resurrected by a repair ───────────────
+#
+# Operator ruling 2026-07-17 (GATE-4 salvage, surfaced by reviewer-challenge
+# on the reconcile-by-number slice): when a booked wFirma invoice exists but
+# the local draft was cancelled, the CANCELLATION WINS. Reconcile refuses and
+# escalates rather than silently reversing an operator's decision.
+#
+# Why this needs a route guard: conversion_persistence.persist_invoice_to_draft
+# issues an unconditional ``UPDATE ... SET draft_state='converted'`` whose only
+# WHERE clause is ``id=?``. Neither reconcile branch used to read draft_state
+# before calling it, so a good-faith Repair click on a split-brain report would
+# flip 'cancelled' -> 'converted'; proforma-list.jsx filters out 'cancelled'
+# but NOT 'converted', so the draft would re-appear as a live invoiced document.
+
+def _force_terminal_draft_state(storage, state: str) -> int:
+    """Put the seeded draft into a terminal lifecycle state while it still
+    carries wfirma_proforma_id, and return its id.
+
+    Direct SQL is deliberate — no app writer can produce this shape today:
+    ``cancel_draft`` refuses a 'posted' draft (CANCELLABLE_STATES is
+    draft/editing/approved/post_failed) and ``migrate_draft_to_canonical_name``
+    supersedes only EDITABLE_STATES rows, which never carry a proforma id. The
+    guard under test is therefore a defence-in-depth invariant on the write,
+    not a repair of a live-reachable path.
+
+    The legacy ``status`` column is parked on the Phase-2 neutral 'draft'
+    value on purpose: ``_ensure_drafts_table`` re-derives draft_state from
+    status on EVERY read (issued->posted) and protects only 'converted', so a
+    terminal state on a status='issued' row is clobbered straight back to
+    'posted' before the route ever sees it.
+    """
+    conn = sqlite3.connect(str(_links_db(storage)))
+    try:
+        row = conn.execute(
+            "SELECT id FROM proforma_drafts WHERE wfirma_proforma_id=? LIMIT 1",
+            (PID,),
+        ).fetchone()
+        assert row is not None, "seed must leave a draft carrying the proforma id"
+        conn.execute(
+            "UPDATE proforma_drafts SET draft_state=?, status='draft' WHERE id=?",
+            (state, row[0]),
+        )
+        conn.commit()
+        return int(row[0])
+    finally:
+        conn.close()
+
+
+def _assert_draft_untouched(storage, draft_id: int, state: str) -> None:
+    """The ruling is 'changes nothing locally' — pin the whole draft row, not
+    just the response shape."""
+    d = pildb.get_draft_by_id(_links_db(storage), draft_id)
+    assert d is not None
+    assert d.draft_state == state, (
+        f"draft_state must stay {state!r}, got {d.draft_state!r} — a repair "
+        f"resurrected a terminal draft"
+    )
+    assert not (getattr(d, "wfirma_invoice_id", None) or "").strip(), \
+        "a blocked repair must not stamp an invoice identity onto the draft"
+
+
+def _seed_issued_link(storage) -> None:
+    _seed_link(storage, status="pending", invoice_id=IID)
+    pildb.mark_issued(_links_db(storage), PID, invoice_id=IID,
+                      invoice_number=INUM, invoice_total=Decimal("306.00"),
+                      notes="issued")
+
+
+def test_reconcile_cancelled_draft_is_blocked(client, storage):
+    """Issued-link branch: a cancelled draft is not a stale projection to
+    repair. Refuse and escalate; change nothing."""
+    _seed_issued_draft(storage)
+    _seed_issued_link(storage)
+    draft_id = _force_terminal_draft_state(storage, "cancelled")
+
+    body = _reconcile(client)
+
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("terminal state" in r and "cancelled" in r
+               for r in body["blocking_reasons"]), body["blocking_reasons"]
+    assert any("escalate to operator" in r for r in body["blocking_reasons"])
+    _assert_draft_untouched(storage, draft_id, "cancelled")
+
+
+def test_reconcile_superseded_draft_is_blocked(client, storage):
+    """Issued-link branch: 'superseded' is terminal for the same reason —
+    the row has been replaced by a canonical draft and must not be revived."""
+    _seed_issued_draft(storage)
+    _seed_issued_link(storage)
+    draft_id = _force_terminal_draft_state(storage, "superseded")
+
+    body = _reconcile(client)
+
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("terminal state" in r and "superseded" in r
+               for r in body["blocking_reasons"]), body["blocking_reasons"]
+    _assert_draft_untouched(storage, draft_id, "superseded")
+
+
+def test_reconcile_cancelled_draft_is_blocked_on_pending_link(client, storage):
+    """Split-brain (pending) branch: the guard fires before the wFirma re-fetch
+    AND before mark_issued — 'changes nothing locally' means the link row is
+    untouched too, not merely the draft."""
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id=IID)
+    draft_id = _force_terminal_draft_state(storage, "cancelled")
+
+    def _no_fetch(*a, **k):
+        raise AssertionError("terminal draft must refuse before any wFirma fetch")
+
+    with patch.object(wc, "fetch_invoice_xml", side_effect=_no_fetch):
+        body = _reconcile(client)
+
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("terminal state" in r and "cancelled" in r
+               for r in body["blocking_reasons"]), body["blocking_reasons"]
+    _assert_draft_untouched(storage, draft_id, "cancelled")
+    assert pildb.get_link_by_proforma(_links_db(storage), PID).status == "pending"
