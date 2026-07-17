@@ -170,6 +170,35 @@ def _prime_vat():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _neutralize_convert_readiness(monkeypatch):
+    """Single-readiness-authority gate stub (convert step 2c): this suite
+    pins the verify-after-create mechanics of the execute route, not
+    readiness — that has dedicated no-stub coverage in
+    test_proforma_readiness_single_authority.py. Without the stub, the
+    minimal seeded draft (no sales rows, no wfirma customer) is blocked at
+    step 2c before the wFirma plan/verify steps this suite exercises.
+    Shape mirrors the real _derive_draft_readiness return exactly (Lesson A)."""
+    from app.api import routes_proforma as rp
+
+    def _stub_readiness(draft, *, intent):
+        return {
+            "ready":             True,
+            "intent":            intent,
+            "draft_id":          int(draft.id),
+            "draft_status":      draft.status,
+            "blockers":          [],
+            "blocking_reasons":  [],
+            "warnings":          [],
+            "ambiguous_designs": {},
+            "resolved_designs":  {},
+            "vat_resolution":    None,
+            "duplicate_product_codes": [],
+            "product_authority_available": True,
+        }
+    monkeypatch.setattr(rp, "_derive_draft_readiness", _stub_readiness)
+
+
 @pytest.fixture()
 def storage(tmp_path):
     pdb.init_packing_db(tmp_path / "packing.db")

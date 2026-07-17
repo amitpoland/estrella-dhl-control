@@ -259,14 +259,23 @@ def test_convert_modal_submit_testid():
 
 def test_no_total_eur_times_fx_rate():
     code = _code_only(_src())
-    assert "totalEur * " not in code, (
-        "Browser-side PLN total (totalEur * fx.rate) must be removed"
-    )
     # Phase 2: both totalEur and detail.fx.rate may appear for display purposes,
     # but must never be MULTIPLIED together (no totalEur * detail.fx.rate).
+    # NOTE: the former blanket `"totalEur * " not in code` pin was retired —
+    # PR #875 (Slice 4, VAT & Insurance KUKE panel) legitimately computes a
+    # display-only insurance-premium ESTIMATE (`totalEur * rate`, where rate is
+    # customer_master.insurance_rate, labelled "(est.)" and superseded by the
+    # CommercialChargeAuthority-resolved premium once saved). The defect this
+    # pin guards is browser-side FX/PLN *document-total* reconstruction, which
+    # stays forbidden below.
     assert "totalEur * detail.fx.rate" not in code, (
         "No browser-side FX conversion: totalEur * detail.fx.rate is forbidden"
     )
+    assert "totalEur * fx" not in code, (
+        "No browser-side FX conversion: totalEur multiplied by any fx rate "
+        "is forbidden — document totals come from the backend authority"
+    )
+    assert "totalEur * fxRate" not in code and "totalEur * rate.fx" not in code
 
 
 def test_no_pln_total_calculation_in_modal():
@@ -547,10 +556,20 @@ def test_send_button_wired_to_send_email():
 
 
 def test_generate_button_disabled_with_reason():
+    # Lesson M: the Generate capability stays VISIBLE and disabled with an
+    # honest reason. PR #707 (Draft #38 closure) reworded the reason from
+    # "not yet available" to the current backend-gap disclosure ("not yet
+    # wired" + gap register pointer) — the pin follows the wording, the
+    # invariant (disabled + reason) is unchanged.
     src = _src()
-    assert "tb-generate" in src, "tb-generate toolbar button must be present"
-    assert "not yet available" in src.lower(), (
-        "Generate toolbar button must be disabled with a not-yet-available reason"
+    tb_pos = src.find('data-testid="tb-generate"')
+    assert tb_pos > 0, "tb-generate toolbar button must be present"
+    block = src[max(0, tb_pos - 800):tb_pos]
+    assert "disabled" in block, (
+        "Generate toolbar button must be disabled (backend gap M4 not wired)"
+    )
+    assert "not yet wired" in block.lower(), (
+        "Generate toolbar button must carry an honest not-yet-wired reason"
     )
 
 
