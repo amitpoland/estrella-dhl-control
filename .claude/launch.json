@@ -21,6 +21,13 @@
       "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--port", "8136", "--app-dir", "service"],
       "port": 8136,
       "autoPort": true
+    },
+    {
+      "name": "pz-review-940",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["service/scripts/review_launch.py", "--app-dir", "C:/PZ-wt/review-940-tree/service", "--storage-root", "C:/PZ-wt/review-940-storage", "--commit", "13d442e9", "--port", "8137"],
+      "port": 8137,
+      "autoPort": true
     }
   ]
 }
