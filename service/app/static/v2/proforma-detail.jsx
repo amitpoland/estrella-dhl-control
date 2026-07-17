@@ -4537,14 +4537,28 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // ── cmrData for CMR preview (EJCMRClassic / EJCMRModern) ─────────────────
   // No CMR backend route exists — this is client-side preview only.
 
-  // Country code → full name for CMR origin display (ISO 3166-1 alpha-2 subset)
+  // Country code → full name for CMR origin/destination display (ISO 3166-1
+  // alpha-2). Coverage = Estrella's real origin/destination footprint — the
+  // DISTINCT country set pulled from production data (Customer Master
+  // country + ship_to_country, wFirma customer countries, and goods origins
+  // IN/PL), plus the reviewer-flagged common destinations (JP/US/AE). Codes
+  // are data-derived, not guessed. An unlisted code still passes through
+  // honestly as the raw 2-letter code (see _cmrCountryName) — honest, not wrong.
   const _CMR_COUNTRY_NAMES = {
-    PL: 'Poland',       LT: 'Lithuania',  DE: 'Germany',      IN: 'India',
-    CZ: 'Czech Republic', SK: 'Slovakia', HU: 'Hungary',      RO: 'Romania',
-    UA: 'Ukraine',      FR: 'France',     IT: 'Italy',        ES: 'Spain',
-    NL: 'Netherlands',  BE: 'Belgium',    AT: 'Austria',      CH: 'Switzerland',
-    GB: 'United Kingdom', DK: 'Denmark',  SE: 'Sweden',       FI: 'Finland',
-    NO: 'Norway',       EE: 'Estonia',    LV: 'Latvia',       BY: 'Belarus',
+    // EU / EEA
+    PL: 'Poland',         LT: 'Lithuania',  DE: 'Germany',      CZ: 'Czech Republic',
+    SK: 'Slovakia',       HU: 'Hungary',    RO: 'Romania',      FR: 'France',
+    IT: 'Italy',          ES: 'Spain',      NL: 'Netherlands',  BE: 'Belgium',
+    AT: 'Austria',        DK: 'Denmark',    SE: 'Sweden',       FI: 'Finland',
+    EE: 'Estonia',        LV: 'Latvia',     IE: 'Ireland',      BG: 'Bulgaria',
+    SI: 'Slovenia',
+    // Rest of Europe
+    GB: 'United Kingdom', CH: 'Switzerland', NO: 'Norway',      UA: 'Ukraine',
+    BY: 'Belarus',
+    // Rest of world
+    IN: 'India',          US: 'United States', AE: 'United Arab Emirates',
+    CN: 'China',          SG: 'Singapore',  KR: 'South Korea',  JP: 'Japan',
+    AU: 'Australia',      MU: 'Mauritius',
   };
   const _cmrCountryName = (code) => (code && (_CMR_COUNTRY_NAMES[code] || code)) || '';
 

@@ -251,3 +251,47 @@ def test_cmr_modern_line_renderer_prints_mapped_origin():
     # the Modern per-line cell prints l.origin (now the mapped full name); the
     # Classic goods table has no per-line origin column (origin is header-only)
     assert '{l.origin || "—"}' in _CMR
+
+
+# ── #940 follow-up: full shipping-footprint coverage (data-derived) ───────────
+# The ISO-2 → country-name table must cover every country in Estrella's real
+# origin/destination footprint. The required set below is the DISTINCT country
+# set pulled from production data (Customer Master country + ship_to_country,
+# wFirma customer countries, exporter/goods origins) — not guessed. An unlisted
+# code still passes through honestly as the raw 2-letter code (_cmrCountryName),
+# so this test pins the intended coverage: the table must not silently regress
+# below the known footprint, and every listed code must resolve to a real name.
+
+def _cmr_country_map():
+    """Parse the single _CMR_COUNTRY_NAMES object literal from proforma-detail.jsx
+    into a {code: name} dict (single-quoted string values)."""
+    m = re.search(r"const _CMR_COUNTRY_NAMES\s*=\s*\{(.*?)\};", _JSX, re.DOTALL)
+    assert m, "_CMR_COUNTRY_NAMES object literal not found"
+    return {k: v for k, v in re.findall(r"\b([A-Z]{2})\s*:\s*'([^']+)'", m.group(1))}
+
+
+def test_cmr_country_table_covers_real_shipping_footprint():
+    m = _cmr_country_map()
+    # Distinct ISO-2 codes present in Estrella's real customer/shipping data
+    # (customer_master.country + ship_to_country + wFirma customers) plus goods
+    # origins (IN, PL). Every one must resolve to a full country name.
+    required = {
+        "PL", "IT", "FR", "DE", "US", "IN", "GB", "AT", "CZ", "FI", "BG", "ES",
+        "LT", "SE", "SK", "CN", "EE", "LV", "CH", "HU", "NL", "NO", "SG", "AE",
+        "AU", "BE", "DK", "IE", "KR", "MU", "SI",
+    }
+    missing = sorted(c for c in required if c not in m)
+    assert not missing, f"CMR country table missing real-footprint codes: {missing}"
+    # names must be real names, never the code echoed back to itself
+    echoed = sorted(c for c in required if m.get(c, "").strip().upper() == c)
+    assert not echoed, f"CMR country codes mapped to themselves (no name): {echoed}"
+
+
+def test_cmr_country_table_covers_reviewer_flagged_examples():
+    # #940 reviewers flagged JP / US / AE specifically as common destinations that
+    # rendered as raw 2-letter codes on the fiscal document. All three must now
+    # resolve to full country names.
+    m = _cmr_country_map()
+    assert m.get("US") == "United States"
+    assert m.get("AE") == "United Arab Emirates"
+    assert m.get("JP") == "Japan"
