@@ -11480,6 +11480,11 @@ class _ReconcileLinkReq(_BaseModel):
     # Operator-supplied wFirma invoice id — only needed for historical rows
     # where the id was never captured on the link row (pre-R-2 fix).
     wfirma_invoice_id: Optional[str] = ""
+    # Alternative to the id: the human-readable invoice number
+    # ("WDT 144/2026") an operator can read off the wFirma UI or the PDF.
+    # Resolved to an immutable id by a read-only invoices/find lookup
+    # BEFORE the verify matrix runs — never trusted on its own.
+    wfirma_invoice_number: Optional[str] = ""
 
 
 def _reconcile_issued_link_projection(
@@ -11706,16 +11711,27 @@ def reconcile_invoice_link(
       DIFFERENT invoice id is a data conflict → blocked.
 
     'pending'/'failed' → split-brain repair. A wFirma invoice id must be
-    available (captured on the link row, or operator-supplied for
-    historical rows; a conflict between the two refuses repair). Then (ALL
-    wFirma access read-only — invoices/get only, never add/edit/delete):
-    re-fetch the source proforma, rebuild the conversion plan via the same
-    _build_convert_candidate authority, re-fetch the remote invoice by id,
-    require its description to back-reference the source proforma, and
-    re-run the IDENTICAL verify-after-create matrix
-    (_verify_created_invoice). Any mismatch → status='refused', local state
-    untouched. On pass, repairs LOCAL state only: mark_issued on the link
-    row + persist_invoice_to_draft.
+    available, from one of three sources (a conflict between them refuses
+    repair):
+      • captured on the link row, or
+      • operator-supplied `wfirma_invoice_id` (historical rows), or
+      • operator-supplied `wfirma_invoice_number` — the human number off
+        the wFirma document ("WDT 144/2026"), resolved to the immutable id
+        by a read-only invoices/find lookup BEFORE any verification. A
+        number that matches no invoice, or more than one (numbers are
+        unique per series/year, not globally), → status='refused' with no
+        local change. Resolution only chooses WHICH invoice is verified;
+        it is never evidence on its own.
+
+    Then (ALL wFirma access read-only — invoices/find + invoices/get,
+    never add/edit/delete): re-fetch the source proforma, rebuild the
+    conversion plan via the same _build_convert_candidate authority,
+    re-fetch the remote invoice by id, require its description to
+    back-reference the source proforma, and re-run the IDENTICAL
+    verify-after-create matrix (_verify_created_invoice) — identical for
+    the id path and the number path alike. Any mismatch →
+    status='refused', local state untouched. On pass, repairs LOCAL state
+    only: mark_issued on the link row + persist_invoice_to_draft.
 
     Both branches append the same audit trail: an append-only
     `invoice_link_reconciled` event (audit.json + draft event log).
@@ -11739,6 +11755,24 @@ def reconcile_invoice_link(
             "blocking_reasons": list(reasons),
         })
 
+    def _refused(error: str, *, iid: str = "", id_source: str = "",
+                 **extra) -> JSONResponse:
+        """Single authority for the refusal shape: verification did not
+        prove the invoice, so LOCAL STATE IS UNTOUCHED. Rendered by the
+        UI's convert-recovery-refused panel.
+        """
+        payload = {
+            "ok":                False,
+            "status":            "refused",
+            "proforma_id":       pid,
+            "wfirma_invoice_id": iid,
+            "id_source":         id_source,
+            "reconcile_refused": True,
+            "error":             error[:500],
+        }
+        payload.update(extra)
+        return JSONResponse(payload)
+
     if not operator:
         return _blocked(
             "operator attribution required — authenticate with a session "
@@ -11748,6 +11782,25 @@ def reconcile_invoice_link(
         return _blocked(
             f"confirm token missing or wrong — send confirm="
             f"'{_RECONCILE_CONFIRM_TOKEN}' to reconcile this link"
+        )
+
+    # ── Request-shape guards ─────────────────────────────────────────────────
+    # Validated BEFORE the link lookup and the status branch: a malformed
+    # request is malformed whatever the link says, and the issued branch would
+    # otherwise silently ignore these fields rather than reject them.
+    supplied     = (body.wfirma_invoice_id or "").strip()
+    supplied_num = (body.wfirma_invoice_number or "").strip()
+    if supplied and not supplied.isdigit():
+        # wFirma invoice ids are integers; the supplied value flows into the
+        # invoices/get URL path — reject anything that isn't a plain number
+        # (2026-07-17 security finding: path-separator injection).
+        return _blocked(
+            f"wfirma_invoice_id {supplied!r} is not a numeric wFirma id"
+        )
+    if supplied and supplied_num:
+        return _blocked(
+            "send either wfirma_invoice_id or wfirma_invoice_number — not "
+            "both; they are two ways to name the same invoice"
         )
 
     link = plink.get_link_by_proforma(link_db, pid)
@@ -11764,26 +11817,74 @@ def reconcile_invoice_link(
         )
 
     captured = (link.invoice_id or "").strip()
-    supplied = (body.wfirma_invoice_id or "").strip()
-    if supplied and not supplied.isdigit():
-        # wFirma invoice ids are integers; the supplied value flows into the
-        # invoices/get URL path — reject anything that isn't a plain number
-        # (2026-07-17 security finding: path-separator injection).
-        return _blocked(
-            f"wfirma_invoice_id {supplied!r} is not a numeric wFirma id"
-        )
+
+    # ── Operator-supplied NUMBER → immutable id (read-only) ──────────────────
+    # Runs BEFORE the verify matrix and only narrows WHICH invoice gets
+    # verified: the resolved id then feeds the IDENTICAL _verify_created_invoice
+    # checks as the id path. A free-text number is never itself evidence —
+    # resolution that is not unique refuses and changes nothing locally.
+    resolved_from_number = ""
+    if supplied_num and not supplied:
+        try:
+            _matches = wfirma_client.find_invoices_by_fullnumber(supplied_num)
+        except Exception as exc:
+            return _refused(
+                f"invoice-number lookup failed for {supplied_num!r}: "
+                f"{type(exc).__name__}: {exc}",
+                wfirma_invoice_number=supplied_num,
+            )
+        if not _matches:
+            return _refused(
+                f"no wFirma invoice carries number {supplied_num!r} — "
+                "nothing to reconcile against; check the number on the "
+                "wFirma document, or supply the invoice id instead",
+                wfirma_invoice_number=supplied_num,
+            )
+        if len(_matches) > 1:
+            _ids = ", ".join(m["id"] for m in _matches)
+            return _refused(
+                f"invoice number {supplied_num!r} is ambiguous — it matches "
+                f"{len(_matches)} wFirma invoices (ids {_ids}). Invoice "
+                "numbers are unique per series/year, not globally; supply "
+                "the immutable wFirma invoice id to disambiguate",
+                wfirma_invoice_number=supplied_num,
+                candidate_ids=[m["id"] for m in _matches],
+            )
+        _resolved = _matches[0]["id"]
+        if not _resolved.isdigit():
+            # The resolved id flows into the invoices/get URL path exactly as
+            # an operator-supplied one does, so it earns the SAME numeric
+            # guard (2026-07-17 path-separator finding). wFirma always returns
+            # integer ids; anything else means a malformed response, never a
+            # reason to build a URL out of it.
+            return _refused(
+                f"number {supplied_num!r} resolved to a non-numeric wFirma id "
+                f"{_resolved!r} — refusing repair",
+                wfirma_invoice_number=supplied_num,
+            )
+        supplied             = _resolved
+        resolved_from_number = _matches[0]["fullnumber"] or supplied_num
+
     if captured and supplied and captured != supplied:
+        _how = (f"number {resolved_from_number!r} resolved to {supplied!r}"
+                if resolved_from_number else f"supplied {supplied!r}")
         return _blocked(
             f"invoice id conflict — link row captured {captured!r} but "
-            f"request supplied {supplied!r}; refusing repair"
+            f"request {_how}; refusing repair"
         )
     iid = captured or supplied
     if not iid:
         return _blocked(
             "no wfirma_invoice_id available — the link row captured none; "
-            "supply the id from the original error response / server log"
+            "supply the id from the original error response / server log, "
+            "or the invoice number (e.g. 'WDT 144/2026') from the wFirma "
+            "document"
         )
-    id_source = "link_row" if captured else "operator_supplied"
+    id_source = (
+        "link_row" if captured
+        else ("operator_supplied_number" if resolved_from_number
+              else "operator_supplied")
+    )
 
     draft = _draft_for_proforma_id(pid)
     if draft is None or draft.id is None:
@@ -11845,15 +11946,16 @@ def reconcile_invoice_link(
 
         _verify_created_invoice(plan, verify_xml)
     except Exception as exc:
-        return JSONResponse({
-            "ok":                False,
-            "status":            "refused",
-            "proforma_id":       pid,
-            "wfirma_invoice_id": iid,
-            "id_source":         id_source,
-            "reconcile_refused": True,
-            "error":             f"{type(exc).__name__}: {exc}"[:500],
-        })
+        # Includes the number path: an invoice resolved from a number still
+        # has to pass the identical matrix, so a resolved-but-wrong invoice
+        # refuses here and local state stays untouched.
+        return _refused(
+            f"{type(exc).__name__}: {exc}",
+            iid       = iid,
+            id_source = id_source,
+            **({"wfirma_invoice_number": resolved_from_number}
+               if resolved_from_number else {}),
+        )
 
     # ── Local repair (the ONLY writes; wFirma untouched) ─────────────────────
     previous_status = link.status

@@ -3606,14 +3606,24 @@ function ConversionRecoveryPanel({ entry, onReconciled }) {
   if (!entry) return null;
 
   const capturedId  = entry.captured_invoice_id || '';
-  const effectiveId = capturedId || manualId.trim();
+  const manualValue = manualId.trim();
+  // One field, either form. wFirma ids are plain integers; a document
+  // number always carries a series/year ("WDT 144/2026"), so shape alone
+  // decides which field the API gets. A misread is safe, not silent: both
+  // forms converge on the same verify matrix, so a wrong guess refuses
+  // rather than links the wrong invoice.
+  const manualIsId  = /^\d+$/.test(manualValue);
+  const effectiveId = capturedId || manualValue;
   const canRepair   = confirmChecked && !!effectiveId && !busy;
 
   const doReconcile = () => {
     if (!canRepair) return;
     setBusy(true); setError(null); setRefused(null);
     const body = { confirm: 'YES_RECONCILE_INVOICE_LINK' };
-    if (!capturedId) body.wfirma_invoice_id = manualId.trim();
+    if (!capturedId) {
+      if (manualIsId) body.wfirma_invoice_id     = manualValue;
+      else            body.wfirma_invoice_number = manualValue;
+    }
     window.PzApi.reconcileInvoiceLink(entry.proforma_id, body)
       .then(r => {
         setBusy(false);
@@ -3657,14 +3667,24 @@ function ConversionRecoveryPanel({ entry, onReconciled }) {
         ? row('wFirma invoice ID', capturedId, 'convert-recovery-captured-id')
         : (
           <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 10, padding: '4px 0', fontSize: 12, alignItems: 'center' }}>
-            <span style={{ color: 'var(--badge-red-text)', opacity: 0.85 }}>wFirma invoice ID</span>
-            <input
-              type="text" value={manualId}
-              onChange={e => setManualId(e.target.value)}
-              placeholder="not captured — enter the id from the original error / server log"
-              data-testid="convert-recovery-invoice-id-input"
-              style={{ fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', maxWidth: 360, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--badge-red-border)', borderRadius: 4 }}
-            />
+            <span style={{ color: 'var(--badge-red-text)', opacity: 0.85 }}>wFirma invoice ID or number</span>
+            <div>
+              <input
+                type="text" value={manualId}
+                onChange={e => setManualId(e.target.value)}
+                placeholder="e.g. 28784270 (id) or WDT 144/2026 (number)"
+                data-testid="convert-recovery-invoice-id-input"
+                style={{ fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', width: '100%', maxWidth: 360, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--badge-red-border)', borderRadius: 4 }}
+              />
+              <div data-testid="convert-recovery-input-hint"
+                   style={{ fontSize: 11, marginTop: 3, color: 'var(--badge-red-text)', opacity: 0.8, fontWeight: 400 }}>
+                {manualValue
+                  ? (manualIsId
+                      ? 'Read as a wFirma invoice ID (used directly).'
+                      : 'Read as an invoice number — looked up in wFirma read-only. If it matches no invoice, or more than one, the repair is refused.')
+                  : 'Not captured on the link row. Enter the id from the original error / server log, or the invoice number shown on the wFirma document.'}
+              </div>
+            </div>
           </div>
         )}
       {entry.notes ? row('Failure note', (entry.notes || '').slice(0, 300)) : null}
@@ -3686,7 +3706,7 @@ function ConversionRecoveryPanel({ entry, onReconciled }) {
           <input type="checkbox" checked={confirmChecked}
                  onChange={e => setConfirmChecked(e.target.checked)}
                  data-testid="convert-recovery-confirm-checkbox" />
-          I confirm the invoice {effectiveId ? `(id ${effectiveId}) ` : ''}exists in wFirma and should be linked to this proforma
+          I confirm the invoice {effectiveId ? `(${(capturedId || manualIsId) ? 'id' : 'number'} ${effectiveId}) ` : ''}exists in wFirma and should be linked to this proforma
         </label>
         <button
           type="button"
@@ -3695,7 +3715,7 @@ function ConversionRecoveryPanel({ entry, onReconciled }) {
           data-testid="convert-recovery-reconcile-btn"
           title={canRepair
             ? 'Writes the LOCAL link + draft only — verifies against wFirma read-only, never writes to wFirma'
-            : (!effectiveId ? 'Enter the wFirma invoice id first' : 'Tick the confirmation first')}
+            : (!effectiveId ? 'Enter the wFirma invoice id or number first' : 'Tick the confirmation first')}
           style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, borderRadius: 4, border: '1px solid var(--badge-red-border)', background: canRepair ? 'var(--badge-red-text)' : 'transparent', color: canRepair ? 'var(--badge-red-bg)' : 'var(--badge-red-text)', cursor: canRepair ? 'pointer' : 'not-allowed', opacity: busy ? 0.6 : 1 }}
         >
           {busy ? 'Verifying against wFirma…' : 'Repair local link (verify remote, write local DB only)'}

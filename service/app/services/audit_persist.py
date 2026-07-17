@@ -409,7 +409,10 @@ def record_invoice_link_reconciled(
     invoice_number:     str,
     operator:           str,
     previous_status:    str = "",
-    id_source:          str = "link_row",   # "link_row" | "operator_supplied"
+    # "link_row" | "operator_supplied" | "operator_supplied_number"
+    # (the last = operator gave the human invoice number, resolved to the
+    # immutable id by a read-only invoices/find lookup before verification)
+    id_source:          str = "link_row",
 ) -> Dict[str, Any]:
     """
     Append an ``invoice_link_reconciled`` timeline event recording that a
