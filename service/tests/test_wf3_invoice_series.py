@@ -189,7 +189,12 @@ class TestConvertRouteSeriesPrecedence:
         )
         monkeypatch.setattr(rp, "_gather_conversion_inputs",
                             lambda batch_id, cn: (PROFORMA_ID, None))
-        monkeypatch.setattr(rp, "_link_already_exists", lambda pid: False)
+        # The routes call _link_status() directly; _link_already_exists() is a thin
+        # wrapper over it. Patching the wrapper is a no-op on the route — this test
+        # only kept passing because the tmp_path link DB does not exist, which makes
+        # the real _link_status return None anyway. Patch the function the route
+        # actually calls, so the bypass is real rather than incidental.
+        monkeypatch.setattr(rp, "_link_status", lambda pid: None)
         monkeypatch.setattr(rp, "_check_invoice_approval_gates",
                             lambda **kw: None)  # gate passes
 

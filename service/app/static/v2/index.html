@@ -775,10 +775,13 @@ function App() {
                   ? <ProformaDetailPage
                       draft={proformaDraft}
                       onBack={handleProformaBack}
-                      onConvert={(draft) => {
-                        alert(`Convert to Invoice: ${draft.number} → Invoice created (stub)`);
-                        handleProformaBack();
-                      }}
+                      // Conversion succeeded in wFirma. Stay on the page: the detail
+                      // page has already re-fetched the draft, and every projection
+                      // (identity card, workflow rail, status header, convert gate)
+                      // re-derives from that canonical state. Navigating away here —
+                      // as the former stub did — is what left the operator without
+                      // any converged view of the invoice they had just created.
+                      onConvert={() => {}}
                     />
                   : null
           )}

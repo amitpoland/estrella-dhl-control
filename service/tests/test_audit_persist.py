@@ -255,3 +255,42 @@ def test_canonical_fields_alone_satisfy_evidence_helper(tmp_path):
     # Timeline-only fallback must NOT be the path that fired.
     assert "timeline:wfirma_pz_created" not in ev["signals"]
     assert ev["wfirma_pz_doc_id"] == "183484963"
+
+
+# ── Consolidation additions (2026-07-17): converted + reconciled events ──────
+
+def test_record_proforma_converted_to_invoice_idempotent(tmp_path):
+    from app.services.audit_persist import record_proforma_converted_to_invoice
+    p = _write(tmp_path, {"batch_id": "B", "timeline": []})
+    kw = dict(batch_id="B", client_name="A",
+              wfirma_proforma_id="467236963", wfirma_invoice_id="500001",
+              invoice_number="FA 1/5/2026", operator="amit",
+              source="invoice_link_reconcile")
+    first  = record_proforma_converted_to_invoice(p, **kw)
+    second = record_proforma_converted_to_invoice(p, **kw)
+    assert first["appended"] is True
+    assert second["appended"] is False
+    assert "already recorded" in second["reason"]
+    a = json.loads(p.read_text())
+    assert sum(1 for e in a["timeline"]
+               if e.get("event") == "proforma_converted_to_invoice") == 1
+
+
+def test_record_invoice_link_reconciled_appends_event(tmp_path):
+    from app.services.audit_persist import record_invoice_link_reconciled
+    p = _write(tmp_path, {"batch_id": "B", "timeline": []})
+    r = record_invoice_link_reconciled(
+        p, batch_id="B", client_name="A",
+        wfirma_proforma_id="467236963", wfirma_invoice_id="500001",
+        invoice_number="FA 1/5/2026", operator="amit",
+        previous_status="pending", id_source="link_row",
+    )
+    assert r["appended"] is True
+    a = json.loads(p.read_text())
+    events = [e for e in a["timeline"]
+              if e.get("event") == "invoice_link_reconciled"]
+    assert len(events) == 1
+    d = events[0]["detail"]
+    assert d["wfirma_invoice_id"] == "500001"
+    assert d["previous_status"]   == "pending"
+    assert d["operator"]          == "amit"

@@ -33,6 +33,11 @@ def persist_invoice_to_draft(
 
     conn = sqlite3.connect(str(db_path))
     try:
+        # Match proforma_invoice_link_db._connect(): this DB has concurrent
+        # writers (FastAPI handlers + schedulers); without WAL + busy_timeout
+        # a held lock makes this critical write raise 'database is locked'.
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("PRAGMA journal_mode=WAL")
         # Add columns idempotently for older schema versions
         for col_def in [
             "wfirma_invoice_id TEXT",

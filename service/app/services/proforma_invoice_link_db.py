@@ -308,6 +308,49 @@ def mark_failed(db_path: Path, proforma_id: str, *, notes: str) -> None:
             raise KeyError(f"no link row for proforma_id={proforma_id!r}")
 
 
+def record_invoice_identity(db_path: Path,
+                            proforma_id: str,
+                            *,
+                            invoice_id: str,
+                            invoice_number: str = "") -> None:
+    """Capture the wFirma invoice identity on the link row WITHOUT changing
+    its status.
+
+    R-2 split-brain repair support: called immediately after invoices/add
+    returns an id, BEFORE verify-after-create and mark_issued run. If a
+    later local step fails (verify mismatch, mark_issued crash), the row
+    stays 'pending'/'failed' but now durably carries the id of the REAL
+    remote invoice, so the reconcile workflow can re-fetch and repair it.
+
+    Idempotent for the same invoice_id. Refuses to overwrite a DIFFERENT
+    already-captured invoice_id (identity conflict — operator must inspect).
+    Raises KeyError if no link row exists for this proforma_id.
+    """
+    iid = (invoice_id or "").strip()
+    if not iid:
+        raise ValueError("invoice_id is required to record invoice identity")
+    existing = get_link_by_proforma(db_path, proforma_id)
+    if existing is None:
+        raise KeyError(f"no link row for proforma_id={proforma_id!r}")
+    if (existing.invoice_id or "").strip() and existing.invoice_id != iid:
+        raise ValueError(
+            f"proforma_id={proforma_id!r} already carries "
+            f"invoice_id={existing.invoice_id!r}; refusing to overwrite "
+            f"with {iid!r}"
+        )
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE proforma_invoice_links
+               SET invoice_id     = ?,
+                   invoice_number = COALESCE(NULLIF(?, ''), invoice_number)
+             WHERE proforma_id    = ?
+            """,
+            (iid, (invoice_number or "").strip(), str(proforma_id)),
+        )
+        conn.commit()
+
+
 def get_link_by_proforma(db_path: Path, proforma_id: str) -> Optional[ProformaInvoiceLink]:
     if not Path(db_path).exists():
         return None
@@ -610,6 +653,17 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         # column never becomes the unique key (avoids re-keying service charges
         # / authority joins). Default '' = unprojected (repaired by backfill).
         ("client_contractor_id", "TEXT NOT NULL DEFAULT ''"),
+        # ── Post-conversion identity (conversion_persistence.py) ─────────────
+        # Previously these existed ONLY after the first persist_invoice_to_draft
+        # call ran its own ALTER loop (which stays in place for old DB files).
+        # Declaring them here makes a fresh schema complete at startup so
+        # readers (_opt) and the reconcile route never see a half-migrated DB.
+        ("wfirma_invoice_id",     "TEXT"),
+        ("wfirma_invoice_number", "TEXT"),
+        ("payment_due",           "TEXT"),
+        ("payment_method",        "TEXT"),
+        ("sale_date",             "TEXT"),
+        ("converted_at",          "TEXT"),
     )
     for _col, _ddl in _ADDITIVE_DRAFT_COLUMNS:
         try:
