@@ -251,15 +251,45 @@ def _convert(client):
 
 
 def _reconcile(client, *, pid=PID, confirm=RECONCILE_TOKEN,
-               operator="amit", invoice_id: str = ""):
+               operator="amit", invoice_id: str = "",
+               invoice_number: str = ""):
     headers = dict(_auth())
     if operator:
         headers["X-Operator"] = operator
     body = {"confirm": confirm}
     if invoice_id:
         body["wfirma_invoice_id"] = invoice_id
+    if invoice_number:
+        body["wfirma_invoice_number"] = invoice_number
     return client.post(_RECONCILE_URL.format(pid=pid),
                        headers=headers, json=body).json()
+
+
+def _invoices_find_xml(*rows) -> str:
+    """Real ``invoices/find`` collection response shape (Lesson A).
+
+    rows: (invoice_id, fullnumber) tuples.
+    """
+    nodes = ""
+    for inv_id, fullnumber in rows:
+        nodes += f"""    <invoice>
+      <id>{inv_id}</id>
+      <fullnumber>{fullnumber}</fullnumber>
+      <type>normal</type>
+    </invoice>
+"""
+    return f"""<?xml version="1.0"?>
+<api>
+  <invoices>
+{nodes}  </invoices>
+  <status><code>OK</code></status>
+</api>"""
+
+
+def _find_returns(*rows):
+    """Patch target for the read-only invoices/find transport."""
+    return patch.object(wc, "_http_request",
+                        return_value=(200, _invoices_find_xml(*rows)))
 
 
 # ── 1. Forward capture: verify-after-create failure keeps the id ─────────────
@@ -901,3 +931,286 @@ def test_failed_convert_reports_when_link_state_could_not_be_recorded(client, st
     # duplicate guard. Deleting it to 'unblock' the operator is how you
     # double-issue an invoice.
     assert pildb.get_link_by_proforma(_links_db(storage), PID) is not None
+
+
+# ── Reconcile by invoice NUMBER (operator recovery input) ────────────────────
+#
+# Operator requirement (2026-07-17): the recovery action accepts "wFirma
+# invoice number or immutable wFirma invoice ID". A number is NEVER evidence
+# on its own — it only selects WHICH invoice the IDENTICAL verify matrix runs
+# against. Anything short of a unique, verified match changes nothing locally.
+
+def test_reconcile_by_number_resolves_uniquely_and_repairs(client, storage):
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id="")   # no captured id
+    _seed_audit(storage)
+
+    fetch_calls = [_proforma_xml(), _created_invoice_xml()]
+    with _find_returns((IID, INUM)) as http, \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls):
+        body = _reconcile(client, invoice_number=INUM)
+
+    assert body["ok"] is True, body
+    assert body["status"] == "reconciled"
+    assert body["wfirma_invoice_id"] == IID
+    assert body["id_source"] == "operator_supplied_number"
+    assert body["wfirma_write"] is False
+
+    # Resolution is READ-ONLY: invoices/find is the only module/action it may
+    # touch — never add/edit/delete.
+    assert http.call_args_list, "expected an invoices/find lookup"
+    for call in http.call_args_list:
+        assert call.args[0] == "GET"
+        assert call.args[1] == "invoices"
+        assert call.args[2] == "find"
+
+    link = pildb.get_link_by_proforma(_links_db(storage), PID)
+    assert link.status == "issued"
+    assert link.invoice_id == IID
+
+    draft = pildb.get_draft(_links_db(storage), BATCH, CLIENT)
+    assert draft.wfirma_invoice_id == IID
+    assert draft.draft_state == "converted"
+
+    # Audit records HOW the id was obtained — a number-resolved repair stays
+    # distinguishable from a link-row one forever after.
+    audit = json.loads((storage / "outputs" / BATCH / "audit.json")
+                       .read_text(encoding="utf-8"))
+    events = [e for e in audit.get("timeline", [])
+              if e.get("event") == "invoice_link_reconciled"]
+    assert len(events) == 1
+    assert events[0]["detail"]["id_source"] == "operator_supplied_number"
+    assert events[0]["detail"]["wfirma_write"] is False
+
+
+def test_reconcile_by_number_matching_nothing_is_refused(client, storage):
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id="")
+    _seed_audit(storage)
+
+    def _no_fetch(*a, **k):
+        raise AssertionError("must not fetch when the number resolves to nothing")
+
+    with _find_returns(), patch.object(wc, "fetch_invoice_xml",
+                                       side_effect=_no_fetch):
+        body = _reconcile(client, invoice_number="WDT 999/2099")
+
+    assert body["ok"] is False
+    assert body["status"] == "refused"
+    assert body["reconcile_refused"] is True
+    assert "no wFirma invoice carries number" in body["error"]
+
+    # NO local change.
+    assert pildb.get_link_by_proforma(_links_db(storage), PID).status == "pending"
+    draft = pildb.get_draft(_links_db(storage), BATCH, CLIENT)
+    assert not (draft.wfirma_invoice_id or "")
+    audit = json.loads((storage / "outputs" / BATCH / "audit.json")
+                       .read_text(encoding="utf-8"))
+    assert not [e for e in audit.get("timeline", [])
+                if e.get("event") == "invoice_link_reconciled"]
+
+
+def test_reconcile_by_ambiguous_number_is_refused(client, storage):
+    """A number can repeat across series/years. Two matches -> refuse and
+    name both candidates; never silently pick the first."""
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id="")
+    _seed_audit(storage)
+
+    def _no_fetch(*a, **k):
+        raise AssertionError("must not fetch while the number is ambiguous")
+
+    with _find_returns((IID, INUM), ("500002", INUM)), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=_no_fetch):
+        body = _reconcile(client, invoice_number=INUM)
+
+    assert body["ok"] is False
+    assert body["status"] == "refused"
+    assert body["reconcile_refused"] is True
+    assert "ambiguous" in body["error"]
+    assert body["candidate_ids"] == [IID, "500002"]
+
+    # NO local change.
+    assert pildb.get_link_by_proforma(_links_db(storage), PID).status == "pending"
+    assert not (pildb.get_draft(_links_db(storage), BATCH, CLIENT)
+                .wfirma_invoice_id or "")
+
+
+def test_reconcile_by_number_still_runs_the_verify_matrix(client, storage):
+    """A number resolving uniquely is NOT sufficient — the resolved invoice
+    faces the identical matrix, and a contractor mismatch refuses it."""
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id="")
+    _seed_audit(storage)
+
+    fetch_calls = [_proforma_xml(),
+                   _created_invoice_xml(contractor_id="9999")]  # wrong party
+    with _find_returns((IID, INUM)), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls):
+        body = _reconcile(client, invoice_number=INUM)
+
+    assert body["ok"] is False
+    assert body["status"] == "refused"
+    assert body["reconcile_refused"] is True
+    assert "contractor mismatch" in body["error"]
+
+    # NO local change — never marked Invoiced off an unverified number.
+    assert pildb.get_link_by_proforma(_links_db(storage), PID).status == "pending"
+    assert not (pildb.get_draft(_links_db(storage), BATCH, CLIENT)
+                .wfirma_invoice_id or "")
+
+
+def test_reconcile_by_number_ignores_silently_unfiltered_collection(client, storage):
+    """wFirma silently ignores filter shapes it does not support and returns
+    an unfiltered collection (the trap that made fetch_invoice_xml abandon
+    find-by-id). Resolution re-checks fullnumber Python-side, so an ignored
+    filter degrades to 'not found' — never to a wrong match."""
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id="")
+    _seed_audit(storage)
+
+    def _no_fetch(*a, **k):
+        raise AssertionError("unrelated rows must not resolve to an id")
+
+    # Filter ignored: wFirma echoes back unrelated invoices, none of which
+    # carry the requested number.
+    with _find_returns(("111", "FV 1/2026"), ("222", "FV 2/2026")), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=_no_fetch):
+        body = _reconcile(client, invoice_number="WDT 144/2026")
+
+    assert body["ok"] is False
+    assert body["status"] == "refused"
+    assert "no wFirma invoice carries number" in body["error"]
+    assert pildb.get_link_by_proforma(_links_db(storage), PID).status == "pending"
+
+
+def test_reconcile_rejects_id_and_number_together(client, storage):
+    """Two ways to name one invoice — sending both is ambiguous intent."""
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id="")
+
+    def _no_wfirma(*a, **k):
+        raise AssertionError("must not call wFirma on a malformed request")
+
+    with patch.object(wc, "_http_request", side_effect=_no_wfirma), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=_no_wfirma):
+        body = _reconcile(client, invoice_id=IID, invoice_number=INUM)
+
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("both" in r for r in body["blocking_reasons"])
+    assert pildb.get_link_by_proforma(_links_db(storage), PID).status == "pending"
+
+
+def test_reconcile_number_resolving_against_captured_id_conflicts(client, storage):
+    """Link row already carries an id and the operator's number resolves to a
+    DIFFERENT invoice -> conflict, refuse before any verification."""
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id=IID)   # captured
+
+    def _no_fetch(*a, **k):
+        raise AssertionError("conflict must fire before the verify fetch")
+
+    with _find_returns(("500002", "WDT 7/2026")), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=_no_fetch):
+        body = _reconcile(client, invoice_number="WDT 7/2026")
+
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("invoice id conflict" in r for r in body["blocking_reasons"])
+    assert pildb.get_link_by_proforma(_links_db(storage), PID).status == "pending"
+
+
+def test_find_invoices_by_fullnumber_is_read_only_and_exact():
+    """Unit pin on the resolver: exact Python-side match, read-only."""
+    resp = (200, _invoices_find_xml(("1", "WDT 144/2026"),
+                                    ("2", "WDT 1440/2026"),    # near-miss
+                                    ("3", "wdt  144/2026")))   # case/space variant
+    with patch.object(wc, "_http_request", return_value=resp) as http:
+        out = wc.find_invoices_by_fullnumber("WDT 144/2026")
+
+    # Near-miss excluded; case/whitespace variant included.
+    assert [m["id"] for m in out] == ["1", "3"]
+    assert http.call_args.args[0] == "GET"
+    assert http.call_args.args[1] == "invoices"
+    assert http.call_args.args[2] == "find"
+
+
+def test_find_invoices_by_fullnumber_requires_a_number():
+    with pytest.raises(ValueError):
+        wc.find_invoices_by_fullnumber("   ")
+
+
+def test_reconcile_by_number_refuses_when_backreference_missing(client, storage):
+    """The number path gets the back-reference guard too: an invoice that does
+    not name the source proforma in its description is not the invoice this
+    flow created, even if the number resolved cleanly."""
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id="")
+    _seed_audit(storage)
+
+    fetch_calls = [_proforma_xml(),
+                   _created_invoice_xml(description="Unrelated manual invoice")]
+    with _find_returns((IID, INUM)), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls):
+        body = _reconcile(client, invoice_number=INUM)
+
+    assert body["ok"] is False
+    assert body["status"] == "refused"
+    assert "does not back-reference" in body["error"]
+    assert pildb.get_link_by_proforma(_links_db(storage), PID).status == "pending"
+
+
+def test_reconcile_pure_digit_number_still_routes_through_resolution(client, storage):
+    """A wFirma series template of just [numer] can yield an all-digit
+    fullnumber. Sent in the NUMBER field it must still be resolved via
+    invoices/find — never treated as an immutable id."""
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id="")
+    _seed_audit(storage)
+
+    fetch_calls = [_proforma_xml(), _created_invoice_xml()]
+    with _find_returns((IID, "144")) as http, \
+         patch.object(wc, "fetch_invoice_xml", side_effect=fetch_calls):
+        body = _reconcile(client, invoice_number="144")
+
+    assert body["ok"] is True, body
+    assert body["id_source"] == "operator_supplied_number"
+    # Resolved to the real id — NOT used as the id "144" verbatim.
+    assert body["wfirma_invoice_id"] == IID
+    assert http.call_args.args[2] == "find"
+
+
+def test_reconcile_refuses_number_resolving_to_non_numeric_id(client, storage):
+    """A malformed invoices/find response must never build an invoices/get URL
+    out of a non-numeric id — the resolved id earns the same numeric guard as
+    an operator-supplied one (path-separator injection defence)."""
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id="")
+
+    def _no_fetch(*a, **k):
+        raise AssertionError("must not fetch with a non-numeric resolved id")
+
+    with _find_returns(("999/../../contractors/find", INUM)), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=_no_fetch):
+        body = _reconcile(client, invoice_number=INUM)
+
+    assert body["ok"] is False
+    assert body["status"] == "refused"
+    assert "non-numeric" in body["error"]
+    assert pildb.get_link_by_proforma(_links_db(storage), PID).status == "pending"
+
+
+def test_reconcile_rejects_id_and_number_together_on_issued_link(client, storage):
+    """Request-shape guards run before the status branch, so the issued branch
+    rejects a malformed request instead of silently ignoring the number."""
+    _seed_issued_draft(storage)
+    _seed_link(storage, status="pending", invoice_id=IID)
+    pildb.mark_issued(_links_db(storage), PID, invoice_id=IID,
+                      invoice_number=INUM, invoice_total=Decimal("306.00"),
+                      notes="issued")
+
+    body = _reconcile(client, invoice_id=IID, invoice_number=INUM)
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("both" in r for r in body["blocking_reasons"])
