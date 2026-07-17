@@ -3,9 +3,13 @@
 review_seed.py — deterministic GATE-6 review-data seeder (non-production).
 
 Builds ONE coherent two-client transport scenario in an ISOLATED review storage
-root by calling the application's CANONICAL service/persistence APIs (imported
-from the served tree via --app-dir) — it never re-implements shipment, invoice-link,
-CMR, or packing authority. It shares the exact safety gate with review_launch.py.
+root by calling the application's CANONICAL service/persistence writers (imported
+from the served tree via --app-dir): it constructs canonical input objects
+(ShipmentResult via compute_idempotency_key) and calls the real writers
+(auto_create_draft_from_sales_packing, create_pending_link/mark_issued,
+insert_shipment/update_state, upsert_product_local) — it never re-implements
+shipment / invoice-link / CMR / packing business logic. It shares the exact safety
+gate with review_launch.py.
 
 Scenario (deterministic constants, batch REVIEW-GATE6-940):
   * 2 per-client proforma drafts (Alpha / Beta) with distinct client_contractor_id.
@@ -79,7 +83,13 @@ def _target_dbs_nonempty(sr: Path) -> list[str]:
 def _reset(sr: Path) -> None:
     guard._assert_isolated_storage(sr)   # double-check before any delete
     if sr.exists():
-        shutil.rmtree(sr, ignore_errors=True)
+        # NOT ignore_errors: a silent partial delete (e.g. a running server holding
+        # a SQLite/WAL lock) would leave a dirty DB that then re-seeds into duplicate
+        # or mixed-schema state. Fail loudly instead.
+        shutil.rmtree(sr, ignore_errors=False)
+    if sr.exists():
+        guard._refuse(f"reset did not fully remove {sr} (is a review server still "
+                      "running against it? stop it first).")
     print(f"[review_seed] reset: removed isolated review storage {sr}")
 
 
@@ -269,7 +279,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Deterministic GATE-6 review seeder.")
     p.add_argument("--storage-root", required=True)
     p.add_argument("--app-dir", default="")
-    p.add_argument("--commit", default="unknown")
+    p.add_argument("--commit", default="",
+                   help="Served git SHA (recorded in the manifest); required to seed.")
     p.add_argument("--reset-review-data", action="store_true")
     args = p.parse_args(argv)
 
@@ -282,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.app_dir:
         guard._refuse("--app-dir is required to seed (points at the served tree).")
+    if not args.commit.strip():
+        guard._refuse("--commit is required to seed (recorded in the manifest for traceability).")
     app_dir = Path(args.app_dir).resolve()
     if not (app_dir / "app" / "main.py").is_file():
         guard._refuse(f"--app-dir {app_dir} does not contain app/main.py")

@@ -62,8 +62,13 @@ _LIVE_CREDENTIAL_KEYS = (
     "ZOHO_CLIENT_SECRET",
     # SMTP (outbound email)
     "SMTP_USER", "SMTP_PASSWORD",
-    # Anthropic (LLM calls — cost + data egress)
+    # Anthropic + AI Cowork (LLM calls — cost + data egress)
     "ANTHROPIC_API_KEY", "ANTHROPIC_ADMIN_API_KEY", "ANTHROPIC_API_KEY_ID",
+    "AI_COWORK_API_KEY",
+    # FedEx (tracking OAuth — read egress, not carrier-shadow-gated)
+    "FEDEX_CLIENT_ID", "FEDEX_CLIENT_SECRET",
+    # Inbound webhook HMAC secrets
+    "DHL_WEBHOOK_SECRET", "WFIRMA_WEBHOOK_KEY",
 )
 # Write flags that must be OFF for a review server.
 _WRITE_FLAG_KEYS = (
@@ -86,11 +91,13 @@ def _is_truthy(val: str | None) -> bool:
 
 
 # Canonical production layout (service/docs + prod-runtime-ops-facts): NSSM serves
-# from C:\PZ. These are refused UNCONDITIONALLY — the guard must not depend on the
-# operator's shell having STORAGE_ROOT set (NSSM sets it on the service process, not
-# on a hand-opened shell).
+# from C:\PZ. Also the other permanent non-production trees (writing review data into
+# them would pollute integration/verify). Refused UNCONDITIONALLY — the guard must not
+# depend on the operator's shell having STORAGE_ROOT set (NSSM sets it on the service
+# process, not on a hand-opened shell).
 _PRODUCTION_ROOTS = (
     r"C:\PZ", r"C:\PZ\storage", r"C:\PZ\app", r"C:\PZ\app\storage",
+    r"C:\PZ-main", r"C:\PZ-active", r"C:\PZ-verify", r"C:\PZ-archive",
 )
 
 
@@ -158,8 +165,10 @@ def _neutralise_and_configure(storage_root: Path, api_key: str) -> None:
     os.environ["CARRIER_API_STATUS"] = "shadow"
     os.environ["CARRIER_PLT_STATUS"] = "shadow"
     os.environ["CARRIER_LIVE_ALLOWLIST"] = ""
-    # 4. No wFirma call on startup.
+    # 4. No wFirma call on startup; no AI execution paths.
     os.environ["SERIES_BOOTSTRAP_ENABLED"] = "false"
+    os.environ["AI_COWORK_ENABLED"] = "false"
+    os.environ["AI_PARSER_ENABLED"] = "false"
     # 5. Isolated storage + non-production auth key + dev-tier (no prod-secret enforcement).
     #    A FRESH JWT secret invalidates any production-issued session cookie.
     os.environ["STORAGE_ROOT"] = str(storage_root)

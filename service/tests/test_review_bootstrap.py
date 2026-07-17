@@ -79,7 +79,12 @@ def test_launcher_strips_host_live_credentials(tmp_path):
     config is neutralised: no live creds, no write flags, carrier shadow."""
     poisoned = {
         "DHL_EXPRESS_API_KEY": "LIVE-XXX", "DHL_EXPRESS_API_SECRET": "LIVE-YYY",
-        "WFIRMA_ACCESS_KEY": "LIVE-WF", "WFIRMA_CREATE_INVOICE_ALLOWED": "true",
+        "DHL_TRACKING_API_KEY": "LIVE-DT", "WFIRMA_ACCESS_KEY": "LIVE-WF",
+        "FEDEX_CLIENT_ID": "FX", "FEDEX_CLIENT_SECRET": "FXS",
+        "SMTP_USER": "u@x", "SMTP_PASSWORD": "p", "CLIQ_WEBHOOK_URL": "http://live",
+        "WORKDRIVE_REFRESH_TOKEN": "wr", "ANTHROPIC_API_KEY": "sk-live",
+        "AI_COWORK_API_KEY": "ck", "DHL_WEBHOOK_SECRET": "hs",
+        "WFIRMA_CREATE_INVOICE_ALLOWED": "true", "WFIRMA_SYNC_CUSTOMERS_ALLOWED": "true",
         "CARRIER_API_STATUS": "live", "CARRIER_LIVE_ALLOWLIST": "SOME-BATCH",
     }
     r = _run([str(_LAUNCH), "--app-dir", str(_APP_DIR), "--storage-root",
@@ -194,6 +199,22 @@ def test_seed_resolution_isolates_clients(tmp_path):
     assert out["a"] == "AWB1000000001"
     assert out["b"] == "AWB2000000002"
     assert out["null"] is None  # multi-client batch ⇒ legacy row NOT attributed
+
+
+def test_seed_refuses_production_root(tmp_path):
+    """The seeder shares the launcher's isolation guard — it must refuse a
+    production/non-prod-tree storage root before any write or delete."""
+    r = _run([str(_SEED), "--app-dir", str(_APP_DIR), "--storage-root",
+              r"C:\PZ\storage", "--commit", "13d442e9", "--reset-review-data"],
+             env={"STORAGE_ROOT": ""})
+    assert r.returncode == 2 and "overlaps a live" in r.stderr
+
+
+def test_seed_requires_commit(tmp_path):
+    """Seeding without --commit is refused (manifest traceability)."""
+    r = _run([str(_SEED), "--app-dir", str(_APP_DIR),
+              "--storage-root", str(tmp_path / "rev")])
+    assert r.returncode == 2 and "--commit is required" in r.stderr
 
 
 def test_reset_removes_only_review_storage(tmp_path):
