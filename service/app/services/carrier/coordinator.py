@@ -127,14 +127,27 @@ class CarrierCoordinator:
 
     # ── public ────────────────────────────────────────────────────────────────
 
-    def create_shipment(self, request: ShipmentRequest) -> ShipmentResult:
+    def create_shipment(
+        self,
+        request: ShipmentRequest,
+        *,
+        operator: Optional[str] = None,
+    ) -> ShipmentResult:
+        """Create (or idempotently replay) a shipment.
+
+        operator (keyword-only) is the X-Operator attribution recorded as the
+        booker. It is persisted ONLY on a first, real booking; an idempotent
+        replay preserves and returns the ORIGINAL booker instead of overwriting
+        it with whoever triggered the replay. None keeps the pre-attribution
+        behaviour unchanged.
+        """
         key = compute_idempotency_key(request)
         existing = _db_get(self._config.shipment_db_path, key)
 
         if existing:
-            return self._handle_existing(request, key, existing)
+            return self._handle_existing(request, key, existing, operator=operator)
 
-        return self._execute(request, key, is_recovery=False)
+        return self._execute(request, key, is_recovery=False, operator=operator)
 
     # ── private ───────────────────────────────────────────────────────────────
 
@@ -143,6 +156,8 @@ class CarrierCoordinator:
         request: ShipmentRequest,
         key: str,
         row: dict,
+        *,
+        operator: Optional[str] = None,
     ) -> ShipmentResult:
         state = ShipmentState(row["state"])
 
@@ -151,6 +166,8 @@ class CarrierCoordinator:
             # adapter for a completed key: the live adapter would create a
             # brand-new DHL shipment (2026-07-06 duplicate-AWB incident —
             # 3 duplicate live AWBs booked by "deterministic recompute").
+            # booked_by is read from the stored row, not the current caller:
+            # a replay must report the ORIGINAL booker for audit integrity.
             return ShipmentResult(
                 idempotency_key=key,
                 mode=ShipmentMode(row["mode"]),
@@ -161,13 +178,17 @@ class CarrierCoordinator:
                 service_product=row.get("service_product"),
                 dimensions_json=row.get("dimensions_json"),
                 replayed=True,
+                booked_by=row.get("booked_by"),
             )
 
         if state == ShipmentState.PENDING:
             # In-flight recovery: the pending row exists but completion never
             # ran (e.g. process crash after insert, before update_state).
-            # Re-execute without re-inserting the row.
-            return self._execute(request, key, is_recovery=True)
+            # Re-execute without re-inserting the row. The original booker was
+            # captured at the first insert; the current caller's operator is
+            # forwarded but _execute always restores booked_by from the stored
+            # row, so the original attribution wins.
+            return self._execute(request, key, is_recovery=True, operator=operator)
 
         if state == ShipmentState.FAILED:
             raise CarrierGateError(
@@ -185,9 +206,12 @@ class CarrierCoordinator:
         request: ShipmentRequest,
         key: str,
         is_recovery: bool,
+        *,
+        operator: Optional[str] = None,
     ) -> ShipmentResult:
         if not is_recovery:
             # Write PENDING before the adapter call — crash-safe anchor.
+            # operator is written here (and only here) as booked_by.
             _db_insert(
                 self._config.shipment_db_path,
                 ShipmentResult(
@@ -198,18 +222,21 @@ class CarrierCoordinator:
                 ),
                 request.batch_id,
                 getattr(request, "client_ref", None),
+                operator=operator,
             )
 
         # Adapter call — pure, deterministic, no side effects.
         raw_result = self._adapter.create_shipment(request)
 
-        # Build a safe request snapshot for the shadow log.
+        # Build a safe request snapshot for the shadow log. operator is part of
+        # the booking-attribution audit trail, so it rides along here too.
         log_request = {
             "batch_id": request.batch_id,
             "shipper_account": request.shipper_account,
             "weight_kg": request.weight_kg,
             "declared_value": request.declared_value,
             "currency": request.currency,
+            "operator": operator,
         }
 
         # Convert result to a plain dict (enum values as strings) for redaction.
@@ -252,10 +279,25 @@ class CarrierCoordinator:
         except (TypeError, ValueError):
             pass
 
+        # Report the PERSISTED booker on the result. For a fresh booking this
+        # is the operator just inserted; for a crash-recovery replay it is the
+        # ORIGINAL booker recorded at the first insert (this call skipped the
+        # insert). Reading it back keeps the two paths honest and identical.
+        # The fallback is None (honest-missing) — never the current caller — so
+        # a failed read on a recovery path cannot mis-attribute to the replayer.
+        booked_by = None
+        try:
+            _row = _db_get(self._config.shipment_db_path, key)
+            if _row is not None:
+                booked_by = _row.get("booked_by")
+        except Exception:
+            pass
+
         complete = dataclasses.replace(
             raw_result,
             state=ShipmentState.COMPLETE,
             dimensions_json=dimensions_json,
+            booked_by=booked_by,
         )
 
         # Register outbound tracking event if enabled (flag-gated, non-transactional)

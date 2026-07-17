@@ -59,6 +59,12 @@ _ADDITIVE_COLUMNS = [
     ("do_not_use_reason", "TEXT"),
     ("do_not_use_at", "TEXT"),
     ("do_not_use_by", "TEXT"),
+    # Operator attribution (X-Operator) for the AWB booking. Written once at
+    # the PENDING anchor insert and never mutated by a state transition, so the
+    # audit trail always names the operator who initiated the real booking —
+    # not whoever later replayed the idempotent request. NULL for legacy rows
+    # booked before attribution existed (honest missing).
+    ("booked_by", "TEXT"),
 ]
 
 
@@ -93,6 +99,8 @@ def insert_shipment(
     result: ShipmentResult,
     batch_id: str,
     client_ref: Optional[str] = None,
+    *,
+    operator: Optional[str] = None,
 ) -> None:
     """
     Record a new shipment idempotency entry.
@@ -102,6 +110,12 @@ def insert_shipment(
 
     client_ref (optional) scopes the row to a single client within the batch;
     None is stored for legacy/unscoped callers.
+
+    operator (optional, keyword-only) is the X-Operator attribution for the
+    booking, stored in booked_by. It is written ONLY at this PENDING anchor
+    insert — state transitions never touch it — so the audit trail always names
+    the operator who initiated the real booking, never a later replayer. None
+    stores NULL (legacy/unattributed callers behave exactly as before).
     """
     if result.mode == ShipmentMode.LIVE:
         raise ValueError(
@@ -113,8 +127,8 @@ def insert_shipment(
             """
             INSERT INTO carrier_shipments
                 (idempotency_key, batch_id, client_ref, mode, state, error, simulated,
-                 service_product, dimensions_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 service_product, dimensions_json, booked_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.idempotency_key,
@@ -126,6 +140,7 @@ def insert_shipment(
                 int(result.simulated),
                 result.service_product,
                 result.dimensions_json,
+                operator,
             ),
         )
 
