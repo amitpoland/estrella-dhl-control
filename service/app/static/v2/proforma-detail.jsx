@@ -3486,7 +3486,15 @@ function DocumentsRegistry({ batchId }) {
 // — never from draft_state or wfirma_invoice_id directly. Two projections reading
 // two authorities is what produced the 2026-07-17 contradiction: an "Invoice
 // Created" card and an actionable Convert button on the same screen.
-function deriveInvoiceProjection(d) {
+//
+// `link` is the conversion-link row itself (GET /proforma/draft/{id}/invoice-link)
+// — the exact row the backend convert guard reads. It is threaded in so the
+// Convert GATE answers from the same authority the server enforces, while the
+// DISPLAY projections keep reading the draft mirror; a stale mirror must never
+// fabricate invoice identity it does not hold. Passing null (fetch in flight or
+// failed) degrades to mirror-only gating — the server still refuses, so nothing
+// slips through.
+function deriveInvoiceProjection(d, link) {
   const src = d || {};
   const id  = src.wfirma_invoice_id || '';
   const st  = String(src.draft_state || '').toLowerCase();
@@ -3494,14 +3502,30 @@ function deriveInvoiceProjection(d) {
   // re-open the Convert path. 'converted' is the terminal member of
   // DRAFT_LIFECYCLE_STATES.
   const invoiced = !!id || st === 'converted';
+  // '' when no link row exists, or none has loaded yet.
+  const linkStatus = (link && link.ok) ? String(link.status || '').toLowerCase() : '';
   return {
     invoiced,
     invoiceId:     id,
     invoiceNumber: src.wfirma_invoice_number || '',
     convertedAt:   src.converted_at || '',
+    linkStatus,
+    // The backend guard _link_already_exists() refuses a second conversion on
+    // ANY status — pending and failed included, because after an ambiguous
+    // wFirma failure we cannot know whether an invoice was created, and a retry
+    // could double-issue one. Mirror that rule exactly, so the button can never
+    // open a modal the server is certain to reject. Note this is BROADER than
+    // `invoiced`: a pending/failed row is not an invoice, and must not render as
+    // one, but it still closes the Convert path. Repair is the reconcile route.
+    linkBlocksConvert: !!linkStatus,
     // stages[] index 3 is the terminal node and `done = i < rank`, so the
     // terminal rank must be 4 — a rank of 3 can never mark it done.
     railRank:      invoiced ? 4 : null,
+    // Mirror health — deliberately AND where `invoiced` is OR. This mirrors the
+    // BACKEND's own health test (split-brain report: a link is healthy only when
+    // the draft carries the invoice id AND draft_state='converted'). It is the
+    // drift question, not the invoiced question, so it cannot reuse `invoiced`.
+    mirrorHealthy: !!id && st === 'converted',
   };
 }
 
@@ -3733,6 +3757,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const draftHook = window.PzState.useDraft(draft && draft.id);
   const liveDraft = (draftHook.data && draftHook.data.draft) ? draftHook.data.draft : (draft || {});
 
+  // SINGLE INVOICE-LINK AUTHORITY — derived ONCE, immediately after liveDraft so
+  // that EVERY invoice-dependent consumer below sits downstream of it. Nothing in
+  // this component may re-derive "is this invoiced?" / "is the mirror healthy?"
+  // from draft_state or wfirma_invoice_id: two projections reading two authorities
+  // is exactly what produced the 2026-07-17 contradiction.
+  const invoiceProjection = React.useMemo(
+    () => deriveInvoiceProjection(liveDraft, invoiceLink), [liveDraft, invoiceLink]
+  );
+
   // WIRED: fetch post disclosure (GET /api/v1/proforma/draft/{id}/disclose-post)
   const [disclosure, setDisclosure] = React.useState(null);
   React.useEffect(() => {
@@ -3764,8 +3797,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // case (id present, draft_state still 'posted') — the exact drift this report
   // exists to surface.
   const [splitBrainEntry, setSplitBrainEntry] = React.useState(null);
-  const _projectionHealthy = !!liveDraft.wfirma_invoice_id
-    && String(liveDraft.draft_state || '').toLowerCase() === 'converted';
+  const _projectionHealthy = invoiceProjection.mirrorHealthy;
   const loadSplitBrain = React.useCallback(() => {
     const pid = liveDraft.wfirma_proforma_id;
     if (!pid || _projectionHealthy || !window.PzApi.getInvoiceLinkSplitBrain) {
@@ -3846,6 +3878,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // backend convert gate shares the post blocker set).
   const [readinessApprove, setReadinessApprove] = React.useState(null);
   const [readinessPost,    setReadinessPost]    = React.useState(null);
+  const [invoiceLink,      setInvoiceLink]      = React.useState(null);   // conversion-link row
   const [resolvingDesign,  setResolvingDesign]  = React.useState(null);   // design_no in flight
   const [resolveError,     setResolveError]     = React.useState(null);
   const [savingVat,        setSavingVat]        = React.useState(false);  // WDT vat→master save in flight
@@ -3863,6 +3896,14 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     window.PzApi.getDraftReadiness(id, 'post')
       .then(r => setReadinessPost((r && r.ok && r.data) ? r.data : null))
       .catch(() => setReadinessPost(null));
+    // The conversion-link row the backend convert guard reads. Same lifecycle as
+    // readiness: reload whenever the draft changes, since converting (or
+    // reconciling) is exactly what creates or moves this row. A failed fetch
+    // stores null and the gate falls back to mirror-only — the backend enforces
+    // the identical rule either way.
+    window.PzApi.getDraftInvoiceLink(id)
+      .then(r => setInvoiceLink((r && r.ok && r.data) ? r.data : null))
+      .catch(() => setInvoiceLink(null));
   };
   React.useEffect(reloadReadiness, [draft && draft.id, liveDraft.updated_at]);
 
@@ -4642,7 +4683,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     const total_qty   = rows.reduce((s, r) => s + r.qty,         0);
     return {
       doc_ref:     _previewLabel,
-      invoice_ref: liveDraft.wfirma_invoice_id ? String(liveDraft.wfirma_invoice_id) : null,
+      invoice_ref: invoiceProjection.invoiceId ? String(invoiceProjection.invoiceId) : null,
       issued_date: liveDraft.created_at ? (liveDraft.created_at || '').split('T')[0] : '',
       seller:      cmrPreviewData.seller,
       shipto:      cmrPreviewData.shipto,
@@ -4662,12 +4703,6 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // ──────────────────────────────────────────────────────────────────────────
 
   const draftState    = liveDraft.draft_state || liveDraft.status || (draft && draft.status) || '';
-  // SINGLE INVOICE-LINK AUTHORITY — derived ONCE here and threaded to every
-  // invoice-dependent projection (status header, workflow rail, toolbar gate,
-  // identity card). Nothing below may re-derive "is this invoiced?" locally.
-  const invoiceProjection = React.useMemo(
-    () => deriveInvoiceProjection(liveDraft), [liveDraft]
-  );
   // SINGLE READINESS AUTHORITY — backend-derived blockers. State gating says
   // whether the lifecycle ALLOWS the action; readiness says whether the data
   // is SAFE for it. Both must pass. While readiness is still loading (null)
@@ -4687,7 +4722,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   }, [approveBlockers, postBlockers]);
   const stateAllowsPost    = ['draft', 'pending_local', 'approved', 'post_failed'].includes(draftState);
   const alreadyConverted    = invoiceProjection.invoiced;
-  const stateAllowsConvert  = draftState === 'posted' && !alreadyConverted;
+  const stateAllowsConvert  = draftState === 'posted' && !alreadyConverted
+                              && !invoiceProjection.linkBlocksConvert;
   const stateAllowsApprove  = ['draft', 'editing', 'post_failed'].includes(draftState);
   const canPost       = stateAllowsPost && !postBlocked;
   const canConvert    = stateAllowsConvert && !postBlocked;
@@ -4705,10 +4741,23 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const postDisabledReason = !stateAllowsPost
     ? (alreadyPosted ? 'Already posted to wFirma' : `Cannot post in '${draftState}' state`)
     : (postBlocked ? `Blocked: ${_firstBlockerText(postBlockers)}` : '');
+  // An unresolved conversion link is not a lifecycle problem the operator can fix
+  // by acting on the draft — it is a link-row problem the reconcile route repairs.
+  // Name the status and point there, rather than the generic 'post first' text
+  // that would be actively misleading on a posted draft (Lesson M: unavailable
+  // WITH a stated reason and a route to repair — never a silently dead button).
+  const _linkConvertReason = {
+    pending:     'A previous conversion attempt is unresolved — its outcome in wFirma is unknown. Reconcile it in the Conversion Recovery panel before converting.',
+    failed:      'The last conversion attempt failed and wFirma may still have created an invoice. Reconcile it in the Conversion Recovery panel to establish the truth.',
+    rolled_back: 'This proforma has a rolled-back conversion link — reconcile it in the Conversion Recovery panel before converting.',
+  }[invoiceProjection.linkStatus] || '';
   const convertDisabledReason = !stateAllowsConvert
     ? (alreadyConverted
         ? `Already converted — invoice ${invoiceProjection.invoiceNumber || invoiceProjection.invoiceId || 'created'}`
-        : (isBlocked ? 'Conversion blocked — see Reservation tab' : 'Post to wFirma first, then convert'))
+        : (_linkConvertReason
+            || (invoiceProjection.linkStatus === 'issued'
+                ? 'An invoice already exists for this proforma, but this draft has not caught up yet — reconcile it in the Conversion Recovery panel.'
+                : (isBlocked ? 'Conversion blocked — see Reservation tab' : 'Post to wFirma first, then convert'))))
     : (postBlocked ? `Blocked: ${_firstBlockerText(postBlockers)}` : '');
 
   // M5 — Edit mode: enabled when draft is in an editable state
@@ -5683,7 +5732,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               : { label, href, testid };
           };
           const _proformaNo  = liveDraft.wfirma_proforma_fullnumber || (draft && draft.wfirma_proforma_fullnumber) || '';
-          const _invoiceNo   = liveDraft.wfirma_invoice_number || (liveDraft.wfirma_invoice_id ? String(liveDraft.wfirma_invoice_id) : '');
+          const _invoiceNo   = invoiceProjection.invoiceNumber || (invoiceProjection.invoiceId ? String(invoiceProjection.invoiceId) : '');
           const _docs = [
             {
               key: 'proforma', name: 'Proforma PDF',
@@ -7568,7 +7617,7 @@ function ProformaOverviewTab({ detail, invoiceProjection, lines, fxRate, vatReso
             <InfoRow label="JPK codes" value={detail.jpk_codes || 'none'} />
             <InfoRow label="Warehouse" value={detail.warehouse || 'Main'} />
             <InfoRow label="wFirma proforma ID" value={detail.wfirma_proforma_id || '—'} mono />
-            <InfoRow label="wFirma invoice ID" value={detail.wfirma_invoice_id || '—'} mono />
+            <InfoRow label="wFirma invoice ID" value={invoiceProjection.invoiceId || '—'} mono />
             <InfoRow label="Source" value={detail.clone_source || detail.source_description || detail.source || '—'} />
           </div>
         </PfPanelCard>
