@@ -331,6 +331,8 @@ async def lifespan(app: FastAPI):
     # 2. load_cache_from_disk — populate in-memory cache from last-saved file
     #    so series dropdowns work immediately even when wFirma is unreachable.
     # 3. If cache is absent or stale (>24 h), trigger a live wFirma refresh.
+    # Ongoing staleness (incl. a failed startup fetch) is retried periodically
+    # by the wfirma_webhook_scheduler series step (same flag, 30-min cooldown).
     # All steps are non-fatal: failures are warned, never block startup.
     # GOVERNANCE: series.refresh_from_wfirma → SAFE_AUTONOMOUS.
     try:
@@ -345,7 +347,7 @@ async def lifespan(app: FastAPI):
                 _wdc.get_dictionaries().get("cache_age_hours"),
             )
         if _wdc.is_cache_stale() and settings.series_bootstrap_enabled:
-            _series_result = _wdc.refresh_from_wfirma()
+            _series_result = _wdc.refresh_from_wfirma(trigger="startup")
         elif _wdc.is_cache_stale() and not settings.series_bootstrap_enabled:
             log.info(
                 "startup_series_bootstrap: cache is stale but "

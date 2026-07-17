@@ -93,6 +93,12 @@ def _run_processing_tick() -> None:
     global _last_tick_at
     _last_tick_at = _now_utc()
 
+    # ── Step 0: series dictionary refresh (stale-triggered, cooldown-gated) ──
+    # Runs BEFORE the events-DB guard so a webhook-storage problem can never
+    # starve the dictionary refresh. Internally failure-isolated and cheap:
+    # the staleness/cooldown pre-check is in-memory only.
+    _run_series_refresh_tick()
+
     if _events_db_path is None or _proc_db_path is None:
         return
 
@@ -215,6 +221,45 @@ def _run_processing_tick() -> None:
 
     # ── Step 7: goods stock-change webhook sync (Wave 4 C-8a) ─────────────────
     _run_stock_sync_tick()
+
+
+def _run_series_refresh_tick() -> None:
+    """
+    Series dictionary refresh step — called at the start of every tick.
+
+    Re-fetches the wFirma series catalog (read-only ``series/find``) through
+    the ONE shared refresh function
+    ``wfirma_dictionary_cache.refresh_from_wfirma`` (also used by the startup
+    bootstrap and the operator Run-Now endpoint) whenever the cache is stale
+    (>24 h TTL, or baseline/error state after an NSSM restart) and the retry
+    cooldown has elapsed.
+
+    - Gated by SERIES_BOOTSTRAP_ENABLED — the same flag that gates the
+      startup live fetch, so one flag governs all autonomous wFirma fetches.
+    - Failure-isolated: never raises into the scheduler tick.
+    - No wFirma writes. No DB writes — in-memory cache + series_cache.json only.
+    """
+    try:
+        from ..core.config import settings
+        if not settings.series_bootstrap_enabled:
+            return
+        from . import wfirma_dictionary_cache as wdc
+        if not wdc.should_attempt_scheduled_refresh():
+            return
+        result = wdc.refresh_from_wfirma(trigger="scheduler")
+        src = result.get("source_state", {})
+        # Count only live entries (the baseline "— Default series" placeholder
+        # has id="" and would otherwise inflate the count by one).
+        inv_count = len([e for e in result.get("invoice_series", []) if e.get("id")])
+        pro_count = len([e for e in result.get("proforma_series", []) if e.get("id")])
+        log.info(
+            "wfirma_scheduler: series_refresh invoice=%s proforma=%s "
+            "invoice_count=%d proforma_count=%d",
+            src.get("invoice_series"), src.get("proforma_series"),
+            inv_count, pro_count,
+        )
+    except Exception as exc:
+        log.warning("wfirma_scheduler: series refresh failed (non-fatal): %s", exc)
 
 
 def _run_enrichment_tick() -> None:
