@@ -188,8 +188,13 @@ def test_routes_shipment_panel_reads_audit_json():
 
 
 def test_routes_shipment_panel_reads_carrier_shipments():
-    assert "get_shipment_by_batch_id" in _routes_src or \
-           "carrier_shipments" in _routes_src
+    # 2026-07-16 independent-review Condition 2: the shipment panel must
+    # resolve through the per-client authority (get_shipment_for_draft),
+    # NEVER the batch-scoped latest row (get_shipment_by_batch_id leaked the
+    # most-recent client's service_product/dimensions to sibling drafts).
+    assert "carrier_shipments" in _routes_src
+    assert "get_shipment_for_draft" in _routes_src
+    assert "get_shipment_by_batch_id as _get_carrier_shipment" not in _routes_src
 
 
 # ── UI surface source-grep ────────────────────────────────────────────────────

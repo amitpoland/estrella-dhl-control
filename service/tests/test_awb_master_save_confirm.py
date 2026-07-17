@@ -99,7 +99,9 @@ class TestBookingGate:
         assert "createCarrierShipment" in booking
 
     def test_submit_button_disabled_while_panel_open(self):
-        assert "disabled={loading || isPending || !!saveConfirm}" in JSX
+        # legacyConfirm added by the legacy-rebook gate (ADR-proforma-cmr-
+        # short-number §Known limitation) — see test_awb_legacy_rebook_confirm.py.
+        assert "disabled={loading || isPending || !!saveConfirm || legacyConfirm}" in JSX
 
     def test_yes_books_only_after_successful_save(self):
         """Yes → updateCustomerMaster; doBooking() only in the r.ok branch;

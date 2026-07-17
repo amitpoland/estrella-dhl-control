@@ -46,8 +46,13 @@ def test_sr_collision_rationale_documented(detail):
     assert "sequential" in blk.lower()
 
 
-def test_origin_defaults_to_india_like_cmr(detail):
-    assert "origin:       ln.origin || pk.origin || 'India'," in detail
+def test_origin_from_product_master_authority_not_hardcoded(detail):
+    # 2026-07-16 authority repair: origin comes from the Product Master authority
+    # (per-line ln.origin → draft-level liveDraft.origin_country, the same chain
+    # the CMR goods block uses), with honest '—' when the authority has none.
+    # The hardcoded UI default 'India' is removed.
+    assert "origin:       ln.origin || liveDraft.origin_country || '—'," in detail
+    assert "|| pk.origin || 'India'," not in detail
 
 
 def test_hsn_not_fabricated_for_eu(detail):

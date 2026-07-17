@@ -64,13 +64,18 @@ def test_export_shipment_id_from_carrier_authority_not_alias():
 
 
 def test_cmr_number_from_authority_or_honest_null():
-    # cmr_number is a pure function of export_shipment_id …
-    assert re.search(r"cmr_number:\s*export_shipment_id\s*\?\s*`CMR-EJ-\$\{export_shipment_id\}`\s*:\s*null", _JSX)
-    # … honest null + reason when the authority has no id (never batch_id).
-    assert re.search(r"cmr_number_reason:\s*export_shipment_id\s*\?\s*null\s*:", _JSX)
+    # cmr_number is the SHORT, deterministic number from the ONE backend authority
+    # (ADR-proforma-cmr-short-number). The frontend CONSUMES ship.cmr_number and
+    # no longer re-derives the long CMR-EJ-<64hex> format from the raw id.
+    assert re.search(r"cmr_number:\s*ship\s*\?\s*\(ship\.cmr_number", _JSX)
+    # … honest null + reason when the authority has no number (never batch_id).
+    assert re.search(r"cmr_number_reason:\s*\(ship\s*&&\s*ship\.cmr_number\)\s*\?\s*null\s*:", _JSX)
     assert "No export shipment identifier available" in _JSX
     assert re.search(r"cmr_no:\s*_transport\.cmr_number", _JSX)
-    # the CMR number must NOT be built from the AWB / tracking_ref or the batch id
+    # backend derives the short number from the stable export_shipment_id
+    assert 'cmr_document_number(row["idempotency_key"])' in _ROUTES_CARRIER
+    # the frontend must NOT rebuild the long number from the raw id / AWB / batch id
+    assert "`CMR-EJ-${export_shipment_id}`" not in _JSX
     assert not re.search(r"CMR-EJ-\$\{[^}]*tracking_ref", _JSX)
     assert "`CMR-EJ-${batchId}`" not in _JSX
 
@@ -143,9 +148,14 @@ def test_gross_weight_uses_effective_projection():
 # ── weight source precedence documented; never inferred/averaged/divided ──────
 
 def test_weight_precedence_documented():
-    assert re.search(r"manual\s*.\s*carrier booking\s*.\s*packing extraction\s*.\s*missing", _JSX)
+    # gross precedence now includes the additive tare-derived calculated source
+    # (manual → carrier booking → packing extraction → calculated(net+tare) → missing)
+    assert re.search(r"manual\s*.\s*carrier booking\s*.\s*packing extraction", _JSX)
+    assert re.search(r"calculated \(net\+tare", _JSX)
     # net precedence has no carrier source (only manual → packing → missing)
     assert re.search(r"manual\s*.\s*packing extraction\s*.\s*missing", _JSX)
+    # tare has no extracted authority — manual only
+    assert re.search(r"tare\s*:\s*manual\s*.\s*missing", _JSX)
 
 
 # ── 13: no live DHL from a document render or the weight endpoints ────────────
@@ -197,3 +207,47 @@ def test_weight_override_source_column():
 def test_weight_source_badges_present():
     for label in ("Manual override", "Extracted from packing", "Carrier booking", "Missing"):
         assert label in _JSX
+
+
+# ── 2026-07-16 independent-review Condition 1: no hardcoded goods origin ──────
+
+def test_cmr_renderer_has_no_hardcoded_origin_country():
+    """The CMR goods blocks (Classic + Modern) must derive origin from the typed
+    data contract (d.goods_origin_country / per-line l.origin), never a
+    hardcoded country literal. Honest omission when the authority has none."""
+    assert "Country of Origin: India" not in _CMR
+    assert 'l.origin || "India"' not in _CMR
+    assert _CMR.count("goods_origin_country") >= 2   # Classic + Modern variants
+
+
+def test_cmr_data_origin_from_authority_not_hardcoded():
+    """proforma-detail.jsx must not default any origin field to 'India' — the
+    authority chain is ln/l.origin → liveDraft.origin_country → honest null/—."""
+    assert "|| 'India'" not in _JSX
+    assert "goods_origin_country" in _JSX
+
+
+# ── #940 repair: per-line CMR origin mapped ISO-2 → full country name ─────────
+# Chip task_35c61ad8 — the Modern CMR line renderer printed raw "IN"; map it
+# through the single _cmrCountryName authority so it prints "India", honest-null
+# preserved (unknown/blank → null → "—", never defaulted to a country).
+
+def test_cmr_per_line_origin_mapped_through_country_name():
+    # the cmrPreviewData line contract maps each line's origin through the CMR
+    # country-name authority (component-local _cmrCountryName lives here)
+    assert "_cmrCountryName(_l.origin)" in _JSX
+    # honest-null: the mapped result falls back to null, never a hardcoded country
+    assert "_cmrCountryName(_l.origin) || null" in _JSX
+
+
+def test_cmr_country_name_is_single_authority():
+    # exactly one ISO→name table + one mapper — no duplication into the renderer
+    assert _JSX.count("const _CMR_COUNTRY_NAMES") == 1
+    assert "_CMR_COUNTRY_NAMES" not in _CMR   # renderer must not carry its own copy
+    assert _CMR.count("_cmrCountryName") == 0  # mapping stays in the data contract
+
+
+def test_cmr_modern_line_renderer_prints_mapped_origin():
+    # the Modern per-line cell prints l.origin (now the mapped full name); the
+    # Classic goods table has no per-line origin column (origin is header-only)
+    assert '{l.origin || "—"}' in _CMR

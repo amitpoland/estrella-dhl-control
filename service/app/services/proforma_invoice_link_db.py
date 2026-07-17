@@ -534,6 +534,12 @@ class ProformaDraft:
     # drift without silently overwriting the override.
     manual_net_weight:      Optional[float] = None   # kg
     manual_gross_weight:    Optional[float] = None   # kg
+    # Manual tare (packaging) weight, kg. net + tare = gross only when both are
+    # explicit and in kg. tare_weight_source records provenance of the last tare
+    # action ('manual' on save, 'cleared' on clear) — same pattern as
+    # weight_override_source, never a computed value persisted as truth.
+    manual_tare_weight:     Optional[float] = None   # kg
+    tare_weight_source:     Optional[str]   = None
     weight_override_reason: Optional[str]   = None
     weight_confirmed_at:    Optional[str]   = None
     weight_confirmed_by:    Optional[str]   = None
@@ -627,6 +633,8 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         # ── PR-5 transport-document weight override (kg) ─────────────────
         ("manual_net_weight",      "REAL"),
         ("manual_gross_weight",    "REAL"),
+        ("manual_tare_weight",     "REAL"),   # packaging/tare weight (kg)
+        ("tare_weight_source",     "TEXT"),   # manual | cleared
         ("weight_override_reason", "TEXT"),
         ("weight_confirmed_at",    "TEXT"),
         ("weight_confirmed_by",    "TEXT"),
@@ -1214,6 +1222,8 @@ def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
         # ── PR-5 transport-document weight override ──────────────────────
         manual_net_weight          = _opt("manual_net_weight"),
         manual_gross_weight        = _opt("manual_gross_weight"),
+        manual_tare_weight         = _opt("manual_tare_weight"),
+        tare_weight_source         = _opt("tare_weight_source"),
         weight_override_reason     = _opt("weight_override_reason"),
         weight_confirmed_at        = _opt("weight_confirmed_at"),
         weight_confirmed_by        = _opt("weight_confirmed_by"),
@@ -2485,6 +2495,8 @@ def _commit_draft_update(
     # ── PR-5 transport-document weight override ──────────────────────
     new_manual_net_weight:          Any                 = _UNCHANGED,
     new_manual_gross_weight:        Any                 = _UNCHANGED,
+    new_manual_tare_weight:         Any                 = _UNCHANGED,
+    new_tare_weight_source:         Any                 = _UNCHANGED,
     new_weight_override_reason:     Any                 = _UNCHANGED,
     new_weight_confirmed_at:        Any                 = _UNCHANGED,
     new_weight_confirmed_by:        Any                 = _UNCHANGED,
@@ -2593,6 +2605,12 @@ def _commit_draft_update(
     if new_manual_gross_weight != _UNCHANGED:
         sets.append("manual_gross_weight=?")
         args.append(new_manual_gross_weight)
+    if new_manual_tare_weight != _UNCHANGED:
+        sets.append("manual_tare_weight=?")
+        args.append(new_manual_tare_weight)
+    if new_tare_weight_source != _UNCHANGED:
+        sets.append("tare_weight_source=?")
+        args.append(new_tare_weight_source)
     if new_weight_override_reason != _UNCHANGED:
         sets.append("weight_override_reason=?")
         args.append(new_weight_override_reason)
@@ -2889,6 +2907,7 @@ def set_draft_weight_override(
     *,
     manual_net_weight:   Optional[float],
     manual_gross_weight: Optional[float],
+    manual_tare_weight:  Optional[float] = None,
     reason:              str,
     source_revision:     Optional[str],
     operator:            str,
@@ -2925,13 +2944,18 @@ def set_draft_weight_override(
 
     net = _num(manual_net_weight, "manual_net_weight")
     gross = _num(manual_gross_weight, "manual_gross_weight")
-    if net is None and gross is None:
-        raise ValueError("at least one of manual_net_weight / manual_gross_weight is required")
+    tare = _num(manual_tare_weight, "manual_tare_weight")
+    if net is None and gross is None and tare is None:
+        raise ValueError(
+            "at least one of manual_net_weight / manual_gross_weight / "
+            "manual_tare_weight is required"
+        )
 
     d = _load_for_edit(db_path, draft_id, expected_updated_at)
     before = {
         "manual_net_weight":   d.manual_net_weight,
         "manual_gross_weight": d.manual_gross_weight,
+        "manual_tare_weight":  d.manual_tare_weight,
         "weight_override_reason": d.weight_override_reason,
         "weight_source_revision": d.weight_source_revision,
     }
@@ -2941,6 +2965,10 @@ def set_draft_weight_override(
         new_state              = _next_state_after_edit(d.draft_state),
         new_manual_net_weight  = net,
         new_manual_gross_weight = gross,
+        new_manual_tare_weight  = tare,
+        # tare provenance mirrors weight_override_source: 'manual' when a tare is
+        # saved, else leave the column unchanged (net/gross-only save).
+        new_tare_weight_source  = ("manual" if tare is not None else _UNCHANGED),
         new_weight_override_reason = (str(reason or "").strip() or None),
         new_weight_confirmed_at    = now,
         new_weight_confirmed_by    = operator,
@@ -2954,6 +2982,9 @@ def set_draft_weight_override(
             "after": {
                 "manual_net_weight":   refreshed.manual_net_weight,
                 "manual_gross_weight": refreshed.manual_gross_weight,
+                # tare included so a tare-only save is fully reconstructable from
+                # the event alone (mirrors the "before" snapshot). See #940 repair.
+                "manual_tare_weight":  refreshed.manual_tare_weight,
                 "weight_override_reason": refreshed.weight_override_reason,
                 "weight_source_revision": refreshed.weight_source_revision,
                 "weight_confirmed_by":    refreshed.weight_confirmed_by,
@@ -2984,6 +3015,7 @@ def clear_draft_weight_override(
     before = {
         "manual_net_weight":   d.manual_net_weight,
         "manual_gross_weight": d.manual_gross_weight,
+        "manual_tare_weight":  d.manual_tare_weight,
         "weight_override_reason": d.weight_override_reason,
     }
     refreshed = _commit_draft_update(
@@ -2991,6 +3023,8 @@ def clear_draft_weight_override(
         new_state              = _next_state_after_edit(d.draft_state),
         new_manual_net_weight  = None,
         new_manual_gross_weight = None,
+        new_manual_tare_weight  = None,
+        new_tare_weight_source  = "cleared",
         new_weight_override_reason = None,
         new_weight_confirmed_at    = None,
         new_weight_confirmed_by    = None,

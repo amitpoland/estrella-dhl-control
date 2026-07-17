@@ -4852,6 +4852,8 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         # source changed since the override was confirmed — without overwriting it.
         "manual_net_weight":      getattr(d, "manual_net_weight", None),
         "manual_gross_weight":    getattr(d, "manual_gross_weight", None),
+        "manual_tare_weight":     getattr(d, "manual_tare_weight", None),   # kg
+        "tare_weight_source":     getattr(d, "tare_weight_source", None),   # manual | cleared
         "weight_override_reason": getattr(d, "weight_override_reason", None),
         "weight_confirmed_at":    getattr(d, "weight_confirmed_at", None),
         "weight_confirmed_by":    getattr(d, "weight_confirmed_by", None),
@@ -9182,10 +9184,12 @@ def set_draft_weight_override(
 
     net = _validate("manual_net_weight", body.get("manual_net_weight"))
     gross = _validate("manual_gross_weight", body.get("manual_gross_weight"))
-    if net is None and gross is None:
+    tare = _validate("manual_tare_weight", body.get("manual_tare_weight"))
+    if net is None and gross is None and tare is None:
         raise HTTPException(
             status_code=422,
-            detail="at least one of manual_net_weight / manual_gross_weight is required (kg)",
+            detail="at least one of manual_net_weight / manual_gross_weight / "
+                   "manual_tare_weight is required (kg)",
         )
 
     db = _proforma_db_path()
@@ -9199,6 +9203,7 @@ def set_draft_weight_override(
         db, int(draft_id),
         manual_net_weight   = net,
         manual_gross_weight = gross,
+        manual_tare_weight  = tare,
         reason              = str(body.get("reason") or ""),
         source_revision     = source_rev,
         operator            = operator,
@@ -10634,14 +10639,28 @@ def _master_db_path() -> "Path":
 
 
 def _carrier_shipment_db_path() -> "Path":
-    return settings.storage_root / "carrier_shipments.db"
+    # Canonical carrier store location — MUST match routes_carrier_actions
+    # (_get_shipment_db_path): {carrier_storage_root or storage_root/carrier}/
+    # carrier_shipments.db. The previous storage_root/carrier_shipments.db was a
+    # wrong path that silently returned null carrier fields in the shipment panel.
+    root = settings.carrier_storage_root or (settings.storage_root / "carrier")
+    return root / "carrier_shipments.db"
 
 
-def _build_shipment_panel(batch_id: Optional[str]) -> Dict[str, Any]:
-    """Read-only: returns shipment intelligence for a batch.
+def _build_shipment_panel(
+    batch_id: Optional[str],
+    client_ref: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Read-only: returns shipment intelligence for ONE client's draft.
 
     Sources: audit.json (AWB, carrier, clearance_path) + carrier_shipments DB
     (service_product, dimensions). Never raises — bad data returns None fields.
+
+    client_ref (the draft's client_name) scopes the carrier-DB read to the
+    shipment that belongs to THIS client — the previous batch-scoped
+    get_shipment_by_batch_id leaked the most-recently-booked client's
+    service_product/dimensions into every sibling draft's readiness panel
+    (2026-07-16 independent-review Condition 2).
     """
     result: Dict[str, Any] = {
         "awb":             None,
@@ -10666,14 +10685,25 @@ def _build_shipment_panel(batch_id: Optional[str]) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # carrier_shipments DB (Phase 5 fields: service_product, dimensions_json)
+    # carrier_shipments DB (Phase 5 fields: service_product, dimensions_json).
+    # Resolved through the SAME per-client authority as the carrier route
+    # (get_shipment_for_draft + the not-multi-client fallback gate) — never the
+    # batch-scoped latest row.
     try:
         from ..services.carrier.persistence.shipment_db import (
-            get_shipment_by_batch_id as _get_carrier_shipment,
+            get_shipment_for_draft as _get_carrier_shipment,
+        )
+        from .routes_carrier_actions import (
+            _batch_not_multi_client as _fallback_ok,
         )
         _cdb = _carrier_shipment_db_path()
         if _cdb.exists():
-            row = _get_carrier_shipment(_cdb, batch_id)
+            row = _get_carrier_shipment(
+                _cdb,
+                batch_id,
+                (client_ref or "").strip() or None,
+                allow_single_client_fallback=_fallback_ok(batch_id),
+            )
             if row:
                 result["service_product"] = row.get("service_product")
                 _dims_raw = row.get("dimensions_json")
@@ -10915,7 +10945,7 @@ def get_proforma_draft_visibility(draft_id: int) -> JSONResponse:
     company_completeness = _cp_completeness(company_profile)
 
     # Panels
-    shipment_panel      = _build_shipment_panel(d.batch_id)
+    shipment_panel      = _build_shipment_panel(d.batch_id, d.client_name)
     readiness           = _build_draft_readiness_panel(
         d, lines, company_completeness, shipment_panel,
     )
@@ -10978,7 +11008,7 @@ def get_proforma_draft_intelligence(draft_id: int) -> JSONResponse:
     suggestions = _intel.infer_missing_fields(lines, master_db_path=_master_db_path())
 
     # Confidence scoring
-    has_awb = bool(_build_shipment_panel(d.batch_id).get("awb"))
+    has_awb = bool(_build_shipment_panel(d.batch_id, d.client_name).get("awb"))
     cp_fields = cp_info.get("fields", {})
     confidence = _intel.score_draft_confidence(
         lines=lines,

@@ -615,12 +615,30 @@
     createCarrierShipment: (batchId, body) =>
       _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`, body),
 
-    // GET /api/v1/carrier/{batch_id}/shipment
-    // Most-recent recorded carrier shipment for the batch (404 when none).
-    // Returns the same AWB logistics/document contract as create, plus
-    // created_at + error. Legacy rows return null tracking_ref honestly.
-    getCarrierShipment: (batchId) =>
-      _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`),
+    // GET /api/v1/carrier/{batch_id}/shipment?client_ref={client_name}
+    // The carrier shipment that belongs to THIS client's draft (404 when none).
+    // client_ref (draft client_name) scopes resolution to one client so two
+    // clients in the same import batch never resolve to the same AWB/CMR
+    // (2026-07-16 cross-client AWB leak). Legacy single-client batches still
+    // resolve; multi-client legacy batches return an honest 404.
+    getCarrierShipment: (batchId, clientRef) =>
+      _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`
+        + (clientRef ? `?client_ref=${encodeURIComponent(clientRef)}` : '')),
+
+    // GET /api/v1/carrier/{batch_id}/shipment/legacy-probe
+    // Pre-booking probe (ADR-proforma-cmr-short-number §Known limitation):
+    // does a legacy (pre-client_ref) shipment row exist for this batch? A
+    // client_ref re-book computes a NEW idempotency key, so the coordinator
+    // will NOT replay that row — the AWB modal requires explicit operator
+    // confirmation first. Pass clientRef to also learn has_client_row: a
+    // non-failed row already scoped to THIS client means a same-params
+    // re-book replays it (no new record), so the modal suppresses the
+    // warning. Read-only; never books, never cancels/voids.
+    // Returns: { batch_id, legacy_exists, tracking_ref?, state?, created_at?,
+    //            has_client_row? (only when clientRef was sent) }
+    probeCarrierLegacyShipment: (batchId, clientRef) =>
+      _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment/legacy-probe`
+        + (clientRef ? `?client_ref=${encodeURIComponent(clientRef)}` : '')),
 
     // POST /api/v1/carrier/{batch_id}/shipment/{tracking_ref}/do-not-use
     // LOCAL operational flag for duplicate/unused labels — never calls DHL,

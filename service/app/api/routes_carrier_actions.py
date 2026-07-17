@@ -6,14 +6,32 @@ POST /api/v1/carrier/{batch_id}/shipment
     503 if carrier_api_status == "pending".
     Returns: batch_id, idempotency_key, mode, state, tracking_ref, simulated.
 
-GET /api/v1/carrier/{batch_id}/shipment
-    Returns most-recent recorded shipment for the batch.
-    Returns: batch_id, idempotency_key, mode, state, simulated, error, plus the
-    AWB logistics/document contract (tracking_ref, carrier, service_code,
-    box_type_code, weight_kg, dimensions, declared_value, currency, created_at,
-    label_download_url, commercial_documents_url, documents_available,
-    saved_labels_exist). tracking_ref persisted since the 2026-07-06 incident
-    fix; legacy rows return null fields honestly.
+GET /api/v1/carrier/{batch_id}/shipment?client_ref={client_name}
+    CLIENT-SCOPED shipment resolution (2026-07-16 cross-client AWB leak fix):
+    returns the shipment that belongs to THIS client's draft — exact
+    (batch_id, client_ref) match, with a legacy single-client fallback only
+    when the batch is not affirmatively multi-client. A multi-client batch
+    with no per-client row returns 404 honest-missing; it is NEVER the
+    "most-recent row for the batch".
+    Returns: batch_id, idempotency_key, export_shipment_id, cmr_number
+    (short CMR-EJ-<10 hex>, ADR-proforma-cmr-short-number), client_ref, mode,
+    state, simulated, error, plus the AWB logistics/document contract
+    (tracking_ref, carrier, service_code, box_type_code, weight_kg, dimensions,
+    declared_value, currency, created_at, label_download_url,
+    commercial_documents_url, documents_available, saved_labels_exist).
+    tracking_ref persisted since the 2026-07-06 incident fix; legacy rows
+    return null fields honestly.
+
+GET /api/v1/carrier/{batch_id}/shipment/legacy-probe
+    Booking-modal pre-check (ADR-proforma-cmr-short-number §Known limitation):
+    does a legacy (pre-client_ref, NULL client_ref, non-failed) shipment row
+    exist for this batch? A re-book that now sends client_ref computes a NEW
+    idempotency key, so the coordinator will NOT replay that row — the V2 AWB
+    modal requires explicit operator confirmation before creating a new
+    shipment record alongside it. Read-only; no carrier-config gate; never
+    calls DHL; performs no cancellation or void.
+    Returns: batch_id, legacy_exists, and (when true) tracking_ref, state,
+    created_at of the newest legacy row.
 
 POST /api/v1/carrier/{batch_id}/label-package   ← Path-DOC (WF4.5)
     Generates outbound customs/shipping document package.
@@ -36,6 +54,7 @@ from pydantic import BaseModel
 from ..core.security import require_api_key
 from ..services.carrier.coordinator import CarrierCoordinator, CoordinatorConfig
 from ..services.carrier.factory import CarrierConfig
+from ..services.carrier.cmr_number import cmr_document_number
 from ..services.carrier.models.shipment import CarrierGateError, ShipmentRequest
 from ..services.carrier.persistence import shipment_db
 
@@ -86,6 +105,43 @@ def _get_shipment_db_path() -> Path:
     root = settings.carrier_storage_root or (settings.storage_root / "carrier")
     root.mkdir(parents=True, exist_ok=True)
     return root / "carrier_shipments.db"
+
+
+def _batch_not_multi_client(batch_id: str) -> bool:
+    """True unless the proforma authority AFFIRMATIVELY shows >1 client draft.
+
+    Draft identity is (batch_id, client_name), so distinct client_name for a
+    batch = number of client drafts. Governs the legacy single-client fallback
+    in get_shipment_for_draft (attributing a NULL-client_ref row to a draft).
+
+    Safety model: the resolver already refuses to fall back unless there is
+    EXACTLY ONE shipment row for the batch. The only case that guard cannot
+    catch is a multi-client batch with a single (pre-client_ref) booking —
+    detectable only via proforma. proforma_links.db is always present in
+    production, so:
+      * DB absent (e.g. unit tests, fresh env) → permissive (True): the
+        single-row guard is sufficient; there is no multi-client data to leak.
+      * DB present, ≤1 distinct client → single-client → True.
+      * DB present, >1 distinct client → multi-client → False (deny fallback,
+        honest-missing — this is the leak fix).
+      * DB present but unreadable → strict (False): never guess when real
+        proforma data exists but we failed to read it.
+    """
+    from ..core.config import settings
+    link_db = settings.storage_root / "proforma_links.db"
+    if not link_db.exists():
+        return True
+    try:
+        from ..services import proforma_invoice_link_db as pildb
+        drafts = pildb.list_drafts_for_batch(link_db, batch_id)
+        names = {
+            (getattr(d, "client_name", "") or "").strip()
+            for d in drafts
+        }
+        names.discard("")
+        return len(names) <= 1
+    except Exception:
+        return False
 
 
 # ── Label / document location helpers ─────────────────────────────────────────
@@ -243,6 +299,9 @@ class ShipmentRequestBody(BaseModel):
     receiver_vat_id: Optional[str] = None     # receiver EU VAT number
     receiver_eori: Optional[str] = None       # receiver EORI number
     box_type_code: Optional[str] = None       # Box Master profile selected in the modal
+    client_ref: Optional[str] = None          # per-client shipment scope (draft client_name);
+                                              # scopes idempotency key + row to one client so
+                                              # two clients in the same batch never share an AWB
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -350,6 +409,7 @@ def create_shipment(
         receiver_vat_id=body.receiver_vat_id,
         receiver_eori=body.receiver_eori,
         box_type_code=body.box_type_code,
+        client_ref=(body.client_ref or None),
     )
     try:
         result = coordinator.create_shipment(request)
@@ -397,16 +457,31 @@ def create_shipment(
 @router.get("/{batch_id}/shipment")
 def get_shipment(
     batch_id: str,
+    client_ref: Optional[str] = None,
     _auth: None = Depends(require_api_key),
     _config: CarrierConfig = Depends(_get_carrier_config),
     db_path: Path = Depends(_get_shipment_db_path),
 ) -> JSONResponse:
     shipment_db.init_db(db_path)
-    row = shipment_db.get_shipment_by_batch_id(db_path, batch_id)
+    # Per-client resolution — a shipment belongs to ONE client's draft, never to
+    # "the latest row for the whole batch" (2026-07-16 cross-client AWB leak).
+    # An exact (batch_id, client_ref) row is always safe; a legacy NULL-client_ref
+    # row is attributed only when the batch is unambiguously single-client.
+    _client = (client_ref or "").strip() or None
+    row = shipment_db.get_shipment_for_draft(
+        db_path,
+        batch_id,
+        _client,
+        allow_single_client_fallback=_batch_not_multi_client(batch_id),
+    )
     if row is None:
         raise HTTPException(
             status_code=404,
-            detail=f"No shipment found for batch {batch_id!r}.",
+            detail=(
+                f"No shipment linked to this client for batch {batch_id!r}."
+                if _client else
+                f"No shipment found for batch {batch_id!r}."
+            ),
         )
 
     tracking_ref = row.get("tracking_ref")
@@ -433,6 +508,13 @@ def get_shipment(
         # does not. This is the canonical source for the CMR document number —
         # NEVER batch_id and NEVER tracking_ref.
         "export_shipment_id": row["idempotency_key"],
+        # Short, deterministic CMR document number derived from export_shipment_id
+        # (ADR-proforma-cmr-short-number). The full id above stays as audit
+        # provenance; only this short form is printed on the CMR. Independent of
+        # the AWB; rebook-stable; NEVER batch_id.
+        "cmr_number": cmr_document_number(row["idempotency_key"]),
+        # Per-client shipment scope (draft client_name); null for legacy rows.
+        "client_ref": row.get("client_ref"),
         "mode": row["mode"],
         "state": row["state"],
         "simulated": bool(row["simulated"]),
@@ -453,6 +535,65 @@ def get_shipment(
         "commercial_documents_url": commercial_documents_url,
         "documents_available": commercial_documents_url is not None,
         "saved_labels_exist": _batch_has_any_label(batch_id),
+    })
+
+
+@router.get(
+    "/{batch_id}/shipment/legacy-probe",
+    summary="Probe for a legacy (pre-client_ref) shipment row before re-booking",
+)
+def probe_legacy_shipment(
+    batch_id: str,
+    client_ref: Optional[str] = None,
+    _auth: None = Depends(require_api_key),
+    db_path: Path = Depends(_get_shipment_db_path),
+) -> JSONResponse:
+    """Read-only pre-booking probe (ADR-proforma-cmr-short-number §Known
+    limitation).
+
+    A batch booked BEFORE client-scoped idempotency keys carries a legacy
+    row with NULL client_ref; a re-book that now sends client_ref computes a
+    NEW key, so the coordinator's completed-key replay will not match — a new
+    shipment record (and, in live mode, a new DHL booking) would be created
+    alongside the legacy row. The V2 AWB modal calls this before booking and
+    blocks on explicit operator confirmation when legacy_exists is true.
+
+    When the optional client_ref query param is sent, the response also
+    carries has_client_row: whether a non-failed row scoped to EXACTLY that
+    client already exists for the batch. If it does, a same-params re-book
+    replays that row (per-client key match) — no new record — so the modal
+    suppresses the warning (reviewer-challenge MEDIUM-2, 2026-07-16). The
+    legacy row is deliberately never mutated; suppression is read-side only.
+    Without the param the response shape is unchanged (no has_client_row key).
+
+    Deliberately NOT behind _get_carrier_config: the answer comes from the
+    local shipment DB only. Never mutates state, never calls DHL, and never
+    cancels/voids anything.
+    """
+    cr = (client_ref or "").strip() or None
+    # Defensive-depth consistency with the other handlers in this file: a
+    # malformed batch_id cannot name a real batch, so answer honestly-false.
+    if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
+        body = {"batch_id": batch_id, "legacy_exists": False}
+        if cr:
+            body["has_client_row"] = False
+        return JSONResponse(body)
+    shipment_db.init_db(db_path)
+    extra = {}
+    if cr:
+        extra["has_client_row"] = (
+            shipment_db.get_client_shipment(db_path, batch_id, cr) is not None
+        )
+    row = shipment_db.get_legacy_shipment(db_path, batch_id)
+    if row is None:
+        return JSONResponse({"batch_id": batch_id, "legacy_exists": False, **extra})
+    return JSONResponse({
+        "batch_id": batch_id,
+        "legacy_exists": True,
+        "tracking_ref": row.get("tracking_ref"),
+        "state": row.get("state"),
+        "created_at": row.get("created_at"),
+        **extra,
     })
 
 

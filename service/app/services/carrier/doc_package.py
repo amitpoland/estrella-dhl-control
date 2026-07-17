@@ -188,14 +188,34 @@ def _load_packing_lines(batch_id: str, storage_root: Path) -> List[Dict[str, Any
     try:
         conn = sqlite3.connect(str(packing_db))
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT product_code, design_no, item_type, quantity, "
-            "gross_weight, net_weight, metal, karat FROM packing_lines "
-            "WHERE batch_id=?",
-            (batch_id,),
-        ).fetchall()
+        # diamond_weight / color_weight (carats) added 2026-06-09; select them so
+        # the backend Packing List PDF can emit the stone-weight columns (they
+        # were previously loaded only by the V2 renderer, never the PDF).
+        # Fall back gracefully for legacy packing.db files that predate those
+        # columns — a missing column must never blank the whole packing list.
+        try:
+            rows = conn.execute(
+                "SELECT product_code, design_no, item_type, quantity, "
+                "gross_weight, net_weight, diamond_weight, color_weight, "
+                "metal, karat FROM packing_lines "
+                "WHERE batch_id=?",
+                (batch_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = conn.execute(
+                "SELECT product_code, design_no, item_type, quantity, "
+                "gross_weight, net_weight, metal, karat FROM packing_lines "
+                "WHERE batch_id=?",
+                (batch_id,),
+            ).fetchall()
         conn.close()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict(r)
+            d.setdefault("diamond_weight", None)
+            d.setdefault("color_weight", None)
+            result.append(d)
+        return result
     except Exception as exc:
         log.debug("[%s] _load_packing_lines failed: %s", batch_id, exc)
         return []
@@ -506,25 +526,40 @@ def render_packing_list_pdf(
         except Exception:
             pass
 
-    headers = ["#", "Product Code / Design", "Type", "Qty", "Gross Wt (g)"]
+    # Weights: gross/net in GRAMS (packing sheet), diamond/color in CARATS.
+    # Net and stone-weight columns were previously omitted from this PDF even
+    # though the data exists (2026-07-16 repair); a missing value renders "—",
+    # never fabricated.
+    headers = ["#", "Product Code / Design", "Type", "Qty",
+               "Gross Wt (g)", "Net Wt (g)", "Dia Wt (ct)", "Col Wt (ct)"]
     data = [headers]
     total_qty = 0
     total_gw = 0.0
+    total_nw = 0.0
     for i, ln in enumerate(packing_lines, 1):
         pc    = (ln.get("product_code") or ln.get("design_no") or "")[:30]
         itype = (ln.get("item_type") or "")[:20]
         qty   = int(ln.get("quantity") or 0)
         gw    = float(ln.get("gross_weight") or 0)
+        nw    = float(ln.get("net_weight") or 0)
+        dia   = float(ln.get("diamond_weight") or 0)
+        col   = float(ln.get("color_weight") or 0)
         total_qty += qty
         total_gw  += gw
+        total_nw  += nw
         data.append([str(i), pc, itype, str(qty),
-                     f"{gw:.1f}" if gw else "—"])
+                     f"{gw:.1f}" if gw else "—",
+                     f"{nw:.1f}" if nw else "—",
+                     f"{dia:.2f}" if dia else "—",
+                     f"{col:.2f}" if col else "—"])
 
     if len(data) > 1:
         data.append(["", "TOTAL", "", str(total_qty),
-                     f"{total_gw:.1f}" if total_gw else "—"])
+                     f"{total_gw:.1f}" if total_gw else "—",
+                     f"{total_nw:.1f}" if total_nw else "—",
+                     "", ""])
 
-    col_ws = [10*mm, 80*mm, 35*mm, 18*mm, 27*mm]
+    col_ws = [8*mm, 55*mm, 24*mm, 12*mm, 20*mm, 20*mm, 18*mm, 18*mm]
     tbl = Table(data, colWidths=col_ws, repeatRows=1)
     tbl.setStyle(TableStyle([
         ("FONTNAME",      (0, 0), (-1, 0),  font_bold),
