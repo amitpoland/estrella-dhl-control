@@ -6804,7 +6804,8 @@ def _derive_draft_readiness(
     # this draft cannot be pinned to a valid product_code; a design no line bills
     # is a batch artifact (note, not a blocker). No product_code is ever guessed.
     _ambig_recon = _reconcile_billed_ambiguity(
-        preview.get("ambiguous_design_codes") or {}, _r_lines)
+        (preview.get("design_product_bridge") or {}).get("ambiguous_design_codes")
+        or {}, _r_lines)
 
     # The draft's billed product_codes — the billing authority (rule 6). Warehouse
     # / stock and wfirma_products blockers must be scoped to THESE codes, not the
