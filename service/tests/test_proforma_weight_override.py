@@ -284,3 +284,34 @@ def test_no_weight_incl_tare_422(client):
     # reason only, no net/gross/tare → still 422
     r = _set(c, did, {"expected_updated_at": d["updated_at"], "reason": "x"})
     assert r.status_code == 422
+
+
+def _event_detail(storage, did, event):
+    """Return the parsed detail_json of the newest matching draft event."""
+    with sqlite3.connect(str(storage / "proforma_links.db")) as conn:
+        row = conn.execute(
+            "SELECT detail_json FROM proforma_draft_events "
+            "WHERE draft_id=? AND event=? ORDER BY id DESC LIMIT 1",
+            (did, event)).fetchone()
+    assert row is not None, f"no {event} event for draft {did}"
+    return json.loads(row[0])
+
+
+# ── #940 repair: weight_override_set audit "after" must include manual_tare_weight
+#    so a tare-only save is fully reconstructable from the event alone (before dict
+#    already carried it; after dict omitted it). ──────────────────────────────────
+
+def test_weight_override_event_after_includes_tare(client):
+    c, storage = client
+    _seed_packing()
+    did = _seed_draft(storage)
+    d = _get(c, did)
+    r = _set(c, did, {"expected_updated_at": d["updated_at"],
+                      "manual_tare_weight": 0.25})
+    assert r.status_code == 200, r.text
+    detail = _event_detail(storage, did, "weight_override_set")
+    # both snapshots carry the tare; the after value reflects the saved override
+    assert "manual_tare_weight" in detail["before"]
+    assert "manual_tare_weight" in detail["after"], \
+        "weight_override_set.after must include manual_tare_weight (#940 repair)"
+    assert detail["after"]["manual_tare_weight"] == 0.25

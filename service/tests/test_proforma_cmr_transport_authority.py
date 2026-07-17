@@ -225,3 +225,29 @@ def test_cmr_data_origin_from_authority_not_hardcoded():
     authority chain is ln/l.origin → liveDraft.origin_country → honest null/—."""
     assert "|| 'India'" not in _JSX
     assert "goods_origin_country" in _JSX
+
+
+# ── #940 repair: per-line CMR origin mapped ISO-2 → full country name ─────────
+# Chip task_35c61ad8 — the Modern CMR line renderer printed raw "IN"; map it
+# through the single _cmrCountryName authority so it prints "India", honest-null
+# preserved (unknown/blank → null → "—", never defaulted to a country).
+
+def test_cmr_per_line_origin_mapped_through_country_name():
+    # the cmrPreviewData line contract maps each line's origin through the CMR
+    # country-name authority (component-local _cmrCountryName lives here)
+    assert "_cmrCountryName(_l.origin)" in _JSX
+    # honest-null: the mapped result falls back to null, never a hardcoded country
+    assert "_cmrCountryName(_l.origin) || null" in _JSX
+
+
+def test_cmr_country_name_is_single_authority():
+    # exactly one ISO→name table + one mapper — no duplication into the renderer
+    assert _JSX.count("const _CMR_COUNTRY_NAMES") == 1
+    assert "_CMR_COUNTRY_NAMES" not in _CMR   # renderer must not carry its own copy
+    assert _CMR.count("_cmrCountryName") == 0  # mapping stays in the data contract
+
+
+def test_cmr_modern_line_renderer_prints_mapped_origin():
+    # the Modern per-line cell prints l.origin (now the mapped full name); the
+    # Classic goods table has no per-line origin column (origin is header-only)
+    assert '{l.origin || "—"}' in _CMR

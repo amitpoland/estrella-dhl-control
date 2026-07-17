@@ -4784,10 +4784,19 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     // Fallback to proforma lines when packing data not yet loaded.
     // Origin authority = Product Master chain (ln.origin → draft origin_country);
     // honest null when the authority has none — never a hardcoded country.
-    lines: _cmrAggPackingLines.lines.length > 0
+    // Per-line origin is mapped through _cmrCountryName (the single CMR country-name
+    // authority, ISO-2 → full name e.g. "IN" → "India") so the Modern CMR line
+    // renderer (estrella-doc-cmr.jsx <td>{l.origin}</td>) prints the full country,
+    // consistent with goods_origin_country. _cmrCountryName is component-local, so
+    // the map is applied here (the CMR data contract — estrella-doc-cmr.jsx:21 states
+    // origin arrives as the full name) rather than duplicating the ISO table into the
+    // renderer. Honest-null preserved: unknown/blank origin → null (renderer shows
+    // "—"); an unknown ISO code passes through unchanged, never defaulted to India.
+    lines: (_cmrAggPackingLines.lines.length > 0
       ? _cmrAggPackingLines.lines
       : lines.map(l => ({ item_type: l.desc, qty: l.qty, net_weight: null,
-                          origin: l.origin || liveDraft.origin_country || null })),
+                          origin: l.origin || liveDraft.origin_country || null }))
+    ).map(_l => ({ ..._l, origin: _cmrCountryName(_l.origin) || null })),
     // Typed goods-origin for the CMR goods block — distinct per-line origins from
     // the SAME lines the document renders (Product Master authority), honest null
     // when unknown so the renderer omits the label instead of guessing

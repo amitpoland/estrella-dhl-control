@@ -2982,6 +2982,9 @@ def set_draft_weight_override(
             "after": {
                 "manual_net_weight":   refreshed.manual_net_weight,
                 "manual_gross_weight": refreshed.manual_gross_weight,
+                # tare included so a tare-only save is fully reconstructable from
+                # the event alone (mirrors the "before" snapshot). See #940 repair.
+                "manual_tare_weight":  refreshed.manual_tare_weight,
                 "weight_override_reason": refreshed.weight_override_reason,
                 "weight_source_revision": refreshed.weight_source_revision,
                 "weight_confirmed_by":    refreshed.weight_confirmed_by,
