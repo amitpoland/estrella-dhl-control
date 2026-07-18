@@ -758,9 +758,18 @@ def test_source_grep_verify_after_create_exists():
 
 
 def test_source_grep_verify_checks_seven_properties():
-    """All 7 verification checks + per-line field matching must be present."""
-    routes = Path(__file__).resolve().parent.parent / "app" / "api" / "routes_proforma.py"
-    src = routes.read_text(encoding="utf-8")
+    """All 7 verification checks + per-line field matching must be present.
+
+    Campaign-2 A1: the comparison matrix was extracted from routes_proforma.py
+    into the single comparison authority services/document_comparator.py (the
+    gate ``_verify_created_invoice`` now delegates to it). This pin follows the
+    relocated matrix; the behavioural pins (tests 1-19) are unchanged.
+    """
+    comparator = (
+        Path(__file__).resolve().parent.parent
+        / "app" / "services" / "document_comparator.py"
+    )
+    src = comparator.read_text(encoding="utf-8")
     # Check 1: id
     assert "has empty <id>" in src
     # Check 2: type
@@ -780,8 +789,14 @@ def test_source_grep_verify_checks_seven_properties():
 
 
 def test_source_grep_per_line_checks_all_fields():
-    """Check 4b verifies name, good_id, unit_count, price, vat_code_id."""
-    routes = Path(__file__).resolve().parent.parent / "app" / "api" / "routes_proforma.py"
-    src = routes.read_text(encoding="utf-8")
+    """Check 4b verifies name, good_id, unit_count, price, vat_code_id.
+
+    Campaign-2 A1: per-line comparison lives in document_comparator.py now.
+    """
+    comparator = (
+        Path(__file__).resolve().parent.parent
+        / "app" / "services" / "document_comparator.py"
+    )
+    src = comparator.read_text(encoding="utf-8")
     for field in ("_a_name", "_a_good_id", "_a_unit_count", "_a_price", "_a_vat_id"):
         assert field in src, f"per-line verification variable {field!r} not found"
