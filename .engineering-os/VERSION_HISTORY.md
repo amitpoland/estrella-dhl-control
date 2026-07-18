@@ -87,6 +87,26 @@ mechanism or hook. No new hook was added; deterministic enforcement, if ever req
 separate approved campaign. This is the §11 Evidence Contract and §12 MODULAR-MINIMAL applied to
 the OS's own upgrade.
 
+## Council-authorized merge gate note (v1.4, 2026-07-19 — deterministic enforcement)
+
+Recorded friction: the `pz-deploy-guard` hook denied **all** `gh pr merge` unconditionally, so even
+a fully Council-reviewed, technically-mergeable PR on an unprotected `main` required a manual
+operator merge — a repeated per-campaign stop with no machine-verifiable path to autonomous merge.
+Operator directive (2026-07-18/19) authorized replacing the unconditional denial with a narrowly
+scoped, fail-closed, **default-OFF** Council-authorized merge gate (`.claude/hooks/
+merge_authorization.py`, ADR `docs/decisions/ADR-council-authorized-merge-gate.md`). Unlike §13's
+advisory loop vocabulary, this IS deterministic enforcement bound to the existing PreToolUse hook:
+an agent merge is permitted only on an HMAC-signed authorization artifact issued **outside** the
+candidate branch (operator/harness env flag + signing key + out-of-repo store), pinned to the head
+SHA via `--match-head-commit`, squash-only, non-protected files, unexpired, unconsumed (replay-
+blocked). In this repository today there is **no CI signer / key / store**, so every path denies —
+behaviour identical to the prior unconditional denial; the structure is built and default-OFF, the
+denial is NOT weakened. Guard self-modification, `.claude/hooks/`, settings, schema/migration,
+secrets, and the merge mechanism itself stay operator-merge-only. Per operator ruling the
+guard-changing PR that introduces this mechanism is itself **operator-merge-only** (it changes the
+merge-enforcement authority). Tests: `service/tests/test_council_merge_guard.py` (24). This is the
+§12 MODULAR-MINIMAL principle applied to the guard: one rule replaced, three deny rules untouched.
+
 ## Amendment rule (unchanged in substance from v1.0 §6)
 
 Future changes go into **v1.4+** only with recorded evidence — an observed
