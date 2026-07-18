@@ -1,6 +1,6 @@
 # ADR — Invoice Comparison Authority (`document_comparator`)
 
-**Status:** Proposed (Campaign-2 A1 / hardened A1.1 — author-proposed; becomes Accepted only through the repository's architecture / PR approval process, not by the implementation author)
+**Status:** Accepted (Campaign-2 A1 / hardened A1.1 — architecture review approved on PR #946, 2026-07-18)
 **Date:** 2026-07-18
 **Scope:** Proforma → Invoice verify-after-create + (future) read-only reconciliation
 **Supersedes / relates:** verify-after-create hardening (`test_invoice_verify_after_create.py`),
