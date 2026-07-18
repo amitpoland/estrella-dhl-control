@@ -5102,6 +5102,68 @@ def list_proforma_drafts(batch_id: str) -> JSONResponse:
     })
 
 
+def _reconciliation_expected_plan(draft):
+    """Rebuild the EXPECTED FinalInvoicePlan for a converted draft using the single
+    conversion authority (_build_convert_candidate, defined in this route module).
+    Read-only: re-fetches the source proforma. Injected into
+    document_reconciler.build_reconciliation so the service never imports this api
+    layer (correct service←route dependency direction). Returns (plan, source_hash).
+    """
+    from ..services import proforma_to_invoice as _p2i
+    source_xml = wfirma_client.fetch_invoice_xml(draft.wfirma_proforma_id)
+    snap = _p2i.parse_proforma_xml(source_xml)
+    cand = _build_convert_candidate(draft, snap)
+    return cand["plan"], cand.get("core_hash", "")
+
+
+@router.get("/draft/{draft_id}/reconciliation", dependencies=[_auth])
+def get_draft_reconciliation(draft_id: int) -> JSONResponse:
+    """A2: READ-ONLY reconciliation report for a proforma-derived invoice.
+
+    Feature-gated by ``document_reconciliation_report_enabled`` (default False →
+    503). Delegates ALL reconciliation to
+    ``document_reconciler.build_reconciliation`` — this route holds NO comparison
+    or reconciliation logic and performs NO write (no DB/wFirma/audit).
+
+    Deterministic domain-outcome mapping:
+      * flag disabled                     → 503
+      * draft not found                   → 404
+      * successful report / no_local_authority → 200 (service view-model, unreshaped)
+      * linked remote wFirma invoice unavailable → 502
+    """
+    if not settings.document_reconciliation_report_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail=("Document reconciliation report is disabled "
+                    "(document_reconciliation_report_enabled=false). Set "
+                    "DOCUMENT_RECONCILIATION_REPORT_ENABLED=true to enable."),
+        )
+    from ..services import document_reconciler as _drec
+    db = settings.storage_root / "proforma_links.db"
+    # Draft existence is an HTTP routing concern (404), distinct from the
+    # service's no_local_authority (draft present but no linked invoice → 200).
+    if pildb.get_draft_by_id(db, draft_id) is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    try:
+        # Inject the expected-plan builder: the route owns the conversion authority,
+        # so the service never imports the api layer.
+        report = _drec.build_reconciliation(
+            draft_id, db_path=db,
+            build_expected_plan=_reconciliation_expected_plan,
+        )
+    except (RuntimeError, ConnectionError, ValueError, ET.ParseError) as exc:
+        # Read-only upstream/data failure — never a 500. Covers: wFirma fetch
+        # failure (RuntimeError/ConnectionError), a source proforma that cannot
+        # produce a billable plan (ZeroBillableInvoice ⊂ ValueError) or is missing
+        # a required id (ValueError), and malformed source/actual XML
+        # (ET.ParseError). Named exceptions only — never a broad catch-all.
+        raise HTTPException(
+            status_code=502,
+            detail=f"reconciliation source unavailable: {type(exc).__name__}: {exc}",
+        )
+    return JSONResponse(report)
+
+
 @router.get("/draft/{draft_id}", dependencies=[_auth])
 def get_proforma_draft(draft_id: int) -> JSONResponse:
     """Return the full editable payload for a single draft.
@@ -6218,7 +6280,14 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
   </div>
 </body></html>
 """
-    return HTMLResponse(content=html)
+    # Lesson G: this is a LOCAL EJ render that changes on every draft edit — it must
+    # never be cached (a stale preview would misrepresent the current draft). A2's
+    # reconciliation panel surfaces this URL as the "View EJ source" action.
+    return HTMLResponse(content=html, headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma":        "no-cache",
+        "Expires":       "0",
+    })
 
 
 @router.get("/draft/{draft_id}/events", dependencies=[_auth])
