@@ -153,6 +153,15 @@ def test_route_source_is_read_only():
     assert "build_reconciliation" in src   # delegates to the sole authority
 
 
+def test_preview_html_sets_no_store():
+    """A2 surfaces the local EJ preview via the 'View EJ source' action; that
+    render changes on every draft edit, so it must carry Lesson-G no-store."""
+    src = inspect.getsource(rp.get_proforma_draft_preview_html)
+    assert "Cache-Control" in src and "no-store" in src, (
+        "preview.html (local EJ render) must send Cache-Control: no-store (Lesson G)"
+    )
+
+
 def test_response_schema_stable_reconciled(client, monkeypatch):
     _enable(monkeypatch)
     monkeypatch.setattr(drec, "build_reconciliation", lambda i, **k: _RECONCILED)

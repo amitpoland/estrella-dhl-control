@@ -6258,7 +6258,14 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
   </div>
 </body></html>
 """
-    return HTMLResponse(content=html)
+    # Lesson G: this is a LOCAL EJ render that changes on every draft edit — it must
+    # never be cached (a stale preview would misrepresent the current draft). A2's
+    # reconciliation panel surfaces this URL as the "View EJ source" action.
+    return HTMLResponse(content=html, headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma":        "no-cache",
+        "Expires":       "0",
+    })
 
 
 @router.get("/draft/{draft_id}/events", dependencies=[_auth])
