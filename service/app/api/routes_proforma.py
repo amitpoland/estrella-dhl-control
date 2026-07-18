@@ -5102,6 +5102,46 @@ def list_proforma_drafts(batch_id: str) -> JSONResponse:
     })
 
 
+@router.get("/draft/{draft_id}/reconciliation", dependencies=[_auth])
+def get_draft_reconciliation(draft_id: int) -> JSONResponse:
+    """A2: READ-ONLY reconciliation report for a proforma-derived invoice.
+
+    Feature-gated by ``document_reconciliation_report_enabled`` (default False →
+    503). Delegates ALL reconciliation to
+    ``document_reconciler.build_reconciliation`` — this route holds NO comparison
+    or reconciliation logic and performs NO write (no DB/wFirma/audit).
+
+    Deterministic domain-outcome mapping:
+      * flag disabled                     → 503
+      * draft not found                   → 404
+      * successful report / no_local_authority → 200 (service view-model, unreshaped)
+      * linked remote wFirma invoice unavailable → 502
+    """
+    if not settings.document_reconciliation_report_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail=("Document reconciliation report is disabled "
+                    "(document_reconciliation_report_enabled=false). Set "
+                    "DOCUMENT_RECONCILIATION_REPORT_ENABLED=true to enable."),
+        )
+    from ..services import document_reconciler as _drec
+    db = settings.storage_root / "proforma_links.db"
+    # Draft existence is an HTTP routing concern (404), distinct from the
+    # service's no_local_authority (draft present but no linked invoice → 200).
+    if pildb.get_draft_by_id(db, draft_id) is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    try:
+        report = _drec.build_reconciliation(draft_id, db_path=db)
+    except (RuntimeError, ConnectionError) as exc:
+        # Read-only upstream failure: the linked wFirma invoice (or its source
+        # proforma) could not be fetched. Named exceptions only — no broad catch.
+        raise HTTPException(
+            status_code=502,
+            detail=f"linked wFirma invoice unavailable: {type(exc).__name__}: {exc}",
+        )
+    return JSONResponse(report)
+
+
 @router.get("/draft/{draft_id}", dependencies=[_auth])
 def get_proforma_draft(draft_id: int) -> JSONResponse:
     """Return the full editable payload for a single draft.

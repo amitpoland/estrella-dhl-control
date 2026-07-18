@@ -309,6 +309,10 @@ class Settings(BaseSettings):
     # Prod stays empty; enable per-type during controlled roll-out only.
     # Example: WFIRMA_RECOVERY_ENABLED_TYPES=wfirma_series_missing
     wfirma_recovery_enabled_types:  str  = Field(default="")
+    # A2 read-only reconciliation report endpoint gate. When False (default) the
+    # GET /api/v1/proforma/draft/{id}/reconciliation endpoint returns 503. This
+    # is a READ-ONLY feature — no writes are gated behind it.
+    document_reconciliation_report_enabled: bool = Field(default=False)
 
     # ── DHL automated email scheduler (Lane A + Lane B) ─────────────────────
     # Lane A: POST /api/v1/dhl/scheduled-inbox-check — inbox scan, every 10 min.
