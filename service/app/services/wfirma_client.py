@@ -384,6 +384,33 @@ def _parse_status(xml_text: str) -> tuple[str, str]:
         return "PARSE_ERROR", str(exc)
 
 
+def extract_error_detail(xml_text: str) -> str:
+    """Best-effort extraction of the ACTUAL reason from a wFirma non-OK
+    response, for ERROR CAPTURE.
+
+    :func:`_parse_status` returns only ``<status><description>``, which wFirma
+    frequently leaves EMPTY on a validation failure — the real reason sits in a
+    nested ``<errors>/<error>`` or ``<parameters>`` block. That is exactly why
+    the proforma 489002275 convert failure recorded
+    ``'invoices/add wFirma status=ERROR: '`` with no reason. This walks the
+    whole tree and collects every non-empty error-ish text (any tag containing
+    'error', plus message/field/value) so the failure note is actionable.
+    Returns '' when nothing extra is present. Never raises.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception:  # noqa: BLE001 — capture must never fail the caller
+        return ""
+    bits: List[str] = []
+    for node in root.iter():
+        tag = (node.tag or "").lower()
+        if "error" in tag or tag in ("message", "field", "value"):
+            t = (node.text or "").strip()
+            if t and t not in bits:
+                bits.append(t)
+    return "; ".join(bits)[:300]
+
+
 def _find_text(element: ET.Element, *path: str) -> str:
     """Safely extract text from nested XML elements."""
     node = element
@@ -2695,6 +2722,91 @@ def find_invoices_by_fullnumber(full_number: str) -> List[Dict[str, str]]:
                 continue
             seen_ids.add(inv_id)
             out.append({"id": inv_id, "fullnumber": inv_num})
+        if len(invoices) < page_size:
+            break
+        start += page_size
+        if start >= _INVOICE_LEDGER_SAFETY_CAP:
+            break
+    return out
+
+
+def find_invoices_for_proforma(proforma_number: str) -> List[Dict[str, str]]:
+    """READ-ONLY discovery: find any wFirma invoice whose description
+    back-references the given source proforma number (e.g. 'PROF 163/2026').
+
+    The proforma->invoice converter always writes the source proforma number
+    into the created invoice's ``<description>`` (the SAME back-reference the
+    reconcile route already requires to prove identity, routes_proforma.py
+    ~12010). This lets the 'failed link without invoice identity' recovery
+    DISCOVER an orphan invoice — one wFirma may have created despite an
+    ERROR-shaped response, or in a prior attempt — WITHOUT any operator-supplied
+    id/number, so a retry can never create a duplicate.
+
+    invoices/find is paged; every returned invoice is re-checked Python-side for
+    the EXACT proforma-number substring in its description — the wire response is
+    never trusted to be filtered (same defence as
+    :func:`find_invoices_by_fullnumber`). Read-only: issues GET invoices/find
+    only; never add/edit/delete.
+
+    Returns one ``{"id","fullnumber","description"}`` per matching invoice:
+      * ``[]``     — no invoice references this proforma (safe to retry),
+      * one entry  — the unambiguous orphan (reconcile against it),
+      * >1 entry   — ambiguous; the caller must refuse rather than pick.
+
+    Raises ValueError on an empty number; RuntimeError on HTTP >= 400 / non-OK
+    status / malformed XML.
+    """
+    wanted = (proforma_number or "").strip()
+    if not wanted:
+        raise ValueError("proforma_number is required")
+
+    out: List[Dict[str, str]] = []
+    seen_ids: set = set()
+    start = 0
+    page_size = _INVOICE_LEDGER_PAGE_LIMIT
+    while True:
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<api><invoices><parameters>'
+              f'<page><start>{start}</start><limit>{page_size}</limit></page>'
+            '</parameters></invoices></api>'
+        )
+        http_status, response_text = _http_request("GET", "invoices", "find", body)
+        if http_status >= 400:
+            raise RuntimeError(
+                f"invoices/find HTTP {http_status} (start={start}): "
+                f"{response_text[:200]}"
+            )
+        code, desc = _parse_status(response_text)
+        if code != "OK":
+            raise RuntimeError(f"invoices/find wFirma status={code}: {desc}")
+        try:
+            root = ET.fromstring(response_text)
+        except ET.ParseError as exc:
+            raise RuntimeError(
+                f"invoices/find: malformed XML at start={start}: {exc}"
+            ) from exc
+
+        invoices = root.findall(".//invoice")
+        if not invoices:
+            break
+        for inv in invoices:
+            # Python-side exact re-check — the description back-reference is the
+            # proof, the wire filter (if any) is only a hint.
+            description = inv.findtext("description") or ""
+            if wanted not in description:
+                continue
+            inv_id = (inv.findtext("id") or "").strip()
+            if not inv_id or inv_id in seen_ids:
+                continue
+            seen_ids.add(inv_id)
+            out.append({
+                "id":          inv_id,
+                "fullnumber":  (inv.findtext("fullnumber")
+                                or inv.findtext("full_number")
+                                or inv.findtext("number") or "").strip(),
+                "description": description,
+            })
         if len(invoices) < page_size:
             break
         start += page_size
