@@ -308,6 +308,52 @@ def mark_failed(db_path: Path, proforma_id: str, *, notes: str) -> None:
             raise KeyError(f"no link row for proforma_id={proforma_id!r}")
 
 
+def reopen_for_retry(db_path: Path, proforma_id: str, *,
+                     operator: str = "") -> bool:
+    """Atomically reopen a FAILED link for a fresh conversion attempt
+    (failed -> pending). Powers the 'discovery-first + explicit operator
+    confirm' recovery of a failed link that carries NO invoice identity
+    (proforma_id 489002275 class: wFirma invoices/add returned ERROR, so no
+    invoice was created and there is no id/number to reconcile against).
+
+    Safety properties (all load-bearing):
+      * DUPLICATE GUARD PRESERVED — the row is re-used, not re-created;
+        proforma_id stays UNIQUE, so there is never a second link and never a
+        path to a second wFirma invoice.
+      * NEVER DELETES — the failed row is transitioned in place; the recovery
+        contract forbids deleting failed links.
+      * AUDIT PRESERVED — the prior failure note is appended to, never
+        overwritten, so the full history survives the reopen.
+      * CONCURRENCY-SAFE — the transition is a single conditional UPDATE
+        guarded on status='failed'. Under a race EXACTLY ONE caller flips the
+        row (rowcount==1 -> True); every other caller sees status!='failed'
+        and gets False. No double-reopen, no lost update.
+
+    Returns True iff this call performed the reopen. False when the row is not
+    in 'failed' state (already reopened / issued / a concurrent reopen won).
+    Raises KeyError when no link row exists at all.
+    """
+    if get_link_by_proforma(db_path, proforma_id) is None:
+        raise KeyError(f"no link row for proforma_id={proforma_id!r}")
+    who   = (operator or "").strip() or "unknown"
+    stamp = _now_utc_iso()
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE proforma_invoice_links
+               SET status = 'pending',
+                   notes  = TRIM(
+                       COALESCE(notes, '')
+                       || ' | reopened_for_retry by ' || ? || ' @' || ?
+                   )
+             WHERE proforma_id = ? AND status = 'failed'
+            """,
+            (who, stamp, str(proforma_id)),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
+
 def record_invoice_identity(db_path: Path,
                             proforma_id: str,
                             *,
