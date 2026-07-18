@@ -66,6 +66,12 @@ class ShipmentResult:
     # True when served from the stored COMPLETE row (idempotency replay) —
     # no adapter call was made, no new shipment was created.
     replayed: bool = False
+    # Operator who initiated the booking (X-Operator attribution). Written to
+    # carrier_shipments.booked_by at the PENDING anchor insert and NEVER
+    # overwritten on replay/recovery, so a replayed result reports the ORIGINAL
+    # booker, not whoever triggered the replay. NULL for legacy rows booked
+    # before attribution existed (honest missing).
+    booked_by: Optional[str] = None
 
 
 class CarrierGateError(Exception):

@@ -47,7 +47,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -280,6 +280,28 @@ def _do_not_use_info(batch_id: str, tracking_ref: Optional[str]) -> dict:
     return info
 
 
+# ── Operator attribution ──────────────────────────────────────────────────────
+# X-Operator names the operator who initiated a carrier write (AWB booking).
+# It is recorded in the carrier audit trail (carrier_shipments.booked_by) so a
+# booking can always be attributed to a person. Same sanitising contract as the
+# rest of the app's audit actors (routes_upload._clean_operator): printable
+# characters only + length cap → no audit-log injection, no unbounded values.
+# Default "operator" matches routes_wfirma / routes_warehouse_receipt so a
+# client that omits the header still yields a stable, non-empty booker.
+
+def _clean_operator(x_operator: Optional[str]) -> str:
+    """Sanitise the X-Operator audit actor for a carrier booking.
+
+    Printable-only, capped at 120 chars, defaulting to 'operator'. Never
+    raises; the header is untrusted input written into an audit column. A
+    non-string argument (e.g. the FastAPI Header sentinel when a handler is
+    unit-tested by direct call) is treated as absent.
+    """
+    raw = x_operator if isinstance(x_operator, str) else ""
+    s = "".join(c for c in raw.strip() if c.isprintable())[:120]
+    return s or "operator"
+
+
 # ── Request body ──────────────────────────────────────────────────────────────
 
 
@@ -334,8 +356,13 @@ def create_shipment(
     body: ShipmentRequestBody,
     _auth: None = Depends(require_api_key),
     coordinator: CarrierCoordinator = Depends(_get_coordinator),
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
 ) -> JSONResponse:
     from ..core.config import settings
+
+    # Operator attribution — recorded as the booker in the carrier audit trail
+    # (carrier_shipments.booked_by). Sanitised untrusted header input.
+    operator = _clean_operator(x_operator)
 
     # Resolve shipper account — body takes precedence, then settings, then 422
     shipper_account = body.shipper_account or settings.dhl_express_account_number
@@ -412,7 +439,7 @@ def create_shipment(
         client_ref=(body.client_ref or None),
     )
     try:
-        result = coordinator.create_shipment(request)
+        result = coordinator.create_shipment(request, operator=operator)
     except CarrierGateError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -433,6 +460,11 @@ def create_shipment(
         # Replay indicator: True when served from the stored COMPLETE row —
         # no adapter call was made, no new DHL shipment was created.
         "replayed": bool(result.replayed),
+        # Operator attribution — who booked this AWB. On a replay this is the
+        # ORIGINAL booker (from the stored row), not the current caller.
+        # Guarded like tracking_ref/service_product above: a real result yields
+        # str|None (both JSON-safe); the guard only coerces a non-str away.
+        "booked_by": (result.booked_by if isinstance(result.booked_by, str) else None),
         # Local do-not-use flag (duplicate/unused label control; not a DHL void)
         **_do_not_use_info(batch_id, result.tracking_ref
                            if isinstance(result.tracking_ref, str) else None),
@@ -529,6 +561,8 @@ def get_shipment(
         "declared_value": row.get("declared_value"),
         "currency": row.get("currency"),
         "created_at": row.get("created_at"),
+        # Operator attribution — who booked this AWB (null for legacy rows).
+        "booked_by": row.get("booked_by"),
         # Local do-not-use flag (duplicate/unused label control; not a DHL void)
         **_do_not_use_info(batch_id, tracking_ref),
         **doc_urls,
@@ -615,6 +649,7 @@ def mark_shipment_do_not_use(
     body: DoNotUseBody,
     _auth: None = Depends(require_api_key),
     db_path: Path = Depends(_get_shipment_db_path),
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
 ) -> JSONResponse:
     """Set the local do-not-use flag on a recorded shipment.
 
@@ -622,6 +657,11 @@ def mark_shipment_do_not_use(
     tracking number is unchanged, and the label PDFs stay on disk for audit.
     It only marks the label so operators do not print it or hand it to the
     courier. Marked labels remain downloadable via ?archived=true.
+
+    Operator attribution (stored in do_not_use_by): the request body's
+    ``operator`` field takes precedence; the app-standard ``X-Operator`` header
+    is the fallback. Both are sanitised; when neither is present the field is
+    left NULL (attribution genuinely unknown — never fabricated).
     """
     if not (_SAFE_BATCH.match(batch_id or "") and _SAFE_REF.match(tracking_ref or "")):
         raise HTTPException(status_code=404, detail="Unknown batch or tracking reference.")
@@ -631,10 +671,13 @@ def mark_shipment_do_not_use(
             status_code=422,
             detail="A reason is required to mark a label as do-not-use (audit trail).",
         )
+    hdr_operator = (x_operator or "").strip() if isinstance(x_operator, str) else ""
+    raw_operator = (body.operator or "").strip() or hdr_operator
+    operator = _clean_operator(raw_operator) if raw_operator else None
     shipment_db.init_db(db_path)
     marked = shipment_db.mark_do_not_use(
         db_path, batch_id, tracking_ref, reason,
-        operator=(body.operator or "").strip() or None,
+        operator=operator,
     )
     if marked == 0:
         raise HTTPException(
