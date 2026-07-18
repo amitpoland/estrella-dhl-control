@@ -4252,8 +4252,47 @@ def proforma_to_invoice(
         status          = "pending",
     )
     if _existing_link == "failed" and body.retry_failed_link:
-        # 2b let this explicit retry through: re-use the SAME failed row (never a
-        # 2nd) so the duplicate guard holds. reopen_for_retry is concurrency-safe
+        # CODE-ENFORCED discovery-first: before re-running invoices/add, re-check
+        # (read-only) that wFirma holds NO invoice back-referencing this proforma.
+        # This makes the no-duplicate guarantee a CODE guarantee — not a matter of
+        # operator discipline — and closes the network-timeout split-brain
+        # (invoices/add succeeded but the HTTP response was lost, leaving the link
+        # 'failed' with no captured id, indistinguishable from a real ERROR).
+        try:
+            _orphans = wfirma_client.find_invoices_for_proforma(snap.proforma_number)
+        except Exception as exc:
+            return JSONResponse({
+                "ok":                 False,
+                "status":             "blocked",
+                "batch_id":           batch_id,
+                "client_name":        cn,
+                "wfirma_proforma_id": pid,
+                "blocking_reasons": [
+                    "cannot safely retry — the read-only orphan-invoice discovery "
+                    f"lookup failed ({type(exc).__name__}: {exc}); refusing to "
+                    "re-create an invoice while wFirma state is unknown"
+                ],
+            })
+        if _orphans:
+            _oids = ", ".join(o["id"] for o in _orphans)
+            return JSONResponse({
+                "ok":                 False,
+                "status":             "blocked",
+                "batch_id":           batch_id,
+                "client_name":        cn,
+                "wfirma_proforma_id": pid,
+                "link_status":        "failed",
+                "discovered_invoice_ids": [o["id"] for o in _orphans],
+                "blocking_reasons": [
+                    f"cannot retry — wFirma already holds {len(_orphans)} "
+                    f"invoice(s) back-referencing proforma {snap.proforma_number} "
+                    f"(ids {_oids}). Retrying would create a DUPLICATE. Reconcile "
+                    "the failed link against that invoice id instead "
+                    "(wfirma_invoice_id=<id>)."
+                ],
+            })
+        # Discovery confirmed no invoice exists: re-use the SAME failed row (never
+        # a 2nd) so the duplicate guard holds. reopen_for_retry is concurrency-safe
         # — exactly one caller flips failed->pending; a loser is blocked here,
         # never double-converted.
         if not plink.reopen_for_retry(link_db, pid, operator=operator):
@@ -12058,15 +12097,30 @@ def reconcile_invoice_link(
                 "supply the correct wfirma_invoice_id to disambiguate",
                 candidate_ids=[o["id"] for o in _orphans],
             )
-        if len(_orphans) == 1 and (_orphans[0]["id"] or "").isdigit():
+        if len(_orphans) == 1 and not (_orphans[0]["id"] or "").isdigit():
+            # An invoice WAS found back-referencing this proforma, but its id is
+            # non-numeric (malformed wFirma response). It is NOT safe to report
+            # "no invoice exists" — refuse and have the operator inspect, exactly
+            # as the number-resolution path does for a non-numeric id.
+            return _refused(
+                f"discovery found one invoice back-referencing proforma "
+                f"{link.proforma_number!r} but its id "
+                f"{_orphans[0]['id']!r} is non-numeric — inspect the wFirma "
+                "record before retrying (do NOT assume no invoice exists)",
+                candidate_ids=[_orphans[0]["id"]],
+            )
+        if len(_orphans) == 1:
             iid       = _orphans[0]["id"]
             supplied  = iid
             id_source = "discovered"
             # falls through to the shared verify + mark_issued path below.
         else:
-            # No invoice references this proforma → none was created → a retry
-            # cannot create a duplicate. Do NOT create anything here: record an
-            # append-only audit event and report retry_ready.
+            # No invoice references this proforma in the discovery scan → record
+            # an append-only audit event and report retry_ready. Do NOT create
+            # anything here. NOTE: the convert route re-runs this SAME read-only
+            # discovery before it creates (code-enforced), so retry_ready is a
+            # green light, not a certified proof — the create-time re-check is the
+            # binding duplicate guard.
             _rr = _draft_for_proforma_id(pid)
             if _rr is not None and _rr.id is not None:
                 try:
@@ -12092,10 +12146,11 @@ def reconcile_invoice_link(
                 "proforma_number": link.proforma_number,
                 "link_status":     link.status,
                 "message": (
-                    "No wFirma invoice references this proforma — discovery "
-                    "found none, so no duplicate can exist. The failed link is "
-                    "preserved. Re-run the conversion with retry_failed_link=true "
-                    "to create the invoice on this same link row."
+                    "No wFirma invoice referencing this proforma was found in "
+                    "the discovery scan. The failed link is preserved. Re-run "
+                    "the conversion with retry_failed_link=true — the convert "
+                    "route re-checks discovery before creating and will refuse "
+                    "if an invoice appears, so a duplicate cannot be created."
                 ),
             })
 

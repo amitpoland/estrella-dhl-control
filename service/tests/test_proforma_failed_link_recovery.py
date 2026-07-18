@@ -111,6 +111,13 @@ def _add_error_xml(detail="<errors><error>VAT rate invalid</error></errors>") ->
             f'{detail}</api>')
 
 
+def _add_ok_xml(inv_id=IID, inv_num=INUM) -> str:
+    return (f'<?xml version="1.0"?><api><invoices><invoice>'
+            f'<id>{inv_id}</id><fullnumber>{inv_num}</fullnumber>'
+            f'<type>normal</type></invoice></invoices>'
+            f'<status><code>OK</code></status></api>')
+
+
 # ── Fixtures / helpers (mirror test_invoice_link_reconcile.py) ────────────────
 
 @pytest.fixture(autouse=True)
@@ -428,6 +435,7 @@ def test_convert_retry_reopens_same_row_and_captures_error(client, storage):
         return 200, _add_error_xml()
 
     with _gate_invoice_on(), _readiness_ready(), \
+         patch.object(wc, "find_invoices_for_proforma", return_value=[]), \
          patch.object(wc, "fetch_invoice_xml", side_effect=[_proforma_xml()]), \
          patch.object(wc, "_http_request", side_effect=_http):
         body = _convert(client, retry_failed_link=True)
@@ -450,3 +458,77 @@ def test_convert_retry_reopens_same_row_and_captures_error(client, storage):
                            "WHERE proforma_id=?", (PID,)).fetchone()[0] == 1
     finally:
         con.close()
+
+
+def test_convert_retry_blocked_when_orphan_invoice_discovered(client, storage):
+    # CODE-ENFORCED discovery-first: even with retry_failed_link=True, if an
+    # invoice already back-references this proforma the retry is refused BEFORE
+    # any reopen / invoices/add — a duplicate can never be created, even if the
+    # operator skipped the standalone reconcile step (network-timeout split-brain).
+    _seed_issued_draft(storage)
+    _seed_failed_link(storage)
+    _seed_audit(storage)
+    _add_calls = {"n": 0}
+
+    def _http(method, module, op, body):
+        if op == "add":
+            _add_calls["n"] += 1
+        return 200, _add_ok_xml()
+
+    with _gate_invoice_on(), _readiness_ready(), \
+         patch.object(wc, "fetch_invoice_xml", side_effect=[_proforma_xml()]), \
+         patch.object(wc, "find_invoices_for_proforma",
+                      return_value=[{"id": IID, "fullnumber": INUM,
+                                     "description": f"do proformy {PNUM}"}]), \
+         patch.object(wc, "_http_request", side_effect=_http):
+        body = _convert(client, retry_failed_link=True)
+
+    assert body["status"] == "blocked"
+    assert IID in body.get("discovered_invoice_ids", [])
+    assert _add_calls["n"] == 0                   # invoices/add NEVER called
+    # link untouched (still failed — no reopen happened)
+    assert pildb.get_link_by_proforma(_links_db(storage), PID).status == "failed"
+
+
+def test_convert_retry_success_marks_issued_single_row(client, storage):
+    # Primary happy path: discovery finds no invoice, the retry re-runs
+    # invoices/add successfully, the SAME row is promoted to issued, and there is
+    # still exactly ONE link row (no duplicate).
+    _seed_issued_draft(storage)
+    _seed_failed_link(storage)
+    _seed_audit(storage)
+
+    def _http(method, module, op, body):
+        return 200, _add_ok_xml()
+
+    with _gate_invoice_on(), _readiness_ready(), \
+         patch.object(wc, "find_invoices_for_proforma", return_value=[]), \
+         patch.object(wc, "fetch_invoice_xml",
+                      side_effect=[_proforma_xml(), _created_invoice_xml()]), \
+         patch.object(wc, "_http_request", side_effect=_http):
+        body = _convert(client, retry_failed_link=True)
+
+    assert body["ok"] is True
+    assert body["wfirma_invoice_id"] == IID
+    link = pildb.get_link_by_proforma(_links_db(storage), PID)
+    assert link.status == "issued" and link.invoice_id == IID
+    con = sqlite3.connect(_links_db(storage))
+    try:
+        assert con.execute("SELECT COUNT(*) FROM proforma_invoice_links "
+                           "WHERE proforma_id=?", (PID,)).fetchone()[0] == 1
+    finally:
+        con.close()
+
+
+def test_reconcile_discovery_one_nonnumeric_id_refused(client, storage):
+    # An orphan found with a non-numeric id must REFUSE (not report retry_ready):
+    # an invoice exists, so retrying could duplicate it.
+    _seed_issued_draft(storage)
+    _seed_failed_link(storage)
+    _seed_audit(storage)
+    with patch.object(wc, "find_invoices_for_proforma",
+                      return_value=[{"id": "not-a-number", "fullnumber": "",
+                                     "description": ""}]):
+        body = _reconcile(client, recover_without_identity=True)
+    assert body["status"] == "refused"
+    assert pildb.get_link_by_proforma(_links_db(storage), PID).status == "failed"
