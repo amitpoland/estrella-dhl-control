@@ -293,16 +293,35 @@ def _collect_pdf_diagnostic(path: Path, diag: Dict[str, Any]) -> None:
             diag["sheet_count"] = page_count
             diag["workbook_sheet_names"] = [f"page_{i+1}" for i in range(page_count)]
             diag["sheets_scanned"] = diag["workbook_sheet_names"][:1]
-            if pdf.pages:
-                tables = pdf.pages[0].extract_tables() or []
-                if tables and tables[0]:
-                    first = [str(c) if c is not None else "" for c in tables[0][0]]
-                    diag["candidate_header_rows"] = [{
-                        "sheet":            "page_1",
-                        "row_index":        0,
-                        "raw_cells_sample": first[:20],
-                        "alias_hits":       len(_map_headers(first)),
-                    }]
+            # Collect all table rows (mirrors _extract_packing_pdf) so the
+            # diagnostic sees the same header the extractor sees.
+            all_rows: List[List[Any]] = []
+            for page in pdf.pages:
+                for table in (page.extract_tables() or []):
+                    if table:
+                        for row in table:
+                            if row is not None:
+                                all_rows.append(row)
+            if all_rows:
+                first = [str(c) if c is not None else "" for c in all_rows[0]]
+                diag["candidate_header_rows"] = [{
+                    "sheet":            "page_1",
+                    "row_index":        0,
+                    "raw_cells_sample": first[:20],
+                    "alias_hits":       len(_map_headers(first)),
+                }]
+                # Populate chosen_header when a real header exists so the
+                # post-pass classifier can tell "header_not_detected" (no header)
+                # from "empty_sheet" (header found, no usable data rows) — parity
+                # with the Excel diagnostic.
+                _hdr_idx = _find_header_row(all_rows)
+                if _hdr_idx >= 0:
+                    _hdr = [str(c) if c is not None else "" for c in all_rows[_hdr_idx]]
+                    diag["chosen_header"] = {
+                        "sheet":     "page_1",
+                        "row_index": _hdr_idx,
+                        "raw_cells": _hdr[:40],
+                    }
     except Exception as exc:
         log.debug("packing diagnostic pdf open failed: %s", exc)
 
@@ -720,6 +739,11 @@ def _find_header_row(rows: List[List[Any]]) -> int:
     cell (qty/quantity/pcs/pcs_qty) AND a design/category cell. Tolerant of
     minor template variations: header text may contain extra words.
     Returns -1 if no header row is found.
+
+    Known limitation (shared by the Excel and PDF paths): only the top 25 rows
+    are scanned, so an unusually long document preamble can push the real
+    header out of range and yield -1. The PDF caller logs the collected row
+    count on this path so such a failure is diagnosable rather than silent.
     """
     def _is_qty_header(h: str) -> bool:
         return h in ("qty", "quantity", "pcs") or "qty" in h or "pcs_qty" == h
@@ -763,6 +787,107 @@ def _is_subtotal_row(cells: List[Any], col_map: Dict[int, str]) -> bool:
     return False
 
 
+# ── Shared invoice-preamble scan (Excel + PDF paths derive invoice identity
+#    identically, so the same logical document keys the same way regardless of
+#    upload format). Two forms observed in EJL templates:
+#      A. label + value in adjacent cells:   ["Invoice #", "EJL/26-27/013"]
+#      B. label + value concatenated:        ["Export No : EJL/26-27/015"]
+_PREAMBLE_LABELS_A = ("invoice", "invoice #", "invoice no", "export no", "export no.")
+_PREAMBLE_LABEL_PATTERN_B = re.compile(
+    r"^(?:invoice\s*(?:no|#)?|export\s*no\.?)\s*[:#]?\s*(.+)$",
+    re.IGNORECASE,
+)
+_PREAMBLE_IS_INVOICE_LIKE = re.compile(r"^\s*(EJL|PROF|INV)[\s/\-]", re.IGNORECASE)
+
+
+def _invoice_no_from_preamble(rows: List[List[Any]]) -> str:
+    """Scan the first 12 preamble rows for an invoice / export reference.
+
+    Returns the reference string, or "" if none is found. Shared by the Excel
+    and PDF extraction paths. Behaviour mirrors the original inline Excel scan
+    exactly: a Form-A label with no adjacent value does not stop the scan — the
+    outer loop continues to the next row.
+    """
+    for r in (rows or [])[:12]:
+        found = ""
+        for i, cell in enumerate(r):
+            raw = str(cell or "").strip()
+            if not raw:
+                continue
+            # Form A — label only
+            tag = raw.lower().rstrip("#:.").strip()
+            if tag in _PREAMBLE_LABELS_A:
+                for v in r[i + 1:]:
+                    sv = str(v or "").strip()
+                    if sv:
+                        found = sv
+                        break
+                break
+            # Form B — label and value in same cell
+            m = _PREAMBLE_LABEL_PATTERN_B.match(raw)
+            if m:
+                cand = m.group(1).strip()
+                if _PREAMBLE_IS_INVOICE_LIKE.match(cand):
+                    found = cand
+                    break
+        if found:
+            return found
+    return ""
+
+
+def _validate_and_normalise_row(
+    d: Dict[str, Any], invoice_no_hint: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Canonical packing-row validity + normalisation contract shared by the
+    Excel and PDF extraction paths.
+
+    Returns the normalised row dict, or ``None`` when the row is not a real
+    product line and MUST be dropped (never emitted, never counted). This is
+    the single guard that stops title/subtotal/footer/address rows and empty
+    mappings from being treated as extracted business rows.
+
+    Currency stamping is intentionally NOT here — it is format-specific (Excel
+    ``number_format``) and remains in the Excel path.
+    """
+    # Real data rows ALWAYS have a numeric quantity — the strongest signal.
+    # Drops subtotals, "frt"/"insu" footer rows, address rows, and — because an
+    # empty mapping has no quantity — empty/degenerate dicts.
+    if not _is_numeric_cell(d.get("quantity")):
+        return None
+    # And must carry a design / category identity cell.
+    design_present = bool(str(d.get("design_no", "") or "").strip())
+    item_type      = bool(str(d.get("item_type", "") or "").strip())
+    if not design_present and not item_type:
+        return None
+
+    # ── Metal / colour split (Variants A/B/C) ────────────────────────────────
+    # Goal: `metal` holds the full combined string (e.g. "14KT/W") AND
+    # `metal_color` holds the standalone colour code (e.g. "W").
+    if d.get("metal_color") and d.get("metal"):
+        # Variant A / C: separate cells — merge karat + colour into metal.
+        d["metal"] = f"{d['metal']}/{d['metal_color']}"
+    elif not d.get("metal_color") and d.get("metal"):
+        # Variant B: combined cell like "14KT/Y" — extract the colour suffix.
+        combined = str(d["metal"]).strip()
+        if "/" in combined:
+            _, _, color_part = combined.partition("/")
+            color_part = color_part.strip().rstrip("-").strip()
+            if color_part and len(color_part) <= 4:
+                d["metal_color"] = color_part
+
+    # Derive standalone `karat` from the (possibly combined) metal.
+    if not str(d.get("karat") or "").strip():
+        _kt = _derive_karat_from_metal(d.get("metal"))
+        if _kt:
+            d["karat"] = _kt
+
+    # Stamp invoice_no from the preamble hint when the row itself has none.
+    if invoice_no_hint and not d.get("invoice_no"):
+        d["invoice_no"] = invoice_no_hint
+
+    return d
+
+
 def _extract_packing_excel(
     path: Path,
     engine: str = "openpyxl",
@@ -787,41 +912,8 @@ def _extract_packing_excel(
     if not rows:
         return []
 
-    # ── Pull invoice_no from the sheet preamble ──────────────────────────────
-    # Two formats observed in EJL templates:
-    #   A. label + value in adjacent cells:    ["Invoice #", "EJL/26-27/013"]
-    #   B. label + value concatenated in one:  ["Export No : EJL/26-27/015"]
-    invoice_no_from_sheet = ""
-    _LABELS_A = ("invoice", "invoice #", "invoice no", "export no", "export no.")
-    _LABEL_PATTERN_B = re.compile(
-        r"^(?:invoice\s*(?:no|#)?|export\s*no\.?)\s*[:#]?\s*(.+)$",
-        re.IGNORECASE,
-    )
-    _IS_INVOICE_LIKE = re.compile(r"^\s*(EJL|PROF|INV)[\s/\-]", re.IGNORECASE)
-
-    for r in rows[:12]:
-        for i, cell in enumerate(r):
-            raw = str(cell or "").strip()
-            if not raw:
-                continue
-            # Form A — label only
-            tag = raw.lower().rstrip("#:.").strip()
-            if tag in _LABELS_A:
-                for v in r[i + 1:]:
-                    sv = str(v or "").strip()
-                    if sv:
-                        invoice_no_from_sheet = sv
-                        break
-                break
-            # Form B — label and value in same cell
-            m = _LABEL_PATTERN_B.match(raw)
-            if m:
-                cand = m.group(1).strip()
-                if _IS_INVOICE_LIKE.match(cand):
-                    invoice_no_from_sheet = cand
-                    break
-        if invoice_no_from_sheet:
-            break
+    # ── Pull invoice_no from the sheet preamble (shared with the PDF path) ────
+    invoice_no_from_sheet = _invoice_no_from_preamble(rows)
 
     # ── Locate the header row ─────────────────────────────────────────────
     hdr_idx = _find_header_row(rows)
@@ -892,57 +984,12 @@ def _extract_packing_excel(
         if _is_subtotal_row(cells, col_map):
             continue
         d = _row_to_dict(cells, col_map)
-
-        # Real data rows ALWAYS have a numeric quantity. This is the strongest
-        # signal — drops "Total ..." subtotals, "frt"/"insu" footer rows,
-        # client-address rows, etc. that may appear interleaved.
-        if not _is_numeric_cell(d.get("quantity")):
+        # Shared canonical validity + normalisation contract (numeric-qty +
+        # design/category gates, metal/colour split, karat derivation, invoice
+        # stamp). None => not a real product line; drop it.
+        d = _validate_and_normalise_row(d, invoice_no_from_sheet)
+        if d is None:
             continue
-        # And must have a design / category cell
-        design_present = bool(str(d.get("design_no", "") or "").strip())
-        item_type      = bool(str(d.get("item_type", "") or "").strip())
-        if not design_present and not item_type:
-            continue
-
-        # ── Metal / color split handling ─────────────────────────────────────
-        # Three template variants produce different raw row shapes:
-        #   Variant A (separate Kt + Col cells):
-        #     col_map assigns metal="14KT", metal_color="W" (two distinct cells)
-        #   Variant B (combined "14KT/Y" in one Kt/Color or Kt/Col cell):
-        #     col_map assigns metal="14KT/Y", metal_color="" (combined cell)
-        #   Variant C (separate Karat + Color):
-        #     same as variant A
-        #
-        # Goal: after this block, `metal` holds the full combined string (e.g.
-        # "14KT/W") AND `metal_color` holds the standalone color code (e.g. "W").
-        if d.get("metal_color") and d.get("metal"):
-            # Variant A / C: separate cells — merge karat + color into metal,
-            # metal_color already populated (left unchanged for DB storage).
-            d["metal"] = f"{d['metal']}/{d['metal_color']}"
-        elif not d.get("metal_color") and d.get("metal"):
-            # Variant B: combined cell like "14KT/Y" — extract the color suffix.
-            # Color codes are short (1–4 chars): W, Y, R, RG, WY, RW, etc.
-            # A dash or hyphen ("-") means no color / neutral — leave empty.
-            combined = str(d["metal"]).strip()
-            if "/" in combined:
-                _, _, color_part = combined.partition("/")
-                color_part = color_part.strip().rstrip("-").strip()
-                if color_part and len(color_part) <= 4:
-                    d["metal_color"] = color_part
-
-        # Derive the standalone `karat` from the (possibly combined) metal when
-        # the source carried no explicit karat column — the "Kt"/"Kt/Color"
-        # header aliases to `metal`, so without this `karat` stays empty for
-        # "18KT/Y"-style values even though the purity is present. The exact
-        # matcher + spec scorer read `karat`; `metal` is preserved unchanged.
-        if not str(d.get("karat") or "").strip():
-            _kt = _derive_karat_from_metal(d.get("metal"))
-            if _kt:
-                d["karat"] = _kt
-
-        # Stamp invoice_no from sheet header if not already on the row
-        if invoice_no_from_sheet and not d.get("invoice_no"):
-            d["invoice_no"] = invoice_no_from_sheet
 
         # Currency priority on the row:
         #   1. cell number_format on Value/Total columns (authoritative)
@@ -974,38 +1021,79 @@ def _extract_packing_xlsx(path: Path) -> List[Dict[str, Any]]:
 
 
 def _extract_packing_pdf(path: Path) -> List[Dict[str, Any]]:
+    """Read an EJL packing list PDF into the SAME canonical packing-row contract
+    as the Excel path.
+
+    EJL PDFs open with title / address / preamble rows (e.g.
+    "SHIPMENT PACKING LIST") before the real column header, so the first table
+    row is NOT the header. All table rows across every page are collected in
+    document order, the real header is located with the shared
+    ``_find_header_row`` scanner (skipping title/preamble rows), and every data
+    row passes the shared ``_validate_and_normalise_row`` contract — so
+    subtotal, footer, title and empty rows can never be emitted as products, and
+    an empty mapping is never counted as an extracted row. The same canonical
+    fields as the Excel path are emitted (notably ``line_position`` → ``pack_sr``
+    and ``invoice_no``) so cross-format persistence keys align.
+    """
     try:
         import pdfplumber
     except ImportError:
         raise RuntimeError("pdfplumber is required for PDF packing list extraction")
 
-    result: List[Dict[str, Any]] = []
-    col_map: Optional[Dict[int, str]] = None
-
+    # Collect every table row across all pages, in document order.
+    all_rows: List[List[Any]] = []
     with pdfplumber.open(str(path)) as pdf:
         for page in pdf.pages:
-            tables = page.extract_tables()
-            for table in tables:
+            for table in (page.extract_tables() or []):
                 if not table:
                     continue
-                # First non-empty row with text is treated as the header row
-                for row_idx, row in enumerate(table):
-                    if row is None:
-                        continue
-                    cells = [str(c).strip() if c is not None else "" for c in row]
-                    if col_map is None:
-                        # Try to detect header row
-                        candidate = _map_headers(cells)
-                        if candidate:
-                            col_map = candidate
-                            continue
-                        # If first row has no matches, treat it as header anyway
-                        col_map = _map_headers(cells) or {}
-                        continue
-                    if all(c == "" for c in cells):
-                        continue
-                    result.append(_row_to_dict(cells, col_map))
+                for row in table:
+                    if row is not None:
+                        all_rows.append(row)
 
+    if not all_rows:
+        log.warning("No table rows found in PDF %s", path.name)
+        return []
+
+    # Locate the real header (skips title / preamble rows) via the shared scanner.
+    hdr_idx = _find_header_row(all_rows)
+    if hdr_idx < 0:
+        # _find_header_row scans only the top 25 rows; surface the collected row
+        # count so a header pushed past that window by a long preamble is a
+        # diagnosable failure, not a silent zero-row extraction.
+        log.warning(
+            "No recognisable column headers in the top %d of %d collected table "
+            "rows for PDF %s (header may be beyond the 25-row scan window).",
+            min(25, len(all_rows)), len(all_rows), path.name,
+        )
+        return []
+
+    headers = [str(c) if c is not None else "" for c in all_rows[hdr_idx]]
+    col_map = _map_headers(headers)
+    if not col_map:
+        log.warning("Header row %d had no aliasable cells in PDF %s: %s",
+                    hdr_idx, path.name, headers)
+        return []
+
+    # Invoice reference from the preamble rows above the header (shared logic).
+    invoice_no_from_sheet = _invoice_no_from_preamble(all_rows[:hdr_idx])
+
+    result: List[Dict[str, Any]] = []
+    for raw in all_rows[hdr_idx + 1:]:
+        cells = [str(c).strip() if c is not None else "" for c in raw]
+        # Skip fully empty rows and interleaved subtotal rows.
+        if all(c == "" for c in cells):
+            continue
+        if _is_subtotal_row(cells, col_map):
+            continue
+        d = _row_to_dict(cells, col_map)
+        d = _validate_and_normalise_row(d, invoice_no_from_sheet)
+        if d is None:
+            continue
+        result.append(d)
+
+    log.info("Packing PDF extracted %d rows from %s (header_row=%d)",
+             len(result), path.name, hdr_idx)
     return result
 
 

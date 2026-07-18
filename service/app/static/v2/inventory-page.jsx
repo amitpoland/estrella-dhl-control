@@ -37,7 +37,6 @@ function DocumentViewerPage({ doc, onBack }) {
     { label: 'Uploaded by',    value: doc?.uploadedBy || 'Anna K.' },
     { label: 'Size',           value: doc?.size || '184 KB' },
     { label: 'Format',         value: doc?.format || 'XLSX' },
-    { label: 'Hash',           value: doc?.hash || 'sha256:a4f9…b182' },
   ];
 
   return (
@@ -143,7 +142,7 @@ function DocumentViewerPage({ doc, onBack }) {
           {meta.map(m => (
             <div key={m.label} style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: 2 }}>{m.label}</div>
-              <div style={{ fontSize: 12.5, color: 'var(--text)', fontFamily: m.label === 'Hash' || m.label.includes('#') ? 'monospace' : undefined, wordBreak: 'break-all' }}>{m.value}</div>
+              <div style={{ fontSize: 12.5, color: 'var(--text)', fontFamily: m.label.includes('#') ? 'monospace' : undefined, wordBreak: 'break-all' }}>{m.value}</div>
             </div>
           ))}
           <div style={{ height: 1, background: 'var(--border)', margin: '20px 0' }} />
