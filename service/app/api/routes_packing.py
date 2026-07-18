@@ -663,7 +663,7 @@ async def reprocess_packing_prices(batch_id: str) -> Dict[str, Any]:
             )
             rows = result["packing_rows"]
             entry["rows_extracted"] = len(rows)
-            pos = [r for r in rows if float(r.get("unit_price", 0) or 0) > 0]
+            pos = [r for r in rows if _safe_float(r.get("unit_price")) > 0]
             entry["positive_price_rows"] = len(pos)
             preflight.append({
                 "file_name":        pf.name,
@@ -671,7 +671,7 @@ async def reprocess_packing_prices(batch_id: str) -> Dict[str, Any]:
                 "rows": [{
                     "pack_sr":       r.get("pack_sr"),
                     "line_position": r.get("line_position"),
-                    "unit_price":    float(r.get("unit_price", 0) or 0),
+                    "unit_price":    _safe_float(r.get("unit_price")),
                 } for r in pos],
             })
         except Exception as exc:
@@ -1114,8 +1114,8 @@ async def reprocess_packing_documents(
                         "extracted_confidence":  float(r.get("extracted_confidence", 0) or 0),
                         "requires_manual_review": bool(r.get("requires_manual_review", False)),
                         "pack_sr":               r.get("line_position"),
-                        "unit_price":            float(r.get("unit_price", 0) or 0),
-                        "total_value":           float(r.get("total_value", 0) or 0),
+                        "unit_price":            _safe_float(r.get("unit_price")),
+                        "total_value":           _safe_float(r.get("total_value")),
                     }
                     for r in rows_parsed
                 ]
@@ -1469,9 +1469,9 @@ async def reprocess_packing_documents(
                         "bag_id":                str(r.get("bag_id", "") or ""),
                         "product_code":          pc_val if pc_val is not None else "",
                         "quantity":              float(qty_val or 0),
-                        "unit_price":            float(r.get("unit_price", 0) or 0),
+                        "unit_price":            _safe_float(r.get("unit_price")),
                         "currency":              (r.get("currency") or "").upper(),
-                        "total_value":           float(r.get("total_value", 0) or 0),
+                        "total_value":           _safe_float(r.get("total_value")),
                         "price_source":          r.get("price_source") or r.get("currency_source") or "",
                         "client_po":             r.get("client_po") or "",
                         "remarks":               str(r.get("remarks", "") or ""),
