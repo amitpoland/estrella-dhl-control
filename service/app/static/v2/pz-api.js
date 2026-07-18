@@ -440,6 +440,18 @@
     draftInvoicePdfUrl: (draftId) =>
       `${BASE}/proforma/draft/${encodeURIComponent(draftId)}/invoice.pdf`,
 
+    // GET /api/v1/proforma/draft/{draft_id}/reconciliation
+    // Read-only A2 reconciliation report. Transport only (Lesson F): pz-api does
+    // NO comparison and NO status inference — it returns the backend view-model.
+    getDraftReconciliation: (draftId) =>
+      _get(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/reconciliation`),
+
+    // GET /api/v1/proforma/draft/{draft_id}/preview.html
+    // Local EJ-rendered SOURCE-document preview (no wFirma call). URL builder
+    // only — reuses the existing preview authority; not a second preview path.
+    draftPreviewHtmlUrl: (draftId) =>
+      `${BASE}/proforma/draft/${encodeURIComponent(draftId)}/preview.html`,
+
     // GET /api/v1/proforma/draft/{draft_id}/invoice-link
     // Read-only join on proforma_invoice_links for this draft's proforma id.
     // Returns { ok:true, status:'pending'|'issued'|'failed'|'rolled_back', ... }

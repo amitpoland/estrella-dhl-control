@@ -3953,6 +3953,113 @@ function ConversionRecoveryPanel({ entry, onReconciled }) {
 }
 
 
+// A2: read-only reconciliation report — PRESENTATION ONLY.
+// Renders the backend view-model from GET /proforma/draft/{id}/reconciliation.
+// It performs NO comparison, NO gap recomputation, and NO status inference — it
+// renders exactly the fields the endpoint returns (Frontend Adaptability Gate:
+// the stable endpoint stays UI-agnostic; the panel only presents). Technical
+// metadata (hashes, internal ids, raw payload) is intentionally NOT shown.
+function ReconciliationPanel({ draft }) {
+  const draftId = draft && draft.id;
+  const [state, setState] = React.useState({ phase: 'idle', res: null });
+
+  React.useEffect(() => {
+    if (!draftId) { setState({ phase: 'idle', res: null }); return; }
+    let live = true;
+    setState({ phase: 'loading', res: null });
+    // exactly ONE fetch per draft load (effect keyed on draftId)
+    window.PzApi.getDraftReconciliation(draftId).then((res) => {
+      if (live) setState({ phase: 'done', res });
+    });
+    return () => { live = false; };
+  }, [draftId]);
+
+  const card = { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 14, marginTop: 20 };
+  const box  = { padding: '10px 14px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-2)' };
+  const btn  = { fontSize: 11, padding: '3px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text-1)', cursor: 'pointer' };
+  const meta = { fontSize: 10, color: 'var(--text-3)', marginTop: 8 };
+
+  const ejUrl = draftId ? window.PzApi.draftPreviewHtmlUrl(draftId) : '#';
+  const wfUrl = draftId ? window.PzApi.draftInvoicePdfUrl(draftId) : '#';
+  // Post-#548 contract: open documents via anchor-click, never window.open
+  // (popup-blocker safe). Reuses the same mechanism as the existing PDF actions.
+  const openDoc  = (url) => { const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener'; document.body.appendChild(a); a.click(); a.remove(); };
+  const printDoc = openDoc;   // opens the printable document; operator prints from the tab
+
+  // Document actions — labelled EJ SOURCE (local render) vs LINKED wFIRMA INVOICE
+  // (remote PDF). Reuses existing document authorities; no second preview path.
+  const docActions = (
+    <div data-testid="pf-recon-docs" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 }}>
+      <span style={{ fontSize: 11, color: 'var(--text-3)' }}>EJ source document</span>
+      <button data-testid="pf-recon-doc-ej-view"  onClick={() => openDoc(ejUrl)}  style={btn}>View</button>
+      <button data-testid="pf-recon-doc-ej-print" onClick={() => printDoc(ejUrl)} style={btn}>Print</button>
+      <span style={{ fontSize: 11, color: 'var(--text-3)', marginLeft: 10 }}>Linked wFirma invoice</span>
+      <button data-testid="pf-recon-doc-wfirma-view"  onClick={() => openDoc(wfUrl)}  style={btn}>View</button>
+      <button data-testid="pf-recon-doc-wfirma-print" onClick={() => printDoc(wfUrl)} style={btn}>Print</button>
+    </div>
+  );
+
+  let body;
+  if (state.phase !== 'done') {
+    body = <div data-testid="pf-recon-loading" style={{ ...box, color: 'var(--text-3)' }}>Checking reconciliation…</div>;
+  } else if (!state.res || state.res.ok === false) {
+    const st = (state.res && state.res.status) || 0;
+    if (st === 503) {
+      body = <div data-testid="pf-recon-unavailable" style={{ ...box, color: 'var(--text-3)' }}>Reconciliation report is not available.</div>;
+    } else if (st === 502) {
+      body = <div data-testid="pf-recon-remote-unavailable" style={{ ...box, color: 'var(--badge-amber-text)', borderColor: 'var(--badge-amber-text)' }}>Linked wFirma invoice is currently unavailable.</div>;
+    } else if (st === 404) {
+      body = <div data-testid="pf-recon-notfound" style={{ ...box, color: 'var(--text-3)' }}>Draft not found.</div>;
+    } else {
+      body = <div data-testid="pf-recon-error" style={{ ...box, color: 'var(--badge-amber-text)', borderColor: 'var(--badge-amber-text)' }}>Could not load reconciliation.</div>;
+    }
+  } else {
+    const d = state.res.data || {};
+    if (d.status === 'no_local_authority') {
+      body = <div data-testid="pf-recon-nolocalauthority" style={{ ...box, color: 'var(--text-3)' }}>No linked wFirma invoice — reconciliation is not available for this draft.</div>;
+    } else if (d.clean) {
+      body = <div data-testid="pf-recon-match" style={{ ...box, color: 'var(--badge-green-text)', borderColor: 'var(--badge-green-text)' }}>✓ Matches the linked wFirma invoice — no differences.</div>;
+    } else {
+      const gs = d.gap_summary || {};
+      body = (
+        <div data-testid="pf-recon-mismatch">
+          <div data-testid="pf-recon-summary" style={{ ...box, color: 'var(--badge-red-text)', borderColor: 'var(--badge-red-text)', marginBottom: 8 }}>
+            {gs.total || 0} difference{(gs.total === 1) ? '' : 's'} vs the linked wFirma invoice
+            {gs.has_blocking ? ' · blocking' : ''}
+          </div>
+          {(d.gaps || []).map((g, i) => (
+            <div key={i} data-testid="pf-recon-gap" style={{ ...box, marginBottom: 6 }}>
+              <span style={{ fontWeight: 600 }}>{g.field}</span>
+              <span data-testid="pf-recon-gap-severity" style={{ marginLeft: 8, color: 'var(--badge-red-text)' }}>{g.severity}</span>
+              <span data-testid="pf-recon-gap-policy" style={{ marginLeft: 8, color: 'var(--text-3)' }}>{g.resolution_policy}</span>
+              <div style={{ marginTop: 3, color: 'var(--text-2)' }}>{g.message}</div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    // comparison version + compared-at only (NEVER hashes / internal ids)
+    body = (
+      <div>
+        {body}
+        <div data-testid="pf-recon-meta" style={meta}>
+          <span data-testid="pf-recon-version">v{d.comparison_version}</span>
+          {d.compared_at ? <span data-testid="pf-recon-comparedat" style={{ marginLeft: 8 }}>compared {String(d.compared_at).slice(0, 19).replace('T', ' ')}</span> : null}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="pf-reconciliation" style={card}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)', marginBottom: 10 }}>Reconciliation</div>
+      {body}
+      {docActions}
+    </div>
+  );
+}
+
+
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
   const [showConvertModal, setShowConvertModal]  = React.useState(false);
@@ -6278,6 +6385,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               <div style={{ marginTop: 20 }}>
                 <DocumentsRegistry batchId={liveDraft.batch_id || (draft && draft.batch_id)} />
               </div>
+
+              {/* A2: read-only reconciliation report (presentation over the stable endpoint) */}
+              <ReconciliationPanel draft={draft} />
             </div>
           );
         })()}
