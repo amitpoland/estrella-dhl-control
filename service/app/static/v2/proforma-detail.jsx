@@ -3185,6 +3185,11 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
   const [recheck,  setRecheck]  = React.useState({ busy: false, msg: null, err: null });
   const [confirmBusy, setConfirmBusy] = React.useState(null);  // line_id being confirmed
   const [confirmErr,  setConfirmErr]  = React.useState({});    // line_id -> message
+  // Batch-level packing re-extraction (reuse: POST /packing/{batch}/reprocess —
+  // same authority V1 "Reparse all" uses). Three independent signals:
+  //   msg  = mutation outcome (ok=green / partial=amber), err = mutation FAILURE
+  //   (red), warn = presentation-refresh advisory (does NOT mean extraction failed).
+  const [reextract,   setReextract]   = React.useState({ busy: false, ok: true, msg: null, err: null, warn: null });
 
   const reload = React.useCallback(() => {
     if (!draftId) { setLoading(false); return Promise.resolve(); }
@@ -3246,6 +3251,89 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
       .catch(e => setRecheck({ busy: false, msg: null, err: (e && e.message) || 'Re-check failed' }));
   };
 
+  // Batch re-extraction — re-parses the stored packing files (no re-upload) via
+  // the canonical deterministic backend authority, then refreshes rows + status.
+  // Use when extraction failed, produced zero rows, needs review, or looks wrong.
+  const reextractPacking = () => {
+    const refreshWarn = 'Re-extraction completed, but the refreshed results could not be loaded. Refresh the page to view the latest status.';
+    const onSavedWarn = 'Re-extraction completed, but part of the page could not be refreshed. Refresh the page to view the latest status.';
+    const resultWarn  = 'Re-extraction completed, but the returned results could not be displayed. Refresh the page to view the latest status.';
+    setReextract({ busy: true, ok: true, msg: null, err: null, warn: null });
+    // TWO-ARGUMENT .then(onFulfilled, onRejected): the rejection handler catches
+    // ONLY a rejection of the original reprocessPacking() promise (transport). It
+    // can NEVER catch an exception thrown inside the success handler. No trailing
+    // .catch is chained, so a success-handler throw can never become red failure.
+    window.PzApi.reprocessPacking(batchId).then(
+      r => {
+        // [A] mutation RESULT failure — the ONLY result-path red "Re-extract failed".
+        if (!r || r.ok === false) {
+          setReextract({ busy: false, ok: false, msg: null, warn: null, err: (r && r.error) || 'Re-extract failed' });
+          return;
+        }
+        // [C] interpret the response DEFENSIVELY. If interpretation throws, the
+        // backend still SUCCEEDED — preserve success and show an amber advisory,
+        // never red, and never fabricate counts.
+        let ok;
+        let msg;
+        try {
+          const d = (r && r.data) || {};
+          const s = (d && d.summary) || {};
+          const resultFiles = Array.isArray(d.files) ? d.files : [];
+          const files = s.files != null ? s.files : 0;
+          const rows  = s.rows  != null ? s.rows  : 0;
+          // Honest per-file partial detection over a SAFELY-normalised array, so a
+          // malformed d.files can never throw through .filter.
+          const problem = resultFiles.filter(f => f && (
+            f.parser_status === 'file_missing' || f.parser_status === 'empty'
+            || f.parser_status === 'failed' || f.failure_reason));
+          ok = rows > 0 && problem.length === 0;
+          msg = `Re-extracted · ${files} file(s), ${rows} row(s) `
+              + `(${s.purchase != null ? s.purchase : 0} purchase, ${s.sales != null ? s.sales : 0} sales)`;
+          if (problem.length > 0) {
+            msg += ` · ${problem.length} file(s) did not extract — check the source document(s)`;
+          } else if (rows === 0) {
+            msg += ' · no rows extracted — check the source document';
+          }
+        } catch (_interp) {
+          setReextract({ busy: false, ok: true, msg: 'Re-extraction completed.', err: null, warn: resultWarn });
+          return;
+        }
+        // [FINAL] mutation outcome committed — no presentation step below may write
+        // `err` or `ok:false`.
+        setReextract({ busy: false, ok, err: null, warn: null, msg });
+
+        // [BLOCK A] notify parent. Guarded: a throwing onSaved is a non-fatal
+        // advisory, NEVER a mutation failure.
+        let onSavedFailed = false;
+        try { if (onSaved) onSaved(); }
+        catch (_e) {
+          onSavedFailed = true;
+          setReextract({ busy: false, ok, msg, err: null, warn: onSavedWarn });
+        }
+
+        // [BLOCK B] refresh rows/status. Guarded on BOTH sync throw and async
+        // rejection. Deliberately NOT the shared reload() (it routes failure to the
+        // tab-level error, blanking the view). On success clear a REFRESH advisory
+        // but PRESERVE an onSaved advisory — the parent notify genuinely failed even
+        // though this tab refreshed.
+        if (!draftId) return;
+        try {
+          window.EstrellaShared.apiFetch(`/api/v1/proforma/draft/${draftId}/extraction`)
+            .then(dd => { setData(dd); setReextract({ busy: false, ok, msg, err: null, warn: onSavedFailed ? onSavedWarn : null }); })
+            .catch(() => setReextract({ busy: false, ok, msg, err: null, warn: refreshWarn }));
+        } catch (_e2) {
+          setReextract({ busy: false, ok, msg, err: null, warn: refreshWarn });
+        }
+      },
+      e => {
+        // [B] TRANSPORT/mutation rejection ONLY (rejection arg of .then). Fires
+        // solely if the mutation promise rejects before a result is delivered; it
+        // cannot catch any exception thrown by the success handler above.
+        setReextract({ busy: false, ok: false, msg: null, warn: null, err: (e && e.message) || 'Re-extract failed' });
+      }
+    );
+  };
+
   // Operator review-state authority: record the CURRENT authoritative decision
   // for a mapped product_code. Uses PzApi (X-Operator injected). Never rewrites
   // machine extraction evidence; the confidence % stays visible as history.
@@ -3294,7 +3382,28 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
       {!loading && !error && (
         <React.Fragment>
           {/* Packing-list source (Import/Packing authority) — batch-scoped by design */}
-          <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', margin: '4px 0 2px' }}>Batch source documents</div>
+          <div style={{ display: 'flex', alignItems: 'center', margin: '4px 0 2px' }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)' }}>Batch source documents</div>
+            <div style={{ flex: 1 }} />
+            <button
+              data-testid="pf-source-reextract"
+              onClick={reextractPacking}
+              disabled={reextract.busy}
+              title="Re-parse every stored packing file for this batch through the deterministic extractor. No re-upload needed."
+              style={{ ...iBtn, opacity: reextract.busy ? 0.6 : 1 }}
+            >
+              {reextract.busy ? '⟳ Re-extracting…' : '⟳ Re-extract all packing files'}
+            </button>
+          </div>
+          {reextract.msg && (
+            <div data-testid="pf-source-reextract-msg" style={{ fontSize: 11, color: reextract.ok ? 'var(--badge-green-text)' : 'var(--badge-amber-text)', marginBottom: 4 }}>{reextract.msg}</div>
+          )}
+          {reextract.warn && (
+            <div data-testid="pf-source-reextract-warn" style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginBottom: 4 }}>{reextract.warn}</div>
+          )}
+          {reextract.err && (
+            <div data-testid="pf-source-reextract-err" style={{ fontSize: 11, color: 'var(--badge-red-text)', marginBottom: 4 }}>Re-extract failed · {reextract.err}</div>
+          )}
           <div data-testid="pf-source-scope-note" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 6 }}>
             Source documents are batch-scoped; the rows below are draft-scoped (this proforma only).
           </div>

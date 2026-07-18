@@ -261,6 +261,15 @@
       }
     },
 
+    // POST /api/v1/packing/{batch_id}/reprocess
+    // Fileless, batch-level re-extraction: re-parses every stored packing file
+    // for the batch through the canonical deterministic extractor (the same
+    // authority V1's "Reparse all" uses). No new file is uploaded. Transport
+    // only — the backend owns extraction, dedup, and idempotent inventory.
+    // Returns { ok, data: { summary: { files, rows, purchase, sales }, ... } }.
+    reprocessPacking: (batchId) =>
+      _postM(`${BASE}/packing/${encodeURIComponent(batchId)}/reprocess`, {}),
+
     // GET /api/v1/proforma/drafts/{batch_id}
     // Returns { ok, data: { ok, batch_id, drafts[], count } }
     getProformaDrafts: (batchId) =>
