@@ -4892,7 +4892,17 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // Missing → '' (renderer shows '—'), never a cross-authority value.
         client_po:    pk.client_po || '',
         // Supplier purchase-invoice number — its OWN typed field, kept separate
-        // from client_po above so the two identities never merge.
+        // from client_po above so the two identities never merge. This is a
+        // typed-SEPARATION GUARD, not a display field: it is INTENTIONALLY NOT
+        // RENDERED on any document. The supplier purchase invoice is IMPORT_PZ
+        // authority and must never appear on a customer-facing sales/transport
+        // document — the packing list carries invoice_ref (the wFirma SALES
+        // invoice, #937 authority) as its only invoice identity. The field exists
+        // solely to give pk.invoice_no its own landing so it can never bleed back
+        // into client_po; presence pinned by
+        // test_proforma_detail_client_po_never_bleeds_purchase_invoice. Rendering
+        // decision recorded: PROJECT_STATE.md DECISIONS 2026-07-18. Do not surface
+        // it without a new DECISIONS entry (Lesson M).
         purchase_invoice_no: pk.invoice_no || '',
         product_code: ln.product_code || pk.product_code || '—',
         design:       ln.design_no    || pk.design_no    || '—',

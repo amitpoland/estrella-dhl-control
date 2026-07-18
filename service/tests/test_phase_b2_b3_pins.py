@@ -158,6 +158,21 @@ def test_proforma_detail_client_po_never_bleeds_purchase_invoice():
     assert "pk.client_po || pk.invoice_no || ln.client_ref" not in src
 
 
+def test_packing_renderer_never_renders_supplier_purchase_invoice():
+    """PROJECT_STATE DECISIONS 2026-07-18: purchase_invoice_no is a typed-separation
+    guard — DEFERRED / intentionally NOT rendered. The supplier purchase invoice is
+    IMPORT_PZ authority and must never appear on the customer-facing packing list,
+    which carries invoice_ref (the wFirma SALES invoice) as its only invoice identity.
+    The presence pin above keeps the builder field alive so pk.invoice_no can never
+    bleed into client_po; this absence pin keeps that field OFF the document. A future
+    `{r.purchase_invoice_no}` added to the renderer must fail here, not ship silently."""
+    packing_src = _read("estrella-doc-packing.jsx")
+    assert ".purchase_invoice_no" not in packing_src, \
+        "estrella-doc-packing.jsx must not read purchase_invoice_no — the supplier " \
+        "purchase invoice is IMPORT_PZ authority and must not appear on a customer " \
+        "sales/transport document (PROJECT_STATE DECISIONS 2026-07-18)"
+
+
 def test_b3_client_po_typed_separation_semantics():
     """client_po draws ONLY from the client PO column; it never adopts the
     supplier purchase invoice. Pure-expression check mirroring the JSX."""
