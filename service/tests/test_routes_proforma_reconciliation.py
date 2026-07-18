@@ -132,6 +132,20 @@ def test_connectionerror_maps_502(client, monkeypatch):
     assert client.get(_URL.format(1), headers=_auth()).status_code == 502
 
 
+@pytest.mark.parametrize("exc", [
+    ValueError("invoice_id is required"),
+    __import__("xml.etree.ElementTree", fromlist=["ParseError"]).ParseError("bad xml"),
+])
+def test_upstream_data_failures_map_502_not_500(client, monkeypatch, exc):
+    """ValueError (incl. ZeroBillableInvoice) and XML ParseError from the
+    expected-plan rebuild must be 502, never an unhandled 500."""
+    _enable(monkeypatch)
+    def _raise(i, **k):
+        raise exc
+    monkeypatch.setattr(drec, "build_reconciliation", _raise)
+    assert client.get(_URL.format(1), headers=_auth()).status_code == 502
+
+
 # ── read-only / idempotency / schema ─────────────────────────────────────────
 
 def test_two_identical_gets_identical_no_side_effect(client, monkeypatch):
@@ -196,8 +210,10 @@ def test_end_to_end_real_service_and_comparator(client, monkeypatch):
     draft = SimpleNamespace(wfirma_invoice_id="500001", wfirma_proforma_id="p", id=1)
     monkeypatch.setattr(settings, "document_reconciliation_report_enabled", True)
     monkeypatch.setattr(pildb, "get_draft_by_id", lambda db, i: draft)
-    # inject the reconciler's read-only indirections (no real wFirma/DB)
-    monkeypatch.setattr(drec, "_build_expected_plan", lambda d: (_plan(), "SRCHASH"))
+    # inject the read-only indirections (no real wFirma/DB): the route now injects
+    # its own expected-plan builder (rp._reconciliation_expected_plan), so patch
+    # THAT (proving the route→service→real comparator wiring) + the actual fetch.
+    monkeypatch.setattr(rp, "_reconciliation_expected_plan", lambda d: (_plan(), "SRCHASH"))
     monkeypatch.setattr(drec, "_fetch_actual_xml", lambda iid: _xml("9999"))
     r = client.get(_URL.format(1), headers=_auth())
     assert r.status_code == 200

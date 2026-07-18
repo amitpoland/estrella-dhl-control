@@ -5102,6 +5102,20 @@ def list_proforma_drafts(batch_id: str) -> JSONResponse:
     })
 
 
+def _reconciliation_expected_plan(draft):
+    """Rebuild the EXPECTED FinalInvoicePlan for a converted draft using the single
+    conversion authority (_build_convert_candidate, defined in this route module).
+    Read-only: re-fetches the source proforma. Injected into
+    document_reconciler.build_reconciliation so the service never imports this api
+    layer (correct service←route dependency direction). Returns (plan, source_hash).
+    """
+    from ..services import proforma_to_invoice as _p2i
+    source_xml = wfirma_client.fetch_invoice_xml(draft.wfirma_proforma_id)
+    snap = _p2i.parse_proforma_xml(source_xml)
+    cand = _build_convert_candidate(draft, snap)
+    return cand["plan"], cand.get("core_hash", "")
+
+
 @router.get("/draft/{draft_id}/reconciliation", dependencies=[_auth])
 def get_draft_reconciliation(draft_id: int) -> JSONResponse:
     """A2: READ-ONLY reconciliation report for a proforma-derived invoice.
@@ -5131,13 +5145,21 @@ def get_draft_reconciliation(draft_id: int) -> JSONResponse:
     if pildb.get_draft_by_id(db, draft_id) is None:
         raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
     try:
-        report = _drec.build_reconciliation(draft_id, db_path=db)
-    except (RuntimeError, ConnectionError) as exc:
-        # Read-only upstream failure: the linked wFirma invoice (or its source
-        # proforma) could not be fetched. Named exceptions only — no broad catch.
+        # Inject the expected-plan builder: the route owns the conversion authority,
+        # so the service never imports the api layer.
+        report = _drec.build_reconciliation(
+            draft_id, db_path=db,
+            build_expected_plan=_reconciliation_expected_plan,
+        )
+    except (RuntimeError, ConnectionError, ValueError, ET.ParseError) as exc:
+        # Read-only upstream/data failure — never a 500. Covers: wFirma fetch
+        # failure (RuntimeError/ConnectionError), a source proforma that cannot
+        # produce a billable plan (ZeroBillableInvoice ⊂ ValueError) or is missing
+        # a required id (ValueError), and malformed source/actual XML
+        # (ET.ParseError). Named exceptions only — never a broad catch-all.
         raise HTTPException(
             status_code=502,
-            detail=f"linked wFirma invoice unavailable: {type(exc).__name__}: {exc}",
+            detail=f"reconciliation source unavailable: {type(exc).__name__}: {exc}",
         )
     return JSONResponse(report)
 

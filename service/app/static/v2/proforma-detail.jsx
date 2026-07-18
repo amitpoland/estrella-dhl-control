@@ -3976,8 +3976,13 @@ function ReconciliationPanel({ draft }) {
 
   const card = { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 14, marginTop: 20 };
   const box  = { padding: '10px 14px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-2)' };
-  const btn  = { fontSize: 11, padding: '3px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text-1)', cursor: 'pointer' };
   const meta = { fontSize: 10, color: 'var(--text-3)', marginTop: 8 };
+
+  // A linked wFirma invoice exists only once reconciliation actually ran against
+  // it (status 'reconciled'); no_local_authority / loading / error → none yet.
+  const _done = state.phase === 'done';
+  const _okData = (_done && state.res && state.res.ok) ? (state.res.data || {}) : null;
+  const hasLinkedInvoice = !!(_okData && _okData.status === 'reconciled');
 
   const ejUrl = draftId ? window.PzApi.draftPreviewHtmlUrl(draftId) : '#';
   const wfUrl = draftId ? window.PzApi.draftInvoicePdfUrl(draftId) : '#';
@@ -3985,17 +3990,21 @@ function ReconciliationPanel({ draft }) {
   // (popup-blocker safe). Reuses the same mechanism as the existing PDF actions.
   const openDoc  = (url) => { const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener'; document.body.appendChild(a); a.click(); a.remove(); };
   const printDoc = openDoc;   // opens the printable document; operator prints from the tab
+  const _wfTitle = hasLinkedInvoice ? undefined : 'No linked wFirma invoice for this draft';
 
-  // Document actions — labelled EJ SOURCE (local render) vs LINKED wFIRMA INVOICE
-  // (remote PDF). Reuses existing document authorities; no second preview path.
+  // Document actions — labelled EJ SOURCE (local render, always available for a
+  // draft) vs LINKED wFIRMA INVOICE (remote PDF; disabled with a reason until an
+  // invoice is linked, so the operator is never sent to a 404). Shared Btn;
+  // existing authorities only; no second preview path.
   const docActions = (
     <div data-testid="pf-recon-docs" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 }}>
       <span style={{ fontSize: 11, color: 'var(--text-3)' }}>EJ source document</span>
-      <button data-testid="pf-recon-doc-ej-view"  onClick={() => openDoc(ejUrl)}  style={btn}>View</button>
-      <button data-testid="pf-recon-doc-ej-print" onClick={() => printDoc(ejUrl)} style={btn}>Print</button>
+      <Btn variant="outline" small data-testid="pf-recon-doc-ej-view"  onClick={() => openDoc(ejUrl)}>View</Btn>
+      <Btn variant="outline" small data-testid="pf-recon-doc-ej-print" onClick={() => printDoc(ejUrl)}>Print</Btn>
       <span style={{ fontSize: 11, color: 'var(--text-3)', marginLeft: 10 }}>Linked wFirma invoice</span>
-      <button data-testid="pf-recon-doc-wfirma-view"  onClick={() => openDoc(wfUrl)}  style={btn}>View</button>
-      <button data-testid="pf-recon-doc-wfirma-print" onClick={() => printDoc(wfUrl)} style={btn}>Print</button>
+      <Btn variant="outline" small data-testid="pf-recon-doc-wfirma-view"  onClick={() => openDoc(wfUrl)}  disabled={!hasLinkedInvoice} title={_wfTitle}>View</Btn>
+      <Btn variant="outline" small data-testid="pf-recon-doc-wfirma-print" onClick={() => printDoc(wfUrl)} disabled={!hasLinkedInvoice} title={_wfTitle}>Print</Btn>
+      {!hasLinkedInvoice ? <span data-testid="pf-recon-wfirma-disabled-reason" style={{ fontSize: 10, color: 'var(--text-3)' }}>(no linked invoice yet)</span> : null}
     </div>
   );
 
@@ -4027,11 +4036,11 @@ function ReconciliationPanel({ draft }) {
             {gs.total || 0} difference{(gs.total === 1) ? '' : 's'} vs the linked wFirma invoice
             {gs.has_blocking ? ' · blocking' : ''}
           </div>
-          {(d.gaps || []).map((g, i) => (
-            <div key={i} data-testid="pf-recon-gap" style={{ ...box, marginBottom: 6 }}>
+          {(d.gaps || []).map((g) => (
+            <div key={g.field} data-testid={`pf-recon-gap-${g.field}`} style={{ ...box, marginBottom: 6 }}>
               <span style={{ fontWeight: 600 }}>{g.field}</span>
-              <span data-testid="pf-recon-gap-severity" style={{ marginLeft: 8, color: 'var(--badge-red-text)' }}>{g.severity}</span>
-              <span data-testid="pf-recon-gap-policy" style={{ marginLeft: 8, color: 'var(--text-3)' }}>{g.resolution_policy}</span>
+              <span data-testid={`pf-recon-gap-severity-${g.field}`} style={{ marginLeft: 8, color: 'var(--badge-red-text)' }}>{g.severity}</span>
+              <span data-testid={`pf-recon-gap-policy-${g.field}`} style={{ marginLeft: 8, color: 'var(--text-3)' }}>{g.resolution_policy}</span>
               <div style={{ marginTop: 3, color: 'var(--text-2)' }}>{g.message}</div>
             </div>
           ))}
@@ -4052,7 +4061,7 @@ function ReconciliationPanel({ draft }) {
 
   return (
     <div data-testid="pf-reconciliation" style={card}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)', marginBottom: 10 }}>Reconciliation</div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 10 }}>Reconciliation</div>
       {body}
       {docActions}
     </div>

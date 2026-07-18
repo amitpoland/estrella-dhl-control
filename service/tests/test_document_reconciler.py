@@ -117,6 +117,18 @@ def test_no_local_authority_when_no_invoice_id():
     assert "remote_snapshot_hash" not in r
 
 
+def test_no_local_authority_when_no_proforma_id():
+    """A draft with a linked invoice but NO source proforma id cannot rebuild the
+    expected plan → no_local_authority (never a raw fetch of a missing id / 500)."""
+    draft = SimpleNamespace(wfirma_invoice_id="500001", wfirma_proforma_id=None, id=1)
+    def _boom(*a, **k):
+        raise AssertionError("must not build plan / fetch when proforma id is missing")
+    r = _run(draft, _plan(), _actual_xml(),
+             build_expected_plan=_boom, fetch_actual_xml=_boom)
+    assert r["status"] == "no_local_authority"
+    assert r["reconciliation_available"] is False
+
+
 def test_no_local_authority_when_draft_missing():
     r = _run(None, _plan(), _actual_xml(), load_draft=lambda db, i: None)
     assert r["status"] == "no_local_authority"
@@ -172,6 +184,27 @@ def test_write_guard_no_forbidden_io():
     ]
     hits = [tok for tok in forbidden if tok in src]
     assert not hits, f"document_reconciler.py contains write/IO tokens: {hits}"
+
+
+def test_no_api_layer_import():
+    """Layering guard (backend/reviewer HIGH): the reconciler service must NEVER
+    import the api/route layer. The route injects the conversion authority."""
+    tree = ast.parse(_MODULE.read_text(encoding="utf-8"))
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom):
+            mod = (n.module or "")
+            lvl = n.level or 0
+            # relative '..api' shows as level=2 module starting 'api'; also catch
+            # any 'routes_proforma' / '.api.' textual form.
+            assert not (lvl >= 2 and mod.startswith("api")), \
+                f"service imports api layer: level={lvl} module={mod!r}"
+            assert "routes_proforma" not in mod, \
+                f"service imports the route module: {mod!r}"
+    src = _MODULE.read_text(encoding="utf-8")
+    # belt-and-suspenders: no import statement referencing the api package
+    import re
+    assert not re.search(r"^\s*from\s+\.\.api\b", src, re.MULTILINE), \
+        "document_reconciler must not `from ..api import ...`"
 
 
 def test_write_guard_no_write_calls_ast():

@@ -55,9 +55,10 @@ def test_all_states_rendered():
         "pf-recon-nolocalauthority",     # no_local_authority
         "pf-recon-match",                # exact match
         "pf-recon-mismatch",             # mismatch
-        "pf-recon-gap",                  # classified gap rows
     ):
         assert f'data-testid="{tid}"' in p, f"missing state testid {tid}"
+    # classified gap rows use a STABLE field-qualified testid (never index-based)
+    assert 'data-testid={`pf-recon-gap-${g.field}`}' in p
 
 
 def test_status_mapping_is_direct_not_inferred():
@@ -75,8 +76,8 @@ def test_shows_status_summary_gaps_version_comparedat():
     p = _panel()
     assert 'data-testid="pf-recon-summary"' in p          # gap summary
     assert "d.gap_summary" in p
-    assert 'data-testid="pf-recon-gap-severity"' in p     # classified: severity
-    assert 'data-testid="pf-recon-gap-policy"' in p       # classified: policy
+    assert 'data-testid={`pf-recon-gap-severity-${g.field}`}' in p   # classified: severity
+    assert 'data-testid={`pf-recon-gap-policy-${g.field}`}' in p     # classified: policy
     assert "g.field" in p and "g.message" in p            # classified gap fields
     assert 'data-testid="pf-recon-version"' in p and "comparison_version" in p
     assert 'data-testid="pf-recon-comparedat"' in p and "compared_at" in p
@@ -94,6 +95,18 @@ def test_document_actions_labelled_ej_and_wfirma():
     # EJ = existing local preview authority; wFirma = existing invoice pdf authority
     assert "draftPreviewHtmlUrl(draftId)" in p
     assert "draftInvoicePdfUrl(draftId)" in p
+    # shared Btn component (not raw <button>), per the frontend design standard
+    assert "<Btn" in p
+
+
+def test_wfirma_actions_disabled_without_linked_invoice():
+    """The linked-wFirma View/Print actions must be disabled (with a reason) when
+    no invoice is linked, so the operator is never sent to a 404. EJ source stays
+    available. Linked-ness is derived from the backend status, not inferred."""
+    p = _panel()
+    assert "hasLinkedInvoice" in p and "'reconciled'" in p
+    assert "disabled={!hasLinkedInvoice}" in p
+    assert 'data-testid="pf-recon-wfirma-disabled-reason"' in p
 
 
 # ── no technical metadata surfaced ───────────────────────────────────────────

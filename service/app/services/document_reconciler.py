@@ -54,21 +54,20 @@ def _load_draft(db_path, draft_id: int):
 
 
 def _build_expected_plan(draft):
-    """Rebuild the EXPECTED FinalInvoicePlan via the single conversion authority.
+    """Default is a LOUD FAILURE, not an implementation.
 
-    Re-fetches the source proforma read-only, parses it, and feeds it to
-    routes_proforma._build_convert_candidate (the one conversion-resolution
-    authority shared by disclose/execute/reconcile). Returns (plan, source_hash).
-    Lazy import avoids an import-time service→route cycle.
+    The EXPECTED-plan builder is INJECTED by the caller (the route), which owns the
+    conversion authority (``_build_convert_candidate``). This service must NEVER
+    import the route layer — that would invert the established service←route
+    dependency (backend/reviewer finding). Production always injects
+    ``build_expected_plan``; tests inject their own. This default only fires if a
+    caller forgets, and it fails clearly rather than reaching into the api layer.
     """
-    from . import wfirma_client as wc
-    from . import proforma_to_invoice as p2i
-    from ..api.routes_proforma import _build_convert_candidate
-
-    source_xml = wc.fetch_invoice_xml(draft.wfirma_proforma_id)
-    snap = p2i.parse_proforma_xml(source_xml)
-    candidate = _build_convert_candidate(draft, snap)
-    return candidate["plan"], candidate.get("core_hash", "")
+    raise RuntimeError(
+        "build_reconciliation requires build_expected_plan to be injected by the "
+        "caller (the route owns the conversion authority; the service does not "
+        "import the api layer)"
+    )
 
 
 def _fetch_actual_xml(invoice_id: str) -> str:
@@ -156,7 +155,13 @@ def build_reconciliation(
     db = db_path or _default_db_path()
 
     draft = _load(db, draft_id)
-    if draft is None or not getattr(draft, "wfirma_invoice_id", None):
+    # Both remote ids are required to reconcile: wfirma_invoice_id names the ACTUAL
+    # document, wfirma_proforma_id is the source the EXPECTED plan is rebuilt from.
+    # A draft missing either has no reconcilable local authority — never a fabricated
+    # gap, and never a raw fetch of a missing id (which would 500 in the route).
+    if (draft is None
+            or not getattr(draft, "wfirma_invoice_id", None)
+            or not getattr(draft, "wfirma_proforma_id", None)):
         return _no_local_authority(draft_id)
 
     resolved_at = _now().isoformat()
