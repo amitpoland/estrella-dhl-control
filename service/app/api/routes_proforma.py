@@ -3723,134 +3723,18 @@ def _verify_created_invoice(plan, verify_xml: str) -> None:
 
     Raises RuntimeError on the first mismatch; returns None when all pass.
     Pure comparison — performs no I/O and no writes.
+
+    Campaign-2 A1: the comparison matrix now lives in the single comparison
+    authority ``services.document_comparator.compare_invoice_plan`` (shared with
+    the read-only reconciliation report). This gate DELEGATES to it and raises
+    ``RuntimeError`` with the first BLOCKED gap's message — byte-identical to the
+    historic verify-after-create behaviour (same checks, same order, same text).
     """
-    import xml.etree.ElementTree as _VET
-    verify_root = _VET.fromstring(verify_xml)
-    v_inv = verify_root.find(".//invoice")
-    if v_inv is None:
-        raise RuntimeError(
-            "verify-after-create: fetched invoice "
-            "but no <invoice> element in response"
-        )
-
-    # Check 1: invoice ID exists
-    v_id = (v_inv.findtext("id") or "").strip()
-    if not v_id:
-        raise RuntimeError(
-            "verify-after-create: fetched invoice has empty <id>"
-        )
-
-    # Check 2: type is normal (not proforma)
-    v_type = (v_inv.findtext("type") or "").strip().lower()
-    if v_type not in ("normal", "vat"):
-        raise RuntimeError(
-            f"verify-after-create: expected type='normal' or 'vat', "
-            f"got type={v_type!r} — wFirma may have created wrong document type"
-        )
-
-    # Check 3: contractor matches source proforma
-    v_contractor_node = v_inv.find("contractor")
-    v_contractor_id = (
-        (v_contractor_node.findtext("id") or "").strip()
-        if v_contractor_node is not None else ""
-    )
-    if v_contractor_id != plan.contractor_id:
-        raise RuntimeError(
-            f"verify-after-create: contractor mismatch — "
-            f"expected={plan.contractor_id!r} got={v_contractor_id!r}"
-        )
-
-    # Check 4: line count matches source proforma
-    v_lines = verify_root.findall(".//invoicecontent")
-    expected_line_count = len(plan.contents)
-    actual_line_count = len(v_lines)
-    if actual_line_count != expected_line_count:
-        raise RuntimeError(
-            f"verify-after-create: line count mismatch — "
-            f"expected={expected_line_count} persisted={actual_line_count} "
-            f"(wFirma silently dropped lines)"
-        )
-
-    # Check 4b: per-line field verification (name, good_id, unit_count, price, vat)
-    for idx, (expected_line, actual_el) in enumerate(
-        zip(plan.contents, v_lines), start=1
-    ):
-        _a_name = (actual_el.findtext("name") or "").strip()
-        _a_good_node = actual_el.find("good")
-        _a_good_id = (
-            (_a_good_node.findtext("id") or "").strip()
-            if _a_good_node is not None else ""
-        )
-        _a_unit_count = (actual_el.findtext("unit_count") or "").strip()
-        _a_price = (actual_el.findtext("price") or "").strip()
-        _a_vat_node = actual_el.find("vat_code")
-        _a_vat_id = (
-            (_a_vat_node.findtext("id") or "").strip()
-            if _a_vat_node is not None else ""
-        )
-        _mismatches = []
-        if _a_name != expected_line.name:
-            _mismatches.append(
-                f"name: expected={expected_line.name!r} got={_a_name!r}"
-            )
-        if _a_good_id != expected_line.good_id:
-            _mismatches.append(
-                f"good_id: expected={expected_line.good_id!r} got={_a_good_id!r}"
-            )
-        if _a_unit_count != expected_line.unit_count:
-            _mismatches.append(
-                f"unit_count: expected={expected_line.unit_count!r} got={_a_unit_count!r}"
-            )
-        if _a_price != expected_line.price:
-            _mismatches.append(
-                f"price: expected={expected_line.price!r} got={_a_price!r}"
-            )
-        if _a_vat_id != expected_line.vat_code_id:
-            _mismatches.append(
-                f"vat_code_id: expected={expected_line.vat_code_id!r} got={_a_vat_id!r}"
-            )
-        if _mismatches:
-            raise RuntimeError(
-                f"verify-after-create: line {idx} field mismatch — "
-                + "; ".join(_mismatches)
-            )
-
-    # Check 5: currency matches
-    v_currency = (v_inv.findtext("currency") or "").strip()
-    if v_currency and v_currency != plan.currency:
-        raise RuntimeError(
-            f"verify-after-create: currency mismatch — "
-            f"expected={plan.currency!r} got={v_currency!r}"
-        )
-
-    # Check 6: total matches within rounding tolerance (0.02)
-    from decimal import Decimal as _D, InvalidOperation as _DI
-    v_total_str = (v_inv.findtext("total") or "0").strip()
-    try:
-        v_total = _D(v_total_str)
-    except _DI:
-        v_total = _D("0")
-    total_diff = abs(v_total - plan.expected_total)
-    if total_diff > _D("0.02"):
-        raise RuntimeError(
-            f"verify-after-create: total mismatch beyond tolerance — "
-            f"expected={plan.expected_total} got={v_total} "
-            f"diff={total_diff} (tolerance=0.02)"
-        )
-
-    # Check 7: contractor_receiver preserved when present
-    if plan.contractor_receiver_id:
-        v_rcv_node = v_inv.find("contractor_receiver")
-        v_rcv_id = (
-            (v_rcv_node.findtext("id") or "").strip()
-            if v_rcv_node is not None else ""
-        )
-        if v_rcv_id != plan.contractor_receiver_id:
-            raise RuntimeError(
-                f"verify-after-create: contractor_receiver mismatch — "
-                f"expected={plan.contractor_receiver_id!r} "
-                f"got={v_rcv_id!r}"
-            )
+    from ..services.document_comparator import compare_invoice_plan
+    result = compare_invoice_plan(plan, verify_xml)
+    blocking = result.first_blocking_gap()
+    if blocking is not None:
+        raise RuntimeError(blocking.message)
 
 
 class _FinalInvoiceConfirmReq(_BaseModel):
