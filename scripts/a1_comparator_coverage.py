@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""a1_comparator_coverage.py — Campaign-2 A1.1 · line coverage + gate.
+"""a1_comparator_coverage.py — Campaign-2 A1.1 · CUSTOM line metric + gate.
 
-coverage.py / pytest-cov are not installed (and installing into the shared
-interpreter is undesirable), so this measures line coverage of
-document_comparator.py with the stdlib: AST to enumerate executable statement
-lines, and sys.settrace to record which lines a representative battery executes.
+NOT standard coverage.py branch coverage. coverage.py / pytest-cov are not
+installed (and installing into the shared interpreter is undesirable), so this
+measures a CUSTOM metric with the stdlib only: AST enumerates executable-BODY
+statement lines of document_comparator.py, and sys.settrace records which of
+those lines a representative battery executes. It reports
+executed-body-lines / executable-body-lines — a LINE metric, not branch coverage.
 
-Exits non-zero if line coverage < 100% (the comparator is small and every branch
-is reachable). Prints any missed lines.
+Exits non-zero if the custom line metric < 100%. Prints any missed lines.
 
 Usage: python scripts/a1_comparator_coverage.py
 """
@@ -151,14 +152,18 @@ def main() -> int:
     covered = executable & executed
     missed = sorted(executable - executed)
     pct = 100.0 * len(covered) / len(executable) if executable else 100.0
-    print("=== document_comparator.py line coverage ===")
-    print(f"executable statement lines: {len(executable)}")
-    print(f"covered:                    {len(covered)}")
-    print(f"line coverage:              {pct:.1f}%")
+    print("=== document_comparator.py CUSTOM line metric "
+          "(stdlib trace + AST; NOT coverage.py branch coverage) ===")
+    print(f"executable-body statement lines: {len(executable)}")
+    print(f"executed-body lines:             {len(covered)}")
+    print(f"custom line metric:              {pct:.1f}%")
     if missed:
         print(f"MISSED lines: {missed}")
         return 1
-    print("100% executable-line coverage — every branch exercised.")
+    print(f"{pct:.1f}% under the custom stdlib trace + AST executable-body line "
+          f"metric ({len(covered)}/{len(executable)}). Standard coverage.py "
+          f"branch coverage was NOT measured (coverage.py unavailable; no package "
+          f"installed into the shared interpreter).")
     return 0
 
 

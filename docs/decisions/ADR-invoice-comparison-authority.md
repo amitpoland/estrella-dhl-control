@@ -1,6 +1,6 @@
 # ADR — Invoice Comparison Authority (`document_comparator`)
 
-**Status:** Accepted (Campaign-2 A1 / hardened A1.1)
+**Status:** Proposed (Campaign-2 A1 / hardened A1.1 — author-proposed; becomes Accepted only through the repository's architecture / PR approval process, not by the implementation author)
 **Date:** 2026-07-18
 **Scope:** Proforma → Invoice verify-after-create + (future) read-only reconciliation
 **Supersedes / relates:** verify-after-create hardening (`test_invoice_verify_after_create.py`),
@@ -101,6 +101,9 @@ imports the comparator. The comparator introduces **no new blocking authority**.
 - Contract suites: 128 passed (verify-after-create 22 + reconcile + conversion-route + comparator 27).
 - Property harness: 3000 randomized cases — ordering/determinism/no-raise/gate-parity invariants hold.
 - Golden corpus: 8 static XML snapshots pinned.
-- Mutation testing: 11/11 mutants killed (100% score).
-- Line coverage: 100% (65/65 executable lines).
+- Mutation testing: 11/11 mutants killed (100% score) via the internal mutation runner.
+- Coverage: 100% under this campaign's **custom stdlib `trace` + AST executable-body
+  line metric** (65/65 executable-body lines). Standard `coverage.py` **branch**
+  coverage was **not** measured — `coverage.py` was unavailable and no package was
+  installed into the shared interpreter. This is a line metric, not branch coverage.
 - Baseline reproduction: the 5 unrelated failures reproduce on clean base SHA `46760572` → pre-existing.
