@@ -29,6 +29,7 @@ Output is written as raw UTF-8 bytes so non-ASCII reason text cannot trip
 a cp1252 Windows console (Lesson L).
 """
 import sys
+import os
 import json
 import re
 
@@ -90,9 +91,28 @@ def _classify_command(command):
     if has_copy and _is_prod_pz_path(low):
         return ("deploy-to-prod-PZ", "copy/write into C:\\PZ is operator-only")
 
-    # 2. gh pr merge
+    # 2. gh pr merge — Council-authorized merge gate
+    #    (ADR-council-authorized-merge-gate). Default-OFF + FAIL-CLOSED: replaces
+    #    the former UNCONDITIONAL denial with a narrowly-scoped, machine-verifiable
+    #    authorization check. With no flag / no trusted signing key / no signed
+    #    authorization artifact (the current repository state — no CI signer),
+    #    evaluate_merge ALWAYS returns "deny", so the merge denial is NOT weakened.
+    #    Protected files / guard self-modification / non-squash / stale head /
+    #    expired / consumed / unsigned all deny. Validator error also denies.
     if "gh pr merge" in low:
-        return ("gh-pr-merge", "gh pr merge is operator-only")
+        try:
+            _hook_dir = os.path.dirname(os.path.abspath(__file__))
+            if _hook_dir not in sys.path:
+                sys.path.insert(0, _hook_dir)
+            from merge_authorization import evaluate_merge as _evaluate_merge
+            decision, reason = _evaluate_merge(command)
+        except Exception as _exc:  # fail closed on ANY error
+            decision, reason = ("deny", "merge-authorization validator error: "
+                                + type(_exc).__name__)
+        if decision == "allow":
+            return (None, None)   # Council-authorized squash merge — permit
+        return ("gh-pr-merge",
+                "gh pr merge is operator-only unless Council-authorized — " + reason)
 
     # 3. git push to main / origin main
     if "git push" in low and re.search(r"git\s+push\b[^\n]*\bmain\b", low):
