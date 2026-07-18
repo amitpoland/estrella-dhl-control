@@ -21,7 +21,7 @@ import pytest
 
 from app.services.document_comparator import (
     compare_invoice_plan,
-    ReconciliationResult,
+    InvoiceComparisonResult,
     Gap,
     SEVERITY_CRITICAL,
     POLICY_BLOCKED,
@@ -97,7 +97,7 @@ def _actual_xml(*, inv_id="500001", inv_type="normal", contractor_id="9001",
 
 def test_matching_invoice_yields_no_gaps():
     res = compare_invoice_plan(_plan(), _actual_xml())
-    assert isinstance(res, ReconciliationResult)
+    assert isinstance(res, InvoiceComparisonResult)
     assert res.gaps == []
     assert res.has_blocking_gaps is False
     assert res.first_blocking_gap() is None

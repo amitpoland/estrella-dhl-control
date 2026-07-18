@@ -1,0 +1,1 @@
+<api><invoices><invoice><id>500001</id><type>normal</type><currency>EUR</currency><total>306.50</total><contractor><id>9001</id></contractor><invoicecontents><invoicecontent><name>RING</name><good><id>42</id></good><unit>szt.</unit><unit_count>1.0000</unit_count><price>306.00</price><vat_code><id>228</id></vat_code></invoicecontent></invoicecontents></invoice></invoices></api>

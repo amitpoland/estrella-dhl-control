@@ -70,8 +70,13 @@ class Gap:
 
 
 @dataclass(frozen=True)
-class ReconciliationResult:
-    """Ordered gaps from comparing a plan against an actual document."""
+class InvoiceComparisonResult:
+    """Ordered gaps from comparing a plan against an actual document.
+
+    Named ``InvoiceComparisonResult`` (not ``ReconciliationResult``) to stay
+    distinct from the unrelated ``reconciliation_scorer.ReconciliationResult``
+    (packing design-no scoring) — one result type, one meaning per repo.
+    """
     gaps: List[Gap] = field(default_factory=list)
 
     @property
@@ -99,7 +104,7 @@ def _blocking_gap(field_name: str, expected: Any, actual: Any, message: str) -> 
     )
 
 
-def compare_invoice_plan(plan, verify_xml: str) -> ReconciliationResult:
+def compare_invoice_plan(plan, verify_xml: str) -> InvoiceComparisonResult:
     """Compare a ``FinalInvoicePlan`` (expected) to an actual wFirma invoice XML
     snapshot and return the ordered gaps.
 
@@ -121,7 +126,7 @@ def compare_invoice_plan(plan, verify_xml: str) -> ReconciliationResult:
             "verify-after-create: fetched invoice "
             "but no <invoice> element in response",
         ))
-        return ReconciliationResult(gaps=gaps)
+        return InvoiceComparisonResult(gaps=gaps)
 
     # Check 1: invoice ID exists
     v_id = (v_inv.findtext("id") or "").strip()
@@ -259,4 +264,4 @@ def compare_invoice_plan(plan, verify_xml: str) -> ReconciliationResult:
                 f"got={v_rcv_id!r}",
             ))
 
-    return ReconciliationResult(gaps=gaps)
+    return InvoiceComparisonResult(gaps=gaps)
