@@ -12,10 +12,71 @@ Governing sources (read at session start, do not re-derive):
 
 ---
 
+## Lifecycle states (canonical single-task axis)
+
+The five phases above are the canonical lifecycle. Each phase is a named **state**;
+`CLOSE` resolves into three states; and `EXECUTION_BLOCKED` is a resumable suspended
+state that any active state may enter. This is the **single-task lifecycle axis** —
+its sole definition lives here. Phase names (`PLAN`/`IMPLEMENT`/`VERIFY`/`CLOSE`) and
+state names (`PLANNING`/`IMPLEMENTING`/`VALIDATING`/…) are the same lifecycle; the
+**state name is canonical** for `TASK_STATE.md`. Underscore form is canonical. **Each phase sets `TASK_STATE.md` to its state on
+entry** — Phase 1 → `DISCOVERY`, Phase 2 → `PLANNING`, Phase 3 → `IMPLEMENTING`,
+Phase 4 → `VALIDATING`; Phase 5 (CLOSE) → `READY_FOR_PR` → `UNDER_REVIEW` →
+`COMPLETE`. Pre-existing `TASK_STATE.md` entries in old spellings (`IN_PROGRESS`,
+`BLOCKED-HOLD`, `READY FOR PR`, `UNDER REVIEW`) are **grandfathered** and NOT
+auto-reclassified (see the migration note in `TASK_STATE.md`); new entries use the
+canonical state.
+
+| State | Meaning | Phase |
+|---|---|---|
+| `NOT_STARTED` | Task registered, no work begun | — (pre-start) |
+| `DISCOVERY` | Inspect repo, establish authority | 1 |
+| `PLANNING` | Produce the implementation plan | 2 |
+| `IMPLEMENTING` | Modify code | 3 |
+| `VALIDATING` | Tests, reviews, governance | 4 |
+| `READY_FOR_PR` | Validation complete, GATE 1 satisfied, PR not yet open | 5 (CLOSE) |
+| `UNDER_REVIEW` | PR open | 5 (CLOSE) |
+| `COMPLETE` | Completion checklist passed; merged | 5 (CLOSE) |
+| `EXECUTION_BLOCKED` | Suspended on an external dependency with a preserved verified checkpoint | overlay |
+
+Transitions: `DISCOVERY → PLANNING → IMPLEMENTING → VALIDATING → READY_FOR_PR →
+UNDER_REVIEW → COMPLETE`. Any active state may enter `EXECUTION_BLOCKED`, which records
+the state it suspended from (`suspended_from`) and, on resume, returns to that state or
+to the **earliest invalid checkpoint** — never auto-restarting earlier phases.
+
+**EXECUTION_BLOCKED is resumable, not restartable.** Its full semantics — what is
+frozen, the recorded checkpoint, the six-check bounded pre-resume validation, and the
+no-silent-rebase / operator-ruling rules — are defined once in
+`docs/governance/anti-hold-and-completion.md` §7. This protocol does not restate them.
+
+### Two axes — do not merge (mapping, not derivation)
+
+The single-task lifecycle (this file) is a **separate axis** from the `.campaigns/`
+branch-write registry state machine (`schema.json` + `campaign-branch-guard.py`). One
+answers "where is the work in its delivery lifecycle"; the other answers "is this branch
+writable / frozen / rebasing / deploying / archived". **Neither derives mechanically from
+the other** — the table below is an informational mapping only, and the `.campaigns/`
+enum is never modified by a lifecycle change.
+
+| Task lifecycle | Possible campaign-registry state |
+|---|---|
+| `DISCOVERY` | no write campaign, or `IN_PROGRESS` (read-only prep) |
+| `PLANNING` | `IN_PROGRESS` |
+| `IMPLEMENTING` | `IN_PROGRESS` |
+| `VALIDATING` | `IN_PROGRESS`, `FROZEN`, or `LOCKED` (per branch governance) |
+| `EXECUTION_BLOCKED` | whatever accurately governs branch writes; the lifecycle checkpoint carries the external block |
+| `READY_FOR_PR` | `READY_FOR_REBASE` or `REBASED_PENDING_REVIEW` |
+| `UNDER_REVIEW` | `PR_OPEN` |
+| `COMPLETE` | `MERGED` or `ARCHIVED` |
+
+---
+
 ## Standing rules (apply to all phases)
 
 **One task at a time.**
-If `TASK_STATE.md` shows `IN_PROGRESS`, finish or record a HOLD before starting new work.
+If `TASK_STATE.md` shows any active lifecycle state (`DISCOVERY`, `PLANNING`,
+`IMPLEMENTING`, `VALIDATING`, `EXECUTION_BLOCKED`, `READY_FOR_PR`, `UNDER_REVIEW`),
+finish or record a HOLD before starting new work.
 
 **Anti-HOLD default.**
 Continuing is the default. Only four conditions justify a stop — see `docs/governance/anti-hold-and-completion.md` §2. Never stop to ask the operator about work in the must-continue list (code inspection, repo search, test execution, local verification, doc/state updates, committing to a feature branch, opening a draft PR).
@@ -68,7 +129,7 @@ acceptance criteria. This policy is subordinate to the four HOLD conditions in
 - Read existing tests for the affected domain
 - Spawn `Explore` or `gap-detection` subagent (non-blocking; report only)
 - Write side-discoveries to `BACKLOG.md`
-- Update `TASK_STATE.md` to `IN_PROGRESS`
+- Update `TASK_STATE.md` to `DISCOVERY`
 
 **Forbidden actions:**
 - Edit any `service/app/*` file
@@ -99,7 +160,7 @@ If a domain skill is not yet built, document that explicitly and proceed with th
 - [ ] GATE 2 count confirmed
 - [ ] gap-detection subagent run (for non-trivial tasks; advisory only)
 - [ ] Side-discoveries in `BACKLOG.md`
-- [ ] `TASK_STATE.md` → `IN_PROGRESS`
+- [ ] `TASK_STATE.md` → `DISCOVERY`
 
 ---
 
@@ -318,6 +379,8 @@ Merge SHA: <sha>
 | Write authority by domain | `docs/governance/AUTHORITY_MAP.md` |
 | Workflow completion checklist | `docs/governance/anti-hold-and-completion.md` §4 |
 | TASK_STATE protocol | `docs/governance/anti-hold-and-completion.md` §5 |
+| Single-task lifecycle states | `.claude/TASK_EXECUTION_PROTOCOL.md` §Lifecycle states (this file) |
+| EXECUTION_BLOCKED / Resume Rule | `docs/governance/anti-hold-and-completion.md` §7 |
 | GATES 1–6 full text | `CLAUDE.md` §MANDATORY GOVERNANCE GATES |
 | 7-agent deploy gate | `CLAUDE.md` §Production deployment rule |
 | Engineering Lessons A–M | `CLAUDE.md` §Engineering Lessons |

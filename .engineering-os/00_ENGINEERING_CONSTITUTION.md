@@ -381,6 +381,12 @@ concurrency) + the `CLAUDE.md` working-tree registry.
   the gate and hand the operator the exact commands. The loop never crosses a gate on its own.
 - **VERIFICATION_FAILED** — VERIFY_CMD failed in a way the loop cannot resolve within scope;
   report the failure with evidence and the next exact step.
+- **Resumable exit (EXECUTION_BLOCKED).** When a `HOLD_TRIGGERED` / `OPERATOR_GATE` exit
+  preserves a verified checkpoint (frozen architecture / implementation / diff + a single
+  recorded resume command), it resumes per the **Resume Rule** — resumable, not restartable —
+  owned by `docs/governance/anti-hold-and-completion.md` §7, with the lifecycle-state model in
+  `.claude/TASK_EXECUTION_PROTOCOL.md`. The OS does not redefine either (subordinate pointer;
+  §5/§12 single-authority) and adds no enforcement here.
 
 ---
 

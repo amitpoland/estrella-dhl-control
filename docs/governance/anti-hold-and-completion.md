@@ -120,7 +120,8 @@ Anti-HOLD means "don't stop unnecessarily," not "wander into new scope."
 ## 4. Workflow completion checklist (definition of done)
 
 A task is **not done** until every applicable item passes. Drive to this
-state before stopping; do not start a second task while one is `IN_PROGRESS`.
+state before stopping; do not start a second task while one is in an active lifecycle
+state (any state other than `COMPLETE`).
 
 - [ ] The stated goal is fully implemented (no `TODO`/placeholder left in
       the delivered surface unless explicitly deferred and recorded).
@@ -168,12 +169,31 @@ issue close, or observer scorecard does (per Observation RULES 2–3). When a
 task completes and merges, update TASK_STATE.md → `COMPLETE` AND let
 `flow-context-keeper` record the durable FACT in PROJECT_STATE.md.
 
-### Status values
+### Status values — the single-task lifecycle
+
+The in-flight task moves along one canonical lifecycle axis, defined once in
+`.claude/TASK_EXECUTION_PROTOCOL.md` (the lifecycle authority) — this list mirrors it.
+Underscore form is canonical; pre-existing `TASK_STATE.md` entries in old spellings
+(`IN_PROGRESS`, `BLOCKED-HOLD`, `READY FOR PR`, `UNDER REVIEW`) are grandfathered and
+NOT auto-reclassified (see §7 and the migration note in `TASK_STATE.md`); new entries
+use the canonical state.
 
 - `NOT_STARTED` — task defined, no work begun.
-- `IN_PROGRESS` — actively working; do not start another task.
-- `BLOCKED-HOLD` — stopped on a named HOLD condition (record which one).
-- `COMPLETE` — completion checklist passed.
+- `DISCOVERY` — inspecting repo, establishing authority (protocol Phase 1).
+- `PLANNING` — producing the implementation plan (Phase 2).
+- `IMPLEMENTING` — modifying code (Phase 3).
+- `VALIDATING` — tests, reviews, governance (Phase 4).
+- `EXECUTION_BLOCKED` — suspended on an external dependency while a verified
+  checkpoint is preserved; the **resumable** refinement of the former `BLOCKED-HOLD`.
+  It still requires one of the four §2 HOLD conditions (primarily #2, missing access).
+  Checkpoint + Resume Rule: §7.
+- `READY_FOR_PR` — validation complete, GATE 1 satisfied, PR not yet open (Phase 5).
+- `UNDER_REVIEW` — PR open (Phase 5).
+- `COMPLETE` — completion checklist passed; merged.
+
+This lifecycle is a **separate axis** from the `.campaigns/` branch-write registry
+state (`IN_PROGRESS` / `FROZEN` / `PR_OPEN` / …); neither derives mechanically from the
+other (mapping table: `.claude/TASK_EXECUTION_PROTOCOL.md`).
 
 ---
 
@@ -186,3 +206,87 @@ task completes and merges, update TASK_STATE.md → `COMPLETE` AND let
 - It does **not** override any GATE, the regression stop-gate, or the
   7-agent deploy gate.
 - It does **not** replace PROJECT_STATE.md or flow-context-keeper.
+
+---
+
+## 7. EXECUTION_BLOCKED and the Resume Rule
+
+`EXECUTION_BLOCKED` is the resumable form of a stop. It applies when work halts on an
+**external dependency** (missing prod access/token, an unmerged upstream PR, an
+unavailable environment or service) **while a verified checkpoint is preserved** — i.e.
+the stop is one of the four §2 HOLD conditions (primarily #2, missing credentials/
+access) AND the work up to the stop is frozen and still valid. It is the resumable
+refinement of the former `BLOCKED-HOLD`.
+
+> **EXECUTION_BLOCKED is resumable, not restartable.**
+
+### 7.1 What is frozen while blocked
+
+Architecture is frozen · implementation is frozen · the existing diff is preserved ·
+the authority decision is preserved. While blocked, do **not**: run new discovery, new
+planning, or new coding; retry the execution repeatedly; rewrite an ADR solely because
+of the interruption; or launch a fresh broad `/context` pass. The single recorded
+resume command is the only campaign-execution command permitted.
+
+### 7.2 The checkpoint (recorded on entering EXECUTION_BLOCKED)
+
+Record, in `TASK_STATE.md`, a checkpoint block carrying: the state suspended from
+(`suspended_from`), the blocking dependency, the recorded branch and HEAD SHA
+(`recorded_branch`, `recorded_head`), the preserved file set, the canonical authority
+owner, the single resume command (`next_command`), a `NO_REPEATED_RETRIES` policy, and
+a timestamp. The checkpoint carries **no** secrets, tokens, customer data, or document
+payloads. (Template: `.claude/memory/TASK_STATE.md`.)
+
+### 7.3 The Resume Rule — bounded pre-resume validation (six checks)
+
+Before executing the recorded `next_command`, run only this bounded validation:
+
+1. Current branch == recorded branch.
+2. Current HEAD == recorded HEAD.
+3. The preserved file set (`preserved_files`) is unchanged — verified against the
+   recorded `preserved_diff_hash` when present, otherwise by re-hashing those paths; a
+   change to any file within the task's declared scope fails this check.
+4. Recorded authority owner still canonical.
+5. External dependency now available.
+6. No conflicting campaign writer has claimed the branch.
+
+**All six pass → execute `next_command` directly** — do not re-run discovery, re-plan,
+or re-implement work that is still valid. If `next_command` opens a PR or triggers a
+production sync/deploy, GATE 1 and the 7-agent deploy gate apply as normal before
+execution — the resumable path never bypasses them. **Any check fails → do not restart
+automatically.** Identify the **earliest invalid checkpoint** and transition to that
+lifecycle state *only*; never fall back to DISCOVERY/PLANNING/IMPLEMENTING unless those
+assumptions specifically became invalid. A changed HEAD/diff that does not invalidate
+the plan resumes at `VALIDATING`, re-verifies, and proceeds.
+
+### 7.4 Operator ruling + preserved diff (hard rules)
+
+- **Require an operator ruling** for: unexpected HEAD movement, an authority conflict, or
+  concurrent branch ownership (checks 2 / 4 / 6). These are not auto-resolved — they
+  mirror the campaign-branch-guard posture that `expected_head` ≠ actual is an INCIDENT.
+  **Unexpected** = any HEAD movement not initiated by the owner session or explicitly
+  pre-authorized by the operator in the checkpoint; a session must not self-classify a
+  HEAD change as "expected" to skip this ruling.
+- **Never** silently `rebase`, `reset`, `cherry-pick`, or discard the preserved diff to
+  force the stored command to run.
+- `EXECUTION_BLOCKED` never becomes a branch-write authority; branch-write governance
+  stays with `.campaigns/` (its state enum and guard are unchanged by this rule).
+
+### 7.5 Worked example
+
+A campaign reaches `VALIDATING` and blocks because a required test needs prod
+infrastructure that is down. It records `suspended_from: VALIDATING`,
+`next_command: python -m pytest service/tests/test_routes_2b_manual_link.py -q`,
+plus `recorded_head` / `recorded_branch`. On resume: if branch/HEAD/diff are unchanged,
+authority still canonical, infra back, and no other writer — run the stored command
+directly. If `main` advanced and the branch was rebased in the interim (HEAD changed),
+do **not** re-run discovery or re-plan: re-enter `VALIDATING`, confirm the plan
+assumptions still hold, and re-run the suite — after an operator ruling if the HEAD
+movement was unexpected.
+
+### 7.6 Subordination
+
+This rule adds no hook and weakens no gate. `EXECUTION_BLOCKED` still requires a §2 HOLD
+condition; GATES 1–6, the regression stop-gate, and the 7-agent deploy gate are
+unaffected. Deterministic enforcement (a Stop hook) is explicitly out of scope (see §6
+and the Engineering OS §13.E honesty boundary) and would be a separate approved campaign.
