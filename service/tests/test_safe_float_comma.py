@@ -51,3 +51,45 @@ def test_safe_float(raw, expected):
 def test_global_parser_agrees(raw, expected):
     """global_packing_parser delegates - both parsers must normalise identically."""
     assert _global_safe_float(raw) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("raw,expected", CASES)
+def test_analytics_agrees(raw, expected):
+    from app.api.routes_analytics import _safe_float as _analytics_safe_float
+
+    assert _analytics_safe_float(raw) == pytest.approx(expected)
+
+
+def test_analytics_default_preserved():
+    from app.api.routes_analytics import _safe_float as _analytics_safe_float
+
+    assert _analytics_safe_float(None, -1.0) == -1.0
+    assert _analytics_safe_float("", -1.0) == -1.0
+    assert _analytics_safe_float(float("nan"), -1.0) == -1.0
+
+
+# Customs XML keeps the OPPOSITE convention on purpose: PUESC/ZC429/SAD is
+# machine-generated Polish locale - comma is always the decimal separator and
+# values are never digit-grouped, so "1,554" is 1.554 kg, not 1554. Locking it
+# in so nobody "harmonises" the two normalisers later.
+@pytest.mark.parametrize("raw,expected", [
+    ("1,554", 1.554),
+    ("1234,56", 1234.56),
+    ("1 234,56", 1234.56),
+    ("0,000", 0.0),
+    ("1234.56", 1234.56),
+    (None, 0.0),
+    ("brak", 0.0),
+])
+def test_customs_xml_keeps_polish_decimal_comma(raw, expected):
+    from app.services.customs_xml_parser import _safe_float as _customs_safe_float
+
+    assert _customs_safe_float(raw) == pytest.approx(expected)
+
+
+def test_customs_and_packing_deliberately_disagree():
+    """Guard the divergence itself - if these ever match, one domain is wrong."""
+    from app.services.customs_xml_parser import _safe_float as _customs_safe_float
+
+    assert _customs_safe_float("1,554") == pytest.approx(1.554)
+    assert _safe_float("1,554") == pytest.approx(1554.0)

@@ -54,11 +54,18 @@ def _month_from_audit(a: Dict[str, Any]) -> str:
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
-    try:
-        f = float(v or 0)
-        return f if f == f else default   # NaN guard
-    except (TypeError, ValueError):
+    """Coerce an audit-summary value to float; `default` on missing/NaN.
+
+    Routes through the canonical packing normaliser: these values originate in
+    the packing pipeline, and bare float() dropped any string form ("1 234,56",
+    "$ 1,554") silently to `default` instead of parsing it.
+    """
+    from ..services.invoice_packing_extractor import _safe_float as _canonical  # noqa: PLC0415
+
+    if v is None or v == "":
         return default
+    f = _canonical(v)
+    return f if f == f else default   # NaN guard
 
 
 def _collect_batches() -> List[Dict[str, Any]]:
