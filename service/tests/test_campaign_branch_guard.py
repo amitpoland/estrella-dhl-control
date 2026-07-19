@@ -330,6 +330,89 @@ def test_multi_entry_registry_first_match_wins_is_documented(tmp_path, repo):
     assert "a_first" in d["permissionDecisionReason"], "first matching entry decides"
 
 
+@pytest.mark.parametrize("bad_state", [123, {"a": 1}, ["MERGED"], 12.5, True])
+def test_non_string_state_never_crashes_and_fails_closed(tmp_path, repo, bad_state):
+    """A hand-edited registry with a non-string `state` must not crash the guard.
+
+    Regression pin: `(entry.get("state") or ...).upper()` raised AttributeError on an
+    int/dict/list BEFORE the fail-closed KNOWN_STATES gate could see it — so the one
+    input class that most needs the gate was the one that bypassed it.
+    """
+    entry = _repo_entry(repo, state="IN_PROGRESS")
+    entry["state"] = bad_state
+    _write_registry(tmp_path, entry)
+    d = _run_guard(tmp_path, "git commit -m x", cwd=str(repo))
+    assert d is not None, "malformed state produced a silent allow"
+    assert d["permissionDecision"] in ("ask", "deny")
+    assert "RESTRICTED" in d["permissionDecisionReason"]
+
+
+def test_non_string_state_does_not_outrank_branch_mismatch_deny(tmp_path, repo):
+    """Categorical deny precedence survives the coercion change."""
+    entry = _repo_entry(repo, state="IN_PROGRESS")
+    entry["state"] = {"nonsense": True}
+    entry["branch"] = "some/other-branch"
+    _write_registry(tmp_path, entry)
+    d = _run_guard(tmp_path, "git commit -m x", cwd=str(repo))
+    assert d["permissionDecision"] == "deny"
+    assert "branch mismatch" in d["permissionDecisionReason"]
+
+
+def _run_entrypoint(tmp_path, extra_env=None):
+    """Run the hook as a real subprocess through its __main__ entrypoint."""
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = str(tmp_path)
+    env.update(extra_env or {})
+    payload = {"tool_input": {"command": "git commit -m x"}, "cwd": str(tmp_path),
+               "session_id": "s"}
+    return subprocess.run([sys.executable, GUARD], input=json.dumps(payload).encode(),
+                          capture_output=True, env=env, timeout=60)
+
+
+def test_entrypoint_exception_cannot_silently_allow(tmp_path):
+    """A crash inside main() must escalate, never pass the write through.
+
+    Forces a real exception by running a copy of the hook whose main() raises, then
+    asserts the __main__ wrapper still produces a blocking/escalating outcome. The copy
+    keeps the real __main__ block verbatim — only main() is replaced.
+    """
+    src = io.open(GUARD, encoding="utf-8").read()
+    assert "if __name__ == \"__main__\":" in src
+    head, tail = src.split("if __name__ == \"__main__\":", 1)
+    broken = (head
+              + "\ndef main():\n    raise RuntimeError('forced entrypoint failure')\n\n"
+              + "if __name__ == \"__main__\":" + tail)
+    victim = tmp_path / "broken_guard.py"
+    victim.write_text(broken, encoding="utf-8")
+    payload = {"tool_input": {"command": "git commit -m x"}, "cwd": str(tmp_path),
+               "session_id": "s"}
+    p = subprocess.run([sys.executable, str(victim)], input=json.dumps(payload).encode(),
+                       capture_output=True, timeout=60)
+    out = p.stdout.decode("utf-8").strip()
+    if out:
+        d = json.loads(out)["hookSpecificOutput"]
+        assert d["permissionDecision"] in ("ask", "deny"), "must not resolve to allow"
+        assert "INTERNAL ERROR" in d["permissionDecisionReason"]
+        assert p.returncode == 0, "a structured decision is returned with exit 0"
+    else:
+        assert p.returncode == 2, "no decision emitted => must use the blocking exit code"
+
+
+def test_entrypoint_does_not_copy_banner_fail_open_pattern():
+    """The banner may fail open (display only); the enforcement guard may not."""
+    src = io.open(GUARD, encoding="utf-8").read()
+    tail = src.split('if __name__ == "__main__":', 1)[1]
+    assert "_emit(" in tail, "entrypoint must emit a decision on failure"
+    assert ("sys.exit(2)" in tail or "else 2" in tail), \
+        "must retain a blocking exit-code fallback when stdout is unusable"
+    # the banner's bare `except Exception: sys.exit(0)` must not appear here
+    assert "except Exception:\n        sys.exit(0)" not in tail
+    # and no unconditional exit-0 inside the failure handler
+    handler = tail.split("except BaseException as exc", 1)[-1]
+    assert "sys.exit(0)\n" not in handler, \
+        "an unconditional exit 0 in the failure handler would be a silent allow"
+
+
 # ------------------------------------------------------------------------ parity pins
 
 def _load(name):

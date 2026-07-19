@@ -203,8 +203,15 @@ def main():
         worktree = entry.get("worktree") or ""
         target_tree = worktree if os.path.isdir(worktree) else cwd
         owner = entry.get("owner", "?")
-        expected = (entry.get("expected_head") or "").lower()
-        state = (entry.get("state") or entry.get("status") or "").upper()
+        expected = str(entry.get("expected_head") or "").lower()
+        # `str()` before `.upper()`: a non-string `state` (int / dict / list from a
+        # hand-edited registry) previously raised AttributeError here — BEFORE the
+        # fail-closed KNOWN_STATES gate below could see it. A crash in an enforcement
+        # guard is the one failure mode that must not happen, so coerce first and let
+        # the malformed value flow into the same fail-closed path as any other
+        # undeclared state.
+        raw_state = entry.get("state") or entry.get("status") or ""
+        state = str(raw_state).upper()
         phase = entry.get("phase") or ""
 
         # 4a-pre — UNKNOWN/SCHEMA-INVALID STATE (fail-closed enforcement boundary).
@@ -304,4 +311,37 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException as exc:  # noqa: BLE001 — deliberate catch-all, see below
+        # FAIL CLOSED. An unhandled exception in an enforcement guard must never let a
+        # campaign-branch write through: an uncaught traceback exits non-zero-but-not-2,
+        # which this harness treats as a non-blocking error, i.e. the tool proceeds.
+        # Emit a real `ask` decision so the operator is asked rather than bypassed.
+        #
+        # NOT the pattern used by campaign-session-banner.py (`except: sys.exit(0)`) —
+        # that hook only prints a card, so failing open there costs a display line. This
+        # hook is the enforcement boundary, and silently exiting 0 here would be a
+        # bypass.
+        emitted = False
+        try:
+            _emit(
+                "ask",
+                "campaign-branch-guard: INTERNAL ERROR — {0}: {1}. The campaign-branch "
+                "guard could not complete its checks, so this write is UNVERIFIED. "
+                "Confirm with the operator and repair the guard/registry before "
+                "proceeding (fail closed by design).".format(
+                    type(exc).__name__, str(exc)[:200]
+                ),
+            )
+            emitted = True
+        except BaseException:
+            emitted = False
+        # Decision emitted -> exit 0, the same way every normal decision is returned.
+        # Nothing emitted (stdout unusable) -> the harness blocking exit code, so the
+        # write is stopped even though no structured reason can be delivered.
+        # NB: sys.exit() must stay OUT of the try above — SystemExit is a BaseException
+        # and would be swallowed by the handler, silently downgrading the emitted `ask`.
+        sys.exit(0 if emitted else 2)

@@ -3,7 +3,8 @@
 Status: Accepted (operator decision, campaign-state lifecycle repair, 2026-07-19).
 
 Decision: The campaign registry remains a **branch/worktree ownership authority** and never
-becomes a feature-lifecycle authority. `expected_head` always means the **campaign branch-tip
+becomes a feature-lifecycle authority. It is *not* claimed to be the repository's sole
+campaign-state store — see "Parallel campaign-state system" below. `expected_head` always means the **campaign branch-tip
 SHA** and may never hold a main-side SHA. Main-side provenance lives in a new optional, inert
 `merge` object `{pr, squash_sha, merged_at}` that **no guard may compare against worktree
 HEAD**. One new lifecycle state, `MERGED_PENDING_ARCHIVE`, covers the window between merge
@@ -91,6 +92,28 @@ registry a second feature-lifecycle authority.
   `expected_head` again.
 - **Silent fall-through for unknown states** — rejected by operator ruling; a fail-closed
   enforcement boundary must not degrade to permit-by-default.
+
+## Parallel campaign-state system (disclosed, not addressed here)
+
+`active-campaigns.json` is **not** the repository's only campaign-state store. A second,
+independent one exists:
+
+- `tasks/campaign-state.json` — live on disk (~50 KB), shape `{schema_version, campaigns[]}`
+  with its own `campaign_id` / `status` vocabulary.
+- `service/scripts/campaign_status.py` — its sole reader/writer; resolves the file via
+  `_find_repo_root`. Notably it *does* carry deployment fields (`deployed_sha`,
+  `previous_main_sha`), which is precisely the coupling this ADR forbids in the ownership
+  registry.
+
+It is **dormant**, not competing: a standalone CLI with zero references from `service/app`,
+any `Makefile`, route, or scheduler. It does not read `active-campaigns.json`, so the schema
+change in this ADR cannot affect it, and the `transport-m1` migration cannot break it — the
+59 `deployed_sha` matches in the repository all belong to that separate file's schema.
+
+Consolidating or retiring the parallel system is **separate follow-up governance debt** and is
+deliberately out of scope here. What this ADR asserts is narrower and accurate: within the
+`active-campaigns.json` registry, branch-tip authority and merged-main provenance are
+separate fields, and the registry does not own feature/deployment lifecycle.
 
 ## Known follow-up debt (not in scope)
 
