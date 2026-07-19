@@ -301,8 +301,14 @@ def _pz_generated_at(a: Dict[str, Any]) -> Optional[str]:
 
     None means "this batch has no PZ-generation evidence" — callers must
     render it as an em-dash and must never substitute another date.
+
+    Non-string values are treated as absent rather than raising: a single
+    malformed audit.json must not 500 the whole list (same "the list view must
+    never break" rule the status hints above follow).
     """
-    raw = ((a.get("pz_output") or {}).get("generated_at") or "")
+    raw = (a.get("pz_output") or {}).get("generated_at")
+    if not isinstance(raw, str):
+        return None
     return raw.strip() or None
 
 

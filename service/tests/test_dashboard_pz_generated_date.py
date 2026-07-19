@@ -92,6 +92,17 @@ class TestCanonicalField:
         assert rd._pz_generated_at({"pz_output": {}}) is None
         assert rd._pz_generated_at({}) is None
 
+    def test_non_string_generated_at_is_treated_as_absent(self):
+        """A malformed audit.json must not 500 the whole Shipments list —
+        this file's status hints follow the same 'never break the list' rule."""
+        for bad in (20260508, 3.14, True, [], {}, ["2026-05-08T11:49:28Z"]):
+            assert rd._pz_generated_at({"pz_output": {"generated_at": bad}}) is None
+
+    def test_malformed_audit_still_yields_a_usable_summary(self):
+        s = rd._batch_summary(_audit(generated_at=None, pz_output={"generated_at": 123}), "d")
+        assert s["pz_generated_at"] is None
+        assert s["net"] == 100.0
+
     def test_timestamp_is_not_used_as_pz_generation_date(self):
         """`timestamp` is overloaded — routes_intake writes it at DRAFT creation.
         A batch with a timestamp but no PZ output must report no date."""
