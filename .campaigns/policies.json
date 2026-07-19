@@ -7,17 +7,22 @@
     "read_registry_first": "Before any write to a campaign branch, read the operational registry. Never reconstruct ownership or the chartered decision from reflog, chat threads, or memory files.",
     "no_auto_correction": "If expected_head and the actual tip (or last_verified_head) diverge, NO session may 'correct' the branch. File an incident report and request an operator ruling. A stale registry must never drive a reset.",
     "superseded_sha_handling": "Superseded SHAs are recorded, tagged, and dispositioned (e.g. 'NEVER cherry-pick, NEVER merge') in the registry entry — never merely deleted.",
-    "cleanup": "Campaign close = status MERGED, entry removed from the operational registry, worktree archived per WORKTREE DISCIPLINE."
+    "cleanup": "Campaign close = status MERGED, entry removed from the operational registry, worktree archived per WORKTREE DISCIPLINE. If the worktree cannot yet be archived (e.g. post-merge follow-up still open), the entry moves to MERGED_PENDING_ARCHIVE — write-restricted — until it can be removed.",
+    "sha_authority": "expected_head and last_verified_head are ALWAYS campaign BRANCH-TIP SHAs. A main-side/squash-merge SHA belongs ONLY in the optional inert `merge` object and is never compared with worktree HEAD by any guard.",
+    "no_deployment_lifecycle_here": "UAT, business-owner sign-off, deployment validation and production completion are owned by PROJECT_STATE.md (Business Feature Completeness Standard). The campaign registry is a branch/worktree OWNERSHIP authority and must not grow deployment lifecycle fields.",
+    "unknown_state_fails_closed": "A `state` value outside state_enum is never treated as permissive. The guard emits an explicit `ask` naming the offending value; it must not fall through to OTHER_STATES."
   },
-  "state_enum": ["IN_PROGRESS", "READY_FOR_REBASE", "REBASED_PENDING_REVIEW", "PR_OPEN", "MERGED", "FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED"],
+  "state_enum": ["IN_PROGRESS", "READY_FOR_REBASE", "REBASED_PENDING_REVIEW", "PR_OPEN", "MERGED", "MERGED_PENDING_ARCHIVE", "FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED"],
   "phase_examples": ["WAITING_FOR_PR924", "AWAITING_OPUS_REVIEW", "AWAITING_DEPLOY_GATE"],
   "state_operation_matrix": {
     "_doc": "Operator second ruling §6: the guard enforces STATE, not just ownership. Ownership match alone is NOT sufficient to permit a write.",
     "FROZEN": { "allowed": ["read", "verify", "review"], "denied": ["commit", "reset", "rebase", "cherry-pick", "merge", "branch-move"] },
     "LOCKED": { "allowed": ["read", "verify", "review"], "denied": ["commit", "reset", "rebase", "cherry-pick", "merge", "branch-move"] },
     "DEPLOYING": { "allowed": ["read", "verify", "review"], "denied": ["commit", "reset", "rebase", "cherry-pick", "merge", "branch-move"] },
+    "MERGED_PENDING_ARCHIVE": { "allowed": ["read", "verify", "review"], "denied": ["commit", "reset", "rebase", "cherry-pick", "merge", "branch-move"] },
     "ARCHIVED": { "allowed": ["read"], "denied": ["commit", "reset", "rebase", "cherry-pick", "merge", "branch-move"] },
-    "OTHER_STATES": { "allowed": ["owner writes with claimed lock"], "denied": ["any non-owner write"] }
+    "UNKNOWN_STATE": { "allowed": [], "denied": ["all writes"], "_doc": "A state outside state_enum is a fail-closed enforcement boundary: the guard emits an explicit `ask` naming the offending value. It NEVER falls through to OTHER_STATES (ADR-campaign-state-lifecycle-sha-authority, 2026-07-19)." },
+    "OTHER_STATES": { "allowed": ["owner writes with claimed lock"], "denied": ["any non-owner write"], "_doc": "Applies only to states present in state_enum and not write-restricted." }
   },
   "guard": {
     "hook": ".claude/hooks/campaign-branch-guard.py",

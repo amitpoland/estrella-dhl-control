@@ -17,7 +17,7 @@
           "owner": { "type": "string", "description": "Human-readable owner session label." },
           "expected_head": {
             "type": "string", "pattern": "^[0-9a-f]{8,40}$",
-            "description": "Operator-approved target SHA. Divergence from the actual tip is an INCIDENT to report — never auto-correct; a stale file must never drive a reset."
+            "description": "Operator-approved target SHA — ALWAYS the campaign BRANCH-TIP SHA, never a main-side/squash-merge SHA (ADR-campaign-state-lifecycle-sha-authority, 2026-07-19). Main-side provenance belongs in `merge`. Divergence from the actual tip is an INCIDENT to report — never auto-correct; a stale file must never drive a reset."
           },
           "last_verified_head": {
             "type": "string", "pattern": "^[0-9a-f]{8,40}$",
@@ -25,8 +25,21 @@
           },
           "state": {
             "type": "string",
-            "enum": ["IN_PROGRESS", "READY_FOR_REBASE", "REBASED_PENDING_REVIEW", "PR_OPEN", "MERGED", "FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED"],
-            "description": "Lifecycle state (operator second ruling §5/§6). FROZEN/LOCKED/DEPLOYING/ARCHIVED are write-restricted: the guard denies commit/reset/rebase/cherry-pick/merge EVEN FOR THE OWNER — ownership match alone never permits a write."
+            "enum": ["IN_PROGRESS", "READY_FOR_REBASE", "REBASED_PENDING_REVIEW", "PR_OPEN", "MERGED", "MERGED_PENDING_ARCHIVE", "FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED"],
+            "description": "Lifecycle state (operator second ruling §5/§6). MERGED_PENDING_ARCHIVE/FROZEN/LOCKED/DEPLOYING/ARCHIVED are write-restricted: the guard denies commit/reset/rebase/cherry-pick/merge EVEN FOR THE OWNER — ownership match alone never permits a write. A state outside this enum is NOT permitted to fall through to write-permitted behaviour: the guard fails closed with an explicit `ask` (ADR-campaign-state-lifecycle-sha-authority, 2026-07-19)."
+          },
+          "merge": {
+            "type": "object",
+            "description": "OPTIONAL main-side provenance for a merged campaign. INERT: no guard may compare any field here against worktree HEAD — the branch-tip authority is `expected_head` alone. Exists so a merged campaign never overloads `expected_head` with a main-side SHA (ADR-campaign-state-lifecycle-sha-authority, 2026-07-19). Deployment/UAT/production-completion state does NOT belong here — that is owned by PROJECT_STATE.md.",
+            "properties": {
+              "pr": { "type": "integer", "description": "GitHub PR number that merged this campaign." },
+              "squash_sha": {
+                "type": "string", "pattern": "^[0-9a-f]{8,40}$",
+                "description": "Squash-merge commit on main. Provenance only — never compared with worktree HEAD."
+              },
+              "merged_at": { "type": "string", "format": "date-time" }
+            },
+            "additionalProperties": false
           },
           "phase": {
             "type": "string",

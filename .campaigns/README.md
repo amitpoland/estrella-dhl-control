@@ -42,10 +42,24 @@ every session open — context comes from the registry, never from chat archaeol
 4. **Read the operational registry before any campaign-branch write.** Never reconstruct
    ownership or the chartered decision from reflog, chat, or memory files.
 
-## SHA semantics — two fields, never one
+## SHA semantics — branch-tip space vs main space
 
-- `expected_head` — the operator-approved target.
-- `last_verified_head` — what read-only verification actually found.
+- `expected_head` — the operator-approved target. **Always the campaign BRANCH-TIP SHA.**
+- `last_verified_head` — what read-only verification actually found (also branch-tip space).
+- `merge` *(optional)* — `{pr, squash_sha, merged_at}`: main-side provenance for a merged
+  campaign. **Inert** — no guard compares any field here against worktree HEAD.
+
+**A main-side / squash-merge SHA may never be stored in `expected_head`.** Doing so produced
+the `transport-m1` false-drift incident (2026-07-18): `expected_head` held the PR #940 squash
+commit `4676057…` while the registered worktree correctly sat on the branch tip `779c1b5f…`,
+so the guard's check 5 would have raised a spurious "unexpected HEAD" incident the moment a
+lock was claimed. Rationale + rejected alternatives:
+`docs/decisions/ADR-campaign-state-lifecycle-sha-authority.md`.
+
+**Deployment lifecycle does not live here.** UAT, business-owner sign-off, deployment
+validation and production completion belong to `PROJECT_STATE.md` under the Business Feature
+Completeness Standard. This registry is a branch/worktree **ownership** authority; growing
+deployment fields would make it a second feature-lifecycle authority.
 
 If they diverge (or the real tip diverges from `expected_head`): **file an incident report and
 request an operator ruling. No session may auto-"correct" the branch.** A stale registry must
@@ -61,6 +75,17 @@ entry — never merely deleted.
 
 `IN_PROGRESS` → `READY_FOR_REBASE_AFTER_<gate>` → `REBASED_PENDING_REVIEW` → `PR_OPEN` →
 `MERGED` → entry removed from the registry + worktree archived (WORKTREE DISCIPLINE).
+
+If the worktree cannot be archived immediately at merge — post-merge follow-up still open,
+as with `transport-m1` — the entry moves to **`MERGED_PENDING_ARCHIVE`** instead of lingering
+in an undeclared state. That state is **write-restricted**: the branch is merged and the
+worktree is still registered, so no legitimate write remains, and the guard denies for owner
+and non-owner alike. The entry leaves the registry when the worktree is archived.
+
+**Unknown states fail closed.** A `state` outside the enum (or absent) is never treated as
+writable: the guard emits an explicit `ask` naming the value and requires an operator ruling.
+`MERGED_VERIFIED` — invented at merge time, present in no enum, and unnoticed because nothing
+validates the registry against its schema — is the reason this rule exists.
 
 ## Why this design (worked example)
 

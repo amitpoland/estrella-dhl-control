@@ -25,6 +25,30 @@ from datetime import datetime, timedelta, timezone
 
 HEARTBEAT_FRESH_MINUTES = 15
 
+# Lifecycle states declared in .campaigns/schema.json + policies.json.state_enum.
+# Parity with those two files and OWNERSHIP-GUARD-SPEC.md is pinned by
+# service/tests/test_campaign_branch_guard.py.
+KNOWN_STATES = (
+    "IN_PROGRESS",
+    "READY_FOR_REBASE",
+    "REBASED_PENDING_REVIEW",
+    "PR_OPEN",
+    "MERGED",
+    "MERGED_PENDING_ARCHIVE",
+    "FROZEN",
+    "LOCKED",
+    "DEPLOYING",
+    "ARCHIVED",
+)
+
+# Write-restricted: denied for ALL sessions INCLUDING the registered owner (§6).
+# MERGED_PENDING_ARCHIVE joins these (ADR-campaign-state-lifecycle-sha-authority,
+# 2026-07-19): the branch is merged, the worktree is still registered, and no
+# legitimate write remains. Because 4a runs before check 5, a merged campaign can
+# never raise a spurious branch-drift incident — drift detection stays fully active
+# for every writable state and is merely superseded here by a stricter deny.
+RESTRICTED_STATES = ("FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED", "MERGED_PENDING_ARCHIVE")
+
 WRITE_VERBS = re.compile(
     r"\bgit\b[^\n|;&]*?\b("
     r"commit|reset|rebase|cherry-pick|merge"
@@ -68,8 +92,15 @@ def _emit(decision, reason):
     sys.stdout.buffer.flush()
 
 
+# Canonical operational-registry location. Module-level so tests can exercise the real
+# guard against a fixture registry by rebinding this name in-process. Deliberately NOT
+# an environment variable: an env-settable registry path would be a bypass vector in a
+# fail-closed enforcement hook.
+CANONICAL_REGISTRY = r"C:\PZ-main\.claude\state\active-campaigns.json"
+
+
 def _registry_paths():
-    paths = [r"C:\PZ-main\.claude\state\active-campaigns.json"]
+    paths = [CANONICAL_REGISTRY]
     proj = os.environ.get("CLAUDE_PROJECT_DIR")
     if proj:
         paths.append(os.path.join(proj, ".claude", "state", "active-campaigns.json"))
@@ -172,13 +203,56 @@ def main():
         worktree = entry.get("worktree") or ""
         target_tree = worktree if os.path.isdir(worktree) else cwd
         owner = entry.get("owner", "?")
-        expected = (entry.get("expected_head") or "").lower()
-        state = (entry.get("state") or entry.get("status") or "").upper()
+        expected = str(entry.get("expected_head") or "").lower()
+        # `str()` before `.upper()`: a non-string `state` (int / dict / list from a
+        # hand-edited registry) previously raised AttributeError here — BEFORE the
+        # fail-closed KNOWN_STATES gate below could see it. A crash in an enforcement
+        # guard is the one failure mode that must not happen, so coerce first and let
+        # the malformed value flow into the same fail-closed path as any other
+        # undeclared state.
+        raw_state = entry.get("state") or entry.get("status") or ""
+        state = str(raw_state).upper()
         phase = entry.get("phase") or ""
+
+        # 4a-pre — UNKNOWN/SCHEMA-INVALID STATE (fail-closed enforcement boundary).
+        # An undeclared state must NEVER fall through to write-permitted behaviour:
+        # `MERGED_VERIFIED` (transport-m1, 2026-07-18) sat outside every enum and
+        # would otherwise have been treated as an ordinary writable state. Surface it
+        # explicitly instead of guessing intent.
+        if not state or state not in KNOWN_STATES:
+            # An undeclared state must not DOWNGRADE a harder verdict. Checks 2 and 3
+            # (branch / worktree mismatch) are categorical `deny`s that do not depend on
+            # state at all, so evaluate them first: otherwise an entry with both a bad
+            # state and a branch mismatch would soften an automatic deny into an
+            # operator-confirmable ask. Only when those pass does the unknown state
+            # itself become the reason to stop.
+            _tree = worktree if os.path.isdir(worktree) else cwd
+            _branch = _git(["branch", "--show-current"], _tree)
+            if _branch is not None and entry.get("branch") and _branch != entry["branch"]:
+                _emit("deny", f"campaign-branch-guard[{name}]: branch mismatch — tree has "
+                              f"'{_branch}', registry expects '{entry['branch']}' (check 2). "
+                              f"NOTE: this entry also carries an unrecognised state "
+                              f"'{state or '(missing)'}' — repair it before any write.")
+                return 0
+            if worktree and not _norm(cwd).startswith(_norm(worktree)) and \
+               (entry.get("branch") or "").lower() in command_low and \
+               _norm(worktree).replace("\\", "/") not in _norm(command).replace("\\", "/"):
+                _emit("deny", f"campaign-branch-guard[{name}]: worktree mismatch — campaign "
+                              f"branch may only be written in its registered worktree "
+                              f"{worktree} (check 3). NOTE: this entry also carries an "
+                              f"unrecognised state '{state or '(missing)'}'.")
+                return 0
+            label = f"'{state}'" if state else "(missing — required by .campaigns/schema.json)"
+            _emit("ask", f"campaign-branch-guard[{name}]: unrecognised campaign state "
+                         f"{label} — not in the declared lifecycle enum "
+                         f"(.campaigns/schema.json, policies.json.state_enum). Treating as "
+                         f"RESTRICTED pending an operator ruling: confirm the intended state "
+                         f"before any write. Fail-closed by design; never assume writable.")
+            return 0
 
         # 4a — STATE enforcement (operator second ruling §6): write-restricted states
         # deny EVEN FOR THE OWNER. Ownership match alone never permits a write.
-        if state in ("FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED"):
+        if state in RESTRICTED_STATES:
             _emit("deny", f"campaign-branch-guard[{name}]: campaign state is {state}"
                           f"{' (phase ' + phase + ')' if phase else ''} — allowed: read/verify/review; "
                           f"denied: commit/reset/rebase/cherry-pick/merge for ALL sessions including "
@@ -210,16 +284,46 @@ def main():
             _emit("ask", f"campaign-branch-guard[{name}]: write-lock unclaimed. Registered owner: "
                          f"{owner}. Operator must confirm this session may claim it (check 4).")
             return 0
-        if lock.get("session_id") != session_id:
+        if not isinstance(lock, dict):
+            # A non-dict `lock` (string / list / number from a hand-edited registry) has no
+            # readable holder, so ownership cannot be established. Fail closed rather than
+            # crash on the .get() below.
+            _emit("ask", f"campaign-branch-guard[{name}]: malformed write-lock — expected an "
+                         f"object with session_id/claimed_at, found {type(lock).__name__}. "
+                         f"Ownership cannot be established; repair the registry entry before "
+                         f"any write (check 4, fail closed).")
+            return 0
+        # Same coercion discipline as `state` above: a non-string session_id (int / dict /
+        # list from a hand-edited registry) must not raise on the [:12] slice below. An
+        # exception here would escape to the entrypoint handler and downgrade a categorical
+        # `deny` into an `ask` — the exact crash-before-the-verdict class this campaign
+        # exists to remove. `_holder` is display/compare only; the lock object is unchanged.
+        raw_holder = lock.get("session_id")
+        if not isinstance(raw_holder, str):
+            # Type-GATE, never coerce. Coercing here (str(None) -> "") made a null holder
+            # compare equal to an absent payload session_id — both "" — which silently
+            # PERMITTED a non-owner write that the original cross-type `!=` denied.
+            # An unreadable holder means ownership cannot be established: fail closed and
+            # leave the comparison semantics for real string ids untouched.
+            _emit("ask", f"campaign-branch-guard[{name}]: malformed lock.session_id — "
+                         f"expected a string, found "
+                         f"{'null/absent' if raw_holder is None else type(raw_holder).__name__}. "
+                         f"Ownership cannot be established; registered owner: {owner}. "
+                         f"Repair the registry entry before any write (check 4, fail closed).")
+            return 0
+        _holder = raw_holder
+        _me = str(session_id or "")
+        if _holder != _me:
+            shown = (_holder[:12] + "…") if _holder else "(no session_id)"
             if _heartbeat_fresh(lock):
                 _emit("deny", f"campaign-branch-guard[{name}]: concurrent writer — lock held by "
-                              f"session {lock.get('session_id', '?')[:12]}… with a fresh heartbeat; "
+                              f"session {shown} with a fresh heartbeat; "
                               f"registered owner: {owner} (check 6).")
             else:
                 _emit("deny", f"campaign-branch-guard[{name}]: owner mismatch — lock held by session "
-                              f"{lock.get('session_id', '?')[:12]}… (heartbeat STALE >"
+                              f"{shown} (heartbeat STALE >"
                               f"{HEARTBEAT_FRESH_MINUTES} min — possibly a crashed owner); current "
-                              f"session {session_id[:12]}…; registered owner: {owner}. Stale-owner "
+                              f"session {_me[:12]}…; registered owner: {owner}. Stale-owner "
                               f"recovery: only the operator may reassign the lock by editing the "
                               f"registry entry (check 4).")
             return 0
@@ -237,4 +341,37 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException as exc:  # noqa: BLE001 — deliberate catch-all, see below
+        # FAIL CLOSED. An unhandled exception in an enforcement guard must never let a
+        # campaign-branch write through: an uncaught traceback exits non-zero-but-not-2,
+        # which this harness treats as a non-blocking error, i.e. the tool proceeds.
+        # Emit a real `ask` decision so the operator is asked rather than bypassed.
+        #
+        # NOT the pattern used by campaign-session-banner.py (`except: sys.exit(0)`) —
+        # that hook only prints a card, so failing open there costs a display line. This
+        # hook is the enforcement boundary, and silently exiting 0 here would be a
+        # bypass.
+        emitted = False
+        try:
+            _emit(
+                "ask",
+                "campaign-branch-guard: INTERNAL ERROR — {0}: {1}. The campaign-branch "
+                "guard could not complete its checks, so this write is UNVERIFIED. "
+                "Confirm with the operator and repair the guard/registry before "
+                "proceeding (fail closed by design).".format(
+                    type(exc).__name__, str(exc)[:200]
+                ),
+            )
+            emitted = True
+        except BaseException:
+            emitted = False
+        # Decision emitted -> exit 0, the same way every normal decision is returned.
+        # Nothing emitted (stdout unusable) -> the harness blocking exit code, so the
+        # write is stopped even though no structured reason can be delivered.
+        # NB: sys.exit() must stay OUT of the try above — SystemExit is a BaseException
+        # and would be swallowed by the handler, silently downgrading the emitted `ask`.
+        sys.exit(0 if emitted else 2)
