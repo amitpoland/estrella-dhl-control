@@ -107,6 +107,18 @@ guard-changing PR that introduces this mechanism is itself **operator-merge-only
 merge-enforcement authority). Tests: `service/tests/test_council_merge_guard.py` (24). This is the
 §12 MODULAR-MINIMAL principle applied to the guard: one rule replaced, three deny rules untouched.
 
+## v1.4 delta — §13.F resumable-exit pointer (2026-07-19)
+
+Added a subordinate cross-reference in `00_ENGINEERING_CONSTITUTION.md` §13.F: a bounded-loop
+`HOLD_TRIGGERED` / `OPERATOR_GATE` exit that preserves a verified checkpoint resumes per the
+**Resume Rule** (`docs/governance/anti-hold-and-completion.md` §7) and the single-task lifecycle
+model (`.claude/TASK_EXECUTION_PROTOCOL.md`). Docs-only; the OS duplicates no enum or rule; no
+version-number bump. Companion (non-OS) changes in the same governance package: the canonical
+8-state single-task lifecycle in `TASK_EXECUTION_PROTOCOL.md`, the Resume Rule in
+`anti-hold-and-completion.md` §7, and the `EXECUTION_BLOCKED` checkpoint block in `TASK_STATE.md`.
+The `.campaigns/` branch-write state machine is intentionally untouched (separate axis). Evidence:
+operator governance directive 2026-07-19 (resumable EXECUTION_BLOCKED, resumable-not-restartable).
+
 ## Amendment rule (unchanged in substance from v1.0 §6)
 
 Future changes go into **v1.4+** only with recorded evidence — an observed

@@ -7,11 +7,42 @@ rewrite the `## Current task` block when a new task begins.
 Rules and boundary vs PROJECT_STATE.md:
 `docs/governance/anti-hold-and-completion.md` §5.
 
-- **Do not** start a second task while the current one is `IN_PROGRESS`
-  (unless the operator explicitly redirects).
+- **Do not** start a second task while the current one is in any active lifecycle
+  state (`DISCOVERY`, `PLANNING`, `IMPLEMENTING`, `VALIDATING`, `EXECUTION_BLOCKED`,
+  `READY_FOR_PR`, `UNDER_REVIEW`) — unless the operator explicitly redirects.
 - **Do** record a one-line HOLD reason (one of the four valid conditions)
   whenever you stop, so the next session resumes without re-derivation.
-- Status values: `NOT_STARTED` · `IN_PROGRESS` · `BLOCKED-HOLD` · `COMPLETE`.
+- Lifecycle state (canonical axis — `.claude/TASK_EXECUTION_PROTOCOL.md`):
+  `NOT_STARTED` · `DISCOVERY` · `PLANNING` · `IMPLEMENTING` · `VALIDATING` ·
+  `EXECUTION_BLOCKED` · `READY_FOR_PR` · `UNDER_REVIEW` · `COMPLETE`.
+  `EXECUTION_BLOCKED` is the resumable refinement of the former `BLOCKED-HOLD`; it
+  requires one of the four §2 HOLD conditions AND a recorded checkpoint block
+  (template below). Resume Rule + full semantics:
+  `docs/governance/anti-hold-and-completion.md` §7. This is a **separate axis** from
+  the `.campaigns/` branch-write registry state — neither derives from the other
+  (mapping: `.claude/TASK_EXECUTION_PROTOCOL.md`).
+- **Migration:** pre-existing entries below in old spellings (`IN_PROGRESS`,
+  `BLOCKED-HOLD`) are **grandfathered** and NOT auto-reclassified; each is migrated
+  only when its owner re-touches it (determine `suspended_from` + checkpoint
+  completeness first). New task entries use the canonical lifecycle state.
+
+### EXECUTION_BLOCKED checkpoint template (record on entering; no secrets / customer data)
+
+```yaml
+state: EXECUTION_BLOCKED
+suspended_from: VALIDATING
+blocked_reason_class: EXTERNAL_INFRASTRUCTURE
+blocked_dependency: <named dependency>
+recorded_branch: <branch>
+recorded_head: <sha>
+preserved_diff_hash: <optional; sha256 over the preserved_files contents, computed by the owner session at checkpoint time>
+preserved_files:
+  - <path>
+authority_owner: <canonical authority>
+next_command: <the single recorded resume command>
+retry_policy: NO_REPEATED_RETRIES
+checkpoint_recorded_at: <ISO-8601 timestamp>
+```
 
 ---
 

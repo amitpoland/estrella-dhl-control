@@ -516,11 +516,26 @@ These are normal autonomous work. Do not stop to ask permission for them:
 
 A task is not done until its completion checklist
 (`docs/governance/anti-hold-and-completion.md` §Completion Checklist)
-passes. Do not begin a second task while a first is `IN_PROGRESS` in
-`.claude/memory/TASK_STATE.md` unless the operator explicitly redirects.
+passes. Do not begin a second task while a first is in an active lifecycle state (any state
+other than `COMPLETE`) in `.claude/memory/TASK_STATE.md` unless the operator explicitly
+redirects.
 Record a one-line HOLD reason in TASK_STATE.md whenever you stop on a
 valid HOLD condition, so the next session can resume without re-deriving
 context.
+
+### Resumable stops — EXECUTION_BLOCKED (resume, don't restart)
+
+A stop on an external dependency that preserves a verified checkpoint is
+`EXECUTION_BLOCKED` — the resumable refinement of a HOLD (it still requires one of the
+four conditions above, primarily #2). **It is resumable, not restartable:** on return,
+run the bounded checkpoint validation (branch / HEAD / diff / authority / dependency /
+no-competing-writer) and, if all pass, execute the single recorded resume command
+directly — do NOT relaunch a broad context pass, re-plan, or re-implement work that is
+still valid. If any check fails, resume from the earliest invalid checkpoint only, take
+an operator ruling on unexpected HEAD movement / authority conflict / concurrent
+ownership, and never silently rebase/reset/cherry-pick/discard the preserved diff.
+Lifecycle-state authority: `.claude/TASK_EXECUTION_PROTOCOL.md`. Full Resume Rule:
+`docs/governance/anti-hold-and-completion.md` §7.
 
 ---
 
