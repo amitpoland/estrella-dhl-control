@@ -160,12 +160,14 @@ def test_upsert_design_rejects_bad_code(tmp_path: Path):
 def client(tmp_path: Path, monkeypatch):
     """FastAPI TestClient with an isolated master_data.sqlite + no API key."""
     monkeypatch.setenv("API_KEY", "")  # disables auth dependency
-    # Re-import the routes module so _DB_PATH binds to a temp path.
-    import importlib
-    from app.core import config as cfg_mod
-    cfg_mod.settings.storage_root = tmp_path  # type: ignore[assignment]
+    # Rebind _DB_PATH straight to a temp DB; monkeypatch restores it on
+    # teardown. Assigning settings.storage_root and reloading the module
+    # instead left BOTH permanently pointing at a deleted tmp_path for
+    # every test that ran afterwards.
     from app.api import routes_master_data
-    importlib.reload(routes_master_data)
+    monkeypatch.setattr(
+        routes_master_data, "_DB_PATH", tmp_path / "master_data.sqlite",
+    )
     from fastapi import FastAPI
     app = FastAPI()
     app.include_router(routes_master_data.designs_router)

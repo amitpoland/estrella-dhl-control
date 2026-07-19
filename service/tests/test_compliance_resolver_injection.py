@@ -9,7 +9,6 @@ Verifies:
 """
 from __future__ import annotations
 
-import importlib
 import os
 import re
 import sys
@@ -42,8 +41,12 @@ def test_settings_has_compliance_resolver_flag_default_false():
 
 def test_settings_object_exposes_flag():
     """The Settings dataclass must expose the new flag attribute."""
+    # No importlib.reload here: reloading app.core.config replaces the
+    # `settings` singleton for the rest of the session, so every module that
+    # captured it via `from .config import settings` and every module that
+    # resolves it lazily end up reading two different objects. The attribute
+    # is a plain class-level default — the live singleton already has it.
     from app.core import config as cfg_mod
-    importlib.reload(cfg_mod)
     assert hasattr(cfg_mod.settings,
                    "compliance_intelligence_resolver_enabled")
     # default false
